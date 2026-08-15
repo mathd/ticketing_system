@@ -256,9 +256,14 @@ func TestStaffCredentialIsAcceptedByTheEditorsTwoOperations(t *testing.T) {
 	}
 }
 
-// X-Internal-Token must keep working on those same two operations. Five smoke drivers
-// and every service-to-service caller present it; this is an ADDITIONAL accepted
-// credential, not a replacement.
+// X-Internal-Token must keep working on those same two operations. Four smoke files
+// (eight call sites) present it; this is an ADDITIONAL accepted credential, not a
+// replacement.
+//
+// The count was "five smoke drivers and every service-to-service caller" until TKT-250
+// checked it: there is NO service-to-service caller of the allocation route, and there
+// are four smoke files, not five. The wrong number is what made TKT-250 look like it had
+// to keep the revision optional for compatibility.
 func TestInternalTokenStillOpensTheEditorsTwoOperations(t *testing.T) {
 	for _, op := range theGrantedOperations() {
 		t.Run(op.name, func(t *testing.T) {

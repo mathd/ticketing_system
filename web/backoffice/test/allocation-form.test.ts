@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   allocationErrors,
   parseAllocationForm,
+  parseAllocationRevision,
   toAllocationRequest,
   toMinuteInput,
   MissingAllocationChannel,
@@ -367,5 +368,73 @@ describe('a submitted set that omits a current allocation is refused', () => {
   // An empty submission against an empty current set is not a deletion, so it is allowed.
   it('allows an empty submission when the slot has no allocations', () => {
     expect(toAllocationRequest('11111111-1111-1111-1111-111111111111', [], []).allocations).toEqual([]);
+  });
+});
+
+// TKT-250. The allocation set carries a revision, so a save built on a stale read is
+// refused instead of silently overwriting whoever saved in between.
+describe('the allocation-set revision', () => {
+  const org = '11111111-1111-1111-1111-111111111111';
+  const current: CurrentAllocation[] = [{ channel: 'reseller-acme' }];
+
+  it('is sent exactly as captured', () => {
+    const req = toAllocationRequest(org, [row()], current, 7);
+    expect(req.allocation_revision).toBe(7);
+  });
+
+  // Zero is a real revision — the value of a pool nobody has edited yet — and must be
+  // SENT, not dropped as falsy. Dropped, inventory would read the request as "replace
+  // unconditionally" and the first edit of every slot would be unprotected: exactly the
+  // window in which two operators are most likely to be setting a slot up together.
+  it('sends revision 0 rather than omitting it as falsy', () => {
+    const req = toAllocationRequest(org, [row()], current, 0);
+    expect(req.allocation_revision).toBe(0);
+    expect('allocation_revision' in req).toBe(true);
+  });
+
+  // Omitted only when genuinely absent. The page refuses that case before calling this,
+  // but the mapping must not invent a value of its own.
+  it('omits the field entirely when no revision is supplied', () => {
+    expect('allocation_revision' in toAllocationRequest(org, [row()], current)).toBe(false);
+  });
+
+  it('reads the revision from the submitted form', () => {
+    const form = new FormData();
+    form.set('allocationRevision', '12');
+    expect(parseAllocationRevision(form)).toBe(12);
+  });
+
+  it('reads a submitted revision of 0 as the value 0, not as absence', () => {
+    const form = new FormData();
+    form.set('allocationRevision', '0');
+    expect(parseAllocationRevision(form)).toBe(0);
+  });
+
+  // A missing or malformed revision is undefined, which the page turns into a refusal.
+  // It must never become a number: any number here would be a guess presented to the
+  // server as a fact.
+  it.each([
+    ['absent', undefined],
+    ['empty', ''],
+    ['not a number', 'abc'],
+    ['negative', '-1'],
+    ['fractional', '1.5'],
+  ])('reads a %s revision as undefined', (_name, value) => {
+    const form = new FormData();
+    if (value !== undefined) form.set('allocationRevision', value);
+    expect(parseAllocationRevision(form)).toBeUndefined();
+  });
+
+  // The refusal is form-level and tells the operator to reload. It must NOT land on a
+  // row: every field they can see is fine, and pointing at one would send them to fix a
+  // value that is not the problem.
+  it('turns a stale-revision refusal into a reload instruction, not a field error', () => {
+    const errors = allocationErrors(
+      { error: 'conflict: allocation set revision mismatch', code: 'allocation_revision_mismatch' },
+      [row()],
+    );
+    expect(errors.rows).toEqual({});
+    expect(errors.total).toBeUndefined();
+    expect(errors.form).toMatch(/reload/i);
   });
 });

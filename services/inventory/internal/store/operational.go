@@ -46,6 +46,20 @@ type StaffAvailability struct {
 	PublicAvailable int32                 `json:"public_available"`
 	OfferingStatus  string                `json:"offering_status"`
 	Channels        []ChannelAvailability `json:"channels"`
+	// AllocationRevision is the allocation set's current revision (TKT-250). An
+	// editor reads it here and presents it back on the replace, which refuses if the
+	// set moved in between — see ReplaceChannelAllocations.
+	//
+	// It belongs on this read and not the public one for the same reason
+	// RequiresCode and SoldBy do: it is configuration an OPERATOR round-trips, and a
+	// buyer has no use for it.
+	//
+	// Serialized straight to the wire (`write(w, 200, a)` — api/operational.go:242),
+	// so like every other field here it must be declared in the OpenAPI document or
+	// response validation fails closed under ADR-028. Declared OPTIONAL there rather
+	// than required: adding a required response property breaks any consumer that
+	// has not regenerated, and the back office reads it by name either way.
+	AllocationRevision int64 `json:"allocation_revision"`
 }
 
 type HistoryEntry struct {
@@ -366,11 +380,12 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 	var target sql.NullInt32
 	var lifecycle, closure string
 	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status,
+			allocation_revision,
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='buyer' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='reservation' AND `+liveClaims+`)
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.BuyerHeld, &a.OperationalHeld, &a.ReservationHeld)
+		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.AllocationRevision, &a.BuyerHeld, &a.OperationalHeld, &a.ReservationHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}

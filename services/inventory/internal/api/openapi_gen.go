@@ -52,6 +52,7 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 const (
 	AllocationCapBelowConsumption ErrorCode = "allocation_cap_below_consumption"
 	AllocationCapsExceedCapacity  ErrorCode = "allocation_caps_exceed_capacity"
+	AllocationRevisionMismatch    ErrorCode = "allocation_revision_mismatch"
 	ChannelWindowClosed           ErrorCode = "channel_window_closed"
 	OrphanedSeats                 ErrorCode = "orphaned_seats"
 	PinUnavailable                ErrorCode = "pin_unavailable"
@@ -68,6 +69,8 @@ func (e ErrorCode) Valid() bool {
 	case AllocationCapBelowConsumption:
 		return true
 	case AllocationCapsExceedCapacity:
+		return true
+	case AllocationRevisionMismatch:
 		return true
 	case ChannelWindowClosed:
 		return true
@@ -237,8 +240,10 @@ type ChannelAllocation struct {
 
 // ChannelAllocationSet defines model for ChannelAllocationSet.
 type ChannelAllocationSet struct {
-	Allocations []ChannelAllocation `json:"allocations"`
-	OrganizerId openapi_types.UUID  `json:"organizer_id"`
+	// AllocationRevision The allocation set revision this replacement is based on (TKT-250), as read from StaffAvailability. Compared under the pool row lock; a mismatch refuses with 409 `allocation_revision_mismatch` rather than silently overwriting the concurrent edit. OPTIONAL IN THIS SCHEMA BUT REQUIRED OF THE BACK OFFICE: the contract cannot express "required for one credential class", and the two differ — a staff-credential caller (ADR-057) must present it, while an `X-Internal-Token` caller may omit it and get the pre-TKT-250 unconditional replace. A staff request without it is refused with 400.
+	AllocationRevision *int64              `json:"allocation_revision,omitempty"`
+	Allocations        []ChannelAllocation `json:"allocations"`
+	OrganizerId        openapi_types.UUID  `json:"organizer_id"`
 }
 
 // ChannelAllocations defines model for ChannelAllocations.
@@ -287,7 +292,7 @@ type Error struct {
 	// Channel The offending allocation's raw channel code, present only on `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to.
 	Channel *string `json:"channel,omitempty"`
 
-	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it.
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -295,7 +300,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it.
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
@@ -515,8 +520,10 @@ type SeatOccupancyOfferingStatus string
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {
-	Available int `json:"available"`
-	BuyerHeld int `json:"buyer_held"`
+	// AllocationRevision The allocation set's current revision (TKT-250). An editor reads it here and presents it back on ChannelAllocationSet; the replace compares it under the pool row lock and refuses a stale save. Bumped only by a successful allocation replace — a ticket sale, a refund or a capacity adjustment leaves it alone, so an open editor is not invalidated by ordinary trading. NOT in the `required` list deliberately: adding a required response property breaks any consumer that has not regenerated, and every reader takes this by name.
+	AllocationRevision *int64 `json:"allocation_revision,omitempty"`
+	Available          int    `json:"available"`
+	BuyerHeld          int    `json:"buyer_held"`
 
 	// Capacity Effective capacity: the clamp floor while a cut drains (TKT-76)
 	Capacity  int                   `json:"capacity"`

@@ -156,9 +156,32 @@ func (s *Server) replaceAllocations(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		OrganizerID uuid.UUID                 `json:"organizer_id"`
 		Allocations []store.ChannelAllocation `json:"allocations"`
+		// AllocationRevision is the set revision the caller believes it is replacing
+		// (TKT-250). A POINTER because absent and zero are different answers: zero is
+		// the revision of a pool nobody has edited yet, and a non-pointer would read
+		// an omitted field as that legitimate value and admit a stale save.
+		AllocationRevision *int64 `json:"allocation_revision"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in, 1<<20); err != nil || in.OrganizerID == uuid.Nil || in.Allocations == nil {
 		write(w, 400, map[string]string{"error": "invalid allocation request"})
+		return
+	}
+	// The revision is REQUIRED of the back office and optional for the shared internal
+	// token (TKT-250). The split is possible because ADR-057 gave inventory its own
+	// staff credential, so the guard can tell the two apart; the contract cannot
+	// express "required for one credential class", so the schema keeps it optional and
+	// the decision lives here.
+	//
+	// WHY THE SPLIT rather than requiring it of everyone: the back office is where two
+	// humans race, and it is the only caller that renders a form from a read. The
+	// service-to-service path is machine-driven and re-derives its whole set per call,
+	// so a precondition would buy it nothing and break eight smoke call sites.
+	//
+	// DECIDED BEFORE THE STORE CALL, and that is load-bearing rather than stylistic:
+	// staff_credential_test.go drives this handler with a nil store, so a check placed
+	// after the store call would panic instead of answering 400.
+	if callerCredential(r) == credentialStaff && in.AllocationRevision == nil {
+		write(w, 400, map[string]string{"error": "allocation_revision is required"})
 		return
 	}
 	seen := map[string]bool{}
@@ -169,7 +192,7 @@ func (s *Server) replaceAllocations(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[a.Channel] = true
 	}
-	out, err := s.st.ReplaceChannelAllocations(r.Context(), in.OrganizerID, slot, in.Allocations)
+	out, err := s.st.ReplaceChannelAllocations(r.Context(), in.OrganizerID, slot, in.Allocations, in.AllocationRevision)
 	if err != nil {
 		problem(w, err)
 		return

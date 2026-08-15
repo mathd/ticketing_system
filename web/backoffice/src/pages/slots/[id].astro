@@ -37,6 +37,7 @@ import {
   type AllocationRow,
   allocationErrors,
   parseAllocationForm,
+  parseAllocationRevision,
   toAllocationRequest,
   toMinuteInput,
   MissingAllocationChannel,
@@ -62,6 +63,11 @@ let errors: AllocationFormErrors = { rows: {} };
 // The rows as submitted, so a refusal re-renders what the operator typed rather than
 // discarding it back to the stored values.
 let submitted: AllocationRow[] | null = null;
+// The revision the submission carried, kept so a refusal re-renders THAT value rather
+// than the current one (TKT-250). Re-rendering the fresh revision after a stale-write
+// refusal would make the operator's second click succeed silently — the same lost update
+// the refusal just prevented, one click later.
+let submittedRevision: number | undefined;
 
 // The read sits in its own error path: a service failure must render this page's readable
 // message, not abort SSR into a 500 that says nothing.
@@ -83,6 +89,12 @@ if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const rows = parseAllocationForm(form);
   submitted = rows;
+  // The revision the RENDERED PAGE carried — not the one the fresh read above just
+  // returned (TKT-250). Sending the fresh one would compare inventory's current value
+  // against itself and match every time; the precondition would be structurally
+  // incapable of failing, which is worse than not having it, because the editor would
+  // report protection it does not have.
+  submittedRevision = parseAllocationRevision(form);
 
   // Presentation-only pre-checks. They never decide whether the write happens — the
   // server refuses regardless — they just keep a submit the server would reject anyway
@@ -97,11 +109,21 @@ if (Astro.request.method === 'POST') {
       rows: {},
       form: 'Inventory could not be read, so the change was not saved — the fields this screen does not show could not be preserved. Try again.',
     };
+  } else if (submittedRevision === undefined) {
+    // No revision, or an unparseable one. Refuse rather than fall back to an
+    // unconditional replace: inventory would accept the omission from an internal
+    // caller, but this process holds only the staff credential (ADR-057), so a
+    // submission without one is malformed rather than privileged — and treating it as
+    // "just save it" would reinstate exactly the lost update this ticket closes.
+    errors = {
+      rows: {},
+      form: 'This form was submitted without its revision, so nothing was saved. Reload the page and try again.',
+    };
   } else {
     try {
       await replaceChannelAllocations(
         slotId,
-        toAllocationRequest(staff.organizerId, rows, availability?.channels ?? []),
+        toAllocationRequest(staff.organizerId, rows, availability?.channels ?? [], submittedRevision),
       );
       return Astro.redirect(here, 303);
     } catch (e) {
@@ -184,6 +206,16 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
       {errors.total && <p class="error" role="alert" data-total-error>{errors.total}</p>}
 
       <form method="post" action="">
+        {/* The allocation set's revision, compared by inventory under the pool lock
+            (TKT-250). After a refusal this re-renders the SUBMITTED value, not the
+            current one: re-rendering the fresh revision would let a second click apply
+            the very stale set the refusal just stopped. */}
+        <input
+          type="hidden"
+          name="allocationRevision"
+          value={String(submittedRevision ?? availability?.allocation_revision ?? '')}
+          data-allocation-revision
+        />
         {rows.length === 0 && <p data-empty>No channel allocations — the whole slot sells publicly.</p>}
 
         {rows.length > 0 && (

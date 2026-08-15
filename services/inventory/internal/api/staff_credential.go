@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"ticketing/shared/httpx"
@@ -48,11 +49,61 @@ func (s *Server) WithStaffWriteCredential(token string) *Server {
 // answers a different question than the one it was asked.
 func (s *Server) staffOrInternal(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.credential) &&
-			!httpx.HeaderCredentialMatches(r, staffWriteHeader, s.staffWriteToken) {
+		internal := httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.credential)
+		staff := httpx.HeaderCredentialMatches(r, staffWriteHeader, s.staffWriteToken)
+		if !internal && !staff {
 			write(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
-		h(w, r)
+		// Both arms are evaluated before either is consulted, deliberately: a
+		// short-circuit would skip a constant-time comparison and make the
+		// unauthorized path's timing depend on which credential was presented.
+		//
+		// The class travels on the request context because the handler needs it
+		// (TKT-250): the allocation-set revision is REQUIRED of a staff caller and
+		// optional for the shared internal token, and until now the guard collapsed
+		// both into one boolean and told the handler nothing.
+		//
+		// Internal wins when both are presented. That is the conservative order: the
+		// shared token is the broader credential, so a caller holding it is treated
+		// as the service-to-service path it already was, and presenting a staff
+		// header alongside it cannot tighten or loosen anything.
+		class := credentialStaff
+		if internal {
+			class = credentialInternal
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), credentialClassKey{}, class)))
 	}
+}
+
+// credentialClass is which of ADR-057's two credentials opened the request.
+//
+// Deliberately not a bare bool on the request: the two are not opposites — a future
+// third credential would be a third value, and `!internal` would silently reclassify it
+// as staff.
+type credentialClass int
+
+const (
+	// credentialStaff is the back office's own inventory credential.
+	credentialStaff credentialClass = iota
+	// credentialInternal is the shared X-Internal-Token, held by services and by the
+	// smoke suite, and deliberately NOT by the back office (ADR-057).
+	credentialInternal
+)
+
+// credentialClassKey types the context key so nothing else can collide with it.
+type credentialClassKey struct{}
+
+// callerCredential reports which credential opened this request.
+//
+// FAILS CLOSED to staff: a handler reached without the guard having run has no class on
+// its context, and staff is the arm with the STRICTER requirement (it must present a
+// revision). Defaulting to internal would silently drop the precondition for any route
+// wired up without the guard — the failure would be a missing check, which is invisible,
+// rather than a refusal, which is not.
+func callerCredential(r *http.Request) credentialClass {
+	if c, ok := r.Context().Value(credentialClassKey{}).(credentialClass); ok {
+		return c
+	}
+	return credentialStaff
 }

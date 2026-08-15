@@ -186,7 +186,7 @@ func TestReturnRefundedCapacitySerializesOnThePoolLock(t *testing.T) {
 func TestReturnedQuantityIsSubtractedFromChannelConsumption(t *testing.T) {
 	ctx, st, _ := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 10)
-	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "resale", Cap: 5}}); err != nil {
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{{Channel: "resale", Cap: 5}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	c := confirmedClaim(t, ctx, st, org, slot, 4, "resale", "ret-channel")

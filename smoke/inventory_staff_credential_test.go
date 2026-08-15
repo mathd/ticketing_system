@@ -81,17 +81,35 @@ func TestBackOfficeInventoryCredentialOpensTheAllocationEditorsTwoOperations(t *
 	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
 
 	// The read. The editor needs it for current consumption, which is a condition of
-	// success and appears in no other read.
+	// success and appears in no other read — and, since TKT-250, for the allocation-set
+	// revision the write must present.
 	code, body := staffCredentialRequest(t, http.MethodGet, availabilityURL, nil)
 	if code != http.StatusOK {
 		t.Fatalf("staff availability with the inventory credential: %d %s", code, body)
 	}
+	var before struct {
+		AllocationRevision *int64 `json:"allocation_revision"`
+	}
+	if err := json.Unmarshal(body, &before); err != nil {
+		t.Fatalf("decode staff availability: %v", err)
+	}
+	// A POINTER so "the field is missing" fails loudly here rather than silently
+	// becoming revision 0 — which a fresh pool legitimately holds, so a plain int64
+	// would make a dropped field indistinguishable from a correct one.
+	if before.AllocationRevision == nil {
+		t.Fatalf("the staff read reports no allocation_revision, so a staff write cannot present one: %s", body)
+	}
 
 	// The write, carrying every field the editor round-trips. sold_by is the one that
 	// matters: a save that dropped it would return a reseller's stock to the public pool.
+	//
+	// It also carries the revision, which is REQUIRED of this credential (TKT-250): the
+	// back office is where two operators race, so its writes are conditional while the
+	// shared internal token's stay unconditional.
 	reseller := "44444444-4444-4444-4444-444444444444"
 	code, body = staffCredentialRequest(t, http.MethodPut, allocURL, map[string]any{
-		"organizer_id": organizerID,
+		"organizer_id":        organizerID,
+		"allocation_revision": *before.AllocationRevision,
 		"allocations": []map[string]any{
 			{"channel": "reseller-staffcred", "cap": 10, "requires_code": true, "sold_by": reseller},
 		},
@@ -172,8 +190,11 @@ func TestBackOfficeInventoryCredentialIsRefusedElsewhereOnTheInternalSurface(t *
 }
 
 // The shared internal token must keep working on the two routes the new credential also
-// opens: this is an ADDITIONAL accepted credential, not a replacement, and five other
-// smoke drivers depend on that.
+// opens: this is an ADDITIONAL accepted credential, not a replacement, and three other
+// smoke files depend on that.
+//
+// Corrected in TKT-250: the count was "five other smoke drivers", and there is no
+// service-to-service caller of this route at all — only smoke files this repo owns.
 func TestTheSharedInternalTokenStillDrivesTheAllocationRoutes(t *testing.T) {
 	slot, _ := publishedSlot(t, "Inventory Shared Token Hall", 30)
 	code, body := internalJSON(t, http.MethodPut,

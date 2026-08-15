@@ -155,7 +155,22 @@ type ChannelAvailability struct {
 // pool lock, so capacity can move between channels without a transient window where the
 // sum overshoots. Caps are validated against pool capacity and against each channel's
 // current consumption; an empty set returns everything to the public channel.
-func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid.UUID, allocs []ChannelAllocation) ([]ChannelAllocation, error) {
+//
+// expectedRevision is the allocation-set revision the caller believes it is replacing
+// (TKT-250). Nil means unconditional — the pre-TKT-250 behaviour, which the shared
+// internal token keeps. Non-nil is compared against the pool's current revision UNDER
+// THE LOCK and refuses with ErrAllocationRevisionMismatch when it differs.
+//
+// The comparison sits inside the existing locked read on purpose (ADR-010): a
+// precondition checked before the transaction is exactly the race it claims to close,
+// because the set can change between that check and the lock. It costs no extra round
+// trip — the revision is read by the same SELECT that already reads capacity.
+//
+// A successful replace bumps the revision exactly once, before the commit. Only this
+// function does: it is the sole writer of channel_allocations, and moving the revision
+// on unrelated pool writes (a confirm, a refund, a capacity adjustment) would invalidate
+// an operator's open form because a ticket sold.
+func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid.UUID, allocs []ChannelAllocation, expectedRevision *int64) ([]ChannelAllocation, error) {
 	seen := map[string]bool{}
 	var total int64
 	for _, a := range allocs {
@@ -175,13 +190,25 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	defer func() { _ = tx.Rollback() }()
 	// During a draining cut (TKT-76) a new allocation set must fit the requested
 	// target, not the materialized clamp floor.
+	//
+	// The revision rides along on this same locked read (TKT-250) rather than in a
+	// query of its own: it must be the value as of the lock, and a second SELECT
+	// would read it at a different instant for no benefit.
 	var capacity int32
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(target_capacity, capacity) FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity)
+	var revision int64
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(target_capacity, capacity), allocation_revision FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Stale-write check, FIRST and under the lock (TKT-250). Before any validation,
+	// so a stale set is refused for being stale rather than for whatever its old caps
+	// happen to violate — the operator's remedy is to reload, and a cap message would
+	// send them to fix a row that is not the problem.
+	if expectedRevision != nil && *expectedRevision != revision {
+		return nil, ErrAllocationRevisionMismatch
 	}
 	if total > int64(capacity) {
 		return nil, ErrAllocationCapsExceedCapacity
@@ -205,6 +232,15 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 			slot, a.Channel, a.Cap, a.ReleaseAt, a.OpensAt, a.ClosesAt, a.RequiresCode, a.SoldBy); err != nil {
 			return nil, err
 		}
+	}
+	// Bump the revision on every SUCCESSFUL replace, including one that submits a
+	// state-identical set: a reader holding the old value has still read a set that a
+	// writer has since re-committed, and the counter's job is to be monotonic rather
+	// than to be a change detector. Inside the transaction, so it commits atomically
+	// with the rows it describes — commitAvailability below COMMITS, and anything
+	// after it would be outside.
+	if _, err = tx.ExecContext(ctx, `UPDATE inventory_pools SET allocation_revision=allocation_revision+1, updated_at=now() WHERE slot_id=$1`, slot); err != nil {
+		return nil, err
 	}
 	if allocs == nil {
 		allocs = []ChannelAllocation{}

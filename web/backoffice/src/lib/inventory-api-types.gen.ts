@@ -380,10 +380,10 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it.
+             * @description Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
              * @enum {string}
              */
-            code?: "slot_archived" | "slot_closed" | "channel_window_closed" | "presale_code_invalid" | "seat_taken" | "seat_unavailable" | "pin_unavailable" | "orphaned_seats" | "allocation_caps_exceed_capacity" | "allocation_cap_below_consumption";
+            code?: "slot_archived" | "slot_closed" | "channel_window_closed" | "presale_code_invalid" | "seat_taken" | "seat_unavailable" | "pin_unavailable" | "orphaned_seats" | "allocation_caps_exceed_capacity" | "allocation_cap_below_consumption" | "allocation_revision_mismatch";
             /** @description The offending allocation's raw channel code, present only on `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to. */
             channel?: string;
             /** @description With `seat_taken`: the requested seats another live claim already holds, sorted (TKT-173). With `orphaned_seats`: the FREE seats this selection would strand with no free neighbour in their row (ADR-041, TKT-182) — seats the buyer did NOT request, so a caller must not assume these are a subset of what it asked for. Seats the request could have had are NOT listed — a caller re-renders exactly what it must give up. Knowable only inside the claim transaction that arbitrated: an answer computed afterwards, by re-reading occupancy say, describes a different moment and can name seats this request never lost. */
@@ -687,6 +687,11 @@ export interface components {
             /** Format: uuid */
             organizer_id: string;
             allocations: components["schemas"]["ChannelAllocation"][];
+            /**
+             * Format: int64
+             * @description The allocation set revision this replacement is based on (TKT-250), as read from StaffAvailability. Compared under the pool row lock; a mismatch refuses with 409 `allocation_revision_mismatch` rather than silently overwriting the concurrent edit. OPTIONAL IN THIS SCHEMA BUT REQUIRED OF THE BACK OFFICE: the contract cannot express "required for one credential class", and the two differ — a staff-credential caller (ADR-057) must present it, while an `X-Internal-Token` caller may omit it and get the pre-TKT-250 unconditional replace. A staff request without it is refused with 400.
+             */
+            allocation_revision?: number;
         };
         ChannelAllocations: {
             /** Format: uuid */
@@ -745,6 +750,11 @@ export interface components {
              */
             offering_status: "open" | "closed" | "archived";
             channels: components["schemas"]["ChannelAvailability"][];
+            /**
+             * Format: int64
+             * @description The allocation set's current revision (TKT-250). An editor reads it here and presents it back on ChannelAllocationSet; the replace compares it under the pool row lock and refuses a stale save. Bumped only by a successful allocation replace — a ticket sale, a refund or a capacity adjustment leaves it alone, so an open editor is not invalidated by ordinary trading. NOT in the `required` list deliberately: adding a required response property breaks any consumer that has not regenerated, and every reader takes this by name.
+             */
+            allocation_revision?: number;
         };
         HistoryEntry: {
             action: string;

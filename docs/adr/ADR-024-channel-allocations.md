@@ -8,6 +8,8 @@ Accepted
 
 **Sales windows, deferred here, are now decided by [ADR-054](./ADR-054-per-channel-sales-windows.md) (2026-08-10, TKT-238).** This ADR's accounting rules are extended rather than changed: a window gates claims and never releases capacity, so `reservedForChannelsSQL` is untouched, and the same clock_timestamp() discipline applies for the same reason.
 
+**The allocation set carries a REVISION (2026-08-15, TKT-250).** Amended below in §Decision (8), §Consequences and §The adversary. This ADR's original §Consequences accepted that the full-set PUT had no stale-write protection, "acceptable while allocation editing is single-operator" — and TKT-244 falsified that premise by shipping the first UI for the endpoint. A replace may now present the revision it is replacing; it is compared under the same pool row lock as everything else here and refused with a coded 409 when stale. The accounting is untouched: a revision says *whether this save may proceed*, never *how much* is left. **It is lost-update protection between honest operators, not authorization and not tamper-evidence.**
+
 **An allocation may bind to a SELLER (2026-08-12, TKT-246).** Amended below in §Decision (7) and §Consequences. An allocation gains a nullable `sold_by`: unset means public — every allocation predating this — and set means only that reseller may consume it. Judged in the claim paths under the same pool row lock as everything else here, in the order **window → seller → code → capacity**. The accounting is untouched: a binding says *who* may consume a cap, never *how much* is left, so `reservedForChannelsSQL` and every derived count are unchanged.
 
 ## Context
@@ -134,6 +136,34 @@ We adopt allocation rows with derived usage. Specifics:
   **Residual, stated plainly:** a public sale naming a reseller channel still *prices* under
   that channel's fee rules while consuming public stock. That is a fee-attribution defect, not
   an inventory one; moving inventory now requires a credential. Tracked separately.
+- **(8) The allocation set carries a REVISION (TKT-250).** `inventory_pools.allocation_revision`,
+  a `bigint` starting at 0. A replace may present the revision it believes it is replacing; the
+  value is read by the **same locked `SELECT`** that already reads capacity, compared **before
+  any other validation**, and refused with `ErrAllocationRevisionMismatch` (coded 409
+  `allocation_revision_mismatch`) when it differs. A successful replace increments it once.
+    - **Why the pool row and not the allocation rows.** The write DELETEs and re-INSERTs every
+      `channel_allocations` row, so nothing per-row survives a save — any version column there
+      would reset to its default on every write. The pool row is the only thing that persists
+      across the replace, and it is already the row being locked.
+    - **Why a counter and not `updated_at` or a hash.** `inventory_pools.updated_at` moves on
+      every confirm, refund, capacity adjustment and offering-state change, so a revision riding
+      on it would be invalidated by ordinary trading and the editor would refuse saves during an
+      on-sale. A hash needs a canonical encoding of opaque channel codes — which §Decision
+      forbids normalizing — and cannot distinguish A → B → A from no change at all.
+    - **Only the replace moves it.** `ReplaceChannelAllocations` is the sole writer of
+      `channel_allocations`, so a revision bumped only there cannot miss a change to the set;
+      and a form opened before a busy on-sale still saves afterwards.
+    - **Required for the staff credential, optional for `X-Internal-Token`.** The split is
+      expressible only because ADR-057 gave inventory its own staff credential, so the guard can
+      tell the two apart and publish the class to the handler. The back office is where two
+      humans race and is the only caller that renders a form from a read; the service-to-service
+      path rebuilds its whole set per call, so a precondition would buy it nothing. The contract
+      cannot express "required for one credential class", so `allocation_revision` is optional in
+      both schemas and the rule lives in the handler — which is why it is asserted, not assumed.
+      *(The compatibility argument originally filed for this ticket — "every service-to-service
+      caller uses this route" — was checked and is false: there is no service-to-service caller.
+      The optional arm exists for the smoke suite and for future internal callers, not for an
+      existing one.)*
 
 ## Consequences
 
@@ -145,8 +175,12 @@ We adopt allocation rows with derived usage. Specifics:
 - **Negative:**
     - The serialized write path gains per-channel aggregation queries (indexed by
       `claims(pool_id, channel_code, status, expires_at)`); revisit only with US-019 data.
-    - Full-set PUT has no stale-write protection (`If-Match`); acceptable while allocation
-      editing is single-operator.
+    - ~~Full-set PUT has no stale-write protection (`If-Match`); acceptable while allocation
+      editing is single-operator.~~ **Superseded (2026-08-15, TKT-250) — the premise was
+      falsified by TKT-244, which shipped the first UI for this endpoint.** Allocation
+      editing stopped being a deliberate one-person `curl` and became a screen any admin
+      can open, so two operators on one slot is ordinary rather than hypothetical. The set
+      now carries a revision; see §Decision (8) below.
     - **A channel with no active allocation is refused outright once its channel reaches
       inventory (TKT-246).** For the partner route this means a reseller configured for *fee
       rules* but not for *inventory* cannot sell at all. Every channel a partner credential
@@ -166,6 +200,24 @@ arriving through the hold path, and nobody else:
 
 So this decision stops a reseller from selling another reseller's stock. It is not evidence of
 who sold anything, and a settlement process (TKT-23) must not treat it as proof.
+
+**`allocation_revision` (TKT-250) binds a narrower adversary still — none at all, in the
+security sense.** It is **lost-update protection between two honest operators**, and nothing
+more:
+
+- **Bound:** two back-office admins editing one slot's allocations from pages rendered at
+  different moments. The second save is refused rather than silently overwriting the first.
+- **Not bound:** anyone at all, in the adversarial sense. A caller who can write inventory's
+  database can set the revision to whatever they like; a caller holding `X-Internal-Token` may
+  omit it entirely and replace unconditionally, by design. State inside the database cannot
+  constrain an adversary who writes to the database (ADR-021).
+
+The original framing of TKT-250 called this an authorization fix — a stale save was said to
+overwrite `sold_by` and return a reseller's bound stock to the public pool. **Shaping checked
+that against the code and it does not hold**: the back office re-reads the current set on the
+POST itself and sources `sold_by`, `requires_code` and the window from that read (TKT-244's
+ai-review passes 2–4), so those fields are not carried by the stale form at all. Do not restate
+the authorization claim; it was checked and it is false.
 
 ## References
 
