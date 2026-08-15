@@ -310,10 +310,22 @@ try {
   await page.click('button[data-action="save-allocations"]');
   await page.waitForLoadState('domcontentloaded');
 
+  // Targets [data-form-error] specifically, not the page text: the message must land at
+  // the FORM level, because no field the operator can see is wrong. Scoping to `form`
+  // would miss it entirely — this banner renders just above the <form> element — and
+  // grepping the whole page would pass on a message rendered anywhere at all, including
+  // beside a row, which is exactly the placement this assertion exists to rule out.
+  const staleError = page.locator('[data-form-error]');
   check(
     'a stale save is refused with a reload instruction',
-    /reload/i.test(await page.locator('form').innerText()),
+    (await staleError.count()) === 1 && /reload/i.test(await staleError.innerText()),
     'the operator must be told their view is stale, not shown a generic failure',
+  );
+  check(
+    'the stale refusal does not land on a row',
+    (await page.locator(`[data-row-error="${boundChannel}"]`).count()) === 0 &&
+      (await page.locator('[data-total-error]').count()) === 0,
+    'every field the operator can see is fine — pointing at one would send them to fix a value that is not the problem',
   );
   check(
     'a stale save does not redirect',
