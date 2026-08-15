@@ -50,19 +50,25 @@ func (e CapacityAdjustmentStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ChannelWindowClosed ErrorCode = "channel_window_closed"
-	OrphanedSeats       ErrorCode = "orphaned_seats"
-	PinUnavailable      ErrorCode = "pin_unavailable"
-	PresaleCodeInvalid  ErrorCode = "presale_code_invalid"
-	SeatTaken           ErrorCode = "seat_taken"
-	SeatUnavailable     ErrorCode = "seat_unavailable"
-	SlotArchived        ErrorCode = "slot_archived"
-	SlotClosed          ErrorCode = "slot_closed"
+	AllocationCapBelowConsumption ErrorCode = "allocation_cap_below_consumption"
+	AllocationCapsExceedCapacity  ErrorCode = "allocation_caps_exceed_capacity"
+	ChannelWindowClosed           ErrorCode = "channel_window_closed"
+	OrphanedSeats                 ErrorCode = "orphaned_seats"
+	PinUnavailable                ErrorCode = "pin_unavailable"
+	PresaleCodeInvalid            ErrorCode = "presale_code_invalid"
+	SeatTaken                     ErrorCode = "seat_taken"
+	SeatUnavailable               ErrorCode = "seat_unavailable"
+	SlotArchived                  ErrorCode = "slot_archived"
+	SlotClosed                    ErrorCode = "slot_closed"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case AllocationCapBelowConsumption:
+		return true
+	case AllocationCapsExceedCapacity:
+		return true
 	case ChannelWindowClosed:
 		return true
 	case OrphanedSeats:
@@ -257,6 +263,12 @@ type ChannelAvailability struct {
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 	Released  bool       `json:"released"`
 
+	// RequiresCode Whether this allocation is gated behind a presale unlock code (TKT-239 / ADR-055). Reported so an EDITOR can round-trip it (TKT-244): the allocation write is a full-set atomic replace, so a field the editor cannot read is one it clears on the next save.
+	RequiresCode *bool `json:"requires_code,omitempty"`
+
+	// SoldBy The reseller this allocation is bound to (TKT-246), absent when it is unbound and therefore public. Reported for the same round-trip reason as `requires_code`, but the stake is higher: `sold_by` is judged in the claim paths under the pool row lock, so an editor that dropped it would return a reseller's stock to the public pool — an authorization change, not a display bug.
+	SoldBy *openapi_types.UUID `json:"sold_by,omitempty"`
+
 	// WindowOpen Whether the window admits a claim right now. STAFF ONLY — the public availability read reports 0 for a closed channel and says nothing about why, because an operator needs to tell "not open yet" from "sold out" and a buyer does not.
 	// Separate from `released`: a released allocation is over, a closed window is not its turn yet, and only the second fixes itself.
 	WindowOpen bool `json:"window_open"`
@@ -272,7 +284,10 @@ type ConvertResult struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout.
+	// Channel The offending allocation's raw channel code, present only on `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to.
+	Channel *string `json:"channel,omitempty"`
+
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -280,7 +295,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, or a transient pin failure rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout.
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it.
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.

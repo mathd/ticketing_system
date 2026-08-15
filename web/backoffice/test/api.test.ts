@@ -24,6 +24,11 @@ import {
   updateVenueGaCapacity,
 } from '../src/lib/catalog';
 import { getOrderState, refundOrder } from '../src/lib/commerce';
+import {
+  getStaffAvailability,
+  InventoryApiError,
+  replaceChannelAllocations,
+} from '../src/lib/inventory';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -41,12 +46,15 @@ beforeEach(() => {
   // refuses equal credentials, so a suite that set both to the same string
   // would fail every refund test for a reason unrelated to what it is testing.
   process.env.COMMERCE_STAFF_WRITE_TOKEN = 'commerce-test-credential';
+  // TKT-244. A THIRD distinct value, for the same reason.
+  process.env.INVENTORY_STAFF_WRITE_TOKEN = 'inventory-test-credential';
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.CATALOG_STAFF_WRITE_TOKEN;
   delete process.env.COMMERCE_STAFF_WRITE_TOKEN;
+  delete process.env.INVENTORY_STAFF_WRITE_TOKEN;
 });
 
 describe('getVenues', () => {
@@ -661,5 +669,93 @@ describe('the channel registry client (TKT-236)', () => {
       kind: 'pos',
       enabled: false,
     });
+  });
+});
+
+// The inventory client (TKT-244, ADR-057). Two operations, direct in-network, behind a
+// credential this process did not previously hold.
+describe('inventory allocation client', () => {
+  const SLOT = '11111111-1111-1111-1111-111111111111';
+
+  it('reads staff availability direct, with its own credential and never the shared one', async () => {
+    const calls = spyFetch(
+      { slot_id: SLOT, capacity: 100, buyer_held: 0, operational_held: 0, reservation_held: 0,
+        confirmed: 0, available: 100, public_available: 60, offering_status: 'open', channels: [] },
+      200,
+    );
+    await getStaffAvailability(SLOT, 'org-1');
+
+    // INVENTORY_URL is unset in the suite, so this is the client's own default — what a
+    // developer running `pnpm dev` outside compose gets.
+    expect(calls[0].url).toBe(`http://localhost:8081/internal/slots/${SLOT}/availability?organizer_id=org-1`);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].headers['X-Inventory-Staff-Write-Token']).toBe('inventory-test-credential');
+    // Never the shared internal token, which the back office does not hold.
+    expect(calls[0].headers['X-Internal-Token']).toBeUndefined();
+    // Nor another service's credential: they exist to have different blast radii.
+    expect(calls[0].headers['X-Catalog-Staff-Write-Token']).toBeUndefined();
+    expect(calls[0].headers['X-Commerce-Staff-Write-Token']).toBeUndefined();
+  });
+
+  it('replaces the whole allocation set in one PUT, carrying every field', async () => {
+    const calls = spyFetch({ slot_id: SLOT, allocations: [] }, 200);
+    await replaceChannelAllocations(SLOT, {
+      organizer_id: 'org-1',
+      allocations: [
+        { channel: 'reseller-acme', cap: 40, requires_code: true, sold_by: '22222222-2222-2222-2222-222222222222' },
+        { channel: 'presale', cap: 20, requires_code: false },
+      ],
+    });
+
+    expect(calls).toHaveLength(1); // ONE request: per-row saves would round-trip a stale set
+    expect(calls[0].url).toBe(`http://localhost:8081/internal/slots/${SLOT}/channel-allocations`);
+    expect(calls[0].method).toBe('PUT');
+    expect(calls[0].headers['X-Inventory-Staff-Write-Token']).toBe('inventory-test-credential');
+    expect(calls[0].headers['X-Internal-Token']).toBeUndefined();
+    expect(calls[0].body).toEqual({
+      organizer_id: 'org-1',
+      allocations: [
+        { channel: 'reseller-acme', cap: 40, requires_code: true, sold_by: '22222222-2222-2222-2222-222222222222' },
+        { channel: 'presale', cap: 20, requires_code: false },
+      ],
+    });
+  });
+
+  // The refusal has to arrive with its code and channel intact, or the editor cannot put
+  // the message beside the right row.
+  it('carries the code and the named channel off a coded 409', async () => {
+    spyFetch(
+      { error: 'channel "reseller-acme" is allocated below its current consumption',
+        code: 'allocation_cap_below_consumption', channel: 'reseller-acme' },
+      409,
+    );
+    await expect(
+      replaceChannelAllocations(SLOT, { organizer_id: 'org-1', allocations: [] }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'allocation_cap_below_consumption',
+      channel: 'reseller-acme',
+    });
+  });
+
+  it('carries the code off the over-capacity 409, which names no channel', async () => {
+    spyFetch({ error: 'channel allocations exceed pool capacity', code: 'allocation_caps_exceed_capacity' }, 409);
+    const err = await replaceChannelAllocations(SLOT, { organizer_id: 'org-1', allocations: [] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InventoryApiError);
+    expect(err).toMatchObject({ status: 409, code: 'allocation_caps_exceed_capacity' });
+    expect((err as InventoryApiError).channel).toBeUndefined();
+  });
+
+  // A missing credential is a configuration defect, not an inventory outage: it must say
+  // so and name the variable, rather than surfacing as a bare 401 the operator would read
+  // as a permissions problem.
+  it('refuses to call without a credential, naming the variable', async () => {
+    delete process.env.INVENTORY_STAFF_WRITE_TOKEN;
+    spyFetch({}, 200);
+    await expect(getStaffAvailability(SLOT, 'org-1')).rejects.toThrow(/INVENTORY_STAFF_WRITE_TOKEN/);
+    await expect(
+      replaceChannelAllocations(SLOT, { organizer_id: 'org-1', allocations: [] }),
+    ).rejects.toThrow(/INVENTORY_STAFF_WRITE_TOKEN/);
   });
 });

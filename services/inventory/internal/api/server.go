@@ -71,8 +71,11 @@ type availabilityReader interface {
 type Server struct {
 	st         *store.Postgres
 	credential string
-	pinner     SeatPinner
-	avail      availabilityReader
+	// staffWriteToken is the back office's own inventory credential (TKT-244,
+	// ADR-057). Empty means unconfigured, which fails closed — see staffOrInternal.
+	staffWriteToken string
+	pinner          SeatPinner
+	avail           availabilityReader
 }
 
 func New(st *store.Postgres, credential string, pinner SeatPinner) *Server {
@@ -87,6 +90,21 @@ func NewWithAvailability(st *store.Postgres, credential string, pinner SeatPinne
 
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
+	s.registerRoutes(r)
+	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
+	if err != nil {
+		panic(err)
+	}
+	return validated
+}
+
+// registerRoutes mounts every route on a bare chi router.
+//
+// Separate from Router so a test can WALK the real registrations (TKT-244):
+// Router returns the validator-wrapped handler, which is not a chi.Routes, so the
+// credential enumeration would have nothing to walk. A hand-maintained list of
+// internal routes cannot detect the drift it exists to catch.
+func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
@@ -110,17 +128,18 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/internal/group-reservations", s.internalOnly(s.grpPlace))
 	r.Post("/internal/group-reservations/{id}/draw-down", s.internalOnly(s.grpDrawDown))
 	r.Get("/internal/group-reservations/{id}/history", s.internalOnly(s.opHistory))
-	r.Get("/internal/slots/{id}/availability", s.internalOnly(s.staffAvailability))
+	// The channel-allocation editor's two operations, and ONLY these two, also accept
+	// the back office's own inventory credential (TKT-244, ADR-057). The read is here
+	// because showing CURRENT CONSUMPTION is a condition of success and only this
+	// staff read reports it — the editor cannot function with the write alone.
+	// Everything else on this surface stays internalOnly; staff_credential_test.go
+	// walks the router and proves it.
+	r.Get("/internal/slots/{id}/availability", s.staffOrInternal(s.staffAvailability))
 	r.Post("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.adjustCapacity))
 	r.Get("/internal/slots/{id}/capacity-adjustments", s.internalOnly(s.capacityHistory))
-	r.Put("/internal/slots/{id}/channel-allocations", s.internalOnly(s.replaceAllocations))
+	r.Put("/internal/slots/{id}/channel-allocations", s.staffOrInternal(s.replaceAllocations))
 	r.Get("/internal/cache-control", s.internalOnly(s.cacheControlStatus))
 	r.Put("/internal/cache-control", s.internalOnly(s.cacheControlSet))
-	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
-	if err != nil {
-		panic(err)
-	}
-	return validated
 }
 func write(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -130,6 +149,19 @@ func write(w http.ResponseWriter, code int, v any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
+// belowConsumption extracts the cap-below-consumption refusal, or nil.
+//
+// Matched by BEHAVIOUR (it carries a channel) rather than by concrete type, so the store
+// keeps the freedom to wrap it — errors.As walks the chain, which a type assertion on the
+// top-level error would not.
+func belowConsumption(err error) interface{ Channel() string } {
+	var e interface{ Channel() string }
+	if errors.As(err, &e) {
+		return e
+	}
+	return nil
+}
+
 func problem(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
 	switch {
@@ -159,6 +191,25 @@ func problem(w http.ResponseWriter, err error) {
 	// re-expand them.
 	case errors.Is(err, store.ErrPresaleCodeInvalid):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "presale_code_invalid"})
+		return
+	// The two allocation-editor refusals (TKT-244). Both WRAP the sentinels handled
+	// below, so they MUST be matched first — the generic case would otherwise swallow
+	// them and answer the code-less 409 this ticket exists to replace.
+	//
+	// They are coded so the back office can put each message beside the field the
+	// operator has to fix, which a bare 409 cannot support: the two are
+	// indistinguishable by status, and the second never said which channel.
+	case errors.Is(err, store.ErrAllocationCapsExceedCapacity):
+		// Names no channel: the sum is a property of the whole set.
+		write(w, 409, map[string]string{"error": err.Error(), "code": "allocation_caps_exceed_capacity"})
+		return
+	case belowConsumption(err) != nil:
+		e := belowConsumption(err)
+		write(w, 409, map[string]string{
+			"error":   err.Error(),
+			"code":    "allocation_cap_below_consumption",
+			"channel": e.Channel(),
+		})
 		return
 	case errors.Is(err, store.ErrUnavailable), errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrIdempotency), errors.Is(err, store.ErrPoolKindMismatch):
 		// ErrPoolKindMismatch: a quantity claim hit a seated pool (or a seat claim a GA

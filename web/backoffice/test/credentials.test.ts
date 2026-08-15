@@ -11,25 +11,45 @@ import { assertCredentialSeparation } from '../credentials.mjs';
 // neither is ever given the other's. Set both to one value and every service
 // starts happily while an internet-facing process holds a single bearer token
 // that both authors catalog content and moves money.
+// TKT-244 extends the rule to a THIRD credential (inventory, ADR-057). Pairwise
+// rather than "all distinct" as a set: with three values there are three pairs, and
+// a check that only compared the newest against one of the others would let the
+// other collapse silently.
 describe('the back office refuses collapsed credentials at startup', () => {
-  const ok = { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value' };
+  const ok = {
+    CATALOG_STAFF_WRITE_TOKEN: 'catalog-value',
+    COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value',
+    INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value',
+  };
 
-  it('accepts two different credentials', () => {
+  it('accepts three different credentials', () => {
     expect(() => assertCredentialSeparation(ok)).not.toThrow();
   });
 
-  it('refuses two identical credentials', () => {
-    expect(() =>
-      assertCredentialSeparation({ CATALOG_STAFF_WRITE_TOKEN: 'same', COMMERCE_STAFF_WRITE_TOKEN: 'same' }),
-    ).toThrow(/must not equal/);
+  // Every pair, so no single collapse can hide behind another pair being distinct.
+  it.each([
+    ['catalog/commerce', { ...ok, CATALOG_STAFF_WRITE_TOKEN: 'same', COMMERCE_STAFF_WRITE_TOKEN: 'same' }],
+    ['catalog/inventory', { ...ok, CATALOG_STAFF_WRITE_TOKEN: 'same', INVENTORY_STAFF_WRITE_TOKEN: 'same' }],
+    ['commerce/inventory', { ...ok, COMMERCE_STAFF_WRITE_TOKEN: 'same', INVENTORY_STAFF_WRITE_TOKEN: 'same' }],
+    ['all three', {
+      CATALOG_STAFF_WRITE_TOKEN: 'same',
+      COMMERCE_STAFF_WRITE_TOKEN: 'same',
+      INVENTORY_STAFF_WRITE_TOKEN: 'same',
+    }],
+  ])('refuses identical credentials: %s', (_name, env) => {
+    expect(() => assertCredentialSeparation(env)).toThrow(/must not equal/);
   });
 
   // The error must not echo the value it is complaining about — this runs at
   // startup and its message lands in container logs.
-  it('does not echo the credential', () => {
+  it.each([
+    ['catalog/commerce', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, COMMERCE_STAFF_WRITE_TOKEN: s })],
+    ['catalog/inventory', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
+    ['commerce/inventory', (s: string) => ({ ...ok, COMMERCE_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
+  ])('does not echo the credential: %s', (_name, build) => {
     const secret = 'a-real-looking-credential-value';
     try {
-      assertCredentialSeparation({ CATALOG_STAFF_WRITE_TOKEN: secret, COMMERCE_STAFF_WRITE_TOKEN: secret });
+      assertCredentialSeparation(build(secret));
       expect.unreachable('should have thrown');
     } catch (e) {
       expect(String(e)).not.toContain(secret);
@@ -37,8 +57,9 @@ describe('the back office refuses collapsed credentials at startup', () => {
   });
 
   it.each([
-    ['catalog', { COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value' }, /CATALOG_STAFF_WRITE_TOKEN/],
-    ['commerce', { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value' }, /COMMERCE_STAFF_WRITE_TOKEN/],
+    ['catalog', { COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value', INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value' }, /CATALOG_STAFF_WRITE_TOKEN/],
+    ['commerce', { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value' }, /COMMERCE_STAFF_WRITE_TOKEN/],
+    ['inventory', { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value' }, /INVENTORY_STAFF_WRITE_TOKEN/],
   ])('refuses a missing %s credential, naming it', (_name, env, want) => {
     expect(() => assertCredentialSeparation(env)).toThrow(want);
   });
@@ -59,17 +80,38 @@ describe('the entrypoint refuses to start', () => {
       timeout: 20_000,
     });
 
-  it('exits non-zero when the two credentials are identical', () => {
-    const got = run({ CATALOG_STAFF_WRITE_TOKEN: 'same', COMMERCE_STAFF_WRITE_TOKEN: 'same' });
+  it('exits non-zero when two credentials are identical', () => {
+    const got = run({
+      CATALOG_STAFF_WRITE_TOKEN: 'same',
+      COMMERCE_STAFF_WRITE_TOKEN: 'same',
+      INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value',
+    });
     expect(got.status).toBe(1);
     expect(got.stderr).toMatch(/refusing to start/);
     expect(got.stderr).toMatch(/must not equal/);
     expect(got.stderr).not.toContain('same');
   });
 
-  it('exits non-zero when a credential is missing', () => {
-    const got = run({ CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', COMMERCE_STAFF_WRITE_TOKEN: '' });
+  // The third credential joins the entrypoint check, not only the client (TKT-244):
+  // a value read lazily by a module under dist/ would be checked after the server is
+  // already listening, which is the failure ai-review pass 2 caught for the first two.
+  it('exits non-zero when the inventory credential collapses onto another', () => {
+    const got = run({
+      CATALOG_STAFF_WRITE_TOKEN: 'catalog-value',
+      COMMERCE_STAFF_WRITE_TOKEN: 'shared',
+      INVENTORY_STAFF_WRITE_TOKEN: 'shared',
+    });
     expect(got.status).toBe(1);
-    expect(got.stderr).toMatch(/COMMERCE_STAFF_WRITE_TOKEN/);
+    expect(got.stderr).toMatch(/must not equal/);
+    expect(got.stderr).not.toContain('shared');
+  });
+
+  it.each([
+    ['commerce', { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', COMMERCE_STAFF_WRITE_TOKEN: '', INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value' }, /COMMERCE_STAFF_WRITE_TOKEN/],
+    ['inventory', { CATALOG_STAFF_WRITE_TOKEN: 'catalog-value', COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value', INVENTORY_STAFF_WRITE_TOKEN: '' }, /INVENTORY_STAFF_WRITE_TOKEN/],
+  ])('exits non-zero when the %s credential is missing', (_name, env, want) => {
+    const got = run(env);
+    expect(got.status).toBe(1);
+    expect(got.stderr).toMatch(want);
   });
 });

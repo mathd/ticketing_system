@@ -50,7 +50,45 @@ var (
 	// and is not claimed here.
 	ErrPresaleCodeInvalid = errors.New("invalid presale code")
 	ErrIdempotency        = errors.New("idempotency key reused with different request")
+	// ErrAllocationCapsExceedCapacity: the submitted allocation set sums above the
+	// pool's capacity (TKT-244). WRAPS ErrUnavailable rather than replacing it, so
+	// every existing caller matching the sentinel behaves exactly as before — the
+	// added code is additive information, not a re-classification.
+	//
+	// It names no channel on purpose: the sum is a property of the whole set, so
+	// every row shares the blame equally and attributing it to one would point the
+	// operator at an arbitrary field.
+	ErrAllocationCapsExceedCapacity = fmt.Errorf("%w: channel allocations exceed pool capacity", ErrUnavailable)
 )
+
+// AllocationCapBelowConsumption is the refusal for a cap set below what that channel has
+// already sold or is holding (TKT-244). It CARRIES THE CHANNEL, which is the whole point:
+// the editor must put the message beside the offending row's cap input, and only the
+// server knows which row failed.
+//
+// A client cannot re-derive this the way TKT-236's channel form re-derives its bounds.
+// Those bounds are static, so a local re-check reaches the same answer; consumption is
+// live and moves between the GET that filled the form and the PUT that submits it, so a
+// local guess can name the wrong row with total confidence.
+//
+// Wraps ErrConflict for the same additive reason as above.
+func AllocationCapBelowConsumption(channel string) error {
+	return allocationCapBelowConsumption{channel: channel}
+}
+
+type allocationCapBelowConsumption struct{ channel string }
+
+func (e allocationCapBelowConsumption) Error() string {
+	// The channel is operator-supplied and opaque (ADR-024: no normalization, no case
+	// folding), so it is quoted rather than interpolated bare.
+	return fmt.Sprintf("%v: channel %q is allocated below its current consumption", ErrConflict, e.channel)
+}
+
+// Unwrap keeps errors.Is(err, ErrConflict) true for every pre-existing caller.
+func (e allocationCapBelowConsumption) Unwrap() error { return ErrConflict }
+
+// Channel is the offending allocation's raw code, echoed verbatim to the client.
+func (e allocationCapBelowConsumption) Channel() string { return e.channel }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
 	f, err := fs.Sub(migrationsFS, "migrations")

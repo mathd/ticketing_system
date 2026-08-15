@@ -30,6 +30,9 @@ import (
 
 const serviceName = "inventory"
 
+// staffWriteTokenEnv carries the back office's inventory credential (TKT-244, ADR-057).
+const staffWriteTokenEnv = "INVENTORY_STAFF_WRITE_TOKEN"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
@@ -104,6 +107,33 @@ func run() error {
 	credential, err := runtimecfg.InternalTokenFromEnv()
 	if err != nil {
 		return err
+	}
+	// The back office's own inventory credential (TKT-244, ADR-057). Read here, before
+	// any dependency is contacted, so a misconfiguration fails fast rather than after
+	// the NATS connection — which retries forever by design.
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	if err != nil {
+		return err
+	}
+	// The whole point of a second credential is that it opens LESS than the first
+	// (ADR-057: this one opens two operations, INTERNAL_SERVICE_TOKEN opens every
+	// inventory operation). Set them to the same value and that separation silently
+	// evaporates — a public-facing SSR process would be holding, under a different
+	// name, the credential that unlocks operational holds, capacity adjustments and
+	// the availability kill-switch. Nothing else in the system would notice: the back
+	// office compares the credentials it holds, but it is never given this one.
+	// Neither value is echoed.
+	//
+	// Comparing the RAW strings is sound because RequiredCredential has already refused
+	// every value HTTP would NORMALIZE — specifically edge whitespace, which header
+	// parsing strips, so " secret " and "secret" would be one credential on the wire
+	// while differing here. The narrow claim is the true one: no two DISTINCT accepted
+	// values arrive identical at a server, so `!=` here means "different on the wire".
+	if staffWriteToken == credential {
+		return errors.New("INVENTORY_STAFF_WRITE_TOKEN must not equal INTERNAL_SERVICE_TOKEN: " +
+			"they exist to have different blast radii — one opens the channel-allocation " +
+			"editor's two operations, the other opens every inventory operation — and " +
+			"identical values collapse that boundary while looking configured")
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -203,7 +233,9 @@ func run() error {
 			return nil
 		})).ServeHTTP(w, req)
 	}))
-	r.Mount("/", api.New(st, credential, catalog).Router(log, validateResponses))
+	r.Mount("/", api.New(st, credential, catalog).
+		WithStaffWriteCredential(staffWriteToken).
+		Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
