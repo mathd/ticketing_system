@@ -4,7 +4,9 @@ import {
   allocationErrors,
   parseAllocationForm,
   toAllocationRequest,
+  toMinuteInput,
   type AllocationRow,
+  type CurrentAllocation,
 } from '../src/lib/allocation-form';
 
 // TKT-244. The allocation editor's pure half: turning a submitted form into the
@@ -33,16 +35,21 @@ describe('the full set survives a round trip', () => {
   // authorization regression: TKT-246 judges it under the pool row lock, so blanking it
   // returns a reseller's bound stock to the public pool.
   it('carries every field, including the ones the operator cannot edit', () => {
-    const req = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
-      row({
-        cap: '50',
-        releaseAt: '2026-09-01T10:00',
-        opensAt: '2026-08-01T09:00',
-        closesAt: '2026-08-31T23:00',
-        requiresCode: 'true',
-        soldBy: '22222222-2222-2222-2222-222222222222',
-      }),
-    ]);
+    const req = toAllocationRequest(
+      '11111111-1111-1111-1111-111111111111',
+      [row({ cap: '50', releaseAt: '2026-09-01T10:00' })],
+      // The fields this screen does not render come from inventory's current set, not the
+      // form (ai-review pass 2): a client-carried copy can be stale or forged.
+      [
+        {
+          channel: 'reseller-acme',
+          opens_at: '2026-08-01T09:00:00.000000Z',
+          closes_at: '2026-08-31T23:00:00.000000Z',
+          requires_code: true,
+          sold_by: '22222222-2222-2222-2222-222222222222',
+        },
+      ],
+    );
 
     expect(req.organizer_id).toBe('11111111-1111-1111-1111-111111111111');
     expect(req.allocations).toHaveLength(1);
@@ -51,16 +58,14 @@ describe('the full set survives a round trip', () => {
     expect(a.cap).toBe(50);
     expect(a.requires_code).toBe(true);
     expect(a.sold_by).toBe('22222222-2222-2222-2222-222222222222');
-    // A `datetime-local` value carries no zone; the contract types these as date-time,
-    // so each must arrive as an explicit instant denoting the same moment the operator
-    // picked. Asserted as a round trip rather than a literal — pinning the UTC string
-    // would encode the machine's zone into the test.
+    expect(a.opens_at).toBe('2026-08-01T09:00:00.000000Z');
+    expect(a.closes_at).toBe('2026-08-31T23:00:00.000000Z');
+    // The release time IS editable, and a `datetime-local` value carries no zone, so it
+    // must arrive as an explicit instant denoting the moment the operator picked.
+    // Asserted as a round trip rather than a literal — pinning the UTC string would
+    // encode the machine's timezone into the test.
     expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-01T10:00').getTime());
-    expect(new Date(a.opens_at!).getTime()).toBe(new Date('2026-08-01T09:00').getTime());
-    expect(new Date(a.closes_at!).getTime()).toBe(new Date('2026-08-31T23:00').getTime());
-    for (const v of [a.release_at, a.opens_at, a.closes_at]) {
-      expect(v).toMatch(/Z$/); // zoned, or inventory's request validation refuses it
-    }
+    expect(a.release_at).toMatch(/Z$/); // zoned, or request validation refuses it
   });
 
   // Absent optional fields must be OMITTED, not sent as empty strings: the contract
@@ -172,95 +177,110 @@ describe('client-side validation is presentation only', () => {
   });
 });
 
-// ai-review pass 1, [high] × 2. Both findings were about the round trip CORRUPTING a
-// value rather than dropping it — a class the existing tests could not see, because they
-// asserted presence and not fidelity.
-describe('the round trip preserves values byte for byte, not just presence', () => {
-  // ADR-024: channel codes are "exact opaque strings — no normalization, no case
-  // folding", and the contract permits any 1..100 characters. So `" reseller "` is a
-  // legal and DISTINCT code. Trimming it submits a different identity: the full-set
-  // replace deletes the original row and inserts the trimmed one, while live claims keep
-  // the original code — stranding that consumption and detaching the allocation from fee
-  // and split rules keyed on the exact string.
-  it.each([
-    [' reseller-acme '],
-    ['reseller acme'],
-    ['  '],
-    ['présale'],
-    ['POS/Booth #2'],
-  ])('submits the channel code %o verbatim', (code) => {
-    const form = new FormData();
-    form.set('channel.0', code);
-    form.set('cap.0', '40');
-    form.set('requiresCode.0', 'false');
-    const [parsed] = parseAllocationForm(form);
-    expect(parsed.channel).toBe(code);
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
-      { ...row(), channel: parsed.channel },
-    ]).allocations;
-    expect(a.channel).toBe(code);
+// ai-review pass 1 ([high] × 2) and pass 2 ([high] + [medium]). Three findings, one root
+// cause: the round trip CORRUPTED values rather than dropping them, and pass 1's fix tried
+// to carry the true values through the CLIENT — which the client can forge or hold stale.
+//
+// The fix pass 2 forced: every field this screen does not edit comes from the SERVER's
+// current allocation set, read on the same request. The form contributes only what an
+// operator can see and change.
+describe('the write takes unrendered fields from the server, never from the client', () => {
+  const current = (over: Partial<CurrentAllocation> = {}): CurrentAllocation => ({
+    channel: 'reseller-acme',
+    release_at: '2026-09-01T10:17:43.123456Z',
+    opens_at: '2026-08-01T09:05:11.500000Z',
+    closes_at: '2026-12-31T23:59:59.999999Z',
+    requires_code: true,
+    sold_by: '22222222-2222-2222-2222-222222222222',
+    ...over,
   });
 
-  // A `datetime-local` input holds MINUTES. release_at/opens_at/closes_at are timestamptz
-  // compared against clock_timestamp(), so re-deriving an untouched boundary from the
-  // input would move it up to a minute earlier — returning inventory to public sale, or
-  // opening admission, sooner than configured. An unrelated cap edit must not move it.
-  it('keeps an untouched timestamp EXACTLY, seconds and all', () => {
-    const exact = '2026-09-01T10:17:43.123456Z';
-    const rendered = '2026-09-01T10:17'; // what the input showed, minutes only
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
-      {
-        ...row(),
-        releaseAt: rendered,
-        renderedReleaseAt: rendered,
-        originalReleaseAt: exact,
-      },
-    ]).allocations;
-    expect(a.release_at).toBe(exact);
+  const build = (r: AllocationRow, c: CurrentAllocation[]) =>
+    toAllocationRequest('11111111-1111-1111-1111-111111111111', [r], c).allocations[0];
+
+  // The invariant, without naming the implementation: EDITING A CAP CHANGES THE CAP AND
+  // NOTHING ELSE — to the microsecond, because these boundaries are compared against
+  // clock_timestamp() and a truncated one still reads as "set".
+  it('a cap edit moves no boundary and touches no binding', () => {
+    const a = build({ ...row(), cap: '50', releaseAt: toMinuteInput(current().release_at) }, [current()]);
+    expect(a.cap).toBe(50);
+    expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
+    expect(a.opens_at).toBe('2026-08-01T09:05:11.500000Z');
+    expect(a.closes_at).toBe('2026-12-31T23:59:59.999999Z');
+    expect(a.requires_code).toBe(true);
+    expect(a.sold_by).toBe('22222222-2222-2222-2222-222222222222');
   });
 
-  it('takes the operator’s new value when they DID edit the field', () => {
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
+  // pass 2 [high]. Every one of these is a field a crafted or stale POST could carry; none
+  // may reach the wire when the server holds a value for that row.
+  it('ignores forged hidden values and uses what inventory holds', () => {
+    const a = build(
       {
         ...row(),
-        releaseAt: '2026-09-02T08:00',
-        renderedReleaseAt: '2026-09-01T10:17',
-        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
+        cap: '50',
+        releaseAt: toMinuteInput(current().release_at),
+        requiresCode: 'false', // forged: try to un-gate a presale channel
+        soldBy: '99999999-9999-9999-9999-999999999999', // forged: try to re-assign the seller
       },
-    ]).allocations;
+      [current()],
+    );
+    expect(a.requires_code).toBe(true);
+    expect(a.sold_by).toBe('22222222-2222-2222-2222-222222222222');
+    // The window is not on the form at all, so it can only come from the server.
+    expect(a.opens_at).toBe('2026-08-01T09:05:11.500000Z');
+    expect(a.closes_at).toBe('2026-12-31T23:59:59.999999Z');
+  });
+
+  // pass 2 [medium]. A `datetime-local` selection means the displayed minute. Re-picking
+  // the SAME minute is not an edit, so the stored instant stands — the previous fix could
+  // not tell this from a stale echo, because both were client strings.
+  it('re-picking the same displayed minute keeps the stored instant', () => {
+    const a = build({ ...row(), releaseAt: toMinuteInput(current().release_at) }, [current()]);
+    expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
+  });
+
+  it('a genuinely different minute replaces the stored instant', () => {
+    const a = build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
     expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-02T08:00').getTime());
     expect(a.release_at).not.toBe('2026-09-01T10:17:43.123456Z');
   });
 
-  it('lets the operator CLEAR a timestamp', () => {
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
-      {
-        ...row(),
-        releaseAt: '',
-        renderedReleaseAt: '2026-09-01T10:17',
-        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
-      },
-    ]).allocations;
+  it('clearing the release time removes it', () => {
+    const a = build({ ...row(), releaseAt: '' }, [current()]);
     expect(a).not.toHaveProperty('release_at');
   });
 
-  it('preserves all three boundaries independently', () => {
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', [
-      {
-        ...row(),
-        releaseAt: '2026-09-01T10:17',
-        opensAt: '2026-08-01T09:05',
-        closesAt: '2026-08-31T23:59',
-        renderedReleaseAt: '2026-09-01T10:17',
-        renderedOpensAt: '2026-08-01T09:05',
-        renderedClosesAt: '2026-08-31T23:59',
-        originalReleaseAt: '2026-09-01T10:17:43.123456Z',
-        originalOpensAt: '2026-08-01T09:05:11.500000Z',
-        originalClosesAt: '2026-08-31T23:59:59.999999Z',
-      },
-    ]).allocations;
-    expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
-    expect(a.opens_at).toBe('2026-08-01T09:05:11.500000Z');
-    expect(a.closes_at).toBe('2026-08-31T23:59:59.999999Z');
+  // A row inventory does not hold is NEW, so the form is the only source it has.
+  it('takes a new row entirely from the form', () => {
+    const a = build({ ...row(), channel: 'brand-new', cap: '10', requiresCode: 'true' }, [current()]);
+    expect(a.channel).toBe('brand-new');
+    expect(a.requires_code).toBe(true);
+    expect(a).not.toHaveProperty('opens_at');
+    expect(a).not.toHaveProperty('sold_by');
   });
+
+  // The server match is by EXACT channel code, so a whitespace variant is a different row
+  // — which is the same opacity rule that forbids trimming (ADR-024).
+  it('matches the server row by the exact channel code', () => {
+    const a = build({ ...row(), channel: ' reseller-acme ' }, [current()]);
+    expect(a.channel).toBe(' reseller-acme ');
+    expect(a).not.toHaveProperty('opens_at'); // no server row under that code
+  });
+});
+
+describe('the channel code is opaque and never normalized', () => {
+  // ADR-024: codes are "exact opaque strings — no normalization, no case folding", and the
+  // contract permits any 1..100 characters. Trimming would submit a DIFFERENT identity: the
+  // full-set replace deletes the original row and inserts the trimmed one while live claims
+  // keep the original code, stranding that consumption.
+  it.each([[' reseller-acme '], ['reseller acme'], ['  '], ['présale'], ['POS/Booth #2']])(
+    'reads the channel code %o verbatim',
+    (code) => {
+      const form = new FormData();
+      form.set('channel.0', code);
+      form.set('cap.0', '40');
+      form.set('requiresCode.0', 'false');
+      expect(parseAllocationForm(form)[0].channel).toBe(code);
+    },
+  );
 });

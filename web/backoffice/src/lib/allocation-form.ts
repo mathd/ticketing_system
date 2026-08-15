@@ -31,30 +31,31 @@ export interface AllocationRow {
   releaseAt: string;
   opensAt: string;
   closesAt: string;
-  /** The literal string 'true' or 'false' — never a checkbox's presence. */
+  /**
+   * The literal string 'true' or 'false' — never a checkbox's presence.
+   *
+   * Only load-bearing for a row inventory does not already hold; for an existing row the
+   * server's value wins (ai-review pass 2). Kept because the parser must still read the
+   * field by VALUE rather than by key presence — a hidden input always submits.
+   */
   requiresCode: string;
   soldBy: string;
-  /**
-   * The timestamps EXACTLY as inventory returned them, carried beside the editable
-   * minute-precision values above (ai-review pass 1, [high]).
-   *
-   * A `datetime-local` input holds minutes, so re-deriving an instant from it discards
-   * seconds and fractions. These columns are `timestamptz` compared against
-   * `clock_timestamp()` (ADR-024's release predicate, ADR-054's window), so a cap edit
-   * that re-submitted a truncated boundary would move a release or a sales window up to
-   * a minute earlier — returning inventory to public sale, or opening admission, sooner
-   * than configured. An unrelated edit must not move a boundary at all.
-   *
-   * So each is submitted verbatim unless the operator actually changed that field, which
-   * is decided by comparing the rendered minute value against what was submitted.
-   */
-  originalReleaseAt?: string;
-  originalOpensAt?: string;
-  originalClosesAt?: string;
-  /** The rendered (minute-precision) values, to detect an actual edit. */
-  renderedReleaseAt?: string;
-  renderedOpensAt?: string;
-  renderedClosesAt?: string;
+}
+
+/**
+ * One allocation as inventory reports it right now — the trustworthy source for every
+ * field this screen does not render (ai-review pass 2, [high]).
+ *
+ * Structurally the subset of `ChannelAvailability` the write needs, declared here rather
+ * than imported so this module stays free of the generated client.
+ */
+export interface CurrentAllocation {
+  channel: string;
+  release_at?: string;
+  opens_at?: string;
+  closes_at?: string;
+  requires_code?: boolean;
+  sold_by?: string;
 }
 
 /** Errors keyed by channel code, plus the total and a form-level fallback. */
@@ -102,14 +103,6 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
       // The VALUE decides, not the key's presence — see the header.
       requiresCode: at('requiresCode') === 'true' ? 'true' : 'false',
       soldBy: at('soldBy'),
-      // The exact instants and the values that were rendered, so an untouched field can
-      // be submitted verbatim rather than re-derived from a minute-precision input.
-      originalReleaseAt: verbatim('originalReleaseAt'),
-      originalOpensAt: verbatim('originalOpensAt'),
-      originalClosesAt: verbatim('originalClosesAt'),
-      renderedReleaseAt: verbatim('renderedReleaseAt'),
-      renderedOpensAt: verbatim('renderedOpensAt'),
-      renderedClosesAt: verbatim('renderedClosesAt'),
     });
   }
   return rows;
@@ -127,54 +120,73 @@ function instant(value: string): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
+/** Minute-precision rendering of an instant, matching what a datetime-local input holds. */
+export function toMinuteInput(value: string | undefined): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /**
- * The instant to submit for one timestamp field.
+ * The instant to submit for one editable timestamp, given what the SERVER currently holds.
  *
- * An untouched field keeps its ORIGINAL value byte for byte — the operator did not edit
- * it, so the save must not move it. Re-deriving from the `datetime-local` input would
- * silently drop seconds and fractions, and these boundaries are compared against
- * `clock_timestamp()`, so a cap edit could bring a release or a window forward by up to a
- * minute (ai-review pass 1, [high]).
+ * An untouched field keeps the server's value byte for byte: a `datetime-local` input holds
+ * minutes, so re-deriving from it drops seconds and fractions, and these boundaries are
+ * compared against `clock_timestamp()` — a cap edit would bring a release or a window
+ * forward by up to a minute (ai-review pass 1, [high]).
  *
- * "Untouched" is decided by comparing the submitted minute value against the one that was
- * rendered. When they differ the operator moved it, and the new minute value is authoritative
- * — including clearing the field.
+ * "Untouched" is decided against the CURRENT SERVER VALUE, never against a hidden input
+ * echoing what was rendered (ai-review pass 2, [high]). Hidden fields are client-controlled:
+ * a crafted or stale POST could otherwise present any `original` it liked and have it
+ * written verbatim — including boundaries this screen does not expose for editing at all.
+ * The server value is not forgeable and is re-read on every request.
  */
-function timestampField(
-  submitted: string,
-  rendered: string | undefined,
-  original: string | undefined,
-): string | undefined {
-  if (rendered !== undefined && submitted === rendered && original) {
-    return original;
+function preservedInstant(submitted: string, current: string | undefined): string | undefined {
+  if (current && submitted === toMinuteInput(current)) {
+    return current;
   }
   return instant(submitted);
 }
 
-/** Build the full-set replace body. Every field rides, including the unrendered ones. */
+/**
+ * Build the full-set replace body.
+ *
+ * `current` is the allocation set as inventory reports it RIGHT NOW. It supplies every
+ * field the form does not render — the sales window, the presale gate and the seller
+ * binding — so those survive a save without ever round-tripping through the client. The
+ * form contributes only what an operator can actually see and change: the channel, its
+ * cap, and its release time.
+ */
 export function toAllocationRequest(
   organizerId: string,
   rows: AllocationRow[],
+  current: CurrentAllocation[] = [],
 ): ChannelAllocationSet {
+  const byChannel = new Map(current.map((c) => [c.channel, c]));
   return {
     organizer_id: organizerId,
     allocations: rows.map((r) => {
+      const held = byChannel.get(r.channel);
       const a: ChannelAllocation = {
         channel: r.channel,
         cap: Number(r.cap),
-        // Always explicit. `false` is meaningful — it is what un-gates a channel — so
-        // it must not be dropped by an `if (truthy)` the way the optional fields are.
-        requires_code: r.requiresCode === 'true',
+        // Always explicit. `false` is meaningful — it is what un-gates a channel — so it
+        // must not be dropped by an `if (truthy)` the way the optional fields are. Taken
+        // from the server for an existing row: this screen does not edit it, so the form's
+        // copy can only be stale or forged.
+        requires_code: held ? Boolean(held.requires_code) : r.requiresCode === 'true',
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = timestampField(r.releaseAt, r.renderedReleaseAt, r.originalReleaseAt);
-      const opens = timestampField(r.opensAt, r.renderedOpensAt, r.originalOpensAt);
-      const closes = timestampField(r.closesAt, r.renderedClosesAt, r.originalClosesAt);
+      const release = preservedInstant(r.releaseAt, held?.release_at);
       if (release) a.release_at = release;
-      if (opens) a.opens_at = opens;
-      if (closes) a.closes_at = closes;
-      if (r.soldBy) a.sold_by = r.soldBy;
+      // Never rendered as an input, so they come from the server unchanged or not at all.
+      if (held?.opens_at) a.opens_at = held.opens_at;
+      if (held?.closes_at) a.closes_at = held.closes_at;
+      const soldBy = held ? held.sold_by : r.soldBy || undefined;
+      if (soldBy) a.sold_by = soldBy;
       return a;
     }),
   };

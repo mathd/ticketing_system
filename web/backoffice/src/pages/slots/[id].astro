@@ -31,6 +31,7 @@ import {
   allocationErrors,
   parseAllocationForm,
   toAllocationRequest,
+  toMinuteInput,
 } from '../../lib/allocation-form';
 import { type Channel, listChannelsForOperator } from '../../lib/catalog';
 import {
@@ -53,6 +54,22 @@ let errors: AllocationFormErrors = { rows: {} };
 // discarding it back to the stored values.
 let submitted: AllocationRow[] | null = null;
 
+// The read sits in its own error path: a service failure must render this page's readable
+// message, not abort SSR into a 500 that says nothing.
+//
+// It runs BEFORE the write, because the write needs it (ai-review pass 2). A save must
+// preserve the boundaries the operator did not touch, and the only trustworthy source for
+// those is inventory itself — NOT a hidden input. Hidden fields are client-controlled and
+// can be stale or forged, so treating them as evidence of stored state would let a crafted
+// POST write an `opens_at`/`closes_at` this screen does not even expose for editing.
+let availability: StaffAvailability | null = null;
+let readFailed = false;
+try {
+  availability = await getStaffAvailability(slotId, staff.organizerId);
+} catch {
+  readFailed = true;
+}
+
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const rows = parseAllocationForm(form);
@@ -64,9 +81,19 @@ if (Astro.request.method === 'POST') {
   const local = allocationErrors(null, rows);
   if (Object.keys(local.rows).length > 0 || local.form) {
     errors = local;
+  } else if (readFailed) {
+    // Refusing is the only safe answer: without the current set this save could only
+    // reconstruct the untouched fields from the form, which is the forgeable path above.
+    errors = {
+      rows: {},
+      form: 'Inventory could not be read, so the change was not saved — the fields this screen does not show could not be preserved. Try again.',
+    };
   } else {
     try {
-      await replaceChannelAllocations(slotId, toAllocationRequest(staff.organizerId, rows));
+      await replaceChannelAllocations(
+        slotId,
+        toAllocationRequest(staff.organizerId, rows, availability?.channels ?? []),
+      );
       return Astro.redirect(here, 303);
     } catch (e) {
       errors =
@@ -78,16 +105,6 @@ if (Astro.request.method === 'POST') {
             };
     }
   }
-}
-
-// Both reads sit in their own error paths: a service failure must render this page's
-// readable message, not abort SSR into a 500 that says nothing.
-let availability: StaffAvailability | null = null;
-let readFailed = false;
-try {
-  availability = await getStaffAvailability(slotId, staff.organizerId);
-} catch {
-  readFailed = true;
 }
 
 // The registry is a LOOKUP, NOT A CONSTRAINT (TKT-235 / ADR-024): a channel code needs no
@@ -104,14 +121,10 @@ try {
 
 const stored: ChannelAvailability[] = availability?.channels ?? [];
 
-/** Format an instant for a `datetime-local` input, which takes local wall time. */
-function localInput(value: string | undefined): string {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+// The rendering and the "did the operator touch this?" comparison MUST agree, so both use
+// the one formatter in allocation-form.ts. Two copies would drift, and the drift would
+// read as an edit — silently truncating a boundary on an untouched field.
+const localInput = toMinuteInput;
 
 // What the form renders: the submitted rows after a refusal, otherwise the stored set.
 const rows: AllocationRow[] =
@@ -124,16 +137,6 @@ const rows: AllocationRow[] =
     closesAt: localInput(c.closes_at),
     requiresCode: c.requires_code ? 'true' : 'false',
     soldBy: c.sold_by ?? '',
-    // The exact instants, and the minute-precision values actually rendered. A field the
-    // operator does not touch is submitted verbatim from the former; `datetime-local`
-    // holds minutes, so re-deriving would drop seconds and move a boundary compared
-    // against clock_timestamp() (ai-review pass 1).
-    originalReleaseAt: c.release_at ?? '',
-    originalOpensAt: c.opens_at ?? '',
-    originalClosesAt: c.closes_at ?? '',
-    renderedReleaseAt: localInput(c.release_at),
-    renderedOpensAt: localInput(c.opens_at),
-    renderedClosesAt: localInput(c.closes_at),
   }));
 
 /** Live consumption for a row, by channel code — held plus confirmed. */
@@ -201,20 +204,17 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                           full-set replace does not destroy them. `requiresCode` is an
                           EXPLICIT 'true'/'false' — a hidden input always submits, so
                           the checkbox convention cannot apply here (TKT-236). */}
-                      <input type="hidden" name={`opensAt.${i}`} value={row.opensAt} />
-                      <input type="hidden" name={`closesAt.${i}`} value={row.closesAt} />
+                      {/* requiresCode rides as an EXPLICIT 'true'/'false' so the parser
+                          decides on the value, never on the key's presence — a hidden
+                          input always submits (TKT-236). For a row inventory already
+                          holds, the SERVER's value wins on the write; this only carries
+                          a new row's intent. Same for soldBy.
+
+                          The sales window is deliberately NOT here. It is not editable on
+                          this screen, so echoing it through the client would let a crafted
+                          POST set a boundary the UI does not expose (ai-review pass 2). */}
                       <input type="hidden" name={`requiresCode.${i}`} value={row.requiresCode} />
                       <input type="hidden" name={`soldBy.${i}`} value={row.soldBy} />
-                      {/* The exact stored instants, and what was rendered for them. An
-                          untouched boundary is submitted from the original rather than
-                          re-derived from a minute-precision input, which would silently
-                          move it earlier — these are compared against clock_timestamp(). */}
-                      <input type="hidden" name={`originalReleaseAt.${i}`} value={row.originalReleaseAt ?? ''} />
-                      <input type="hidden" name={`originalOpensAt.${i}`} value={row.originalOpensAt ?? ''} />
-                      <input type="hidden" name={`originalClosesAt.${i}`} value={row.originalClosesAt ?? ''} />
-                      <input type="hidden" name={`renderedReleaseAt.${i}`} value={row.renderedReleaseAt ?? ''} />
-                      <input type="hidden" name={`renderedOpensAt.${i}`} value={row.renderedOpensAt ?? ''} />
-                      <input type="hidden" name={`renderedClosesAt.${i}`} value={row.renderedClosesAt ?? ''} />
                     </td>
                     <td>
                       <label class="visually-hidden" for={`cap-${i}`}>Cap for {row.channel}</label>
