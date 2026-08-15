@@ -12,8 +12,15 @@
 // from what arrives, so a field this page does not carry is a field the save destroys.
 // `sold_by` is the one that matters: TKT-246 judges it in the claim paths under the pool
 // row lock, so dropping it turns a reseller's bound stock into public stock — an
-// authorization change, invisible in a screenshot. It rides in a hidden input, as do the
-// sales window and the presale gate. allocation-form.ts owns that mapping and its tests.
+// authorization change, invisible in a screenshot.
+//
+// Those fields are NOT round-tripped through the client. The page re-reads inventory's
+// current set on every request and the write takes them from there, matched on the exact
+// channel code; a row naming a code inventory does not hold is REFUSED rather than
+// treated as new. Three review passes converged on that: carrying the values in hidden
+// inputs let a crafted POST choose them, and so did falling back to form values when the
+// client-supplied channel key matched nothing. A field the form cannot submit cannot be
+// forged. allocation-form.ts owns that mapping and its tests.
 //
 // The organizer comes from the SESSION, never the URL: inventory authenticates this
 // process, not the staff member behind it (ADR-021/ADR-053), so it cannot tell a
@@ -32,6 +39,7 @@ import {
   parseAllocationForm,
   toAllocationRequest,
   toMinuteInput,
+  UnknownAllocationChannel,
 } from '../../lib/allocation-form';
 import { type Channel, listChannelsForOperator } from '../../lib/catalog';
 import {
@@ -96,13 +104,22 @@ if (Astro.request.method === 'POST') {
       );
       return Astro.redirect(here, 303);
     } catch (e) {
-      errors =
-        e instanceof InventoryApiError
-          ? allocationErrors({ error: e.message, code: e.code, channel: e.channel }, rows)
-          : {
-              rows: {},
-              form: 'Inventory could not be reached. Nothing was saved — try again.',
-            };
+      if (e instanceof UnknownAllocationChannel) {
+        // The submitted set names a channel inventory does not hold. Either the
+        // allocation was removed while this page was open, or the request did not come
+        // from this form. Either way the safe answer is to refuse and re-read.
+        errors = {
+          rows: {},
+          form: `“${e.channel}” is not one of this slot’s current allocations, so nothing was saved. Reload to see the current set.`,
+        };
+      } else if (e instanceof InventoryApiError) {
+        errors = allocationErrors({ error: e.message, code: e.code, channel: e.channel }, rows);
+      } else {
+        errors = {
+          rows: {},
+          form: 'Inventory could not be reached. Nothing was saved — try again.',
+        };
+      }
     }
   }
 }
@@ -133,10 +150,6 @@ const rows: AllocationRow[] =
     channel: c.channel,
     cap: String(c.cap),
     releaseAt: localInput(c.release_at),
-    opensAt: localInput(c.opens_at),
-    closesAt: localInput(c.closes_at),
-    requiresCode: c.requires_code ? 'true' : 'false',
-    soldBy: c.sold_by ?? '',
   }));
 
 /** Live consumption for a row, by channel code — held plus confirmed. */
@@ -204,17 +217,11 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                           full-set replace does not destroy them. `requiresCode` is an
                           EXPLICIT 'true'/'false' — a hidden input always submits, so
                           the checkbox convention cannot apply here (TKT-236). */}
-                      {/* requiresCode rides as an EXPLICIT 'true'/'false' so the parser
-                          decides on the value, never on the key's presence — a hidden
-                          input always submits (TKT-236). For a row inventory already
-                          holds, the SERVER's value wins on the write; this only carries
-                          a new row's intent. Same for soldBy.
-
-                          The sales window is deliberately NOT here. It is not editable on
-                          this screen, so echoing it through the client would let a crafted
-                          POST set a boundary the UI does not expose (ai-review pass 2). */}
-                      <input type="hidden" name={`requiresCode.${i}`} value={row.requiresCode} />
-                      <input type="hidden" name={`soldBy.${i}`} value={row.soldBy} />
+                      {/* Nothing else rides. The sales window, the presale gate and the
+                          seller binding are not editable here, and a field the form does
+                          not submit is a field a crafted POST cannot choose — inventory
+                          validates none of them (ai-review pass 3). The write takes them
+                          from inventory's current set, matched on this exact code. */}
                     </td>
                     <td>
                       <label class="visually-hidden" for={`cap-${i}`}>Cap for {row.channel}</label>

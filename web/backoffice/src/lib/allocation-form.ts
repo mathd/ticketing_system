@@ -5,41 +5,52 @@
 // allocation" satisfies a naive assertion and fails this ticket's COS, which asks for
 // the message beside the field the operator has to fix.
 //
-// TWO THINGS THIS MODULE EXISTS TO GET RIGHT:
+// THE ONE THING THIS MODULE EXISTS TO GET RIGHT, and it took three review passes.
 //
-// 1. The write is a FULL-SET ATOMIC REPLACE under the pool lock (ADR-024): inventory
-//    DELETEs every allocation row and re-INSERTs from what was submitted. So a field the
-//    form does not carry is a field the save DESTROYS. `sold_by` is the dangerous one —
-//    TKT-246 judges it in the claim paths under the pool row lock, so dropping it turns a
-//    reseller's bound stock back into public stock. That is an authorization regression,
-//    not a display bug, and it is invisible in a screenshot.
+// The write is a FULL-SET ATOMIC REPLACE under the pool lock (ADR-024): inventory DELETEs
+// every allocation row and re-INSERTs from what was submitted. So a field the request does
+// not carry is a field the save DESTROYS, and a field it DOES carry is a field the client
+// chooses. `sold_by` is the dangerous one — TKT-246 judges it in the claim paths under the
+// pool row lock, so both losing it and choosing it are authorization changes, and neither
+// is visible in a screenshot.
 //
-// 2. `requires_code` rides as a HIDDEN input, and a hidden input always submits. So
-//    "the key is present" means nothing here and `value=""` must read as FALSE. Reading
-//    it with checkbox semantics is how renaming a disabled channel silently re-enabled it
-//    in TKT-236 (AGENTS.md: "a hidden input is not a checkbox").
+// Inventory cannot help: it validates the channel, the cap, duplicates, pool capacity and
+// consumption, and nothing else. It never constrains `sold_by`. So this module is the only
+// place the boundary exists, and it holds it by construction rather than by checking:
+//
+//   * the row type carries ONLY what the screen renders — channel, cap, release time;
+//   * every other field comes from inventory's CURRENT set, read on the same request;
+//   * a submitted row must match a current one by EXACT channel code, or it is refused.
+//
+// The three passes each broke a weaker version: carrying the values in hidden inputs let a
+// crafted POST supply them; sourcing them from the server but keying on the client's
+// channel let an unmatched row fall back to client values. A field that cannot be
+// submitted cannot be forged.
 
 import type { components } from './inventory-api-types.gen';
 
 export type ChannelAllocation = components['schemas']['ChannelAllocation'];
 export type ChannelAllocationSet = components['schemas']['ChannelAllocationSet'];
 
-/** One editor row: every value as the form carries it, i.e. as strings. */
+/**
+ * One editor row — ONLY what this screen lets an operator change (ai-review pass 3).
+ *
+ * There is deliberately no `requiresCode` and no `soldBy` here, and no window. This
+ * screen edits **caps and release times on allocations that already exist**; it does not
+ * create allocations, set seller bindings, or gate channels behind presale codes.
+ *
+ * That is a security boundary, not a scope note. The write is a full-set replace, so any
+ * field this type can carry is a field a crafted POST can choose — and inventory
+ * validates only the channel, the cap, duplicates, pool capacity and consumption. It
+ * never constrains `sold_by`, so the back office is the ONLY place that boundary exists.
+ * Pass 2 moved these fields to a server merge keyed on the channel; pass 3 found the key
+ * itself is client-supplied, so a row whose code matches nothing restored client control.
+ * A field that cannot be submitted cannot be forged.
+ */
 export interface AllocationRow {
   channel: string;
   cap: string;
   releaseAt: string;
-  opensAt: string;
-  closesAt: string;
-  /**
-   * The literal string 'true' or 'false' — never a checkbox's presence.
-   *
-   * Only load-bearing for a row inventory does not already hold; for an existing row the
-   * server's value wins (ai-review pass 2). Kept because the parser must still read the
-   * field by VALUE rather than by key presence — a hidden input always submits.
-   */
-  requiresCode: string;
-  soldBy: string;
 }
 
 /**
@@ -98,11 +109,6 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
       channel: verbatim('channel'),
       cap: at('cap'),
       releaseAt: at('releaseAt'),
-      opensAt: at('opensAt'),
-      closesAt: at('closesAt'),
-      // The VALUE decides, not the key's presence — see the header.
-      requiresCode: at('requiresCode') === 'true' ? 'true' : 'false',
-      soldBy: at('soldBy'),
     });
   }
   return rows;
@@ -151,13 +157,33 @@ function preservedInstant(submitted: string, current: string | undefined): strin
 }
 
 /**
+ * Thrown when a submitted row names a channel inventory does not currently hold.
+ *
+ * The page turns this into a form-level "reload" message. It is a REFUSAL rather than a
+ * fallback on purpose (ai-review pass 3): treating an unmatched row as "new" would let a
+ * crafted POST invent a channel and choose its seller binding and presale gate, because
+ * inventory validates neither. This screen edits existing allocations; creating one is a
+ * different operation with a different authorization story.
+ */
+export class UnknownAllocationChannel extends Error {
+  constructor(public readonly channel: string) {
+    super(`no current allocation for channel ${JSON.stringify(channel)}`);
+    this.name = 'UnknownAllocationChannel';
+  }
+}
+
+/**
  * Build the full-set replace body.
  *
- * `current` is the allocation set as inventory reports it RIGHT NOW. It supplies every
- * field the form does not render — the sales window, the presale gate and the seller
- * binding — so those survive a save without ever round-tripping through the client. The
- * form contributes only what an operator can actually see and change: the channel, its
- * cap, and its release time.
+ * `current` is the allocation set as inventory reports it RIGHT NOW, and it is the ONLY
+ * source for every field the form does not render — the sales window, the presale gate
+ * and the seller binding. The form contributes exactly three things, all of them visible
+ * to the operator: which row, its cap, and its release time.
+ *
+ * Every submitted row must match a current one by EXACT channel code. That check is what
+ * makes the merge trustworthy: the channel is client-supplied, so without it a row naming
+ * an unknown code would fall through to client-chosen values for fields this screen never
+ * shows.
  */
 export function toAllocationRequest(
   organizerId: string,
@@ -169,24 +195,23 @@ export function toAllocationRequest(
     organizer_id: organizerId,
     allocations: rows.map((r) => {
       const held = byChannel.get(r.channel);
+      if (!held) {
+        throw new UnknownAllocationChannel(r.channel);
+      }
       const a: ChannelAllocation = {
         channel: r.channel,
         cap: Number(r.cap),
         // Always explicit. `false` is meaningful — it is what un-gates a channel — so it
-        // must not be dropped by an `if (truthy)` the way the optional fields are. Taken
-        // from the server for an existing row: this screen does not edit it, so the form's
-        // copy can only be stale or forged.
-        requires_code: held ? Boolean(held.requires_code) : r.requiresCode === 'true',
+        // must not be dropped by an `if (truthy)` the way the optional fields are.
+        requires_code: Boolean(held.requires_code),
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = preservedInstant(r.releaseAt, held?.release_at);
+      const release = preservedInstant(r.releaseAt, held.release_at);
       if (release) a.release_at = release;
-      // Never rendered as an input, so they come from the server unchanged or not at all.
-      if (held?.opens_at) a.opens_at = held.opens_at;
-      if (held?.closes_at) a.closes_at = held.closes_at;
-      const soldBy = held ? held.sold_by : r.soldBy || undefined;
-      if (soldBy) a.sold_by = soldBy;
+      if (held.opens_at) a.opens_at = held.opens_at;
+      if (held.closes_at) a.closes_at = held.closes_at;
+      if (held.sold_by) a.sold_by = held.sold_by;
       return a;
     }),
   };
