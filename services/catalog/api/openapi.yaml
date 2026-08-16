@@ -24,6 +24,12 @@ paths:
   /venues:
     post:
       operationId: createVenue
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a general-admission venue
       requestBody:
         required: true
@@ -47,6 +53,12 @@ paths:
   /venues/{venueId}/seat-maps:
     post:
       operationId: createSeatMap
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a draft seat map under a venue (US-019)
       description: >
         Authors a new versioned seat map in the draft state under a venue.
@@ -75,6 +87,12 @@ paths:
   /seat-maps/{seatMapId}/sections:
     post:
       operationId: addSeatMapSection
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Add a section to a draft seat map (US-019)
       parameters:
         - $ref: '#/components/parameters/SeatMapId'
@@ -103,6 +121,12 @@ paths:
   /seat-maps/{seatMapId}/rows:
     post:
       operationId: addSeatMapRow
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Add a row to a section of a draft seat map (US-019)
       parameters:
         - $ref: '#/components/parameters/SeatMapId'
@@ -131,6 +155,12 @@ paths:
   /seat-maps/{seatMapId}/seats:
     post:
       operationId: addSeatMapSeat
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Add a seat to a row of a draft seat map (US-019)
       description: >
         The stable seat identity is composed server-side as
@@ -194,6 +224,12 @@ paths:
   /seat-maps/{seatMapId}/edit:
     post:
       operationId: editSeatMap
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Edit a published seat map, producing a new version (TKT-105)
       description: >
         Surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP. The body is
@@ -234,6 +270,12 @@ paths:
   /venues/{venueId}/ga-capacity:
     post:
       operationId: updateVenueGaCapacity
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Update a venue's GA capacity (TKT-105)
       description: >
         Sets a venue's general-admission capacity (write-once at venue creation
@@ -262,6 +304,12 @@ paths:
   /events:
     post:
       operationId: createEvent
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create an event (localizable content)
       requestBody:
         required: true
@@ -285,6 +333,12 @@ paths:
   /performances:
     post:
       operationId: createPerformance
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a dated performance (draft)
       description: >
         A performance is the catalog's first dated slot (ADR-005): a datable,
@@ -456,6 +510,12 @@ paths:
   /series:
     post:
       operationId: createSeries
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a localized series for one event
       requestBody:
         required: true
@@ -551,6 +611,12 @@ paths:
   /seasons:
     post:
       operationId: createSeason
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a localized season
       requestBody:
         required: true
@@ -628,6 +694,12 @@ paths:
   /festivals:
     post:
       operationId: createFestival
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a localized shared-capacity festival
       requestBody:
         required: true
@@ -723,6 +795,12 @@ paths:
   /ticket-types:
     post:
       operationId: createTicketType
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Create a ticket type with a price
       requestBody:
         required: true
@@ -1272,6 +1350,12 @@ paths:
   /channels:
     post:
       operationId: createChannel
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Define a sales channel (TKT-235 / epic TKT-17)
       description: >
         Creates an organizer-scoped channel definition: an exact opaque code, a
@@ -1307,6 +1391,12 @@ paths:
   /channels/{channelId}:
     put:
       operationId: updateChannel
+      # TKT-245: the organizer comes from the assertion, not the body. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Update a channel's display name, kind or enabled flag (TKT-235)
       description: >
         The code is IMMUTABLE. It is required in the body and must equal the
@@ -1405,6 +1495,26 @@ components:
       type: apiKey
       in: header
       name: X-Catalog-Staff-Write-Token
+    CatalogOrganizerAssertion:
+      description: >
+        WHICH ORGANIZER the write is for (TKT-245, ADR-058), signed by catalog at
+        staff sign-in and presented back unchanged. It answers the question
+        CatalogStaffWriteCredential cannot: that credential authenticates the
+        deputy PROCESS, so before this scheme existed every write took
+        organizer_id from the request body and catalog had nothing to check it
+        against.
+
+        Required TOGETHER WITH CatalogStaffWriteCredential, never instead of it —
+        both keys in ONE requirement object. The two are not alternatives: the
+        credential says the back office is calling, the assertion says which
+        tenant it is calling for, and a caller needs both.
+
+        Obtained from POST /staff/authenticate (organizer_assertion). It is a
+        bearer credential until it expires: hold it server-side, never render it
+        into a page.
+      type: apiKey
+      in: header
+      name: X-Catalog-Organizer-Assertion
   parameters:
     Locale:
       name: locale
@@ -2217,11 +2327,8 @@ components:
           pattern: '^[A-Z]{3}$'
     VenueCreate:
       type: object
-      required: [organizer_id, name, ga_capacity]
+      required: [name, ga_capacity]
       properties:
-        organizer_id:
-          type: string
-          format: uuid
         name:
           type: string
           minLength: 1
@@ -2249,9 +2356,8 @@ components:
           format: date-time
     SeatMapCreate:
       type: object
-      required: [organizer_id, name]
+      required: [name]
       properties:
-        organizer_id: { type: string, format: uuid }
         name: { type: string, minLength: 1 }
         orphan_prevention_enabled:
           type: boolean
@@ -2289,26 +2395,23 @@ components:
         created_at: { type: string, format: date-time }
     SeatMapSectionCreate:
       type: object
-      required: [organizer_id, name, position]
+      required: [name, position]
       properties:
-        organizer_id: { type: string, format: uuid }
         # no '/': it is the seat-identity delimiter, so a component carrying one
         # would make distinct seats compose to the same identity.
         name: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapRowCreate:
       type: object
-      required: [organizer_id, section_id, label, position]
+      required: [section_id, label, position]
       properties:
-        organizer_id: { type: string, format: uuid }
         section_id: { type: string, format: uuid }
         label: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapSeatCreate:
       type: object
-      required: [organizer_id, row_id, label, position]
+      required: [row_id, label, position]
       properties:
-        organizer_id: { type: string, format: uuid }
         row_id: { type: string, format: uuid }
         label: { type: string, minLength: 1, pattern: '^[^/]+$' }
         position: { type: integer, format: int32, minimum: 1 }
@@ -2377,9 +2480,8 @@ components:
         store's EditSeatMapInput; seat identity is composed server-side from the
         section/row/seat labels, so no component may contain the '/' delimiter.
       type: object
-      required: [organizer_id, sections]
+      required: [sections]
       properties:
-        organizer_id: { type: string, format: uuid }
         orphan_prevention_enabled:
           type: boolean
           description: >
@@ -2417,17 +2519,13 @@ components:
         position: { type: integer, format: int32, minimum: 1 }
     VenueGaCapacityUpdate:
       type: object
-      required: [organizer_id, ga_capacity]
+      required: [ga_capacity]
       properties:
-        organizer_id: { type: string, format: uuid }
         ga_capacity: { type: integer, format: int32, minimum: 1 }
     EventCreate:
       type: object
-      required: [organizer_id, name]
+      required: [name]
       properties:
-        organizer_id:
-          type: string
-          format: uuid
         name:
           $ref: '#/components/schemas/LocalizedString'
         description:
@@ -2503,11 +2601,8 @@ components:
         operating window (operating_date + opens_at + closes_at). re_entry
         defaults to single-entry.
       type: object
-      required: [organizer_id, event_id, venue_id, timezone]
+      required: [event_id, venue_id, timezone]
       properties:
-        organizer_id:
-          type: string
-          format: uuid
         event_id:
           type: string
           format: uuid
@@ -2607,11 +2702,8 @@ components:
           format: date-time
     TicketTypeCreate:
       type: object
-      required: [organizer_id, performance_id, name, price]
+      required: [performance_id, name, price]
       properties:
-        organizer_id:
-          type: string
-          format: uuid
         performance_id:
           type: string
           format: uuid
@@ -2641,9 +2733,8 @@ components:
           format: date-time
     SeriesCreate:
       type: object
-      required: [organizer_id, event_id, name]
+      required: [event_id, name]
       properties:
-        organizer_id: { type: string, format: uuid }
         event_id: { type: string, format: uuid }
         name: { $ref: '#/components/schemas/LocalizedString' }
     SeriesPerformanceAttach:
@@ -2687,9 +2778,8 @@ components:
         blocking_performance_id: { type: string, format: uuid }
     SeasonCreate:
       type: object
-      required: [organizer_id, name]
+      required: [name]
       properties:
-        organizer_id: { type: string, format: uuid }
         name: { $ref: '#/components/schemas/LocalizedString' }
     SeasonSeriesAttach:
       type: object
@@ -2717,9 +2807,8 @@ components:
         created_at: { type: string, format: date-time }
     FestivalCreate:
       type: object
-      required: [organizer_id, name, shared_capacity]
+      required: [name, shared_capacity]
       properties:
-        organizer_id: { type: string, format: uuid }
         name: { $ref: '#/components/schemas/LocalizedString' }
         shared_capacity: { type: integer, format: int32, minimum: 1 }
     FestivalDayAttach:
@@ -2924,11 +3013,8 @@ components:
     ChannelCreate:
       type: object
       additionalProperties: false
-      required: [organizer_id, code, display_name, kind]
+      required: [code, display_name, kind]
       properties:
-        organizer_id:
-          type: string
-          format: uuid
         code:
           $ref: '#/components/schemas/ChannelCode'
         display_name:
@@ -2944,23 +3030,13 @@ components:
     ChannelUpdate:
       type: object
       additionalProperties: false
-      required: [organizer_id, code, display_name, kind, enabled]
+      required: [code, display_name, kind, enabled]
       description: >
         A full replacement of the mutable fields. `code` is required and must
         equal the stored code — it is present so an update cannot be written
         against a channel the caller has misidentified, and a mismatch is a 409
         rather than a rename.
       properties:
-        organizer_id:
-          description: >
-            The tenant the channel must belong to (TKT-236). Scopes the write: a
-            channel owned by another organizer is refused with 404, exactly as a
-            channel that does not exist. An id alone is not an authorization
-            boundary — callers take it from a form field, and catalog
-            authenticates the calling PROCESS rather than the staff member behind
-            it (ADR-021), so the predicate has to be in the query.
-          type: string
-          format: uuid
         code:
           $ref: '#/components/schemas/ChannelCode'
         display_name:

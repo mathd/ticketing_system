@@ -200,7 +200,11 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 		// level and public reads opt out with `security: []`, so a newly added
 		// operation is closed by construction — the failure mode this replaces is
 		// an endpoint that ships unguarded because someone forgot a line.
-		Options: openapi3filter.Options{AuthenticationFunc: s.authenticateStaffWrite},
+		// Two schemes now (TKT-245): the staff-write credential says the back
+		// office is calling, the organizer assertion says which tenant it is
+		// calling for. authenticateCatalogRequest dispatches on the declared
+		// scheme name and refuses an unknown one.
+		Options: openapi3filter.Options{AuthenticationFunc: s.authenticateCatalogRequest},
 	})
 	r := chi.NewRouter()
 	r.Get("/internal/ticket-types/{id}", s.getTicketType)
@@ -238,7 +242,17 @@ func NewRouter(s *Server, validateResponses bool) (http.Handler, error) {
 	})
 	// Response drift fails closed (ADR-028): hand-built payloads are checked
 	// against the committed spec at runtime, same as the non-codegen services.
-	return contract.ResponseValidator(apispec.Spec, guardInternalSurface(s, handler), s.log, validateResponses)
+	//
+	// withOrganizerScopeSlot wraps EVERYTHING (TKT-245), outside both the internal
+	// guard and the validator, because both fill or read it: the validator's
+	// AuthenticationFunc fills the slot for contract operations, and the
+	// hand-mounted /internal/channels read fills it inline. Installed here rather
+	// than as a chi middleware because the validator runs before the router.
+	validated, err := contract.ResponseValidator(apispec.Spec, guardInternalSurface(s, handler), s.log, validateResponses)
+	if err != nil {
+		return nil, err
+	}
+	return withOrganizerScopeSlot(validated), nil
 }
 
 // guardInternalSurface authenticates catalog's WHOLE /internal/ surface before
@@ -627,8 +641,12 @@ func (s *Server) CreateVenue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	v, err := s.store.CreateVenue(r.Context(), store.VenueInput{
-		OrganizerID: in.OrganizerId,
+		OrganizerID: organizerID,
 		Name:        in.Name,
 		GACapacity:  in.GaCapacity,
 	})
@@ -656,8 +674,12 @@ func (s *Server) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	if in.Description != nil {
 		desc = store.LocalizedText(*in.Description)
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	ev, err := s.store.CreateEvent(r.Context(), store.EventInput{
-		OrganizerID: in.OrganizerId,
+		OrganizerID: organizerID,
 		Name:        store.LocalizedText(in.Name),
 		Description: desc,
 	})
@@ -710,7 +732,11 @@ func (s *Server) CreateSeries(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		return
 	}
-	out, err := s.store.CreateSeries(r.Context(), store.SeriesInput{OrganizerID: in.OrganizerId, EventID: in.EventId, Name: store.LocalizedText(in.Name)})
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.CreateSeries(r.Context(), store.SeriesInput{OrganizerID: organizerID, EventID: in.EventId, Name: store.LocalizedText(in.Name)})
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -742,7 +768,11 @@ func (s *Server) CreateSeason(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		return
 	}
-	out, err := s.store.CreateSeason(r.Context(), store.SeasonInput{OrganizerID: in.OrganizerId, Name: store.LocalizedText(in.Name)})
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.CreateSeason(r.Context(), store.SeasonInput{OrganizerID: organizerID, Name: store.LocalizedText(in.Name)})
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -792,8 +822,12 @@ func (s *Server) CreateFestival(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "shared_capacity must be positive"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	out, err := s.store.CreateFestival(r.Context(), store.FestivalInput{
-		OrganizerID: in.OrganizerId, Name: store.LocalizedText(in.Name), SharedCapacity: in.SharedCapacity,
+		OrganizerID: organizerID, Name: store.LocalizedText(in.Name), SharedCapacity: in.SharedCapacity,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -865,8 +899,12 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "max_entries is only valid for re_entry mode 'count_limited'"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	input := store.PerformanceInput{
-		OrganizerID: in.OrganizerId,
+		OrganizerID: organizerID,
 		EventID:     in.EventId,
 		VenueID:     in.VenueId,
 		Kind:        kind,
@@ -1203,8 +1241,12 @@ func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: err.Error()})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	tt, err := s.store.CreateTicketType(r.Context(), store.TicketTypeInput{
-		OrganizerID:   in.OrganizerId,
+		OrganizerID:   organizerID,
 		PerformanceID: in.PerformanceId,
 		Name:          store.LocalizedText(in.Name),
 		PriceAmount:   in.Price.Amount,
@@ -1486,7 +1528,11 @@ func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId S
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	m, needsEmit, err := s.store.EditSeatMap(r.Context(), editInput(seatMapId, in))
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	m, needsEmit, err := s.store.EditSeatMap(r.Context(), editInput(organizerID, seatMapId, in))
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -1509,7 +1555,11 @@ func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId S
 // editInput maps the wire SeatMapEdit (any version id + full geometry tree) to
 // the store's EditSeatMapInput. Seat identity is composed server-side from the
 // labels, so no id plumbing is needed.
-func editInput(seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
+//
+// The organizer is a PARAMETER, taken from the verified assertion by the caller
+// (TKT-245). It used to come off the wire type, which is what let the seat-map
+// editor round-trip a tenant id through a hidden form field and hand it back.
+func editInput(organizerID uuid.UUID, seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
 	sections := make([]store.EditSectionInput, 0, len(in.Sections))
 	for _, sec := range in.Sections {
 		rows := make([]store.EditRowInput, 0, len(sec.Rows))
@@ -1527,7 +1577,7 @@ func editInput(seatMapID SeatMapId, in SeatMapEdit) store.EditSeatMapInput {
 	// here would turn "the staffer said nothing" into "the staffer said off"
 	// (ADR-041).
 	return store.EditSeatMapInput{
-		OrganizerID: in.OrganizerId, SeatMapID: seatMapID, Sections: sections,
+		OrganizerID: organizerID, SeatMapID: seatMapID, Sections: sections,
 		OrphanPreventionEnabled: in.OrphanPreventionEnabled,
 	}
 }
@@ -1562,8 +1612,12 @@ func (s *Server) UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request, v
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	v, err := s.store.UpdateVenueGACapacity(r.Context(), store.VenueGACapacityInput{
-		OrganizerID: in.OrganizerId, VenueID: venueId, GACapacity: in.GaCapacity,
+		OrganizerID: organizerID, VenueID: venueId, GACapacity: in.GaCapacity,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -1581,8 +1635,12 @@ func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId V
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	m, err := s.store.CreateSeatMap(r.Context(), store.SeatMapInput{
-		OrganizerID: in.OrganizerId, VenueID: venueId, Name: in.Name,
+		OrganizerID: organizerID, VenueID: venueId, Name: in.Name,
 		// Absent means false: a caller that has never heard of the rule creates
 		// exactly the map it created before (ADR-041).
 		OrphanPreventionEnabled: in.OrphanPreventionEnabled != nil && *in.OrphanPreventionEnabled,
@@ -1600,8 +1658,12 @@ func (s *Server) AddSeatMapSection(w http.ResponseWriter, r *http.Request, seatM
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	sec, err := s.store.AddSeatMapSection(r.Context(), store.SeatMapSectionInput{
-		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, Name: in.Name, Position: in.Position,
+		OrganizerID: organizerID, SeatMapID: seatMapId, Name: in.Name, Position: in.Position,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -1616,8 +1678,12 @@ func (s *Server) AddSeatMapRow(w http.ResponseWriter, r *http.Request, seatMapId
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	row, err := s.store.AddSeatMapRow(r.Context(), store.SeatMapRowInput{
-		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, SectionID: in.SectionId,
+		OrganizerID: organizerID, SeatMapID: seatMapId, SectionID: in.SectionId,
 		Label: in.Label, Position: in.Position,
 	})
 	if err != nil {
@@ -1633,8 +1699,12 @@ func (s *Server) AddSeatMapSeat(w http.ResponseWriter, r *http.Request, seatMapI
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	seat, err := s.store.AddSeatMapSeat(r.Context(), store.SeatMapSeatInput{
-		OrganizerID: in.OrganizerId, SeatMapID: seatMapId, RowID: in.RowId,
+		OrganizerID: organizerID, SeatMapID: seatMapId, RowID: in.RowId,
 		Label: in.Label, Position: in.Position,
 	})
 	if err != nil {

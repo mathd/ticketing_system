@@ -29,12 +29,39 @@ func operatorGet(e *env, path string) *httptest.ResponseRecorder {
 	return e.doWithHeaders(http.MethodGet, path, nil, map[string]string{"X-Internal-Token": testInternalToken})
 }
 
+// operatorListChannels reads the channel registry as the BACK OFFICE does
+// (TKT-245): the staff-write credential plus an assertion naming the organizer.
+//
+// The organizer is no longer a query parameter, so this helper is the only way
+// the list can be reached for a given tenant — which is the point. `/internal/
+// channels/{id}` is unaffected and still takes the internal token.
+func operatorListChannels(e *env, organizerID uuid.UUID) *httptest.ResponseRecorder {
+	e.t.Helper()
+	return e.doWithHeaders(http.MethodGet, "/internal/channels", nil, map[string]string{
+		staffWriteHeader:         testStaffWriteToken,
+		organizerAssertionHeader: e.assertionFor(organizerID),
+	})
+}
+
 // testInternalToken is the internal credential newEnv configures.
 const testInternalToken = "test-internal-token"
 
-func createChannelBody(organizerID uuid.UUID, code, name, kind string, enabled *bool) map[string]any {
+// channelWrite issues a channel write ACTING FOR organizerID.
+//
+// Before TKT-245 the organizer was a field in the body and this helper built it
+// there; now it travels in the assertion and cannot be written into the body at
+// all — `ChannelCreate` is additionalProperties: false, so a submitted
+// organizer_id is refused by the validator rather than ignored.
+func channelWrite(e *env, method, path string, organizerID uuid.UUID, body map[string]any) *httptest.ResponseRecorder {
+	e.t.Helper()
+	return e.doWithHeaders(method, path, body, map[string]string{
+		staffWriteHeader:         testStaffWriteToken,
+		organizerAssertionHeader: e.assertionFor(organizerID),
+	})
+}
+
+func createChannelBody(code, name, kind string, enabled *bool) map[string]any {
 	body := map[string]any{
-		"organizer_id": organizerID,
 		"code":         code,
 		"display_name": name,
 		"kind":         kind,
@@ -49,7 +76,7 @@ func TestCreateChannelReturnsTheDefinition(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /channels = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -82,7 +109,7 @@ func TestCreateChannelHonoursExplicitlyDisabled(t *testing.T) {
 	org := uuid.New()
 	disabled := false
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "partner-a", "Partner A", "reseller", &disabled))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("partner-a", "Partner A", "reseller", &disabled))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /channels = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
@@ -99,16 +126,16 @@ func TestChannelCodeIsUniquePerOrganizerNotGlobally(t *testing.T) {
 	e := newEnv(t)
 	orgA, orgB := uuid.New(), uuid.New()
 
-	if rec := e.do(http.MethodPost, "/channels", createChannelBody(orgA, "pos", "A box office", "pos", nil)); rec.Code != http.StatusCreated {
+	if rec := channelWrite(e, http.MethodPost, "/channels", orgA, createChannelBody("pos", "A box office", "pos", nil)); rec.Code != http.StatusCreated {
 		t.Fatalf("first create = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
 	// Same organizer, same code: refused.
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(orgA, "pos", "Duplicate", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", orgA, createChannelBody("pos", "Duplicate", "pos", nil))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("duplicate code for the same organizer = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
 	// Different organizer, same code: allowed. Tenants do not share a namespace.
-	if rec := e.do(http.MethodPost, "/channels", createChannelBody(orgB, "pos", "B box office", "pos", nil)); rec.Code != http.StatusCreated {
+	if rec := channelWrite(e, http.MethodPost, "/channels", orgB, createChannelBody("pos", "B box office", "pos", nil)); rec.Code != http.StatusCreated {
 		t.Fatalf("same code for a different organizer = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
 }
@@ -122,7 +149,7 @@ func TestChannelCodesDifferingOnlyByCaseOrSpaceAreDistinctChannels(t *testing.T)
 	// disagree with all four. These are three different channels, and creating
 	// all three must succeed — a 409 here means something normalized.
 	for _, code := range []string{"pos", "POS", "pos "} {
-		rec := e.do(http.MethodPost, "/channels", createChannelBody(org, code, "Box office", "pos", nil))
+		rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody(code, "Box office", "pos", nil))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("POST /channels code=%q = %d, want 201 (codes are exact, not normalized): %s", code, rec.Code, rec.Body.String())
 		}
@@ -140,7 +167,7 @@ func TestUpdateChannelRefusesToRenameTheCode(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "legacy-pos", "Old box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("legacy-pos", "Old box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -152,8 +179,8 @@ func TestUpdateChannelRefusesToRenameTheCode(t *testing.T) {
 	// A different code is a rename, and a rename would orphan the code already
 	// recorded on live claims, fee rules and split schedules — none of which
 	// reference this table, so nothing would cascade and nothing would complain.
-	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
-		"organizer_id": org, "code": "pos", "display_name": "Old box office", "kind": "pos", "enabled": true,
+	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
+		"code": "pos", "display_name": "Old box office", "kind": "pos", "enabled": true,
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("renaming the code = %d, want 409: %s", rec.Code, rec.Body.String())
@@ -177,7 +204,7 @@ func TestUpdateChannelChangesTheMutableFields(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "web", "Website", "web", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("web", "Website", "web", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -186,8 +213,8 @@ func TestUpdateChannelChangesTheMutableFields(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
-		"organizer_id": org, "code": "web", "display_name": "Main website", "kind": "web", "enabled": false,
+	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
+		"code": "web", "display_name": "Main website", "kind": "web", "enabled": false,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -209,8 +236,8 @@ func TestUpdateUnknownChannelIs404NotAnImmutabilityConflict(t *testing.T) {
 	e := newEnv(t)
 	// Reporting 409 for an id that does not exist would tell a caller that an id
 	// it guessed is real.
-	rec := e.do(http.MethodPut, "/channels/"+uuid.New().String(), map[string]any{
-		"organizer_id": uuid.New(), "code": "pos", "display_name": "Box office", "kind": "pos", "enabled": true,
+	rec := channelWrite(e, http.MethodPut, "/channels/"+uuid.New().String(), uuid.New(), map[string]any{
+		"code": "pos", "display_name": "Box office", "kind": "pos", "enabled": true,
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PUT to an unknown channel = %d, want 404: %s", rec.Code, rec.Body.String())
@@ -244,7 +271,7 @@ func TestPublicReadShowsOnlyEnabledChannelsAndOperatorReadShowsBoth(t *testing.T
 		{other, "web", "Someone else's website", "web", nil},
 	}
 	for _, s := range seed {
-		if rec := e.do(http.MethodPost, "/channels", createChannelBody(s.organizer, s.code, s.name, s.kind, s.enabled)); rec.Code != http.StatusCreated {
+		if rec := channelWrite(e, http.MethodPost, "/channels", s.organizer, createChannelBody(s.code, s.name, s.kind, s.enabled)); rec.Code != http.StatusCreated {
 			t.Fatalf("seed %q = %d: %s", s.code, rec.Code, rec.Body.String())
 		}
 	}
@@ -267,7 +294,7 @@ func TestPublicReadShowsOnlyEnabledChannelsAndOperatorReadShowsBoth(t *testing.T
 	}
 
 	// Operator: everything for this organizer, including the disabled one.
-	rec = operatorGet(e, "/internal/channels?organizer_id="+org.String())
+	rec = operatorListChannels(e, org)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /channels = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -319,7 +346,7 @@ func TestPublicChannelListDeclaresTheMinutesTier(t *testing.T) {
 func TestOperatorChannelReadsAreNotShareableCached(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -327,8 +354,20 @@ func TestOperatorChannelReadsAreNotShareableCached(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	for _, path := range []string{"/internal/channels?organizer_id=" + org.String(), "/internal/channels/" + created.Id.String()} {
-		rec := operatorGet(e, path)
+	// The two operator reads take different credentials now (TKT-245): the list is
+	// organizer-scoped and needs an assertion, the single-row read is not and
+	// still takes the internal token alone. Both must be never-cacheable.
+	for _, tc := range []struct {
+		path string
+		get  func() *httptest.ResponseRecorder
+	}{
+		{"/internal/channels", func() *httptest.ResponseRecorder { return operatorListChannels(e, org) }},
+		{"/internal/channels/" + created.Id.String(), func() *httptest.ResponseRecorder {
+			return operatorGet(e, "/internal/channels/"+created.Id.String())
+		}},
+	} {
+		path := tc.path
+		rec := tc.get()
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d: %s", path, rec.Code, rec.Body.String())
 		}
@@ -340,9 +379,8 @@ func TestOperatorChannelReadsAreNotShareableCached(t *testing.T) {
 
 func TestChannelWritesRequireTheStaffCredential(t *testing.T) {
 	e := newEnv(t)
-	org := uuid.New()
 	rec := e.doWithHeaders(http.MethodPost, "/channels",
-		createChannelBody(org, "pos", "Box office", "pos", nil),
+		createChannelBody("pos", "Box office", "pos", nil),
 		map[string]string{staffWriteHeader: "wrong-token"})
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("POST /channels with a bad credential = %d, want 401: %s", rec.Code, rec.Body.String())
@@ -355,7 +393,7 @@ func TestOperatorChannelReadsRequireTheInternalCredential(t *testing.T) {
 	// is not. A read that only passes because a credential happened to be
 	// attached would hide a public surface silently acquiring — or losing — a
 	// guard.
-	for _, path := range []string{"/internal/channels?organizer_id=" + uuid.New().String(), "/internal/channels/" + uuid.New().String()} {
+	for _, path := range []string{"/internal/channels", "/internal/channels/" + uuid.New().String()} {
 		if rec := e.do(http.MethodGet, path, nil); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("unauthenticated GET %s = %d, want 401: %s", path, rec.Code, rec.Body.String())
 		}
@@ -368,14 +406,13 @@ func TestOperatorChannelReadsRequireTheInternalCredential(t *testing.T) {
 
 func TestChannelWriteGateRefusesBadInput(t *testing.T) {
 	e := newEnv(t)
-	org := uuid.New()
 	tests := []struct {
 		name string
 		body map[string]any
 	}{
-		{"unknown kind", createChannelBody(org, "x", "X", "partner", nil)},
-		{"empty code", createChannelBody(org, "", "X", "web", nil)},
-		{"empty display name", createChannelBody(org, "x", "", "web", nil)},
+		{"unknown kind", createChannelBody("x", "X", "partner", nil)},
+		{"empty code", createChannelBody("", "X", "web", nil)},
+		{"empty display name", createChannelBody("x", "", "web", nil)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -442,12 +479,14 @@ func TestChannelEnabledDefaultLivesInTheContract(t *testing.T) {
 func TestOperatorChannelListAcceptsTheStaffWriteCredential(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
-	if rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
+	if rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec := e.doWithHeaders(http.MethodGet, "/internal/channels?organizer_id="+org.String(), nil,
-		map[string]string{staffWriteHeader: testStaffWriteToken})
+	rec := e.doWithHeaders(http.MethodGet, "/internal/channels", nil, map[string]string{
+		staffWriteHeader:         testStaffWriteToken,
+		organizerAssertionHeader: e.assertionFor(org),
+	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /internal/channels with the staff-write credential = %d, want 200: %s",
 			rec.Code, rec.Body.String())
@@ -471,7 +510,7 @@ func TestOperatorChannelListAcceptsTheStaffWriteCredential(t *testing.T) {
 func TestTheStaffWriteCredentialOpensNothingElseOnTheInternalSurface(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d", rec.Code)
 	}
@@ -513,22 +552,63 @@ func TestTheStaffWriteCredentialOpensNothingElseOnTheInternalSurface(t *testing.
 // The shared internal token still works on the route the staff token now also
 // opens. This is an ADDITIONAL accepted credential, not a replacement: access
 // and other services reach catalog's internal surface with it.
-func TestOperatorChannelListStillAcceptsTheInternalToken(t *testing.T) {
+// The channel LIST now needs an organizer assertion whatever credential opened
+// the door (TKT-245) — including the shared internal token.
+//
+// This reverses what this test asserted before, and the reversal is deliberate
+// rather than incidental, so it is written down here.
+//
+// The internal token authenticates a SERVICE. It names no tenant, and the
+// organizer used to arrive as a query parameter, which is exactly the shape this
+// ticket removes: a caller-chosen organizer that catalog had nothing to check
+// against. Keeping a query-parameter path "for services" would have left the
+// enumeration capability open to anyone holding the shared token — the widest
+// credential in the system — while closing it for the narrow one. That is
+// backwards.
+//
+// Verified before removing it: `GET /internal/channels` has exactly ONE caller
+// repo-wide, the back office (web/backoffice/src/lib/catalog.ts), which does hold
+// an assertion. No Go service reads this route, so nothing lost a capability it
+// was using. The sibling `/internal/channels/{id}` is untouched and still takes
+// the internal token alone — it names a specific row rather than enumerating a
+// tenant's configuration.
+//
+// If a service ever does need this list, it needs an organizer-bound credential
+// of its own (ADR-056's shape), not a query parameter restored.
+func TestOperatorChannelListRequiresAnAssertionEvenWithTheInternalToken(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
-	if rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
+	if rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil)); rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d", rec.Code)
 	}
-	if rec := operatorGet(e, "/internal/channels?organizer_id="+org.String()); rec.Code != http.StatusOK {
-		t.Fatalf("GET with X-Internal-Token = %d, want 200 — the staff allowance must ADD a "+
-			"credential, not replace the one other services use: %s", rec.Code, rec.Body.String())
+
+	// The internal token alone: through the prefix guard, refused at the handler.
+	if rec := operatorGet(e, "/internal/channels"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET with X-Internal-Token and no assertion = %d, want 401 — the token names no "+
+			"tenant, so it must not be able to enumerate one: %s", rec.Code, rec.Body.String())
+	}
+
+	// The internal token WITH an assertion: allowed, and scoped to the assertion.
+	rec := e.doWithHeaders(http.MethodGet, "/internal/channels", nil, map[string]string{
+		"X-Internal-Token":       testInternalToken,
+		organizerAssertionHeader: e.assertionFor(org),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET with X-Internal-Token + assertion = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var list ChannelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Channels) != 1 || list.Channels[0].OrganizerId != org {
+		t.Fatalf("the read must be scoped to the assertion's organizer, got %+v", list.Channels)
 	}
 }
 
 // A wrong staff credential is refused, and indistinguishably from an absent one.
 func TestOperatorChannelListRefusesAWrongStaffCredential(t *testing.T) {
 	e := newEnv(t)
-	path := "/internal/channels?organizer_id=" + uuid.New().String()
+	path := "/internal/channels"
 	for _, tc := range []struct {
 		name    string
 		headers map[string]string
@@ -637,7 +717,7 @@ func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
 	e := newEnv(t)
 	victim, attacker := uuid.New(), uuid.New()
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(victim, "pos", "Their box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", victim, createChannelBody("pos", "Their box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -648,8 +728,8 @@ func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
 
 	// The attacker knows the id AND the exact code — the strongest position a
 	// forged form can be in — and still must not touch the row.
-	rec = e.do(http.MethodPut, "/channels/"+theirs.Id.String(), map[string]any{
-		"organizer_id": attacker, "code": "pos", "display_name": "Hijacked", "kind": "web", "enabled": false,
+	rec = channelWrite(e, http.MethodPut, "/channels/"+theirs.Id.String(), attacker, map[string]any{
+		"code": "pos", "display_name": "Hijacked", "kind": "web", "enabled": false,
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-tenant update = %d, want 404 — a channel id is not an authorization "+
@@ -658,7 +738,7 @@ func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
 	}
 
 	// And nothing moved.
-	rec = operatorGet(e, "/internal/channels?organizer_id="+victim.String())
+	rec = operatorListChannels(e, victim)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("verify read = %d", rec.Code)
 	}
@@ -680,7 +760,7 @@ func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
 func TestUpdateChannelAcceptsTheOwningOrganizer(t *testing.T) {
 	e := newEnv(t)
 	org := uuid.New()
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(org, "pos", "Box office", "pos", nil))
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody("pos", "Box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d", rec.Code)
 	}
@@ -688,69 +768,96 @@ func TestUpdateChannelAcceptsTheOwningOrganizer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	rec = e.do(http.MethodPut, "/channels/"+created.Id.String(), map[string]any{
-		"organizer_id": org, "code": "pos", "display_name": "Counter", "kind": "pos", "enabled": false,
+	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
+		"code": "pos", "display_name": "Counter", "kind": "pos", "enabled": false,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner update = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// The enumeration→mutation chain, PINNED AS PRESENT rather than claimed absent.
+// The enumeration→mutation chain, now PINNED AS CLOSED.
 //
-// This test asserts a capability the system HAS, and it exists because the
-// comment above `staffMayReadOperatorChannels` twice claimed the opposite. Pass 1
-// of ai-review rejected "the added blast radius is nil"; pass 2 rejected the
-// replacement, "the organizer predicate breaks the chain". Both were written in
-// good faith and both were false, and the second was only settled by running the
-// sequence — which is what this test now does, permanently.
+// ## What this test used to say, and why the history is kept
 //
-// What it proves: a holder of ONLY the catalog staff-write credential can list a
-// victim organizer's channels and then mutate the ids it just learned, because
-// `organizer_id` is caller-supplied on both calls. The organizer predicate on
-// UpdateChannel defends the back-office FORM path (where the page supplies its
-// session's organizer against a form-supplied id) and nothing else.
+// Until TKT-245 this was `TestStaffCredentialCanStillEnumerateAndMutateAcross‑
+// Tenants`, and it asserted the chain WORKED — a deliberate record of an open
+// gap, in the shape of ADR-021's rollback-gap test. It existed because the
+// comment above `staffMayReadOperatorChannels` twice claimed the opposite: pass 1
+// of TKT-236's ai-review rejected "the added blast radius is nil"; pass 2
+// rejected the replacement, "the organizer predicate breaks the chain". Both were
+// written in good faith, both were false, and the second was settled only by
+// running the sequence and watching it return 200.
 //
-// This is NOT a new capability — the same credential could already create and
-// update channels for any organizer, since catalog authenticates the PROCESS
-// (ADR-021). The read makes it far easier to aim. TKT-245 owns the fix.
+// Its failure message named the condition for changing it: *"If this now REFUSES,
+// the boundary has changed for the better — most likely TKT-245 landed an
+// organizer identity catalog can verify... change this test to assert the
+// refusal. Do not simply delete it: it is the record of what was open."* That is
+// what happened, and this is that change.
 //
-// **If this test ever fails, the boundary changed and the comments must be
-// rewritten — do not delete it.** It is the same shape as ADR-021's rollback-gap
-// test: an honest record of what is not yet closed.
-func TestStaffCredentialCanStillEnumerateAndMutateAcrossTenants(t *testing.T) {
+// ## What it proves now
+//
+// The staff-write credential ALONE can no longer select a tenant: there is no
+// query parameter to name one with, and the credential carries no organizer. An
+// attacker holding it plus an assertion for their own organizer cannot reach
+// another tenant's channel, because every write is scoped to the organizer the
+// assertion names.
+//
+// ## What it still does NOT prove (ADR-021 — name the adversary)
+//
+// Nothing here constrains a holder of the SIGNING KEY, a compromised back office
+// replaying a live assertion it legitimately holds, or anyone who can write
+// catalog's database. ADR-058 states those residuals; this test is about a caller
+// holding the deputy credential and nothing else.
+//
+// **If this test ever fails, the boundary changed and ADR-058 must be rewritten —
+// do not delete it.**
+func TestStaffCredentialAloneCanNoLongerEnumerateOrMutateAcrossTenants(t *testing.T) {
 	e := newEnv(t)
 	victim := uuid.New()
 
-	rec := e.do(http.MethodPost, "/channels", createChannelBody(victim, "pos", "Victim box office", "pos", nil))
+	// Seed the victim's channel by ACTING for them -- the only way a row can be
+	// created for an organizer now.
+	rec := channelWrite(e, http.MethodPost, "/channels", victim,
+		createChannelBody("pos", "Victim box office", "pos", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("seed = %d: %s", rec.Code, rec.Body.String())
 	}
-
-	// Step 1 — enumerate, naming the victim's organizer.
-	rec = e.doWithHeaders(http.MethodGet, "/internal/channels?organizer_id="+victim.String(), nil,
-		map[string]string{staffWriteHeader: testStaffWriteToken})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list = %d, want 200 — this read is the capability under description", rec.Code)
-	}
-	var list ChannelList
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+	var seeded Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &seeded); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Channels) != 1 {
-		t.Fatalf("list returned %d channels, want the victim's 1", len(list.Channels))
+
+	// Step 1 -- enumerate with the credential ALONE. There is no longer a query
+	// parameter to name a victim with, and the credential carries no organizer, so
+	// the request cannot express the tenant it wants.
+	if rec := e.doWithHeaders(http.MethodGet, "/internal/channels", nil,
+		map[string]string{staffWriteHeader: testStaffWriteToken}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("list with the credential alone = %d, want 401. The staff-write credential "+
+			"authenticates the DEPUTY; on its own it must not select a tenant.\nbody: %s",
+			rec.Code, rec.Body.String())
 	}
 
-	// Step 2 — mutate the id it just learned, claiming the victim's organizer.
-	rec = e.do(http.MethodPut, "/channels/"+list.Channels[0].Id.String(), map[string]any{
-		"organizer_id": victim, "code": "pos", "display_name": "Renamed by a token holder",
-		"kind": "web", "enabled": false,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("update = %d, want 200.\n\nIf this now REFUSES, the boundary has changed for the "+
-			"better — most likely TKT-245 landed an organizer identity catalog can verify. Update "+
-			"the comment on staffMayReadOperatorChannels and ADR-053 to match, then change this "+
-			"test to assert the refusal. Do not simply delete it: it is the record of what was "+
-			"open.\n\nbody: %s", rec.Code, rec.Body.String())
+	// Step 2 -- and an attacker holding the credential plus an assertion for their
+	// OWN organizer cannot reach the victim's row: the update is scoped to the
+	// organizer the assertion names, so the victim's channel id lands on no row.
+	attacker := uuid.New()
+	if rec := channelWrite(e, http.MethodPut, "/channels/"+seeded.Id.String(), attacker, map[string]any{
+		"code": "pos", "display_name": "Renamed by a token holder", "kind": "web", "enabled": false,
+	}); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant update = %d, want 404.\n\nIf this SUCCEEDS again, the boundary "+
+			"TKT-245 built has regressed and ADR-058's claim is false.\nbody: %s",
+			rec.Code, rec.Body.String())
+	}
+
+	// And the victim's row is untouched -- a refusal that still wrote would look
+	// identical from the status code alone.
+	list := operatorListChannels(e, victim)
+	var out ChannelList
+	if err := json.Unmarshal(list.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Channels) != 1 || out.Channels[0].DisplayName != "Victim box office" {
+		t.Fatalf("the victim's channel was modified: %+v", out.Channels)
 	}
 }

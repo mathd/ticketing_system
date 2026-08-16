@@ -16,7 +16,6 @@ func editBody(dropPinnedSeat bool) SeatMapEdit {
 		seats = []SeatMapEditSeat{{Label: "2", Position: 1}} // renames the seat -> orphans Orchestra/A/1
 	}
 	return SeatMapEdit{
-		OrganizerId: orgID,
 		Sections: []SeatMapEditSection{{
 			Name: "Orchestra", Position: 1,
 			Rows: []SeatMapEditRow{{
@@ -166,7 +165,7 @@ func TestUpdateVenueGaCapacity(t *testing.T) {
 	venueID := seedVenue(t, e, "La Grande Salle") // seeded with GaCapacity 1000
 
 	rec := e.do("POST", "/venues/"+venueID.String()+"/ga-capacity",
-		VenueGaCapacityUpdate{OrganizerId: orgID, GaCapacity: 250})
+		VenueGaCapacityUpdate{GaCapacity: 250})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GA update: %d %s", rec.Code, rec.Body.String())
 	}
@@ -185,7 +184,7 @@ func TestUpdateVenueGaCapacity(t *testing.T) {
 func TestUpdateVenueGaCapacityUnknown(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("POST", "/venues/"+uuid.NewString()+"/ga-capacity",
-		VenueGaCapacityUpdate{OrganizerId: orgID, GaCapacity: 100})
+		VenueGaCapacityUpdate{GaCapacity: 100})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GA update on unknown venue must be 404, got %d %s", rec.Code, rec.Body.String())
 	}
