@@ -188,6 +188,18 @@ func statusReplayRetention(fallback time.Duration) (time.Duration, error) {
 //
 // Fail-fast, like every other config reader here: a malformed ring refuses startup
 // rather than surfacing as a verification failure long after the fact.
+// journalKeyMinBytes is the floor JOURNAL_SIGNING_KEY has always been held to
+// (ADR-032: "a secret under 16 bytes" is a stated rejected configuration). It is
+// named here so the startup check and the keyring agree on one number, and so the
+// value that diverges from runtimecfg.CredentialMinBytes is a declared policy
+// rather than a literal argument someone might "correct".
+//
+// paymentstore.NewKeyring applies the same floor to the ACTIVE key and to every
+// historical key. Checking it here as well is not redundant: it fails before the
+// keyring is built, with a message naming the environment variable an operator
+// actually set.
+const journalKeyMinBytes = 16
+
 func signingConfig() (*paymentstore.Keyring, error) {
 	id := os.Getenv("JOURNAL_KEY_ID")
 	if id == "" {
@@ -198,7 +210,18 @@ func signingConfig() (*paymentstore.Keyring, error) {
 	// under a key that is in the repository — and the comment below already knew
 	// it was "exactly the low-entropy kind" an oracle would enjoy. Refused
 	// forever now, the same way the bearer tokens are (TKT-83).
-	secret, err := runtimecfg.RequiredCredential("JOURNAL_SIGNING_KEY", runtimecfg.RetiredJournalSigningKey)
+	// journalKeyMinBytes, NOT runtimecfg.CredentialMinBytes: this key keeps the
+	// 16-byte contract ADR-032 already states, while TKT-252 moved every ordinary
+	// credential to 32. The divergence is deliberate and ADR-059 records why —
+	// raising the journal floor is a separate decision with its own blast radius
+	// (the smoke journal literals, JOURNAL_HISTORICAL_KEYS, and a documented claim
+	// in docs/development.md that rests on it), and it was ruled out of TKT-252's
+	// scope rather than left unexamined.
+	//
+	// Changing this argument to the shared constant would look like tidying and
+	// would silently refuse conformant deployed keys.
+	// TestJournalSigningKeyKeepsItsOwnFloorBelowTheOrdinaryOne pins it.
+	secret, err := runtimecfg.RequiredCredential("JOURNAL_SIGNING_KEY", runtimecfg.RetiredJournalSigningKey, journalKeyMinBytes)
 	if err != nil {
 		return nil, err
 	}

@@ -127,7 +127,7 @@ func run() error {
 	// answers every refund with 404, which is indistinguishable from "no such
 	// order" — so the misconfiguration would arrive as a support ticket about a
 	// missing order, not as a deployment failure.
-	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func run() error {
 	// that, " secret " and "secret" would be one credential on the wire while
 	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
 	// one — no two DISTINCT accepted values arrive identical at a server.
-	assertionKey, err := runtimecfg.RequiredCredential(assertionKeyEnv, "")
+	assertionKey, err := runtimecfg.RequiredCredential(assertionKeyEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func run() error {
 	// access or the gateway no longer reaches charge, void or refund. Required
 	// rather than optional-with-fallback — a fallback is how a deployment ends up
 	// back on the shared token without anyone noticing.
-	paymentsToken, err := runtimecfg.RequiredCredential(runtimecfg.PaymentsTokenEnv, "")
+	paymentsToken, err := runtimecfg.RequiredCredential(runtimecfg.PaymentsTokenEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}

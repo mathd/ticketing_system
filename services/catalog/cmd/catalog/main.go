@@ -116,7 +116,7 @@ func run() error {
 	// dependency so a misconfigured deployment fails fast rather than starting up
 	// and refusing every write at runtime. Separate from INTERNAL_SERVICE_TOKEN
 	// on purpose: that one opens every service, this one opens catalog writes.
-	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func run() error {
 	// same reason as the credential above: a catalog running without it mints
 	// nothing and verifies nothing, so every back-office write would 401 while the
 	// service looked healthy.
-	assertionKey, err := runtimecfg.RequiredCredential(organizerAssertionKeyEnv, "")
+	assertionKey, err := runtimecfg.RequiredCredential(organizerAssertionKeyEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}

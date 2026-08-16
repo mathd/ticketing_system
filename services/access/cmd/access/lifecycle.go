@@ -89,7 +89,7 @@ func lifecycleSigner(keyring *lifecycle.Keyring) (*lifecycle.Signer, error) {
 	// material anyone can reproduce, and `access verify-lifecycle` then verified
 	// an attacker's chain as clean. Nothing about ADR-021's tamper-evidence
 	// survives a signing key the adversary holds.
-	seed, err := runtimecfg.RequiredCredential(envLifecycleSeed, runtimecfg.RetiredAccessLifecycleSeed)
+	seed, err := runtimecfg.RequiredCredential(envLifecycleSeed, runtimecfg.RetiredAccessLifecycleSeed, runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return nil, err
 	}

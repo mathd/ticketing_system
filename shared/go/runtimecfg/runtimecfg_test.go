@@ -173,7 +173,7 @@ func TestRequiredCredentialRejectsValuesHTTPWouldChange(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TEST_CREDENTIAL", tc.value)
-			got, err := RequiredCredential("TEST_CREDENTIAL", "")
+			got, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes)
 			if err == nil {
 				t.Fatalf("accepted %q, which HTTP would not transmit unchanged", tc.value)
 			}
@@ -197,15 +197,20 @@ func TestRequiredCredentialRejectsValuesHTTPWouldChange(t *testing.T) {
 //
 // So: accept it, send it, and read back what the server actually received.
 func TestAcceptedCredentialSurvivesAnHTTPRoundTripUnchanged(t *testing.T) {
+	// Every fixture is >= CredentialMinBytes because TKT-252 gave RequiredCredential
+	// a length floor, and this is the POSITIVE test — a fixture under the floor would
+	// be rejected for its length and prove nothing about the transport. They were
+	// lengthened rather than dropped: each one still carries the exact property it
+	// was chosen for, and that property is what this test exists to pin.
 	for _, value := range []string{
-		"0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5", // what make up generates
-		"a-b_c.d~e",                        // punctuation a base64url/hex value might carry
-		"tok en",                           // an INTERIOR space is legal and must survive
-		"Zm9vYmFy==",                       // base64 padding
+		"0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5",  // what make up generates (exactly 32)
+		"a-b_c.d~e-a-b_c.d~e-a-b_c.d~e-ab",  // punctuation a base64url/hex value might carry
+		"tok en tok en tok en tok en tok e", // an INTERIOR space is legal and must survive
+		"Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYg==",  // base64 padding
 	} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("TEST_CREDENTIAL", value)
-			got, err := RequiredCredential("TEST_CREDENTIAL", "")
+			got, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes)
 			if err != nil {
 				t.Fatalf("rejected a header-safe credential %q: %v", value, err)
 			}
@@ -236,5 +241,118 @@ func TestAcceptedCredentialSurvivesAnHTTPRoundTripUnchanged(t *testing.T) {
 					value, received)
 			}
 		})
+	}
+}
+
+// TKT-252. RequiredCredential validated transport CHARACTERS and never LENGTH, so
+// a deployment configured with `x` started cleanly — across every credential in the
+// system, since this one function guards all sixteen loads.
+//
+// The boundary is asserted from both sides. One short of the floor must be refused
+// and exactly the floor must be accepted, because a test that only checks a very
+// short value passes just as happily against `< 4` as against `< 32`.
+func TestRequiredCredentialRefusesValuesShorterThanTheFloor(t *testing.T) {
+	const short = "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d" // 31 — one byte under
+	t.Setenv("TEST_CREDENTIAL", short)
+	got, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes)
+	if err == nil {
+		t.Fatalf("accepted a %d-byte credential below the %d-byte floor", len(short), CredentialMinBytes)
+	}
+	if got != "" {
+		t.Fatalf("returned a value alongside the error: %q", got)
+	}
+	// The same rule the rest of this file follows: a startup diagnostic names the
+	// variable, never its value. An error carrying the credential leaks it into
+	// every log, crash report and terminal that sees the failed boot.
+	if strings.Contains(err.Error(), short) {
+		t.Fatalf("the error echoed the supplied value: %q", err)
+	}
+	if !strings.Contains(err.Error(), "TEST_CREDENTIAL") {
+		t.Fatalf("the error does not name the variable: %q", err)
+	}
+
+	const atFloor = "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5" // exactly 32
+	t.Setenv("TEST_CREDENTIAL", atFloor)
+	if _, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes); err != nil {
+		t.Fatalf("refused a credential of exactly %d bytes: %v", CredentialMinBytes, err)
+	}
+}
+
+// The floor is a LENGTH floor, and this test is the executable form of that
+// decision (ADR-059). Thirty-two 'a' characters carry essentially no entropy and
+// are ACCEPTED — deliberately.
+//
+// It guards the decision rather than the code. A later change that adds a
+// character-class rule, a repetition check or any other entropy heuristic turns
+// this red, which is the point: the floor makes online guessing infeasible for
+// the values the generators actually produce, and claims nothing whatsoever about
+// entropy. Read ADR-059 before making this pass.
+func TestCredentialFloorIsLengthNotEntropy(t *testing.T) {
+	weak := strings.Repeat("a", CredentialMinBytes)
+	t.Setenv("TEST_CREDENTIAL", weak)
+	got, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes)
+	if err != nil {
+		t.Fatalf("a %d-byte low-entropy value must pass a LENGTH floor: %v", CredentialMinBytes, err)
+	}
+	if got != weak {
+		t.Fatalf("value altered at load: %q -> %q", weak, got)
+	}
+}
+
+// len() on a Go string counts BYTES, and that is the rule (D1): the floor measures
+// the raw byte length of the configured string, not runes and not decoded material.
+//
+// Sixteen 'é' are 16 runes but 32 bytes and must be accepted; fifteen 'é' plus an
+// 'a' are 16 runes and 31 bytes and must be refused. A "tidy-up" to
+// utf8.RuneCountInString would accept the 31-byte value and reject nothing it
+// should — a silent weakening that no other test in this file can see.
+func TestCredentialFloorCountsBytesNotRunes(t *testing.T) {
+	atFloor := strings.Repeat("é", CredentialMinBytes/2) // 16 runes, 32 bytes
+	if len(atFloor) != CredentialMinBytes {
+		t.Fatalf("fixture is %d bytes, expected %d", len(atFloor), CredentialMinBytes)
+	}
+	t.Setenv("TEST_CREDENTIAL", atFloor)
+	if _, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes); err != nil {
+		t.Fatalf("refused a %d-byte multi-byte value: %v", len(atFloor), err)
+	}
+
+	under := strings.Repeat("é", CredentialMinBytes/2-1) + "a" // 16 runes, 31 bytes
+	if len(under) != CredentialMinBytes-1 {
+		t.Fatalf("fixture is %d bytes, expected %d", len(under), CredentialMinBytes-1)
+	}
+	t.Setenv("TEST_CREDENTIAL", under)
+	if _, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes); err == nil {
+		t.Fatalf("accepted a %d-byte value: the floor is counting runes, not bytes", len(under))
+	}
+}
+
+// The floor is a per-call PARAMETER, not a package constant applied everywhere,
+// because JOURNAL_SIGNING_KEY keeps the 16-byte contract ADR-032 already states
+// while every ordinary credential moves to 32 (ADR-059).
+//
+// So the parameter has to be honoured rather than decorative: one value must be
+// accepted under a 16-byte policy and refused under a 32-byte one. Hard-coding
+// either number inside RequiredCredential, or ignoring the argument, turns this red.
+func TestRequiredCredentialHonoursThePerCallFloor(t *testing.T) {
+	const sixteen = "0123456789abcdef" // exactly 16 bytes
+
+	t.Setenv("TEST_CREDENTIAL", sixteen)
+	if _, err := RequiredCredential("TEST_CREDENTIAL", "", 16); err != nil {
+		t.Fatalf("a 16-byte value must pass a 16-byte floor: %v", err)
+	}
+	if _, err := RequiredCredential("TEST_CREDENTIAL", "", CredentialMinBytes); err == nil {
+		t.Fatalf("a 16-byte value must NOT pass the %d-byte floor", CredentialMinBytes)
+	}
+
+	// The diagnostic must state the floor the CALLER passed. A message hard-coded
+	// to 32 would tell a payments operator their 16-byte key needs 32 bytes, which
+	// is the opposite of true.
+	t.Setenv("TEST_CREDENTIAL", "0123456789abcde") // 15, under both
+	_, err := RequiredCredential("TEST_CREDENTIAL", "", 16)
+	if err == nil {
+		t.Fatal("a 15-byte value must not pass a 16-byte floor")
+	}
+	if !strings.Contains(err.Error(), "16") {
+		t.Fatalf("the error does not state the floor the caller passed: %q", err)
 	}
 }
