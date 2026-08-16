@@ -138,13 +138,17 @@ func seedSeasonWithForeignEvent(ctx context.Context, t *testing.T, db *sql.DB, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	if season, err = st.AttachEventToSeason(ctx, season.ID, eventID); err != nil {
+	if season, err = st.AttachEventToSeason(ctx, orgID, season.ID, eventID); err != nil {
 		t.Fatal(err)
 	}
 	// Both slots published: the foreign one is live inventory the season read
-	// must never look at.
-	for _, id := range []uuid.UUID{slotID, foreignSlotID} {
-		if _, _, err = st.PublishPerformance(ctx, id); err != nil {
+	// must never look at. Each publishes under ITS OWN organizer — since TKT-251
+	// the transition is scoped, so publishing the foreign slot as orgID would
+	// (correctly) refuse.
+	for _, owned := range []struct {
+		org, id uuid.UUID
+	}{{orgID, slotID}, {foreignOrgID, foreignSlotID}} {
+		if _, _, err = st.PublishPerformance(ctx, owned.org, owned.id); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -176,6 +176,10 @@ this claim in `server.go` were both wrong in good faith.
 any of the 15 converted writes, and can no longer enumerate a tenant's channel registry at all. The
 organizer is unsubmittable rather than validated.
 
+**Since TKT-251 this extends to the 13 path-id transitions** (§ item 5 below), by a different
+mechanism: they had no field to delete, so they take the verified organizer into a store-tier SQL
+predicate instead. All 29 unsafe operations now answer the same way.
+
 **Not closed, and each of these is a real residual:**
 
 1. **A compromised back office.** It holds live assertions in memory for every signed-in staff member
@@ -188,11 +192,43 @@ organizer is unsubmittable rather than validated.
    inside the database cannot constrain an adversary who writes to the database.
 4. **Replay of a live stolen assertion** until it expires. It is a bearer token, exactly as commerce
    says of its own.
-5. **The 13 path-id transition writes.** A compromised deputy can still publish, archive, close or
-   reopen another tenant's resources by id, because those operations carry no organizer at any layer.
-   They need a **store-tier organizer predicate**, which is a different remedy from a credential, and
-   they are the agreed follow-up slice. Until that lands, *"catalog can verify the organizer"* is
-   true of the 15 writes and the channel read, and **false of the transitions** — say it that way.
+5. **The 13 path-id transition writes — CLOSED for the staff-token holder by TKT-251.**
+
+   As written, this item said a caller could still publish, archive, close, reopen or re-wire
+   another tenant's resources by id, because those operations carried no organizer at any layer, and
+   that *"catalog can verify the organizer"* was true of the 15 writes and the channel read and
+   **false of the transitions**. That sentence was correct on 2026-08-15 and is no longer.
+
+   TKT-251 gave all 13 the remedy this item named — a **store-tier organizer predicate** — and the
+   claim now reads the same way for all 29 unsafe operations: a caller holding only
+   `CATALOG_STAFF_WRITE_TOKEN` cannot choose an organizer on any of them. The shape, because it is
+   the part most likely to be misread later:
+
+   - The predicate is **in the SQL of the locked lookup**, not a check beside it (ADR-018 — the
+     decision happens under the row lock, so a check outside it is a TOCTOU on the row the
+     transition is about to move). `transitionFestival` did not even select `organizer_id`; the
+     column was added as a predicate, never as a value to compare afterwards.
+   - **The attach operations' two-row comparison was never authorization.**
+     `AttachPerformanceToSeries`, `AttachDayToFestival` and `attachSeasonMember` compared the two
+     rows' `organizer_id` to *each other* — which two resources of the same victim tenant satisfy.
+     Both lookups now carry the caller's organizer. The same-organizer comparison remains, because
+     it still catches the legitimate case (your own two resources belonging to different events)
+     and still answers `ErrOrganizerMismatch`.
+   - **A cross-tenant miss is `ErrNotFound`**, indistinguishable from an unknown id, so the refusal
+     never confirms a guessed id is real — and catalog's ids are exposed by public reads.
+   - `PublishPerformance` needed the predicate in **two** places: the atomic `UPDATE`, and the
+     fallback read that classifies *why* nothing flipped. Scoping only the update refused the write
+     while still answering `ErrGroupedSlotLifecycle` / `ErrNotSellable` / `ErrIllegalTransition`
+     about a row the caller does not own — the write was closed and the information channel was not.
+   - `PublishSeatMap` is deliberately **not** the ADR-029 family-lock shape. That lock serves
+     `EditSeatMap`/`PinSeat`, which resolve the family's current published version; publish flips one
+     specific draft row by id and resolves no version, so it takes the predicate on its conditional
+     `UPDATE` and on the canonical re-read, and nothing else.
+
+   **Still open, and unchanged by TKT-251:** items 1–4 and 6–7 below apply to the transitions exactly
+   as they apply to the 15. A compromised back office replays live assertions; the signing-key holder
+   mints at will; **a writer with catalog database access is untouched** — state inside the database
+   cannot constrain an adversary who writes to the database (ADR-021).
 6. **Roles.** Catalog enforces none. The assertion names a staff member but authorizes nothing on
    their behalf beyond naming their tenant.
 7. **Multi-organizer staff.** Out of scope by ADR-042 § 4; one organizer per staff row, so an
@@ -201,6 +237,14 @@ organizer is unsubmittable rather than validated.
 ## Tests that pin this
 
 - `TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential` — the AND-ness (§ 2).
+- `internal/store/organizer_predicate_smoke_test.go` (TKT-251) — the transitions' cross-tenant
+  refusal, asserted at the **store tier against real PostgreSQL**, because that is where the
+  mechanism is: the API-tier fake scopes in a Go map and stays green with the SQL predicate deleted.
+  Each case asserts three things — the attacker is refused with `ErrNotFound`, the victim's row did
+  not move, and **the owner can still perform the operation** (a `WHERE false` satisfies the first
+  two). Both mutants were run: deleting `transitionSeries`' predicate, and deleting the scoped
+  existence check in `PublishPerformance`'s classification path — the second leaked
+  *"performance has no ticket type"* about a victim's row, and the test caught it.
 - `TestCatalogWritesTakeTheOrganizerFromTheAssertionAndNotTheBody` — derived from the spec in both
   directions: no converted write still declares the field, and no unsafe write still takes one.
 - `TestConvertedHandlerRefusesWhenNoScopeWasVerified` — a handler reached with no verified scope

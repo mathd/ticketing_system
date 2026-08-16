@@ -86,7 +86,7 @@ if (Astro.request.method === 'POST') {
       );
       return Astro.redirect(`${here}?map=${mapId}`);
     } else if (action === 'publish-map') {
-      await publishSeatMap(mapId);
+      await publishSeatMap(mapId, staff.organizerAssertion);
       return Astro.redirect(`${here}?map=${mapId}`);
     } else if (action === 'edit-map') {
       // The React editor serializes the full replacement geometry into `geometry`.

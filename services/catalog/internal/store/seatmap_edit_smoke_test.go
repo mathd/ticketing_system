@@ -466,7 +466,7 @@ func TestEditSeatMapInheritsOrphanPrevention(t *testing.T) {
 	if _, err = st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = st.PublishSeatMap(ctx, m.ID); err != nil {
+	if _, _, err = st.PublishSeatMap(ctx, seatMapOrg, m.ID); err != nil {
 		t.Fatal(err)
 	}
 

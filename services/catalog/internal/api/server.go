@@ -750,7 +750,11 @@ func (s *Server) AttachPerformanceToSeries(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	out, err := s.store.AttachPerformanceToSeries(r.Context(), seriesId, in.PerformanceId, in.Position)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.AttachPerformanceToSeries(r.Context(), organizerID, seriesId, in.PerformanceId, in.Position)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -786,7 +790,11 @@ func (s *Server) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	out, err := s.store.AttachSeriesToSeason(r.Context(), seasonId, in.SeriesId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.AttachSeriesToSeason(r.Context(), organizerID, seasonId, in.SeriesId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -800,7 +808,11 @@ func (s *Server) AttachEventToSeason(w http.ResponseWriter, r *http.Request, sea
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	out, err := s.store.AttachEventToSeason(r.Context(), seasonId, in.EventId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.AttachEventToSeason(r.Context(), organizerID, seasonId, in.EventId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -842,7 +854,11 @@ func (s *Server) AttachDayToFestival(w http.ResponseWriter, r *http.Request, fes
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	out, err := s.store.AttachDayToFestival(r.Context(), festivalId, in.PerformanceId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.store.AttachDayToFestival(r.Context(), organizerID, festivalId, in.PerformanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -965,7 +981,11 @@ func performanceToAPI(p store.Performance) Performance {
 // a live cross-tenant write with no test, no startup check and no signal.
 // Whoever does so owns TKT-199 first. (TKT-22 refactor: triage re-confirmed.)
 func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
-	p, needsEmit, err := s.store.PublishPerformance(r.Context(), performanceId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	p, needsEmit, err := s.store.PublishPerformance(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -991,7 +1011,11 @@ func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, perf
 // publication marker is still null, publication is emitted and marked before
 // the archive event so the lifecycle cannot silently drop a domain event.
 func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
-	p, publishNeedsEmit, archiveNeedsEmit, err := s.store.ArchivePerformance(r.Context(), performanceId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	p, publishNeedsEmit, archiveNeedsEmit, err := s.store.ArchivePerformance(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -1027,7 +1051,11 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 }
 
 func (s *Server) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
-	items, err := s.store.PublishSeries(r.Context(), seriesId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.store.PublishSeries(r.Context(), organizerID, seriesId)
 	if err != nil {
 		s.writeSeriesTransitionError(w, r, err)
 		return
@@ -1047,7 +1075,11 @@ func (s *Server) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId 
 }
 
 func (s *Server) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId SeriesId) {
-	items, err := s.store.ArchiveSeries(r.Context(), seriesId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.store.ArchiveSeries(r.Context(), organizerID, seriesId)
 	if err != nil {
 		s.writeSeriesTransitionError(w, r, err)
 		return
@@ -1098,7 +1130,11 @@ func (s *Server) writeSeriesTransitionError(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) PublishFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
-	items, err := s.store.PublishFestival(r.Context(), festivalId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.store.PublishFestival(r.Context(), organizerID, festivalId)
 	if err != nil {
 		s.writeFestivalTransitionError(w, r, err)
 		return
@@ -1118,7 +1154,11 @@ func (s *Server) PublishFestival(w http.ResponseWriter, r *http.Request, festiva
 }
 
 func (s *Server) ArchiveFestival(w http.ResponseWriter, r *http.Request, festivalId FestivalId) {
-	items, err := s.store.ArchiveFestival(r.Context(), festivalId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.store.ArchiveFestival(r.Context(), organizerID, festivalId)
 	if err != nil {
 		s.writeFestivalTransitionError(w, r, err)
 		return
@@ -1180,7 +1220,11 @@ func (s *Server) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	p, publishNeedsEmit, closureNeedsEmit, err := s.store.CloseSlot(r.Context(), performanceId, in.Reason)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.CloseSlot(r.Context(), organizerID, performanceId, in.Reason)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -1190,7 +1234,11 @@ func (s *Server) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId
 
 // ReopenSlot mirrors CloseSlot for the reverse transition.
 func (s *Server) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
-	p, publishNeedsEmit, closureNeedsEmit, err := s.store.ReopenSlot(r.Context(), performanceId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	p, publishNeedsEmit, closureNeedsEmit, err := s.store.ReopenSlot(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -1485,7 +1533,11 @@ func seatMapPayload(m store.SeatMap) SeatMap {
 // unacknowledged (event_emitted_at null), so a failed emission is retried by
 // re-POSTing publish; consumers de-duplicate on the deterministic id.
 func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
-	m, needsEmit, err := s.store.PublishSeatMap(r.Context(), seatMapId)
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	m, needsEmit, err := s.store.PublishSeatMap(r.Context(), organizerID, seatMapId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

@@ -193,6 +193,14 @@ paths:
   /seat-maps/{seatMapId}/publish:
     post:
       operationId: publishSeatMap
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Publish a seat map (idempotent, TKT-103)
       description: >
         Flips a seat map draft to published and emits the
@@ -375,6 +383,14 @@ paths:
   /performances/{performanceId}/publish:
     post:
       operationId: publishPerformance
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Publish a performance (idempotent)
       description: >
         Flips draft to published and emits the
@@ -409,6 +425,14 @@ paths:
   /performances/{performanceId}/archive:
     post:
       operationId: archivePerformance
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Archive a published performance (idempotent)
       description: >
         Flips published to archived and emits the
@@ -442,6 +466,14 @@ paths:
   /performances/{performanceId}/close:
     post:
       operationId: closeSlot
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Close a published slot (weather closure; idempotent)
       description: >
         Sets the orthogonal closure attribute to closed and emits
@@ -480,6 +512,14 @@ paths:
   /performances/{performanceId}/reopen:
     post:
       operationId: reopenSlot
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Reopen a closed slot (idempotent)
       description: >
         Sets the closure attribute back to open and emits
@@ -537,6 +577,14 @@ paths:
   /series/{seriesId}/performances:
     post:
       operationId: attachPerformanceToSeries
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Attach an ordered draft slot to a series
       parameters:
         - $ref: '#/components/parameters/SeriesId'
@@ -565,6 +613,14 @@ paths:
   /series/{seriesId}/publish:
     post:
       operationId: publishSeries
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Atomically publish every slot in the series
       parameters:
         - $ref: '#/components/parameters/SeriesId'
@@ -588,6 +644,14 @@ paths:
   /series/{seriesId}/archive:
     post:
       operationId: archiveSeries
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Atomically archive every published slot in the series
       parameters:
         - $ref: '#/components/parameters/SeriesId'
@@ -638,6 +702,14 @@ paths:
   /seasons/{seasonId}/series:
     post:
       operationId: attachSeriesToSeason
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Attach a series to a season
       parameters:
         - $ref: '#/components/parameters/SeasonId'
@@ -666,6 +738,14 @@ paths:
   /seasons/{seasonId}/events:
     post:
       operationId: attachEventToSeason
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Attach a standalone event to a season
       parameters:
         - $ref: '#/components/parameters/SeasonId'
@@ -721,6 +801,14 @@ paths:
   /festivals/{festivalId}/days:
     post:
       operationId: attachDayToFestival
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Attach a draft festival day to the shared-capacity festival
       parameters:
         - $ref: '#/components/parameters/FestivalId'
@@ -749,6 +837,14 @@ paths:
   /festivals/{festivalId}/publish:
     post:
       operationId: publishFestival
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Atomically publish the festival and every member day
       parameters:
         - $ref: '#/components/parameters/FestivalId'
@@ -772,6 +868,14 @@ paths:
   /festivals/{festivalId}/archive:
     post:
       operationId: archiveFestival
+      # TKT-251: these path-id transitions carried no organizer at ANY layer, so a
+      # caller holding only the shared staff credential could publish, archive,
+      # close, reopen or re-wire another organizer's resources by id. BOTH schemes
+      # in ONE requirement object -- separate objects would mean OR, i.e. either
+      # credential alone suffices. A test pins that.
+      security:
+        - CatalogStaffWriteCredential: []
+          CatalogOrganizerAssertion: []
       summary: Atomically archive the festival and every member day
       parameters:
         - $ref: '#/components/parameters/FestivalId'
@@ -2620,6 +2724,10 @@ components:
           type: string
           nullable: true
     SlotCloseRequest:
+      # TKT-251: unsubmittable, not silently dropped (ADR-058 s1). These bodies
+      # name the TARGET of the transition; the organizer comes from the verified
+      # assertion and can no longer be sent at all.
+      additionalProperties: false
       description: Optional operator-supplied reason for the closure
       type: object
       properties:
@@ -2782,6 +2890,10 @@ components:
         event_id: { type: string, format: uuid }
         name: { $ref: '#/components/schemas/LocalizedString' }
     SeriesPerformanceAttach:
+      # TKT-251: unsubmittable, not silently dropped (ADR-058 s1). These bodies
+      # name the TARGET of the transition; the organizer comes from the verified
+      # assertion and can no longer be sent at all.
+      additionalProperties: false
       type: object
       required: [performance_id, position]
       properties:
@@ -2830,11 +2942,19 @@ components:
       properties:
         name: { $ref: '#/components/schemas/LocalizedString' }
     SeasonSeriesAttach:
+      # TKT-251: unsubmittable, not silently dropped (ADR-058 s1). These bodies
+      # name the TARGET of the transition; the organizer comes from the verified
+      # assertion and can no longer be sent at all.
+      additionalProperties: false
       type: object
       required: [series_id]
       properties:
         series_id: { type: string, format: uuid }
     SeasonEventAttach:
+      # TKT-251: unsubmittable, not silently dropped (ADR-058 s1). These bodies
+      # name the TARGET of the transition; the organizer comes from the verified
+      # assertion and can no longer be sent at all.
+      additionalProperties: false
       type: object
       required: [event_id]
       properties:
@@ -2864,6 +2984,10 @@ components:
         name: { $ref: '#/components/schemas/LocalizedString' }
         shared_capacity: { type: integer, format: int32, minimum: 1 }
     FestivalDayAttach:
+      # TKT-251: unsubmittable, not silently dropped (ADR-058 s1). These bodies
+      # name the TARGET of the transition; the organizer comes from the verified
+      # assertion and can no longer be sent at all.
+      additionalProperties: false
       type: object
       required: [performance_id]
       properties:

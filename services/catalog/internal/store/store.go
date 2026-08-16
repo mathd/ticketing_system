@@ -526,7 +526,11 @@ type Store interface {
 	// seat_map.published domain event has not been ack'd (event_emitted_at is
 	// null) — the caller emits, then marks. A published version is immutable:
 	// the Add* write gate (status='draft') refuses further authoring.
-	PublishSeatMap(ctx context.Context, id uuid.UUID) (m SeatMap, needsEmit bool, err error)
+	// organizerID is the VERIFIED organizer (ADR-058's assertion), and it is part
+	// of the update predicate rather than a check beside it: a row belonging to
+	// another organizer is ErrNotFound, indistinguishable from an unknown id, so
+	// the refusal never confirms a guessed id is real (TKT-251).
+	PublishSeatMap(ctx context.Context, organizerID, id uuid.UUID) (m SeatMap, needsEmit bool, err error)
 	MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) error
 	// EditSeatMap safely edits a published seat map (TKT-104). Under a family-
 	// scoped advisory lock (NOT a current-row FOR UPDATE — see ADR-029/§lock), in
@@ -585,12 +589,19 @@ type Store interface {
 	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
 	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
 	CreateSeries(ctx context.Context, in SeriesInput) (Series, error)
-	AttachPerformanceToSeries(ctx context.Context, seriesID, performanceID uuid.UUID, position int32) (Series, error)
+	// The attach operations take the verified organizer and scope BOTH row
+	// lookups by it (TKT-251). Comparing the two rows' organizer_id to EACH OTHER
+	// is not authorization: two resources of the same victim tenant satisfy it,
+	// which is exactly the position a forged request is in. The same-organizer
+	// comparison stays for the legitimate case (attaching two of your OWN
+	// resources that belong to different events) and still yields
+	// ErrOrganizerMismatch.
+	AttachPerformanceToSeries(ctx context.Context, organizerID, seriesID, performanceID uuid.UUID, position int32) (Series, error)
 	CreateSeason(ctx context.Context, in SeasonInput) (Season, error)
-	AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error)
-	AttachEventToSeason(ctx context.Context, seasonID, eventID uuid.UUID) (Season, error)
+	AttachSeriesToSeason(ctx context.Context, organizerID, seasonID, seriesID uuid.UUID) (Season, error)
+	AttachEventToSeason(ctx context.Context, organizerID, seasonID, eventID uuid.UUID) (Season, error)
 	CreateFestival(ctx context.Context, in FestivalInput) (Festival, error)
-	AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error)
+	AttachDayToFestival(ctx context.Context, organizerID, festivalID, performanceID uuid.UUID) (Festival, error)
 	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
 	// CreatePriceRule attaches a pricing rule to one of ADR-036 §1's five scope
 	// levels. scope_id carries no FK (the target table depends on the level), so
@@ -674,12 +685,16 @@ type Store interface {
 	// PublishPerformance flips draft->published (idempotent). needsEmit is
 	// true while the domain event for this publication has not been ack'd
 	// (event_emitted_at is null) — the caller emits, then marks.
-	PublishPerformance(ctx context.Context, id uuid.UUID) (perf Performance, needsEmit bool, err error)
+	// The organizer is part of the atomic update predicate AND of the fallback
+	// read that classifies why nothing flipped (TKT-251). Scoping only the update
+	// would still let a cross-tenant caller learn the victim row's status through
+	// the error code.
+	PublishPerformance(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, needsEmit bool, err error)
 	MarkPerformanceEventEmitted(ctx context.Context, id uuid.UUID) error
 	// ArchivePerformance flips published->archived (idempotent). The two
 	// marker booleans report whether the publication and archive events are
 	// still owed, respectively.
-	ArchivePerformance(ctx context.Context, id uuid.UUID) (perf Performance, publishNeedsEmit, archiveNeedsEmit bool, err error)
+	ArchivePerformance(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, publishNeedsEmit, archiveNeedsEmit bool, err error)
 	MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UUID) error
 	// CloseSlot / ReopenSlot toggle the orthogonal closure attribute while the
 	// slot is published (spike §Case 3). Each toggle bumps closure_version;
@@ -690,13 +705,16 @@ type Store interface {
 	// ErrClosurePending while a prior closure event is still owed, so the single
 	// marker never loses one. Idempotent: closing an already-closed slot (or
 	// reopening an open one) does not bump the version.
-	CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
-	ReopenSlot(ctx context.Context, id uuid.UUID) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
+	CloseSlot(ctx context.Context, organizerID, id uuid.UUID, reason *string) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
+	ReopenSlot(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
 	MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error
-	PublishSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
-	ArchiveSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
-	PublishFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
-	ArchiveFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error)
+	// The group transitions carry the verified organizer into the locked lookup
+	// of the group row itself (TKT-251). The members are reached through that
+	// row, so scoping the parent scopes the cascade.
+	PublishSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
+	ArchiveSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
+	PublishFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
+	ArchiveFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
 	// ListPublishedEvents returns events having at least one published
 	// performance, each appearing once with all its published slots.
 	ListPublishedEvents(ctx context.Context) ([]EventAggregate, error)

@@ -181,21 +181,30 @@ func getSeriesFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Series, err
 	return s, rows.Err()
 }
 
-func (p *Postgres) AttachPerformanceToSeries(ctx context.Context, seriesID, performanceID uuid.UUID, position int32) (Series, error) {
+// AttachPerformanceToSeries wires a slot into a series.
+//
+// TKT-251: BOTH locked lookups carry the caller's verified organizer. Before
+// this, the method read organizer_id from both rows and compared them to EACH
+// OTHER — which two resources of the same victim tenant satisfy, so a caller
+// holding only the shared staff credential could re-wire another organizer's
+// series. That same-organizer comparison remains below, because it still does a
+// real job for the legitimate case (your own series and your own slot belonging
+// to different events); it is simply no longer load-bearing for authorization.
+func (p *Postgres) AttachPerformanceToSeries(ctx context.Context, organizerID, seriesID, performanceID uuid.UUID, position int32) (Series, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Series{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var orgID, eventID uuid.UUID
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id FROM series WHERE id=$1 FOR UPDATE`, seriesID).Scan(&orgID, &eventID); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id FROM series WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, seriesID, organizerID).Scan(&orgID, &eventID); errors.Is(err, sql.ErrNoRows) {
 		return Series{}, ErrNotFound
 	} else if err != nil {
 		return Series{}, err
 	}
 	var targetOrg, targetEvent uuid.UUID
 	var status string
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id,status FROM performances WHERE id=$1 FOR UPDATE`, performanceID).Scan(&targetOrg, &targetEvent, &status); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,event_id,status FROM performances WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, performanceID, organizerID).Scan(&targetOrg, &targetEvent, &status); errors.Is(err, sql.ErrNoRows) {
 		return Series{}, ErrNotFound
 	} else if err != nil {
 		return Series{}, err
@@ -366,7 +375,11 @@ func getFestivalFrom(ctx context.Context, q rowQueryer, id uuid.UUID) (Festival,
 	return f, nil
 }
 
-func (p *Postgres) AttachDayToFestival(ctx context.Context, festivalID, performanceID uuid.UUID) (Festival, error) {
+// AttachDayToFestival carries the same TKT-251 change as
+// AttachPerformanceToSeries: both locked lookups are scoped to the caller's
+// verified organizer, and the festivalOrg/performanceOrg comparison below stops
+// being authorization while still catching the legitimate same-tenant mismatch.
+func (p *Postgres) AttachDayToFestival(ctx context.Context, organizerID, festivalID, performanceID uuid.UUID) (Festival, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Festival{}, err
@@ -375,7 +388,7 @@ func (p *Postgres) AttachDayToFestival(ctx context.Context, festivalID, performa
 	var festivalOrg uuid.UUID
 	var festivalStatus string
 	var sharedCapacity int32
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,status,shared_capacity FROM festivals WHERE id=$1 FOR UPDATE`, festivalID).
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,status,shared_capacity FROM festivals WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, festivalID, organizerID).
 		Scan(&festivalOrg, &festivalStatus, &sharedCapacity); errors.Is(err, sql.ErrNoRows) {
 		return Festival{}, ErrNotFound
 	} else if err != nil {
@@ -384,7 +397,7 @@ func (p *Postgres) AttachDayToFestival(ctx context.Context, festivalID, performa
 	var performanceOrg uuid.UUID
 	var kind, performanceStatus string
 	var capacityGroup uuid.NullUUID
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,kind,status,capacity_group_id FROM performances WHERE id=$1 FOR UPDATE`, performanceID).
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id,kind,status,capacity_group_id FROM performances WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, performanceID, organizerID).
 		Scan(&performanceOrg, &kind, &performanceStatus, &capacityGroup); errors.Is(err, sql.ErrNoRows) {
 		return Festival{}, ErrNotFound
 	} else if err != nil {
@@ -418,20 +431,25 @@ func (p *Postgres) AttachDayToFestival(ctx context.Context, festivalID, performa
 	return f, nil
 }
 
-func (p *Postgres) AttachSeriesToSeason(ctx context.Context, seasonID, seriesID uuid.UUID) (Season, error) {
-	return p.attachSeasonMember(ctx, seasonID, seriesID, true)
+func (p *Postgres) AttachSeriesToSeason(ctx context.Context, organizerID, seasonID, seriesID uuid.UUID) (Season, error) {
+	return p.attachSeasonMember(ctx, organizerID, seasonID, seriesID, true)
 }
-func (p *Postgres) AttachEventToSeason(ctx context.Context, seasonID, eventID uuid.UUID) (Season, error) {
-	return p.attachSeasonMember(ctx, seasonID, eventID, false)
+func (p *Postgres) AttachEventToSeason(ctx context.Context, organizerID, seasonID, eventID uuid.UUID) (Season, error) {
+	return p.attachSeasonMember(ctx, organizerID, seasonID, eventID, false)
 }
-func (p *Postgres) attachSeasonMember(ctx context.Context, seasonID, memberID uuid.UUID, isSeries bool) (Season, error) {
+
+// attachSeasonMember carries the same TKT-251 change as the other two attach
+// paths: both the season and the member lookup are scoped to the caller's
+// verified organizer, so the seasonOrg/memberOrg comparison is no longer what
+// stands between a staff-credential holder and another tenant's season.
+func (p *Postgres) attachSeasonMember(ctx context.Context, organizerID, seasonID, memberID uuid.UUID, isSeries bool) (Season, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Season{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var seasonOrg, memberOrg uuid.UUID
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM seasons WHERE id=$1 FOR UPDATE`, seasonID).Scan(&seasonOrg); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM seasons WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, seasonID, organizerID).Scan(&seasonOrg); errors.Is(err, sql.ErrNoRows) {
 		return Season{}, ErrNotFound
 	} else if err != nil {
 		return Season{}, err
@@ -440,7 +458,7 @@ func (p *Postgres) attachSeasonMember(ctx context.Context, seasonID, memberID uu
 	if isSeries {
 		table, col = "series", "series_id"
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM `+table+` WHERE id=$1`, memberID).Scan(&memberOrg); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT organizer_id FROM `+table+` WHERE id=$1 AND organizer_id=$2`, memberID, organizerID).Scan(&memberOrg); errors.Is(err, sql.ErrNoRows) {
 		return Season{}, ErrNotFound
 	} else if err != nil {
 		return Season{}, err
@@ -597,16 +615,16 @@ func (p *Postgres) GetTicketType(ctx context.Context, id uuid.UUID) (TicketType,
 	return tt, nil
 }
 
-func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Performance, bool, error) {
+func (p *Postgres) PublishPerformance(ctx context.Context, organizerID, id uuid.UUID) (Performance, bool, error) {
 	// The transition is gated on a sellable offer existing (ErrNotSellable
 	// otherwise): the publication event and public visibility must never
 	// disagree. Single atomic statement flips draft->published exactly
 	// once; the returned row also says whether the domain event is owed.
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE performances SET status = 'published', published_at = now()
-		 WHERE id = $1 AND status = 'draft'
+		 WHERE id = $1 AND organizer_id = $2 AND status = 'draft'
 		   AND capacity_group_id IS NULL
-		   AND EXISTS (SELECT 1 FROM ticket_types t WHERE t.performance_id = $1)`, id)
+		   AND EXISTS (SELECT 1 FROM ticket_types t WHERE t.performance_id = $1)`, id, organizerID)
 	if err != nil {
 		return Performance{}, false, fmt.Errorf("publish: %w", err)
 	}
@@ -620,7 +638,23 @@ func (p *Postgres) PublishPerformance(ctx context.Context, id uuid.UUID) (Perfor
 		p.notifyPublicRead(PublicReadAll)
 	}
 	if flipped == 0 {
-		// Nothing flipped: not found, already published, or unpriced draft.
+		// Nothing flipped: not found, NOT OURS, already published, or unpriced
+		// draft. The organizer is re-asserted before classifying, because the
+		// classification below is itself an information channel: it answers
+		// ErrGroupedSlotLifecycle / ErrNotSellable / ErrIllegalTransition, each of
+		// which reveals the row's state. Scoping only the UPDATE above would
+		// refuse the write and still tell a cross-tenant caller what the victim's
+		// slot is doing (TKT-251). One scoped existence check collapses "no such
+		// slot" and "not yours" into the same ErrNotFound.
+		var ours bool
+		if err = p.db.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM performances WHERE id = $1 AND organizer_id = $2)`,
+			id, organizerID).Scan(&ours); err != nil {
+			return Performance{}, false, err
+		}
+		if !ours {
+			return Performance{}, false, ErrNotFound
+		}
 		perf, _, _, err := p.getPerformance(ctx, id)
 		if err != nil {
 			return Performance{}, false, err
@@ -882,7 +916,7 @@ func (p *Postgres) GetPoolOfferState(ctx context.Context, id uuid.UUID) (PoolOff
 // status and applying the transition, so archive can never emit an archive
 // event for a row that is still published (nor derive a second, nil-timestamp
 // archive id). draft is rejected; already-archived is idempotent.
-func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Performance, bool, bool, error) {
+func (p *Postgres) ArchivePerformance(ctx context.Context, organizerID, id uuid.UUID) (Performance, bool, bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Performance{}, false, false, err
@@ -894,7 +928,7 @@ func (p *Postgres) ArchivePerformance(ctx context.Context, id uuid.UUID) (Perfor
 	var closureVersion, closureEmitted int32
 	err = tx.QueryRowContext(ctx,
 		`SELECT status, capacity_group_id, closure_version, closure_emitted_version
-		 FROM performances WHERE id = $1 FOR UPDATE`, id).Scan(&status, &capacityGroup, &closureVersion, &closureEmitted)
+		 FROM performances WHERE id = $1 AND organizer_id = $2 FOR UPDATE`, id, organizerID).Scan(&status, &capacityGroup, &closureVersion, &closureEmitted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
 	}
@@ -952,12 +986,12 @@ func (p *Postgres) MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UU
 	return nil
 }
 
-func (p *Postgres) CloseSlot(ctx context.Context, id uuid.UUID, reason *string) (Performance, bool, bool, error) {
-	return p.toggleClosure(ctx, id, "closed", reason)
+func (p *Postgres) CloseSlot(ctx context.Context, organizerID, id uuid.UUID, reason *string) (Performance, bool, bool, error) {
+	return p.toggleClosure(ctx, organizerID, id, "closed", reason)
 }
 
-func (p *Postgres) ReopenSlot(ctx context.Context, id uuid.UUID) (Performance, bool, bool, error) {
-	return p.toggleClosure(ctx, id, "open", nil)
+func (p *Postgres) ReopenSlot(ctx context.Context, organizerID, id uuid.UUID) (Performance, bool, bool, error) {
+	return p.toggleClosure(ctx, organizerID, id, "open", nil)
 }
 
 // toggleClosure flips the orthogonal closure attribute under a FOR UPDATE lock
@@ -971,7 +1005,7 @@ func (p *Postgres) ReopenSlot(ctx context.Context, id uuid.UUID) (Performance, b
 // if owed (safe: deterministic id de-duplicates). The opposite toggle is
 // refused while the current version's event is still owed (ErrClosurePending),
 // so the single closure_emitted_version marker can never silently drop one.
-func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target string, reason *string) (Performance, bool, bool, error) {
+func (p *Postgres) toggleClosure(ctx context.Context, organizerID, id uuid.UUID, target string, reason *string) (Performance, bool, bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Performance{}, false, false, err
@@ -982,7 +1016,7 @@ func (p *Postgres) toggleClosure(ctx context.Context, id uuid.UUID, target strin
 	var version, emittedVersion int32
 	err = tx.QueryRowContext(ctx,
 		`SELECT status, closure_status, closure_version, closure_emitted_version
-		 FROM performances WHERE id = $1 FOR UPDATE`, id).
+		 FROM performances WHERE id = $1 AND organizer_id = $2 FOR UPDATE`, id, organizerID).
 		Scan(&status, &closureStatus, &version, &emittedVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Performance{}, false, false, fmt.Errorf("performance: %w", ErrNotFound)
@@ -1052,22 +1086,28 @@ func (p *Postgres) MarkClosureEmitted(ctx context.Context, id uuid.UUID, version
 	return nil
 }
 
-func (p *Postgres) PublishSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
-	return p.transitionSeries(ctx, id, "published")
+func (p *Postgres) PublishSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionSeries(ctx, organizerID, id, "published")
 }
 
-func (p *Postgres) ArchiveSeries(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
-	return p.transitionSeries(ctx, id, "archived")
+func (p *Postgres) ArchiveSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionSeries(ctx, organizerID, id, "archived")
 }
 
-func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target string) ([]SeriesTransition, error) {
+func (p *Postgres) transitionSeries(ctx context.Context, organizerID, id uuid.UUID, target string) ([]SeriesTransition, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The organizer is a PREDICATE on the locked lookup, not a comparison after
+	// it (TKT-251): a series belonging to another organizer is ErrNotFound here,
+	// under the same lock that gates the transition, so there is no window in
+	// which the row is read unscoped and no answer that distinguishes "not
+	// yours" from "no such series" (ADR-018 — the decision happens under the
+	// row lock).
 	var lockedID uuid.UUID
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM series WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM series WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, organizerID).Scan(&lockedID); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -1156,18 +1196,18 @@ func (p *Postgres) transitionSeries(ctx context.Context, id uuid.UUID, target st
 	return out, nil
 }
 
-func (p *Postgres) PublishFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
-	return p.transitionFestival(ctx, id, "published")
+func (p *Postgres) PublishFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionFestival(ctx, organizerID, id, "published")
 }
 
-func (p *Postgres) ArchiveFestival(ctx context.Context, id uuid.UUID) ([]SeriesTransition, error) {
-	return p.transitionFestival(ctx, id, "archived")
+func (p *Postgres) ArchiveFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error) {
+	return p.transitionFestival(ctx, organizerID, id, "archived")
 }
 
 // transitionFestival keeps the group status, every member transition and the
 // owed-event snapshots in one row-locked decision. Emission happens only after
 // this transaction commits in the API layer.
-func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target string) ([]SeriesTransition, error) {
+func (p *Postgres) transitionFestival(ctx context.Context, organizerID, id uuid.UUID, target string) ([]SeriesTransition, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1175,7 +1215,9 @@ func (p *Postgres) transitionFestival(ctx context.Context, id uuid.UUID, target 
 	defer func() { _ = tx.Rollback() }()
 	var festivalStatus string
 	var sharedCapacity int32
-	if err = tx.QueryRowContext(ctx, `SELECT status,shared_capacity FROM festivals WHERE id=$1 FOR UPDATE`, id).
+	// organizer_id was not even in this projection before TKT-251 — the column is
+	// added as a PREDICATE, not read and compared afterwards.
+	if err = tx.QueryRowContext(ctx, `SELECT status,shared_capacity FROM festivals WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, organizerID).
 		Scan(&festivalStatus, &sharedCapacity); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
@@ -1640,10 +1682,17 @@ func (p *Postgres) CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap,
 // seat_map.published domain event is still owed (event_emitted_at is null);
 // the caller emits, then marks. Publishing an already-published map is a
 // resource no-op that still reports whether the event is owed.
-func (p *Postgres) PublishSeatMap(ctx context.Context, id uuid.UUID) (SeatMap, bool, error) {
+// PublishSeatMap is deliberately NOT the ADR-029 family-lock shape (TKT-251).
+// That lock exists for EditSeatMap/PinSeat, which resolve "the family's current
+// published version" — an edit INSERTs a new version row, which no row lock on
+// the old one would conflict with. Publish flips ONE specific draft row by id
+// and resolves no current version, so it takes the organizer predicate on the
+// conditional UPDATE and on the canonical re-read below, and nothing else.
+// Adding the family lock here would change which row gets published.
+func (p *Postgres) PublishSeatMap(ctx context.Context, organizerID, id uuid.UUID) (SeatMap, bool, error) {
 	if _, err := p.db.ExecContext(ctx,
 		`UPDATE seat_maps SET status = 'published', published_at = now()
-		 WHERE id = $1 AND status = 'draft'`, id); err != nil {
+		 WHERE id = $1 AND organizer_id = $2 AND status = 'draft'`, id, organizerID); err != nil {
 		return SeatMap{}, false, fmt.Errorf("publish seat map: %w", err)
 	}
 	var m SeatMap
@@ -1651,7 +1700,7 @@ func (p *Postgres) PublishSeatMap(ctx context.Context, id uuid.UUID) (SeatMap, b
 	var emittedAt sql.NullTime
 	err := p.db.QueryRowContext(ctx,
 		`SELECT id, organizer_id, venue_id, name, version, status, published_at, event_emitted_at, created_at, orphan_prevention_enabled
-		 FROM seat_maps WHERE id = $1`, id).
+		 FROM seat_maps WHERE id = $1 AND organizer_id = $2`, id, organizerID).
 		Scan(&m.ID, &m.OrganizerID, &m.VenueID, &m.Name, &m.Version, &m.Status, &publishedAt, &emittedAt, &m.CreatedAt, &m.OrphanPreventionEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatMap{}, false, fmt.Errorf("seat map: %w", ErrNotFound)

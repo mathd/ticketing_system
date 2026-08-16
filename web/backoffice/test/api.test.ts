@@ -18,6 +18,7 @@ import {
   getVenues,
   listSeatMapVersions,
   listVenueSeatMaps,
+  publishPerformance,
   publishSeatMap,
   updateChannel,
   updateVenueGaCapacity,
@@ -238,11 +239,16 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
     expect(nv.version).toBe(2);
   });
 
-  it('publishes a draft map through the publish endpoint', async () => {
+  it('publishes a draft map through the publish endpoint, carrying the assertion', async () => {
     const calls = spyFetch(publishedMap, 200);
-    await publishSeatMap('m1');
+    await publishSeatMap('m1', TEST_ASSERTION);
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toContain('/api/catalog/seat-maps/m1/publish');
+    // TKT-251: the transition is organizer-scoped server-side, so the assertion
+    // has to reach it. Asserted HERE rather than in a browser spec: the page
+    // submits a form POST and this call happens server-side, so Playwright
+    // observes nothing of it.
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
   });
 
   it('reads version history and unwraps current_version + versions', async () => {
@@ -313,6 +319,21 @@ describe('catalog write credential (TKT-191)', () => {
     expect(calls[0].headers[HEADER]).toBe('the-credential');
     // And the assertion rides alongside it: the credential says WHO is calling,
     // the assertion says which organizer for (TKT-245).
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
+  });
+
+  // TKT-251: the path-id transitions used to send the credential and NO
+  // assertion, which is how a staff token reached another tenant's slot. Both
+  // headers now, on the two transitions the back office actually calls.
+  it('attaches both headers to the path-id transitions', async () => {
+    process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
+    const calls = spyFetch(
+      { id: 'p1', organizer_id: 'o1', event_id: 'e1', venue_id: 'v1', kind: 'performance', status: 'published', timezone: 'America/Toronto', created_at: 'x' },
+      200,
+    );
+    await publishPerformance('p1', TEST_ASSERTION);
+    expect(calls[0].url).toContain('/api/catalog/performances/p1/publish');
+    expect(calls[0].headers[HEADER]).toBe('the-credential');
     expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
   });
 

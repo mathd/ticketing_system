@@ -36,6 +36,14 @@ func (f *fakeStore) RegisterPublicReadInvalidator(func(store.PublicReadScope)) {
 
 type fakeStore struct {
 	displayNamesErr error
+	// organizerSeen records the organizer each transition method was called with
+	// (TKT-251). It exists ONLY so the wiring test can assert the handler passed
+	// the VERIFIED organizer rather than uuid.Nil or a request-derived value; it
+	// is deliberately not used for scoping. Scoping asserted here would prove the
+	// fake and the handler agree and nothing about the SQL — the predicate is
+	// proven in internal/store/organizer_predicate_smoke_test.go, at the tier the
+	// mechanism lives.
+	organizerSeen map[string]uuid.UUID
 	venues         map[uuid.UUID]store.Venue
 	events         map[uuid.UUID]store.Event
 	performances   map[uuid.UUID]store.Performance
@@ -160,7 +168,15 @@ func (f *fakeStore) draftMap(id, org uuid.UUID) (store.SeatMap, bool) {
 	return m, ok && m.OrganizerID == org && m.Status == "draft"
 }
 
-func (f *fakeStore) PublishSeatMap(_ context.Context, id uuid.UUID) (store.SeatMap, bool, error) {
+func (f *fakeStore) recordOrganizer(method string, organizerID uuid.UUID) {
+	if f.organizerSeen == nil {
+		f.organizerSeen = map[string]uuid.UUID{}
+	}
+	f.organizerSeen[method] = organizerID
+}
+
+func (f *fakeStore) PublishSeatMap(_ context.Context, organizerID, id uuid.UUID) (store.SeatMap, bool, error) {
+	f.recordOrganizer("PublishSeatMap", organizerID)
 	m, ok := f.seatMaps[id]
 	if !ok {
 		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
@@ -446,7 +462,8 @@ func (f *fakeStore) CreateFestival(_ context.Context, in store.FestivalInput) (s
 	return festival, nil
 }
 
-func (f *fakeStore) AttachDayToFestival(_ context.Context, festivalID, performanceID uuid.UUID) (store.Festival, error) {
+func (f *fakeStore) AttachDayToFestival(_ context.Context, organizerID, festivalID, performanceID uuid.UUID) (store.Festival, error) {
+	f.recordOrganizer("AttachDayToFestival", organizerID)
 	festival, ok := f.festivals[festivalID]
 	if !ok {
 		return store.Festival{}, store.ErrNotFound
@@ -490,7 +507,8 @@ func (f *fakeStore) CreateSeries(_ context.Context, in store.SeriesInput) (store
 	f.series[s.ID] = s
 	return s, nil
 }
-func (f *fakeStore) AttachPerformanceToSeries(_ context.Context, seriesID, performanceID uuid.UUID, position int32) (store.Series, error) {
+func (f *fakeStore) AttachPerformanceToSeries(_ context.Context, organizerID, seriesID, performanceID uuid.UUID, position int32) (store.Series, error) {
+	f.recordOrganizer("AttachPerformanceToSeries", organizerID)
 	s, ok := f.series[seriesID]
 	if !ok {
 		return store.Series{}, store.ErrNotFound
@@ -527,7 +545,8 @@ func (f *fakeStore) CreateSeason(_ context.Context, in store.SeasonInput) (store
 	f.seasons[s.ID] = s
 	return s, nil
 }
-func (f *fakeStore) AttachSeriesToSeason(_ context.Context, seasonID, seriesID uuid.UUID) (store.Season, error) {
+func (f *fakeStore) AttachSeriesToSeason(_ context.Context, organizerID, seasonID, seriesID uuid.UUID) (store.Season, error) {
+	f.recordOrganizer("AttachSeriesToSeason", organizerID)
 	s, ok := f.seasons[seasonID]
 	if !ok {
 		return store.Season{}, store.ErrNotFound
@@ -548,7 +567,8 @@ func (f *fakeStore) AttachSeriesToSeason(_ context.Context, seasonID, seriesID u
 	f.seasons[s.ID] = s
 	return s, nil
 }
-func (f *fakeStore) AttachEventToSeason(_ context.Context, seasonID, eventID uuid.UUID) (store.Season, error) {
+func (f *fakeStore) AttachEventToSeason(_ context.Context, organizerID, seasonID, eventID uuid.UUID) (store.Season, error) {
+	f.recordOrganizer("AttachEventToSeason", organizerID)
 	s, ok := f.seasons[seasonID]
 	if !ok {
 		return store.Season{}, store.ErrNotFound
@@ -902,7 +922,8 @@ func (f *fakeStore) GetPoolOfferState(_ context.Context, id uuid.UUID) (store.Po
 	return store.PoolOfferState{}, store.ErrNotFound
 }
 
-func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, error) {
+func (f *fakeStore) PublishPerformance(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, error) {
+	f.recordOrganizer("PublishPerformance", organizerID)
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, store.ErrNotFound
@@ -925,7 +946,8 @@ func (f *fakeStore) PublishPerformance(_ context.Context, id uuid.UUID) (store.P
 	return p, !f.emitted[id], nil
 }
 
-func (f *fakeStore) ArchivePerformance(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
+func (f *fakeStore) ArchivePerformance(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, bool, error) {
+	f.recordOrganizer("ArchivePerformance", organizerID)
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, false, store.ErrNotFound
@@ -967,11 +989,13 @@ func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUI
 	return nil
 }
 
-func (f *fakeStore) CloseSlot(_ context.Context, id uuid.UUID, reason *string) (store.Performance, bool, bool, error) {
+func (f *fakeStore) CloseSlot(_ context.Context, organizerID, id uuid.UUID, reason *string) (store.Performance, bool, bool, error) {
+	f.recordOrganizer("CloseSlot", organizerID)
 	return f.toggleClosure(id, "closed", reason)
 }
 
-func (f *fakeStore) ReopenSlot(_ context.Context, id uuid.UUID) (store.Performance, bool, bool, error) {
+func (f *fakeStore) ReopenSlot(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, bool, error) {
+	f.recordOrganizer("ReopenSlot", organizerID)
 	return f.toggleClosure(id, "open", nil)
 }
 
@@ -1012,10 +1036,12 @@ func (f *fakeStore) MarkClosureEmitted(_ context.Context, id uuid.UUID, version 
 	return nil
 }
 
-func (f *fakeStore) PublishSeries(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+func (f *fakeStore) PublishSeries(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
+	f.recordOrganizer("PublishSeries", organizerID)
 	return f.transitionSeries(ctx, id, "published")
 }
-func (f *fakeStore) ArchiveSeries(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+func (f *fakeStore) ArchiveSeries(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
+	f.recordOrganizer("ArchiveSeries", organizerID)
 	return f.transitionSeries(ctx, id, "archived")
 }
 func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target string) ([]store.SeriesTransition, error) {
@@ -1060,11 +1086,13 @@ func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target str
 	return out, nil
 }
 
-func (f *fakeStore) PublishFestival(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+func (f *fakeStore) PublishFestival(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
+	f.recordOrganizer("PublishFestival", organizerID)
 	return f.transitionFestival(ctx, id, "published")
 }
 
-func (f *fakeStore) ArchiveFestival(ctx context.Context, id uuid.UUID) ([]store.SeriesTransition, error) {
+func (f *fakeStore) ArchiveFestival(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
+	f.recordOrganizer("ArchiveFestival", organizerID)
 	return f.transitionFestival(ctx, id, "archived")
 }
 
