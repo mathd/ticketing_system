@@ -12,6 +12,131 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-245's ai-review — confirmed, deliberately deferred\n\nai-review raised this as **[high] \"Path-ID writes still permit cross-tenant mutation\"**. Every word\nof the finding is correct and I verified it at the store tier rather than taking it on trust.\n\n**Why it was overridden rather than fixed in TKT-245:** it is the agreed slice boundary — the owner\nchose the 15/13 split at Gate 1 after both classes were enumerated — and the remedy is genuinely\ndifferent. TKT-245 replaced a body field with a credential; this needs a **store-tier organizer\npredicate** on lookup, which is a different change in a different layer, and folding it into a\n43-file diff would have meant a second implementation reviewed by nobody.\n\nThe residual is named in three places so it cannot be lost: ADR-058 §5, the PR description, and\nhere. **The reviewer's own sentence conceded the point** — *\"ADR-058 acknowledges 13 such operations,\nbut that means the claimed tenant boundary is incomplete\"* — and it is incomplete, which the ADR says\nbefore anyone asks.\n\nNeeds shaping before Gate 1. The likely trap: the attach operations already compare two organizers to\neach other, so a fix that merely *adds* a caller comparison beside that check would look correct and\nleave the lookup unscoped — the predicate has to be in the SQL, under the same lock."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping pass - readiness verdict: **PASS** (8/8 met, 0 open, 0 deferred)\n\nShaped from a **Backlog** start. The run was requested as \"autonomous\", and Gate 1 stays human in\nautonomous mode, so this stops here for prioritization rather than self-promoting to Ready.\n\nEvery claim in the ticket text was **verified against the code** rather than inherited (shaping.md\ns\"a remedy proposed in the ticket text is a hypothesis\"). All of them held - which is itself worth\nrecording, because the checking is what makes that trustworthy.\n\n| DoR item | State | Basis |\n|---|---|---|\n| objective | met | Confirmed at the store tier |\n| scope | met | 13 in, residuals + roles out |\n| uncertainties | met | 3 resolved by reading, 0 remaining |\n| dependencies | met | Zero open blockers; TKT-245 merged |\n| approach | met | Verified; see the four findings below |\n| first_slice | met | One slice, all 13 (splitting breaks an invariant) |\n| success | met | COS verified achievable as written |\n| context_memo | met | Baked: 7 governingAdrs, 6 governingTests, all resolve at HEAD |\n\n#### What the read changed vs. what the ticket assumed\n\n**1. The trap the filing comment predicted is real, and confirmed.** `AttachPerformanceToSeries`\n(`store/postgres.go:184-202`) reads `organizer_id` from both rows and compares them **to each\nother** (`targetOrg != orgID`), never to a caller. Two resources of the same victim tenant satisfy\nit. A fix that merely *adds* a caller comparison beside that check would look correct and leave the\nlookup unscoped.\n\n**2. Where the predicate goes, precisely.** `transitionSeries` does\n`SELECT id FROM series WHERE id=$1 FOR UPDATE` (`postgres.go:1070`). That statement gains\n`AND organizer_id=$2`. ADR-018 is why it must be *inside* the locked lookup rather than beside it:\na check outside the lock is a TOCTOU on the row the transition is about to move.\n\n**3. The slice is smaller than \"13\" suggests, in two independent ways.**\n- **Store:** the transitions share helpers - `transitionSeries` and `transitionFestival` each back\n  2 operations, `attachSeasonMember` backs 2 - so 13 operations collapse to **~9 store edit points**.\n- **Front end:** 11 of the 13 appear in `web/` **only in `api-types.gen.ts`**. They have no\n  hand-written caller at all. Only `publishSeatMap` and `publishPerformance` are actually invoked.\n\n**4. The back-office change is threading an existing value, not new plumbing.** `postCatalog`\nalready takes an `assertion` argument, and `staff.organizerAssertion` is already in scope in the\nvery handler that calls `publishSeatMap(mapId)` without it (`venues/[id].astro:89`) - three lines\nabove, a sibling write passes it. Same shape in `events/new.astro:142`.\n\n#### Confirmed, so the plan need not re-derive it\n\n- **All 13 are genuinely undeclared.** They inherit the **document-level** default\n  (`security: [CatalogStaffWriteCredential]`, `openapi.yaml:21-22`); none has an operation-level\n  block. First measured with a regex that bled into the *next* operation and reported 3 of 13 as\n  already converted - corrected by parsing per-operation. Recorded because the wrong number was\n  briefly convincing.\n- **The COS claim about auto-coverage is correct.**\n  `TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion` derives its set from the **Go\n  AST**, so the 13 enter coverage the moment their handlers call `organizerFor`, and Direction 2\n  forces the contract declaration to follow. No new API-tier infrastructure.\n- **A directly reusable store-tier template exists**:\n  `TestUpdateChannelIsScopedToTheOwningOrganizer`, including the `ErrNotFound`-not-mismatch subtlety\n  (a distinguishing refusal confirms a guessed id is real) and the both-directions structure\n  (\"a boundary, not a wall\"). Note `//go:build smoke`.\n\n#### Flagged for the plan (not blocking Gate 1)\n\n- **`make browser` is required.** `publishSeatMap` and `publishPerformance` are reached from Astro\n  form POST handlers, so this touches back-office write paths (AGENTS.md). Note the sharp edge: **no\n  form markup changes** here, so a render-only spec would prove nothing - and a browser spec cannot\n  see the SSR handler's upstream call. Assert what the browser can see or what the write left behind.\n- **`publishSeatMap` is ADR-029 territory.** Seat-map edits are family-scoped under\n  `pg_advisory_xact_lock(map_family_id)`, *not* a row lock on the current version. Re-resolve the\n  current version after taking the lock.\n- **`risk:low` must NOT be claimed.** This is an auth/trust-boundary change across ~24 files. Stated\n  explicitly so the claim comment inherits a verdict rather than a silence.\n\n**Verdict: PASS.** No open items, no `deferred`, no blockers, no human decisions outstanding. The\nticket is claimable the moment it is prioritized.\n\n**Waiting on Gate 1** - the human transitions Backlog -> Ready. (`approach` is `met`, not\n`deferred`, which matters here: shaping.md forbids `approach: deferred` on auth surfaces precisely\nbecause the approach *is* the redesign.)"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "13 catalog transition writes take only a path id and reach the store with no organizer at any layer; a caller holding CATALOG_STAFF_WRITE_TOKEN can publish/archive/close/reopen/re-wire another organizer's resources by id. Verified at the store tier, not taken on trust."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the 13 operations named in the description - contract security block, handler organizerFor, store-tier SQL predicate inside the locked lookup, store-tier cross-tenant refusal tests, the 2 back-office callers, ADR-058 s5 amendment. OUT: roles (catalog enforces none), the assertion mechanism itself (shipped ADR-058), the 4 residuals ADR-058 leaves open (compromised back office, signing-key holder, DB-level writer, live-assertion replay)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading. (a) Do the 13 already declare the assertion? No - all 13 inherit the DOCUMENT-LEVEL default `security: [CatalogStaffWriteCredential]` (openapi.yaml:21-22); none declares an operation-level block. (b) Does the API-tier invariant auto-cover them? Yes - TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion derives its set from the Go AST (every method mentioning organizerFor), and asserts BOTH directions, so contract and handler cannot diverge. (c) Front-end blast radius? Far smaller than 13: 11 of the 13 appear in web/ ONLY in api-types.gen.ts, so they have no hand-written caller at all."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. TKT-245 (the assertion mechanism, ADR-058) is merged and is the precondition; this is its agreed second slice. No links to add."
+    },
+    "approach": {
+      "state": "met",
+      "owner": "agent",
+      "note": "VERIFIED against the code, not inherited from the ticket text. The predicate goes in the SQL of the LOCKED LOOKUP, not in a check beside it: transitionSeries does `SELECT id FROM series WHERE id=$1 FOR UPDATE` (postgres.go:1070) and that statement gains `AND organizer_id=$2`. Sizing is better than 13 suggests - the transitions share helpers (transitionSeries and transitionFestival each back 2 ops, attachSeasonMember backs 2), so the 13 operations collapse to ~9 store edit points. The trap named in the kind=readiness comment is confirmed real: AttachPerformanceToSeries (postgres.go:184-202) compares `targetOrg != orgID` - the two ROWS to each other, never to a caller - so adding a caller comparison beside it would look correct and leave the lookup unscoped. Refusal must be ErrNotFound, not a mismatch error, per the TestUpdateChannelIsScopedToTheOwningOrganizer precedent: an answer distinguishing 'not yours' from 'no such row' confirms a guessed id is real. Front-end is threading an EXISTING value, not new plumbing - postCatalog already takes an `assertion` arg and `staff.organizerAssertion` is already in scope in the very handler that calls publishSeatMap(mapId) without it (venues/[id].astro:89)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, all 13. They share a single remedy shape and the API-tier invariant asserts both directions, so a partial slice would make TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion fail on the ones left behind - splitting costs more than it saves. ~9 store edit points + 13 contract blocks + 2 back-office call sites."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS as written on the ticket, all three verified as achievable and correctly stated: organizer from the verified scope inside the same locked predicate; store-tier cross-tenant refusal test per transition (the API tier cannot prove it - a fake store scopes in Go and passes with the SQL predicate deleted, AGENTS.md/TKT-236); ADR-058 s5 item 5 AMENDED not deleted."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below with governingAdrs and governingTests; every cited ADR verified to resolve to a real file at HEAD."
+    }
+  },
+  "context": {
+    "binding": [
+      {
+        "id": "ADR-058",
+        "rule": "The field is DELETED, not validated. Catalog does not compare a submitted organizer against the verified one - there is nothing to submit. Every fix that *checks* a submitted value keeps the trust boundary in the client and merely moves where it leaks.",
+        "date": "2026-08-15"
+      },
+      {
+        "id": "ADR-058",
+        "rule": "Both schemes are required TOGETHER, in one requirement object. One object means AND. Separate objects would mean OR - one bracket's difference - and the OR form means either credential alone suffices.",
+        "date": "2026-08-15"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-058",
+        "why": "The decision this ticket completes. s5 of 'what this does NOT close' states the boundary is FALSE for these 13 transitions and names the remedy shape: a store-tier organizer predicate, explicitly 'a different remedy from a credential'. That sentence becomes wrong the day this lands and must be AMENDED, not deleted (a COS)."
+      },
+      {
+        "id": "ADR-043",
+        "why": "Where a service auth guard lives. These 13 ARE contract operations, so their guard is a declared `security:` requirement enforced by the validator - not an inline check. ADR-058 applied this line as written; do not move it."
+      },
+      {
+        "id": "ADR-018",
+        "why": "Catalog slot transition concurrency. State-deriving transitions decide UNDER A ROW LOCK and emit after commit. This is why the organizer predicate belongs INSIDE the locked lookup statement rather than in a check before it - a check outside the lock is a TOCTOU on the row the transition is about to move."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary. This closes the staff-token holder, and does NOT close a writer with catalog DB access. State the claim for the adversary it actually holds against - two prior attempts at this exact claim in server.go were both wrong in good faith."
+      },
+      {
+        "id": "ADR-029",
+        "why": "Seat identity pinning. publishSeatMap is one of the 13; seat-map edits are family-scoped under pg_advisory_xact_lock on map_family_id, NOT a row lock on the current version. Re-resolve the current version after taking the lock - a row lock on the old version never conflicts with an edit that INSERTs a new one."
+      },
+      {
+        "id": "ADR-053",
+        "why": "Recorded the gap ADR-058 closes and the assumption it rested on. Useful precedent for how an honest residual is written down."
+      },
+      {
+        "id": "ADR-056",
+        "why": "Partner credential identity - the per-organizer credential shape. ADR-058 s'Why not the alternatives' rejected it for staff tooling (tenant is a property of the signed-in human, not the process). Do not re-propose it here."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/catalog/internal/api/write_credential_test.go:TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion",
+        "rule": "Derives its set from the Go AST - every method whose body mentions organizerFor - and asserts BOTH directions. A handler calling organizerFor without an operation-level assertion requirement FAILS, and a declared requirement whose handler does not read the scope also fails. The 13 enter coverage automatically; no new API-tier infrastructure needed."
+      },
+      {
+        "test": "services/catalog/internal/api/write_credential_test.go:TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential",
+        "rule": "The AND-ness. Both schemes must sit in ONE requirement object; the OR form passes securityRequires, passes a naive coverage test, and passes mutation testing. Write the block exactly as the 15 converted writes do."
+      },
+      {
+        "test": "services/catalog/internal/api/write_credential_test.go:TestCatalogSpecGuardsEveryUnsafeOperationAndOnlyThose",
+        "rule": "Every unsafe operation is guarded and only those; safe operations must opt out with `security: []`. A new operation is closed by construction via the document-level default."
+      },
+      {
+        "test": "services/catalog/internal/store/channels_smoke_test.go:TestUpdateChannelIsScopedToTheOwningOrganizer",
+        "rule": "THE TEMPLATE for the 13 store-tier tests. Asserts at the tier the predicate lives, because a fake store scopes in Go and passes with the SQL deleted. Structure to copy: attacker holds the id AND the exact code (strongest forged position); refusal is ErrNotFound not a mismatch error (a distinguishing answer confirms a guessed id is real); nothing moved on the victim row; AND the owner is still unaffected - 'a boundary, not a wall'. Note the //go:build smoke tag: these run in the smoke stage, not test-go."
+      },
+      {
+        "test": "services/catalog/internal/api/write_credential_test.go:TestConvertedHandlerRefusesWhenNoScopeWasVerified",
+        "rule": "A handler reached with no verified scope refuses rather than writing for uuid.Nil. Exists because deleting the refusal left the whole package green - every other test drives the router, where the validator always fills the slot."
+      },
+      {
+        "test": "services/catalog/internal/api/write_credential_test.go:TestStaffCredentialAloneCanNoLongerEnumerateOrMutateAcrossTenants",
+        "rule": "The inverted TKT-236 test. If it ever fails, ADR-058 is wrong - do not delete it. This ticket must EXTEND its reach to the transitions, since today it is true of the 15 writes and false of these 13."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "CATALOG_STAFF_WRITE_TOKEN - one env scalar shared by one back office serving ALL staff. It names no tenant, which is exactly why a holder can reach any organizer's resources by id. Blast radius: every unsafe catalog write.",
+        "link": "docs/adr/ADR-058-catalog-organizer-assertion.md"
+      },
+      {
+        "summary": "CATALOG_ORGANIZER_ASSERTION_KEY - catalog-only, never sent to the back office. A holder mints for any organizer, forever. Catalog refuses to start when it equals either credential: a key equal to the write credential would let anyone who can write mint their own tenancy.",
+        "link": "docs/adr/ADR-058-catalog-organizer-assertion.md"
+      },
+      {
+        "summary": "Back-office seam: postCatalog(path, assertion, body) already takes the assertion; staff.organizerAssertion is already in scope in the handlers calling publishSeatMap / publishPerformance without it. No new plumbing.",
+        "link": "web/backoffice/src/lib/catalog.ts"
+      }
+    ],
+    "capturedAt": "2026-08-16"
+  }
 }
