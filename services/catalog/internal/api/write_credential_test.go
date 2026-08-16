@@ -1,10 +1,14 @@
 package api
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -225,38 +229,75 @@ func TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential(t *te
 // through organizerFor would be silently unguarded with nothing to say so.
 //
 // So membership is grounded in something the DECLARATION CANNOT MOVE: the Go
-// source. A handler that reads the verified organizer is, by construction, an
-// operation whose organizer must be verified — and the count is asserted too, so
-// a handler added without its requirement, or a requirement dropped from a
-// handler that still reads the scope, both fail here.
+// source itself, parsed here rather than transcribed.
+//
+// ai-review pass 3 [high], confirmed: an earlier version of this test hardcoded
+// the 15 operationIds and claimed in this very comment to be "grounded in the Go
+// source" — while the list was a literal someone had typed after grepping once.
+// That is worse than deriving, for the failure mode that matters: add a handler
+// that calls organizerFor, omit its assertion requirement, and omit it from the
+// list, and BOTH loops skip it. The forward loop iterates the list; the reverse
+// loop only inspects operations that already require the assertion. A new
+// unguarded write would be invisible to the test written to prevent exactly that.
+//
+// It also could not check its own converse — an id could stay listed long after
+// its handler stopped reading the verified scope.
+//
+// Now the set comes from the AST: every method whose body mentions organizerFor.
+// A handler is in scope because of what it DOES, and the equivalence is asserted
+// in both directions, so all four regressions fail loudly — a new organizer-
+// scoped handler without its requirement, a requirement removed from an existing
+// one, an assertion declared on an operation whose handler no longer reads the
+// scope, and the OR-alternative shapes the tests above cover.
 func TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion(t *testing.T) {
 	doc := loadSpec(t)
 
-	// The operationIds whose handlers call organizerFor. Derived from the Go
-	// source by grepping for the call, then written down here so a REMOVAL is as
-	// loud as an addition: reading the list out of the source at runtime would
-	// make a deleted guard look like a shrinking scope rather than a regression.
-	converted := []string{
-		"createVenue", "createSeatMap", "addSeatMapSection", "addSeatMapRow", "addSeatMapSeat",
-		"editSeatMap", "updateVenueGaCapacity", "createEvent", "createPerformance", "createSeries",
-		"createSeason", "createFestival", "createTicketType", "createChannel", "updateChannel",
+	readsVerifiedOrganizer := handlersReadingTheVerifiedOrganizer(t)
+	if len(readsVerifiedOrganizer) == 0 {
+		t.Fatal("no handler was found calling organizerFor — the AST scan matched nothing, so this " +
+			"invariant would pass while inspecting an empty set")
 	}
 
 	byID := map[string]*openapi3.Operation{}
-	for _, item := range doc.Paths.Map() {
-		for _, op := range item.Operations() {
-			if op.OperationID != "" {
-				byID[op.OperationID] = op
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if op.OperationID == "" {
+				continue
 			}
+			if prior, dup := byID[op.OperationID]; dup && prior != op {
+				t.Fatalf("operationId %q appears twice (%s %s); the id->operation map cannot be "+
+					"trusted and this invariant would silently inspect only one of them",
+					op.OperationID, method, path)
+			}
+			byID[op.OperationID] = op
 		}
 	}
 
-	for _, id := range converted {
+	// Handler -> operation. oapi-codegen names the method after the operationId
+	// with an upper-case first letter, so the mapping is exact rather than fuzzy.
+	operationFor := func(handler string) (string, *openapi3.Operation, bool) {
+		id := strings.ToLower(handler[:1]) + handler[1:]
 		op, ok := byID[id]
+		return id, op, ok
+	}
+
+	// Direction 1: everything that reads the verified organizer requires it.
+	requiredIDs := map[string]bool{}
+	for _, handler := range readsVerifiedOrganizer {
+		id, op, ok := operationFor(handler)
 		if !ok {
-			t.Errorf("%s is in the converted set but the contract has no such operation", id)
+			// A hand-mounted route (listChannels) reads the scope inline and is not
+			// in the contract at all. That is ADR-043's line, not a defect — but it
+			// must be named here, or an operation that genuinely vanished from the
+			// contract would look like one of these.
+			if handler == "listChannels" {
+				continue
+			}
+			t.Errorf("handler %s reads the verified organizer but no contract operation is named %q; "+
+				"if it is deliberately hand-mounted, name it in this test's exception", handler, id)
 			continue
 		}
+		requiredIDs[id] = true
 		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
 			t.Errorf("%s reads the verified organizer in its handler but its operation does NOT "+
 				"require %s. The contract would advertise staff-only access while the handler "+
@@ -268,18 +309,61 @@ func TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion(t *testing.
 		}
 	}
 
-	// The other direction: nothing may require the assertion without being in the
-	// list, or the list has gone stale and stopped describing the surface.
+	// Direction 2: nothing requires the assertion whose handler does not read it.
+	// A declaration without a reader is a boundary nobody enforces.
 	for id, op := range byID {
 		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
 			continue
 		}
-		if !slices.Contains(converted, id) {
-			t.Errorf("%s requires %s but is not in this test's converted set. Add it here (and "+
-				"confirm its handler takes the organizer from the verified scope) — an operation "+
-				"nobody has listed is one nobody has checked.", id, organizerAssertionSecurityScheme)
+		if !requiredIDs[id] {
+			t.Errorf("%s requires %s but no handler reading the verified organizer maps to it. "+
+				"Either the handler stopped taking the organizer from the verified scope — in which "+
+				"case it is taking it from somewhere else — or the requirement is decoration.",
+				id, organizerAssertionSecurityScheme)
 		}
 	}
+}
+
+// handlersReadingTheVerifiedOrganizer parses this package and returns the names
+// of every method whose body calls organizerFor.
+//
+// Parsed rather than listed, because a list is a fact a human has to keep right
+// and this one is load-bearing: it decides which operations the invariant above
+// even looks at. The same argument the staff-write invariant makes for deriving
+// its operation set from the spec (see the top of this file), applied to the
+// other side of the boundary.
+func handlersReadingTheVerifiedOrganizer(t *testing.T) []string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+
+	var handlers []string
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Recv == nil || fn.Body == nil {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok || sel.Sel == nil || sel.Sel.Name != "organizerFor" {
+						return true
+					}
+					handlers = append(handlers, fn.Name.Name)
+					return false
+				})
+			}
+		}
+	}
+	slices.Sort(handlers)
+	return slices.Compact(handlers)
 }
 
 // And the runtime agrees with the contract: neither credential alone opens a
