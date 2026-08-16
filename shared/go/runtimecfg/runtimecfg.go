@@ -111,16 +111,37 @@ const (
 	RetiredAccessLifecycleSeed = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
 )
 
-// RequiredCredential validates one startup credential: present, and not the
-// retired checked-in literal it replaced. Entrypoints call it before touching
-// any dependency so a misconfigured deployment fails fast instead of timing
-// out, and **errors never echo the supplied value**.
+// CredentialMinBytes is the floor every ordinary credential in this system is
+// held to: 32 bytes, following ADR-056's generated 32-byte partner token rather
+// than a number invented here.
+//
+// It is a LENGTH floor and nothing more (ADR-059). Thirty-two 'a' characters pass
+// it. What it buys is that a deployment cannot be configured with `x` — which is
+// what this package permitted until TKT-252, across every credential at once,
+// including the HMAC keys behind the customer and organizer assertions where a
+// captured token is an offline oracle. It makes no claim about entropy, and no
+// caller should read one into it.
+const CredentialMinBytes = 32
+
+// RequiredCredential validates one startup credential: present, not the retired
+// checked-in literal it replaced, transmissible unchanged over HTTP, and at least
+// minBytes long. Entrypoints call it before touching any dependency so a
+// misconfigured deployment fails fast instead of timing out, and **errors never
+// echo the supplied value**.
 //
 // Generic because a second credential arrived (TKT-191) and a per-credential
 // function in a package imported by all five services and the gateway would
 // make every caller carry someone else's private concern. Pass "" for
 // retiredDefault when a credential has no retired literal to refuse.
-func RequiredCredential(envVar, retiredDefault string) (string, error) {
+//
+// minBytes is a REQUIRED parameter rather than a package-wide constant or an
+// optional override, and that is the whole design (TKT-252). Almost every caller
+// passes CredentialMinBytes; JOURNAL_SIGNING_KEY passes 16, because ADR-032
+// already fixed its contract there and ADR-059 records why the two differ. A
+// variadic option or a separate exception function would let a new caller inherit
+// the wrong floor in silence — as a required argument, an omitted floor is a
+// compile error, and every call site states its policy where it can be read.
+func RequiredCredential(envVar, retiredDefault string, minBytes int) (string, error) {
 	token := os.Getenv(envVar)
 	switch {
 	case token == "":
@@ -154,6 +175,30 @@ func RequiredCredential(envVar, retiredDefault string) (string, error) {
 		// every outbound authenticated request at runtime, which is precisely the
 		// fail-fast contract this function exists to keep (ai-review pass 3).
 		return "", fmt.Errorf("%s contains a character that cannot appear in an HTTP header value", envVar)
+	// ORDER MATTERS here too, for a different reason than the pair above: this arm
+	// must stay LAST. Every case before it describes something specific and
+	// actionable about the value — it is absent, it is the retired literal, it is
+	// padded, it carries a byte HTTP will not transmit — and each of those
+	// diagnostics is what tells an operator which mistake they made. Most of the
+	// fixtures proving those messages are deliberately short, so a length check
+	// placed ahead of them answers "too short" to a value whose real problem is a
+	// stray newline, and the tests that pin those messages go red.
+	//
+	// Length is the right thing to say only once nothing more specific applies.
+	case len(token) < minBytes:
+		// Bytes, not runes: len() on a Go string is a byte count and that is the
+		// rule (ADR-059). The floor is stated as the CALLER's minBytes, never a
+		// hardcoded 32 — payments refuses at 16 and an error claiming 32 there
+		// would send an operator to lengthen a key that is already conformant.
+		//
+		// The message says what is wrong and what to do, and NOTHING about the
+		// value itself. An earlier wording added "a short credential is
+		// guessable"; a payments test caught that the word "short" was also the
+		// literal a fixture had configured, so the diagnostic read as an echo of
+		// the secret. That collision was accidental, but the rule it enforces is
+		// not — an error that characterizes a credential is one adjective away
+		// from describing it.
+		return "", fmt.Errorf("%s must be at least %d bytes (`make up` generates a conformant value)", envVar, minBytes)
 	}
 	return token, nil
 }
@@ -177,7 +222,7 @@ const PaymentsTokenEnv = "PAYMENTS_INTERNAL_TOKEN"
 // equal to the shared one — a configuration where they match looks configured and
 // restores exactly the coupling the split removed.
 func PaymentsTokenFromEnv() (string, error) {
-	token, err := RequiredCredential(PaymentsTokenEnv, "")
+	token, err := RequiredCredential(PaymentsTokenEnv, "", CredentialMinBytes)
 	if err != nil {
 		return "", err
 	}
@@ -193,7 +238,7 @@ func PaymentsTokenFromEnv() (string, error) {
 // One value across all five services (compose.yaml, the &go-env anchor), so
 // whatever holds it can reach every service's internal surface.
 func InternalTokenFromEnv() (string, error) {
-	return RequiredCredential("INTERNAL_SERVICE_TOKEN", retiredInternalToken)
+	return RequiredCredential("INTERNAL_SERVICE_TOKEN", retiredInternalToken, CredentialMinBytes)
 }
 
 // ResponseValidationFromEnv reports whether a service enforces ADR-028

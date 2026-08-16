@@ -10,6 +10,7 @@ import (
 
 	"ticketing/services/payments/internal/psp"
 	"ticketing/shared/obs"
+	"ticketing/shared/runtimecfg"
 )
 
 // Provider selection is fail-fast config (mirrors signingConfig): the fake is chosen only
@@ -163,6 +164,43 @@ func TestSigningConfigKeyring(t *testing.T) {
 				t.Fatalf("error echoes secret material: %q", err)
 			}
 		})
+	}
+}
+
+// TKT-252. Every ordinary credential in the system now takes a 32-byte floor
+// (runtimecfg.CredentialMinBytes, ADR-059). JOURNAL_SIGNING_KEY deliberately does
+// NOT: ADR-032 already states its 16-byte contract, and raising it was ruled out of
+// scope rather than left undecided.
+//
+// That divergence lives in ONE argument at main.go's signingConfig, and nothing else
+// would notice it being "tidied up" to use the shared constant. The gate would still
+// go red — the smoke suite signs a journal with a 31-byte key — but it reports as a
+// verify-journal failure three layers away from the cause. This test names the rule
+// where the decision is, so the diagnostic matches the mistake.
+//
+// It is deliberately NOT written as "assert 16": the value is journalKeyMinBytes, and
+// what is pinned is that a key between the two floors is accepted here while
+// runtimecfg's ordinary floor would refuse it.
+func TestJournalSigningKeyKeepsItsOwnFloorBelowTheOrdinaryOne(t *testing.T) {
+	// Between the two floors: long enough for the journal, too short for everything
+	// else. This is the exact band the divergence is about, so a fixture outside it
+	// could not tell the two policies apart.
+	const betweenTheFloors = "an-ordinary-active-journal-key" // 30 bytes
+	if len(betweenTheFloors) < journalKeyMinBytes {
+		t.Fatalf("fixture is %d bytes, below the journal floor of %d", len(betweenTheFloors), journalKeyMinBytes)
+	}
+	if len(betweenTheFloors) >= runtimecfg.CredentialMinBytes {
+		t.Fatalf("fixture is %d bytes, which the ordinary %d-byte floor would ACCEPT — "+
+			"it cannot distinguish the two policies", len(betweenTheFloors), runtimecfg.CredentialMinBytes)
+	}
+
+	t.Setenv("JOURNAL_KEY_ID", "local-v1")
+	t.Setenv("JOURNAL_SIGNING_KEY", betweenTheFloors)
+	t.Setenv("JOURNAL_HISTORICAL_KEYS", "")
+	if _, err := signingConfig(); err != nil {
+		t.Fatalf("the journal keeps its own %d-byte floor (ADR-032; ADR-059 records why it "+
+			"differs) — a %d-byte key must still build a ring: %v",
+			journalKeyMinBytes, len(betweenTheFloors), err)
 	}
 }
 

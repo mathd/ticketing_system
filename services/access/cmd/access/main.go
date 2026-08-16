@@ -204,7 +204,7 @@ func run() error {
 	// shipped as an ACTIVE compose default — an all-zero Ed25519 seed, in the
 	// repository — so any stack whose env was unset issued and verified QR codes
 	// under key material an attacker already has.
-	qrSeed, err := runtimecfg.RequiredCredential("ACCESS_QR_PRIVATE_KEY", runtimecfg.RetiredAccessQRSeed)
+	qrSeed, err := runtimecfg.RequiredCredential("ACCESS_QR_PRIVATE_KEY", runtimecfg.RetiredAccessQRSeed, runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func run() error {
 	// claims would spend a leak of the cheap one at the price of the expensive
 	// one. Required so a deployment cannot silently fall back to unsigned links,
 	// which is the state this finding is about.
-	qrLinkKey, err := runtimecfg.RequiredCredential("ACCESS_TICKET_LINK_KEY", "")
+	qrLinkKey, err := runtimecfg.RequiredCredential("ACCESS_TICKET_LINK_KEY", "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}

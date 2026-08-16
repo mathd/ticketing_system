@@ -111,7 +111,7 @@ func run() error {
 	// The back office's own inventory credential (TKT-244, ADR-057). Read here, before
 	// any dependency is contacted, so a misconfiguration fails fast rather than after
 	// the NATS connection — which retries forever by design.
-	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "")
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
