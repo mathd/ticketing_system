@@ -2,7 +2,7 @@
   "key": "TKT-241",
   "type": "Task",
   "summary": "Prove lookup-not-constraint end to end, not just at the inventory store (TKT-235 ai-review)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
