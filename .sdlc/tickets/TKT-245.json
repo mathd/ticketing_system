@@ -3,10 +3,14 @@
   "type": "Task",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 223,
+    "url": "https://github.com/mathd/ticketing_system/pull/223",
+    "state": "open"
+  },
   "summary": "Catalog cannot verify WHICH organizer a back-office request is for (TKT-236 ai-review)",
   "description": "**Surfaced by TKT-236's ai-review.** Not a defect that ticket introduced — a property of the\ndeputy model that TKT-236 was the first to have to state out loud.\n\nCatalog authenticates the **calling process**, not the staff member behind it. Every back-office\nwrite takes `organizer_id` from the request body and catalog trusts it, because it has nothing else\nto go on. The back office passes its session's organizer and never one from a form — but that is a\ndiscipline in one codebase, not a boundary catalog can enforce.\n\nTKT-236 narrowed the blast radius where it could: `UpdateChannel` now carries an organizer predicate,\nso an id disclosed by the operator list is no longer sufficient to mutate another tenant's channel.\nWhat remains is that a compromised or buggy back office can still *author for*, and now *enumerate*,\nany organizer.\n\n**Conditions of Success:**\n- A way for catalog to verify which organizer a request is for, that does not rest on the caller\n  asserting it. Options to weigh: a per-organizer credential; a signed assertion the back office\n  mints from its session (commerce's customer-assertion key is the in-repo precedent); or catalog\n  resolving the organizer from the staff identity it already stores.\n- An ADR recording the choice and what it does *not* close — ADR-021's rule about naming the\n  adversary applies: this is about a compromised deputy, not a DB writer.\n- Applies to every catalog write the back office makes, not only channels. A fix that scoped one\n  endpoint would leave the model unchanged and the claim still unearned.\n\nQuality gates: `make check` green; `make browser` for any touched write form.\n\nNon-goals: multi-organizer staff sign-in (ADR-042 scopes that as future work); inventory's credential\n(TKT-244).",
   "context": {
