@@ -86,7 +86,7 @@ if (Astro.request.method === 'POST') {
         error = name.message;
         errorField = `name_${name.field}`;
       } else {
-        const created = await createEvent(staff.organizerId, name.value);
+        const created = await createEvent(staff.organizerAssertion, name.value);
         return Astro.redirect(`${here}?event=${encodeURIComponent(created.id)}`, 303);
       }
     } else if (action === 'create-performance') {
@@ -100,7 +100,7 @@ if (Astro.request.method === 'POST') {
       if (readFailed) {
         // error already describes the venue read failure
       } else {
-      const perf = await createPerformance(staff.organizerId, {
+      const perf = await createPerformance(staff.organizerAssertion, {
         eventId: String(eventId),
         venueId: field('venue_id'),
         startsAt: field('starts_at'),
@@ -120,7 +120,7 @@ if (Astro.request.method === 'POST') {
         error = bad.message;
         errorField = bad.field === 'en' || bad.field === 'fr' ? `tt_name_${bad.field}` : bad.field;
       } else if (name.ok && amount.ok && currency.ok) {
-        const tt = await createTicketType(staff.organizerId, {
+        const tt = await createTicketType(staff.organizerAssertion, {
           performanceId: String(performanceId),
           name: name.value,
           amount: amount.value,

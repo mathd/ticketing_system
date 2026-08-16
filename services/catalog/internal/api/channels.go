@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -60,8 +61,12 @@ func (s *Server) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
 	c, err := s.store.CreateChannel(r.Context(), store.ChannelInput{
-		OrganizerID: in.OrganizerId,
+		OrganizerID: organizerID,
 		Code:        in.Code,
 		DisplayName: in.DisplayName,
 		Kind:        store.ChannelKind(in.Kind),
@@ -112,11 +117,29 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
-	organizerID, err := uuid.Parse(r.URL.Query().Get("organizer_id"))
+	// The organizer comes from the assertion, not from the query string (TKT-245).
+	// This read is exactly the enumeration ADR-053 recorded: it returns every
+	// channel of a CALLER-NAMED organizer, ids and disabled rows included, which is
+	// what turned a credential that could only probe one guessed code at a time
+	// into one that could list a victim's whole configuration.
+	//
+	// The check is INLINE rather than declared, because this route is hand-mounted
+	// and outside the contract — the validator never sees it, so there is no
+	// AuthenticationFunc to fill the slot. ADR-043 draws that line: contract
+	// operation, declared security; internal route, inline check.
+	//
+	// Verified before removing the parameter: the back office is the ONLY caller
+	// repo-wide (web/backoffice/src/lib/catalog.ts), so no service-to-service
+	// caller loses the ability to name an organizer it is not.
+	scope, err := verifyOrganizerAssertion(s.organizerAssertionKey,
+		r.Header.Get(organizerAssertionHeader), time.Now())
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, Error{Error: "organizer_id (uuid) required"})
+		// Same uninformative refusal as everywhere else: absent, expired, forged
+		// and malformed are one answer.
+		writeJSON(w, http.StatusUnauthorized, Error{Error: "unauthorized"})
 		return
 	}
+	organizerID := scope.OrganizerID
 	channels, err := s.store.ListChannels(r.Context(), organizerID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -155,7 +178,15 @@ func (s *Server) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
 		return
 	}
-	c, err := s.store.UpdateChannel(r.Context(), in.OrganizerId, channelId, store.ChannelUpdate{
+	// The organizer predicate TKT-236 added to this query is now fed by the
+	// VERIFIED organizer rather than a caller-supplied one. That predicate always
+	// scoped the write; what it could not do was tell whether the organizer it
+	// scoped to was the caller's to name (ADR-053).
+	organizerID, ok := s.organizerFor(w, r)
+	if !ok {
+		return
+	}
+	c, err := s.store.UpdateChannel(r.Context(), organizerID, channelId, store.ChannelUpdate{
 		Code:        in.Code,
 		DisplayName: in.DisplayName,
 		Kind:        store.ChannelKind(in.Kind),

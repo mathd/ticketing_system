@@ -52,6 +52,15 @@ export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
 SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_CATALOG_STAFF_WRITE_TOKEN
 export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
+# TKT-245: catalog's organizer-assertion signing key. A separate /dev/urandom
+# read for a reason the ticket turns on -- catalog refuses to start when this
+# equals CATALOG_STAFF_WRITE_TOKEN, because a signing key equal to the write
+# credential lets anyone who can write mint their own tenancy. Deriving one from
+# the other here would make the smoke suite the one place that guard is never
+# exercised honestly.
+SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+export SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY
+export CATALOG_ORGANIZER_ASSERTION_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"
 # TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
 # when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
 # when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would

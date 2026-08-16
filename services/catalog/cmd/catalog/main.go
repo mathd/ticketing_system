@@ -103,6 +103,10 @@ func port() string {
 // staffWriteTokenEnv names the catalog-only staff-write credential (TKT-191).
 const staffWriteTokenEnv = "CATALOG_STAFF_WRITE_TOKEN"
 
+// organizerAssertionKeyEnv names the HMAC key catalog signs organizer assertions
+// with (TKT-245, ADR-058). A signing key, not a credential anyone presents.
+const organizerAssertionKeyEnv = "CATALOG_ORGANIZER_ASSERTION_KEY"
+
 func run() error {
 	internalToken, err := runtimecfg.InternalTokenFromEnv()
 	if err != nil {
@@ -141,6 +145,31 @@ func run() error {
 		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
 			"so the back office cannot reach other services' internal surfaces, and identical values "+
 			"remove that boundary while looking configured", staffWriteTokenEnv)
+	}
+	// The organizer-assertion signing key (TKT-245). Required at startup for the
+	// same reason as the credential above: a catalog running without it mints
+	// nothing and verifies nothing, so every back-office write would 401 while the
+	// service looked healthy.
+	assertionKey, err := runtimecfg.RequiredCredential(organizerAssertionKeyEnv, "")
+	if err != nil {
+		return err
+	}
+	// It must differ from BOTH other values, and the reasons are different.
+	//
+	// Against INTERNAL_SERVICE_TOKEN: the usual blast-radius argument — one value
+	// opening every service's internal surface must not also be the thing catalog
+	// trusts to name a tenant.
+	//
+	// Against CATALOG_STAFF_WRITE_TOKEN the argument is sharper, and it is the
+	// whole point of this ticket. The assertion exists so that holding the write
+	// credential does NOT let a caller choose an organizer. If the signing key
+	// were that same value, any holder could mint their own assertion for any
+	// tenant, and the boundary would be exactly as absent as before — while every
+	// test, header and log line said it was there.
+	if assertionKey == internalToken || assertionKey == staffWriteToken {
+		return fmt.Errorf("%s must differ from INTERNAL_SERVICE_TOKEN and %s: a signing key equal to "+
+			"the write credential lets anyone who can write mint their own tenancy, which is the "+
+			"boundary this key exists to create", organizerAssertionKeyEnv, staffWriteTokenEnv)
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -189,7 +218,10 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	apiHandler, err := api.NewRouter(api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken), validateResponses)
+	apiHandler, err := api.NewRouter(
+		api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken).
+			WithOrganizerAssertionKey(assertionKey),
+		validateResponses)
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)
 	}

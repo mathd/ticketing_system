@@ -15,14 +15,14 @@ import (
 func seedVenue(t *testing.T, e *env, name string) openapi_types.UUID {
 	t.Helper()
 	v := decode[Venue](t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: name, GaCapacity: 1000}))
+		VenueCreate{Name: name, GaCapacity: 1000}))
 	return v.Id
 }
 
 func seedDraftMap(t *testing.T, e *env, venueID openapi_types.UUID, name string) SeatMap {
 	t.Helper()
 	rec := e.do("POST", "/venues/"+venueID.String()+"/seat-maps",
-		SeatMapCreate{OrganizerId: orgID, Name: name})
+		SeatMapCreate{Name: name})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create seat map: %d %s", rec.Code, rec.Body.String())
 	}
@@ -34,7 +34,7 @@ func TestCreateSeatMapDraft(t *testing.T) {
 	venueID := seedVenue(t, e, "La Grande Salle")
 
 	rec := e.do("POST", "/venues/"+venueID.String()+"/seat-maps",
-		SeatMapCreate{OrganizerId: orgID, Name: "Main floor"})
+		SeatMapCreate{Name: "Main floor"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -56,7 +56,7 @@ func TestCreateSeatMapDraft(t *testing.T) {
 func TestCreateSeatMapUnknownVenue(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("POST", "/venues/"+orgID.String()+"/seat-maps", // orgID is not a venue id
-		SeatMapCreate{OrganizerId: orgID, Name: "Nope"})
+		SeatMapCreate{Name: "Nope"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("want 404 for unknown venue, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -70,11 +70,11 @@ func TestSeatMapAuthoringChain(t *testing.T) {
 	m := seedDraftMap(t, e, venueID, "Main floor")
 
 	sec := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
-		SeatMapRowCreate{OrganizerId: orgID, SectionId: sec.Id, Label: "A", Position: 1}))
+		SeatMapRowCreate{SectionId: sec.Id, Label: "A", Position: 1}))
 	seat := decode[Seat](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
-		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "12", Position: 1}))
+		SeatMapSeatCreate{RowId: row.Id, Label: "12", Position: 1}))
 
 	if seat.SeatIdentity != "Orchestra/A/12" {
 		t.Fatalf("seat identity must be composed section/row/seat, got %q", seat.SeatIdentity)
@@ -112,11 +112,11 @@ func seedPublishedMap(t *testing.T, e *env, venueID openapi_types.UUID, name str
 	t.Helper()
 	m := seedDraftMap(t, e, venueID, name)
 	sec := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
-		SeatMapRowCreate{OrganizerId: orgID, SectionId: sec.Id, Label: "A", Position: 1}))
+		SeatMapRowCreate{SectionId: sec.Id, Label: "A", Position: 1}))
 	e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
-		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "1", Position: 1})
+		SeatMapSeatCreate{RowId: row.Id, Label: "1", Position: 1})
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish seat map: %d %s", rec.Code, rec.Body.String())
@@ -199,7 +199,7 @@ func TestPublishedSeatMapRejectsAuthoring(t *testing.T) {
 	venueID := seedVenue(t, e, "Hall")
 	m := seedPublishedMap(t, e, venueID, "Frozen")
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "New", Position: 9})
+		SeatMapSectionCreate{Name: "New", Position: 9})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("authoring a published map must be refused (404), got %d %s", rec.Code, rec.Body.String())
 	}
@@ -213,12 +213,12 @@ func TestCreateSeatedPerformance(t *testing.T) {
 	venueID := seedVenue(t, e, "La Grande Salle")
 	m := seedPublishedMap(t, e, venueID, "Main floor")
 	event := decode[Event](t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "Récital", "en": "Recital"},
+		Name: LocalizedString{"fr": "Récital", "en": "Recital"},
 	}))
 	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
 
 	seatedRec := e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+		EventId: event.Id, VenueId: venueID,
 		StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: &m.Id,
 	})
 	if seatedRec.Code != http.StatusCreated {
@@ -231,7 +231,7 @@ func TestCreateSeatedPerformance(t *testing.T) {
 
 	// GA performance at the same venue is unchanged: no reference, coexists.
 	gaRec := e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+		EventId: event.Id, VenueId: venueID,
 		StartsAt: &startsAt, Timezone: "Europe/Paris",
 	})
 	ga := decode[Performance](t, gaRec)
@@ -249,7 +249,7 @@ func TestCreateSeatedPerformanceRejectsUnpublishedOrCrossTenant(t *testing.T) {
 	draft := seedDraftMap(t, e, venueID, "Draft map")
 	publishedElsewhere := seedPublishedMap(t, e, otherVenueID, "Other venue map")
 	event := decode[Event](t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "R", "en": "R"},
+		Name: LocalizedString{"fr": "R", "en": "R"},
 	}))
 	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
 	unknown := uuid.New()
@@ -266,7 +266,7 @@ func TestCreateSeatedPerformanceRejectsUnpublishedOrCrossTenant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			id := tc.mapID
 			rec := e.do("POST", "/performances", PerformanceCreate{
-				OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+				EventId: event.Id, VenueId: venueID,
 				StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: &id,
 			})
 			if rec.Code != tc.want {
@@ -282,9 +282,9 @@ func TestGeometryOrderedByPosition(t *testing.T) {
 	m := seedDraftMap(t, e, venueID, "Floor")
 	// Insert sections out of position order; the read must sort ascending.
 	_ = decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Balcony", Position: 2}))
+		SeatMapSectionCreate{Name: "Balcony", Position: 2}))
 	_ = decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	g := decode[SeatMapGeometry](t, e.do("GET", "/public/seat-maps/"+m.Id.String(), nil))
 	if len(g.Sections) != 2 || g.Sections[0].Name != "Orchestra" || g.Sections[1].Name != "Balcony" {
 		t.Fatalf("sections must be position-ordered, got %+v", g.Sections)
@@ -294,7 +294,7 @@ func TestGeometryOrderedByPosition(t *testing.T) {
 func TestAddSectionUnknownMap(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("POST", "/seat-maps/"+orgID.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1})
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -308,10 +308,10 @@ func TestAddRowRejectsCrossMapSection(t *testing.T) {
 	mapA := seedDraftMap(t, e, venueID, "A")
 	mapB := seedDraftMap(t, e, venueID, "B")
 	secA := decode[SeatSection](t, e.do("POST", "/seat-maps/"+mapA.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	// Try to add a row under mapB referencing mapA's section.
 	rec := e.do("POST", "/seat-maps/"+mapB.Id.String()+"/rows",
-		SeatMapRowCreate{OrganizerId: orgID, SectionId: secA.Id, Label: "A", Position: 1})
+		SeatMapRowCreate{SectionId: secA.Id, Label: "A", Position: 1})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-map section must be rejected 404, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -323,11 +323,11 @@ func TestAddSeatRejectsCrossMapRow(t *testing.T) {
 	mapA := seedDraftMap(t, e, venueID, "A")
 	mapB := seedDraftMap(t, e, venueID, "B")
 	secA := decode[SeatSection](t, e.do("POST", "/seat-maps/"+mapA.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	rowA := decode[SeatRow](t, e.do("POST", "/seat-maps/"+mapA.Id.String()+"/rows",
-		SeatMapRowCreate{OrganizerId: orgID, SectionId: secA.Id, Label: "A", Position: 1}))
+		SeatMapRowCreate{SectionId: secA.Id, Label: "A", Position: 1}))
 	rec := e.do("POST", "/seat-maps/"+mapB.Id.String()+"/seats",
-		SeatMapSeatCreate{OrganizerId: orgID, RowId: rowA.Id, Label: "1", Position: 1})
+		SeatMapSeatCreate{RowId: rowA.Id, Label: "1", Position: 1})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-map row must be rejected 404, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -340,16 +340,16 @@ func TestDuplicateSeatIdentity(t *testing.T) {
 	venueID := seedVenue(t, e, "Hall")
 	m := seedDraftMap(t, e, venueID, "Floor")
 	sec := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1}))
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
 	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
-		SeatMapRowCreate{OrganizerId: orgID, SectionId: sec.Id, Label: "A", Position: 1}))
+		SeatMapRowCreate{SectionId: sec.Id, Label: "A", Position: 1}))
 	first := e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
-		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "12", Position: 1})
+		SeatMapSeatCreate{RowId: row.Id, Label: "12", Position: 1})
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first seat: %d %s", first.Code, first.Body.String())
 	}
 	dup := e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
-		SeatMapSeatCreate{OrganizerId: orgID, RowId: row.Id, Label: "12", Position: 2})
+		SeatMapSeatCreate{RowId: row.Id, Label: "12", Position: 2})
 	if dup.Code != http.StatusConflict {
 		t.Fatalf("duplicate seat identity must be 409, got %d %s", dup.Code, dup.Body.String())
 	}
@@ -365,9 +365,9 @@ func TestDuplicateSectionNameIsConflict(t *testing.T) {
 	venueID := seedVenue(t, e, "Hall")
 	m := seedDraftMap(t, e, venueID, "Floor")
 	_ = e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 1})
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1})
 	dup := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "Orchestra", Position: 2})
+		SeatMapSectionCreate{Name: "Orchestra", Position: 2})
 	if dup.Code != http.StatusConflict {
 		t.Fatalf("duplicate section name must be 409, got %d %s", dup.Code, dup.Body.String())
 	}
@@ -381,7 +381,7 @@ func TestSeatMapRejectsSlashInLabel(t *testing.T) {
 	venueID := seedVenue(t, e, "Hall")
 	m := seedDraftMap(t, e, venueID, "Floor")
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
-		SeatMapSectionCreate{OrganizerId: orgID, Name: "A/B", Position: 1})
+		SeatMapSectionCreate{Name: "A/B", Position: 1})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("section name with '/' must be 400, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -588,17 +588,17 @@ func TestPublicPerformanceDetailCarriesSeatMapID(t *testing.T) {
 	venueID := seedVenue(t, e, "La Grande Salle")
 	m := seedPublishedMap(t, e, venueID, "Main floor")
 	event := decode[Event](t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "Récital", "en": "Recital"},
+		Name: LocalizedString{"fr": "Récital", "en": "Recital"},
 	}))
 	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
 
 	for _, seatMap := range []*openapi_types.UUID{&m.Id, nil} {
 		perf := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
-			OrganizerId: orgID, EventId: event.Id, VenueId: venueID,
+			EventId: event.Id, VenueId: venueID,
 			StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: seatMap,
 		}))
 		e.do("POST", "/ticket-types", TicketTypeCreate{
-			OrganizerId: orgID, PerformanceId: perf.Id,
+			PerformanceId: perf.Id,
 			Name:  LocalizedString{"fr": "Place", "en": "Seat"},
 			Price: Money{Amount: 5000, Currency: "EUR"},
 		})

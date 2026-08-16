@@ -656,6 +656,11 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 		// Supplied here so this probe still tests what it is about (that the
 		// server path does not migrate) rather than failing at configuration.
 		"-e", "CATALOG_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN"),
+		// TKT-245: and its organizer-assertion signing key, for the same reason.
+		// The startup guard is tested by TestServerRefusesToStartWithoutAReal‑
+		// Credential; here it would only stop this probe from reaching the thing
+		// it exists to observe.
+		"-e", "CATALOG_ORGANIZER_ASSERTION_KEY="+os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"),
 		project+"-catalog").CombinedOutput()
 	if err != nil {
 		t.Fatalf("start probe: %v: %s", err, out)

@@ -17,10 +17,10 @@ import (
 func TestInventoryContentionSafeHolds(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	inventory := gatewayURL + "/api/inventory"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Contention Hall", "ga_capacity": 10})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Test contention", "en": "Contention test"}})
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-10-01T20:00:00Z", "timezone": "UTC"})
-	created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": "Contention Hall", "ga_capacity": 10})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Test contention", "en": "Contention test"}})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-10-01T20:00:00Z", "timezone": "UTC"})
+	created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}
@@ -88,10 +88,10 @@ func TestInventoryContentionSafeHolds(t *testing.T) {
 func TestChannelAllocationContention(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	inventory := gatewayURL + "/api/inventory"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Channel Hall", "ga_capacity": 10})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Test canaux", "en": "Channel test"}})
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
-	created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": "Channel Hall", "ga_capacity": 10})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Test canaux", "en": "Channel test"}})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
+	created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}
@@ -158,10 +158,10 @@ func TestChannelAllocationContention(t *testing.T) {
 func TestCapacityAdjustmentDuringHoldBurstStaysOversellFree(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	inventory := gatewayURL + "/api/inventory"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Adjustment Hall", "ga_capacity": 10})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Test ajustement", "en": "Adjustment test"}})
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-12-01T20:00:00Z", "timezone": "UTC"})
-	created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": "Adjustment Hall", "ga_capacity": 10})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Test ajustement", "en": "Adjustment test"}})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-12-01T20:00:00Z", "timezone": "UTC"})
+	created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}

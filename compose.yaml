@@ -164,6 +164,12 @@ services:
       # Held by catalog and the back office and nothing else — deliberately NOT in
       # the shared &go-env anchor, which every service inherits.
       CATALOG_STAFF_WRITE_TOKEN: ${CATALOG_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # TKT-245: the key catalog SIGNS organizer assertions with. Held by catalog
+      # alone — the back office receives minted assertions in the sign-in
+      # response and never the key, which is what makes the assertion a boundary
+      # rather than a formality. Catalog refuses to start when it equals either
+      # credential above.
+      CATALOG_ORGANIZER_ASSERTION_KEY: ${CATALOG_ORGANIZER_ASSERTION_KEY:?no default is shipped - run 'make up' once to generate a local signing key}
     # Catalog's internal surface is deliberately not routed through the gateway
     # (public edge), same as inventory's. Since TKT-210 that surface includes the
 

@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	CatalogOrganizerAssertionScopes   catalogOrganizerAssertionContextKey   = "CatalogOrganizerAssertion.Scopes"
 	CatalogStaffWriteCredentialScopes catalogStaffWriteCredentialContextKey = "CatalogStaffWriteCredential.Scopes"
 )
 
@@ -521,8 +522,7 @@ type ChannelCreate struct {
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
-	Kind        ChannelKind        `json:"kind"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Kind ChannelKind `json:"kind"`
 }
 
 // ChannelKind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
@@ -542,9 +542,6 @@ type ChannelUpdate struct {
 
 	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
 	Kind ChannelKind `json:"kind"`
-
-	// OrganizerId The tenant the channel must belong to (TKT-236). Scopes the write: a channel owned by another organizer is refused with 404, exactly as a channel that does not exist. An id alone is not an authorization boundary — callers take it from a form field, and catalog authenticates the calling PROCESS rather than the staff member behind it (ADR-021), so the predicate has to be in the query.
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
 // Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
@@ -581,8 +578,7 @@ type EventCreate struct {
 	Description *LocalizedString `json:"description,omitempty"`
 
 	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
-	Name        LocalizedString    `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Name LocalizedString `json:"name"`
 }
 
 // FeeCodeResolution One fee code's outcome. candidates holds every rule that competed for this code EXCEPT the winner, ordered by rule id — representation only, carrying no precedence.
@@ -683,9 +679,8 @@ type FestivalStatus string
 // FestivalCreate defines model for FestivalCreate.
 type FestivalCreate struct {
 	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
-	Name           LocalizedString    `json:"name"`
-	OrganizerId    openapi_types.UUID `json:"organizer_id"`
-	SharedCapacity int32              `json:"shared_capacity"`
+	Name           LocalizedString `json:"name"`
+	SharedCapacity int32           `json:"shared_capacity"`
 }
 
 // FestivalDayAttach defines model for FestivalDayAttach.
@@ -803,7 +798,6 @@ type PerformanceCreate struct {
 
 	// OperatingDate Local operating date for day kinds
 	OperatingDate *openapi_types.Date `json:"operating_date,omitempty"`
-	OrganizerId   openapi_types.UUID  `json:"organizer_id"`
 
 	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
 	ReEntry *ReEntryPolicy `json:"re_entry,omitempty"`
@@ -1024,8 +1018,7 @@ type Season struct {
 // SeasonCreate defines model for SeasonCreate.
 type SeasonCreate struct {
 	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
-	Name        LocalizedString    `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Name LocalizedString `json:"name"`
 }
 
 // SeasonEventAttach defines model for SeasonEventAttach.
@@ -1068,8 +1061,7 @@ type SeatMapStatus string
 
 // SeatMapCreate defines model for SeatMapCreate.
 type SeatMapCreate struct {
-	Name        string             `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Name string `json:"name"`
 
 	// OrphanPreventionEnabled Refuse a seat selection that would strand a lone free seat in a row (ADR-041). Optional and defaulting to false, so a caller that has never heard of the rule creates exactly the map it created before. Nothing enforces it yet — TKT-181 puts it on the wire, TKT-182 acts on it.
 	OrphanPreventionEnabled *bool `json:"orphan_prevention_enabled,omitempty"`
@@ -1077,8 +1069,6 @@ type SeatMapCreate struct {
 
 // SeatMapEdit Full replacement geometry for a published seat map (TKT-105). Mirrors the store's EditSeatMapInput; seat identity is composed server-side from the section/row/seat labels, so no component may contain the '/' delimiter.
 type SeatMapEdit struct {
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-
 	// OrphanPreventionEnabled Omit to INHERIT the edited version's setting; set to apply a new value to the newly minted version only (ADR-029: the edited version is immutable and is never altered either way). Inheritance is the default because an edit is a geometry change — a staffer who says nothing about the rule must not silently switch it off.
 	OrphanPreventionEnabled *bool                `json:"orphan_prevention_enabled,omitempty"`
 	Sections                []SeatMapEditSection `json:"sections"`
@@ -1117,25 +1107,22 @@ type SeatMapList struct {
 
 // SeatMapRowCreate defines model for SeatMapRowCreate.
 type SeatMapRowCreate struct {
-	Label       string             `json:"label"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	Position    int32              `json:"position"`
-	SectionId   openapi_types.UUID `json:"section_id"`
+	Label     string             `json:"label"`
+	Position  int32              `json:"position"`
+	SectionId openapi_types.UUID `json:"section_id"`
 }
 
 // SeatMapSeatCreate defines model for SeatMapSeatCreate.
 type SeatMapSeatCreate struct {
-	Label       string             `json:"label"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	Position    int32              `json:"position"`
-	RowId       openapi_types.UUID `json:"row_id"`
+	Label    string             `json:"label"`
+	Position int32              `json:"position"`
+	RowId    openapi_types.UUID `json:"row_id"`
 }
 
 // SeatMapSectionCreate defines model for SeatMapSectionCreate.
 type SeatMapSectionCreate struct {
-	Name        string             `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	Position    int32              `json:"position"`
+	Name     string `json:"name"`
+	Position int32  `json:"position"`
 }
 
 // SeatMapVersionHistory A seat-map family's versions (TKT-105), newest first.
@@ -1178,8 +1165,7 @@ type SeriesCreate struct {
 	EventId openapi_types.UUID `json:"event_id"`
 
 	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
-	Name        LocalizedString    `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Name LocalizedString `json:"name"`
 }
 
 // SeriesLifecycleResult defines model for SeriesLifecycleResult.
@@ -1265,8 +1251,12 @@ type StaffCredentials struct {
 
 // StaffPrincipal Who signed in, and in what role. Carries no password material of any kind.
 // The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
+// organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
 type StaffPrincipal struct {
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	// OrganizerAssertion Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+	// Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+	OrganizerAssertion string             `json:"organizer_assertion"`
+	OrganizerId        openapi_types.UUID `json:"organizer_id"`
 
 	// Role The staff role vocabulary (TKT-197). This enum is the SINGLE source: it generates the Go constants catalog validates against and the TypeScript union the back office's route matrix is typed on, so adding a role here without deciding its permissions fails the back-office build rather than silently defaulting to something permissive.
 	// Deliberately NOT also a CHECK constraint on staff_accounts.role. That would be a second hand-written vocabulary to keep in step, and per ADR-021 it constrains nobody who can write the database — they can drop the constraint or grant themselves admin. The fail-closed boundary is the application: an unrecognised stored role does not authenticate.
@@ -1298,7 +1288,6 @@ type TicketType struct {
 type TicketTypeCreate struct {
 	// Name Locale-keyed text; adding a locale is data, not a schema change (TKT-36)
 	Name          LocalizedString    `json:"name"`
-	OrganizerId   openapi_types.UUID `json:"organizer_id"`
 	PerformanceId openapi_types.UUID `json:"performance_id"`
 
 	// Price Integer minor units + ISO-4217 code (ADR-001); no floats, ever
@@ -1316,15 +1305,13 @@ type Venue struct {
 
 // VenueCreate defines model for VenueCreate.
 type VenueCreate struct {
-	GaCapacity  int32              `json:"ga_capacity"`
-	Name        string             `json:"name"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	GaCapacity int32  `json:"ga_capacity"`
+	Name       string `json:"name"`
 }
 
 // VenueGaCapacityUpdate defines model for VenueGaCapacityUpdate.
 type VenueGaCapacityUpdate struct {
-	GaCapacity  int32              `json:"ga_capacity"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	GaCapacity int32 `json:"ga_capacity"`
 }
 
 // ChannelId defines model for ChannelId.
@@ -1371,6 +1358,9 @@ type NotFound = Error
 
 // StaffWriteUnauthorized defines model for StaffWriteUnauthorized.
 type StaffWriteUnauthorized = Error
+
+// catalogOrganizerAssertionContextKey is the context key for CatalogOrganizerAssertion security scheme
+type catalogOrganizerAssertionContextKey string
 
 // catalogStaffWriteCredentialContextKey is the context key for CatalogStaffWriteCredential security scheme
 type catalogStaffWriteCredentialContextKey string
@@ -1895,6 +1885,8 @@ func (siw *ServerInterfaceWrapper) CreateChannel(w http.ResponseWriter, r *http.
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -1927,6 +1919,8 @@ func (siw *ServerInterfaceWrapper) UpdateChannel(w http.ResponseWriter, r *http.
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -1947,6 +1941,8 @@ func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Re
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -1966,6 +1962,8 @@ func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Re
 func (siw *ServerInterfaceWrapper) CreateFestival(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2184,6 +2182,8 @@ func (siw *ServerInterfaceWrapper) GetOpenAPISpec(w http.ResponseWriter, r *http
 func (siw *ServerInterfaceWrapper) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2636,6 +2636,8 @@ func (siw *ServerInterfaceWrapper) CreateSeason(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2732,6 +2734,8 @@ func (siw *ServerInterfaceWrapper) EditSeatMap(w http.ResponseWriter, r *http.Re
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2796,6 +2800,8 @@ func (siw *ServerInterfaceWrapper) AddSeatMapRow(w http.ResponseWriter, r *http.
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2827,6 +2833,8 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSeat(w http.ResponseWriter, r *http
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2860,6 +2868,8 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSection(w http.ResponseWriter, r *h
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2879,6 +2889,8 @@ func (siw *ServerInterfaceWrapper) AddSeatMapSection(w http.ResponseWriter, r *h
 func (siw *ServerInterfaceWrapper) CreateSeries(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -3016,6 +3028,8 @@ func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *ht
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -3078,6 +3092,8 @@ func (siw *ServerInterfaceWrapper) CreateVenue(w http.ResponseWriter, r *http.Re
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -3110,6 +3126,8 @@ func (siw *ServerInterfaceWrapper) UpdateVenueGaCapacity(w http.ResponseWriter, 
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -3141,6 +3159,8 @@ func (siw *ServerInterfaceWrapper) CreateSeatMap(w http.ResponseWriter, r *http.
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 

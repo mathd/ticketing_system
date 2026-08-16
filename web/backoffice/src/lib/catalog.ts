@@ -56,20 +56,34 @@ function staffWriteCredential(): string {
   return token;
 }
 
-/** Headers for every catalog write. One helper, so no call site can forget. */
-function writeHeaders(): Record<string, string> {
-  return {
+/**
+ * Headers for every catalog write. One helper, so no call site can forget.
+ *
+ * `assertion` is the session's organizer assertion (TKT-245). It is REQUIRED on
+ * every write except the sign-in that issues one — catalog reads the organizer
+ * from it and accepts none in a request body — so it is a positional parameter
+ * rather than an option: a call site that forgets it does not compile.
+ */
+function writeHeaders(assertion?: string): Record<string, string> {
+  const headers: Record<string, string> = {
     'content-type': 'application/json',
     'X-Catalog-Staff-Write-Token': staffWriteCredential(),
   };
+  if (assertion) {
+    headers['X-Catalog-Organizer-Assertion'] = assertion;
+  }
+  return headers;
 }
 
-// v1 has a single organizer (US-002 AC5); the fixed UUID is seeded by the
-// catalog migration (0002). When admin auth lands this comes from the session.
-export const DEFAULT_ORGANIZER_ID = '00000000-0000-0000-0000-000000000001';
-
-/** The venue list page's single read: the organizer's venues (hours tier). */
-export async function getVenues(organizerId = DEFAULT_ORGANIZER_ID): Promise<Venue[]> {
+// A READ scoped by an explicit organizer parameter — not authorization.
+//
+// `organizerId` here is a filter on a PUBLIC endpoint, and it stays a required
+// parameter (TKT-245 removed its default, which was a hardcoded v1 organizer with
+// a note saying "when admin auth lands this comes from the session" — this is that
+// landing). Every caller passes the session's organizer. It carries no authority:
+// the data behind it is public, and writes take their organizer from the signed
+// assertion instead.
+export async function getVenues(organizerId: string): Promise<Venue[]> {
   const url = `${GATEWAY_URL}/api/catalog/public/venues?organizer_id=${encodeURIComponent(organizerId)}`;
   const res = await fetch(url);
   if (!res.ok) {
@@ -82,7 +96,7 @@ export async function getVenues(organizerId = DEFAULT_ORGANIZER_ID): Promise<Ven
 /** One venue by id (v1 has no single-venue read; filter the organizer list). */
 export async function getVenue(
   venueId: string,
-  organizerId = DEFAULT_ORGANIZER_ID,
+  organizerId: string,
 ): Promise<Venue | undefined> {
   const venues = await getVenues(organizerId);
   return venues.find((v) => v.id === venueId);
@@ -106,10 +120,10 @@ async function parseError(res: Response): Promise<CatalogApiError> {
   return new CatalogApiError(res.status, message);
 }
 
-async function postCatalog<T>(path: string, body: unknown): Promise<T> {
+async function postCatalog<T>(path: string, assertion: string, body: unknown): Promise<T> {
   const res = await fetch(catalog(path), {
     method: 'POST',
-    headers: writeHeaders(),
+    headers: writeHeaders(assertion),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -124,14 +138,13 @@ async function postCatalog<T>(path: string, body: unknown): Promise<T> {
 export function createSeatMap(
   venueId: string,
   name: string,
+  assertion: string,
   // Orphan-seat prevention (ADR-041). Defaults off so an existing caller creates
   // exactly the map it created before; the flag is per version, and an edit that
   // omits it inherits rather than clears.
   orphanPreventionEnabled = false,
-  organizerId = DEFAULT_ORGANIZER_ID,
 ): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/venues/${encodeURIComponent(venueId)}/seat-maps`, {
-    organizer_id: organizerId,
+  return postCatalog<SeatMap>(`/venues/${encodeURIComponent(venueId)}/seat-maps`, assertion, {
     name,
     orphan_prevention_enabled: orphanPreventionEnabled,
   });
@@ -140,10 +153,9 @@ export function createSeatMap(
 export function addSeatMapSection(
   seatMapId: string,
   section: { name: string; position: number },
-  organizerId = DEFAULT_ORGANIZER_ID,
+  assertion: string,
 ): Promise<SeatSection> {
-  return postCatalog<SeatSection>(`/seat-maps/${encodeURIComponent(seatMapId)}/sections`, {
-    organizer_id: organizerId,
+  return postCatalog<SeatSection>(`/seat-maps/${encodeURIComponent(seatMapId)}/sections`, assertion, {
     ...section,
   });
 }
@@ -151,10 +163,9 @@ export function addSeatMapSection(
 export function addSeatMapRow(
   seatMapId: string,
   row: { section_id: string; label: string; position: number },
-  organizerId = DEFAULT_ORGANIZER_ID,
+  assertion: string,
 ): Promise<SeatRow> {
-  return postCatalog<SeatRow>(`/seat-maps/${encodeURIComponent(seatMapId)}/rows`, {
-    organizer_id: organizerId,
+  return postCatalog<SeatRow>(`/seat-maps/${encodeURIComponent(seatMapId)}/rows`, assertion, {
     ...row,
   });
 }
@@ -162,10 +173,9 @@ export function addSeatMapRow(
 export function addSeatMapSeat(
   seatMapId: string,
   seat: { row_id: string; label: string; position: number },
-  organizerId = DEFAULT_ORGANIZER_ID,
+  assertion: string,
 ): Promise<Seat> {
-  return postCatalog<Seat>(`/seat-maps/${encodeURIComponent(seatMapId)}/seats`, {
-    organizer_id: organizerId,
+  return postCatalog<Seat>(`/seat-maps/${encodeURIComponent(seatMapId)}/seats`, assertion, {
     ...seat,
   });
 }
@@ -199,9 +209,15 @@ export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeom
 // Editing surfaces the TKT-104 store contract over the new catalog endpoint; the
 // UI adds no domain logic. ---
 
-/** Publish a draft map (TKT-103). Idempotent server-side. */
+/**
+ * Publish a draft map (TKT-103). Idempotent server-side.
+ *
+ * No assertion: publish is a path-id transition, which catalog resolves from the
+ * seat-map id alone and which carries no organizer at any layer. Those writes are
+ * the follow-up slice to TKT-245, not this one — see ADR-058 § what stays open.
+ */
 export function publishSeatMap(seatMapId: string): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/publish`, null);
+  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/publish`, '', null);
 }
 
 /**
@@ -210,8 +226,12 @@ export function publishSeatMap(seatMapId: string): Promise<SeatMap> {
  * edit (would orphan a pinned seat) throws a CatalogApiError carrying the
  * actionable {error} message and 409 status.
  */
-export function editSeatMap(seatMapId: string, edit: SeatMapEdit): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/edit`, edit);
+export function editSeatMap(
+  seatMapId: string,
+  edit: SeatMapEdit,
+  assertion: string,
+): Promise<SeatMap> {
+  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/edit`, assertion, edit);
 }
 
 /**
@@ -230,21 +250,25 @@ export async function listSeatMapVersions(seatMapId: string): Promise<SeatMapVer
 export function updateVenueGaCapacity(
   venueId: string,
   gaCapacity: number,
-  organizerId = DEFAULT_ORGANIZER_ID,
+  assertion: string,
 ): Promise<Venue> {
-  return postCatalog<Venue>(`/venues/${encodeURIComponent(venueId)}/ga-capacity`, {
-    organizer_id: organizerId,
+  return postCatalog<Venue>(`/venues/${encodeURIComponent(venueId)}/ga-capacity`, assertion, {
     ga_capacity: gaCapacity,
   });
 }
 
 // --- Staff sign-in (TKT-190 / US-B1) ---
 
-/** Who is signed in. Carries no role: TKT-191 owns role semantics. */
+/** Who is signed in, and the credential that says which organizer for. */
 export interface StaffPrincipalDto {
   staffId: string;
   organizerId: string;
   role: StaffRole;
+  /**
+   * Catalog's signed organizer statement (TKT-245). Goes straight into the
+   * server-side session and is forwarded on writes; it is never rendered.
+   */
+  organizerAssertion: string;
 }
 
 /**
@@ -280,7 +304,12 @@ export async function authenticateStaff(
   if (!res.ok) {
     throw await parseError(res);
   }
-  const body = (await res.json()) as { staff_id: string; organizer_id: string; role: string };
+  const body = (await res.json()) as {
+    staff_id: string;
+    organizer_id: string;
+    role: string;
+    organizer_assertion: string;
+  };
   if (!isRecognisedRole(body.role)) {
     // Catalog validates the stored role too, so reaching this means the contract
     // and this client disagree about the vocabulary — a deployment skew. Refuse
@@ -288,7 +317,19 @@ export async function authenticateStaff(
     // fail-closed at every layer that handles a role is the whole design.
     throw new Error(`catalog returned an unrecognised staff role`);
   }
-  return { staffId: body.staff_id, organizerId: body.organizer_id, role: body.role };
+  // An empty assertion means catalog has no signing key configured (TKT-245).
+  // Refuse the sign-in rather than mint a session that cannot write: every
+  // subsequent write would 401, which reads to the staff member as "my password
+  // works but nothing I do saves" — the least diagnosable failure available.
+  if (!body.organizer_assertion) {
+    throw new Error('catalog returned no organizer assertion; it is running without a signing key');
+  }
+  return {
+    staffId: body.staff_id,
+    organizerId: body.organizer_id,
+    role: body.role,
+    organizerAssertion: body.organizer_assertion,
+  };
 }
 
 // --- Event authoring (TKT-192 / US-B3) ---
@@ -308,16 +349,15 @@ export type Performance = components['schemas']['Performance'];
 export type TicketType = components['schemas']['TicketType'];
 export type LocalizedStringDto = components['schemas']['LocalizedString'];
 
-export function createEvent(organizerId: string, name: LocalizedStringDto): Promise<Event> {
-  return postCatalog<Event>('/events', { organizer_id: organizerId, name });
+export function createEvent(assertion: string, name: LocalizedStringDto): Promise<Event> {
+  return postCatalog<Event>('/events', assertion, { name });
 }
 
 export function createPerformance(
-  organizerId: string,
+  assertion: string,
   input: { eventId: string; venueId: string; startsAt: string; timezone: string },
 ): Promise<Performance> {
-  return postCatalog<Performance>('/performances', {
-    organizer_id: organizerId,
+  return postCatalog<Performance>('/performances', assertion, {
     event_id: input.eventId,
     venue_id: input.venueId,
     // RFC 3339 with an explicit offset, and the IANA zone alongside it. A
@@ -330,11 +370,10 @@ export function createPerformance(
 }
 
 export function createTicketType(
-  organizerId: string,
+  assertion: string,
   input: { performanceId: string; name: LocalizedStringDto; amount: number; currency: string },
 ): Promise<TicketType> {
-  return postCatalog<TicketType>('/ticket-types', {
-    organizer_id: organizerId,
+  return postCatalog<TicketType>('/ticket-types', assertion, {
     performance_id: input.performanceId,
     name: input.name,
     // Integer minor units + ISO code, parsed as such (ADR-001). Nothing on this
@@ -350,8 +389,10 @@ export function createTicketType(
  * CatalogApiError whose message is catalog's own.
  */
 export function publishPerformance(performanceId: string): Promise<Performance> {
+  // No assertion: a path-id transition, the follow-up slice (ADR-058).
   return postCatalog<Performance>(
     `/performances/${encodeURIComponent(performanceId)}/publish`,
+    '',
     null,
   );
 }
@@ -392,10 +433,17 @@ const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8081';
  * to name whose channels it wants — and every call site takes it from the
  * session.
  */
-export async function listChannelsForOperator(organizerId: string): Promise<Channel[]> {
-  const url = `${CATALOG_URL}/internal/channels?organizer_id=${encodeURIComponent(organizerId)}`;
+export async function listChannelsForOperator(assertion: string): Promise<Channel[]> {
+  // No organizer in the URL (TKT-245). This read returns every channel of an
+  // organizer — ids, codes and disabled rows that appear nowhere public — and
+  // naming the tenant in a query string is exactly the enumeration ADR-053
+  // recorded. Catalog takes it from the assertion instead.
+  const url = `${CATALOG_URL}/internal/channels`;
   const res = await fetch(url, {
-    headers: { 'X-Catalog-Staff-Write-Token': staffWriteCredential() },
+    headers: {
+      'X-Catalog-Staff-Write-Token': staffWriteCredential(),
+      'X-Catalog-Organizer-Assertion': assertion,
+    },
   });
   if (!res.ok) {
     throw await parseError(res);
@@ -409,11 +457,10 @@ export async function listChannelsForOperator(organizerId: string): Promise<Chan
 }
 
 export function createChannel(
-  organizerId: string,
+  assertion: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled?: boolean },
 ): Promise<Channel> {
-  return postCatalog<Channel>('/channels', {
-    organizer_id: organizerId,
+  return postCatalog<Channel>('/channels', assertion, {
     code: input.code,
     display_name: input.displayName,
     kind: input.kind,
@@ -424,26 +471,26 @@ export function createChannel(
 /**
  * Update a channel's display name, kind and enabled flag.
  *
- * FULL REPLACEMENT, scoped to `organizerId` — which the caller must take from
- * its SESSION, never from the request. `code` is required in the body even
+ * FULL REPLACEMENT, scoped to the organizer the ASSERTION names (TKT-245) —
+ * which the caller can no longer choose at all. `code` is required in the body even
  * though it cannot change: catalog compares it against the stored code and answers 409 on a
  * mismatch, so the caller states which channel it believes it is updating
  * (TKT-235). Every field must be sent — omitting `enabled` would not "leave it
  * alone", it would send `false`.
  */
 export async function updateChannel(
-  organizerId: string,
+  assertion: string,
   channelId: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
 ): Promise<Channel> {
   const res = await fetch(catalog(`/channels/${encodeURIComponent(channelId)}`), {
     method: 'PUT',
-    headers: writeHeaders(),
+    headers: writeHeaders(assertion),
     body: JSON.stringify({
-      // Scopes the write to the caller's tenant (TKT-236 ai-review). The channel
-      // id comes from a form field, and an id is not an authorization boundary;
-      // catalog refuses a channel owned by another organizer with 404.
-      organizer_id: organizerId,
+      // The channel id still comes from a form field, and an id is still not an
+      // authorization boundary — but the tenant it is checked against now comes
+      // from the assertion rather than the body, so catalog refuses another
+      // organizer's channel with 404 whatever the caller claims (TKT-245).
       code: input.code,
       display_name: input.displayName,
       kind: input.kind,

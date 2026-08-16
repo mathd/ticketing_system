@@ -1299,13 +1299,30 @@ type env struct {
 	handler http.Handler
 	router  routers.Router // spec router for response validation
 	t       *testing.T
+	// organizer is the tenant every write through e.do() acts for (TKT-245). It
+	// used to be a value each fixture put in the request body; now it is the one
+	// the assertion names, because that is the only place a handler can read it.
+	organizer uuid.UUID
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	// Keyed, so the whole env can exercise the organizer assertion (TKT-245): an
+	// unkeyed server verifies nothing, which would make every assertion test in
+	// this package pass for the wrong reason.
+	return newEnvWithAssertionKey(t, testOrganizerAssertionKey)
+}
+
+// newEnvWithAssertionKey builds the same env with a chosen assertion key. Pass ""
+// for the unkeyed server -- the construction path that forgets, which must mint
+// and verify nothing rather than minting something unverifiable.
+func newEnvWithAssertionKey(t *testing.T, assertionKey string) *env {
+	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
-	h, err := NewRouter(NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken), true)
+	srv := NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken).
+		WithOrganizerAssertionKey(assertionKey)
+	h, err := NewRouter(srv, true)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
@@ -1318,7 +1335,11 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatalf("spec router: %v", err)
 	}
-	return &env{store: st, pub: pub, handler: h, router: router, t: t}
+	// The env acts for the same organizer the fixtures have always used, so
+	// assertions that compare a stored row against orgID keep meaning what they
+	// meant (TKT-245). What changed is HOW the value reaches the handler: it used
+	// to be in every request body, and is now signed into the assertion header.
+	return &env{store: st, pub: pub, handler: h, router: router, t: t, organizer: orgID}
 }
 
 func TestInternalTicketTypeRequiresCredential(t *testing.T) {
@@ -1455,7 +1476,6 @@ func (e *env) doWithHeaders(method, path string, body any, hdr map[string]string
 // on the guard is never accidentally satisfied by a 400 from the validator.
 func validEventCreate() EventCreate {
 	return EventCreate{
-		OrganizerId: orgID,
 		Name:        LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
 	}
 }
@@ -1481,6 +1501,12 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 	// silently acquiring a guard.
 	if !isSafeMethod(method) {
 		req.Header.Set(staffWriteHeader, testStaffWriteToken)
+		// TKT-245: and the organizer assertion, which is where the organizer now
+		// comes from. Attached for the same reason as the credential above — so
+		// existing happy paths keep reaching their handlers — and it names
+		// e.organizer, which is what fixtures must use when they need to know
+		// which tenant a write landed in.
+		req.Header.Set(organizerAssertionHeader, e.assertionFor(e.organizer))
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)
@@ -1488,9 +1514,21 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 	return rec
 }
 
+// assertionFor mints a valid assertion naming an organizer, for tests that need
+// to act as a DIFFERENT tenant than the env's default -- the cross-tenant cases.
+func (e *env) assertionFor(organizerID uuid.UUID) string {
+	e.t.Helper()
+	return mintOrganizerAssertion(testOrganizerAssertionKey, uuid.New(), organizerID, time.Now().Add(time.Hour))
+}
+
 // testStaffWriteToken is the credential newEnv configures; do() presents it on
 // unsafe requests. Guard tests use doWithHeaders to present something else.
 const testStaffWriteToken = "test-staff-write-token"
+
+// Distinct from testStaffWriteToken on purpose (TKT-245): the two answer
+// different questions, and a test suite that used one value for both could not
+// tell "the credential was accepted" from "the assertion verified".
+const testOrganizerAssertionKey = "test-organizer-assertion-key"
 
 func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder) {
 	e.t.Helper()
@@ -1540,20 +1578,19 @@ var orgID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 func (e *env) createFixture(publish bool) (eventID, performanceID uuid.UUID) {
 	e.t.Helper()
 	venue := decode[Venue](e.t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: "Le Zénith", GaCapacity: 500}))
+		VenueCreate{Name: "Le Zénith", GaCapacity: 500}))
 	desc := LocalizedString{"fr": "Une soirée électro.", "en": "An electro night."}
 	event := decode[Event](e.t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID,
 		Name:        LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
 		Description: &desc,
 	}))
 	startsAt := time.Date(2026, 9, 18, 19, 30, 0, 0, time.UTC)
 	perf := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
+		EventId: event.Id, VenueId: venue.Id,
 		StartsAt: &startsAt, Timezone: "Europe/Paris",
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
-		OrganizerId: orgID, PerformanceId: perf.Id,
+		PerformanceId: perf.Id,
 		Name:  LocalizedString{"fr": "Admission générale", "en": "General admission"},
 		Price: Money{Amount: 4550, Currency: "EUR"},
 	})
@@ -1568,7 +1605,7 @@ func (e *env) createFixture(publish bool) (eventID, performanceID uuid.UUID) {
 
 func TestCreateVenue(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do("POST", "/venues", VenueCreate{OrganizerId: orgID, Name: "Halle A", GaCapacity: 1200})
+	rec := e.do("POST", "/venues", VenueCreate{Name: "Halle A", GaCapacity: 1200})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -1580,7 +1617,7 @@ func TestCreateVenue(t *testing.T) {
 func TestCreateVenueRejectsInvalidBody(t *testing.T) {
 	e := newEnv(t)
 	// ga_capacity below minimum: rejected by the spec middleware, not handler code.
-	rec := e.do("POST", "/venues", VenueCreate{OrganizerId: orgID, Name: "Halle A", GaCapacity: 0})
+	rec := e.do("POST", "/venues", VenueCreate{Name: "Halle A", GaCapacity: 0})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -1589,7 +1626,7 @@ func TestCreateVenueRejectsInvalidBody(t *testing.T) {
 func TestCreateEventRequiresAllSupportedLocales(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "Sans anglais"},
+		Name: LocalizedString{"fr": "Sans anglais"},
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
@@ -1602,13 +1639,13 @@ func TestCreateEventRequiresAllSupportedLocales(t *testing.T) {
 func TestCreatePerformanceValidations(t *testing.T) {
 	e := newEnv(t)
 	venue := decode[Venue](e.t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: "Halle A", GaCapacity: 100}))
+		VenueCreate{Name: "Halle A", GaCapacity: 100}))
 	event := decode[Event](e.t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "F", "en": "E"},
+		Name: LocalizedString{"fr": "F", "en": "E"},
 	}))
 
 	startsAt := time.Now().UTC()
-	base := PerformanceCreate{OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
+	base := PerformanceCreate{EventId: event.Id, VenueId: venue.Id,
 		StartsAt: &startsAt, Timezone: "Europe/Paris"}
 
 	unknownEvent := base
@@ -1623,9 +1660,16 @@ func TestCreatePerformanceValidations(t *testing.T) {
 		t.Fatalf("bad timezone: status %d", rec.Code)
 	}
 
-	crossOrg := base
-	crossOrg.OrganizerId = uuid.New()
-	if rec := e.do("POST", "/performances", crossOrg); rec.Code != http.StatusBadRequest {
+	// Cross-organizer, now expressed the only way it still can be (TKT-245): the
+	// body cannot name an organizer at all, so the attempt is a caller ACTING for
+	// another tenant -- a valid assertion for a different organizer -- reaching for
+	// this tenant's event. Before, this test set a field; that it can no longer be
+	// written that way is the ticket's whole point.
+	crossOrgAssertion := e.assertionFor(uuid.New())
+	if rec := e.doWithHeaders("POST", "/performances", base, map[string]string{
+		staffWriteHeader:         testStaffWriteToken,
+		organizerAssertionHeader: crossOrgAssertion,
+	}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("cross-organizer: status %d", rec.Code)
 	}
 
@@ -1862,13 +1906,13 @@ func TestPublicListExcludesDraftsAndPublishRequiresPrice(t *testing.T) {
 	// Publishing without a ticket type is refused (409): the publication
 	// event and public visibility must never disagree.
 	venue := decode[Venue](e.t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: "Halle B", GaCapacity: 50}))
+		VenueCreate{Name: "Halle B", GaCapacity: 50}))
 	event := decode[Event](e.t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "Brouillon", "en": "Draft"},
+		Name: LocalizedString{"fr": "Brouillon", "en": "Draft"},
 	}))
 	startsAt := time.Now().UTC()
 	perf := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: event.Id, VenueId: venue.Id,
+		EventId: event.Id, VenueId: venue.Id,
 		StartsAt: &startsAt, Timezone: "Europe/Paris",
 	}))
 	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusConflict {
@@ -1936,16 +1980,16 @@ func TestSeriesSeasonLifecycleAndPublicGrouping(t *testing.T) {
 	eventID, firstID := e.createFixture(false)
 	first := e.store.performances[firstID]
 	startsAt := first.StartsAt.Add(24 * time.Hour)
-	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{OrganizerId: orgID, EventId: eventID, VenueId: first.VenueID, StartsAt: &startsAt, Timezone: first.Timezone}))
-	e.do("POST", "/ticket-types", TicketTypeCreate{OrganizerId: orgID, PerformanceId: second.Id, Name: LocalizedString{"en": "Second", "fr": "Deuxième"}, Price: Money{Amount: 5000, Currency: "EUR"}})
+	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{EventId: eventID, VenueId: first.VenueID, StartsAt: &startsAt, Timezone: first.Timezone}))
+	e.do("POST", "/ticket-types", TicketTypeCreate{PerformanceId: second.Id, Name: LocalizedString{"en": "Second", "fr": "Deuxième"}, Price: Money{Amount: 5000, Currency: "EUR"}})
 
-	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{OrganizerId: orgID, EventId: eventID, Name: LocalizedString{"en": "Autumn run", "fr": "Série automne"}}))
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{EventId: eventID, Name: LocalizedString{"en": "Autumn run", "fr": "Série automne"}}))
 	series = decode[Series](t, e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: second.Id, Position: 2}))
 	series = decode[Series](t, e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1}))
 	if len(series.Members) != 2 || series.Members[0].PerformanceId != firstID {
 		t.Fatalf("series members = %+v", series.Members)
 	}
-	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{OrganizerId: orgID, Name: LocalizedString{"en": "2026 season", "fr": "Saison 2026"}}))
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{Name: LocalizedString{"en": "2026 season", "fr": "Saison 2026"}}))
 	e.do("POST", "/seasons/"+season.Id.String()+"/series", SeasonSeriesAttach{SeriesId: series.Id})
 	e.do("POST", "/seasons/"+season.Id.String()+"/events", SeasonEventAttach{EventId: eventID})
 
@@ -1979,11 +2023,11 @@ func (e *env) createFestivalDay(venueID, eventID uuid.UUID, day int) Performance
 	opens, closes := "12:00", "23:00"
 	date := openapi_types.Date{Time: time.Date(2026, 8, day, 0, 0, 0, 0, time.UTC)}
 	p := decode[Performance](e.t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		EventId: eventID, VenueId: venueID, Kind: &kind,
 		OperatingDate: &date, OpensAt: &opens, ClosesAt: &closes, Timezone: "America/Toronto",
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
-		OrganizerId: orgID, PerformanceId: p.Id,
+		PerformanceId: p.Id,
 		Name:  LocalizedString{"en": fmt.Sprintf("Day %d", day), "fr": fmt.Sprintf("Jour %d", day)},
 		Price: Money{Amount: 7500, Currency: "CAD"},
 	})
@@ -1995,7 +2039,7 @@ func TestFestivalCreateAttachDaysAndSharedCapacity(t *testing.T) {
 	venueID, eventID := e.dayEnv()
 	first, second := e.createFestivalDay(venueID, eventID, 1), e.createFestivalDay(venueID, eventID, 2)
 	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
-		OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
+		Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
 	}))
 	festival = decode[Festival](t, e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}))
 	festival = decode[Festival](t, e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: second.Id}))
@@ -2016,7 +2060,7 @@ func TestFestivalCreateAttachDaysAndSharedCapacity(t *testing.T) {
 	crossOrg.CapacityGroupID = nil
 	crossOrg.OrganizerID = uuid.New()
 	e.store.performances[first.Id] = crossOrg
-	otherFestival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Other", "fr": "Autre"}, SharedCapacity: 50}))
+	otherFestival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{Name: LocalizedString{"en": "Other", "fr": "Autre"}, SharedCapacity: 50}))
 	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("cross-organizer attach: %d", rec.Code)
 	}
@@ -2039,7 +2083,7 @@ func TestFestivalPublishCascadesAndEmitsSharedCapacity(t *testing.T) {
 	e := newEnv(t)
 	venueID, eventID := e.dayEnv()
 	days := []Performance{e.createFestivalDay(venueID, eventID, 1), e.createFestivalDay(venueID, eventID, 2)}
-	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
 	for _, day := range days {
 		e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
 	}
@@ -2071,7 +2115,7 @@ func TestGroupedFestivalDayLifecycleMustUseFestivalCascade(t *testing.T) {
 	venueID, eventID := e.dayEnv()
 	day := e.createFestivalDay(venueID, eventID, 1)
 	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
-		OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
+		Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000,
 	}))
 	e.do("POST", "/festivals/"+festival.Id.String()+"/days", FestivalDayAttach{PerformanceId: day.Id})
 
@@ -2107,7 +2151,7 @@ func TestGroupedFestivalDayLifecycleMustUseFestivalCascade(t *testing.T) {
 func TestFestivalPublicGroupedRead(t *testing.T) {
 	e := newEnv(t)
 	venueID, eventID := e.dayEnv()
-	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{Name: LocalizedString{"en": "Summer Fest", "fr": "Festival d'été"}, SharedCapacity: 1000}))
 	if rec := e.do("GET", "/public/festivals/"+festival.Id.String()+"?locale=en", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("draft festival public read: %d", rec.Code)
 	}
@@ -2131,11 +2175,11 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 	sellable := e.store.performances[sellableID]
 	startsAt := sellable.StartsAt.Add(48 * time.Hour)
 	blocking := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: sellable.VenueID,
+		EventId: eventID, VenueId: sellable.VenueID,
 		StartsAt: &startsAt, Timezone: sellable.Timezone,
 	}))
 	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
-		OrganizerId: orgID, EventId: eventID,
+		EventId: eventID,
 		Name: LocalizedString{"en": "Run", "fr": "Série"},
 	}))
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: sellableID, Position: 1})
@@ -2154,7 +2198,7 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 	}
 
 	e.do("POST", "/ticket-types", TicketTypeCreate{
-		OrganizerId: orgID, PerformanceId: blocking.Id,
+		PerformanceId: blocking.Id,
 		Name:  LocalizedString{"en": "Admission", "fr": "Admission"},
 		Price: Money{Amount: 2500, Currency: "CAD"},
 	})
@@ -2163,7 +2207,7 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 	}
 	newStart := startsAt.Add(24 * time.Hour)
 	late := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: sellable.VenueID,
+		EventId: eventID, VenueId: sellable.VenueID,
 		StartsAt: &newStart, Timezone: sellable.Timezone,
 	}))
 	if rec = e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: late.Id, Position: 3}); rec.Code != http.StatusConflict {
@@ -2177,16 +2221,16 @@ func TestSeriesArchiveBlocksOwedClosureThenEmitsInOrder(t *testing.T) {
 	first := e.store.performances[firstID]
 	startsAt := first.StartsAt.Add(24 * time.Hour)
 	second := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: first.VenueID,
+		EventId: eventID, VenueId: first.VenueID,
 		StartsAt: &startsAt, Timezone: first.Timezone,
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
-		OrganizerId: orgID, PerformanceId: second.Id,
+		PerformanceId: second.Id,
 		Name:  LocalizedString{"en": "Second", "fr": "Deuxième"},
 		Price: Money{Amount: 5000, Currency: "EUR"},
 	})
 	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
-		OrganizerId: orgID, EventId: eventID,
+		EventId: eventID,
 		Name: LocalizedString{"en": "Run", "fr": "Série"},
 	}))
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1})
@@ -2231,7 +2275,7 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 	e := newEnv(t)
 	eventID, performanceID := e.createFixture(true)
 	empty := decode[Series](t, e.do("POST", "/series", SeriesCreate{
-		OrganizerId: orgID, EventId: eventID,
+		EventId: eventID,
 		Name: LocalizedString{"en": "Empty", "fr": "Vide"},
 	}))
 	for _, action := range []string{"publish", "archive"} {
@@ -2252,7 +2296,7 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 	e.store.performances[otherPerformanceID] = otherPerformance
 	otherSeries := store.Series{ID: otherSeriesID, OrganizerID: otherOrg, EventID: otherEventID, Name: store.LocalizedText{"en": "Other", "fr": "Autre"}, Members: []store.SeriesMember{}, CreatedAt: time.Now().UTC()}
 	e.store.series[otherSeriesID] = otherSeries
-	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{OrganizerId: orgID, Name: LocalizedString{"en": "Season", "fr": "Saison"}}))
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{Name: LocalizedString{"en": "Season", "fr": "Saison"}}))
 
 	cases := []struct {
 		path string
@@ -2274,9 +2318,9 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 // dayEnv creates a venue + event and returns their ids for slot-kind tests.
 func (e *env) dayEnv() (venueID, eventID uuid.UUID) {
 	e.t.Helper()
-	v := decode[Venue](e.t, e.do("POST", "/venues", VenueCreate{OrganizerId: orgID, Name: "La Ronde", GaCapacity: 800}))
+	v := decode[Venue](e.t, e.do("POST", "/venues", VenueCreate{Name: "La Ronde", GaCapacity: 800}))
 	ev := decode[Event](e.t, e.do("POST", "/events", EventCreate{
-		OrganizerId: orgID, Name: LocalizedString{"fr": "Journée parc", "en": "Park day"},
+		Name: LocalizedString{"fr": "Journée parc", "en": "Park day"},
 	}))
 	return v.Id, ev.Id
 }
@@ -2289,7 +2333,7 @@ func TestCreateOperatingDaySlot(t *testing.T) {
 	opDate := openapi_types.Date{Time: time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)}
 	max := int32(3)
 	rec := e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		EventId: eventID, VenueId: venueID, Kind: &kind,
 		OperatingDate: &opDate, OpensAt: &opens, ClosesAt: &closes, Timezone: "America/Toronto",
 		ReEntry: &ReEntryPolicy{Mode: "count_limited", MaxEntries: &max, RequiresExit: true},
 	})
@@ -2313,7 +2357,7 @@ func TestCreateSlotKindValidations(t *testing.T) {
 	e := newEnv(t)
 	venueID, eventID := e.dayEnv()
 	base := func() PerformanceCreate {
-		return PerformanceCreate{OrganizerId: orgID, EventId: eventID, VenueId: venueID, Timezone: "America/Toronto"}
+		return PerformanceCreate{EventId: eventID, VenueId: venueID, Timezone: "America/Toronto"}
 	}
 	opens, closes := "09:00", "17:00"
 	opDate := openapi_types.Date{Time: time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)}
@@ -2379,11 +2423,11 @@ func TestPublishEmitsSlotKind(t *testing.T) {
 	opens, closes := "12:00", "23:00"
 	opDate := openapi_types.Date{Time: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
 	perf := decode[Performance](t, e.do("POST", "/performances", PerformanceCreate{
-		OrganizerId: orgID, EventId: eventID, VenueId: venueID, Kind: &kind,
+		EventId: eventID, VenueId: venueID, Kind: &kind,
 		OperatingDate: &opDate, OpensAt: &opens, ClosesAt: &closes, Timezone: "Europe/Paris",
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
-		OrganizerId: orgID, PerformanceId: perf.Id,
+		PerformanceId: perf.Id,
 		Name: LocalizedString{"fr": "Pass jour", "en": "Day pass"}, Price: Money{Amount: 9000, Currency: "EUR"},
 	})
 	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
@@ -2537,12 +2581,21 @@ func TestListPublicVenues(t *testing.T) {
 	e := newEnv(t)
 	otherOrg := uuid.MustParse("00000000-0000-0000-0000-0000000000ff")
 	// Two venues for orgID, one for another organizer — the read must scope.
+	//
+	// The third is created by a caller ACTING FOR otherOrg (TKT-245): the organizer
+	// is no longer a body field, so the only way to seed another tenant's row is to
+	// present that tenant's assertion. Writing it any other way would leave all
+	// three venues under orgID and the "want 2" assertion below could not fail —
+	// a fixture that cannot construct the state it claims to test.
 	_ = decode[Venue](t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: "Zed Hall", GaCapacity: 900}))
+		VenueCreate{Name: "Zed Hall", GaCapacity: 900}))
 	_ = decode[Venue](t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: orgID, Name: "Alpha Room", GaCapacity: 200}))
-	_ = decode[Venue](t, e.do("POST", "/venues",
-		VenueCreate{OrganizerId: otherOrg, Name: "Not Ours", GaCapacity: 100}))
+		VenueCreate{Name: "Alpha Room", GaCapacity: 200}))
+	_ = decode[Venue](t, e.doWithHeaders("POST", "/venues",
+		VenueCreate{Name: "Not Ours", GaCapacity: 100}, map[string]string{
+			staffWriteHeader:         testStaffWriteToken,
+			organizerAssertionHeader: e.assertionFor(otherOrg),
+		}))
 
 	rec := e.do("GET", "/public/venues?organizer_id="+orgID.String(), nil)
 	if rec.Code != http.StatusOK {

@@ -114,10 +114,10 @@ func directService(url string) string {
 func publishedSlot(t *testing.T, name string, capacity int) (string, string) {
 	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": name, "ga_capacity": capacity})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": name, "en": name}})
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
-	tt := created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 2500, "currency": "EUR"}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": name, "ga_capacity": capacity})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": name, "en": name}})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
+	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 2500, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}

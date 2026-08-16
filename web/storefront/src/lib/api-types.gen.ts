@@ -847,6 +847,7 @@ export interface components {
         /**
          * @description Who signed in, and in what role. Carries no password material of any kind.
          *     The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
+         *     organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
          */
         StaffPrincipal: {
             /** Format: uuid */
@@ -854,6 +855,11 @@ export interface components {
             /** Format: uuid */
             organizer_id: string;
             role: components["schemas"]["StaffRole"];
+            /**
+             * @description Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+             *     Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+             */
+            organizer_assertion: string;
         };
         /** @description Locale-keyed text; adding a locale is data, not a schema change (TKT-36) */
         LocalizedString: {
@@ -1099,8 +1105,6 @@ export interface components {
             currency: string;
         };
         VenueCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: string;
             /** Format: int32 */
             ga_capacity: number;
@@ -1117,8 +1121,6 @@ export interface components {
             created_at: string;
         };
         SeatMapCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: string;
             /**
              * @description Refuse a seat selection that would strand a lone free seat in a row (ADR-041). Optional and defaulting to false, so a caller that has never heard of the rule creates exactly the map it created before. Nothing enforces it yet — TKT-181 puts it on the wire, TKT-182 acts on it.
@@ -1149,15 +1151,11 @@ export interface components {
             created_at: string;
         };
         SeatMapSectionCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: string;
             /** Format: int32 */
             position: number;
         };
         SeatMapRowCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             /** Format: uuid */
             section_id: string;
             label: string;
@@ -1165,8 +1163,6 @@ export interface components {
             position: number;
         };
         SeatMapSeatCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             /** Format: uuid */
             row_id: string;
             label: string;
@@ -1215,8 +1211,6 @@ export interface components {
         };
         /** @description Full replacement geometry for a published seat map (TKT-105). Mirrors the store's EditSeatMapInput; seat identity is composed server-side from the section/row/seat labels, so no component may contain the '/' delimiter. */
         SeatMapEdit: {
-            /** Format: uuid */
-            organizer_id: string;
             /** @description Omit to INHERIT the edited version's setting; set to apply a new value to the newly minted version only (ADR-029: the edited version is immutable and is never altered either way). Inheritance is the default because an edit is a geometry change — a staffer who says nothing about the rule must not silently switch it off. */
             orphan_prevention_enabled?: boolean;
             sections: components["schemas"]["SeatMapEditSection"][];
@@ -1239,14 +1233,10 @@ export interface components {
             position: number;
         };
         VenueGaCapacityUpdate: {
-            /** Format: uuid */
-            organizer_id: string;
             /** Format: int32 */
             ga_capacity: number;
         };
         EventCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: components["schemas"]["LocalizedString"];
             description?: components["schemas"]["LocalizedString"];
         };
@@ -1287,8 +1277,6 @@ export interface components {
         };
         /** @description Creates a dated slot in draft. kind defaults to 'performance' (which requires starts_at); 'festival_day'/'operating_day' require the operating window (operating_date + opens_at + closes_at). re_entry defaults to single-entry. */
         PerformanceCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             /** Format: uuid */
             event_id: string;
             /** Format: uuid */
@@ -1360,8 +1348,6 @@ export interface components {
         };
         TicketTypeCreate: {
             /** Format: uuid */
-            organizer_id: string;
-            /** Format: uuid */
             performance_id: string;
             name: components["schemas"]["LocalizedString"];
             price: components["schemas"]["Money"];
@@ -1379,8 +1365,6 @@ export interface components {
             created_at: string;
         };
         SeriesCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             /** Format: uuid */
             event_id: string;
             name: components["schemas"]["LocalizedString"];
@@ -1421,8 +1405,6 @@ export interface components {
             blocking_performance_id?: string;
         };
         SeasonCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: components["schemas"]["LocalizedString"];
         };
         SeasonSeriesAttach: {
@@ -1445,8 +1427,6 @@ export interface components {
             created_at: string;
         };
         FestivalCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             name: components["schemas"]["LocalizedString"];
             /** Format: int32 */
             shared_capacity: number;
@@ -1562,8 +1542,6 @@ export interface components {
         /** @description An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it. */
         ChannelCode: string;
         ChannelCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             code: components["schemas"]["ChannelCode"];
             display_name: string;
             kind: components["schemas"]["ChannelKind"];
@@ -1575,11 +1553,6 @@ export interface components {
         };
         /** @description A full replacement of the mutable fields. `code` is required and must equal the stored code — it is present so an update cannot be written against a channel the caller has misidentified, and a mismatch is a 409 rather than a rename. */
         ChannelUpdate: {
-            /**
-             * Format: uuid
-             * @description The tenant the channel must belong to (TKT-236). Scopes the write: a channel owned by another organizer is refused with 404, exactly as a channel that does not exist. An id alone is not an authorization boundary — callers take it from a form field, and catalog authenticates the calling PROCESS rather than the staff member behind it (ADR-021), so the predicate has to be in the query.
-             */
-            organizer_id: string;
             code: components["schemas"]["ChannelCode"];
             display_name: string;
             kind: components["schemas"]["ChannelKind"];

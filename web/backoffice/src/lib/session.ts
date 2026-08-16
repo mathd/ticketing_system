@@ -24,6 +24,18 @@ export interface StaffPrincipal {
    * eviction, restart, or the eight-hour expiry. ADR-042 records this.
    */
   role: StaffRole;
+  /**
+   * Catalog's signed statement of which organizer this staff member acts for
+   * (TKT-245, ADR-058). Forwarded on every catalog write; catalog takes the
+   * organizer from here and no longer accepts one in a request body.
+   *
+   * A CREDENTIAL, and it lives only here: server-side, in this process, never
+   * rendered into a page and never handed to browser JavaScript. `organizerId`
+   * above stays for reads that are scoped by an explicit parameter, and is the
+   * same value this token names — but it is not authority, and nothing may send
+   * it as one.
+   */
+  organizerAssertion: string;
 }
 
 /** Deliberately unremarkable: a cookie named `admin_token` advertises its worth. */
@@ -111,8 +123,41 @@ export function createSession(principal: StaffPrincipal, now = Date.now()): stri
 
   // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
   const token = randomBytes(32).toString('base64url');
-  sessions.set(token, { principal, expiresAt: now + SESSION_TTL_MS });
+  // The session never outlives the assertion it carries (TKT-245). Equal TTLs are
+  // not enough on their own — see assertionLifetimeMs.
+  const assertionMs = assertionLifetimeMs(principal.organizerAssertion, now);
+  const lifetime = assertionMs === undefined ? SESSION_TTL_MS : Math.min(SESSION_TTL_MS, assertionMs);
+  sessions.set(token, { principal, expiresAt: now + lifetime });
   return token;
+}
+
+/**
+ * The expiry catalog stamped into an assertion, in milliseconds from `now`.
+ *
+ * Why it is needed at all, when both TTLs are eight hours: catalog mints the
+ * assertion at T1 on ITS clock and this process stamps the session at T2, after
+ * the round trip. A session created at T2 with an 8h assertion outlives it by the
+ * round trip plus any clock skew. Near the boundary that surfaces as a 401 from
+ * catalog on a session this process still considers live — a staff member told
+ * their write failed, with a session that looks fine, and nothing to point at.
+ *
+ * Clamping closes the window. Catalog remains the authority on whether an
+ * assertion is valid; this only ensures the session cannot promise more than the
+ * credential it holds.
+ *
+ * An unparseable or absent assertion falls back to the session TTL rather than
+ * refusing: whether a token is well-formed is catalog's verdict to give, not this
+ * process's to pre-empt. (Same shape, same reasoning, as the storefront's
+ * customer assertion — web/storefront/src/lib/session.ts.)
+ */
+function assertionLifetimeMs(assertion: string, wallClockNow: number): number | undefined {
+  const parts = assertion.split('.');
+  // v1.<staff>.<organizer>.<unix expiry>.<mac>
+  if (parts.length !== 5) return undefined;
+  const expiry = Number(parts[3]);
+  if (!Number.isFinite(expiry)) return undefined;
+  const remaining = expiry * 1000 - wallClockNow;
+  return remaining > 0 ? remaining : 0;
 }
 
 export function lookupSession(token: string, now = Date.now()): StaffPrincipal | undefined {

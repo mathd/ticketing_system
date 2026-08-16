@@ -40,21 +40,20 @@ func publishMultiSlot(t *testing.T) string {
 	catalog := gatewayURL + "/api/catalog"
 	suffix := reemitSuffix()
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Reemit Arena " + suffix, "ga_capacity": 500,
+		"name": "Reemit Arena " + suffix, "ga_capacity": 500,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Passe " + suffix, "en": "Pass " + suffix},
 		"description":  map[string]string{"fr": "Passe multi-entrée.", "en": "Multi-entry pass."},
 	})
 	perf := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"kind": "operating_day", "operating_date": "2026-09-18", "opens_at": "10:00", "closes_at": "22:00",
 		"timezone": "Europe/Paris",
 		"re_entry": map[string]any{"mode": "multi", "requires_exit": true},
 	})
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": perf["id"],
+		"performance_id": perf["id"],
 		"name":  map[string]string{"fr": "Passe", "en": "Pass"},
 		"price": map[string]any{"amount": 9000, "currency": "EUR"},
 	})

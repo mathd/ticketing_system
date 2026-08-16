@@ -69,7 +69,7 @@ if (Astro.request.method === 'POST') {
         // `default: true` applies, and sent explicitly as false when it is not.
         // An unchecked checkbox submits NOTHING — see checkboxChecked.
         const enabled = checkboxChecked(form.get('enabled'));
-        await createChannel(staff.organizerId, {
+        await createChannel(staff.organizerAssertion, {
           code: input.code,
           displayName: input.displayName,
           kind: asChannelKind(input.kind)!,
@@ -87,7 +87,7 @@ if (Astro.request.method === 'POST') {
         errors = local;
         failedChannelId = field('channel_id');
       } else {
-        await updateChannel(staff.organizerId, field('channel_id'), {
+        await updateChannel(staff.organizerAssertion, field('channel_id'), {
           code: input.code,
           displayName: input.displayName,
           kind: asChannelKind(input.kind)!,
@@ -104,7 +104,7 @@ if (Astro.request.method === 'POST') {
       // kind ride along in hidden fields. `enabled` here is an explicit value
       // rather than a checkbox: the button states which way it is going, so
       // there is no unchecked-box ambiguity to resolve.
-      await updateChannel(staff.organizerId, field('channel_id'), {
+      await updateChannel(staff.organizerAssertion, field('channel_id'), {
         code: field('code'),
         displayName: field('display_name'),
         kind: asChannelKind(field('kind'))!,
@@ -132,7 +132,7 @@ if (Astro.request.method === 'POST') {
 let channels: Channel[] = [];
 let readFailed = false;
 try {
-  channels = await listChannelsForOperator(staff.organizerId);
+  channels = await listChannelsForOperator(staff.organizerAssertion);
 } catch {
   readFailed = true;
 }

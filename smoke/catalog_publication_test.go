@@ -9,7 +9,10 @@ package smoke_test
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +43,48 @@ const staffWriteHeader = "X-Catalog-Staff-Write-Token"
 
 func staffWriteToken() string { return os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN") }
 
+// TKT-245: catalog takes the organizer for a write from a SIGNED assertion, not
+// from the request body -- the field no longer exists in the schemas. The smoke
+// stack has no back-office session to obtain one from, so it mints its own with
+// the same key the catalog container was started with, exported by
+// scripts/stack-env.sh.
+//
+// Minting here rather than signing in is deliberate: this suite exercises the
+// service contract, not the back office, and a sign-in round trip would make
+// every catalog write depend on a seeded staff account that exists for no other
+// reason. What it does NOT do is bypass the boundary -- the assertion is verified
+// by the real catalog, with the real key, on every request below.
+const organizerAssertionHeader = "X-Catalog-Organizer-Assertion"
+
+func organizerAssertion(t *testing.T) string {
+	t.Helper()
+	return organizerAssertionFor(t, organizerID)
+}
+
+// organizerAssertionFor mints one naming a CHOSEN organizer, for the cross-tenant
+// cases: since TKT-245 the only way to attempt a write as another tenant is to
+// present that tenant's assertion, because no request body names an organizer.
+func organizerAssertionFor(t *testing.T, organizer string) string {
+	t.Helper()
+	key := os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY")
+	if key == "" {
+		t.Fatal("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY is not set: scripts/stack-env.sh exports it, " +
+			"and without it every catalog write in this suite 401s for a reason that looks like a bug")
+	}
+	// v1.<staff>.<organizer>.<unix expiry>.<mac> -- the format catalog verifies
+	// (services/catalog/internal/api/assertion.go). Kept in step by the smoke run
+	// itself: a format change breaks these writes loudly.
+	payload := strings.Join([]string{
+		"v1",
+		"00000000-0000-0000-0000-0000000000aa",
+		organizer,
+		strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
+	}, ".")
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte(payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func isCatalogURL(url string) bool { return strings.Contains(url, "/api/catalog/") }
 
 // The enrolled gate device's credential (ai-review S1). scripts/smoke.sh enrols
@@ -50,6 +96,33 @@ func scannerToken() string { return os.Getenv("SMOKE_SCANNER_TOKEN") }
 // is remembering the header at every call site, and the one that forgets is a 401
 // that reads as a broken deployment.
 func isScanURL(url string) bool { return strings.Contains(url, "/api/access/scans") }
+
+// postJSONAs posts a catalog write ACTING FOR whichever organizer the supplied
+// assertion names (TKT-245). The cross-tenant cases need it: postJSON always
+// mints one for the seeded organizer, and since the body cannot name an organizer
+// at all, an assertion is the only way to attempt a write as someone else.
+func postJSONAs(t *testing.T, url, assertion string, body any) (int, []byte) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(staffWriteHeader, staffWriteToken())
+	req.Header.Set(organizerAssertionHeader, assertion)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
+	return resp.StatusCode, out
+}
 
 func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	t.Helper()
@@ -64,6 +137,7 @@ func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	req.Header.Set("Content-Type", "application/json")
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
+		req.Header.Set(organizerAssertionHeader, organizerAssertion(t))
 	}
 	// ai-review S1: the scan routes admit only enrolled devices.
 	if isScanURL(url) {
@@ -115,31 +189,50 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 
 	// -- create the fixture through the public contract (AC1) --
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Le Zénith", "ga_capacity": 500,
+		"name": "Le Zénith", "ga_capacity": 500,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": nameFR, "en": nameEN},
 		"description":  map[string]string{"fr": "Une soirée électro.", "en": "An electro night."},
 	})
 	perf := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
 	})
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": perf["id"],
+		"performance_id": perf["id"],
 		"name":  map[string]string{"fr": "Admission générale", "en": "General admission"},
 		"price": map[string]any{"amount": 4550, "currency": "EUR"},
 	})
 
-	// Tenancy is enforced through the real stack: a venue owned by an
-	// unknown organizer id cannot be wired to this event (AC5).
-	if code, _ := postJSON(t, catalog+"/performances", map[string]any{
+	// Tenancy is enforced through the real stack, and since TKT-245 there are TWO
+	// things to check because the organizer arrives differently (ADR-058).
+	//
+	// First: a submitted organizer_id is REFUSED, not ignored. The schemas are
+	// additionalProperties:false, so a client that still sends the old field gets
+	// a 400 rather than a 201 and a silently-dropped key. This assertion caught
+	// the gap: before the schemas were tightened it returned 201, and a test that
+	// had merely been updated to expect 201 would have recorded "extras are
+	// accepted" as if it were the intended design.
+	if code, body := postJSON(t, catalog+"/performances", map[string]any{
 		"organizer_id": "11111111-1111-1111-1111-111111111111",
 		"event_id":     event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
-	}); code != http.StatusBadRequest && code != http.StatusNotFound {
-		t.Fatalf("cross-organizer performance: want 400/404, got %d", code)
+	}); code != http.StatusBadRequest {
+		t.Fatalf("a submitted organizer_id must be refused, want 400, got %d: %s", code, body)
+	}
+
+	// Second: acting for ANOTHER organizer cannot wire this tenant's event. The
+	// organizer now comes from the assertion, so the only way to attempt the
+	// cross-tenant write is to present a valid assertion for a different one --
+	// which is exactly the adversary ADR-058 closes.
+	if code, body := postJSONAs(t, catalog+"/performances",
+		organizerAssertionFor(t, "11111111-1111-1111-1111-111111111111"),
+		map[string]any{
+			"event_id": event["id"], "venue_id": venue["id"],
+			"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
+		}); code != http.StatusBadRequest && code != http.StatusNotFound {
+		t.Fatalf("cross-organizer performance: want 400/404, got %d: %s", code, body)
 	}
 
 	// -- consumer BEFORE publish: no deliver-all false pass (AC2) --
@@ -293,11 +386,10 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	// Unpublished (draft) performances stay invisible: a fresh event with a
 	// draft-only performance must not appear on the public list.
 	draftEvent := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Brouillon " + suffix, "en": "Draft " + suffix},
 	})
 	created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": draftEvent["id"], "venue_id": venue["id"],
+		"event_id": draftEvent["id"], "venue_id": venue["id"],
 		"starts_at": "2026-10-01T18:00:00Z", "timezone": "Europe/Paris",
 	})
 	code, body, _ = getWithHeaders(t, catalog+"/public/events?locale=en")
@@ -308,11 +400,11 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	// Add a second published slot to the original event. Archiving the first
 	// must retain this mixed event with only its remaining published slot.
 	secondPerf := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-09-19T17:30:00Z", "timezone": "Europe/Paris",
 	})
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": secondPerf["id"],
+		"performance_id": secondPerf["id"],
 		"name":  map[string]string{"fr": "Deuxième soir", "en": "Second night"},
 		"price": map[string]any{"amount": 5000, "currency": "EUR"},
 	})
@@ -445,25 +537,24 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	suffix := hex.EncodeToString(suffixBytes)
 
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Seated Hall " + suffix, "ga_capacity": 400,
+		"name": "Seated Hall " + suffix, "ga_capacity": 400,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Récital " + suffix, "en": "Recital " + suffix},
 	})
 
 	// -- author a draft seat map: map -> section -> row -> seat --
 	seatMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
-		"organizer_id": organizerID, "name": "Main floor " + suffix,
+		"name": "Main floor " + suffix,
 	})
 	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
-		"organizer_id": organizerID, "name": "Orchestra", "position": 1,
+		"name": "Orchestra", "position": 1,
 	})
 	row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
-		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1,
+		"section_id": section["id"], "label": "A", "position": 1,
 	})
 	created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
-		"organizer_id": organizerID, "row_id": row["id"], "label": "1", "position": 1,
+		"row_id": row["id"], "label": "1", "position": 1,
 	})
 
 	// -- consumer BEFORE publishing the map: assert the seat_map.published event --
@@ -508,7 +599,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	}
 	// A published version rejects further authoring (immutability, COS-1).
 	if code, _ := postJSON(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
-		"organizer_id": organizerID, "name": "Balcony", "position": 2,
+		"name": "Balcony", "position": 2,
 	}); code != http.StatusNotFound {
 		t.Fatalf("authoring a published map must be refused with 404, got %d", code)
 	}
@@ -539,7 +630,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 
 	// -- create a SEATED performance referencing the published map version --
 	seated := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-10-01T20:00:00Z", "timezone": "Europe/Paris",
 		"seat_map_id": seatMap["id"],
 	})
@@ -549,10 +640,10 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	// A seated reference to the STILL-draft state is impossible now (it's
 	// published), but a reference to a draft map in a fresh venue is a 409.
 	draftMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
-		"organizer_id": organizerID, "name": "Draft " + suffix,
+		"name": "Draft " + suffix,
 	})
 	if code, _ := postJSON(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-10-02T20:00:00Z", "timezone": "Europe/Paris",
 		"seat_map_id": draftMap["id"],
 	}); code != http.StatusConflict {
@@ -560,7 +651,7 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	}
 
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": seated["id"],
+		"performance_id": seated["id"],
 		"name":  map[string]string{"fr": "Place assise", "en": "Reserved seat"},
 		"price": map[string]any{"amount": 8000, "currency": "EUR"},
 	})
@@ -577,11 +668,11 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 
 	// -- a GA performance at the same venue still publishes at schema 2 (coexistence, COS-2) --
 	ga := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-10-03T20:00:00Z", "timezone": "Europe/Paris",
 	})
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": ga["id"],
+		"performance_id": ga["id"],
 		"name":  map[string]string{"fr": "Admission générale", "en": "General admission"},
 		"price": map[string]any{"amount": 4550, "currency": "EUR"},
 	})
@@ -848,28 +939,27 @@ func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
 	_, _ = rand.Read(suffixBytes)
 	suffix := hex.EncodeToString(suffixBytes)
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Series Hall", "ga_capacity": 300,
+		"name": "Series Hall", "ga_capacity": 300,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Événement " + suffix, "en": "Event " + suffix},
 	})
 	performanceIDs := make([]string, 0, 2)
 	for i, startsAt := range []string{"2026-11-01T19:00:00Z", "2026-11-02T19:00:00Z"} {
 		perf := created(t, catalog+"/performances", map[string]any{
-			"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+			"event_id": event["id"], "venue_id": venue["id"],
 			"starts_at": startsAt, "timezone": "America/Toronto",
 		})
 		performanceIDs = append(performanceIDs, fmt.Sprint(perf["id"]))
 		created(t, catalog+"/ticket-types", map[string]any{
-			"organizer_id": organizerID, "performance_id": perf["id"],
+			"performance_id": perf["id"],
 			"name":  map[string]string{"fr": fmt.Sprintf("Soir %d", i+1), "en": fmt.Sprintf("Night %d", i+1)},
 			"price": map[string]any{"amount": 3000 + i*500, "currency": "CAD"},
 		})
 	}
 	seriesName := "Autumn run " + suffix
 	series := created(t, catalog+"/series", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"],
+		"event_id": event["id"],
 		"name": map[string]string{"fr": "Série automne " + suffix, "en": seriesName},
 	})
 	for i, id := range performanceIDs {
@@ -880,7 +970,6 @@ func TestSeriesSeasonPublicationAndStorefrontGrouping(t *testing.T) {
 		}
 	}
 	season := created(t, catalog+"/seasons", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Saison " + suffix, "en": "Season " + suffix},
 	})
 	if code, body := postJSON(t, fmt.Sprintf("%s/seasons/%v/series", catalog, season["id"]), map[string]any{"series_id": series["id"]}); code != http.StatusOK {
@@ -1011,28 +1100,26 @@ func TestFestivalPublicationSharedCapacityAndPublicGrouping(t *testing.T) {
 	_, _ = rand.Read(suffixBytes)
 	suffix := hex.EncodeToString(suffixBytes)
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Festival Grounds " + suffix, "ga_capacity": 250,
+		"name": "Festival Grounds " + suffix, "ga_capacity": 250,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Festival " + suffix, "en": "Festival " + suffix},
 	})
 	dayIDs := make([]string, 0, 2)
 	for i, date := range []string{"2026-08-01", "2026-08-02"} {
 		day := created(t, catalog+"/performances", map[string]any{
-			"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+			"event_id": event["id"], "venue_id": venue["id"],
 			"kind": "festival_day", "operating_date": date,
 			"opens_at": "12:00", "closes_at": "23:00", "timezone": "America/Toronto",
 		})
 		dayIDs = append(dayIDs, fmt.Sprint(day["id"]))
 		created(t, catalog+"/ticket-types", map[string]any{
-			"organizer_id": organizerID, "performance_id": day["id"],
+			"performance_id": day["id"],
 			"name":  map[string]string{"fr": fmt.Sprintf("Jour %d", i+1), "en": fmt.Sprintf("Day %d", i+1)},
 			"price": map[string]any{"amount": 7500, "currency": "CAD"},
 		})
 	}
 	festival := created(t, catalog+"/festivals", map[string]any{
-		"organizer_id":    organizerID,
 		"name":            map[string]string{"fr": "Festival partagé " + suffix, "en": "Shared festival " + suffix},
 		"shared_capacity": 1000,
 	})
@@ -1203,15 +1290,14 @@ func TestTypedDaySlotPublication(t *testing.T) {
 	nameFR, nameEN := "Journée Parc "+suffix, "Park Day "+suffix
 
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "La Ronde", "ga_capacity": 800,
+		"name": "La Ronde", "ga_capacity": 800,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": nameFR, "en": nameEN},
 	})
 	// operating_day: no starts_at; carries the operating window + multi re-entry.
 	slot := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"kind": "operating_day", "operating_date": "2026-08-01",
 		"opens_at": "10:00", "closes_at": "22:00", "timezone": "America/Toronto",
 		"re_entry": map[string]any{"mode": "multi", "requires_exit": true},
@@ -1220,7 +1306,7 @@ func TestTypedDaySlotPublication(t *testing.T) {
 		t.Fatalf("operating_day create echo wrong: %+v", slot)
 	}
 	created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": slot["id"],
+		"performance_id": slot["id"],
 		"name":  map[string]string{"fr": "Passeport jour", "en": "Day pass"},
 		"price": map[string]any{"amount": 9000, "currency": "CAD"},
 	})
@@ -1390,23 +1476,23 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	const hoursTier = "public, max-age=3600, s-maxage=3600" // ADR-004
 
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Versioning Hall " + suffix, "ga_capacity": 100,
+		"name": "Versioning Hall " + suffix, "ga_capacity": 100,
 	})
 	venueID := fmt.Sprint(venue["id"])
 
 	// -- author and publish version 1: Orchestra / A / 1 --
 	seatMap := created(t, catalog+"/venues/"+venueID+"/seat-maps", map[string]any{
-		"organizer_id": organizerID, "name": "Versioned floor " + suffix,
+		"name": "Versioned floor " + suffix,
 	})
 	v1ID := fmt.Sprint(seatMap["id"])
 	section := created(t, catalog+"/seat-maps/"+v1ID+"/sections", map[string]any{
-		"organizer_id": organizerID, "name": "Orchestra", "position": 1,
+		"name": "Orchestra", "position": 1,
 	})
 	row := created(t, catalog+"/seat-maps/"+v1ID+"/rows", map[string]any{
-		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1,
+		"section_id": section["id"], "label": "A", "position": 1,
 	})
 	created(t, catalog+"/seat-maps/"+v1ID+"/seats", map[string]any{
-		"organizer_id": organizerID, "row_id": row["id"], "label": "1", "position": 1,
+		"row_id": row["id"], "label": "1", "position": 1,
 	})
 	// -- TKT-107: while v1 is still a draft, the geometry read is no-store. This is
 	// the one real-stack proof that the status-driven tier survives the gateway and
@@ -1423,7 +1509,6 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 
 	// -- editSeatMap: full replacement geometry keeping Orchestra/A/1, adding A/2 --
 	editCode, editBody := postJSON(t, catalog+"/seat-maps/"+v1ID+"/edit", map[string]any{
-		"organizer_id": organizerID,
 		"sections": []map[string]any{{
 			"name": "Orchestra", "position": 1,
 			"rows": []map[string]any{{
@@ -1569,7 +1654,7 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 
 	// -- updateVenueGaCapacity: GA capacity is writable after venue creation --
 	code, body = postJSON(t, catalog+"/venues/"+venueID+"/ga-capacity", map[string]any{
-		"organizer_id": organizerID, "ga_capacity": 450,
+		"ga_capacity": 450,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("update ga capacity: %d %s", code, body)

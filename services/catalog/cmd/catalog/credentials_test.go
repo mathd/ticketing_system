@@ -48,3 +48,56 @@ func TestServerRefusesMissingStaffWriteCredential(t *testing.T) {
 		t.Fatalf("want a CATALOG_STAFF_WRITE_TOKEN configuration error, got %v", err)
 	}
 }
+
+// TKT-245. The assertion key is a THIRD value with a third blast radius, and the
+// reason it must differ from the staff-write credential is sharper than the usual
+// separation argument.
+//
+// The assertion exists so that holding the write credential does not let a caller
+// choose an organizer. If the signing key WERE the write credential, any holder
+// could mint their own assertion for any tenant — the boundary would be exactly
+// as absent as before this ticket, while every header, test and log line said it
+// was there. That is the failure this refuses at startup.
+func TestServerRefusesAnAssertionKeyEqualToACredential(t *testing.T) {
+	for _, tc := range []struct{ name, collidesWith string }{
+		{"equal to the staff-write credential", "CATALOG_STAFF_WRITE_TOKEN"},
+		{"equal to the internal token", "INTERNAL_SERVICE_TOKEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const internal = "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5"
+			const staffWrite = "1a2b3c4d5e6f70819293a4b5c6d7e8f9"
+			t.Setenv("INTERNAL_SERVICE_TOKEN", internal)
+			t.Setenv("CATALOG_STAFF_WRITE_TOKEN", staffWrite)
+			collided := staffWrite
+			if tc.collidesWith == "INTERNAL_SERVICE_TOKEN" {
+				collided = internal
+			}
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_KEY", collided)
+			// Unset, so a guard that failed to fire would fail on the database
+			// instead — a different error, which is what this asserts against.
+			t.Setenv("DATABASE_URL", "")
+
+			err := run()
+			if err == nil {
+				t.Fatal("catalog started with the signing key equal to a credential")
+			}
+			if !strings.Contains(err.Error(), "must differ from INTERNAL_SERVICE_TOKEN") {
+				t.Fatalf("startup failed for the wrong reason: %v", err)
+			}
+			if strings.Contains(err.Error(), collided) {
+				t.Fatalf("the error echoes the secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerRefusesMissingAssertionKey(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
+	t.Setenv("CATALOG_STAFF_WRITE_TOKEN", "1a2b3c4d5e6f70819293a4b5c6d7e8f9")
+	t.Setenv("CATALOG_ORGANIZER_ASSERTION_KEY", "")
+
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "CATALOG_ORGANIZER_ASSERTION_KEY required") {
+		t.Fatalf("want a CATALOG_ORGANIZER_ASSERTION_KEY configuration error, got %v", err)
+	}
+}

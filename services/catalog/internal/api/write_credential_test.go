@@ -1,7 +1,15 @@
 package api
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,6 +96,477 @@ func TestCatalogStaffWriteSchemeIsADeclaredHeaderKey(t *testing.T) {
 	if ss.Value.Name != staffWriteHeader {
 		t.Fatalf("the scheme names header %q but the server reads %q — the contract and the "+
 			"enforcement must agree or the guard is undocumented", ss.Value.Name, staffWriteHeader)
+	}
+}
+
+// The assertion scheme must exist and name the header the server actually reads,
+// for the same reason the staff-write scheme must (TKT-245).
+func TestCatalogOrganizerAssertionSchemeIsADeclaredHeaderKey(t *testing.T) {
+	doc := loadSpec(t)
+	ss := doc.Components.SecuritySchemes[organizerAssertionSecurityScheme]
+	if ss == nil || ss.Value == nil {
+		t.Fatalf("securitySchemes.%s is not defined", organizerAssertionSecurityScheme)
+	}
+	if ss.Value.Type != "apiKey" || ss.Value.In != "header" {
+		t.Fatalf("%s must be an apiKey in a header, got type=%q in=%q",
+			organizerAssertionSecurityScheme, ss.Value.Type, ss.Value.In)
+	}
+	if ss.Value.Name != organizerAssertionHeader {
+		t.Fatalf("the scheme names header %q but the server reads %q — the contract and the "+
+			"enforcement must agree or the guard is undocumented", ss.Value.Name, organizerAssertionHeader)
+	}
+}
+
+// ⚠️ THE AND-NESS TEST. Every operation carrying the organizer assertion requires
+// it TOGETHER WITH the staff credential, never as an alternative to it.
+//
+// Why this exists as its own test, when the invariant above already checks that
+// every unsafe operation requires the staff credential: `securityRequires` (and
+// OpenAPI itself) treats the security LIST as OR and the keys WITHIN one
+// requirement object as AND. So
+//
+//	security: [{Staff: []}, {Assertion: []}]     <- either alone suffices
+//	security: [{Staff: [], Assertion: []}]       <- both required
+//
+// differ by one bracket, and the FIRST form passes both the existing invariant
+// and any naive "the assertion is declared on these operations" coverage test —
+// while silently meaning that presenting the assertion ALONE, with no staff
+// credential, is enough. That is an auth downgrade in the exact property this
+// ticket exists to add, and nothing else catches it: not the invariant, not the
+// gate, and not mutation testing, whose mutants flip the mechanism rather than
+// the declaration.
+//
+// Derived from the spec in both directions, like the invariant it sits beside:
+// which operations carry the assertion is read out of the document, never listed
+// here, so operation 16 is covered the day it is added.
+func TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential(t *testing.T) {
+	doc := loadSpec(t)
+
+	var carriers int
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			reqs := doc.Security
+			if op.Security != nil {
+				reqs = *op.Security
+			}
+
+			// Does ANY alternative name the assertion? If so this operation is
+			// assertion-protected, and EVERY alternative must then carry both
+			// schemes — see below for why checking only the naming ones is not
+			// enough.
+			var assertionProtected bool
+			for _, req := range reqs {
+				if _, ok := req[organizerAssertionSecurityScheme]; ok {
+					assertionProtected = true
+					break
+				}
+			}
+			if !assertionProtected {
+				continue
+			}
+			carriers++
+
+			// ai-review [medium], CONFIRMED by execution: an earlier version of
+			// this test inspected only the requirement objects that CONTAIN the
+			// assertion, and confirmed those also contained the staff credential.
+			// A sibling object without the assertion was invisible to it, so
+			//
+			//   security: [{Staff: [], Assertion: []}, {Staff: []}]
+			//
+			// passed this test, passed the staff-credential invariant, and passed
+			// the coverage test — while declaring that the staff credential ALONE
+			// is an accepted alternative. Verified by adding exactly that to one
+			// operation and watching every test stay green.
+			//
+			// That is the same defect this test exists to catch, one level up: the
+			// fix reproduced the shape of the bug it was fixing. So the rule is
+			// now stated over ALL alternatives, not the naming ones.
+			//
+			// (What saved the runtime meanwhile: kin-openapi requires every
+			// declared alternative to pass rather than any one of them, so the
+			// staff-only request was still refused 401 — the reviewer's claim that
+			// runtime would admit it does not hold for this validator. The CONTRACT
+			// would still have said otherwise, and the contract is what the next
+			// reader and any other client believe.)
+			for i, req := range reqs {
+				_, hasStaff := req[staffWriteSecurityScheme]
+				_, hasAssertion := req[organizerAssertionSecurityScheme]
+				if hasStaff && hasAssertion {
+					continue
+				}
+				t.Errorf("%s (%s %s) is assertion-protected but its security alternative #%d names "+
+					"{staff:%v assertion:%v}. EVERY alternative must carry BOTH, or the operation "+
+					"declares a weaker way in: a list of requirement objects is an OR, and one that "+
+					"omits a scheme says that scheme is optional.",
+					op.OperationID, method, path, i, hasStaff, hasAssertion)
+			}
+		}
+	}
+
+	// The assertion must actually be declared somewhere, or this test passes by
+	// inspecting nothing — the shape of green test this repo has been bitten by.
+	if carriers == 0 {
+		t.Fatalf("no operation requires %s; the invariant inspected nothing",
+			organizerAssertionSecurityScheme)
+	}
+}
+
+// Every handler that READS the verified organizer sits behind an operation that
+// REQUIRES the assertion.
+//
+// ai-review pass 2 [high], confirmed by execution. The test above grounds
+// membership in the security declaration itself — it inspects an operation only
+// after finding an alternative that names the assertion. So deleting the
+// assertion ENTIRELY from one operation does not fail it; the operation simply
+// drops out of scope. Verified: with one converted operation changed to
+// `security: [{CatalogStaffWriteCredential: []}]`, every contract invariant in
+// this file stayed green.
+//
+// The mutant was caught only INCIDENTALLY, by functional tests failing because
+// the handler calls organizerFor and gets no scope. That is luck, not coverage:
+// it depends on the handler's fallback, the contract meanwhile advertises
+// staff-only access, and a future converted operation whose handler does not go
+// through organizerFor would be silently unguarded with nothing to say so.
+//
+// So membership is grounded in something the DECLARATION CANNOT MOVE: the Go
+// source itself, parsed here rather than transcribed.
+//
+// ai-review pass 3 [high], confirmed: an earlier version of this test hardcoded
+// the 15 operationIds and claimed in this very comment to be "grounded in the Go
+// source" — while the list was a literal someone had typed after grepping once.
+// That is worse than deriving, for the failure mode that matters: add a handler
+// that calls organizerFor, omit its assertion requirement, and omit it from the
+// list, and BOTH loops skip it. The forward loop iterates the list; the reverse
+// loop only inspects operations that already require the assertion. A new
+// unguarded write would be invisible to the test written to prevent exactly that.
+//
+// It also could not check its own converse — an id could stay listed long after
+// its handler stopped reading the verified scope.
+//
+// Now the set comes from the AST: every method whose body mentions organizerFor.
+// A handler is in scope because of what it DOES, and the equivalence is asserted
+// in both directions, so all four regressions fail loudly — a new organizer-
+// scoped handler without its requirement, a requirement removed from an existing
+// one, an assertion declared on an operation whose handler no longer reads the
+// scope, and the OR-alternative shapes the tests above cover.
+func TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion(t *testing.T) {
+	doc := loadSpec(t)
+
+	readsVerifiedOrganizer := handlersReadingTheVerifiedOrganizer(t)
+	if len(readsVerifiedOrganizer) == 0 {
+		t.Fatal("no handler was found calling organizerFor — the AST scan matched nothing, so this " +
+			"invariant would pass while inspecting an empty set")
+	}
+
+	byID := map[string]*openapi3.Operation{}
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if op.OperationID == "" {
+				continue
+			}
+			if prior, dup := byID[op.OperationID]; dup && prior != op {
+				t.Fatalf("operationId %q appears twice (%s %s); the id->operation map cannot be "+
+					"trusted and this invariant would silently inspect only one of them",
+					op.OperationID, method, path)
+			}
+			byID[op.OperationID] = op
+		}
+	}
+
+	// Handler -> operation. oapi-codegen names the method after the operationId
+	// with an upper-case first letter, so the mapping is exact rather than fuzzy.
+	operationFor := func(handler string) (string, *openapi3.Operation, bool) {
+		id := strings.ToLower(handler[:1]) + handler[1:]
+		op, ok := byID[id]
+		return id, op, ok
+	}
+
+	// Direction 1: everything that reads the verified organizer requires it.
+	requiredIDs := map[string]bool{}
+	for _, handler := range readsVerifiedOrganizer {
+		id, op, ok := operationFor(handler)
+		if !ok {
+			// A hand-mounted route (listChannels) reads the scope inline and is not
+			// in the contract at all. That is ADR-043's line, not a defect — but it
+			// must be named here, or an operation that genuinely vanished from the
+			// contract would look like one of these.
+			if handler == "listChannels" {
+				continue
+			}
+			t.Errorf("handler %s reads the verified organizer but no contract operation is named %q; "+
+				"if it is deliberately hand-mounted, name it in this test's exception", handler, id)
+			continue
+		}
+		requiredIDs[id] = true
+		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+			t.Errorf("%s reads the verified organizer in its handler but its operation does NOT "+
+				"require %s. The contract would advertise staff-only access while the handler "+
+				"refuses at runtime — a boundary that exists only as a fallback.",
+				id, organizerAssertionSecurityScheme)
+		}
+		if !securityRequires(doc, op, staffWriteSecurityScheme) {
+			t.Errorf("%s does not require %s", id, staffWriteSecurityScheme)
+		}
+	}
+
+	// Direction 2: nothing requires the assertion whose handler does not read it.
+	// A declaration without a reader is a boundary nobody enforces.
+	for id, op := range byID {
+		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+			continue
+		}
+		if !requiredIDs[id] {
+			t.Errorf("%s requires %s but no handler reading the verified organizer maps to it. "+
+				"Either the handler stopped taking the organizer from the verified scope — in which "+
+				"case it is taking it from somewhere else — or the requirement is decoration.",
+				id, organizerAssertionSecurityScheme)
+		}
+	}
+}
+
+// handlersReadingTheVerifiedOrganizer parses this package and returns the names
+// of every method whose body calls organizerFor.
+//
+// Parsed rather than listed, because a list is a fact a human has to keep right
+// and this one is load-bearing: it decides which operations the invariant above
+// even looks at. The same argument the staff-write invariant makes for deriving
+// its operation set from the spec (see the top of this file), applied to the
+// other side of the boundary.
+func handlersReadingTheVerifiedOrganizer(t *testing.T) []string {
+	t.Helper()
+
+	// Files walked and parsed individually rather than with parser.ParseDir,
+	// which staticcheck flags as deprecated (SA1019). Nothing here needs package
+	// assembly or build-tag resolution — the question is only "which methods
+	// mention organizerFor" — so the simpler API is also the correct one.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	var handlers []string
+	var parsed int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed++
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || sel.Sel == nil || sel.Sel.Name != "organizerFor" {
+					return true
+				}
+				handlers = append(handlers, fn.Name.Name)
+				return false
+			})
+		}
+	}
+	// A scan that read no files would report "no handlers" — indistinguishable
+	// from a package where the guard had been deleted everywhere.
+	if parsed == 0 {
+		t.Fatal("the AST scan parsed no source files; it would report an empty handler set")
+	}
+	slices.Sort(handlers)
+	return slices.Compact(handlers)
+}
+
+// And the runtime agrees with the contract: neither credential alone opens a
+// converted write.
+//
+// The contract test above is a statement about the DOCUMENT. This one drives the
+// real router, because "the declaration is right" and "the guard refuses" are two
+// claims and the ticket needs both. ai-review's finding included a prediction
+// about runtime behaviour that turned out to be wrong for this validator — which
+// is exactly the kind of thing that should be settled by executing it rather than
+// by reading either the reviewer's argument or mine.
+func TestConvertedWriteRefusesEitherCredentialAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"staff credential alone", map[string]string{staffWriteHeader: testStaffWriteToken}},
+		{"assertion alone", nil}, // filled below: needs the env's key
+		{"neither", map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			headers := tc.headers
+			if tc.name == "assertion alone" {
+				headers = map[string]string{organizerAssertionHeader: e.assertionFor(e.organizer)}
+			}
+			before := len(e.store.events)
+			rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), headers)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s = %d, want 401: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			if len(e.store.events) != before {
+				t.Fatalf("%s still created an event: %d -> %d", tc.name, before, len(e.store.events))
+			}
+		})
+	}
+}
+
+// Every write that took organizer_id from the body now requires the assertion,
+// and no such operation still declares the field.
+//
+// Both halves matter and neither implies the other: an operation could require
+// the assertion and still accept a body organizer (the field would be dead but
+// submittable, and a later reader would wire it back up), or drop the field
+// without requiring the assertion (catalog would then have no organizer at all).
+//
+// Membership is derived from the REQUEST SCHEMA, not from a list of names: an
+// operation is in scope precisely because it used to name an organizer, and the
+// day someone adds a 16th, this test already covers it.
+func TestCatalogWritesTakeTheOrganizerFromTheAssertionAndNotTheBody(t *testing.T) {
+	doc := loadSpec(t)
+
+	// The operations this ticket converted, derived from the contract rather than
+	// listed: an unsafe operation that requires the assertion is one whose
+	// organizer now comes from the credential.
+	var converted int
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if isSafeMethod(method) {
+				continue
+			}
+			if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+				continue
+			}
+			converted++
+
+			// Direction 1: the field must be gone. A dead-but-submittable field is
+			// what a later reader wires back up.
+			if op.RequestBody == nil || op.RequestBody.Value == nil {
+				continue
+			}
+			media := op.RequestBody.Value.Content.Get("application/json")
+			if media == nil || media.Schema == nil || media.Schema.Value == nil {
+				continue
+			}
+			if _, stillDeclared := media.Schema.Value.Properties["organizer_id"]; stillDeclared {
+				t.Errorf("%s (%s %s) requires the assertion but STILL declares organizer_id in its request "+
+					"body. The organizer must be UNSUBMITTABLE, not validated: a field the client can send "+
+					"is a trust boundary that moved rather than closed (AGENTS.md, TKT-244).",
+					op.OperationID, method, path)
+			}
+		}
+	}
+
+	// Direction 2: no unsafe operation still takes an organizer from its body. A
+	// write left behind would keep the whole model unchanged for that endpoint,
+	// which is precisely what the COS refuses ("a fix that scoped one endpoint
+	// would leave the model unchanged and the claim still unearned").
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if isSafeMethod(method) || op.RequestBody == nil || op.RequestBody.Value == nil {
+				continue
+			}
+			media := op.RequestBody.Value.Content.Get("application/json")
+			if media == nil || media.Schema == nil || media.Schema.Value == nil {
+				continue
+			}
+			if _, declaresOrganizer := media.Schema.Value.Properties["organizer_id"]; !declaresOrganizer {
+				continue
+			}
+			t.Errorf("%s (%s %s) takes organizer_id from the request body and does not require %s. "+
+				"Either it was missed by the conversion, or it is a new write that inherited the old shape.",
+				op.OperationID, method, path, organizerAssertionSecurityScheme)
+		}
+	}
+
+	if converted == 0 {
+		t.Fatal("no unsafe operation requires the organizer assertion; the invariant inspected nothing")
+	}
+}
+
+// Deleting the field is not enough: the schema must REFUSE a submitted one.
+//
+// The difference is the whole distance between "unsubmittable" and "ignored",
+// and it is invisible unless you look. A schema without `additionalProperties:
+// false` silently DROPS an extra `organizer_id` — so a client can still send it,
+// gets a 201, and is told nothing. The write lands under the assertion's
+// organizer, which is safe; but "safe because nothing reads it" is a property of
+// today's handler, and the next reader sees a field the API appears to accept.
+//
+// Found by the gate rather than by review: a smoke test still sending a forged
+// organizer expected a refusal and got 201, because 13 of the 15 schemas were
+// lax. The security outcome was already correct; the contract was lying.
+func TestConvertedWriteSchemasRefuseASubmittedOrganizer(t *testing.T) {
+	doc := loadSpec(t)
+
+	var checked int
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if isSafeMethod(method) || !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+				continue
+			}
+			if op.RequestBody == nil || op.RequestBody.Value == nil {
+				continue
+			}
+			media := op.RequestBody.Value.Content.Get("application/json")
+			if media == nil || media.Schema == nil || media.Schema.Value == nil {
+				continue
+			}
+			checked++
+			if schema := media.Schema.Value; schema.AdditionalProperties.Has == nil || *schema.AdditionalProperties.Has {
+				t.Errorf("%s (%s %s) does not set additionalProperties: false, so a submitted "+
+					"organizer_id is silently ignored rather than refused. Unsubmittable means the "+
+					"client cannot send it, not that the server drops it quietly.",
+					op.OperationID, method, path)
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no converted write schema was inspected")
+	}
+}
+
+// A handler reached with NO verified scope refuses, rather than writing for the
+// nil organizer.
+//
+// This test exists because a mutation check found the gap it closes: deleting the
+// refusal from `organizerFor` -- so it returns the zero scope and `true` -- left
+// the ENTIRE package green. Every other test drives the router, where the
+// validator fills the slot for all 15 operations before any handler runs, so
+// nothing could ever reach the unfilled state. A fixture that cannot construct
+// the failing state cannot fail (AGENTS.md), and the guard was resting on that.
+//
+// So this one calls the handler DIRECTLY, with a bare context: the construction
+// path where the slot was never installed -- an operation that reaches a
+// converted handler without declaring the assertion, or a future hand-mounted
+// route. What must not happen is a write attributed to uuid.Nil.
+func TestConvertedHandlerRefusesWhenNoScopeWasVerified(t *testing.T) {
+	e := newEnv(t)
+	before := len(e.store.venues)
+
+	// No withOrganizerScopeSlot, no AuthenticationFunc: exactly the state the
+	// router never produces and a mistake would.
+	req := httptest.NewRequest(http.MethodPost, "http://catalog.local/venues",
+		strings.NewReader(`{"name":"Nobody's Hall","ga_capacity":10}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv := NewServer(e.store, e.pub, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		testInternalToken, testStaffWriteToken).WithOrganizerAssertionKey(testOrganizerAssertionKey)
+	srv.CreateVenue(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a handler with no verified scope answered %d, want 401: %s", rec.Code, rec.Body.String())
+	}
+	if len(e.store.venues) != before {
+		t.Fatalf("a venue was created with no verified organizer: %d -> %d", before, len(e.store.venues))
 	}
 }
 
