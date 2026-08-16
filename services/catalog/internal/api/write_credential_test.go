@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -203,6 +204,81 @@ func TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential(t *te
 	if carriers == 0 {
 		t.Fatalf("no operation requires %s; the invariant inspected nothing",
 			organizerAssertionSecurityScheme)
+	}
+}
+
+// Every handler that READS the verified organizer sits behind an operation that
+// REQUIRES the assertion.
+//
+// ai-review pass 2 [high], confirmed by execution. The test above grounds
+// membership in the security declaration itself — it inspects an operation only
+// after finding an alternative that names the assertion. So deleting the
+// assertion ENTIRELY from one operation does not fail it; the operation simply
+// drops out of scope. Verified: with one converted operation changed to
+// `security: [{CatalogStaffWriteCredential: []}]`, every contract invariant in
+// this file stayed green.
+//
+// The mutant was caught only INCIDENTALLY, by functional tests failing because
+// the handler calls organizerFor and gets no scope. That is luck, not coverage:
+// it depends on the handler's fallback, the contract meanwhile advertises
+// staff-only access, and a future converted operation whose handler does not go
+// through organizerFor would be silently unguarded with nothing to say so.
+//
+// So membership is grounded in something the DECLARATION CANNOT MOVE: the Go
+// source. A handler that reads the verified organizer is, by construction, an
+// operation whose organizer must be verified — and the count is asserted too, so
+// a handler added without its requirement, or a requirement dropped from a
+// handler that still reads the scope, both fail here.
+func TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion(t *testing.T) {
+	doc := loadSpec(t)
+
+	// The operationIds whose handlers call organizerFor. Derived from the Go
+	// source by grepping for the call, then written down here so a REMOVAL is as
+	// loud as an addition: reading the list out of the source at runtime would
+	// make a deleted guard look like a shrinking scope rather than a regression.
+	converted := []string{
+		"createVenue", "createSeatMap", "addSeatMapSection", "addSeatMapRow", "addSeatMapSeat",
+		"editSeatMap", "updateVenueGaCapacity", "createEvent", "createPerformance", "createSeries",
+		"createSeason", "createFestival", "createTicketType", "createChannel", "updateChannel",
+	}
+
+	byID := map[string]*openapi3.Operation{}
+	for _, item := range doc.Paths.Map() {
+		for _, op := range item.Operations() {
+			if op.OperationID != "" {
+				byID[op.OperationID] = op
+			}
+		}
+	}
+
+	for _, id := range converted {
+		op, ok := byID[id]
+		if !ok {
+			t.Errorf("%s is in the converted set but the contract has no such operation", id)
+			continue
+		}
+		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+			t.Errorf("%s reads the verified organizer in its handler but its operation does NOT "+
+				"require %s. The contract would advertise staff-only access while the handler "+
+				"refuses at runtime — a boundary that exists only as a fallback.",
+				id, organizerAssertionSecurityScheme)
+		}
+		if !securityRequires(doc, op, staffWriteSecurityScheme) {
+			t.Errorf("%s does not require %s", id, staffWriteSecurityScheme)
+		}
+	}
+
+	// The other direction: nothing may require the assertion without being in the
+	// list, or the list has gone stale and stopped describing the surface.
+	for id, op := range byID {
+		if !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+			continue
+		}
+		if !slices.Contains(converted, id) {
+			t.Errorf("%s requires %s but is not in this test's converted set. Add it here (and "+
+				"confirm its handler takes the organizer from the verified scope) — an operation "+
+				"nobody has listed is one nobody has checked.", id, organizerAssertionSecurityScheme)
+		}
 	}
 }
 
