@@ -144,19 +144,56 @@ func TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential(t *te
 			if op.Security != nil {
 				reqs = *op.Security
 			}
+
+			// Does ANY alternative name the assertion? If so this operation is
+			// assertion-protected, and EVERY alternative must then carry both
+			// schemes — see below for why checking only the naming ones is not
+			// enough.
+			var assertionProtected bool
 			for _, req := range reqs {
-				if _, wantsAssertion := req[organizerAssertionSecurityScheme]; !wantsAssertion {
+				if _, ok := req[organizerAssertionSecurityScheme]; ok {
+					assertionProtected = true
+					break
+				}
+			}
+			if !assertionProtected {
+				continue
+			}
+			carriers++
+
+			// ai-review [medium], CONFIRMED by execution: an earlier version of
+			// this test inspected only the requirement objects that CONTAIN the
+			// assertion, and confirmed those also contained the staff credential.
+			// A sibling object without the assertion was invisible to it, so
+			//
+			//   security: [{Staff: [], Assertion: []}, {Staff: []}]
+			//
+			// passed this test, passed the staff-credential invariant, and passed
+			// the coverage test — while declaring that the staff credential ALONE
+			// is an accepted alternative. Verified by adding exactly that to one
+			// operation and watching every test stay green.
+			//
+			// That is the same defect this test exists to catch, one level up: the
+			// fix reproduced the shape of the bug it was fixing. So the rule is
+			// now stated over ALL alternatives, not the naming ones.
+			//
+			// (What saved the runtime meanwhile: kin-openapi requires every
+			// declared alternative to pass rather than any one of them, so the
+			// staff-only request was still refused 401 — the reviewer's claim that
+			// runtime would admit it does not hold for this validator. The CONTRACT
+			// would still have said otherwise, and the contract is what the next
+			// reader and any other client believe.)
+			for i, req := range reqs {
+				_, hasStaff := req[staffWriteSecurityScheme]
+				_, hasAssertion := req[organizerAssertionSecurityScheme]
+				if hasStaff && hasAssertion {
 					continue
 				}
-				carriers++
-				if _, alsoStaff := req[staffWriteSecurityScheme]; !alsoStaff {
-					t.Errorf("%s (%s %s) has a security requirement naming %s WITHOUT %s. "+
-						"That makes the assertion an ALTERNATIVE to the staff credential rather than an "+
-						"addition to it: a caller presenting only an assertion satisfies this operation. "+
-						"Both schemes belong in ONE requirement object.",
-						op.OperationID, method, path,
-						organizerAssertionSecurityScheme, staffWriteSecurityScheme)
-				}
+				t.Errorf("%s (%s %s) is assertion-protected but its security alternative #%d names "+
+					"{staff:%v assertion:%v}. EVERY alternative must carry BOTH, or the operation "+
+					"declares a weaker way in: a list of requirement objects is an OR, and one that "+
+					"omits a scheme says that scheme is optional.",
+					op.OperationID, method, path, i, hasStaff, hasAssertion)
 			}
 		}
 	}
@@ -166,6 +203,42 @@ func TestCatalogOrganizerAssertionIsRequiredTogetherWithTheStaffCredential(t *te
 	if carriers == 0 {
 		t.Fatalf("no operation requires %s; the invariant inspected nothing",
 			organizerAssertionSecurityScheme)
+	}
+}
+
+// And the runtime agrees with the contract: neither credential alone opens a
+// converted write.
+//
+// The contract test above is a statement about the DOCUMENT. This one drives the
+// real router, because "the declaration is right" and "the guard refuses" are two
+// claims and the ticket needs both. ai-review's finding included a prediction
+// about runtime behaviour that turned out to be wrong for this validator — which
+// is exactly the kind of thing that should be settled by executing it rather than
+// by reading either the reviewer's argument or mine.
+func TestConvertedWriteRefusesEitherCredentialAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"staff credential alone", map[string]string{staffWriteHeader: testStaffWriteToken}},
+		{"assertion alone", nil}, // filled below: needs the env's key
+		{"neither", map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			headers := tc.headers
+			if tc.name == "assertion alone" {
+				headers = map[string]string{organizerAssertionHeader: e.assertionFor(e.organizer)}
+			}
+			before := len(e.store.events)
+			rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), headers)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s = %d, want 401: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			if len(e.store.events) != before {
+				t.Fatalf("%s still created an event: %d -> %d", tc.name, before, len(e.store.events))
+			}
+		})
 	}
 }
 
