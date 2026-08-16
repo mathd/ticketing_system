@@ -226,7 +226,26 @@ func TestSeriesTransitionsAreScopedToTheOwningOrganizer(t *testing.T) {
 		return s.ID, slot
 	}
 
-	t.Run("attach — attacker holds BOTH victim ids", func(t *testing.T) {
+	countMembers := func(t *testing.T, seriesID uuid.UUID) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM series_performances WHERE series_id=$1`, seriesID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Both lookups are scoped, so BOTH have to be reached by a test.
+	//
+	// ai-review [high], confirmed by mutation: an earlier version of this test had
+	// only the both-victim-ids case. The PARENT lookup refuses first there, so the
+	// child lookup never runs and deleting `AND organizer_id=$2` from it left this
+	// suite green. The unscoped child read would then answer ErrOrganizerMismatch
+	// for a victim's id and ErrNotFound for an unknown one — disclosing existence
+	// while the write stays refused, which is the exact distinguishability this
+	// ticket closes. Each predicate needs a case that reaches IT.
+	t.Run("attach — attacker holds BOTH victim ids (reaches the PARENT predicate)", func(t *testing.T) {
 		seriesID, slot := newSeries(t)
 
 		_, err := st.AttachPerformanceToSeries(ctx, p.attackerOrg, seriesID, slot, 1)
@@ -234,16 +253,60 @@ func TestSeriesTransitionsAreScopedToTheOwningOrganizer(t *testing.T) {
 			t.Fatalf("cross-tenant attach = %v, want ErrNotFound — the two-row organizer "+
 				"comparison is not authorization; both lookups need a caller predicate", err)
 		}
-		var members int
-		if err := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM series_performances WHERE series_id=$1`, seriesID).Scan(&members); err != nil {
-			t.Fatal(err)
-		}
-		if members != 0 {
-			t.Fatalf("the victim's series gained %d member(s)", members)
+		if n := countMembers(t, seriesID); n != 0 {
+			t.Fatalf("the victim's series gained %d member(s)", n)
 		}
 		if _, err := st.AttachPerformanceToSeries(ctx, p.victimOrg, seriesID, slot, 1); err != nil {
 			t.Fatalf("the owning organizer must still attach: %v", err)
+		}
+	})
+
+	t.Run("attach — attacker owns the series, victim owns the slot (reaches the CHILD predicate)", func(t *testing.T) {
+		// The parent is the attacker's own, so the parent lookup SUCCEEDS and the
+		// child lookup is the only thing standing between them and wiring a
+		// victim's slot into their series.
+		s, err := st.CreateSeries(ctx, SeriesInput{
+			OrganizerID: p.attackerOrg, EventID: p.attackerEvent,
+			Name: LocalizedText{"en": "attacker series", "fr": "serie"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		victimSlot := seedSlot(ctx, t, db, p.victimOrg, p.victimEvent, p.victimVenue, "performance", "2026-10-05 20:00:00-04")
+
+		_, err = st.AttachPerformanceToSeries(ctx, p.attackerOrg, s.ID, victimSlot, 1)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("attach of a victim's slot = %v, want ErrNotFound. ErrOrganizerMismatch here "+
+				"would confirm the id names a real row owned by someone else.", err)
+		}
+		if n := countMembers(t, s.ID); n != 0 {
+			t.Fatalf("the attacker's series gained %d victim member(s)", n)
+		}
+	})
+
+	// And the legitimate same-tenant mismatch still refuses, with its OWN error:
+	// two of your own resources belonging to different events. Collapsing this
+	// into ErrNotFound would be a real regression — the caller owns both rows and
+	// needs to be told what is actually wrong.
+	t.Run("same-tenant, different event — still ErrOrganizerMismatch", func(t *testing.T) {
+		otherEvent := uuid.New()
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO events(id,organizer_id,name) VALUES($1,$2,'{"en":"other","fr":"autre"}')`,
+			otherEvent, p.victimOrg); err != nil {
+			t.Fatal(err)
+		}
+		s, err := st.CreateSeries(ctx, SeriesInput{
+			OrganizerID: p.victimOrg, EventID: p.victimEvent,
+			Name: LocalizedText{"en": "series", "fr": "serie"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		slotOfOtherEvent := seedSlot(ctx, t, db, p.victimOrg, otherEvent, p.victimVenue, "performance", "2026-10-06 20:00:00-04")
+
+		if _, err := st.AttachPerformanceToSeries(ctx, p.victimOrg, s.ID, slotOfOtherEvent, 1); !errors.Is(err, ErrOrganizerMismatch) {
+			t.Fatalf("same-tenant cross-event attach = %v, want ErrOrganizerMismatch — the owner "+
+				"owns both rows and must be told what is wrong", err)
 		}
 	})
 
@@ -313,6 +376,32 @@ func TestFestivalTransitionsAreScopedToTheOwningOrganizer(t *testing.T) {
 		}
 		if _, err := st.AttachDayToFestival(ctx, p.victimOrg, festivalID, day); err != nil {
 			t.Fatalf("the owning organizer must still attach: %v", err)
+		}
+	})
+
+	// Reaches the CHILD predicate: the festival is the attacker's own, so the
+	// parent lookup succeeds and only the day lookup can refuse (see the series
+	// attach for why one case cannot cover both).
+	t.Run("attach day — attacker owns the festival, victim owns the day", func(t *testing.T) {
+		f, err := st.CreateFestival(ctx, FestivalInput{
+			OrganizerID:    p.attackerOrg,
+			Name:           LocalizedText{"en": "attacker festival", "fr": "festival"},
+			SharedCapacity: 1000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		victimDay := seedSlot(ctx, t, db, p.victimOrg, p.victimEvent, p.victimVenue, KindFestivalDay, "2026-11-05")
+
+		if _, err := st.AttachDayToFestival(ctx, p.attackerOrg, f.ID, victimDay); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("attach of a victim's day = %v, want ErrNotFound", err)
+		}
+		var group uuid.NullUUID
+		if err := db.QueryRowContext(ctx, `SELECT capacity_group_id FROM performances WHERE id=$1`, victimDay).Scan(&group); err != nil {
+			t.Fatal(err)
+		}
+		if group.Valid {
+			t.Fatalf("the victim's day was grouped into the attacker's festival: %v", group.UUID)
 		}
 	})
 
@@ -401,6 +490,42 @@ func TestSeasonAttachIsScopedToTheOwningOrganizer(t *testing.T) {
 		}
 		if _, err := st.AttachSeriesToSeason(ctx, p.victimOrg, season.ID, s.ID); err != nil {
 			t.Fatalf("the owning organizer must still attach: %v", err)
+		}
+	})
+
+	// Reaches the MEMBER predicate: the season belongs to the attacker, so the
+	// season lookup succeeds and only the member lookup can refuse.
+	t.Run("attacker's own season, victim's member", func(t *testing.T) {
+		attackerSeason, err := st.CreateSeason(ctx, SeasonInput{
+			OrganizerID: p.attackerOrg,
+			Name:        LocalizedText{"en": "attacker season", "fr": "saison"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := st.AttachEventToSeason(ctx, p.attackerOrg, attackerSeason.ID, p.victimEvent); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("attach of a victim's event = %v, want ErrNotFound", err)
+		}
+		victimSeries, err := st.CreateSeries(ctx, SeriesInput{
+			OrganizerID: p.victimOrg, EventID: p.victimEvent,
+			Name: LocalizedText{"en": "victim series", "fr": "serie"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AttachSeriesToSeason(ctx, p.attackerOrg, attackerSeason.ID, victimSeries.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("attach of a victim's series = %v, want ErrNotFound", err)
+		}
+
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT (SELECT count(*) FROM season_events WHERE season_id=$1)
+			      + (SELECT count(*) FROM season_series WHERE season_id=$1)`, attackerSeason.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("the attacker's season gained %d victim member(s)", n)
 		}
 	})
 }

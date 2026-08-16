@@ -177,6 +177,12 @@ func (f *fakeStore) recordOrganizer(method string, organizerID uuid.UUID) {
 
 func (f *fakeStore) PublishSeatMap(_ context.Context, organizerID, id uuid.UUID) (store.SeatMap, bool, error) {
 	f.recordOrganizer("PublishSeatMap", organizerID)
+	// TKT-251: the fake refuses a row the caller does not own, exactly as the
+	// SQL predicate does — otherwise the API tier proves the handler and the
+	// fake agree and nothing about the boundary.
+	if row, ok := f.seatMaps[id]; ok && row.OrganizerID != organizerID {
+		return store.SeatMap{}, false, store.ErrNotFound
+	}
 	m, ok := f.seatMaps[id]
 	if !ok {
 		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
@@ -464,16 +470,14 @@ func (f *fakeStore) CreateFestival(_ context.Context, in store.FestivalInput) (s
 
 func (f *fakeStore) AttachDayToFestival(_ context.Context, organizerID, festivalID, performanceID uuid.UUID) (store.Festival, error) {
 	f.recordOrganizer("AttachDayToFestival", organizerID)
+	// TKT-251: both lookups organizer-scoped, mirroring the SQL.
 	festival, ok := f.festivals[festivalID]
-	if !ok {
+	if !ok || festival.OrganizerID != organizerID {
 		return store.Festival{}, store.ErrNotFound
 	}
 	performance, ok := f.performances[performanceID]
-	if !ok {
+	if !ok || performance.OrganizerID != organizerID {
 		return store.Festival{}, store.ErrNotFound
-	}
-	if festival.OrganizerID != performance.OrganizerID {
-		return store.Festival{}, store.ErrOrganizerMismatch
 	}
 	if performance.Kind != store.KindFestivalDay {
 		return store.Festival{}, store.ErrSlotKindMismatch
@@ -509,15 +513,21 @@ func (f *fakeStore) CreateSeries(_ context.Context, in store.SeriesInput) (store
 }
 func (f *fakeStore) AttachPerformanceToSeries(_ context.Context, organizerID, seriesID, performanceID uuid.UUID, position int32) (store.Series, error) {
 	f.recordOrganizer("AttachPerformanceToSeries", organizerID)
+	// TKT-251: both lookups are organizer-scoped in the SQL, so the fake scopes
+	// both too. A fake that kept the old two-row comparison would answer 400
+	// where production answers 404, and the API-tier contract tests would pin the
+	// distinguishable behaviour this ticket removes (ai-review [high]).
 	s, ok := f.series[seriesID]
-	if !ok {
+	if !ok || s.OrganizerID != organizerID {
 		return store.Series{}, store.ErrNotFound
 	}
 	p, ok := f.performances[performanceID]
-	if !ok {
+	if !ok || p.OrganizerID != organizerID {
 		return store.Series{}, store.ErrNotFound
 	}
-	if p.OrganizerID != s.OrganizerID || p.EventID != s.EventID {
+	// Same-tenant, different event: the caller owns both rows, so this stays a
+	// mismatch rather than collapsing into not-found.
+	if p.EventID != s.EventID {
 		return store.Series{}, store.ErrOrganizerMismatch
 	}
 	if p.Status != "draft" {
@@ -547,16 +557,14 @@ func (f *fakeStore) CreateSeason(_ context.Context, in store.SeasonInput) (store
 }
 func (f *fakeStore) AttachSeriesToSeason(_ context.Context, organizerID, seasonID, seriesID uuid.UUID) (store.Season, error) {
 	f.recordOrganizer("AttachSeriesToSeason", organizerID)
+	// TKT-251: both lookups organizer-scoped, mirroring the SQL.
 	s, ok := f.seasons[seasonID]
-	if !ok {
+	if !ok || s.OrganizerID != organizerID {
 		return store.Season{}, store.ErrNotFound
 	}
 	series, ok := f.series[seriesID]
-	if !ok {
+	if !ok || series.OrganizerID != organizerID {
 		return store.Season{}, store.ErrNotFound
-	}
-	if s.OrganizerID != series.OrganizerID {
-		return store.Season{}, store.ErrOrganizerMismatch
 	}
 	for _, id := range s.SeriesIDs {
 		if id == seriesID {
@@ -569,16 +577,14 @@ func (f *fakeStore) AttachSeriesToSeason(_ context.Context, organizerID, seasonI
 }
 func (f *fakeStore) AttachEventToSeason(_ context.Context, organizerID, seasonID, eventID uuid.UUID) (store.Season, error) {
 	f.recordOrganizer("AttachEventToSeason", organizerID)
+	// TKT-251: both lookups organizer-scoped, mirroring the SQL.
 	s, ok := f.seasons[seasonID]
-	if !ok {
+	if !ok || s.OrganizerID != organizerID {
 		return store.Season{}, store.ErrNotFound
 	}
 	ev, ok := f.events[eventID]
-	if !ok {
+	if !ok || ev.OrganizerID != organizerID {
 		return store.Season{}, store.ErrNotFound
-	}
-	if s.OrganizerID != ev.OrganizerID {
-		return store.Season{}, store.ErrOrganizerMismatch
 	}
 	for _, id := range s.EventIDs {
 		if id == eventID {
@@ -924,6 +930,12 @@ func (f *fakeStore) GetPoolOfferState(_ context.Context, id uuid.UUID) (store.Po
 
 func (f *fakeStore) PublishPerformance(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, error) {
 	f.recordOrganizer("PublishPerformance", organizerID)
+	// TKT-251: the fake refuses a row the caller does not own, exactly as the
+	// SQL predicate does — otherwise the API tier proves the handler and the
+	// fake agree and nothing about the boundary.
+	if row, ok := f.performances[id]; ok && row.OrganizerID != organizerID {
+		return store.Performance{}, false, store.ErrNotFound
+	}
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, store.ErrNotFound
@@ -948,6 +960,12 @@ func (f *fakeStore) PublishPerformance(_ context.Context, organizerID, id uuid.U
 
 func (f *fakeStore) ArchivePerformance(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, bool, error) {
 	f.recordOrganizer("ArchivePerformance", organizerID)
+	// TKT-251: the fake refuses a row the caller does not own, exactly as the
+	// SQL predicate does — otherwise the API tier proves the handler and the
+	// fake agree and nothing about the boundary.
+	if row, ok := f.performances[id]; ok && row.OrganizerID != organizerID {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
 	p, ok := f.performances[id]
 	if !ok {
 		return store.Performance{}, false, false, store.ErrNotFound
@@ -991,11 +1009,23 @@ func (f *fakeStore) MarkPerformanceArchiveEmitted(_ context.Context, id uuid.UUI
 
 func (f *fakeStore) CloseSlot(_ context.Context, organizerID, id uuid.UUID, reason *string) (store.Performance, bool, bool, error) {
 	f.recordOrganizer("CloseSlot", organizerID)
+	// TKT-251: the fake refuses a row the caller does not own, exactly as the
+	// SQL predicate does — otherwise the API tier proves the handler and the
+	// fake agree and nothing about the boundary.
+	if row, ok := f.performances[id]; ok && row.OrganizerID != organizerID {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
 	return f.toggleClosure(id, "closed", reason)
 }
 
 func (f *fakeStore) ReopenSlot(_ context.Context, organizerID, id uuid.UUID) (store.Performance, bool, bool, error) {
 	f.recordOrganizer("ReopenSlot", organizerID)
+	// TKT-251: the fake refuses a row the caller does not own, exactly as the
+	// SQL predicate does — otherwise the API tier proves the handler and the
+	// fake agree and nothing about the boundary.
+	if row, ok := f.performances[id]; ok && row.OrganizerID != organizerID {
+		return store.Performance{}, false, false, store.ErrNotFound
+	}
 	return f.toggleClosure(id, "open", nil)
 }
 
@@ -1038,10 +1068,16 @@ func (f *fakeStore) MarkClosureEmitted(_ context.Context, id uuid.UUID, version 
 
 func (f *fakeStore) PublishSeries(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
 	f.recordOrganizer("PublishSeries", organizerID)
+	if row, ok := f.series[id]; ok && row.OrganizerID != organizerID {
+		return nil, store.ErrNotFound
+	}
 	return f.transitionSeries(ctx, id, "published")
 }
 func (f *fakeStore) ArchiveSeries(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
 	f.recordOrganizer("ArchiveSeries", organizerID)
+	if row, ok := f.series[id]; ok && row.OrganizerID != organizerID {
+		return nil, store.ErrNotFound
+	}
 	return f.transitionSeries(ctx, id, "archived")
 }
 func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target string) ([]store.SeriesTransition, error) {
@@ -1088,11 +1124,17 @@ func (f *fakeStore) transitionSeries(_ context.Context, id uuid.UUID, target str
 
 func (f *fakeStore) PublishFestival(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
 	f.recordOrganizer("PublishFestival", organizerID)
+	if row, ok := f.festivals[id]; ok && row.OrganizerID != organizerID {
+		return nil, store.ErrNotFound
+	}
 	return f.transitionFestival(ctx, id, "published")
 }
 
 func (f *fakeStore) ArchiveFestival(ctx context.Context, organizerID, id uuid.UUID) ([]store.SeriesTransition, error) {
 	f.recordOrganizer("ArchiveFestival", organizerID)
+	if row, ok := f.festivals[id]; ok && row.OrganizerID != organizerID {
+		return nil, store.ErrNotFound
+	}
 	return f.transitionFestival(ctx, id, "archived")
 }
 
@@ -2089,8 +2131,17 @@ func TestFestivalCreateAttachDaysAndSharedCapacity(t *testing.T) {
 	crossOrg.OrganizerID = uuid.New()
 	e.store.performances[first.Id] = crossOrg
 	otherFestival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{Name: LocalizedString{"en": "Other", "fr": "Autre"}, SharedCapacity: 50}))
-	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("cross-organizer attach: %d", rec.Code)
+	// TKT-251: this slot now belongs to ANOTHER organizer, so the answer is 404 —
+	// indistinguishable from an id that names no row. It was 400 ("entities must
+	// belong to the same organizer") until the day lookup became organizer-scoped,
+	// and that answer confirmed a guessed id names a real row someone else owns.
+	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-organizer attach: %d, want 404", rec.Code)
+	}
+	// And an id that names nothing answers identically — the equivalence IS the
+	// property, so assert it rather than the code alone.
+	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: uuid.New()}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown-id attach: %d, want the SAME 404 as the cross-tenant case", rec.Code)
 	}
 	crossOrg.OrganizerID = orgID
 	crossOrg.CapacityGroupID = &festival.Id
@@ -2326,7 +2377,13 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 	e.store.series[otherSeriesID] = otherSeries
 	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{Name: LocalizedString{"en": "Season", "fr": "Saison"}}))
 
-	cases := []struct {
+	// TKT-251 (ai-review [high]): these fixtures build resources owned by ANOTHER
+	// organizer, so they are the CROSS-TENANT case and now answer 404 — the same
+	// as an id naming no row. Asserting 400 here pinned the distinguishable
+	// behaviour this ticket removes, and it stayed green only because the fake
+	// did not scope. The equivalence with an unknown id is asserted alongside,
+	// because "both refuse" is weaker than "both refuse IDENTICALLY".
+	crossTenant := []struct {
 		path string
 		body any
 	}{
@@ -2334,10 +2391,39 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 		{"/seasons/" + season.Id.String() + "/series", SeasonSeriesAttach{SeriesId: otherSeriesID}},
 		{"/seasons/" + season.Id.String() + "/events", SeasonEventAttach{EventId: otherEventID}},
 	}
-	for _, tc := range cases {
-		if rec := e.do("POST", tc.path, tc.body); rec.Code != http.StatusBadRequest {
-			t.Fatalf("organizer mismatch %s: %d %s", tc.path, rec.Code, rec.Body.String())
+	unknown := []any{
+		SeriesPerformanceAttach{PerformanceId: uuid.New(), Position: 1},
+		SeasonSeriesAttach{SeriesId: uuid.New()},
+		SeasonEventAttach{EventId: uuid.New()},
+	}
+	for i, tc := range crossTenant {
+		rec := e.do("POST", tc.path, tc.body)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("cross-tenant attach %s: %d %s, want 404", tc.path, rec.Code, rec.Body.String())
 		}
+		other := e.do("POST", tc.path, unknown[i])
+		if other.Code != rec.Code || other.Body.String() != rec.Body.String() {
+			t.Fatalf("cross-tenant and unknown-id answers differ for %s:\n cross-tenant: %d %s\n unknown:      %d %s\n"+
+				"A distinguishable refusal confirms a guessed id names a real row owned by someone else.",
+				tc.path, rec.Code, rec.Body.String(), other.Code, other.Body.String())
+		}
+	}
+
+	// The LEGITIMATE mismatch still refuses with its own 400: the caller owns
+	// both rows, they just belong to different events. Collapsing this into 404
+	// would leave the owner unable to tell what is actually wrong.
+	sameTenantOtherEventID := uuid.New()
+	sameTenantEvent := e.store.events[eventID]
+	sameTenantEvent.ID = sameTenantOtherEventID
+	e.store.events[sameTenantOtherEventID] = sameTenantEvent
+	sameTenantSlotID := uuid.New()
+	sameTenantSlot := e.store.performances[performanceID]
+	sameTenantSlot.ID, sameTenantSlot.EventID, sameTenantSlot.Status = sameTenantSlotID, sameTenantOtherEventID, "draft"
+	e.store.performances[sameTenantSlotID] = sameTenantSlot
+	if rec := e.do("POST", "/series/"+empty.Id.String()+"/performances",
+		SeriesPerformanceAttach{PerformanceId: sameTenantSlotID, Position: 1}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("same-tenant cross-event attach: %d %s, want 400 — the owner owns both rows",
+			rec.Code, rec.Body.String())
 	}
 }
 
@@ -2819,4 +2905,75 @@ func (f *fakeStore) ListEnabledChannels(_ context.Context, organizerID uuid.UUID
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out, nil
+}
+
+// TestEveryTransitionPassesTheVerifiedOrganizerToTheStore closes the gap between
+// "the handler calls organizerFor" and "the handler passes what organizerFor
+// returned".
+//
+// TKT-251 ai-review [medium], confirmed: the fake recorded the organizer every
+// transition was called with, and NOTHING read it. A handler passing uuid.Nil, a
+// hard-coded organizer, or another request's organizer would have left the whole
+// API suite green — the store smoke tests call the store directly and cannot see
+// a caller error, and the AST invariant only proves the handler MENTIONS
+// organizerFor, not what it does with the value.
+//
+// Driven through the real router so the assertion is filled the way production
+// fills it, and the expected value is the one the ASSERTION names — derived from
+// the request, never read back from what the handler happened to pass.
+func TestEveryTransitionPassesTheVerifiedOrganizerToTheStore(t *testing.T) {
+	e := newEnv(t)
+	eventID, performanceID := e.createFixture(false)
+
+	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
+		EventId: eventID, Name: LocalizedString{"en": "S", "fr": "S"},
+	}))
+	season := decode[Season](t, e.do("POST", "/seasons", SeasonCreate{
+		Name: LocalizedString{"en": "Se", "fr": "Se"},
+	}))
+	festival := decode[Festival](t, e.do("POST", "/festivals", FestivalCreate{
+		Name: LocalizedString{"en": "F", "fr": "F"}, SharedCapacity: 10,
+	}))
+	venue := decode[Venue](t, e.do("POST", "/venues", VenueCreate{Name: "V", GaCapacity: 10}))
+	seatMap := decode[SeatMap](t, e.do("POST", "/venues/"+venue.Id.String()+"/seat-maps",
+		SeatMapCreate{Name: "M"}))
+
+	// One row per transition. The bodies need not succeed — the organizer is
+	// recorded on entry to the store, so a 404/409 still proves the wiring.
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   any
+		store  string
+	}{
+		{"POST", "/performances/" + performanceID.String() + "/publish", nil, "PublishPerformance"},
+		{"POST", "/performances/" + performanceID.String() + "/archive", nil, "ArchivePerformance"},
+		{"POST", "/performances/" + performanceID.String() + "/close", SlotCloseRequest{}, "CloseSlot"},
+		{"POST", "/performances/" + performanceID.String() + "/reopen", nil, "ReopenSlot"},
+		{"POST", "/series/" + series.Id.String() + "/publish", nil, "PublishSeries"},
+		{"POST", "/series/" + series.Id.String() + "/archive", nil, "ArchiveSeries"},
+		{"POST", "/series/" + series.Id.String() + "/performances", SeriesPerformanceAttach{PerformanceId: performanceID, Position: 1}, "AttachPerformanceToSeries"},
+		{"POST", "/seasons/" + season.Id.String() + "/series", SeasonSeriesAttach{SeriesId: series.Id}, "AttachSeriesToSeason"},
+		{"POST", "/seasons/" + season.Id.String() + "/events", SeasonEventAttach{EventId: eventID}, "AttachEventToSeason"},
+		{"POST", "/festivals/" + festival.Id.String() + "/publish", nil, "PublishFestival"},
+		{"POST", "/festivals/" + festival.Id.String() + "/archive", nil, "ArchiveFestival"},
+		{"POST", "/festivals/" + festival.Id.String() + "/days", FestivalDayAttach{PerformanceId: performanceID}, "AttachDayToFestival"},
+		{"POST", "/seat-maps/" + seatMap.Id.String() + "/publish", nil, "PublishSeatMap"},
+	} {
+		t.Run(tc.store, func(t *testing.T) {
+			delete(e.store.organizerSeen, tc.store)
+			e.do(tc.method, tc.path, tc.body)
+
+			got, ok := e.store.organizerSeen[tc.store]
+			if !ok {
+				t.Fatalf("%s never reached the store — this row cannot prove anything about "+
+					"the organizer it was called with", tc.store)
+			}
+			if got != e.organizer {
+				t.Fatalf("%s got organizer %v, want %v (the one the assertion names). "+
+					"A handler that passes uuid.Nil or another value writes for the wrong tenant.",
+					tc.store, got, e.organizer)
+			}
+		})
+	}
 }
