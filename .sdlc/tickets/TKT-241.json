@@ -4,10 +4,14 @@
   "summary": "Prove lookup-not-constraint end to end, not just at the inventory store (TKT-235 ai-review)",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
-  "pr": null,
+  "pr": {
+    "number": 226,
+    "url": "https://github.com/mathd/ticketing_system/pull/226",
+    "state": "open"
+  },
   "parent": "TKT-17",
   "description": "**Surfaced by TKT-235's ai-review (`gpt-5.6-luna`), finding 5 [medium].** Not a defect that ticket\nintroduced — a gap between what its tests prove and what its design *claims*.\n\nTKT-235 established the sales-channel registry as a **lookup, not a constraint**: an unregistered —\nor disabled — channel code must sell exactly as it did before the registry existed. Two tests guard\nit, and both are narrower than the claim:\n\n- `services/inventory/internal/store/channel_allocations_smoke_test.go` →\n  `TestAnUnregisteredChannelCodeStillSells` calls the **inventory store directly**. It never\n  traverses commerce orchestration, catalog fee resolution, split resolution, payments, or any API\n  boundary. A registry lookup added at any of those layers would reject the sale *earlier* and leave\n  this test green.\n- `services/catalog/internal/store/channels_smoke_test.go` → `TestNothingReferencesTheChannelRegistry`\n  greps `information_schema` for foreign keys pointing at `channels`. That proves **FK absence in\n  catalog's schema**. It says nothing about application-level gating anywhere.\n\nBoth had their scope narrowed in comments at review time, so nothing currently overclaims in the\ncode. What is missing is the test that would actually catch the regression.\n\n**Conditions of Success:**\n- A gateway-level (or `smoke/`) test buys through the full path — reserve → fee resolution → split\n  resolution → confirm — using a channel code that has **no registry row at all**, and asserts the\n  sale completes with the code recorded verbatim on the claim and the order.\n- The same path with a channel code whose registry row exists but is **`enabled = false`**, and it\n  also completes. Disabling is a *display* decision (it removes the channel from\n  `/public/channels`), not a sellability one — nothing in the sale path consults the registry today,\n  and this test is what stops that changing silently.\n- Both assertions name the invariant and cite ADR-024, so a future ticket that deliberately adds\n  registry gating has to change the test and state why, rather than deleting it.\n\nQuality gates: `make check` green. Test-only ticket — if it surfaces a real gating bug in the sale\npath, report it and stop rather than fixing it here.\n\nParent: TKT-17. Non-goals: adding any registry enforcement (that would be the opposite of this\nticket); the seated-pool seam (TKT-176).",
   "context": {
