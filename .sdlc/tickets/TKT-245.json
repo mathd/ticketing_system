@@ -8,46 +8,149 @@
   "summary": "Catalog cannot verify WHICH organizer a back-office request is for (TKT-236 ai-review)",
   "description": "**Surfaced by TKT-236's ai-review.** Not a defect that ticket introduced — a property of the\ndeputy model that TKT-236 was the first to have to state out loud.\n\nCatalog authenticates the **calling process**, not the staff member behind it. Every back-office\nwrite takes `organizer_id` from the request body and catalog trusts it, because it has nothing else\nto go on. The back office passes its session's organizer and never one from a form — but that is a\ndiscipline in one codebase, not a boundary catalog can enforce.\n\nTKT-236 narrowed the blast radius where it could: `UpdateChannel` now carries an organizer predicate,\nso an id disclosed by the operator list is no longer sufficient to mutate another tenant's channel.\nWhat remains is that a compromised or buggy back office can still *author for*, and now *enumerate*,\nany organizer.\n\n**Conditions of Success:**\n- A way for catalog to verify which organizer a request is for, that does not rest on the caller\n  asserting it. Options to weigh: a per-organizer credential; a signed assertion the back office\n  mints from its session (commerce's customer-assertion key is the in-repo precedent); or catalog\n  resolving the organizer from the staff identity it already stores.\n- An ADR recording the choice and what it does *not* close — ADR-021's rule about naming the\n  adversary applies: this is about a compromised deputy, not a DB writer.\n- Applies to every catalog write the back office makes, not only channels. A fix that scoped one\n  endpoint would leave the model unchanged and the claim still unearned.\n\nQuality gates: `make check` green; `make browser` for any touched write form.\n\nNon-goals: multi-organizer staff sign-in (ADR-042 scopes that as future work); inventory's credential\n(TKT-244).",
   "context": {
-    "binding": [],
+    "capturedAt": "2026-08-15",
+    "supersedes": "2026-08-10 bake (stale: ADR-056 and ADR-057 landed after it)",
     "governingAdrs": [
       {
         "id": "ADR-042",
-        "why": "Staff identity and back-office sessions — the deputy model this ticket revisits, and its own note that multi-organizer sign-in is out of scope."
+        "why": "Staff identity lives in catalog (staff_accounts, migration 0015); the BACK OFFICE owns the session and it is in-process and non-persisted. Sub-decision 4 scopes multi-organizer sign-in as out of scope, and sub-decision 2 promises the session module can be replaced 'without moving the enforcement point' -- which is the hinge for mechanism 3."
       },
       {
         "id": "ADR-043",
-        "why": "Where a service's auth guard lives; a new organizer-scoped credential or assertion has to place itself against this."
+        "why": "Where a service's auth guard lives: contract operation (declared security:, enforced by openapi3filter) vs internal route (inline header check). A new organizer-scoped credential or assertion must place itself on this line; catalog's writes are contract operations, so the guard belongs in the AuthenticationFunc seam."
       },
       {
         "id": "ADR-053",
-        "why": "TKT-236's credential allowlist, which records the enumeration capability this ticket would close."
+        "why": "Records the enumeration capability this ticket closes, and states the assumption explicitly: 'the back office is not compromised.' Its own code comment names TKT-245 as the owner of the fix (internal/api/server.go:323-325). Its reasoning deliberately does NOT generalize -- read the WHY IT DOES NOT GENERALIZE block before citing it as precedent."
+      },
+      {
+        "id": "ADR-056",
+        "why": "NEW since the stale bake. The live in-repo template: a credential resolved to a scope {ResellerID, OrganizerID, ChannelCode} inside the AuthenticationFunc, handed to handlers through a per-request slot, with 'nothing in it ever comes from the request body'. It explicitly cites ADR-053's cross-tenant staff credential as the failure it avoids."
+      },
+      {
+        "id": "ADR-057",
+        "why": "NEW since the stale bake. The freshest precedent for adding a service-specific staff credential (TKT-244), and it answers the same-shaped question as ADR-053 while reaching the OPPOSITE conclusion -- the difference is the whole content of that ADR. Read both before arguing from either."
+      },
+      {
+        "id": "ADR-049",
+        "why": "Customer identity and storefront sessions -- the ADR behind commerce's customer assertion, which is mechanism 2's precedent. Its TKT-221 amendment records why a customer_id in the body and a service credential in the SSR process were BOTH refused; catalog's problem is the same shape with organizer_id."
       },
       {
         "id": "ADR-021",
-        "why": "Name the adversary: this is about a compromised deputy process, not a DB writer, and the ADR must not overclaim."
+        "why": "Name the adversary. This ticket is about a compromised or buggy DEPUTY PROCESS, not a writer with catalog DB access -- no mechanism here constrains the latter, and the ADR must not overclaim. Three of its clauses broke this rule across two review passes."
+      },
+      {
+        "id": "ADR-002",
+        "why": "Catalog owns organizers/tenants, which is why staff live there rather than in a sixth service or on the gateway."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "TestCatalogSpecGuardsEveryUnsafeOperationAndOnlyThose",
+        "path": "services/catalog/internal/api/write_credential_test.go:31",
+        "why": "Derives the invariant from the SPEC in both directions over every operation: unsafe -> requires CatalogStaffWriteCredential AND declares 401; safe -> opts out with `security: []`. Adding a security scheme or a new operation without satisfying both fails the gate. This is why ADR-053 says catalog's contract cannot express a staff-authenticated GET."
+      },
+      {
+        "test": "TestCatalogStaffWriteSchemeIsADeclaredHeaderKey",
+        "path": "services/catalog/internal/api/write_credential_test.go:78",
+        "why": "Pins the scheme name and header to what the document declares. A header renamed in the spec but not in code would silently read a header nobody sends."
+      },
+      {
+        "test": "TestCatalogRefusalsAreIndistinguishable",
+        "path": "services/catalog/internal/api/write_credential_test.go:137",
+        "why": "Refusals must not become an oracle. Any new refusal path (wrong organizer, bad assertion) has to answer identically to the existing ones."
+      },
+      {
+        "test": "TestCatalogPublicReadsStayOpenWithoutCredential",
+        "path": "services/catalog/internal/api/write_credential_test.go:150",
+        "why": "The storefront must keep working. A change that makes reads demand an organizer identity breaks the public surface."
       }
     ],
     "reference": [
       {
-        "summary": "The corrected blast-radius reasoning, and the residual it names",
-        "link": "services/catalog/internal/api/server.go"
+        "summary": "The corrected blast-radius reasoning and the residual it names -- it names TKT-245 as the owner of the fix. Read before anything else in the code.",
+        "link": "services/catalog/internal/api/server.go:280-343"
       },
       {
-        "summary": "The precedent for a signed assertion minted from a session",
-        "link": "services/commerce/internal/api"
+        "summary": "Mechanism 2's precedent, in full: mint/verify an HMAC assertion `v1.<id>.<expiry>.<mac>`",
+        "link": "services/commerce/internal/api/assertion.go"
       },
       {
-        "summary": "TKT-236 PR and its review",
+        "summary": "Mechanism 1's precedent: credential -> scope in the AuthenticationFunc, per-request slot, never from the body",
+        "link": "services/commerce/internal/api/partner_auth.go"
+      },
+      {
+        "summary": "staff_accounts.organizer_id NOT NULL -- catalog already stores the fact it does not use",
+        "link": "services/catalog/internal/store/migrations/0015_staff_accounts.sql:19-32"
+      },
+      {
+        "summary": "Catalog already returns the organizer at sign-in (StaffPrincipal.OrganizerId)",
+        "link": "services/catalog/internal/api/staff.go:76-80"
+      },
+      {
+        "summary": "The back office reads staff.organizerId from its session and passes it as an argument",
+        "link": "web/backoffice/src/pages/channels.astro:72,90,107,135"
+      },
+      {
+        "summary": "The existing guard seam a fix would extend",
+        "link": "services/catalog/internal/api/write_credential.go:29-46"
+      },
+      {
+        "summary": "Browser-spec pattern for a back-office write form (make browser)",
+        "link": "test/browser/channels.mjs"
+      },
+      {
+        "summary": "TKT-236 PR and its review (the finding this ticket was filed from)",
         "link": "https://github.com/mathd/ticketing_system/pull/194"
       }
-    ],
-    "capturedAt": "2026-08-10"
+    ]
   },
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-236 ai-review — incidental, deferred\n\n**Finding:** [high] *\"Credential widening materially increases compromise impact despite claiming\nnone.\"* The reviewer was **right about the claim**: the code said the added blast radius was nil, and\nthat was false — a create could only probe one guessed code at a time and never yielded an id, while\nthe list read returns every channel, id and disabled row in one call.\n\n**Fixed in TKT-236:** the claim itself (corrected in the code and in ADR-053), and the chain it\nenabled — `UpdateChannel` now carries an organizer predicate, so a disclosed id no longer mutates\nacross tenants.\n\n**Deferred here:** the underlying model. Catalog cannot verify which organizer any back-office\nrequest is for, on any endpoint. Closing that is a new credential or assertion mechanism affecting\nevery catalog write — its own vertical slice, not a channels story's.\n\nNeeds shaping before Gate 1: the choice between a per-organizer credential, a signed session\nassertion, and catalog resolving the organizer from staff identity is the ticket's real content."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping verdict — 6 of 8 met, 2 held for the human (Gate 1 blocked, correctly)\n\n**Backend:** local tracker. **Gates:** all four waived for this ticket (owner, confirmed at start of\nrun); agent takes them by judgement, `overrides:` required at closeout.\n\n#### The described defect survives verification — with one correction\n\nTKT-250's lesson was that a filed ticket can describe a defect the code does not have, so this was\nchecked against HEAD before anything was planned. **It holds**, and the code says so in its own\nwords: `services/catalog/internal/api/server.go:318-325` states the whole security property rests on\n*\"the back office is not compromised\"* and names TKT-245 as the owner of the fix.\n\n**The correction:** the ticket describes the problem as `organizer_id` **taken from the request\nbody**. That is 15 of catalog's 29 contract writes. The other 13 unsafe operations are\nstate transitions that take only a **path id** — `POST /series/{id}/publish`,\n`/festivals/{id}/archive`, `/performances/{id}/close` and so on — and they reach the store with **no\norganizer at any layer**: `PublishSeries(ctx, id uuid.UUID)` (`internal/store/store.go:696`,\n`postgres.go:1055`). There is no asserted field to distrust because there is no field at all. A fix\nshaped only around \"don't trust the body value\" would leave 13 writes untouched and the COS's\n*\"applies to every catalog write\"* unearned — the exact failure the COS warns about, one level\ndeeper than it states.\n\n#### What the read changed about the three mechanisms\n\nThe ticket presents three options as open. Reading the code narrows them:\n\n**Catalog already knows the answer it fails to remember.** `staff_accounts.organizer_id` is\n`NOT NULL REFERENCES organizers(id)` (migration `0015:21`) and `AuthenticateStaff` already returns it\nas `StaffPrincipal.OrganizerId` (`internal/api/staff.go:76-80`). The back office learns the organizer\n*from catalog* at sign-in, holds it in its session, and hands it back on every write — and catalog,\nhaving said it, no longer knows it. The gap is not missing data; it is a missing binding between the\nauthenticated staff member and the request.\n\n| # | Mechanism | Verified precedent | Assessment |\n|---|---|---|---|\n| 1 | Per-organizer credential | ADR-056 `partnerScope` — credential → `{ResellerID, OrganizerID, ChannelCode}` resolved in the `AuthenticationFunc`, *\"nothing in it ever comes from the request body\"* (`commerce/internal/api/partner_auth.go:36-43,103-115`) | Right shape, wrong caller. That credential authenticates a **machine** confined to one tenant. Catalog's is one env scalar (`CATALOG_STAFF_WRITE_TOKEN`, `cmd/catalog/main.go:104`) shared by one back office serving *all* staff; per-tenant provisioning and rotation buys a boundary the signed-in human already carries. |\n| 2 | Signed assertion minted from the session | commerce's customer assertion, `v1.<id>.<expiry>.<mac>`, HMAC-SHA256, minted on password presentation, kept server-side, forwarded on the write (`commerce/internal/api/assertion.go:57-72`); key already provisioned by `scripts/env-bootstrap.sh:72` | **Recommended.** Commerce hit the *identically shaped* problem in TKT-221 — session in one process, identity needed in another, `customer_id` in the body forgeable — and this is the answer it landed on, reviewed and shipped. Catalog's is the same with `organizer_id`. It also fits the existing seam: `authenticateStaffWrite` is already the `openapi3filter` `AuthenticationFunc` (`write_credential.go:29`), which is where ADR-056 proves a scope can be attached. |\n| 3 | Catalog resolves the organizer from staff identity | ADR-042 sub-decision 2: the session module can be replaced *\"without moving the enforcement point\"* | Cleanest **end state** and where ADR-042 points, but it means catalog owns sessions — a table, a migration, an expiry sweep, and moving enforcement out of the back office. Larger than this ticket; mechanism 2 is a strict step toward it, not a detour, since the mint/verify seam is the same one a session would later use. |\n\n⚠️ **ADR-053 must not be cited as precedent without reading its `WHY IT DOES NOT GENERALIZE` block**,\nand ADR-057 answers a same-shaped question while reaching the **opposite** conclusion. Both are in\nthe refreshed mémo with that warning attached.\n\n#### Scope is too large for one ticket — proposed slice\n\n28 writes (excluding `authenticateStaff` itself) across **two classes that do not share a remedy**.\nSPIDR, split on Rules/Interface:\n\n- **Slice 1** — the mechanism, the verification seam, and the **15 body-organizer writes**. Per\n  AGENTS.md the target is **unsubmittable, not validated**: delete `organizer_id` from the request\n  types rather than comparing it, or the trust boundary stays in the client and only moves.\n- **Slice 2** — the **13 path-id transitions**. A store-tier scoping change (organizer predicate on\n  lookup), not a credential change. Different tier, different tests, different failure mode.\n\nRecommending the split be confirmed **at Gate 1** rather than discovered mid-Planning.\n\n#### Readiness\n\n| Item | State | One-liner |\n|---|---|---|\n| `objective` | **met** | Verified at HEAD; the code names this ticket as its fix. |\n| `scope` | **met** | In/out drawn; multi-organizer sign-in and inventory explicitly out. |\n| `uncertainties` | **met** | Resolved by reading; surfaced the unstated 13-transition class. |\n| `dependencies` | **met** | No open blockers; precedents already shipped. |\n| `approach` | **open**, `owner: human` | Trust-boundary decision on an auth surface — `deferred` is barred by `shaping.md`. |\n| `first_slice` | **open**, `owner: human` | Follows from `approach`; the 15/13 split needs confirming. |\n| `success` | **met** | COS sharpened: unsubmittable, adversary named, omission enumerated both ways. |\n| `context_memo` | **met** | Re-resolved 2026-08-15; +ADR-056, +ADR-057, +4 governing tests; all 8 ADRs verified present at HEAD. |\n\n**Gate 1 is hard-blocked while `approach` and `first_slice` are open — as intended.** Both are\nquestions only the owner can answer, and both are in the agent's message alongside this comment.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Catalog authenticates the calling PROCESS, not the staff member behind it. Verified at HEAD: 15 of 29 contract writes take organizer_id from the request body and catalog trusts it (services/catalog/internal/api/server.go, channels.go); the back office passes staff.organizerId from its session (web/backoffice/src/pages/channels.astro:72,90,107,135) and never a form value -- a discipline in one codebase, not a boundary catalog enforces."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an organizer identity catalog verifies independently of the request body, applied across the whole back-office write surface; the ADR recording the choice and its residual. OUT: multi-organizer staff sign-in (ADR-042 sub-decision 4 scopes it as future work); inventory's credential (TKT-244/ADR-057); commerce and access surfaces. See first_slice -- the surface splits into two classes that do not have the same fix."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading, not asking. (1) staff_accounts ALREADY carries organizer_id NOT NULL REFERENCES organizers(id) (migration 0015:21), and AuthenticateStaff already returns it as StaffPrincipal.OrganizerId (internal/api/staff.go:76-80) -- catalog already knows the fact it fails to remember. (2) The back-office session is in-process and its token is opaque (ADR-042 sub-decision 2; web/backoffice/src/lib/session.ts:10-11), so catalog cannot verify a session cookie -- any fix must carry the organizer in something catalog can check itself. (3) A second, UNSTATED exposure class: 13 state-transition writes take only a path id and reach the store with no organizer at any layer (store.PublishSeries(ctx, id) -- internal/store/store.go:696, postgres.go:1055). Those have no field to compare, so the body-field framing in the ticket text does not cover them."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. Depends on decisions already landed, not on unshipped work: ADR-056's partnerScope is a working in-repo template for exactly this (credential -> scope resolved in the AuthenticationFunc, 'nothing in it ever comes from the request body' -- services/commerce/internal/api/partner_auth.go:36-43,103-115), and it names ADR-053's staff credential reaching across tenants as the anti-pattern it was written to avoid (:105-107)."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "THE ticket's real content, and a trust-boundary decision on an auth surface -- shaping.md bars approach:deferred here. Three candidates, all verified against HEAD; see the kind=readiness comment for the full trade. Agent recommendation: mechanism 2 (an HMAC-signed organizer assertion minted by catalog at sign-in, forwarded by the back office, verified in catalog's existing authenticateStaffWrite seam), because commerce solved the identically-shaped problem in TKT-221 and the code is there to copy. Mechanism 1 (per-organizer credential) fits a machine caller, not an interactive staff tool -- the credential is one env scalar (CATALOG_STAFF_WRITE_TOKEN, cmd/catalog/main.go:104) and per-tenant provisioning/rotation buys a boundary the human already carries. Mechanism 3 (catalog resolves organizer from staff identity) is the cleanest END state and is where ADR-042's 'sessions move without moving the enforcement point' points, but it means catalog owns sessions, which is a larger move than this ticket."
+    },
+    "first_slice": {
+      "state": "open",
+      "owner": "human",
+      "note": "Depends on approach. SPIDR (Rules/Interface): the COS says 'every catalog write', which is 28 operations across two classes needing different remedies -- 15 body-organizer writes (compare the asserted value against the verified one, or delete the field) and 13 path-id transitions (add organizer scoping that does not exist at any layer). That is too much for one ticket. Proposed: slice 1 = the mechanism + the seam + the 15 body writes; slice 2 = the 13 transitions, which are a scoping change in the store, not a credential change. Recommend confirming the split at Gate 1 rather than discovering it in Planning."
+    },
+    "success": {
+      "state": "met",
+      "note": "From the ticket, sharpened by the read: (1) catalog determines the organizer for a back-office write without the caller asserting it -- make it UNSUBMITTABLE rather than validated (AGENTS.md; TKT-244 took three passes to learn this); (2) an ADR naming the adversary per ADR-021 -- a compromised deputy PROCESS, not a DB writer -- and stating what stays open; (3) coverage across the sliced surface, with omission enumerated in both directions. Gates: make check green; make browser for any touched write form (test/browser/channels.mjs is the pattern)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Re-resolved at claim time. The 2026-08-10 bake was stale: ADR-056 and ADR-057 both landed after it and both bear on the central decision. All 8 cited ADRs verified to resolve to real files at HEAD. governingTests added -- catalog's contract invariant is enforced by a TEST, not an ADR, and is discoverable only by failing the gate."
+    }
+  }
 }
