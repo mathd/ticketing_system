@@ -127,7 +127,10 @@ func eventOf(t *testing.T, ctx context.Context, ticketType string) string {
 //
 // With it, the sale's fee outcome is a function of the channel code, so a registry
 // gate added in fee resolution changes an asserted number rather than nothing.
-func seedChannelFeeAndSplit(t *testing.T, ctx context.Context, eventID, channel string) {
+// Returns the seeded payee id, which is what the split assertion recognises the
+// winning schedule BY: asserting the fee alone cannot see split resolution at all
+// (ai-review pass 1, [high]) — see assertSplitAwardedTo.
+func seedChannelFeeAndSplit(t *testing.T, ctx context.Context, eventID, channel string) string {
 	t.Helper()
 	cat, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
 	if err != nil {
@@ -181,6 +184,88 @@ func seedChannelFeeAndSplit(t *testing.T, ctx context.Context, eventID, channel 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit split seed for %q: %v", channel, err)
 	}
+	return payeeID
+}
+
+// assertSplitAwardedTo checks the persisted fee-resolution snapshot attributes the
+// fee to the seeded payee, in full.
+//
+// WHY THIS EXISTS. The first version of these tests seeded a channel-scoped split
+// schedule and then asserted only the fee's code and amount — which observe nothing
+// about split resolution, because a fee with NO split is forwarded with no parts and
+// payments records it as collected-and-unattributed rather than refusing
+// (services/commerce/internal/api/catalog_fees.go:648-652). Deleting the split seed,
+// or making the split resolver drop this channel, left all three tests green. The
+// ADR-047 half of the claim was decorative. Found by ai-review pass 1 [high].
+//
+// The snapshot is the right place to look: splits ride inside the fee-resolution
+// response rather than in a call of their own, and commerce persists the whole
+// document on the reservation, then settles from THAT rather than re-reading catalog.
+// So the snapshot is both what the resolver decided and what the money follows.
+func assertSplitAwardedTo(t *testing.T, ctx context.Context, reservationID, payeeID, channel string) {
+	t.Helper()
+	db, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
+	if err != nil {
+		t.Fatalf("connect commerce: %v", err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT fee_resolution_snapshot FROM reservations WHERE id=$1`,
+		reservationID).Scan(&raw); err != nil {
+		t.Fatalf("read fee_resolution_snapshot: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("reservation %s has NO fee resolution snapshot; the sale never resolved fees at "+
+			"all, so nothing below could have been proven", reservationID)
+	}
+	var snap struct {
+		Resolution struct {
+			Fees []struct {
+				FeeCode string `json:"fee_code"`
+				Split   struct {
+					Mode   string `json:"mode"`
+					Winner *struct {
+						Parts []struct {
+							Payee struct {
+								PayeeID string `json:"payee_id"`
+							} `json:"payee"`
+							ShareBps int32 `json:"share_bps"`
+						} `json:"parts"`
+					} `json:"winner"`
+				} `json:"split"`
+			} `json:"fees"`
+		} `json:"resolution"`
+	}
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("decode fee snapshot: %v", err)
+	}
+	for _, f := range snap.Resolution.Fees {
+		if f.FeeCode != "service" {
+			continue
+		}
+		if f.Split.Winner == nil {
+			t.Fatalf("fee 'service' resolved with NO winning split on channel %q, but a "+
+				"channel-scoped schedule was seeded for it. Split resolution is channel-selective "+
+				"(ADR-047) — if it now filters on the channel registry, that is the regression "+
+				"this test exists to catch. snapshot: %s", channel, raw)
+		}
+		if len(f.Split.Winner.Parts) != 1 {
+			t.Fatalf("winning split has %d parts, want 1: %s", len(f.Split.Winner.Parts), raw)
+		}
+		p := f.Split.Winner.Parts[0]
+		// Both halves asserted, and from the SEED rather than from a run: the payee
+		// identifies WHICH schedule won (a different one would name a different
+		// payee), and the share is the value the seed wrote.
+		if p.Payee.PayeeID != payeeID {
+			t.Fatalf("split awarded to payee %s, want the seeded %s — a different schedule won",
+				p.Payee.PayeeID, payeeID)
+		}
+		if p.ShareBps != 10000 {
+			t.Fatalf("share_bps = %d, want 10000 as seeded", p.ShareBps)
+		}
+		return
+	}
+	t.Fatalf("no 'service' fee in the resolution snapshot: %s", raw)
 }
 
 // tkt241FeePerTicket is the seeded per-ticket fee, in minor units.
@@ -316,7 +401,7 @@ func TestAPublicSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 	requireNotInRegistry(t, ctx, channel)
 
 	_, ticketType := publishedSlot(t, "TKT-241 Public Hall", 20)
-	seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
+	payeeID := seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
 
 	// NO inventory allocation for this code, and that is not an omission: the
 	// public route forwards no channel to inventory at all, so the hold is a
@@ -342,6 +427,9 @@ func TestAPublicSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(body, &reservation); err != nil {
 		t.Fatal(err)
 	}
+	// The split half of the traversal, observed rather than assumed (ai-review
+	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
+	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
 	checkoutReservation(t, reservation.ID, "tkt241-public-order-"+channel)
 
 	resChannel, orderChannel := commerceAttribution(t, ctx, reservation.ID)
@@ -404,7 +492,7 @@ func TestAPartnerSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 	requireNotInRegistry(t, ctx, channel)
 
 	slot, ticketType := publishedSlot(t, "TKT-241 Partner Hall", 20)
-	seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
+	payeeID := seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
 
 	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
 	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
@@ -432,6 +520,9 @@ func TestAPartnerSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(body, &reservation); err != nil {
 		t.Fatal(err)
 	}
+	// The split half of the traversal, observed rather than assumed (ai-review
+	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
+	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
 	checkoutReservation(t, reservation.ID, "tkt241-partner-order-"+slot)
 
 	// The claim: the half the public path cannot reach.
@@ -476,7 +567,7 @@ func TestASaleOnADISABLEDRegisteredChannelCompletesEndToEnd(t *testing.T) {
 	}
 
 	_, ticketType := publishedSlot(t, "TKT-241 Disabled Hall", 20)
-	seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
+	payeeID := seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
 
 	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt241-disabled-"+channel,
 		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType,
@@ -496,6 +587,9 @@ func TestASaleOnADISABLEDRegisteredChannelCompletesEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(body, &reservation); err != nil {
 		t.Fatal(err)
 	}
+	// The split half of the traversal, observed rather than assumed (ai-review
+	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
+	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
 	checkoutReservation(t, reservation.ID, "tkt241-disabled-order-"+channel)
 
 	_, orderChannel := commerceAttribution(t, ctx, reservation.ID)
