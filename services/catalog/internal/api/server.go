@@ -108,6 +108,13 @@ type Server struct {
 	// (TKT-191). Deliberately a different, catalog-only value — see the
 	// CatalogStaffWriteCredential security scheme and ADR-042.
 	staffWriteCredential string
+	// organizerAssertionKey signs the organizer assertion (TKT-245, ADR-058). It
+	// answers a different question from staffWriteCredential, which is why it is a
+	// second value rather than a reuse: that credential says "the back office is
+	// calling", this key says "for organizer O". Set through
+	// WithOrganizerAssertionKey; a server without it verifies nothing rather than
+	// verifying everything (see assertion.go's empty-key check).
+	organizerAssertionKey organizerAssertionKey
 	// limiters bound the public staff-login surface (TKT-195). Reached through
 	// lim(), never directly: a nil here must mean "build the real ones", not
 	// "allow everything". See ratelimit.go.
@@ -137,6 +144,15 @@ func newServerWithPublicReader(st store.Store, pub events.Publisher, log *slog.L
 func newServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
 	return &Server{store: st, pub: pub, log: log, public: pr,
 		internalCredential: internalCredential, staffWriteCredential: staffWriteCredential}
+}
+
+// WithOrganizerAssertionKey supplies the signing key (TKT-245). A setter rather
+// than another positional argument to NewServer, for the same reason commerce's
+// WithCustomerAssertionKey is one: every existing caller keeps compiling, and a
+// server constructed without it verifies nothing rather than verifying everything.
+func (s *Server) WithOrganizerAssertionKey(key string) *Server {
+	s.organizerAssertionKey = organizerAssertionKey(key)
+	return s
 }
 
 // publicReader is the narrow display-read collaborator — the four minute-tier
