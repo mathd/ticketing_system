@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -52,6 +53,91 @@ func TestAuthenticateStaffReturnsThePrincipal(t *testing.T) {
 // hand the back office a role its matrix cannot classify — and an unclassifiable
 // role that reaches a session is precisely the fail-open this ticket exists to
 // prevent. So: refuse, generically, and log for the operator.
+// A successful sign-in hands back an assertion naming the staff member and the
+// organizer the store resolved -- so the organizer catalog will later trust comes
+// from the AUTHENTICATED account, not from anything the caller said (TKT-245).
+func TestAuthenticateStaffMintsAnAssertionForTheResolvedOrganizer(t *testing.T) {
+	e := newEnv(t)
+	staffID, org := uuid.New(), uuid.New()
+	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
+		account:  store.StaffAccount{ID: staffID, OrganizerID: org, Identifier: "ada@example.test", Role: "admin"},
+		password: "correct horse",
+	}
+
+	rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+		Identifier: "ada@example.test", Password: "correct horse"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	got := decode[StaffPrincipal](t, rec)
+	if got.OrganizerAssertion == "" {
+		t.Fatal("sign-in returned no organizer assertion; the back office has nothing to forward")
+	}
+	scope, err := verifyOrganizerAssertion(testOrganizerAssertionKey, got.OrganizerAssertion, time.Now())
+	if err != nil {
+		t.Fatalf("the minted assertion does not verify against catalog's own key: %v", err)
+	}
+	// The organizer in the token is the STORE's, not the request's -- the request
+	// never named one.
+	if scope.OrganizerID != org {
+		t.Errorf("assertion names organizer %s, want the authenticated account's %s", scope.OrganizerID, org)
+	}
+	if scope.StaffID != staffID {
+		t.Errorf("assertion names staff %s, want %s", scope.StaffID, staffID)
+	}
+}
+
+// A refused sign-in mints nothing. Stated as its own test because the failure it
+// guards against is silent: an assertion attached to a 401 body would be a
+// credential handed to whoever guessed wrong.
+func TestAuthenticateStaffMintsNothingWhenTheCredentialsAreRefused(t *testing.T) {
+	e := newEnv(t)
+	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
+		account:  store.StaffAccount{ID: uuid.New(), OrganizerID: uuid.New(), Identifier: "ada@example.test", Role: "admin"},
+		password: "correct horse",
+	}
+
+	for _, tc := range []struct{ name, identifier, password string }{
+		{"wrong password", "ada@example.test", "wrong"},
+		{"unknown identifier", "nobody@example.test", "correct horse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+				Identifier: tc.identifier, Password: tc.password})
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status %d, want 401", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), organizerAssertionVersion+".") {
+				t.Fatalf("a refused sign-in returned something assertion-shaped: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// With no key configured the server mints nothing rather than minting something
+// unverifiable. Startup refuses that configuration, so this pins the behaviour of
+// a construction path that forgets -- the alternative is a token the back office
+// stores and forwards forever, which catalog then refuses on every write.
+func TestAuthenticateStaffWithNoAssertionKeyMintsNothing(t *testing.T) {
+	// The construction path that forgets the key.
+	e := newEnvWithAssertionKey(t, "")
+	staffID, org := uuid.New(), uuid.New()
+	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
+		account:  store.StaffAccount{ID: staffID, OrganizerID: org, Identifier: "ada@example.test", Role: "admin"},
+		password: "correct horse",
+	}
+
+	rec := e.do("POST", "/staff/authenticate", StaffCredentials{
+		Identifier: "ada@example.test", Password: "correct horse"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := decode[StaffPrincipal](t, rec).OrganizerAssertion; got != "" {
+		t.Fatalf("an unkeyed server minted %q, want no assertion at all", got)
+	}
+}
+
 func TestAuthenticateStaffRefusesAnUnrecognisedStoredRole(t *testing.T) {
 	e := newEnv(t)
 	e.store.staffAccounts["ada@example.test"] = staffAuthResult{

@@ -73,10 +73,17 @@ func (s *Server) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The assertion is minted from what the STORE resolved, never from anything
+	// the request said -- the request names no organizer at all (TKT-245). This is
+	// the only place one is created, so the TTL cannot drift between call sites.
+	//
+	// It rides on the success path only: attaching one to a 401 would hand a
+	// credential to whoever guessed wrong.
 	writeJSON(w, http.StatusOK, StaffPrincipal{
-		StaffId:     principal.ID,
-		OrganizerId: principal.OrganizerID,
-		Role:        role,
+		StaffId:            principal.ID,
+		OrganizerId:        principal.OrganizerID,
+		Role:               role,
+		OrganizerAssertion: s.mintForStaff(principal.ID, principal.OrganizerID),
 	})
 }
 

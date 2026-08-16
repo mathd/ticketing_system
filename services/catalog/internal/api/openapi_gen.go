@@ -1265,8 +1265,12 @@ type StaffCredentials struct {
 
 // StaffPrincipal Who signed in, and in what role. Carries no password material of any kind.
 // The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
+// organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
 type StaffPrincipal struct {
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	// OrganizerAssertion Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+	// Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+	OrganizerAssertion string             `json:"organizer_assertion"`
+	OrganizerId        openapi_types.UUID `json:"organizer_id"`
 
 	// Role The staff role vocabulary (TKT-197). This enum is the SINGLE source: it generates the Go constants catalog validates against and the TypeScript union the back office's route matrix is typed on, so adding a role here without deciding its permissions fails the back-office build rather than silently defaulting to something permissive.
 	// Deliberately NOT also a CHECK constraint on staff_accounts.role. That would be a second hand-written vocabulary to keep in step, and per ADR-021 it constrains nobody who can write the database — they can drop the constraint or grant themselves admin. The fail-closed boundary is the application: an unrecognised stored role does not authenticate.

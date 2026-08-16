@@ -847,6 +847,7 @@ export interface components {
         /**
          * @description Who signed in, and in what role. Carries no password material of any kind.
          *     The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
+         *     organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
          */
         StaffPrincipal: {
             /** Format: uuid */
@@ -854,6 +855,11 @@ export interface components {
             /** Format: uuid */
             organizer_id: string;
             role: components["schemas"]["StaffRole"];
+            /**
+             * @description Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+             *     Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+             */
+            organizer_assertion: string;
         };
         /** @description Locale-keyed text; adding a locale is data, not a schema change (TKT-36) */
         LocalizedString: {
