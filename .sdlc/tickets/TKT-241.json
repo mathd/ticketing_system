@@ -13,15 +13,33 @@
     "governingAdrs": [
       {
         "id": "ADR-024",
-        "why": "The no-FK rule and the reason for it: historical attribution must survive a channel being retired. This ticket proves the rule holds at every layer, not just in catalog's schema."
+        "why": "The load-bearing decision. The no-FK rule (historical attribution must survive a channel being retired) is what makes 'lookup, not constraint' true. RE-RESOLVED at claim: amended by TKT-246 (allocations may bind a seller via sold_by) and TKT-250 (allocation set carries a revision) since this memo was first captured. Both amendments are guards on channel_allocations, NOT on catalog.channels -- the distinction this test exists to pin."
       },
       {
         "id": "ADR-046",
-        "why": "Fee resolution takes a channel and is one of the layers the end-to-end test must traverse — a registry lookup added there would reject before inventory is reached."
+        "why": "Fee resolution takes a channel and is one of the layers the end-to-end test must traverse. A registry lookup added here would reject the sale before inventory is ever reached, leaving the inventory-store test green."
       },
       {
         "id": "ADR-047",
-        "why": "Split resolution is channel-selective and is the other such layer."
+        "why": "Split resolution is channel-selective and is the other such layer. Note it is NOT a separate HTTP call -- splits ride inside the fee-resolution response and are persisted in fee_resolution_snapshot, so traversing fee resolution traverses both."
+      },
+      {
+        "id": "ADR-054",
+        "why": "ADDED at shaping (absent from the 2026-08-09 capture). Per-channel sales windows are the FIRST predicate in the inventory claim guard (window -> seller -> code -> capacity). It gates on channel_allocations, not the registry, but it is a channel-keyed refusal the fixture must not trip, or the test never reaches the INSERT it means to assert on."
+      }
+    ],
+    "governingTests": [
+      {
+        "name": "services/commerce/internal/api/channel_seam_test.go",
+        "why": "A LIVE TRIPWIRE, not background. It pins the public reserve route as channel-free until the seam closes, and its header says 'when TKT-246 lands these assertions INVERT; do not delete them' -- then records that they did NOT invert. Any change that makes the public route forward a channel fails here. This ticket must not touch it."
+      },
+      {
+        "name": "smoke/coverage_test.go",
+        "why": "Every documented 2xx operation of inventory/commerce/payments/access must be driven by some smoke test, enforced in TestMain. A new smoke file adds coverage, never removes it, but the gate runs on every make check."
+      },
+      {
+        "name": "services/inventory/internal/store/channel_allocations_smoke_test.go:470-497",
+        "why": "The existing test's own scope disclaimer names TKT-241 as the owner of the gateway-level version. Its wording is the charter; the new test should be reachable from it."
       }
     ],
     "reference": [
@@ -34,17 +52,69 @@
         "link": "services/catalog/internal/store/channels_smoke_test.go"
       },
       {
-        "summary": "TKT-235 PR — the registry, and the review that surfaced this",
+        "summary": "Closest template: partner sells from its own bound allocation (add a confirm leg)",
+        "link": "smoke/partner_reserve_test.go:27-107"
+      },
+      {
+        "summary": "The claim guard sequence window -> seller -> code -> capacity, all on channel_allocations",
+        "link": "services/inventory/internal/store/store.go:500-600"
+      },
+      {
+        "summary": "Why the public route carries no channel to inventory",
+        "link": "services/commerce/internal/api/server.go:363-381"
+      },
+      {
+        "summary": "TKT-235 PR -- the registry, and the review that surfaced this",
         "link": "https://github.com/mathd/ticketing_system/pull/192"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-09",
+    "reResolvedAt": "2026-08-16"
   },
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-235 ai-review — incidental, deferred\n\n**Finding:** [medium] *\"The lookup-not-constraint regression test does not exercise a sale\nboundary\"* — `gpt-5.6-luna`, TKT-235 ai-review pass 1.\n\n**Triage: incidental, not blocking.** The reviewer is right that the test is narrower than the\nclaim, and wrong that this makes the claim false today: nothing in the sale path reads the registry\nat all (verified — no reference to `channels` or `ListEnabledChannels` anywhere in commerce or\ninventory outside generated types). So there is **no defect in the diff**; there is a missing guard\nagainst a defect a *future* ticket could introduce. Building a full gateway-level purchase harness\nis its own vertical slice, well beyond a registry story's scope.\n\n**Done at review time instead:** both tests had their scope narrowed in their own comments, so\nneither overclaims in the code. This ticket carries the real coverage.\n\nNeeds shaping before Gate 1 — the 8-item DoR is not filled and `first_slice` in particular needs a\ndecision on whether this rides `smoke/` or the gateway suite."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping pass — 2026-08-16. Verdict: **all 8 items `met`, no open blockers → Gate 1 clears.**\n\nRan per `references/shaping.md`: read the real code first, then Example-Mapped what was left.\nNothing needed a spike and nothing needs a human decision. Detail is on the `readiness` field;\nthe four things a reader should not have to diff for:\n\n**1. The COS as filed is partly unachievable, and that is by design — not a bug to fix here.**\n\nThe ticket asks for the channel code \"recorded verbatim on the claim *and* the order\" from a\nsingle full-path purchase. It cannot be, because the **public** route deliberately forwards no\nchannel to inventory (`services/commerce/internal/api/server.go:363-381`). TKT-240 added that\nforward and it was **reverted** after its own adversarial review — `POST /reservations` is\nunauthenticated and takes `channel_code` from the body, so forwarding alone let any caller drain\na reseller's allocation with no credential. TKT-246 then closed the seam only where a channel can\nbe *authorized* (the partner route, channel from the credential) and kept the public route unable\nto reach the decision at all. `channel_seam_test.go:13-58` is a live tripwire pinning exactly\nthis, with instructions not to delete it.\n\nSo `claims.channel_code` is **NULL by design** on a public sale. The ticket text predates TKT-246\nand did not know that.\n\n**Correction, not deferral:** the test splits in two, each proving the invariant at the layer that\ncan actually carry it — **(A) public path** → assert `orders.channel_code` verbatim, having\ntraversed price + fee (ADR-046) + split (ADR-047) resolution, which are precisely the layers a\nregistry lookup would be added to; **(B) partner path** → assert `claims.channel_code` *and*\n`orders.channel_code` verbatim. Between them the original COS is fully covered, and neither\noverclaims. `first_slice` is decided: **`smoke/`**, because there is no separate \"gateway suite\" —\n`smoke/` *is* the gateway-level tier and is already in `make check`.\n\n**2. The invariant is sharper than the ticket words it, and the sharpening is the whole test.**\n\nThe claim path guards on **inventory's `channel_allocations`**, never on **catalog's `channels`**.\nTwo different tables in two different services. The guard is four ordered predicates\n(`store.go:500-600`): `window → seller → code → capacity` — and *not one of them* consults the\nregistry. Writing the test as \"a channel with no row sells\" without saying *which table* is how it\nwould end up green and vacuous.\n\n**Guard predicate count, per `shaping.md`:** the fixture must satisfy **all four** to reach the\n`INSERT` it asserts on — active allocation for the code, open window, `sold_by` admitting the\ncaller (or unbound), `requires_code` false, cap ≥ qty. Trip any earlier predicate and the test\nproves nothing about the registry while looking like it does. This is the failure mode\n`docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md` names, and the one\nthe existing inventory test already dodged deliberately (`channel_allocations_smoke_test.go:496`).\n\n**3. The stored context-mémo was stale and has been re-resolved.**\n\nCaptured 2026-08-09; since then **ADR-024 took two amendments** (TKT-246 `sold_by`, TKT-250\nallocation revision) and **ADR-054** (per-channel sales windows) became the *first* predicate in\nthe claim guard — and was missing from `governingAdrs` entirely. Added, with the reason it matters\nto *this* ticket (it is a channel-keyed refusal the fixture must not trip). All four cited ADRs\nverified to resolve at HEAD. `governingTests` added and populated — `channel_seam_test.go` in\nparticular is a tripwire this ticket must not touch.\n\n**4. Verified, not assumed: nothing on the sale path reads the registry today.**\n\nZero references to the `channels` table or `ListEnabledChannels` in commerce, inventory, payments\nor the gateway; catalog only, plus generated UI types. So there is no gating bug to report — the\nticket's \"if it surfaces a real gating bug, stop\" branch does not trigger. The `enabled = false`\nhalf is reachable directly at create time (`POST /api/catalog/channels` accepts `enabled`), no\nupdate leg needed.\n\n**`risk:low`: not claimed.** Test-only and touches no production code, which argues for it — but\nthe work is a *new end-to-end fixture across five services*, and the failure mode being guarded\nagainst is a test that passes without proving anything. That is exactly the class the plan gate\ncatches. Running the plan gate.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TKT-235's 'the channel registry is a lookup, not a constraint' is guarded only by an inventory-store-level test and a catalog FK-absence test. Neither crosses a service boundary, so a registry lookup added in commerce, catalog fee/split resolution, or the gateway would reject a sale earlier and leave both green. This ticket buys the end-to-end guard."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: new smoke/ test(s) (//go:build smoke, package smoke_test) driving the real docker-compose stack through the gateway. OUT: any registry enforcement (the opposite of this ticket); the seated-pool seam (TKT-176); closing the public-route fee-attribution seam (TKT-247)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading at shaping. (1) Nothing on the sale path reads catalog's channels registry: zero hits for ListEnabledChannels / channels-table access in commerce, inventory, payments and gateway; only catalog and generated UI types. (2) The inventory claim guard reads channel_allocations (inventory's OWN table), never catalog.channels -- the two are distinct and conflating them is the trap this test must not fall into. (3) No allowlist gating: scripts/smoke.sh:304 runs go test -tags smoke ./... with no -run, so a new file cannot silently never run."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blocked-by links, none needed. Depends only on infrastructure that already exists: scripts/smoke.sh's stack lifecycle, the SMOKE_PARTNER_TOKEN/CHANNEL/RESELLER_ID credentials it enrols (smoke.sh:260-274), and the publishedSlot / internalJSON / partnerDo / created helpers."
+    },
+    "approach": {
+      "state": "met",
+      "note": "VERIFIED AGAINST THE CODE, and it corrects the ticket text. The ticket's COS asks for the code 'recorded verbatim on the claim AND the order' from one path. That is not achievable from one path, and the reason is deliberate: the PUBLIC route POST /api/commerce/reservations forwards no channel to inventory at all (services/commerce/internal/api/server.go:363-381; TKT-240 forwarded it and was REVERTED because that route is unauthenticated; TKT-246 kept it closed). channel_seam_test.go:13-58 is a live tripwire pinning that. So claims.channel_code is NULL by design on a public sale. The test therefore splits in two, each proving the invariant at the layer that can carry it: (A) PUBLIC path -- unregistered channel_code in the body, reserve -> price/fee/split resolution -> order confirm; assert 2xx and orders.channel_code == the code verbatim. This traverses ADR-046 fee resolution and ADR-047 split resolution, the exact layers a registry lookup would be added to. (B) PARTNER path -- POST /api/commerce/partners/reservations under SMOKE_PARTNER_TOKEN, whose channel comes from the CREDENTIAL, then confirm via POST /api/commerce/orders; assert claims.channel_code AND orders.channel_code == the code. 'reseller-smoke' already has no catalog registry row (smoke.sh never creates one), which is the unregistered case for free. Template: smoke/partner_reserve_test.go:27-107 plus a confirm leg. GUARD PREDICATE COUNT on the claim path (services/inventory/internal/store/store.go:500-600): the ordered sequence is window -> seller -> code -> capacity, four predicates, ALL of them keyed on channel_allocations and NONE on catalog.channels. The test must reach the INSERT, so its fixture must satisfy all four -- an active allocation for the code, open window, sold_by admitting the caller (or unbound), requires_code false, cap >= qty. A fixture that fails any earlier predicate proves nothing about the registry, which is precisely how this test could be green and vacuous."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "DECIDED: smoke/, not the gateway suite -- there is no separate 'gateway suite'. smoke/ IS the gateway-level tier (module ticketing/smoke, black-box HTTP against the running compose stack via SMOKE_GATEWAY_URL), and it is already in make check (Makefile:20 -> :122). One new file, both halves (A and B) plus the enabled=false variant, fits one slice."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS restated to what the code permits -- see the readiness comment. Three assertions: unregistered code sells on the public path (order verbatim); unregistered code sells on the partner path (claim AND order verbatim); a registry row with enabled=false sells identically on both. Each names the invariant in its comment and cites ADR-024."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked and RE-RESOLVED at shaping. The stored memo was captured 2026-08-09 and is stale: ADR-024 has since taken two amendments (TKT-246 sold_by, TKT-250 revision), and ADR-054 (per-channel sales windows) became a claim-path guard after capture and was absent from the list. Corrected below; all cited ADRs verified to resolve at HEAD under docs/adr/."
+    }
+  }
 }
