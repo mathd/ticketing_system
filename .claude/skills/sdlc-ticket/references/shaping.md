@@ -65,6 +65,15 @@ inheriting the suggestion would have spent a drafting run designing an interface
 If the proposed remedy does not survive the read, say so in `note` and record what replaces it — the
 correction is worth more to the drafter than the original suggestion was.
 
+**When the approach lands on a guard, COUNT ITS PREDICATES in the `note`.** A guard with several
+independent checks needs one test per check — an earlier refusal short-circuits the rest, so a
+single case proves one predicate and is silent about the others. That count is what the test plan
+needs, and shaping is the cheapest place to establish it, because you are already reading the code.
+TKT-251 is the worked example: shaping correctly predicted the trap (an attach comparing two rows to
+each other, where merely adding a caller comparison beside it would look right), the implementation
+was correct, and the *test* still could not detect deleting one of the two predicates — the fixture
+was refused by the first lookup and never reached the second.
+
 ## The shaping pass (agent, in Backlog)
 
 1. **Read the real code first** — most items resolve by reading, not asking (integration point,

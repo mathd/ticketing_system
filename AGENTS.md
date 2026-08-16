@@ -79,6 +79,17 @@ experiment stays valid.
   the precondition during setup, and naming a state the fixture cannot construct. Delete the
   mechanism and re-run: if it stays green, the test is about something else.
   ([a green test that cannot reach the failing state](docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md))
+- **A guard with N predicates needs N tests, and scoping a write means scoping its FAILURE path too.**
+  Two shapes from one ticket (TKT-251), both invisible to a test that only asserts "the write was
+  refused". *One:* when several predicates guard one operation, an earlier refusal **short-circuits**
+  the rest — an attach test giving the attacker a victim-owned parent *and* child never reaches the
+  child predicate, so deleting it stays green. One case per predicate, each passing the earlier ones,
+  each mutated separately. *Two:* a conditional write's **"why did nothing happen?" read is a second
+  information channel**. `PublishPerformance` scoped its `UPDATE` and still answered
+  `ErrNotSellable` about a victim's row — the write closed, the disclosure open. And when the
+  mechanism moves tiers, **move the fake with it**: an untouched contract test whose fake still
+  scopes the old way silently becomes an assertion that the *old* behaviour is correct.
+  ([a green test that cannot reach the failing state](docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md) §4–5)
 - **And a green test can assert the DEFECT as correct — mutation testing cannot catch that.** When a
   test pins a *number* or a *state* rather than a refusal, derive the expected value from the
   requirement, never from a run: an assertion written by observing what the code did pins the

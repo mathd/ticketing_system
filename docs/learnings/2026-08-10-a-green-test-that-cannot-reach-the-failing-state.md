@@ -32,10 +32,33 @@ requires an operational hold, which ADR-024 defines as pool-only and unchanneled
 fixture cannot build it. My first probe wrote exactly that fixture and showed both cases passing —
 the bug was real and running at the time.
 
+**4. An earlier refusal short-circuited the predicate under test.** (TKT-251)
+A guard with *two* independent predicates — both row lookups of an attach operation scoped to the
+caller's organizer — got one test, whose fixture gave the attacker a victim-owned parent *and* a
+victim-owned child. The **parent** lookup refuses first, so the child predicate never executes:
+deleting `AND organizer_id=$2` from the child left the suite green. The unscoped child would then
+answer `ErrOrganizerMismatch` for a real id and `ErrNotFound` for an unknown one — disclosing
+existence while the write stayed refused, which was the exact property the test was written to
+prove. Reaching predicate 2 requires a fixture that *passes* predicate 1: attacker owns the parent,
+victim owns the child.
+
+**5. The expected value was a constant the code could also reach by accident.** (TKT-251)
+A test asserting that all 13 handlers pass the *verified* organizer to the store drove every case
+with the test env's default tenant — which is the package-global `orgID`. Hard-coding that same
+constant inside a handler kept it green. It proved the argument was not `uuid.Nil`; it could not
+prove the value came from the request's assertion. The fix is two runs under two freshly generated
+organizers: one run cannot distinguish "read it from the assertion" from "happens to equal this
+fixture's tenant".
+
 ## What they share
 
-None was a forgotten case. In all three the case was *named*, a test for it *existed*, and the test
+None was a forgotten case. In all five the case was *named*, a test for it *existed*, and the test
 was *green*. The gap was between the state the test named and the state it actually constructed.
+
+Instances 4 and 5 add an edge worth stating on its own: **the test most likely to be unfalsifiable
+is the one whose name matches the acceptance criterion.** Both were written specifically to prove a
+security boundary, in a ticket whose shaping had already predicted the underlying trap, and both
+were caught only by cross-model review.
 
 ## The check
 
@@ -47,8 +70,16 @@ When a test is the evidence for a claim, ask:
    assertion actually runs against. (Instance 2.)
 3. **Can this fixture even build the failing state?** If the state needs a mechanism the fixture
    doesn't use, no amount of tuning gets there — the fixture is the wrong shape. (Instance 3.)
+4. **How many independent predicates does the guard have, and does something refuse before the one
+   I am testing?** A guard with N predicates needs N cases, each *passing* the earlier ones, and
+   each predicate mutated separately. One green case proves one predicate. (Instance 4.)
+5. **Could the expected value arrive by coincidence?** If the value under test is a constant the
+   code could plausibly hard-code — a default tenant, a fixture id, a zero value — vary it and run
+   twice. A single run cannot separate "computed correctly" from "equal by accident". (Instance 5.)
 
 Question 3 is the one with no natural prompt, and the only defence is asking it deliberately.
+Questions 4 and 5 have a cheap mechanical trigger: *count the predicates*, and *ask whether the
+expected value is distinct from every constant in scope*.
 
 ## Related
 
