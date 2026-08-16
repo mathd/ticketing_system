@@ -12,6 +12,149 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-245's ai-review — confirmed, and deliberately NOT fixed there\n\nai-review raised this as **[high] \"Catalog accepts trivially brute-forceable HMAC signing keys\"**.\nCorrect, and verified: `RequiredCredential` has no length or entropy check.\n\n**Why it was overridden rather than fixed in TKT-245.** The same function guards every credential in\nthe system, including `COMMERCE_CUSTOMER_ASSERTION_KEY` — the **direct precedent** for TKT-245's\nmechanism, with an identical threat model, shipped in TKT-221 with the same absence. So TKT-245\n*inherits* a system-wide property rather than introducing one.\n\nA catalog-only entropy floor would have been worse than none: it would leave the identical hole one\nservice over while **looking** like the class had been addressed — the \"configured-looking and wrong\"\nfailure ADR-042's own credential guard exists to prevent. The fix belongs in the shared package, used\nby both assertion keys at once.\n\n**What already holds, and what does not:** `make up` and `scripts/env-bootstrap.sh` generate 32 bytes\nfrom `/dev/urandom`, compose ships no default and refuses to start without the variable, and no\nsigning key is ever sent to a web process. None of that is *enforcement* — it is a convention a\nproduction deployment can decline to follow, which is exactly the reviewer's point."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping pass — 7 of 8 DoR items met, `approach` held OPEN for a human decision\n\nTicket claim **verified against the code**: `RequiredCredential` (`shared/go/runtimecfg/runtimecfg.go:123-159`)\nchecks emptiness, the retired literal, edge whitespace and `httpguts.ValidHeaderFieldValue`, and\nnothing else. `x` starts cleanly. 14 credential loads across 6 binaries inherit that.\n\n**The ticket's proposed remedy does not survive the read**, and the corrections are worth more to\nthe planner than the original wording:\n\n1. **The floor cannot be uniform.** Three encodings coexist. The two Ed25519 seeds\n   (`ACCESS_QR_PRIVATE_KEY`, `ACCESS_LIFECYCLE_PRIVATE_KEY`) already decode\n   `base64.RawStdEncoding` and refuse anything but exactly `ed25519.SeedSize` — `token.go:37-39`,\n   `keys.go:61-67`. They need **no floor**, only a test pinning that they are covered. So the COS\n   clause *\"adopted by the ticket-link/QR keys\"* is half already-true and half genuinely open:\n   `ACCESS_TICKET_LINK_KEY` is a **raw-string HMAC key with no floor at all** (`server.go:65`).\n2. **`JOURNAL_SIGNING_KEY`'s 16-byte floor is not an oversight.** `ADR-032` line 115 enumerates\n   *\"a secret under 16 bytes\"* as a blessed rejected configuration, and `docs/development.md:448`\n   rests the key-id log-safety argument on the explicit sentence *\"nothing here requires\n   `JOURNAL_SIGNING_KEY` to be high-entropy.\"* Raising 16→32 is an **ADR amendment plus a docs\n   correction**, not a code change — and `main_test.go:145` asserts on the literal substring `\"16\"`.\n3. **A length floor is not an entropy floor.** Thirty-two `a`s passes any `len()` check. The honest\n   claim is a *length* floor that makes online brute force infeasible for values the generators\n   already produce; the word \"entropy\" should not reach the error message or the ADR.\n4. **`ADR-056` lines 61-72 is the in-repo precedent for the number** — *\"a generated 32-byte\n   token… 256 bits\"*. Cite it rather than inventing 32.\n\n**Ordering hazard, pinned as a governing test.** `runtimecfg.go:130-136` carries an explicit\n`ORDER MATTERS` comment. A length case placed anywhere but **last** rewrites the message for the 9\nsub-cases of `TestRequiredCredentialRejectsValuesHTTPWouldChange` and breaks two **exact-string**\nassertions (`runtimecfg_test.go:109`, `:120`). Note the retired literal `local-service-token` is 19\nchars — it must still reach the *retired-default* case, not the new length case.\n\n**Guaranteed fixture breakage, and it is the bulk of the work.**\n`TestAcceptedCredentialSurvivesAnHTTPRoundTripUnchanged` (`:199`) is a **positive** test with\nfixtures of 9, 6 and 10 chars — lengthen them, do not delete the case, it exists to prove interior\nspaces survive an HTTP round trip. And `scripts/smoke.sh:196-197,209` carries 30/31-byte journal\nliterals **co-owned** with `journal_smoke_test.go:45-49` under the `TestSmokeJournalKeyLiteralsMatchScript`\ndrift guard (TKT-117) — edit both or neither. Full radius in the mémo (~10 lines of production code\nagainst 12+ test files and 2 shell scripts).\n\n**No generated value breaks.** `env-bootstrap.sh` and `stack-env.sh` draw 32 bytes from\n`/dev/urandom` (64 hex chars) and `compose.yaml` ships `${VAR:?}` with no defaults. That is the\nargument for a hard refusal over a deprecation window — but it is Q3's to settle, not shaping's.\n\n**A gap the COS asks for that does not exist yet:** there is **no** test asserting the error omits\nthe value on `RequiredCredential` *itself*. The no-echo assertions live on the `InternalTokenFromEnv`\nwrapper and on caller guards. COS clause 3 is new work, not a copy of an existing pattern.\n\n---\n\n### ⛔ Gate 1 is HELD — `approach: open`, `owner: human`\n\nPer `shaping.md`, `approach: deferred` **does not pass** when a ticket touches auth, and this one is\nthe auth substrate for every credential in the system. Three questions, one answer each:\n\n- **Q1 — What does the floor measure?** Raw byte length of the configured string (simple, testable,\n  satisfied by every generator at 64 chars) **or** decoded material per declared encoding\n  (correct-sounding, but teaches `runtimecfg` three encodings and buys nothing for the two seeds\n  that already enforce exactly 32)?\n- **Q2 — Does `JOURNAL_SIGNING_KEY` go 16→32 in this ticket** (carrying the ADR-032 amendment, the\n  `development.md:448` correction and the `main_test.go:145` expectation), **or stay at 16** with the\n  divergence recorded as deliberate?\n- **Q3 — Do existing deployments need a rotation?** Hard refusal at startup (a value that boots today\n  stops booting) or a deprecation window? The ticket's own COS asks for this to be decided.\n\n`risk:low` **not claimed** — auth surface, shared package, all six binaries rebuild, >5 files.\n\n**8 governing ADRs baked into the context-mémo, every one verified to resolve at HEAD**\n(`ADR-012/021/032/042/043/056/057/058`), plus 6 governing tests. Next ADR number: **ADR-059**."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "runtimecfg.RequiredCredential validates transport characters only (empty, retired literal, edge whitespace, httpguts) and never length or entropy. Verified at shared/go/runtimecfg/runtimecfg.go:123-159. A deployment configured with `x` starts cleanly across 14 credential loads in 6 binaries."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an entropy floor in shared/go/runtimecfg, adopted at once by the 9 raw-string credentials (INTERNAL_SERVICE_TOKEN, PAYMENTS_INTERNAL_TOKEN, the 3 staff-write tokens, both assertion keys, ACCESS_TICKET_LINK_KEY) + a decision recorded for the 2 Ed25519 seeds and JOURNAL_SIGNING_KEY; an ADR (ADR-059) stating the floor and the rotation position; fixture/literal migration everywhere the floor now bites. OUT: rotation mechanics, key overlap, mTLS, per-caller credentials, web/backoffice credentials.mjs beyond a stated decision."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading rather than by spike. (1) THE FLOOR CANNOT BE UNIFORM: three encodings coexist - raw string (9 vars), base64 RawStdEncoding->ed25519.SeedSize (ACCESS_QR_PRIVATE_KEY token.go:33-39, ACCESS_LIFECYCLE_PRIVATE_KEY keys.go:61-67, both ALREADY exactly 32 decoded bytes and already enforced), and raw bytes with an existing 16-byte floor (JOURNAL_SIGNING_KEY, keyring.go:16 minSecretLen). A single '32 bytes in a declared encoding' rule as the ticket text words it would either double-count the base64 seeds (43 chars pass a 32-char test trivially and prove nothing new) or contradict a shipped ADR. (2) A string-length floor is NOT an entropy floor: 32 repetitions of 'a' passes any len() check. The honest claim is a LENGTH floor that makes online brute force infeasible for values the generators already produce at 64 hex chars; say that, do not write 'entropy' into the error or the ADR. (3) Ordering hazard: the length case must go LAST in the switch - runtimecfg.go:130-136 carries an explicit ORDER MATTERS comment and 9 sub-cases of TestRequiredCredentialRejectsValuesHTTPWouldChange plus 2 exact-string assertions (runtimecfg_test.go:109, :120) expect the existing messages."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers, no blocked-by links. Touches shared/go so all 5 services + gateway rebuild. Two co-owned literal sets must move together or a drift guard fails: scripts/smoke.sh:196-197,209 and services/payments/internal/store/journal_smoke_test.go:45-49, pinned by TestSmokeJournalKeyLiteralsMatchScript (journal_smoke_test.go:701, TKT-117)."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "THE TICKET'S PROPOSED REMEDY DOES NOT SURVIVE THE READ, and what replaces it needs a human call because it is an auth surface (shaping.md: approach:deferred does not pass on auth). Verified corrections: (a) The 2 Ed25519 seeds ALREADY refuse anything but exactly 32 decoded bytes - they need no floor, only a test pinning that they are covered, so the COS clause 'adopted by the ticket-link/QR keys' is half already-true (ACCESS_QR_PRIVATE_KEY) and half genuinely open (ACCESS_TICKET_LINK_KEY is a raw-string HMAC key with no floor at all - server.go:65). (b) JOURNAL_SIGNING_KEY's 16-byte floor is not an oversight: ADR-032 line 115 enumerates 'a secret under 16 bytes' as a blessed rejected configuration, and docs/development.md:448 rests the key-id log-safety argument on the explicit sentence 'nothing here requires JOURNAL_SIGNING_KEY to be high-entropy'. Raising 16->32 is an ADR-032 amendment plus a development.md correction, not a code change. (c) ADR-056 line 61-72 is the in-repo precedent for 32 bytes ('a generated 32-byte token... 256 bits'), which is what a new floor should cite rather than inventing a number. DECISION NEEDED (3 questions, one answer each): Q1 - does the floor apply to raw byte length of the configured string (simple, testable, what the generators satisfy at 64 chars) or to decoded material per declared encoding (correct-sounding, but requires teaching runtimecfg 3 encodings and buys nothing for the 2 seeds that already enforce exactly 32)? Q2 - is JOURNAL_SIGNING_KEY raised 16->32 in this ticket (with the ADR-032 amendment and the development.md paragraph) or explicitly left at 16 with the divergence recorded? Q3 - do existing deployments require a rotation, i.e. does this land as a hard refusal at startup (a value that boots today stops booting) or with a deprecation window? The ticket's own COS asks for this to be decided and it is the deploy-ordering question, not a code one."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, and it must be one: the ticket exists precisely because a per-service adoption 'would leave the identical hole one service over while looking closed'. Slice = the floor in shared/go/runtimecfg + adoption by all 9 raw-string credentials + ACCESS_TICKET_LINK_KEY + the ADR + fixture migration. Sized by the fixture blast radius, not the logic: ~10 lines of production code against 12+ test files and 2 shell scripts."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS restated with the read applied: (1) a length floor in runtimecfg refusing values below the declared minimum, placed AFTER the existing cases so every current message survives; (2) adopted by both assertion keys AND ACCESS_TICKET_LINK_KEY in the same change, with a test per credential proving the refusal - not one test for the shared helper (a green test one tier above the mechanism proves the fake and the handler agree, AGENTS.md); (3) the error never echoes the value, asserted directly on RequiredCredential, which today has NO such test - the no-echo assertions live only on the InternalTokenFromEnv wrapper and on caller guards; (4) the rotation/deploy-ordering decision recorded in ADR-059; (5) make check green, including the smoke journal literals and their drift guard."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; 8 governing ADRs all verified to resolve at HEAD."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-032-stripe-behind-the-psp-port.md",
+        "constrains": "Line 115 BLESSES the 16-byte journal floor as a stated rejected-configuration list. Raising JOURNAL_SIGNING_KEY to 32 CONTRADICTS a shipped ADR and requires an amendment here, not a silent bump. Also explains (line ~118+) why HMAC key comparison is on the EFFECTIVE key: RFC 2104 zero-pads short keys and digests long ones, so byte-distinct values can be the same HMAC key - directly relevant to any reasoning about what a short key costs."
+      },
+      {
+        "adr": "ADR-056-partner-credential-identity.md",
+        "constrains": "The in-repo precedent for the NUMBER: line 61 'SHA-256 over a generated 32-byte token', line 72 'this token is 256 bits' and bcrypt's cost 'exists to compensate for low-entropy human-chosen secrets'. Cite this for the floor's value rather than inventing 32."
+      },
+      {
+        "adr": "ADR-058-catalog-organizer-assertion.md",
+        "constrains": "Defines CATALOG_ORGANIZER_ASSERTION_KEY (HMAC-SHA256, line 63) and states the consequence this ticket bounds - line 189 'anyone holding the signing key mints for any organizer, forever'. States NO minimum length; ADR-059 should say so explicitly rather than implying it always did."
+      },
+      {
+        "adr": "ADR-042-staff-identity-and-backoffice-sessions.md",
+        "constrains": "The staff-write credential separation (and the TKT-194 amendment at line 290 adding the money-moving one). Establishes 'generated independently' as the standard but states no length requirement - the gap ADR-059 closes."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "NAME THE ADVERSARY before writing any strength claim. Also D4 (line 240-243): lifecycle Ed25519 material is deliberately namespaced apart from QR. Both seeds are already length-correct; the ADR is why they must stay distinct."
+      },
+      {
+        "adr": "ADR-012-ticket-issuance-and-qr-credentials.md",
+        "constrains": "ACCESS_QR_PRIVATE_KEY is injected configuration; its seed decode already pins ed25519.SeedSize."
+      },
+      {
+        "adr": "ADR-043-where-a-service-auth-guard-lives.md",
+        "constrains": "Where an auth guard belongs - the floor goes in the shared package the 14 loads already call, not in each caller."
+      },
+      {
+        "adr": "ADR-057-inventory-staff-write-credential.md",
+        "constrains": "INVENTORY_STAFF_WRITE_TOKEN, the third staff-write credential; line 156 enumerates the four credential classes this floor must cover at once."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "TestRequiredCredentialRejectsValuesHTTPWouldChange (shared/go/runtimecfg/runtimecfg_test.go:150)",
+        "why": "9 sub-cases whose fixtures are 6-24 chars and which assert on the WHITESPACE and HEADER-VALUE messages. A length check placed before them rewrites the message and fails all 9. The floor case must be LAST."
+      },
+      {
+        "test": "TestInternalTokenRequiresAnExplicitCredential (:104) / TestInternalTokenRejectsTheRetiredDefaultForever (:114)",
+        "why": "EXACT-STRING equality on the error text. Any reworded message, including appending a length clause, fails these two. The retired literal 'local-service-token' is 19 chars, so it must still reach the retired-default case, not the new length case."
+      },
+      {
+        "test": "TestAcceptedCredentialSurvivesAnHTTPRoundTripUnchanged (:199)",
+        "why": "A POSITIVE test whose 4 fixtures include 'a-b_c.d~e' (9), 'tok en' (6), 'Zm9vYmFy==' (10). GUARANTEED breakage under any floor. It exists to prove interior spaces survive an HTTP round trip - lengthen the fixtures, do not delete the case."
+      },
+      {
+        "test": "TestSmokeJournalKeyLiteralsMatchScript (services/payments/internal/store/journal_smoke_test.go:701)",
+        "why": "Reads scripts/smoke.sh and fails if the literal sets drift (TKT-117). smoke.sh:196-197,209 carry 30- and 31-byte journal keys; journal_smoke_test.go:45-49 owns the same four literals. Edit both or neither."
+      },
+      {
+        "test": "services/payments/cmd/payments/main_test.go:145",
+        "why": "A table case asserting on the literal substring '16' for the short-secret rejection. If Q2 raises the journal floor, this expectation moves; if Q2 leaves it at 16, it must stay untouched - which is itself the evidence that the divergence was deliberate."
+      },
+      {
+        "test": "shared/go/runtimecfg/runtimecfg_test.go has NO length test and NO direct no-echo test on RequiredCredential",
+        "why": "The no-echo assertions are on the InternalTokenFromEnv wrapper (:109, :120) and on caller guards (catalog/credentials_test.go:36,87; commerce:48; payments/main_test.go:162,183-190). COS clause 3 asks for the assertion on RequiredCredential itself - it does not exist yet, so it is new work, not a copy."
+      }
+    ],
+    "callSites": {
+      "note": "14 credential loads across 6 binaries - a per-service fix is the failure mode this ticket exists to avoid.",
+      "internalToken": [
+        "services/catalog/cmd/catalog/main.go:111",
+        "services/access/cmd/access/main.go:152",
+        "services/inventory/cmd/inventory/main.go:107",
+        "services/inventory/cmd/inventory/reconcile_pins.go:183",
+        "services/commerce/cmd/commerce/main.go:121"
+      ],
+      "requiredCredential": [
+        "services/catalog/cmd/catalog/main.go:119 CATALOG_STAFF_WRITE_TOKEN",
+        "services/catalog/cmd/catalog/main.go:153 CATALOG_ORGANIZER_ASSERTION_KEY",
+        "services/commerce/cmd/commerce/main.go:130 COMMERCE_STAFF_WRITE_TOKEN",
+        "services/commerce/cmd/commerce/main.go:145 COMMERCE_CUSTOMER_ASSERTION_KEY",
+        "services/commerce/cmd/commerce/main.go:155 PAYMENTS_INTERNAL_TOKEN (direct, not via PaymentsTokenFromEnv)",
+        "services/inventory/cmd/inventory/main.go:114 INVENTORY_STAFF_WRITE_TOKEN",
+        "services/access/cmd/access/main.go:207 ACCESS_QR_PRIVATE_KEY",
+        "services/access/cmd/access/main.go:222 ACCESS_TICKET_LINK_KEY",
+        "services/access/cmd/access/lifecycle.go:92 ACCESS_LIFECYCLE_PRIVATE_KEY",
+        "services/payments/cmd/payments/main.go:201 JOURNAL_SIGNING_KEY"
+      ],
+      "paymentsToken": [
+        "services/payments/cmd/payments/main.go:266"
+      ]
+    },
+    "fixtureBlastRadius": [
+      "scripts/smoke.sh:196,197,209 (30/31-byte journal literals, co-owned with the drift guard)",
+      "shared/go/runtimecfg/runtimecfg_test.go:151-172 (9 rejection fixtures), :201-205 (3 positive fixtures under 32)",
+      "services/catalog/cmd/catalog/credentials_test.go:69 (31 chars - one short)",
+      "services/payments/cmd/payments/main_test.go:102 (30), :105-106 (21/21 decoded), :145 (asserts on '16')",
+      "services/catalog/internal/api/server_test.go:1596,1601; channels_test.go:47 (19-28 chars, construct servers directly - unaffected by a runtimecfg floor, affected by a setter floor)",
+      "services/inventory/internal/api/staff_credential_test.go:36-37; services/commerce/internal/api/staff_credential_test.go:30-31 (25-27 chars, same caveat)",
+      "services/commerce/cmd/commerce/credentials_test.go:19,26-35,56 (call credentialsAreDistinct directly)",
+      "web/backoffice/test/api.test.ts:50,54,56,316,329,343,356,649,683 (14-25 chars) and web/backoffice/credentials.mjs:36-59 assertCredentialSeparation - presence + pairwise distinctness only, NO length check. The third place a system-wide floor would have to land."
+    ],
+    "generatorsAlreadySafe": "scripts/env-bootstrap.sh:72-76,97 and scripts/stack-env.sh:47-125 all draw `od -An -tx1 -N32 /dev/urandom` = 64 hex chars; access keygen emits 43-char base64 seeds. compose.yaml ships ${VAR:?} with no defaults. So no GENERATED value breaks under a 32-byte floor - only hand-written fixtures and the smoke literals do. This is what makes the floor cheap to adopt and is the argument for a hard refusal over a deprecation window (Q3).",
+    "docsToCorrect": [
+      "docs/development.md:448 - 'nothing here requires JOURNAL_SIGNING_KEY to be high-entropy' underpins the key-id log-safety argument; if Q2 raises the journal floor this paragraph is stale.",
+      "docs/adr/ADR-032 line 115 - the blessed 'under 16 bytes' rejection."
+    ],
+    "nextAdrNumber": "ADR-059 (ADR-058 is the highest at HEAD)"
+  }
 }
