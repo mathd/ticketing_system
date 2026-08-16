@@ -8,6 +8,7 @@ package api
 // that starts passing for a new reason is visible as a changed sentence.
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -227,7 +228,7 @@ func TestOrganizerAssertionRefusalsAreIndistinguishable(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s verified, want refusal", tc.name)
 			}
-			if err != ErrOrganizerAssertionInvalid {
+			if !errors.Is(err, ErrOrganizerAssertionInvalid) {
 				t.Fatalf("%s refused with %v, want the single %v -- a distinguishable refusal is an oracle",
 					tc.name, err, ErrOrganizerAssertionInvalid)
 			}
