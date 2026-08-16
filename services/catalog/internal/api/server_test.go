@@ -2135,13 +2135,18 @@ func TestFestivalCreateAttachDaysAndSharedCapacity(t *testing.T) {
 	// indistinguishable from an id that names no row. It was 400 ("entities must
 	// belong to the same organizer") until the day lookup became organizer-scoped,
 	// and that answer confirmed a guessed id names a real row someone else owns.
-	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id}); rec.Code != http.StatusNotFound {
-		t.Fatalf("cross-organizer attach: %d, want 404", rec.Code)
+	crossTenantRec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: first.Id})
+	if crossTenantRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-organizer attach: %d, want 404", crossTenantRec.Code)
 	}
-	// And an id that names nothing answers identically — the equivalence IS the
-	// property, so assert it rather than the code alone.
-	if rec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: uuid.New()}); rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown-id attach: %d, want the SAME 404 as the cross-tenant case", rec.Code)
+	// And an id that names nothing answers IDENTICALLY. Comparing the bodies, not
+	// just the codes (ai-review pass 2 [medium]): two 404s whose bodies differ
+	// still tell the caller which id named a real row someone else owns, which is
+	// the whole property this ticket buys.
+	unknownRec := e.do("POST", "/festivals/"+otherFestival.Id.String()+"/days", FestivalDayAttach{PerformanceId: uuid.New()})
+	if unknownRec.Code != crossTenantRec.Code || unknownRec.Body.String() != crossTenantRec.Body.String() {
+		t.Fatalf("cross-tenant and unknown-id answers differ:\n cross-tenant: %d %s\n unknown:      %d %s",
+			crossTenantRec.Code, crossTenantRec.Body.String(), unknownRec.Code, unknownRec.Body.String())
 	}
 	crossOrg.OrganizerID = orgID
 	crossOrg.CapacityGroupID = &festival.Id
@@ -2921,6 +2926,14 @@ func (f *fakeStore) ListEnabledChannels(_ context.Context, organizerID uuid.UUID
 // Driven through the real router so the assertion is filled the way production
 // fills it, and the expected value is the one the ASSERTION names — derived from
 // the request, never read back from what the handler happened to pass.
+//
+// ai-review pass 2 [high], confirmed by mutation: an earlier version drove every
+// case with the env's default organizer, which IS the package-global `orgID`.
+// Replacing a handler's argument with that constant left the test green — it
+// proved the value was not uuid.Nil, not that it came from the assertion. Each
+// case now runs under TWO organizers, both freshly generated and distinct from
+// `orgID`, so a hard-coded constant and a value leaked from a previous request
+// both fail.
 func TestEveryTransitionPassesTheVerifiedOrganizerToTheStore(t *testing.T) {
 	e := newEnv(t)
 	eventID, performanceID := e.createFixture(false)
@@ -2961,18 +2974,28 @@ func TestEveryTransitionPassesTheVerifiedOrganizerToTheStore(t *testing.T) {
 		{"POST", "/seat-maps/" + seatMap.Id.String() + "/publish", nil, "PublishSeatMap"},
 	} {
 		t.Run(tc.store, func(t *testing.T) {
-			delete(e.store.organizerSeen, tc.store)
-			e.do(tc.method, tc.path, tc.body)
+			// Two DIFFERENT organizers, neither of them orgID and neither of them
+			// the other. One run cannot distinguish "took it from the assertion"
+			// from "happens to equal this fixture's tenant"; two runs that each
+			// report their own organizer can only come from the assertion.
+			for _, acting := range []uuid.UUID{uuid.New(), uuid.New()} {
+				delete(e.store.organizerSeen, tc.store)
+				e.doWithHeaders(tc.method, tc.path, tc.body, map[string]string{
+					staffWriteHeader:         testStaffWriteToken,
+					organizerAssertionHeader: e.assertionFor(acting),
+				})
 
-			got, ok := e.store.organizerSeen[tc.store]
-			if !ok {
-				t.Fatalf("%s never reached the store — this row cannot prove anything about "+
-					"the organizer it was called with", tc.store)
-			}
-			if got != e.organizer {
-				t.Fatalf("%s got organizer %v, want %v (the one the assertion names). "+
-					"A handler that passes uuid.Nil or another value writes for the wrong tenant.",
-					tc.store, got, e.organizer)
+				got, ok := e.store.organizerSeen[tc.store]
+				if !ok {
+					t.Fatalf("%s never reached the store — this row cannot prove anything about "+
+						"the organizer it was called with", tc.store)
+				}
+				if got != acting {
+					t.Fatalf("%s got organizer %v, want %v (the one THIS request's assertion names). "+
+						"A handler passing uuid.Nil, a hard-coded id, or a value left over from "+
+						"another request writes for the wrong tenant.",
+						tc.store, got, acting)
+				}
 			}
 		})
 	}
