@@ -1997,6 +1997,8 @@ func (siw *ServerInterfaceWrapper) ArchiveFestival(w http.ResponseWriter, r *htt
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2029,6 +2031,8 @@ func (siw *ServerInterfaceWrapper) AttachDayToFestival(w http.ResponseWriter, r 
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2060,6 +2064,8 @@ func (siw *ServerInterfaceWrapper) PublishFestival(w http.ResponseWriter, r *htt
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2217,6 +2223,8 @@ func (siw *ServerInterfaceWrapper) ArchivePerformance(w http.ResponseWriter, r *
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2248,6 +2256,8 @@ func (siw *ServerInterfaceWrapper) CloseSlot(w http.ResponseWriter, r *http.Requ
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2281,6 +2291,8 @@ func (siw *ServerInterfaceWrapper) PublishPerformance(w http.ResponseWriter, r *
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2312,6 +2324,8 @@ func (siw *ServerInterfaceWrapper) ReopenSlot(w http.ResponseWriter, r *http.Req
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2670,6 +2684,8 @@ func (siw *ServerInterfaceWrapper) AttachEventToSeason(w http.ResponseWriter, r 
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2701,6 +2717,8 @@ func (siw *ServerInterfaceWrapper) AttachSeriesToSeason(w http.ResponseWriter, r
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2767,6 +2785,8 @@ func (siw *ServerInterfaceWrapper) PublishSeatMap(w http.ResponseWriter, r *http
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
@@ -2924,6 +2944,8 @@ func (siw *ServerInterfaceWrapper) ArchiveSeries(w http.ResponseWriter, r *http.
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2956,6 +2978,8 @@ func (siw *ServerInterfaceWrapper) AttachPerformanceToSeries(w http.ResponseWrit
 
 	ctx := r.Context()
 
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
+
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 
 	r = r.WithContext(ctx)
@@ -2987,6 +3011,8 @@ func (siw *ServerInterfaceWrapper) PublishSeries(w http.ResponseWriter, r *http.
 	}
 
 	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
 
 	ctx = context.WithValue(ctx, CatalogStaffWriteCredentialScopes, []string{})
 

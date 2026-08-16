@@ -93,8 +93,8 @@ func TestConcurrentFestivalAttachChoosesOneGroup(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
 	wg.Add(2)
-	go func() { defer wg.Done(); _, errs[0] = st.AttachDayToFestival(ctx, first.ID, dayID) }()
-	go func() { defer wg.Done(); _, errs[1] = st.AttachDayToFestival(ctx, second.ID, dayID) }()
+	go func() { defer wg.Done(); _, errs[0] = st.AttachDayToFestival(ctx, orgID, first.ID, dayID) }()
+	go func() { defer wg.Done(); _, errs[1] = st.AttachDayToFestival(ctx, orgID, second.ID, dayID) }()
 	wg.Wait()
 	winners := 0
 	for _, err := range errs {
@@ -122,11 +122,11 @@ func TestFestivalPublishPreflightRollsBackAllMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []uuid.UUID{sellableID, blockingID} {
-		if _, err = st.AttachDayToFestival(ctx, festival.ID, id); err != nil {
+		if _, err = st.AttachDayToFestival(ctx, orgID, festival.ID, id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err = st.PublishFestival(ctx, festival.ID); !errors.Is(err, ErrNotSellable) {
+	if _, err = st.PublishFestival(ctx, orgID, festival.ID); !errors.Is(err, ErrNotSellable) {
 		t.Fatalf("publish error=%v, want ErrNotSellable", err)
 	}
 	var drafts int
@@ -145,14 +145,14 @@ func TestFestivalPublishArchiveRaceIsConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.AttachDayToFestival(ctx, festival.ID, dayID); err != nil {
+	if _, err = st.AttachDayToFestival(ctx, orgID, festival.ID, dayID); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
 	var publishErr, archiveErr error
 	wg.Add(2)
-	go func() { defer wg.Done(); _, publishErr = st.PublishFestival(ctx, festival.ID) }()
-	go func() { defer wg.Done(); _, archiveErr = st.ArchiveFestival(ctx, festival.ID) }()
+	go func() { defer wg.Done(); _, publishErr = st.PublishFestival(ctx, orgID, festival.ID) }()
+	go func() { defer wg.Done(); _, archiveErr = st.ArchiveFestival(ctx, orgID, festival.ID) }()
 	wg.Wait()
 	if publishErr != nil {
 		t.Fatalf("publish: %v", publishErr)
@@ -179,15 +179,15 @@ func TestDirectArchiveRacingFestivalPublishCannotDesync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.AttachDayToFestival(ctx, festival.ID, dayID); err != nil {
+	if _, err = st.AttachDayToFestival(ctx, orgID, festival.ID, dayID); err != nil {
 		t.Fatal(err)
 	}
 
 	var wg sync.WaitGroup
 	var publishErr, archiveErr error
 	wg.Add(2)
-	go func() { defer wg.Done(); _, publishErr = st.PublishFestival(ctx, festival.ID) }()
-	go func() { defer wg.Done(); _, _, _, archiveErr = st.ArchivePerformance(ctx, dayID) }()
+	go func() { defer wg.Done(); _, publishErr = st.PublishFestival(ctx, orgID, festival.ID) }()
+	go func() { defer wg.Done(); _, _, _, archiveErr = st.ArchivePerformance(ctx, orgID, dayID) }()
 	wg.Wait()
 	if publishErr != nil {
 		t.Fatalf("festival publish: %v", publishErr)
@@ -241,14 +241,14 @@ func TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, id := range []uuid.UUID{firstDayID, secondDayID} {
-		if _, err = st.AttachDayToFestival(ctx, festival.ID, id); err != nil {
+		if _, err = st.AttachDayToFestival(ctx, orgID, festival.ID, id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err = st.PublishFestival(ctx, festival.ID); err != nil {
+	if _, err = st.PublishFestival(ctx, orgID, festival.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = st.PublishPerformance(ctx, unrelatedID); err != nil {
+	if _, _, err = st.PublishPerformance(ctx, orgID, unrelatedID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,10 +275,10 @@ func seedPublishedFestival(ctx context.Context, t *testing.T, db *sql.DB, st *Po
 	if err != nil {
 		t.Fatal(err)
 	}
-	if festival, err = st.AttachDayToFestival(ctx, festival.ID, dayID); err != nil {
+	if festival, err = st.AttachDayToFestival(ctx, orgID, festival.ID, dayID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.PublishFestival(ctx, festival.ID); err != nil {
+	if _, err = st.PublishFestival(ctx, orgID, festival.ID); err != nil {
 		t.Fatal(err)
 	}
 	return festival, dayID
@@ -307,10 +307,9 @@ func TestGetPublishedFestivalDoesNotScanForeignDays(t *testing.T) {
 		`UPDATE ticket_types SET name='"not-an-object"' WHERE performance_id=$1`, foreignDayID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := st.PublishPerformance(ctx, foreignDayID); err != nil {
+	if _, _, err := st.PublishPerformance(ctx, foreignOrg, foreignDayID); err != nil {
 		t.Fatal(err)
 	}
-	_ = foreignOrg
 
 	agg, err := st.GetPublishedFestival(ctx, festival.ID)
 	if err != nil {

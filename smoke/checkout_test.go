@@ -44,8 +44,12 @@ func postWithKey(t *testing.T, url, key string, body any) (int, []byte) {
 	req.Header.Set("Idempotency-Key", key)
 	// TKT-191: catalog writes need the staff-write credential; other services
 	// must never see it.
+	//
+	// TKT-251: and since the path-id transitions take the organizer from the
+	// verified assertion, an unsafe catalog write needs BOTH headers.
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
+		req.Header.Set(organizerAssertionHeader, organizerAssertion(t))
 	}
 	// ai-review S1: the scan routes admit only enrolled devices.
 	if isScanURL(url) {
@@ -79,8 +83,13 @@ func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
 	}
 	// TKT-191: catalog writes need the staff-write credential; other services
 	// must never see it.
+	//
+	// TKT-251: and since the path-id transitions take the organizer from the
+	// verified assertion, an unsafe catalog write needs BOTH headers. The
+	// credential says who is calling; the assertion says which organizer for.
 	if isCatalogURL(url) {
 		req.Header.Set(staffWriteHeader, staffWriteToken())
+		req.Header.Set(organizerAssertionHeader, organizerAssertion(t))
 	}
 	// ai-review S1: the scan routes admit only enrolled devices.
 	if isScanURL(url) {

@@ -212,12 +212,15 @@ export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeom
 /**
  * Publish a draft map (TKT-103). Idempotent server-side.
  *
- * No assertion: publish is a path-id transition, which catalog resolves from the
- * seat-map id alone and which carries no organizer at any layer. Those writes are
- * the follow-up slice to TKT-245, not this one — see ADR-058 § what stays open.
+ * Carries the organizer assertion since TKT-251: catalog scopes the publish to
+ * the verified organizer, so a map belonging to another tenant answers 404.
  */
-export function publishSeatMap(seatMapId: string): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/publish`, '', null);
+export function publishSeatMap(seatMapId: string, assertion: string): Promise<SeatMap> {
+  return postCatalog<SeatMap>(
+    `/seat-maps/${encodeURIComponent(seatMapId)}/publish`,
+    assertion,
+    null,
+  );
 }
 
 /**
@@ -388,11 +391,13 @@ export function createTicketType(
  * slot with no ticket type is refused as not sellable. Each arrives here as a
  * CatalogApiError whose message is catalog's own.
  */
-export function publishPerformance(performanceId: string): Promise<Performance> {
-  // No assertion: a path-id transition, the follow-up slice (ADR-058).
+export function publishPerformance(
+  performanceId: string,
+  assertion: string,
+): Promise<Performance> {
   return postCatalog<Performance>(
     `/performances/${encodeURIComponent(performanceId)}/publish`,
-    '',
+    assertion,
     null,
   );
 }

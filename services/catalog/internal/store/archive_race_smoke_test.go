@@ -83,11 +83,11 @@ func TestArchiveDoesNotRacePublish(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, _, _ = st.PublishPerformance(ctx, perfID)
+			_, _, _ = st.PublishPerformance(ctx, orgID, perfID)
 		}()
 		go func() {
 			defer wg.Done()
-			archivePerf, _, _, archiveErr = st.ArchivePerformance(ctx, perfID)
+			archivePerf, _, _, archiveErr = st.ArchivePerformance(ctx, orgID, perfID)
 		}()
 		wg.Wait()
 
@@ -188,11 +188,11 @@ func TestSeriesArchiveDoesNotDeadlockDirectArchive(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, seriesErr = st.ArchiveSeries(ctx, seriesID)
+			_, seriesErr = st.ArchiveSeries(ctx, orgID, seriesID)
 		}()
 		go func() {
 			defer wg.Done()
-			_, _, _, directErr = st.ArchivePerformance(ctx, secondID)
+			_, _, _, directErr = st.ArchivePerformance(ctx, orgID, secondID)
 		}()
 		wg.Wait()
 		if seriesErr != nil || directErr != nil {

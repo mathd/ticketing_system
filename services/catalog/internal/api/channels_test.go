@@ -860,4 +860,39 @@ func TestStaffCredentialAloneCanNoLongerEnumerateOrMutateAcrossTenants(t *testin
 	if len(out.Channels) != 1 || out.Channels[0].DisplayName != "Victim box office" {
 		t.Fatalf("the victim's channel was modified: %+v", out.Channels)
 	}
+
+	// Step 3 (TKT-251) -- the same question for a PATH-ID TRANSITION, which is the
+	// class this test could not speak for until TKT-251. Until then these carried
+	// no organizer at any layer, so the credential alone reached them: this
+	// assertion was true of the 15 body writes and FALSE of the 13 transitions,
+	// and leaving it channels-only would let that gap close or reopen silently.
+	//
+	// A transition with the credential ALONE is refused.
+	unknown := uuid.NewString()
+	if rec := e.doWithHeaders(http.MethodPost, "/performances/"+unknown+"/publish", nil,
+		map[string]string{staffWriteHeader: testStaffWriteToken}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("transition with the credential alone = %d, want 401. A path-id transition "+
+			"must not be reachable by the deputy credential on its own.\nbody: %s",
+			rec.Code, rec.Body.String())
+	}
+
+	// The refusal above is NOT enough on its own, and a mutation check proved it:
+	// removing the assertion requirement from the operation left it green,
+	// because `organizerFor` then refuses at runtime with the same 401. The two
+	// causes are indistinguishable from the status code, so the assertion that
+	// separates them is the POSITIVE one — with a valid assertion the request
+	// must get PAST authentication and be answered by the handler (404 for an id
+	// that names no row). If the contract stopped declaring the assertion, the
+	// validator would never fill the scope, `organizerFor` would refuse, and this
+	// would be a 401 instead.
+	if rec := e.doWithHeaders(http.MethodPost, "/performances/"+unknown+"/publish", nil,
+		map[string]string{
+			staffWriteHeader:         testStaffWriteToken,
+			organizerAssertionHeader: e.assertionFor(attacker),
+		}); rec.Code != http.StatusNotFound {
+		t.Fatalf("transition WITH an assertion = %d, want 404. A 401 here means the operation "+
+			"no longer declares the assertion, so the only thing refusing is the handler's "+
+			"fallback — a boundary that exists only as a fallback.\nbody: %s",
+			rec.Code, rec.Body.String())
+	}
 }

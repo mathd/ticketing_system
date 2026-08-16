@@ -139,7 +139,7 @@ if (Astro.request.method === 'POST') {
       // told it. Publishing is idempotent server-side (ADR-018), so a refresh
       // that re-posts is harmless — which is what makes forgoing PRG safe here,
       // and nowhere else on this page.
-      const slot = await publishPerformance(String(performanceId));
+      const slot = await publishPerformance(String(performanceId), staff.organizerAssertion);
       // `published`, not merely truthy. Catalog's publish updates and rereads in
       // separate statements, so a concurrent archive can return `archived` here
       // — and rendering that under "Publication accepted" would report a slot

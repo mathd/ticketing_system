@@ -27,7 +27,7 @@ func seedPublishedMap(ctx context.Context, t *testing.T, st *Postgres, name stri
 	if _, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
 		t.Fatal(err)
 	}
-	published, needsEmit, err := st.PublishSeatMap(ctx, m.ID)
+	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatalf("publish seat map: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestPublishSeatMapMonotonic(t *testing.T) {
 	ctx, _, st, _ := seatMapSmokeStore(t)
 	m := seedDraftMap(ctx, t, st, "Main floor")
 
-	published, needsEmit, err := st.PublishSeatMap(ctx, m.ID)
+	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestPublishSeatMapMonotonic(t *testing.T) {
 
 	// Idempotent re-publish: still published, but the event is no longer owed
 	// only after we mark it. Before marking, a retry re-owes (at-least-once).
-	again, needsEmitAgain, err := st.PublishSeatMap(ctx, m.ID)
+	again, needsEmitAgain, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatalf("re-publish: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestPublishSeatMapMonotonic(t *testing.T) {
 	if err := st.MarkSeatMapEventEmitted(ctx, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	marked, needsEmitAfterMark, err := st.PublishSeatMap(ctx, m.ID)
+	marked, needsEmitAfterMark, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestPublishSeatMapMonotonic(t *testing.T) {
 // TestPublishSeatMapUnknown pins the not-found path.
 func TestPublishSeatMapUnknown(t *testing.T) {
 	ctx, _, st, _ := seatMapSmokeStore(t)
-	if _, _, err := st.PublishSeatMap(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
+	if _, _, err := st.PublishSeatMap(ctx, seatMapOrg, uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("publish unknown map err = %v, want ErrNotFound", err)
 	}
 }
@@ -142,7 +142,7 @@ func TestPublicEventReadCarriesSeatMapID(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err = st.PublishPerformance(ctx, perf.ID); err != nil {
+		if _, _, err = st.PublishPerformance(ctx, seatMapOrg, perf.ID); err != nil {
 			t.Fatalf("publish (seated=%v): %v", seated, err)
 		}
 		perfIDs[seated] = perf.ID
@@ -203,7 +203,7 @@ func TestPublishSeatMapCarriesOrphanPrevention(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	published, needsEmit, err := st.PublishSeatMap(ctx, m.ID)
+	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestPublishSeatMapCarriesOrphanPrevention(t *testing.T) {
 			"SeatMapPublished and returned to the caller, so it would publish a lie")
 	}
 
-	republished, _, err := st.PublishSeatMap(ctx, m.ID)
+	republished, _, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
