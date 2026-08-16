@@ -1,5 +1,6 @@
 {
   "tracker": "local",
+  "gates": "autonomous",
   "confluence": null,
   "code": {
     "repo": "ticketing_system",

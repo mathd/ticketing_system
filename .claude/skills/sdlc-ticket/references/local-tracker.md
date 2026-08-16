@@ -86,6 +86,10 @@ graph and writes via the same `POST /ticket`.
   **only `status`**; labels and comments remain the agent's job.
 
 ## The one-ticket run (identical to Jira mode)
+
+> In `config.gates: "autonomous"` the ⛔ Gate 2–4 steps below are agent transitions per the skill's
+> § Autonomous mode: don't set `needs:human` at those points; Gate 1 still waits for the human.
+
 1. **Backlog** — shape per `shaping.md`: COS + the 8-item `readiness` object on the ticket (incl. `context_memo`),
    spikes (`type:"Spike"`, parent `blocked-by` them) for investigations, `owner:"human"` items for
    pending decisions; `kind=readiness` verdict comment; suggest `risk:low` if trivial.

@@ -1,6 +1,6 @@
 ---
 name: sdlc-ticket
-description: Drive one unit of work through the agentic SDLC pipeline on JIRA — a 6-status board (Backlog→Ready→Planning→Building→PO Review→Done, + transversal BLOCKED) with label-driven sub-states, plus the code repo for branch/PR/merge. Human gates - priority at entry, plan approval (skipped for risk:low), review+merge, PO acceptance at exit. Use when the user wants to run a task/ticket through the pipeline, says "run this through the SDLC pipeline", "take this ticket through the flow", "resume <ISSUE-KEY>", wants a PRD/spec decomposed into pipeline tickets, wants to explore a feature idea into tickets, or references the "SDLC agentique" board. V0 is manual - the agent performs each stage on the user's command in Claude Code via the Atlassian MCP; there is no event automation.
+description: Drive one unit of work through the agentic SDLC pipeline on JIRA — a 6-status board (Backlog→Ready→Planning→Building→PO Review→Done, + transversal BLOCKED) with label-driven sub-states, plus the code repo for branch/PR/merge. Four gates - priority at entry, plan approval (skipped for risk:low), review+merge, PO acceptance at exit; held by a human or taken by the agent per config.gates ("human" | "autonomous"). Use when the user wants to run a task/ticket through the pipeline, says "run this through the SDLC pipeline", "take this ticket through the flow", "resume <ISSUE-KEY>", wants a PRD/spec decomposed into pipeline tickets, wants to explore a feature idea into tickets, or references the "SDLC agentique" board. V0 is manual - the agent performs each stage on the user's command in Claude Code via the Atlassian MCP; there is no event automation.
 ---
 
 # Agentic SDLC pipeline (Jira)
@@ -36,12 +36,43 @@ Still applies to direct commits: the local gate must be green, and the commit me
 
 The Jira ticket carries the key in the branch/PR (`<ISSUE-KEY>`); the PR carries `<ISSUE-KEY>` in its title/body so the two stay linked.
 
-## Human gates
+## Gates
 
-1. ⛔ **Priority** — human transitions `Backlog → Ready`.
+Four decision points. **Who decides is a config binding** — `config.gates`: `"human"` (the default when the key is absent — every ⛔ line in this skill and its references waits for the human, exactly as written) or `"autonomous"` (the agent takes gates 2–4 itself and runs Ready → Done in one continuous run — see § Autonomous mode). Everything else in the skill applies identically in both modes.
+
+1. ⛔ **Priority** — human transitions `Backlog → Ready`. **Human in both modes** — the agent never self-promotes out of Backlog: shaping + the DoR still gate entry, and priority is the owner's call.
 2. ⛔ **Plan** — human transitions `Planning → Building`. **Skipped when the issue carries `risk:low`.**
-3. ⛔ **Review + merge** — human reviews the PR and **merges (squash) in the code repo**, then transitions `Building → PO Review`. Agents never merge.
+3. ⛔ **Review + merge** — human reviews the PR and **merges (squash) in the code repo**, then transitions `Building → PO Review`. Agents never merge in human mode.
 4. ⛔ **PO acceptance** — the PO functionally validates and transitions `PO Review → Done`.
+
+### Autonomous mode (`config.gates: "autonomous"`)
+
+The four human gates are replaced by agent judgement; **every other rule is unchanged and non-negotiable** — `config.models` routing (never substitute), cross-model review for both plan and code, TDD with tests observed red first, local gate green before every push and after the merge, all marker comments at each stage, no AI attribution anywhere.
+
+State the mode in the **claim comment** ("running gateless per `config.gates: autonomous`") so the board history shows the ticket ran without human gates.
+
+**Gate replacements:**
+
+- **Gate 1 (priority):** not replaced — the ticket must already be in `Ready`. Verify that against the board (§ Before you start); a ticket really in Backlog gets shaped and **stops there** for the human.
+- **Gate 2 (plan approval):** after the cross-model plan critique, resolve every open decision yourself: prefer the option the critique recommends; if it makes no recommendation, pick the **most reversible** option. Record each self-made decision and its rationale in the `kind=plan-final` comment, then transition `Planning → Building` yourself.
+- **Gate 3 (review + merge):** after the adversarial ai-review converges (same triage, second-pass, and churn-cap rules as always), post the **review-guide on the PR first** — it becomes the audit record — then verify `git rev-parse HEAD` == `git rev-parse origin/<branch>` (Hard rules), squash-merge the PR yourself, delete the branch, and transition `Building → PO Review`.
+- **Gate 4 (PO acceptance):** self-validate **each COS against test evidence on the merged code**, post the validation note, transition to `Done`, and close with the full `kind=metrics` comment — the `overrides:` list (§ Memory & metrics) is mandatory on every autonomous run, `none` earned not assumed.
+
+**Label mechanics:** at a replaced gate, don't set `needs:human` — post the stage's marker comment, then move straight to the next label/transition. `human-wait` in the metrics comment is `n/a (autonomous)`.
+
+**Epics:** if the issue is an epic, decompose it per `references/decomposition.md`, then run each child story Ready → Done **one at a time, in dependency order** — full pipeline per story, no batching.
+
+**Drive style:** no ask — continuous run. Report at the end (and at each story boundary when running an epic).
+
+**⛔ STOP and report to the human instead of proceeding only if:**
+
+- (a) the local gate or CI fails **twice on the same cause** with no clear fix;
+- (b) implementation would touch **auth, money paths, data migrations, or CI/deploy config** in a way the ticket and approved plan did not anticipate;
+- (c) a **blocking** review finding survives the churn cap unresolved;
+- (d) a configured model is **unreachable** after the documented escalation ladder;
+- (e) an action would be **destructive or hard to reverse** and the right choice is ambiguous.
+
+Otherwise make the call yourself, record it (plan-final decisions, stage comments, `overrides:`), and keep going.
 
 > **Custom workflow, deliberately richer than the org standard.** The agent stages (`Planning`, `Building`) are **first-class Jira statuses**, not just labels — the label axis alone isn't visible enough for human + AI co-work. The org's admin route creates the bare Jira project + Confluence space; **you** (project admin) build the workflow/board yourself. **PO Review** (gate 4) and transversal **BLOCKED** are kept from the standard because the business wants them. Details: `references/setup.md` §1.
 
@@ -67,7 +98,7 @@ Read the relevant file **before** executing the step — don't improvise the how
 - **Local backend?** If `config.tracker` is `"local"`, the user asks for a demo, or Jira isn't ready — read `references/local-tracker.md` and drive the repo-contained store instead of Atlassian. Same rules; only storage changes.
 - **Read the ticket's actual status before starting anywhere.** When the run is described as starting from a status ("it's in Ready", "run it Ready to Done"), that is the requester's belief, not an observation — **verify it against the board and re-shape if it doesn't hold**, rather than entering at the named step. A ticket that is really still in Backlog has no `readiness` and no context-mémo, and starting at Ready silently skips the shaping those represent. The skip is invisible and self-confirming: the run proceeds normally and produces a plan, just one built on whatever the ticket text asserted. TKT-233 was handed over as "already in Ready" while sitting in Backlog with `readiness: null` and its own comment reading *"Needs shaping before Gate 1"* — and the shaping it would have skipped is what caught the ticket's proposed fix being unimplementable (`shaping.md` § approach). This check costs one read and protects every stage after it.
 - **Resuming?** If the ticket is in flight (or the user says "resume <KEY>"), reconstruct state from the board status + label + the marker comments — never from conversation memory — and continue from the step the label indicates.
-- **Drive style:** V0 is interactive. Ask **once at the start of the run**: *every step* (stop and report after each transition) or *gates only* (pause at the human gates). Apply for the rest of the ticket; don't re-ask.
+- **Drive style:** in `gates: "human"`, V0 is interactive — ask **once at the start of the run**: *every step* (stop and report after each transition) or *gates only* (pause at the human gates); apply for the rest of the ticket, don't re-ask. In `gates: "autonomous"`, don't ask — continuous run per § Autonomous mode.
 - **Risk:** agree on `risk:low` (skips the plan gate) for trivial, isolated work.
 
 ## Config (per project) — this skill is generic
@@ -77,6 +108,7 @@ Project-specific bindings live in **`.claude/sdlc.config.json`** in the code rep
 ```json
 {
   "tracker":    "jira | local (see references/local-tracker.md; jira keys below apply only to jira)",
+  "gates":      "human | autonomous (default human when absent — see § Gates)",
   "jira":       { "projectKey": "<KEY>",
                   "statuses": { "backlog": "Backlog", "ready": "Ready", "planning": "Planning", "building": "Building", "poReview": "PO Review", "done": "Done", "blocked": "BLOCKED" },
                   "transitions": { "ready->planning": "<resolved at setup>", "building->poReview": "<...>" },
@@ -150,7 +182,7 @@ Swapping `plan` ↔ `planReview` is how the "Codex drafts, main agent reviews" v
 
 ## Transitions (V0 — manual, via MCP + code repo)
 
-Each step is an agent action on the user's command. **Jira ops = Atlassian MCP tools; code ops = `git`/`gh`/`codex`.** Model-assignable stages route per § config.models — the steps below don't repeat the how.
+Each step is an agent action on the user's command. **Jira ops = Atlassian MCP tools; code ops = `git`/`gh`/`codex`.** Model-assignable stages route per § config.models — the steps below don't repeat the how. The ⛔ GATE lines below (and in the references) are the **human-mode** behavior; in `gates: "autonomous"`, apply the corresponding replacement from § Autonomous mode instead — gates 2–4 only, Gate 1 always waits.
 
 ```
 # 1 Entrée (Jira)
@@ -271,13 +303,13 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 - **Cross-ticket memory.** Reusable learnings (codebase patterns, gotchas) go to a dedicated **"🧠 Agent memory" Jira issue** (or the team decision registry). When a pattern proves out, promote it per the **"3 houses" rule** (`references/setup.md`): **technical** standards → the team's shared standards registry (via PR), **process** learnings → the team wiki, repo-local guidance → `AGENTS.md` via a normal gated ticket. Working memory ≠ gospel.
 - **Promotion is a mandatory Done step, not best-effort.** The `kind=metrics` closing comment must include a `learnings:` section — either concrete promotable items (each with its target house) or the explicit word `none`. Skipping it is the registry cold-start failure mode.
 - **Metrics.** Durations from the Jira changelog (status/label transitions); `needs:human` time-in-state is the Gate 2 / Gate 3 human wait — a first-class metric, the likely bottleneck. Diff size from `gh pr view`. The `kind=metrics` comment has **required fields** — a table `stage | duration` (one row per status + per `agent:*` label), `human-wait total`, `diff: +x/−y (n files)`, the `learnings:` section, and a `retro:` section. All five, every ticket; missing data is written `n/a`, not omitted.
-- **Gates waived? The closeout names every objection the agent overrode.** On a run where a human gate is replaced by agent judgement, add an `overrides:` list to `kind=metrics`: each point where a review pass (or the human, earlier) stated a **blocking** objection and the agent proceeded anyway — finding, reviewer's reason, agent's reason, and the ticket carrying the residual risk. `none` is a valid answer and must be earned. Rationale: on a gateless run the machinery catches the ordinary defects; what it cannot settle is a genuine disagreement about whether something should ship. That list is the smallest thing an owner must read to re-take the decisions that were taken for them — and it is unrecoverable later, because a fixed finding and an overridden one look identical in a merged diff (TKT-190 overrode one [high] "do not ship").
+- **Gates waived? The closeout names every objection the agent overrode.** On any run where a human gate is replaced by agent judgement — every `gates: "autonomous"` run, or an ad-hoc waiver — add an `overrides:` list to `kind=metrics`: each point where a review pass (or the human, earlier) stated a **blocking** objection and the agent proceeded anyway — finding, reviewer's reason, agent's reason, and the ticket carrying the residual risk. `none` is a valid answer and must be earned. Rationale: on a gateless run the machinery catches the ordinary defects; what it cannot settle is a genuine disagreement about whether something should ship. That list is the smallest thing an owner must read to re-take the decisions that were taken for them — and it is unrecoverable later, because a fixed finding and an overridden one look identical in a merged diff (TKT-190 overrode one [high] "do not ship").
 - **`retro:` = introspection on the collaboration, not the code.** Two fixed questions, answered honestly (`nothing` is allowed but must be earned): **(1)** *What would have made this ticket faster or better — missing context in the mémo, ambiguous COS, a gap in this skill?* **(2)** *What should the humans change — in the process, the config, or how the ticket was written?* Each retro item is a **concrete, appliable change** (which file/section, what edit) — not an observation. V0 is interactive: after posting the retro, offer to apply the changes now; if approved, patch in the same session and note `applied`. Unapplied items land in the weekly registry review; a recurring one is a signal to stop re-noting and patch.
 - **High bar for skill edits.** This skill carries *rules*, not knowledge. A retro item may patch the skill only if it would change agent behavior in a future session **and** isn't already readable from the repo when needed — learnings (`docs/LEARNINGS.md`, `docs/learnings/`) and ADRs (`docs/adr/`) are accessible to every session; **cite them, never restate them**. Incident narratives go to `docs/learnings/`; the skill gets the rule, a one-line why, and the ticket citation. When in doubt, it's a learning, not a skill edit.
 
 ## Hard rules
 
-- **Never merge for the human.** Gate 3 is the human's, in the code repo. Agents stop at `needs:human`.
+- **Never merge at a gate the config gives to the human.** In `gates: "human"`, Gate 3 is the human's, in the code repo — agents stop at `needs:human`. In `gates: "autonomous"`, the agent merges per § Autonomous mode, review-guide posted first and the pre-merge push check done.
 - **Model routing is declared, never inferred.** Every model decision comes from `config.models` (§ Config). Never detect which model is driving the session and branch on it, and never silently substitute a model: if the configured one is unreachable, **stop and report**. Who did the work is a thing this pipeline measures — a stage that quietly ran on the wrong model is a corrupted measurement. **This rule is deliberately self-contained:** the skill ships to whoever installs it and must not depend on any individual's personal model preferences or global config.
 - **Delegated ≠ done.** When a stage resolves to anything but `main-agent`, you still own the outcome: verify the output against the real code, re-run the gate yourself (`quality-practices.md` §2.b), and attribute the work in the stage comment. A delegated run reports a *claim*; the evidence is what you check.
 - **`gpt-*` stage mechanics live in `references/codex-runner.md`** — companion script (not raw `codex exec`, not slash commands), prompt-file materialization, the raw fallback, judging output (exit 0 ≠ success), and the fixed escalation ladder. Read it before running any such stage. A `@claudex` suffix on the model swaps the harness, not the model — those mechanics live in `references/claudex-runner.md` instead.
