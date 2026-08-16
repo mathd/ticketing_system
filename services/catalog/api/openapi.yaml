@@ -2327,6 +2327,10 @@ components:
           pattern: '^[A-Z]{3}$'
     VenueCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name, ga_capacity]
       properties:
         name:
@@ -2356,6 +2360,10 @@ components:
           format: date-time
     SeatMapCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name]
       properties:
         name: { type: string, minLength: 1 }
@@ -2395,6 +2403,10 @@ components:
         created_at: { type: string, format: date-time }
     SeatMapSectionCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name, position]
       properties:
         # no '/': it is the seat-identity delimiter, so a component carrying one
@@ -2403,6 +2415,10 @@ components:
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapRowCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [section_id, label, position]
       properties:
         section_id: { type: string, format: uuid }
@@ -2410,6 +2426,10 @@ components:
         position: { type: integer, format: int32, minimum: 1 }
     SeatMapSeatCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [row_id, label, position]
       properties:
         row_id: { type: string, format: uuid }
@@ -2480,6 +2500,10 @@ components:
         store's EditSeatMapInput; seat identity is composed server-side from the
         section/row/seat labels, so no component may contain the '/' delimiter.
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [sections]
       properties:
         orphan_prevention_enabled:
@@ -2519,11 +2543,19 @@ components:
         position: { type: integer, format: int32, minimum: 1 }
     VenueGaCapacityUpdate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [ga_capacity]
       properties:
         ga_capacity: { type: integer, format: int32, minimum: 1 }
     EventCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name]
       properties:
         name:
@@ -2601,6 +2633,10 @@ components:
         operating window (operating_date + opens_at + closes_at). re_entry
         defaults to single-entry.
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [event_id, venue_id, timezone]
       properties:
         event_id:
@@ -2702,6 +2738,10 @@ components:
           format: date-time
     TicketTypeCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [performance_id, name, price]
       properties:
         performance_id:
@@ -2733,6 +2773,10 @@ components:
           format: date-time
     SeriesCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [event_id, name]
       properties:
         event_id: { type: string, format: uuid }
@@ -2778,6 +2822,10 @@ components:
         blocking_performance_id: { type: string, format: uuid }
     SeasonCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name]
       properties:
         name: { $ref: '#/components/schemas/LocalizedString' }
@@ -2807,6 +2855,10 @@ components:
         created_at: { type: string, format: date-time }
     FestivalCreate:
       type: object
+      # TKT-245: a submitted organizer_id must be REFUSED, not ignored. The
+      # field is gone from the properties above; without this line an extra
+      # key is silently dropped, which reads to a client as "accepted".
+      additionalProperties: false
       required: [name, shared_capacity]
       properties:
         name: { $ref: '#/components/schemas/LocalizedString' }

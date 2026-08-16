@@ -58,6 +58,14 @@ const organizerAssertionHeader = "X-Catalog-Organizer-Assertion"
 
 func organizerAssertion(t *testing.T) string {
 	t.Helper()
+	return organizerAssertionFor(t, organizerID)
+}
+
+// organizerAssertionFor mints one naming a CHOSEN organizer, for the cross-tenant
+// cases: since TKT-245 the only way to attempt a write as another tenant is to
+// present that tenant's assertion, because no request body names an organizer.
+func organizerAssertionFor(t *testing.T, organizer string) string {
+	t.Helper()
 	key := os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY")
 	if key == "" {
 		t.Fatal("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY is not set: scripts/stack-env.sh exports it, " +
@@ -69,7 +77,7 @@ func organizerAssertion(t *testing.T) string {
 	payload := strings.Join([]string{
 		"v1",
 		"00000000-0000-0000-0000-0000000000aa",
-		organizerID,
+		organizer,
 		strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
 	}, ".")
 	mac := hmac.New(sha256.New, []byte(key))
@@ -88,6 +96,33 @@ func scannerToken() string { return os.Getenv("SMOKE_SCANNER_TOKEN") }
 // is remembering the header at every call site, and the one that forgets is a 401
 // that reads as a broken deployment.
 func isScanURL(url string) bool { return strings.Contains(url, "/api/access/scans") }
+
+// postJSONAs posts a catalog write ACTING FOR whichever organizer the supplied
+// assertion names (TKT-245). The cross-tenant cases need it: postJSON always
+// mints one for the seeded organizer, and since the body cannot name an organizer
+// at all, an assertion is the only way to attempt a write as someone else.
+func postJSONAs(t *testing.T, url, assertion string, body any) (int, []byte) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(staffWriteHeader, staffWriteToken())
+	req.Header.Set(organizerAssertionHeader, assertion)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	validateServiceResponse(t, resp.Request, resp.StatusCode, resp.Header, out)
+	return resp.StatusCode, out
+}
 
 func postJSON(t *testing.T, url string, body any) (int, []byte) {
 	t.Helper()
@@ -170,14 +205,34 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 		"price": map[string]any{"amount": 4550, "currency": "EUR"},
 	})
 
-	// Tenancy is enforced through the real stack: a venue owned by an
-	// unknown organizer id cannot be wired to this event (AC5).
-	if code, _ := postJSON(t, catalog+"/performances", map[string]any{
+	// Tenancy is enforced through the real stack, and since TKT-245 there are TWO
+	// things to check because the organizer arrives differently (ADR-058).
+	//
+	// First: a submitted organizer_id is REFUSED, not ignored. The schemas are
+	// additionalProperties:false, so a client that still sends the old field gets
+	// a 400 rather than a 201 and a silently-dropped key. This assertion caught
+	// the gap: before the schemas were tightened it returned 201, and a test that
+	// had merely been updated to expect 201 would have recorded "extras are
+	// accepted" as if it were the intended design.
+	if code, body := postJSON(t, catalog+"/performances", map[string]any{
 		"organizer_id": "11111111-1111-1111-1111-111111111111",
 		"event_id":     event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
-	}); code != http.StatusBadRequest && code != http.StatusNotFound {
-		t.Fatalf("cross-organizer performance: want 400/404, got %d", code)
+	}); code != http.StatusBadRequest {
+		t.Fatalf("a submitted organizer_id must be refused, want 400, got %d: %s", code, body)
+	}
+
+	// Second: acting for ANOTHER organizer cannot wire this tenant's event. The
+	// organizer now comes from the assertion, so the only way to attempt the
+	// cross-tenant write is to present a valid assertion for a different one --
+	// which is exactly the adversary ADR-058 closes.
+	if code, body := postJSONAs(t, catalog+"/performances",
+		organizerAssertionFor(t, "11111111-1111-1111-1111-111111111111"),
+		map[string]any{
+			"event_id": event["id"], "venue_id": venue["id"],
+			"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
+		}); code != http.StatusBadRequest && code != http.StatusNotFound {
+		t.Fatalf("cross-organizer performance: want 400/404, got %d: %s", code, body)
 	}
 
 	// -- consumer BEFORE publish: no deliver-all false pass (AC2) --

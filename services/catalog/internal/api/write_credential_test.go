@@ -242,6 +242,49 @@ func TestCatalogWritesTakeTheOrganizerFromTheAssertionAndNotTheBody(t *testing.T
 	}
 }
 
+// Deleting the field is not enough: the schema must REFUSE a submitted one.
+//
+// The difference is the whole distance between "unsubmittable" and "ignored",
+// and it is invisible unless you look. A schema without `additionalProperties:
+// false` silently DROPS an extra `organizer_id` — so a client can still send it,
+// gets a 201, and is told nothing. The write lands under the assertion's
+// organizer, which is safe; but "safe because nothing reads it" is a property of
+// today's handler, and the next reader sees a field the API appears to accept.
+//
+// Found by the gate rather than by review: a smoke test still sending a forged
+// organizer expected a refusal and got 201, because 13 of the 15 schemas were
+// lax. The security outcome was already correct; the contract was lying.
+func TestConvertedWriteSchemasRefuseASubmittedOrganizer(t *testing.T) {
+	doc := loadSpec(t)
+
+	var checked int
+	for path, item := range doc.Paths.Map() {
+		for method, op := range item.Operations() {
+			if isSafeMethod(method) || !securityRequires(doc, op, organizerAssertionSecurityScheme) {
+				continue
+			}
+			if op.RequestBody == nil || op.RequestBody.Value == nil {
+				continue
+			}
+			media := op.RequestBody.Value.Content.Get("application/json")
+			if media == nil || media.Schema == nil || media.Schema.Value == nil {
+				continue
+			}
+			checked++
+			if schema := media.Schema.Value; schema.AdditionalProperties.Has == nil || *schema.AdditionalProperties.Has {
+				t.Errorf("%s (%s %s) does not set additionalProperties: false, so a submitted "+
+					"organizer_id is silently ignored rather than refused. Unsubmittable means the "+
+					"client cannot send it, not that the server drops it quietly.",
+					op.OperationID, method, path)
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no converted write schema was inspected")
+	}
+}
+
 // A handler reached with NO verified scope refuses, rather than writing for the
 // nil organizer.
 //
