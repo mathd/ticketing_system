@@ -99,14 +99,14 @@ func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
 func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Checkout " + suffix, "ga_capacity": 5})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Paiement " + suffix, "en": "Checkout " + suffix}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": "Checkout " + suffix, "ga_capacity": 5})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Paiement " + suffix, "en": "Checkout " + suffix}})
 	// starts_at is relative to now, never a fixed date (TKT-93): a hardcoded
 	// 2026 date silently ages into the past and would eventually publish a
 	// performance that has already started.
 	startsAt := time.Now().UTC().AddDate(0, 0, 90).Truncate(time.Second).Format(time.RFC3339)
-	perf := created(t, catalog+"/performances", map[string]any{"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": "UTC"})
-	tt := created(t, catalog+"/ticket-types", map[string]any{"organizer_id": organizerID, "performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1250, "currency": "EUR"}})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": "UTC"})
+	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1250, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}
@@ -689,30 +689,30 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 	suffix := uuid.NewString()[:8]
 
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Seated Checkout " + suffix, "ga_capacity": 50})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID,
+		"name": "Seated Checkout " + suffix, "ga_capacity": 50})
+	event := created(t, catalog+"/events", map[string]any{
 		"name": map[string]string{"fr": "Concert " + suffix, "en": "Concert " + suffix}})
 
 	// Three seats in one row, so a partial collision is expressible.
 	seatMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
-		"organizer_id": organizerID, "name": "Stalls " + suffix})
+		"name": "Stalls " + suffix})
 	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
-		"organizer_id": organizerID, "name": "Stalls", "position": 1})
+		"name": "Stalls", "position": 1})
 	row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
-		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1})
+		"section_id": section["id"], "label": "A", "position": 1})
 	for i := 1; i <= 3; i++ {
 		created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
-			"organizer_id": organizerID, "row_id": row["id"], "label": fmt.Sprint(i), "position": i})
+			"row_id": row["id"], "label": fmt.Sprint(i), "position": i})
 	}
 	if code, body := postJSON(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/publish", nil); code != http.StatusOK {
 		t.Fatalf("publish seat map: %d %s", code, body)
 	}
 
 	perf := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-11-05T20:00:00Z", "timezone": "UTC", "seat_map_id": seatMap["id"]})
 	tt := created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": perf["id"],
+		"performance_id": perf["id"],
 		"name":  map[string]string{"fr": "Place", "en": "Seat"},
 		"price": map[string]any{"amount": 3000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {

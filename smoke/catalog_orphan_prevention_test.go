@@ -29,10 +29,9 @@ func TestOrphanPreventionPublishesSchema5AndEnforcesTheRule(t *testing.T) {
 	suffix := hex.EncodeToString(suffixBytes)
 
 	venue := created(t, catalog+"/venues", map[string]any{
-		"organizer_id": organizerID, "name": "Orphan Hall " + suffix, "ga_capacity": 400,
+		"name": "Orphan Hall " + suffix, "ga_capacity": 400,
 	})
 	event := created(t, catalog+"/events", map[string]any{
-		"organizer_id": organizerID,
 		"name":         map[string]string{"fr": "Concert " + suffix, "en": "Concert " + suffix},
 	})
 
@@ -41,18 +40,18 @@ func TestOrphanPreventionPublishesSchema5AndEnforcesTheRule(t *testing.T) {
 	// negative: in a row of three, EVERY pair strands the third, so a passing "this one
 	// is allowed" case is impossible there.
 	seatMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
-		"organizer_id": organizerID, "name": "Stalls " + suffix,
+		"name": "Stalls " + suffix,
 		"orphan_prevention_enabled": true,
 	})
 	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
-		"organizer_id": organizerID, "name": "Stalls", "position": 1,
+		"name": "Stalls", "position": 1,
 	})
 	row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
-		"organizer_id": organizerID, "section_id": section["id"], "label": "A", "position": 1,
+		"section_id": section["id"], "label": "A", "position": 1,
 	})
 	for i := 1; i <= 4; i++ {
 		created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
-			"organizer_id": organizerID, "row_id": row["id"],
+			"row_id": row["id"],
 			"label": fmt.Sprint(i), "position": i,
 		})
 	}
@@ -85,12 +84,12 @@ func TestOrphanPreventionPublishesSchema5AndEnforcesTheRule(t *testing.T) {
 	}
 
 	seated := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-11-01T20:00:00Z", "timezone": "Europe/Paris",
 		"seat_map_id": seatMap["id"],
 	})
 	ticketType := created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": seated["id"],
+		"performance_id": seated["id"],
 		"name":  map[string]string{"fr": "Place", "en": "Seat"},
 		"price": map[string]any{"amount": 5000, "currency": "EUR"},
 	})

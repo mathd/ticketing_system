@@ -523,17 +523,17 @@ func TestOfflineReconciliationOutOfOrderAndConflicts(t *testing.T) {
 func setupPassOffer(t *testing.T, ctx context.Context, suffix string) (slotID, ticketType string) {
 	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
-	venue := created(t, catalog+"/venues", map[string]any{"organizer_id": organizerID, "name": "Pass Arena " + suffix, "ga_capacity": 50})
-	event := created(t, catalog+"/events", map[string]any{"organizer_id": organizerID, "name": map[string]string{"fr": "Passe " + suffix, "en": "Pass " + suffix}})
+	venue := created(t, catalog+"/venues", map[string]any{"name": "Pass Arena " + suffix, "ga_capacity": 50})
+	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Passe " + suffix, "en": "Pass " + suffix}})
 	// Operating day relative to now (TKT-93: never a fixed date).
 	operatingDate := time.Now().UTC().AddDate(0, 0, 30).Format("2006-01-02")
 	perf := created(t, catalog+"/performances", map[string]any{
-		"organizer_id": organizerID, "event_id": event["id"], "venue_id": venue["id"],
+		"event_id": event["id"], "venue_id": venue["id"],
 		"kind": "operating_day", "operating_date": operatingDate, "opens_at": "10:00", "closes_at": "22:00", "timezone": "UTC",
 		"re_entry": map[string]any{"mode": "multi", "requires_exit": true},
 	})
 	tt := created(t, catalog+"/ticket-types", map[string]any{
-		"organizer_id": organizerID, "performance_id": perf["id"],
+		"performance_id": perf["id"],
 		"name": map[string]string{"fr": "Passe", "en": "Pass"}, "price": map[string]any{"amount": 1250, "currency": "EUR"},
 	})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {
