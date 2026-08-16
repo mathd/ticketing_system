@@ -58,9 +58,16 @@ export function nextSeat(seats: SeatState[]): SeatState {
 
 // toEdit converts the editor state to the SeatMapEdit request body. Exported so
 // the component test can assert the exact serialized shape without a DOM submit.
-export function toEdit(organizerId: string, sections: SectionState[]): SeatMapEdit {
+//
+// It does NOT carry an organizer, and that absence is the point (TKT-245).
+// This function used to take one and serialize it into the JSON that becomes a
+// HIDDEN FORM FIELD — so the tenant made a round trip through the browser and
+// came back as client input, on the one back-office path that did it. That is
+// AGENTS.md's "a hidden input is not a checkbox" trap, and the schema no longer
+// has the field to put it in: catalog reads the organizer from the signed
+// assertion the SSR handler holds, which never leaves the server.
+export function toEdit(sections: SectionState[]): SeatMapEdit {
   return {
-    organizer_id: organizerId,
     sections: sections.map((s) => ({
       name: s.name,
       position: s.position,
@@ -75,15 +82,14 @@ export function toEdit(organizerId: string, sections: SectionState[]): SeatMapEd
 
 export interface SeatMapEditorProps {
   geometry: SeatMapGeometry;
-  organizerId: string;
   /** The page `_action` value submitted with the geometry JSON (e.g. "edit-map"). */
   action: string;
 }
 
-export default function SeatMapEditor({ geometry, organizerId, action }: SeatMapEditorProps) {
+export default function SeatMapEditor({ geometry, action }: SeatMapEditorProps) {
   const [sections, setSections] = useState<SectionState[]>(() => fromGeometry(geometry));
 
-  const editJson = useMemo(() => JSON.stringify(toEdit(organizerId, sections)), [organizerId, sections]);
+  const editJson = useMemo(() => JSON.stringify(toEdit(sections)), [sections]);
 
   const renameSeat = (si: number, ri: number, seatIdx: number, label: string) => {
     setSections((prev) =>

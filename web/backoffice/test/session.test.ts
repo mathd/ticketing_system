@@ -13,7 +13,17 @@ import {
   sessionCountForTest,
 } from '../src/lib/session';
 
-const principal = { staffId: 'staff-1', organizerId: 'org-1', role: 'admin' } as const;
+// The assertion's expiry is far in the future so the TTL clamp (TKT-245) is not
+// what these pre-existing session tests are measuring: they are about the 8h
+// session lifetime, the cap and the sweep. The clamp has its own tests below.
+const FAR_FUTURE_ASSERTION =
+  'v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.99999999999.mac';
+const principal = {
+  staffId: 'staff-1',
+  organizerId: 'org-1',
+  role: 'admin',
+  organizerAssertion: FAR_FUTURE_ASSERTION,
+} as const;
 
 beforeEach(() => {
   resetSessionsForTest();
@@ -138,7 +148,12 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
   });
 
   it('caps per principal, so one busy account cannot evict a colleague', () => {
-    const colleague = { staffId: 'staff-2', organizerId: 'org-1', role: 'box_office' } as const;
+    const colleague = {
+      staffId: 'staff-2',
+      organizerId: 'org-1',
+      role: 'box_office',
+      organizerAssertion: FAR_FUTURE_ASSERTION,
+    } as const;
     const theirs = createSession(colleague);
 
     for (let i = 0; i < MAX_SESSIONS_PER_STAFF * 3; i++) createSession(principal);
@@ -177,5 +192,78 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
     for (const [name, token] of Object.entries({ older, mid, newer, newestButExpiringSoonest, sixth })) {
       expect(lookupSession(token, t0 + 4000), `${name} must have survived`).toBeDefined();
     }
+  });
+});
+
+// TKT-245: the session never outlives the organizer assertion it carries.
+//
+// Equal TTLs are not enough on their own, which is the whole reason this exists.
+// Catalog mints at T1 on ITS clock; this process stamps the session at T2, after
+// the round trip. Without the clamp a session created at T2 with an 8h assertion
+// outlives its credential by the round trip plus any clock skew — surfacing near
+// the boundary as a 401 from catalog on a session this process still believes is
+// live, which is the least diagnosable failure available to a staff member.
+describe('session lifetime is clamped to the assertion (TKT-245)', () => {
+  beforeEach(() => resetSessionsForTest());
+
+  /** An assertion in catalog's format, expiring `secondsFromNow` after `now`. */
+  const assertionExpiringAt = (nowMs: number, secondsFromNow: number) =>
+    `v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.${
+      Math.floor(nowMs / 1000) + secondsFromNow
+    }.mac`;
+
+  it('ends the session when the assertion dies first, not eight hours later', () => {
+    const now = 1_800_000_000_000;
+    // One hour of assertion left — far short of the 8h session TTL.
+    const shortLived = {
+      ...principal,
+      organizerAssertion: assertionExpiringAt(now, 60 * 60),
+    };
+
+    const token = createSession(shortLived, now);
+
+    // Alive just before the assertion expires...
+    expect(lookupSession(token, now + 59 * 60 * 1000)).toBeDefined();
+    // ...and gone once it has, rather than surviving to the session's own 8h.
+    expect(lookupSession(token, now + 61 * 60 * 1000)).toBeUndefined();
+    // Without the clamp this would still be live: proof the assertion is what
+    // ended it, not SESSION_TTL_MS.
+    expect(now + 61 * 60 * 1000).toBeLessThan(now + SESSION_TTL_MS);
+  });
+
+  it('does not EXTEND the session when the assertion outlives it', () => {
+    const now = 1_800_000_000_000;
+    const longLived = {
+      ...principal,
+      organizerAssertion: assertionExpiringAt(now, 48 * 60 * 60),
+    };
+
+    const token = createSession(longLived, now);
+
+    // The session's own 8h still governs: the clamp is a minimum, not a lease.
+    expect(lookupSession(token, now + SESSION_TTL_MS - 1000)).toBeDefined();
+    expect(lookupSession(token, now + SESSION_TTL_MS + 1000)).toBeUndefined();
+  });
+
+  // Whether a token is well-formed is catalog's verdict to give. This process
+  // pre-judging it would turn a format change into a silent sign-out loop here
+  // rather than a clear refusal there.
+  it('falls back to the session TTL when the assertion cannot be parsed', () => {
+    const now = 1_800_000_000_000;
+    for (const bad of ['', 'not-a-token', 'v1.only.three.parts', 'v1.a.b.not-a-number.mac']) {
+      resetSessionsForTest();
+      const token = createSession({ ...principal, organizerAssertion: bad }, now);
+      expect(lookupSession(token, now + SESSION_TTL_MS - 1000), `bad=${bad}`).toBeDefined();
+      expect(lookupSession(token, now + SESSION_TTL_MS + 1000), `bad=${bad}`).toBeUndefined();
+    }
+  });
+
+  // An already-dead assertion must not produce a session with a NEGATIVE
+  // lifetime that some future arithmetic reads as "very old" or, worse, wraps.
+  it('creates an already-expired session when the assertion is already dead', () => {
+    const now = 1_800_000_000_000;
+    const dead = { ...principal, organizerAssertion: assertionExpiringAt(now, -60) };
+    const token = createSession(dead, now);
+    expect(lookupSession(token, now)).toBeUndefined();
   });
 });

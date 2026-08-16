@@ -50,30 +50,40 @@ if (Astro.request.method === 'POST') {
       const m = await createSeatMap(
         venueId,
         String(form.get('name') ?? ''),
+        staff.organizerAssertion,
         // An unchecked checkbox is absent from the form data, which is exactly the
         // default this rule wants (ADR-041).
         form.get('orphan_prevention') === 'on',
       );
       return Astro.redirect(`${here}?map=${m.id}`);
     } else if (action === 'add-section') {
-      await addSeatMapSection(mapId, {
-        name: String(form.get('name') ?? ''),
-        position: Number(form.get('position')),
-      });
+      await addSeatMapSection(
+        mapId,
+        { name: String(form.get('name') ?? ''), position: Number(form.get('position')) },
+        staff.organizerAssertion,
+      );
       return Astro.redirect(`${here}?map=${mapId}`);
     } else if (action === 'add-row') {
-      await addSeatMapRow(mapId, {
-        section_id: String(form.get('section_id') ?? ''),
-        label: String(form.get('label') ?? ''),
-        position: Number(form.get('position')),
-      });
+      await addSeatMapRow(
+        mapId,
+        {
+          section_id: String(form.get('section_id') ?? ''),
+          label: String(form.get('label') ?? ''),
+          position: Number(form.get('position')),
+        },
+        staff.organizerAssertion,
+      );
       return Astro.redirect(`${here}?map=${mapId}`);
     } else if (action === 'add-seat') {
-      await addSeatMapSeat(mapId, {
-        row_id: String(form.get('row_id') ?? ''),
-        label: String(form.get('label') ?? ''),
-        position: Number(form.get('position')),
-      });
+      await addSeatMapSeat(
+        mapId,
+        {
+          row_id: String(form.get('row_id') ?? ''),
+          label: String(form.get('label') ?? ''),
+          position: Number(form.get('position')),
+        },
+        staff.organizerAssertion,
+      );
       return Astro.redirect(`${here}?map=${mapId}`);
     } else if (action === 'publish-map') {
       await publishSeatMap(mapId);
@@ -81,11 +91,11 @@ if (Astro.request.method === 'POST') {
     } else if (action === 'edit-map') {
       // The React editor serializes the full replacement geometry into `geometry`.
       const edit = JSON.parse(String(form.get('geometry') ?? '{}')) as SeatMapEdit;
-      const nv = await editSeatMap(mapId, edit);
+      const nv = await editSeatMap(mapId, edit, staff.organizerAssertion);
       // Show the NEW version after a successful edit.
       return Astro.redirect(`${here}?map=${nv.id}`);
     } else if (action === 'set-ga') {
-      await updateVenueGaCapacity(venueId, Number(form.get('ga_capacity')));
+      await updateVenueGaCapacity(venueId, Number(form.get('ga_capacity')), staff.organizerAssertion);
       return Astro.redirect(here);
     }
   } catch (e) {
@@ -188,7 +198,7 @@ const rowOptions =
             This version is published and immutable. Editing creates a <strong>new published version</strong>;
             seats currently sold or held cannot be removed.
           </p>
-          <SeatMapEditor client:load geometry={geometry} organizerId={staff.organizerId} action="edit-map" />
+          <SeatMapEditor client:load geometry={geometry} action="edit-map" />
         </div>
       ) : (
         <div class="forms">

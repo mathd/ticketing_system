@@ -154,7 +154,7 @@ if (Astro.request.method === 'POST') {
 // never registered. So a registry miss marks the row, and never hides or disables it.
 let registered = new Set<string>();
 try {
-  registered = new Set((await listChannelsForOperator(staff.organizerId)).map((c: Channel) => c.code));
+  registered = new Set((await listChannelsForOperator(staff.organizerAssertion)).map((c: Channel) => c.code));
 } catch {
   // A registry outage costs the display names only. Editing must still work, so this is
   // deliberately not `readFailed`.

@@ -13,7 +13,6 @@ import {
   createChannel,
   listChannelsForOperator,
   createSeatMap,
-  DEFAULT_ORGANIZER_ID,
   editSeatMap,
   getSeatMapGeometry,
   getVenues,
@@ -23,6 +22,12 @@ import {
   updateChannel,
   updateVenueGaCapacity,
 } from '../src/lib/catalog';
+
+// TKT-245: the organizer is no longer a module constant with a hardcoded default.
+// Reads take it as an explicit parameter; writes take a signed assertion and take
+// no organizer at all. These stand in for both.
+const TEST_ORGANIZER_ID = '00000000-0000-0000-0000-000000000001';
+const TEST_ASSERTION = 'v1.11111111-1111-1111-1111-111111111111.00000000-0000-0000-0000-000000000001.99999999999.testmac';
 import { getOrderState, refundOrder } from '../src/lib/commerce';
 import {
   getStaffAvailability,
@@ -66,7 +71,7 @@ describe('getVenues', () => {
         venues: [
           {
             id: '00000000-0000-0000-0000-0000000000a2',
-            organizer_id: DEFAULT_ORGANIZER_ID,
+            organizer_id: TEST_ORGANIZER_ID,
             name: 'Le Petit Théâtre',
             ga_capacity: 350,
             created_at: '2026-07-20T00:00:00Z',
@@ -76,12 +81,12 @@ describe('getVenues', () => {
     });
     vi.stubGlobal('fetch', fetchSpy);
 
-    const venues = await getVenues();
+    const venues = await getVenues(TEST_ORGANIZER_ID);
 
     // Consumes the public contract through the gateway, scoped by organizer_id.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(requestedUrl).toContain('/api/catalog/public/venues');
-    expect(requestedUrl).toContain(`organizer_id=${DEFAULT_ORGANIZER_ID}`);
+    expect(requestedUrl).toContain(`organizer_id=${TEST_ORGANIZER_ID}`);
     // Unwraps the { venues: [...] } envelope; capacity is present for the list.
     expect(venues).toHaveLength(1);
     expect(venues[0].name).toBe('Le Petit Théâtre');
@@ -93,7 +98,7 @@ describe('getVenues', () => {
       'fetch',
       vi.fn(async () => new Response('nope', { status: 502 })),
     );
-    await expect(getVenues()).rejects.toThrow(/venue read failed: 502/);
+    await expect(getVenues(TEST_ORGANIZER_ID)).rejects.toThrow(/venue read failed: 502/);
   });
 });
 
@@ -120,34 +125,36 @@ describe('seat-map authoring client', () => {
   it('creates a draft map under a venue, organizer-scoped, through the gateway', async () => {
     const calls = spyFetch({
       id: 'm1',
-      organizer_id: DEFAULT_ORGANIZER_ID,
+      organizer_id: TEST_ORGANIZER_ID,
       venue_id: 'v1',
       name: 'Floor',
       version: 1,
       status: 'draft',
       created_at: '2026-07-20T00:00:00Z',
     });
-    const m = await createSeatMap('v1', 'Floor');
+    const m = await createSeatMap('v1', 'Floor', TEST_ASSERTION);
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toContain('/api/catalog/venues/v1/seat-maps');
-    expect(calls[0].body).toMatchObject({ organizer_id: DEFAULT_ORGANIZER_ID, name: 'Floor' });
+    expect(calls[0].body).toMatchObject({ name: 'Floor' });
+    expect(calls[0].body).not.toHaveProperty('organizer_id');
     expect(m.status).toBe('draft');
     expect(m.version).toBe(1);
   });
 
   it('adds a section, row, and seat to the right nested endpoints', async () => {
     const secCalls = spyFetch({ id: 's1', name: 'Orchestra', position: 1 });
-    await addSeatMapSection('m1', { name: 'Orchestra', position: 1 });
+    await addSeatMapSection('m1', { name: 'Orchestra', position: 1 }, TEST_ASSERTION);
     expect(secCalls[0].url).toContain('/api/catalog/seat-maps/m1/sections');
-    expect(secCalls[0].body).toMatchObject({ organizer_id: DEFAULT_ORGANIZER_ID, name: 'Orchestra', position: 1 });
+    expect(secCalls[0].body).toMatchObject({ name: 'Orchestra', position: 1 });
+    expect(secCalls[0].body).not.toHaveProperty('organizer_id');
 
     const rowCalls = spyFetch({ id: 'r1', label: 'A', position: 1 });
-    await addSeatMapRow('m1', { section_id: 's1', label: 'A', position: 1 });
+    await addSeatMapRow('m1', { section_id: 's1', label: 'A', position: 1 }, TEST_ASSERTION);
     expect(rowCalls[0].url).toContain('/api/catalog/seat-maps/m1/rows');
     expect(rowCalls[0].body).toMatchObject({ section_id: 's1', label: 'A', position: 1 });
 
     const seatCalls = spyFetch({ id: 'x1', seat_identity: 'Orchestra/A/1', label: '1', position: 1 });
-    const seat = await addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 });
+    const seat = await addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 }, TEST_ASSERTION);
     expect(seatCalls[0].url).toContain('/api/catalog/seat-maps/m1/seats');
     expect(seatCalls[0].body).toMatchObject({ row_id: 'r1', label: '1', position: 1 });
     // Identity is composed server-side and returned; the client does not mint it.
@@ -156,7 +163,7 @@ describe('seat-map authoring client', () => {
 
   it('reads a venue seat-map list and unwraps the envelope', async () => {
     const calls = spyFetch(
-      { seat_maps: [{ id: 'm1', organizer_id: DEFAULT_ORGANIZER_ID, venue_id: 'v1', name: 'Floor', version: 1, status: 'draft', created_at: '2026-07-20T00:00:00Z' }] },
+      { seat_maps: [{ id: 'm1', organizer_id: TEST_ORGANIZER_ID, venue_id: 'v1', name: 'Floor', version: 1, status: 'draft', created_at: '2026-07-20T00:00:00Z' }] },
       200,
     );
     const maps = await listVenueSeatMaps('v1');
@@ -169,7 +176,7 @@ describe('seat-map authoring client', () => {
   it('reads full geometry through the public read', async () => {
     const calls = spyFetch(
       {
-        map: { id: 'm1', organizer_id: DEFAULT_ORGANIZER_ID, venue_id: 'v1', name: 'Floor', version: 1, status: 'draft', created_at: '2026-07-20T00:00:00Z' },
+        map: { id: 'm1', organizer_id: TEST_ORGANIZER_ID, venue_id: 'v1', name: 'Floor', version: 1, status: 'draft', created_at: '2026-07-20T00:00:00Z' },
         sections: [{ id: 's1', name: 'Orchestra', position: 1, rows: [{ id: 'r1', label: 'A', position: 1, seats: [{ id: 'x1', seat_identity: 'Orchestra/A/1', label: '1', position: 1 }] }] }],
       },
       200,
@@ -181,7 +188,9 @@ describe('seat-map authoring client', () => {
 
   it('throws on a write failure so the page surfaces it, not a silent success', async () => {
     spyFetch({ error: 'conflict' }, 409);
-    await expect(addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 })).rejects.toThrow(/conflict/);
+    await expect(
+      addSeatMapSeat('m1', { row_id: 'r1', label: '1', position: 1 }, TEST_ASSERTION),
+    ).rejects.toThrow(/conflict/);
   });
 });
 
@@ -189,7 +198,7 @@ describe('seat-map authoring client', () => {
 describe('seat-map edit + versioning client (TKT-105)', () => {
   const publishedMap = {
     id: 'm2',
-    organizer_id: DEFAULT_ORGANIZER_ID,
+    organizer_id: TEST_ORGANIZER_ID,
     venue_id: 'v1',
     name: 'Floor',
     version: 2,
@@ -202,14 +211,14 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
     spyFetch({ error: 'edit would orphan a seat identity pinned by a sale or hold' }, 409);
     // The actionable message reaches the UI — a bare "409" would be useless.
     await expect(
-      editSeatMap('m1', { organizer_id: DEFAULT_ORGANIZER_ID, sections: [] }),
+      editSeatMap('m1', { sections: [] }, TEST_ASSERTION),
     ).rejects.toThrow(/orphan a seat identity pinned/);
   });
 
   it('throws a typed CatalogApiError carrying the status', async () => {
     spyFetch({ error: 'nope' }, 409);
     try {
-      await editSeatMap('m1', { organizer_id: DEFAULT_ORGANIZER_ID, sections: [] });
+      await editSeatMap('m1', { sections: [] }, TEST_ASSERTION);
       throw new Error('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(CatalogApiError);
@@ -220,10 +229,9 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
   it('posts the full replacement geometry to the edit endpoint and returns the new version', async () => {
     const calls = spyFetch(publishedMap, 201);
     const body = {
-      organizer_id: DEFAULT_ORGANIZER_ID,
       sections: [{ name: 'Orchestra', position: 1, rows: [{ label: 'A', position: 1, seats: [{ label: '1', position: 1 }] }] }],
     };
-    const nv = await editSeatMap('m1', body);
+    const nv = await editSeatMap('m1', body, TEST_ASSERTION);
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toContain('/api/catalog/seat-maps/m1/edit');
     expect(calls[0].body).toMatchObject(body);
@@ -247,25 +255,32 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
   });
 
   it('updates a venue GA capacity through the GA endpoint', async () => {
-    const calls = spyFetch({ id: 'v1', organizer_id: DEFAULT_ORGANIZER_ID, name: 'Hall', ga_capacity: 250, created_at: '2026-07-20T00:00:00Z' }, 200);
-    const v = await updateVenueGaCapacity('v1', 250);
+    const calls = spyFetch({ id: 'v1', organizer_id: TEST_ORGANIZER_ID, name: 'Hall', ga_capacity: 250, created_at: '2026-07-20T00:00:00Z' }, 200);
+    const v = await updateVenueGaCapacity('v1', 250, TEST_ASSERTION);
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toContain('/api/catalog/venues/v1/ga-capacity');
-    expect(calls[0].body).toMatchObject({ organizer_id: DEFAULT_ORGANIZER_ID, ga_capacity: 250 });
+    expect(calls[0].body).toMatchObject({ ga_capacity: 250 });
+    expect(calls[0].body).not.toHaveProperty('organizer_id');
     expect(v.ga_capacity).toBe(250);
   });
 });
 
 describe('staff authentication client (TKT-190)', () => {
   it('posts the credential to the catalog through the gateway, like every other call', async () => {
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin', organizer_assertion: TEST_ASSERTION }, 200);
     const principal = await authenticateStaff('ada@example.test', 'correct horse');
     expect(calls[0].method).toBe('POST');
     // Through the gateway, not straight at the catalog container: one network
     // path means the back office never needs the shared internal credential.
     expect(calls[0].url).toContain('/api/catalog/staff/authenticate');
     expect(calls[0].body).toEqual({ identifier: 'ada@example.test', password: 'correct horse' });
-    expect(principal).toEqual({ staffId: 's1', organizerId: 'o1', role: 'admin' });
+    expect(principal).toEqual({
+      staffId: 's1',
+      organizerId: 'o1',
+      role: 'admin',
+      // The credential the session will forward on every write (TKT-245).
+      organizerAssertion: TEST_ASSERTION,
+    });
   });
 
   it('reports invalid credentials as null, not as an exception', async () => {
@@ -281,7 +296,7 @@ describe('staff authentication client (TKT-190)', () => {
   });
 
   it('never puts the password in the URL', async () => {
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
+    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin', organizer_assertion: TEST_ASSERTION }, 200);
     await authenticateStaff('ada@example.test', 'correct horse');
     expect(calls[0].url).not.toContain('correct horse');
   });
@@ -294,23 +309,32 @@ describe('catalog write credential (TKT-191)', () => {
   it('attaches the credential to every catalog write', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
     const calls = spyFetch({ id: 'm1', organizer_id: 'o', venue_id: 'v', name: 'M', version: 1, status: 'draft', created_at: 'x' });
-    await createSeatMap('v1', 'Main');
+    await createSeatMap('v1', 'Main', TEST_ASSERTION);
     expect(calls[0].headers[HEADER]).toBe('the-credential');
+    // And the assertion rides alongside it: the credential says WHO is calling,
+    // the assertion says which organizer for (TKT-245).
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
   });
 
   // Guarded like every other unsafe operation: leaving it out would mean an
   // exception list inside a fail-closed scheme.
   it('attaches it to the sign-in call too', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
-    const calls = spyFetch({ staff_id: 's1', organizer_id: 'o1', role: 'admin' }, 200);
+    const calls = spyFetch(
+      { staff_id: 's1', organizer_id: 'o1', role: 'admin', organizer_assertion: TEST_ASSERTION },
+      200,
+    );
     await authenticateStaff('ada@example.test', 'pw');
     expect(calls[0].headers[HEADER]).toBe('the-credential');
+    // But NOT an assertion: this is the call that issues one. Requiring it here
+    // would be a chicken-and-egg 401 nobody could ever satisfy.
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBeUndefined();
   });
 
   it('does NOT attach it to reads — they are public and must stay so', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
     const calls = spyFetch({ venues: [] }, 200);
-    await getVenues();
+    await getVenues(TEST_ORGANIZER_ID);
     expect(calls[0].headers[HEADER]).toBeUndefined();
   });
 
@@ -320,7 +344,7 @@ describe('catalog write credential (TKT-191)', () => {
   it('throws before fetching when the credential is not configured', async () => {
     delete process.env.CATALOG_STAFF_WRITE_TOKEN;
     const calls = spyFetch({}, 200);
-    await expect(createSeatMap('v1', 'Main')).rejects.toThrow(/CATALOG_STAFF_WRITE_TOKEN/);
+    await expect(createSeatMap('v1', 'Main', TEST_ASSERTION)).rejects.toThrow(/CATALOG_STAFF_WRITE_TOKEN/);
     expect(calls).toHaveLength(0);
   });
 });
@@ -329,7 +353,7 @@ describe('catalog write credential (TKT-191)', () => {
 describe('staff role propagation (TKT-197)', () => {
   it('carries the role from the catalog response into the principal', async () => {
     for (const role of ['admin', 'box_office', 'finance']) {
-      spyFetch({ staff_id: 's1', organizer_id: 'o1', role }, 200);
+      spyFetch({ staff_id: 's1', organizer_id: 'o1', role, organizer_assertion: TEST_ASSERTION }, 200);
       await expect(authenticateStaff('ada@example.test', 'pw')).resolves.toMatchObject({ role });
     }
   });
@@ -587,13 +611,13 @@ describe('the channel registry client (TKT-236)', () => {
 
   it('reads the operator list DIRECT from catalog, not through the gateway', async () => {
     const calls = spyFetch({ channels: [] }, 200);
-    await listChannelsForOperator('org-1');
+    await listChannelsForOperator(TEST_ASSERTION);
     // CATALOG_URL is unset in the suite, so this is the client's own default —
     // what a developer running `pnpm dev` outside compose gets. Same shape as
     // the commerce refund's assertion above: the env var is read at module load,
     // so setting it inside a test would not take effect, and a test that
     // pretended otherwise would assert nothing.
-    expect(calls[0].url).toBe('http://localhost:8081/internal/channels?organizer_id=org-1');
+    expect(calls[0].url).toBe('http://localhost:8081/internal/channels');
     // The gateway edge-denies every /api/<svc>/internal/ route by construction
     // (ADR-002), so routing this through the gateway would 404 in production
     // while passing any test that only checked the path.
@@ -603,17 +627,22 @@ describe('the channel registry client (TKT-236)', () => {
   it('authenticates the operator read with the STAFF credential, never the internal token', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
     const calls = spyFetch({ channels: [] }, 200);
-    await listChannelsForOperator('org-1');
+    await listChannelsForOperator(TEST_ASSERTION);
     expect(calls[0].headers[STAFF]).toBe('the-credential');
     // The posture the whole ticket rests on: this process does not hold the
     // shared internal token and must never send one (compose.yaml).
     expect(calls[0].headers[INTERNAL]).toBeUndefined();
   });
 
-  it('encodes the organizer rather than interpolating it raw', async () => {
+  // TKT-245 replaced the query parameter with the assertion header. There is no
+  // longer an organizer in the URL to encode -- which is the point: this read
+  // returns a tenant's whole channel configuration, and naming the tenant in a
+  // query string is the enumeration ADR-053 recorded.
+  it('names no organizer in the URL and sends the assertion instead', async () => {
     const calls = spyFetch({ channels: [] }, 200);
-    await listChannelsForOperator('org 1&x=2');
-    expect(calls[0].url).toContain('organizer_id=org%201%26x%3D2');
+    await listChannelsForOperator(TEST_ASSERTION);
+    expect(calls[0].url).not.toContain('organizer_id');
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
   });
 
   // A hand-mounted route is outside catalog's response validation (ADR-009), so
@@ -621,18 +650,18 @@ describe('the channel registry client (TKT-236)', () => {
   // the page's .map() with a stack trace instead of rendering an empty table.
   it('survives a body with no channels array', async () => {
     spyFetch({}, 200);
-    await expect(listChannelsForOperator('org-1')).resolves.toEqual([]);
+    await expect(listChannelsForOperator(TEST_ASSERTION)).resolves.toEqual([]);
   });
 
   it('surfaces a refusal as CatalogApiError with its status', async () => {
     spyFetch({ error: 'unauthorized' }, 401);
-    await expect(listChannelsForOperator('org-1')).rejects.toMatchObject({ status: 401 });
+    await expect(listChannelsForOperator(TEST_ASSERTION)).rejects.toMatchObject({ status: 401 });
   });
 
   it('creates through the gateway with the write credential', async () => {
     process.env.CATALOG_STAFF_WRITE_TOKEN = 'the-credential';
     const calls = spyFetch({ id: 'c1', code: 'pos' }, 201);
-    await createChannel('org-1', { code: 'pos', displayName: 'Box office', kind: 'pos' });
+    await createChannel(TEST_ASSERTION, { code: 'pos', displayName: 'Box office', kind: 'pos' });
     expect(calls[0].url).toContain('/api/catalog/channels');
     expect(calls[0].headers[STAFF]).toBe('the-credential');
     expect(calls[0].headers[INTERNAL]).toBeUndefined();
@@ -643,32 +672,33 @@ describe('the channel registry client (TKT-236)', () => {
   // is how a channel is created invisible to the storefront.
   it('omits enabled when the channel is created available, and sends false when it is not', async () => {
     let calls = spyFetch({ id: 'c1' }, 201);
-    await createChannel('org-1', { code: 'pos', displayName: 'Box office', kind: 'pos' });
+    await createChannel(TEST_ASSERTION, { code: 'pos', displayName: 'Box office', kind: 'pos' });
     expect(calls[0].body).not.toHaveProperty('enabled');
 
     calls = spyFetch({ id: 'c2' }, 201);
-    await createChannel('org-1', { code: 'x', displayName: 'X', kind: 'web', enabled: false });
+    await createChannel(TEST_ASSERTION, { code: 'x', displayName: 'X', kind: 'web', enabled: false });
     expect((calls[0].body as { enabled?: boolean }).enabled).toBe(false);
   });
 
   // The PUT is a full replacement. An omitted field is not "unchanged" — it is
   // absent, and for `enabled` that reads as false.
-  it('sends every field on update, including the immutable code and the organizer', async () => {
+  it('sends every mutable field on update, and NO organizer', async () => {
     const calls = spyFetch({ id: 'c1' }, 200);
-    await updateChannel('org-1', 'c1', {
+    await updateChannel(TEST_ASSERTION, 'c1', {
       code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false,
     });
     expect(calls[0].url).toContain('/api/catalog/channels/c1');
-    // organizer_id scopes the write. The channel id comes from a form field, so
-    // without it a forged id would let one tenant edit another's channel — an id
-    // is not an authorization boundary (ai-review).
+    // The write is still scoped to a tenant -- the channel id comes from a form
+    // field and an id is not an authorization boundary -- but the tenant now
+    // comes from the ASSERTION, not the body (TKT-245). toEqual, not
+    // toMatchObject: an extra organizer_id creeping back in must fail here.
     expect(calls[0].body).toEqual({
-      organizer_id: 'org-1',
       code: 'pos',
       display_name: 'Counter',
       kind: 'pos',
       enabled: false,
     });
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
   });
 });
 
