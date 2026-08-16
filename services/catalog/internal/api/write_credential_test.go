@@ -335,32 +335,47 @@ func TestEveryHandlerReadingTheVerifiedOrganizerRequiresTheAssertion(t *testing.
 func handlersReadingTheVerifiedOrganizer(t *testing.T) []string {
 	t.Helper()
 
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	// Files walked and parsed individually rather than with parser.ParseDir,
+	// which staticcheck flags as deprecated (SA1019). Nothing here needs package
+	// assembly or build-tag resolution — the question is only "which methods
+	// mention organizerFor" — so the simpler API is also the correct one.
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse package: %v", err)
+		t.Fatalf("read package dir: %v", err)
 	}
 
+	fset := token.NewFileSet()
 	var handlers []string
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Recv == nil || fn.Body == nil {
-					continue
-				}
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					sel, ok := n.(*ast.SelectorExpr)
-					if !ok || sel.Sel == nil || sel.Sel.Name != "organizerFor" {
-						return true
-					}
-					handlers = append(handlers, fn.Name.Name)
-					return false
-				})
-			}
+	var parsed int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed++
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || sel.Sel == nil || sel.Sel.Name != "organizerFor" {
+					return true
+				}
+				handlers = append(handlers, fn.Name.Name)
+				return false
+			})
+		}
+	}
+	// A scan that read no files would report "no handlers" — indistinguishable
+	// from a package where the guard had been deleted everywhere.
+	if parsed == 0 {
+		t.Fatal("the AST scan parsed no source files; it would report an empty handler set")
 	}
 	slices.Sort(handlers)
 	return slices.Compact(handlers)
