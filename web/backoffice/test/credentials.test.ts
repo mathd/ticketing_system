@@ -67,15 +67,27 @@ describe('the back office refuses collapsed credentials at startup', () => {
 
   // The refusal must not disclose the value or its length: a credential that is
   // already too short does not also need its search space narrowed in a log.
+  //
+  // The thrown error is captured and asserted on OUTSIDE the catch, deliberately.
+  // The obvious shape — expect.unreachable() inside the try, assertions inside the
+  // catch — cannot fail: expect.unreachable throws, the catch swallows it as though
+  // it were the production error, and two `not.toContain` assertions against an
+  // assertion-error message pass trivially. Written that way this test stayed green
+  // with the floor deleted (caught by ai-review pass 2). Capture, then assert an
+  // Error was actually caught, then inspect it.
   it('does not echo a short credential or its length', () => {
     const short = 'sekrit-but-far-too-short';
+    let caught: unknown;
     try {
       assertCredentialSeparation({ ...ok, COMMERCE_STAFF_WRITE_TOKEN: short });
-      expect.unreachable('should have thrown');
     } catch (e) {
-      expect(String(e)).not.toContain(short);
-      expect(String(e)).not.toContain(String(short.length));
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(Error);
+    const message = String(caught);
+    expect(message).toMatch(/COMMERCE_STAFF_WRITE_TOKEN.*at least 32 bytes/);
+    expect(message).not.toContain(short);
+    expect(message).not.toContain(String(short.length));
   });
 
   // Every pair, so no single collapse can hide behind another pair being distinct.
@@ -98,14 +110,24 @@ describe('the back office refuses collapsed credentials at startup', () => {
     ['catalog/commerce', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, COMMERCE_STAFF_WRITE_TOKEN: s })],
     ['catalog/inventory', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
     ['commerce/inventory', (s: string) => ({ ...ok, COMMERCE_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
+  // Same capture-then-assert shape as the length case below, and for the same
+  // reason: this test previously put expect.unreachable() inside the try and its
+  // assertions inside the catch, which meant it stayed green with the equality
+  // check deleted — the catch swallowed the assertion error and `not.toContain`
+  // passed against that. Pre-existing (TKT-194), found while fixing the identical
+  // flaw this ticket introduced, and fixed here because it is the same three lines.
   ])('does not echo the credential: %s', (_name, build) => {
     const secret = 'a-real-looking-credential-value-0f3d1c9a';
+    let caught: unknown;
     try {
       assertCredentialSeparation(build(secret));
-      expect.unreachable('should have thrown');
     } catch (e) {
-      expect(String(e)).not.toContain(secret);
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(Error);
+    const message = String(caught);
+    expect(message).toMatch(/must not equal/);
+    expect(message).not.toContain(secret);
   });
 
   it.each([
