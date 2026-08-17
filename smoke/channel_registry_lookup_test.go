@@ -541,27 +541,48 @@ func TestAPartnerSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 // That is the storefront selector's behaviour, catalog's own tests cover it, and
 // mixing it in would blur the very line this test draws — invisible in the picker
 // and unsellable are different claims, and only the first one is true.
+//
+// TKT-248 moved it to the PARTNER path, and only the path changed. It used to sell
+// on a freshly-minted disabled code through the public route; public reservations
+// can no longer name any channel (ADR-060), so the vehicle is gone while the claim
+// is untouched. It now disables the PARTNER's own registry row, which is a sharper
+// version of the same test: the channel a credential actually sells on is switched
+// off, and the sale must still complete.
 func TestASaleOnADISABLEDRegisteredChannelCompletesEndToEnd(t *testing.T) {
 	ctx := t.Context()
-	channel := tkt241Code(t, "disabled")
+	channel := partnerChannel()
+	if channel == "" {
+		t.Fatal("SMOKE_PARTNER_CHANNEL is not set: the credential's channel is the only channel a " +
+			"sale can name, so this test cannot be constructed without it")
+	}
 	requireNotInRegistry(t, ctx, channel)
 
 	// A registry row that EXISTS and is switched off — the case the unregistered
 	// tests above cannot make, since they turn on the row's absence.
 	created := created(t, gatewayURL+"/api/catalog/channels", map[string]any{
-		"code": channel, "display_name": "TKT-241 disabled", "kind": "reseller", "enabled": false,
+		"code": channel, "display_name": "TKT-248 disabled", "kind": "reseller", "enabled": false,
 	})
 	if enabled, ok := created["enabled"].(bool); !ok || enabled {
 		t.Fatalf("channel %q was created enabled=%v, want false — the fixture cannot show what it "+
 			"claims to show if the row is not actually disabled", channel, created["enabled"])
 	}
 
-	_, ticketType := publishedSlot(t, "TKT-241 Disabled Hall", 20)
+	slot, ticketType := publishedSlot(t, "TKT-248 Disabled Hall", 20)
 	payeeID := seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
 
-	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt241-disabled-"+channel,
-		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType,
-			"quantity": 2, "channel_code": channel})
+	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
+	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
+		"organizer_id": organizerID,
+		"allocations": []map[string]any{
+			{"channel": channel, "cap": 4, "sold_by": partnerReseller()},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("allocate bound: %d %s", code, body)
+	}
+
+	code, body := partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations",
+		"tkt248-disabled-"+slot,
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2})
 	if code != http.StatusCreated {
 		t.Fatalf("reserve on DISABLED channel %q: %d %s — disabling a channel removes it from the "+
 			"storefront selector and must not make it unsellable. If this refusal is deliberate "+
@@ -580,7 +601,7 @@ func TestASaleOnADISABLEDRegisteredChannelCompletesEndToEnd(t *testing.T) {
 	// The split half of the traversal, observed rather than assumed (ai-review
 	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
 	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
-	checkoutReservation(t, reservation.ID, "tkt241-disabled-order-"+channel)
+	checkoutReservation(t, reservation.ID, "tkt248-disabled-order-"+slot)
 
 	_, orderChannel := commerceAttribution(t, ctx, reservation.ID)
 	if got := mustString(t, orderChannel, "orders.channel_code"); got != channel {
