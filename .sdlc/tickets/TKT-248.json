@@ -2,9 +2,9 @@
   "key": "TKT-248",
   "type": "Story",
   "summary": "A public sale still prices on a reseller's channel while consuming public stock (TKT-246 residual)",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
