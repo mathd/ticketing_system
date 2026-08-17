@@ -349,4 +349,12 @@ shared helper did *not* fix it: replacing the call *inside* `Setup` still compil
 still passed, because the test exercised the helper. What held was asserting on **bytes that actually
 left the process** (the real `Setup`, a local collector, grep the OTLP payload). Ask which edit your
 test catches: breaking the mechanism, or removing it from the place that uses it.
+A same-day corollary from TKT-199: **a mutation that breaks the mechanism *syntactically* proves
+nothing.** Deleting a SQL tenant predicate by replacing it with an untyped `$2` made Postgres refuse
+the statement, so eight tests failed and it read as strong evidence — of the query being reachable,
+not of the predicate being load-bearing. The valid mutation keeps the statement well-formed and flips
+only the predicate's truth; then **one** test fails, saying `cross-tenant publish = <nil>, want
+ErrNotFound`. After a mutation goes red, read which tests failed and what they said: evidence is a
+**semantic** failure, not a **structural** one, and a broad cluster of unrelated failures usually means
+you broke the scaffolding.
 [full note](learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md)

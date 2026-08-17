@@ -69,6 +69,42 @@ Sanitise on a canonical, case-folded, dot-reduced form even where that is broade
 two errors are not symmetric: over-redacting a route-shaped 404 costs one segment of a request that
 did nothing; under-redacting writes a live credential to a log. See ADR-012 § *TKT-202 amendment*.
 
+## 4. A mutation that breaks the mechanism *syntactically* proves nothing
+
+**TKT-199**, same day. The claim under test was "the cross-tenant guard on catalog's publish is live
+and its test is not vacuous". The guard is a SQL predicate, so the mutation was to delete it:
+
+```sql
+-- before
+WHERE id = $1 AND organizer_id = $2 AND status = 'draft'
+-- mutation attempt 1
+WHERE id = $1 AND $2 IS NOT NULL AND status = 'draft'
+```
+
+The gate went red, the cross-tenant test was among the failures, and it looked like strong evidence.
+It was not. `$2` now had no inferable type, so Postgres refused the statement (`SQLSTATE 42P18`) and
+**eight** tests failed — every test that touches the publish path, for a reason that has nothing to do
+with tenancy. A mutation that makes the query *invalid* tells you the query is reachable, not that the
+predicate is load-bearing.
+
+The valid mutation keeps the statement well-formed and the parameter bound, and changes only the
+predicate's truth:
+
+```sql
+WHERE id = $1 AND (organizer_id = $2 OR $2::uuid IS NOT NULL) AND status = 'draft'
+```
+
+Now **one** test fails, and it fails with the sentence that names the actual defect:
+`cross-tenant publish = <nil>, want ErrNotFound` — the attacker's write succeeded.
+
+**The rule.** After a mutation goes red, read *which* tests failed and *what they said*. A mutation is
+evidence only if the failure is **semantic** (the mechanism stopped doing its job) rather than
+**structural** (the code stopped compiling, the query stopped parsing, the fixture stopped loading).
+The tell is breadth: a whole cluster of unrelated tests failing together usually means you broke the
+scaffolding, not the guard. This is the same mistake as a fixture that cannot reach the failing state,
+inverted — there the test could not observe the defect; here the test observed something else entirely
+and got credit for it.
+
 ## See also
 
 - [a green test that cannot reach the failing state](2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md) — the rule this extends
