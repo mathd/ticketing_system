@@ -113,6 +113,11 @@ var readOnlyStoreMethods = map[string]bool{
 	// /public/channels, which is public but NOT cached — it reads through to
 	// Postgres on every request, so it participates in no cached payload.
 	"GetChannel": true, "ListChannels": true, "ListEnabledChannels": true,
+	// TKT-243. An operator sweep over price and fee rule currencies. A pure
+	// read, and one that touches no published payload — it reports
+	// misconfiguration to a CLI, so it neither invalidates a public read nor
+	// participates in one.
+	"ListRuleCurrencyMismatches": true,
 }
 
 // TestEveryStoreMethodIsClassifiedForPublicReads is the anti-rot guard.

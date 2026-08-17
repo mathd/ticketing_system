@@ -632,6 +632,15 @@ type Store interface {
 	// with ErrFeeRuleCurrencyMismatch rather than being skipped, whatever its
 	// channel.
 	ResolveTicketTypeFees(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (FeeSelection, error)
+	// ListRuleCurrencyMismatches sweeps price and fee rules for currencies that
+	// disagree with the ticket type they would apply to (TKT-243). Resolution
+	// filters by channel before it checks currency, so a rule misconfigured for
+	// a channel nobody is buying through is invisible until a sale arrives on
+	// it; this read finds it first. It applies no channel and no
+	// effective_from predicate for exactly that reason, and excludes rules whose
+	// window has closed, which are inert and unrecoverable (ADR-036 §4 step 1).
+	// Operator-facing: it reports, and gates nothing.
+	ListRuleCurrencyMismatches(ctx context.Context) ([]RuleCurrencyMismatch, error)
 	// CreatePayee registers someone a fee can be owed to (TKT-216 / ADR-047).
 	CreatePayee(ctx context.Context, in Payee) (Payee, error)
 	// CreateSplitSchedule writes a schedule and its parts in ONE transaction —
