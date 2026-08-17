@@ -16,6 +16,10 @@
 #      INTERNAL_SERVICE_TOKEN opens every service's internal surface;
 #      CATALOG_STAFF_WRITE_TOKEN opens catalog writes; COMMERCE_STAFF_WRITE_TOKEN
 #      opens exactly one commerce operation (the staff refund);
+#      INVENTORY_STAFF_WRITE_TOKEN opens exactly the two operations the back
+#      office's channel-allocation editor needs (TKT-244, ADR-057) — inventory
+#      REFUSES TO START when it equals INTERNAL_SERVICE_TOKEN, so its own draw
+#      below is load-bearing, not tidiness;
 #      COMMERCE_CUSTOMER_ASSERTION_KEY signs proofs that a checkout belongs to a
 #      customer; PAYMENTS_INTERNAL_TOKEN opens payments' money surface, split off
 #      the shared token by ai-review S8; JOURNAL_SIGNING_KEY signs the payments
@@ -69,7 +73,12 @@ needs_generation() {
 	[ -z "$current" ] || [ "$current" = "$2" ]
 }
 
-for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN CATALOG_ORGANIZER_ASSERTION_KEY COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY; do
+# Each name gets its own iteration and therefore its own /dev/urandom read.
+# `scripts/check-required-env.sh` asserts this list keeps up with every variable
+# compose.yaml marks mandatory: TKT-244 added INVENTORY_STAFF_WRITE_TOKEN to
+# compose and not here, and `make up` failed on interpolation — telling the
+# developer to run `make up` to generate it (TKT-227).
+for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN CATALOG_ORGANIZER_ASSERTION_KEY COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY INVENTORY_STAFF_WRITE_TOKEN PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY; do
 	if needs_generation "$var" "$RETIRED_TOKEN"; then
 		env_set "$var" "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 	fi

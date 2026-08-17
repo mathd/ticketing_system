@@ -168,6 +168,13 @@ exists are in *Historical* at the bottom; their files are kept.
   install when one fails to fetch. So a transient hiccup yields a green `pnpm install` and a
   confusing "your platform is unsupported" from `tsc` minutes later — which sent TKT-227 after musl
   and the lockfile, neither of which was involved. Does not reproduce; landed as a diagnosis.
+  **Second half (TKT-227 closeout):** by the time the ticket was worked, `make up` was broken again
+  for an unrelated reason — TKT-244 made a credential mandatory in `compose.yaml` without adding it
+  to `scripts/env-bootstrap.sh`, and the interpolation error told the developer to run the very
+  command that had just failed. `make check` stayed green because its smoke stage builds its
+  environment from `scripts/stack-env.sh` instead. **A gate that supplies its own version of a
+  shared input cannot notice that the real one is missing** — `scripts/check-required-env.sh` now
+  compares the two, deriving the expectation from the requirement rather than from the behaviour.
 
 ## Security
 

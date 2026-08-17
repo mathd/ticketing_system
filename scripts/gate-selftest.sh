@@ -111,6 +111,16 @@ expect_fail "go dependency drift" check-dep-drift
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
+# 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
+#    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
+#    interpolation while `make check` stayed green, because the smoke path takes
+#    its environment from scripts/stack-env.sh instead. The positive control is
+#    not optional here — this seed mutates an existing file, so a checker that
+#    always failed would satisfy its own expect_fail.
+expect_pass "required stack env (clean baseline)" check-required-env
+sed -i 's/ INVENTORY_STAFF_WRITE_TOKEN//' scripts/env-bootstrap.sh
+expect_fail "required stack env (compose requires a variable nothing generates)" check-required-env
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1
