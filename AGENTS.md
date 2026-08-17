@@ -103,6 +103,21 @@ experiment stays valid.
   an **authorization fallback**, green and well-named, and only cross-model review caught it.
   ([a green test can bless the defect](docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md),
   [make it unsubmittable](docs/learnings/2026-08-15-make-it-unsubmittable-not-validated.md))
+- **A fixture that seeds N mechanisms proves at most one of them — ask of EACH seed what would
+  notice its absence.** Not "does the test pass": *"if I delete this seed, what goes red?"* A seed
+  with no answer is decoration that makes the test look like it covers a layer it never observes,
+  and reviewers read the fixture as a statement of scope. TKT-241 — a ticket whose entire subject
+  was vacuous tests — seeded a fee rule **and** a split schedule, asserted only the fee's code and
+  amount, and stayed green with the split seed deleted: a fee with no split is forwarded with no
+  parts and settles as collected-and-unattributed. The correct argument for the fee seed had been
+  written down one stage earlier and simply not applied to the seed beside it. Two corollaries.
+  *One:* **a mutation caught by a lower tier proves the mechanism is live, not that your test caught
+  it** — three of five mutations died in a per-service suite that runs first, so the new tier never
+  executed; the mutation that is evidence is the one **only** the new tier can catch. *Two:* **a
+  ticket whose deliverable is coverage for an existing gap must demonstrate the gap** — one run in
+  which the new tests go red and the pre-existing guards stay green. Without it, "we added a test
+  for the gap" is unfalsifiable.
+  ([a fixture that seeds two mechanisms](docs/learnings/2026-08-16-a-fixture-that-seeds-two-mechanisms.md))
 - **When a value must not be client-chosen, make it UNSUBMITTABLE — validating it is the slower way
   to lose.** Every fix that *checks* a submitted value keeps the trust boundary in the client and
   merely moves where it leaks. The tell is structural: if *"can the client influence this field?"*

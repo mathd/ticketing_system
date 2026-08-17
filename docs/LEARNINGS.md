@@ -310,3 +310,23 @@ matches. Also: the ticket was filed as an authorization defect that the code doe
 remedy survived, the justification did not, caught only because shaping verifies a proposed remedy
 against the code instead of inheriting it.
 [full note](learnings/2026-08-15-a-precondition-that-cannot-fail.md)
+
+## 2026-08-16 — A fixture that seeds two mechanisms proves at most one (TKT-241)
+
+A ticket whose entire subject was *"this test is green without proving anything"* shipped a first
+version that was green without proving one of the two things it seeded. Each test seeded a
+channel-scoped **fee rule** (ADR-046) *and* a **split schedule** (ADR-047), because commerce treats
+"no rule matched" as a successful resolution with an empty fee set — so without a seed the sale
+completes identically whether the resolver ran or not. That argument was written down at plan-review
+as the justification for the fee seed, and simply not applied to the split seed beside it: the
+assertions read the fee's code and amount, and split selection changes neither. A fee with no split
+is forwarded with no parts and settles as collected-and-unattributed, so deleting the split seed
+left all three tests green. The proof, once the assertion existed: every snapshot reports
+`mode: "unsplit", reason: "no_schedule"` while `passed_on_fees` stays **600** — that unchanged 600
+is the finding. Nothing local caught it; the gate, the tests, and the author's own mutation set were
+all downstream of the same understanding that produced the gap. Two corollaries: **a mutation caught
+by a lower tier proves the mechanism is live, not that your test caught it** (three of five died in
+a per-service suite that runs first, so the new tier never executed), and **a ticket delivering
+coverage for a known gap must demonstrate the gap** — one run with the new tests red and the
+pre-existing guards green, or "we added a test for it" is unfalsifiable.
+[full note](learnings/2026-08-16-a-fixture-that-seeds-two-mechanisms.md)
