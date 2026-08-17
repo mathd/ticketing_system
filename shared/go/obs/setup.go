@@ -39,8 +39,7 @@ func Setup(ctx context.Context, service string) (*slog.Logger, func(context.Cont
 	if err != nil {
 		return nil, nil, err
 	}
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExp), sdktrace.WithResource(res))
+	tp := newTracerProvider(sdktrace.NewBatchSpanProcessor(traceExp), res)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagator)
 

@@ -10,6 +10,10 @@ import (
 // trace_id/span_id (via the context) — the correlation line the smoke
 // suite asserts across services. Mount inside Middleware so the span
 // already exists.
+//
+// The path goes through SanitizedPath: a capability-bearing segment is a
+// credential, and writing one here would hand it to everyone who can read logs
+// (TKT-202, ADR-012). Ordinary routes are unchanged byte-for-byte.
 func RequestLogger(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -17,7 +21,7 @@ func RequestLogger(log *slog.Logger, next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		log.InfoContext(r.Context(), "request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", SanitizedPath(r.URL.Path),
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)

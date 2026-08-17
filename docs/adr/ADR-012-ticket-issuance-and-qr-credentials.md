@@ -20,6 +20,62 @@ Access creates one ticket and `issued` lifecycle event per authoritative quantit
 - Ticket issuance is at-least-once safe for JetStream redelivery and checkout replay. A process crash after Commerce commits but before it publishes may delay issuance until a checkout replay. Scheduled/restart outbox recovery remains TKT-43 work.
 - TKT-30 can validate the Ed25519 payload and derive redemption from this lifecycle trace without changing ticket storage.
 
+---
+
+## TKT-202 amendment — "not logged" audited, and made true (2026-08-17)
+
+The decision above is unchanged. This records **which sinks were audited**, because the "not logged"
+clause was false in practice from the day guest retrieval shipped until TKT-202, and the next reader
+should not have to re-derive whether traces were considered.
+
+`guest_order_ref` appears in a **URL path segment** on three route shapes — the guest bundle, the QR
+image, and the storefront ticket page (proxied under the gateway's `/` catch-all). Three sinks wrote
+that path:
+
+1. `shared/go/obs/requestlog.go` — one line per request, in **all six binaries**, not only the gateway.
+2. `shared/go/contract/http.go` — the contract-drift error log; an independent second emitter.
+3. The **OTel server span**: `otelhttp` sets `url.path` from the raw path inside the dependency, and
+   `shared/go/obs/setup.go` exports spans over OTLP. Invisible to any grep of this repo, and the
+   worst of the three, since the value left the process to a collector.
+
+All three now route the path through `obs.SanitizedPath`, which replaces **declared capability
+segments**. The rule is a table of route shapes (`shared/go/obs/capability_path.go`), so a future
+capability URL inherits it by adding a row.
+
+**Matching is deliberately broader than routing, and that is a decision, not an accident.** The
+sanitiser reduces `.`/`..`/empty segments the way `net/http`'s ServeMux does, and compares literals
+case-insensitively — so it also redacts the capability position of requests the routers would answer
+`404` or `307` to. The two errors are not symmetric: redacting a route-shaped 404 costs an operator
+one segment of a request that did nothing, whereas declining to redact it writes a **live,
+redeemable, unauthenticated credential** into the log. A 404 does not make the reference less valid,
+and the request logger runs *before* the router, so it records the path either way. Sanitisation
+therefore follows the **shape of the secret**, not route identity.
+
+Consequently a path that is not a declared capability route is returned **byte-for-byte**, but "not a
+declared capability route" is judged on the reduced, case-folded form. `/healthz` and every ordinary
+route are unaffected.
+
+One further consequence, found by review rather than by design: on a path that **does** resolve to a
+capability route, every segment that `..` discarded is redacted too. `/api/access/orders/<ref-1>/../<ref-2>/tickets`
+resolves on `<ref-2>`, and redacting only the surviving segment left `<ref-1>` — an equally live,
+equally redeemable reference — in the line. Whether a discarded segment was a credential is not
+knowable at that point, so the rule is blunt on purpose: a segment thrown away by path traversal on a
+request that resolves to a capability route has no diagnostic value worth the risk.
+
+**The adversary, named (ADR-021).** This bounds **whoever can read this platform's logs and traces**,
+from the change forward. It bounds **nothing** against: a reference already written to a retained log
+or an exported trace (still valid — there is no rotation of the underlying capability); anyone with
+the access database; the collector or any hop upstream of it; browser history, referrer headers, or
+proxies outside this repo. "Not logged" is now true of this platform's emitters. It is not a claim
+that the reference is unexposed.
+
+**Not in scope, deliberately.** The query string is still not logged anywhere in this repo, and
+nothing here starts logging it — ADR-049 § *TKT-222 amendment* and ADR-050 § 5 both rely on that. The
+QR image link's `sig`/`exp` were checked and are unaffected. The `{ticket}` segment on the QR route is
+preserved on purpose: it is not redeemable alone (ADR-050's signed-link check gates the image), and
+keeping it is what lets an operator correlate a specific fetch with a report.
+
 ## References
 
 - [ADR-003](./ADR-003-append-only-audit-trail.md) · [ADR-009](./ADR-009-contract-first-apis.md) · TKT-29 · TKT-43
+- TKT-202 · [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) · [ADR-049](./ADR-049-customer-identity-and-storefront-sessions.md)

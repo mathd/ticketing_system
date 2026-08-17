@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,23 @@ paths:
               required: [name]
               properties:
                 name: {type: string}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: {type: boolean}
+  /api/access/orders/{ref}/tickets:
+    get:
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          schema: {type: string}
       responses:
         "200":
           description: ok
@@ -236,6 +254,54 @@ func TestResponseDriftEmitsStructuredLog(t *testing.T) {
 	}
 	if entry["error"] == nil || entry["error"] == "" {
 		t.Error("log line carries no validation error detail")
+	}
+}
+
+// The drift log is a SECOND emitter of the raw request path, independent of
+// obs.RequestLogger — a fix applied only to the request logger leaves this one
+// writing the capability at ERROR (TKT-202, ADR-012).
+//
+// Driven through responseValidated directly rather than the test spec's routes:
+// the mechanism under test is the sanitiser call on the log field, not routing,
+// and the shared spec declares no capability-shaped path.
+//
+// Asserting the exact sanitized value, not merely the reference's absence — a
+// logger that dropped the path entirely would satisfy "absent" while destroying
+// the diagnosability ADR-028 requires of this line.
+//
+// Mutation this must catch: drop the obs.SanitizedPath call in responseValidated.
+func TestResponseDriftLogSanitizesCapabilityPaths(t *testing.T) {
+	const ref = "2f1e3d4c-5b6a-4978-8899-aabbccddeeff"
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	_, router, err := load(testSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := responseValidated(router, driftingHandler(), log,
+		func(context.Context, *openapi3filter.ResponseValidationInput) error {
+			return errors.New("drift")
+		})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/access/orders/"+ref+"/tickets", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if buf.Len() == 0 {
+		t.Fatal("no drift log emitted — this test would prove nothing")
+	}
+	if strings.Contains(buf.String(), ref) {
+		t.Errorf("contract drift log leaks the guest reference: %s", buf.String())
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("not JSON: %q", buf.String())
+	}
+	if entry["path"] != "/api/access/orders/:capability/tickets" {
+		t.Errorf("path = %v, want the route shape with the capability replaced", entry["path"])
+	}
+	if entry["method"] != http.MethodGet {
+		t.Errorf("method = %v — the line must stay diagnosable", entry["method"])
 	}
 }
 

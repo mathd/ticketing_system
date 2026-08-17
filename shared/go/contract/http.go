@@ -17,6 +17,8 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/gorillamux"
 	oapimiddleware "github.com/oapi-codegen/nethttp-middleware"
+
+	"ticketing/shared/obs"
 )
 
 // RequestValidator validates every documented service request. The served
@@ -133,8 +135,13 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 				if logger == nil {
 					logger = slog.Default()
 				}
+				// SanitizedPath for the same reason RequestLogger uses it: a
+				// capability-bearing segment is a credential, and a contract
+				// violation on a guest route would otherwise write it to a log
+				// at ERROR (TKT-202, ADR-012). This sink is easy to miss —
+				// it is a second, independent emitter of the raw path.
 				logger.ErrorContext(r.Context(), "response violates OpenAPI contract",
-					"method", r.Method, "path", r.URL.Path, "status", recorder.Code, "error", validationErr.Error())
+					"method", r.Method, "path", obs.SanitizedPath(r.URL.Path), "status", recorder.Code, "error", validationErr.Error())
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				w.WriteHeader(http.StatusInternalServerError)

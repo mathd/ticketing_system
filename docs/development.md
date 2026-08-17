@@ -698,8 +698,10 @@ ADR-049 § *TKT-223 amendment*.
 
 **The proof is the order reference alone**, deliberately — matching the email would refuse a buyer
 who signed up with a different address. That means anyone holding a leaked reference can claim the
-order, which makes **TKT-202** (the gateway logs the reference via the URL path) a safety issue for
-this feature and not just logging hygiene.
+order, which made **TKT-202** (every service logged the reference via the URL path) a safety issue
+for this feature and not just logging hygiene. TKT-202 is closed: the request log, the contract-drift
+log and the OTel span attribute all sanitise declared capability segments. References already written
+to retained logs before that change remain valid, so ADR-052's detach path is still the recovery.
 
 **Every refusal is the same 404.** "No such order", "not completed" and "already claimed by somebody
 else" are indistinguishable on purpose. If a buyer reports that claiming does not work, the answer is
@@ -749,7 +751,9 @@ malformed request (blank actor/reason, bad uuid) is `400`, which is a different 
 **A detached order is immediately claimable again, by anyone holding the reference.** That is
 deliberate (ADR-052 § 4): blocking re-claim would block the rightful buyer, and would not stop an
 attacker who can register another account. Tell the buyer to claim it promptly. What bounds abuse is
-ADR-051's rate limiting on the claim path — and the real fix for the underlying exposure is TKT-202.
+ADR-051's rate limiting on the claim path — and the underlying exposure was fixed by TKT-202, which
+stops this platform emitting the reference into its own logs and traces (it cannot un-leak references
+already retained elsewhere).
 
 **Detaching is not transferring.** It restores `NULL` and stops. There is no operation that moves an
 order from one account to another in one step (TKT-9/TKT-160). If you need to move an order, detach

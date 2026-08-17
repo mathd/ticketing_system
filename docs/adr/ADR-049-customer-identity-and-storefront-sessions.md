@@ -186,9 +186,10 @@ unimplementable and buy a rewrite.
 
 **What makes it acceptable today:** no service or gateway log records it.
 `shared/go/obs/requestlog.go` logs `method`, `path`, `status` and `duration_ms` and nothing else,
-and every Go service and the gateway use it. TKT-202 — the open bug where the gateway "logs
-`guest_order_ref`" — is a *path* disclosure, which confirms the shape: paths are logged, cookies are
-not.
+and every Go service and the gateway use it. TKT-202 — where the reference was disclosed via the
+logged path — was a *path* disclosure, which confirms the shape: paths are logged, cookies are not.
+Since TKT-202, paths are logged with **declared capability segments replaced**
+(`shared/go/obs/capability_path.go`); the cookie is still not logged, for the reason below.
 
 That is a property of **today's logging**, not a guarantee. `docs/development.md` carries the
 standing constraint that request logging must never log the `Cookie` header, and this paragraph is
@@ -436,10 +437,11 @@ Each row carries it, because the wallet's job is to **link** to the existing tic
 render tickets a second time — one place decides what a valid credential looks like. It is a bearer
 credential (ADR-012): the response is `no-store` and it must not reach a log.
 
-**TKT-202 is not fixed here.** The gateway logs `guest_order_ref` via the URL path when anyone opens
-a ticket page — already true from the guest flow, not made worse by this ticket, and belonging to the
-ticket that owns it. Redacting path shapes means changing a logging component every service uses, and
-that is not a change to make from a wallet ticket.
+**TKT-202 was not fixed here.** The services logged `guest_order_ref` via the URL path when anyone
+opened a ticket page — already true from the guest flow, not made worse by this ticket, and belonging
+to the ticket that owned it. Redacting path shapes meant changing a logging component every service
+uses, which is not a change to make from a wallet ticket. *(TKT-202 has since done exactly that, in
+`shared/go/obs`, and also closed the OTel span attribute that carried the same value.)*
 
 ### Scope, stated because the epic's COS is wider
 
@@ -481,12 +483,16 @@ capability is not "also sees it in a wallet":
 > the order away from its buyer, and **there is no un-claim path** — no endpoint, no CLI, no support
 > tool. The buyer's recourse is nothing.
 
-That is a bigger statement than "the bearer trade-off ADR-012 already accepted", and it is obtained
-with a credential this repo **knowingly logs today**: **TKT-202** (the gateway logs the reference via
-the URL path) is therefore not logging hygiene here, it is a **prerequisite for this feature's
-safety**. **TKT-225** is filed for an operator un-claim path.
+That is a bigger statement than "the bearer trade-off ADR-012 already accepted", and it was obtained
+with a credential this repo **knowingly logged**: **TKT-202** (the reference written to logs via the
+URL path) was therefore not logging hygiene here, it was a **prerequisite for this feature's safety**.
+**TKT-225** is filed for an operator un-claim path.
 
-The calculus above depends on references not leaking. Those two tickets are what makes it true.
+**TKT-202 is closed** — this platform no longer emits the reference to its logs or its traces. Two
+qualifications that keep this honest (ADR-021): a reference written to a log *before* the fix is
+still valid and still redeemable, and the fix binds only this platform's own emitters, not a
+collector, a proxy, browser history or a referrer header. So the calculus above is better than it
+was, not guaranteed — which is why TKT-225's recovery path is not made redundant by it.
 
 ### The one exception to "attribution never changes"
 
