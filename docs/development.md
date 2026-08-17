@@ -564,11 +564,42 @@ drive which write is decided in the back office, and today the answer is "any si
 Per-role authorization is TKT-197. Do not read "catalog writes are authenticated" as "catalog
 enforces who may write what" (ADR-042 § TKT-191 amendment).
 
-**Two credentials now exist and are generated separately by `make up`:**
-`INTERNAL_SERVICE_TOKEN` (shared; opens every service's internal surface) and
-`CATALOG_STAFF_WRITE_TOKEN` (catalog writes only; held by catalog and the back office). One leaking
-does not imply the other, which is the entire reason there are two. Catalog fails startup without
-either.
+**These credentials are generated separately by `make up`:** `INTERNAL_SERVICE_TOKEN` (shared;
+opens every service's internal surface), `CATALOG_STAFF_WRITE_TOKEN` (catalog writes only; held by
+catalog and the back office), and `INVENTORY_STAFF_WRITE_TOKEN` (TKT-244/ADR-057; opens exactly the
+two operations the channel-allocation editor needs), alongside the commerce, payments and access
+keys `scripts/env-bootstrap.sh` documents at the top. One leaking does not imply another, which is
+the entire reason each gets its **own** `/dev/urandom` draw rather than a shared one. Catalog fails
+startup without its two; inventory **refuses to start** when `INVENTORY_STAFF_WRITE_TOKEN` equals
+`INTERNAL_SERVICE_TOKEN`, because equal values collapse the blast-radius boundary while looking
+configured.
+
+**If `make up` fails on a missing credential, the bootstrap has fallen behind Compose.** That is
+what TKT-227 fixed: TKT-244 made `INVENTORY_STAFF_WRITE_TOKEN` mandatory in `compose.yaml` without
+adding it to `scripts/env-bootstrap.sh`, so interpolation failed with a message telling the
+developer to run `make up` — the command that had just failed. `make check` never saw it, because
+the smoke stage builds its environment from `scripts/stack-env.sh` instead.
+
+```
+make check-required-env    # every required var in compose.yaml is generated, non-empty
+```
+
+It reads **both** of Compose's required forms, which do not mean the same thing: `${VAR:?msg}`
+fails when the variable is unset **or empty**, while `${VAR?msg}` fails only when it is unset. So
+the check is not "was a name assigned" but "would Compose accept what the bootstrap left" — a
+name-only comparison passes on `VAR=` while `make up` still dies.
+
+It bootstraps into a throwaway sandbox (never your `.env`), prints names and reasons but never
+values, and runs in CI inside the `gate-selftest` job, where three seeded mutations — a deleted
+name, a name generated empty, and a requirement written in the alternate `${VAR?}` form — prove it
+can still fail. It is deliberately **not** in `make check`, which never starts the stack it
+protects. When you add a required variable to `compose.yaml`, add it to `env-bootstrap.sh` in the
+same change.
+
+**An existing `.env` is preserved.** A run adds only what is missing; it never rotates a value you
+already have. So a developer who once set `INVENTORY_STAFF_WRITE_TOKEN` equal to
+`INTERNAL_SERVICE_TOKEN` by hand keeps that value and inventory will keep refusing to start —
+delete the line from `.env` and re-run `make up` to get a fresh independent draw.
 
 **Verifying a change here needs a real browser.** The smoke suite submits the login and logout
 forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot

@@ -90,8 +90,9 @@ Two snags a demo would hit cold:
 
 - **TKT-227 did not reproduce.** The scanner image built cleanly (`Image ticketing-scanner Built`)
   with the pinned `typescript@7.0.2`. That ticket describes an arm64-macOS-shaped failure; on this
-  box the in-Docker scanner build is fine. Worth updating the ticket — `scripts/browser.sh` is
-  currently routed around `make up` on that ticket's authority.
+  box the in-Docker scanner build is fine. *(Closed in TKT-227: re-confirmed on amd64 and emulated
+  arm64 and at the filing commit, and `scripts/browser.sh`'s comment no longer claims the build is
+  broken. The detour is now documented as the speed choice it always was.)*
 - **The real failure was Docker Desktop's WSL2 port forwarding** returning HTTP 500 on
   `127.0.0.1:5432`, then `127.0.0.1:8080`, while `ss` showed both ports free and no process held
   them. Every published port is already env-overridable, so the workaround is config only:
@@ -132,5 +133,7 @@ not 18080, or tear the demo stack down before gating.
 3. **Pick and document a demo port pair**, away from 18080, with the `make check` conflict called
    out.
 4. **Rehearse the scanner in a browser** — the one leg not verifiable from the shell.
-5. Optionally correct TKT-227 with the evidence above, since it is currently steering the browser
-   gate away from `make up`.
+5. ~~Optionally correct TKT-227 with the evidence above, since it is currently steering the browser
+   gate away from `make up`.~~ **Done** — TKT-227. Note that `make up` was *separately* broken from
+   2026-08-15 by a credential TKT-244 made mandatory without generating it; that is fixed too, and
+   `make check-required-env` now refuses to let the bootstrap fall behind `compose.yaml` again.

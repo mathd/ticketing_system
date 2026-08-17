@@ -111,6 +111,41 @@ expect_fail "go dependency drift" check-dep-drift
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
+# 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
+#    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
+#    interpolation while `make check` stayed green, because the smoke path takes
+#    its environment from scripts/stack-env.sh instead. The positive control is
+#    not optional here — this seed mutates an existing file, so a checker that
+#    always failed would satisfy its own expect_fail.
+expect_pass "required stack env (clean baseline)" check-required-env
+sed -i 's/ INVENTORY_STAFF_WRITE_TOKEN//' scripts/env-bootstrap.sh
+expect_fail "required stack env (compose requires a variable nothing generates)" check-required-env
+
+# 9b. Present-but-EMPTY is not generated (ai-review [high]). `${VAR:?}` rejects an
+#     empty value exactly as it rejects an unset one, so a checker comparing only
+#     NAMES passes here while `make up` still dies. Deleting a name (9 above)
+#     cannot expose that, which is why this is its own seed.
+printf '\nenv_set INVENTORY_STAFF_WRITE_TOKEN ""\n' >> scripts/env-bootstrap.sh
+expect_fail "required stack env (a required credential generated empty)" check-required-env
+
+# 9c. The OTHER required form (ai-review [medium]). Compose supports `${VAR?msg}`
+#     as well as `${VAR:?msg}`; a requirement written that way leaves the existing
+#     matches intact, so MIN_REQUIRED stays satisfied and an ungenerated credential
+#     escapes. Seeded as a NEW requirement rather than by rewriting an existing
+#     one, so the floor cannot be what catches it.
+sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_UNGENERATED: ${SELFTEST_UNGENERATED?seeded by gate-selftest}\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
+expect_fail "required stack env (alternate \${VAR?} requirement form)" check-required-env
+
+# 9d. The OPPOSITE failure, and the one a gate is least forgiven for: refusing a
+#     VALID stack. Compose ignores a placeholder inside a YAML comment and treats
+#     `$${VAR:?}` as a literal — both confirmed against `docker compose config`
+#     with the variables unset. A checker that counted either would invent a
+#     missing credential and fail the gate on a config that starts perfectly well
+#     (ai-review pass 2). This is an expect_PASS: the seed must change nothing.
+sed -i '1i # a commented placeholder: ${SELFTEST_COMMENTED:?never a requirement}' compose.yaml
+sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_LITERAL: "$${SELFTEST_ESCAPED:?never a requirement}"\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
+expect_pass "required stack env (comments and \$\$-escapes are not requirements)" check-required-env
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1

@@ -29,9 +29,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/stack-env.sh" browser
 
 # Fast path only (host-built artifacts, compose.smoke.yaml), deliberately not
-# `make up`: the in-Docker scanner build is broken (TKT-227), and this gate must
-# not be blocked on it. Same images, same wiring, same gateway — only the build
-# source differs, and none of what this gate checks lives in the build.
+# `make up`. Same images, same wiring, same gateway — only the build source
+# differs, and none of what this gate checks lives in the build, so paying for
+# an in-Docker rebuild per run would buy nothing this gate reads.
+#
+# This comment used to say the in-Docker scanner build was BROKEN (TKT-227) and
+# that the detour was forced. That was never true here and is not true now:
+# TKT-227 did not reproduce on this platform, and `make up` builds the scanner
+# image and comes up healthy. The detour is a speed choice — keep it, but do not
+# re-inherit it as a workaround for a defect that does not exist.
 # compose.direct-ports.yaml: see the note in scripts/smoke.sh (ai-review S11).
 COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke.yaml")
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }

@@ -12,7 +12,7 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-required-env up down clean
 
 check: deps check-generate check-dep-drift lint test build smoke
 
@@ -46,6 +46,14 @@ check-generate: generate
 # so nothing else in the gate would ever notice.
 check-dep-drift:
 	@./scripts/check-go-dependency-drift.sh $(GO_MODULES)
+
+## ---- stack credential bootstrap (TKT-227) ----
+# Deliberately NOT in `make check`: it bootstraps into a sandbox, which mints two
+# Ed25519 pairs via `go run` and costs seconds, and `make check` never starts the
+# `make up` stack it protects. It runs in CI as part of the gate-selftest job,
+# where its mutation seed lives — that is the standing guard.
+check-required-env:
+	@./scripts/check-required-env.sh
 
 ## ---- lint ----
 lint: lint-go lint-ts
