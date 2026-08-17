@@ -3,9 +3,9 @@
   "type": "Task",
   "classification": "simple",
   "summary": "`make up` fails on the in-Docker scanner build (typescript@7.0.2), and four tickets have worked around it",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
-  "assignee": null,
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "description": "`make up` does not work on at least one developer machine. The scanner image's build step fails:\n\n```\n> [scanner build 6/6] RUN pnpm install --frozen-lockfile && pnpm --filter scanner build\n  at getExePath (…/typescript@7.0.2/node_modules/typescript/lib/getExePath.js:53:19)\n[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 build: `tsc -b && vite build`\ntarget scanner: failed to solve: … exit code: 1\n```\n\nIt looks like TypeScript 7's native binary failing to resolve inside the container, but that is a\nguess from the stack — **diagnosis is the first half of this ticket.**\n\n**Why it matters more than it looks.** `make up` is what AGENTS.md names for the browser-submit gate:\n*\"drive the real stack (`make up`) in a browser and submit the write path.\"* With it broken, four\ntickets (TKT-220 through TKT-223) each verified against a **smoke-shaped stack** built from host\nartifacts (`compose.smoke.yaml`) instead. That worked and it is not the same thing: the smoke path\nships host-built binaries, so the in-Docker build is exactly the surface nobody is exercising.\n\n`make check` passes throughout, because its smoke stage uses the same fast path.\n\n**Acceptance Criteria:**\n- [ ] `make up` completes on a clean checkout, or the failure is diagnosed and the fix is applied\n  wherever it belongs (scanner's Dockerfile, the pinned TypeScript, or the pnpm workspace).\n- [ ] The finding says whether this is **host-local or real** — if it only reproduces on arm64 macOS,\n  say so, because that changes who is affected and whether CI would ever have caught it.\n- [ ] If the fix is not obvious, the ticket may land as a **documented workaround plus a diagnosis**\n  rather than a repair — but it must not land as silence.\n- [ ] `make check` green (lint + test + build, Go & TS, gateway smoke suite); regenerated code committed BEFORE the gate runs (ADR-009).\n\n**Non-goals:** replacing the smoke fast path (`compose.smoke.yaml` is deliberate and stays) ·\nTKT-196's browser harness, which is a different problem that this one makes harder.",
@@ -79,6 +79,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — PASS\n\nSmall, isolated, no product risk, and the one uncertainty (the cause) is the work rather than a\nblocker. `risk:low` is **not** claimed: the fix may touch a pinned dependency, and ADR-035 makes that\na repo-wide change rather than a local one.\n\n**Verdict:** PASS."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-227\n\nRunning **gateless per `config.gates: autonomous`**. Gate 1 (Backlog → Ready) was taken by the\nowner's instruction to \"take from backlog and start the work\"; the ticket's `readiness` verdict was\nalready **PASS** with all eight DoR items met (one `deferred`, the cause, which is the work itself).\n\n**Backend:** local tracker (`config.tracker: \"local\"`).\n**Branch:** `TKT-227-make-up-in-docker-build` off `origin/main`.\n\n**Selection reason:** the owner named it. It is also the ticket that unblocks the browser-submit\ngate AGENTS.md makes mandatory for web-UI work — four tickets (TKT-220..223) already shipped\nverified against the smoke-shaped stack instead, so the debt is compounding.\n\n**Risk verdict — `risk:low` is NOT claimed.** Stated explicitly rather than left silent, per the\nlabel's carve-outs: the shaping comment refused it because the fix might move a pinned dependency\n(ADR-035 makes that repo-wide). Diagnosis has since changed the reason but not the verdict — the\ndefect is in **credential bootstrap** (`scripts/env-bootstrap.sh`), which is squarely inside the\n\"auth / secrets\" carve-out. The plan gate stays.\n"
     }
   ]
 }
