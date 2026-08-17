@@ -2,7 +2,7 @@
   "key": "TKT-243",
   "type": "Task",
   "summary": "A misconfigured price rule is now silent until a sale arrives on its channel (TKT-237 ai-review)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
