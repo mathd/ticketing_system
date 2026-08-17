@@ -971,15 +971,14 @@ func performanceToAPI(p store.Performance) Performance {
 // publish. Crash between DB commit and ack remains the recorded US-004
 // deferral (ADR-009).
 //
-// **Not organizer-scoped — TKT-199, deferred.** This and ArchivePerformance
-// take only a slot id, while every sibling write scopes by (id, organizer_id).
-// Any holder of the staff-write credential can therefore transition ANY
-// organizer's slot by naming its id. The deferral rests on one precondition:
-// `organizers` has exactly one row (migration 0002) and nothing outside a
-// migration inserts into it, so there is no second tenant to cross into.
-// Nothing enforces that precondition — seed a second organizer and this becomes
-// a live cross-tenant write with no test, no startup check and no signal.
-// Whoever does so owns TKT-199 first. (TKT-22 refactor: triage re-confirmed.)
+// **Organizer-scoped since TKT-251 — TKT-199 is closed.** The organizer comes
+// from the verified assertion via organizerFor, never from the request, and the
+// store's UPDATE carries `organizer_id = $2`. A cross-tenant caller gets
+// ErrNotFound, indistinguishable from "no such slot": the store re-asserts
+// ownership before classifying the no-op, because the classification is itself
+// an information channel (see PublishPerformance in store/postgres.go).
+// Pinned by TestPerformanceTransitionsAreScopedToTheOwningOrganizer — deleting
+// the predicate makes the attacker's publish succeed and only that test fails.
 func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId) {
 	organizerID, ok := s.organizerFor(w, r)
 	if !ok {

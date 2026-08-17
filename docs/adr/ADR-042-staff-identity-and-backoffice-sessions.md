@@ -160,6 +160,18 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
   unsafe catalog operation now requires the staff-write credential; an unauthenticated caller
   reaching the gateway is refused. What replaces this gap is a narrower one, stated below: catalog
   authenticates the **deputy**, not the staff member.
+- ~~**A credential holder could transition ANY organizer's resource by naming its id.**~~ **Closed by
+  TKT-251** (TKT-199's subject). Authenticating the deputy is not the same as scoping the write:
+  the path-id transitions — publish, archive, close, reopen and their series/season/festival
+  siblings — took only a resource id, so the staff-write credential alone was authority over every
+  tenant's resources. They now require the staff credential **and** the organizer assertion in one
+  requirement object; the organizer is read from the verified assertion, never from the request; and
+  the store predicate is `(id, organizer_id)`. A cross-tenant caller receives `ErrNotFound` — the
+  refusal is **indistinguishable from "no such resource"**, because *why nothing happened* is itself
+  a disclosure channel: a distinct error would confirm the resource exists in another tenant.
+  Exposure while it was open was theoretical (`organizers` held one row), which is exactly why it was
+  easy to leave open; ADR-002 requires the tenant id from day one so this is not retrofitted under
+  pressure.
 - **Anything already inside the Compose network** can address the back-office container directly and
   forge `X-Forwarded-*`, or address catalog directly and skip the gateway entirely.
 - **Anyone holding `INTERNAL_SERVICE_TOKEN`** already has every service's internal surface; nothing
