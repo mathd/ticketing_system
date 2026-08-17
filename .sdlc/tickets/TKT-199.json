@@ -2,7 +2,7 @@
   "key": "TKT-199",
   "type": "Story",
   "summary": "Catalog publish/archive accept a slot id with no organizer — cross-tenant by construction",
-  "status": "Backlog",
+  "status": "Done",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -13,11 +13,19 @@
     "governingAdrs": [
       {
         "id": "ADR-002",
-        "why": "Every entity carries a tenant/organizer id from day one — the rule this gap breaks."
+        "why": "Every entity carries a tenant/organizer id from day one — the rule the gap broke, and the reason a theoretical exposure was still worth closing."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first: changing these operations means editing openapi.yaml and committing generated output before the gate."
+        "why": "Contract-first. TKT-251's fix declared both credentials in ONE security requirement object (AND, not OR) and committed the generated code."
+      },
+      {
+        "id": "ADR-042",
+        "why": "MISSING FROM THE ORIGINAL MEMO though the ticket's own COS #4 requires editing it. Its adversary section is where a cross-tenant claim has to be stated or it is stated nowhere."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary. The refusal must be indistinguishable from 'no such resource' — the reason nothing happened is a second information channel."
       }
     ],
     "reference": [
@@ -26,13 +34,67 @@
         "link": "services/catalog/internal/api/server.go:703"
       }
     ],
-    "capturedAt": "2026-08-04"
+    "capturedAt": "2026-08-17",
+    "governingTests": [
+      {
+        "path": "services/catalog/internal/store/organizer_predicate_smoke_test.go:111",
+        "why": "TestPerformanceTransitionsAreScopedToTheOwningOrganizer — attacker/victim organizers at the STORE tier, where the SQL predicate is. Asserts ErrNotFound, that the victim's row did not move, and that the owner can still act ('a boundary, not a wall')."
+      },
+      {
+        "path": "services/catalog/internal/store/postgres.go:644",
+        "why": "The scoped existence re-check before classifying a no-op. Deleting it would keep the write closed and reopen the disclosure — TKT-251's own lesson, in the code."
+      }
+    ]
   },
   "comments": [
     {
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-192's ai-review triage as **incidental**: real, but pre-existing and outside that ticket's scope. Not shaped — needs the 8-item DoR before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness verdict: **the ticket is already delivered — closing, not building**\n\nShaping began with the standing rule to read the real code before inheriting a ticket's framing. The\nframing did not survive: **TKT-199's defect was fixed by TKT-251** (`b599a75a`, PR #224, 2026-08-16 —\n*\"the 13 path-id transitions take the verified organizer\"*), a fortnight after this ticket was filed\nand before it was ever claimed.\n\n#### The mechanism, at both tiers\n\n| Tier | State |\n|---|---|\n| API (`server.go:983`, `:1013`) | `organizerFor` resolves the organizer from the **verified assertion**, never from the request — the unsubmittable rule, not a validated field |\n| Contract (`openapi.yaml:385`) | Staff credential **and** organizer assertion in **one** requirement object (separate objects would mean OR) |\n| Store (`postgres.go:625`, `:931`) | `WHERE id = $1 AND organizer_id = $2` on the UPDATE **and** on the `FOR UPDATE` read |\n| Disclosure path (`postgres.go:644`) | A scoped existence re-check **before** classifying the no-op, so `ErrNotFound` collapses \"no such slot\" and \"not yours\" |\n\nThat last row is the part most fixes miss, and TKT-251 got it right: scoping only the UPDATE would\nrefuse the write and still tell a cross-tenant caller what the victim's slot is doing.\n\n#### Verified by execution, not by reading\n\nPer AGENTS.md — *a security claim is a hypothesis until it is executed* — I deleted the mechanism and\nran the gate:\n\n```\norganizer_predicate_smoke_test.go:120: cross-tenant publish = <nil>, want ErrNotFound\n```\n\nThe attacker's publish **succeeded** against the victim's slot, and **exactly one test failed**, by\nname. The guard is live and the test is not vacuous.\n\n**The first mutation attempt was not evidence and is recorded as such.** Replacing the predicate with\nan untyped `$2` broke the query (`SQLSTATE 42P18`) and failed *eight* tests. That proves the SQL\nparses, nothing more — a mutation that breaks the mechanism syntactically tests nothing about the\nmechanism. The valid mutation is a typed always-true predicate.\n\n#### COS\n\n| COS | State | Evidence |\n|---|---|---|\n| 1. Refuse another organizer's slot, two real organizers | ✅ TKT-251 | `seedTenantPair` — attacker/victim, not a fabricated id |\n| 2. Refusal indistinguishable from \"no such slot\" | ✅ TKT-251 | `ErrNotFound` both paths; the re-check exists for this |\n| 3. Contract change declared, generated code committed | ✅ TKT-251 | `openapi.yaml:385` + `openapi_gen.go` |\n| 4. **ADR-042's adversary section names this** | ✅ **this commit** | The one thing genuinely outstanding |\n| 5. `make check` green | ✅ | `EXIT=0` |\n\n#### What was outstanding, and why it was not a pipeline run\n\nTwo artifacts still claimed the defect was open, one of them dangerously:\n\n- `server.go:974` read **\"Not organizer-scoped — TKT-199, deferred\"** directly above scoped code, and\n  told the reader to *own TKT-199 before seeding a second organizer*. That advice is now backwards,\n  and it is the kind of comment someone acts on.\n- ADR-042's adversary section named TKT-191's closure and nothing about tenant scoping — COS #4.\n\nBoth are *\"write down what is already true\"*. Per `SKILL.md` § *What this pipeline is for*, that is a\n**direct commit, not a ticket**: there is no decision to gate and no product risk, so routing it\nthrough Backlog→Done would buy ceremony rather than safety. Committed as `61d70991`, gate green.\n\n`docs/reviews/2026-08-08-sdlc-board-validation.md` still lists TKT-199 as open and was **deliberately\nleft alone** — it is a dated snapshot, and editing it would falsify the record rather than update it.\n\n#### The finding worth keeping\n\n**A ticket can be closed by another ticket's fix and nothing tells the board.** TKT-251's scope was\n\"the 13 path-id transitions\", which is TKT-199's defect described in different words, so nobody\nconnected them. What made it visible was reading the code before trusting the ticket text — the same\ncheck that caught TKT-202's three misframings. The cost of not checking here would have been a full\nplan/build/review cycle re-fixing working code.\n"
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n### Closeout — TKT-199 (closed as already-delivered)\n\n| stage | duration |\n|---|---|\n| Backlog (filed 2026-08-04 → shaped 2026-08-17) | ~13 days |\n| Shaping + verification + doc commit | ~25 min |\n| Planning / Building / PO Review | **n/a — never entered.** The defect was already fixed |\n| **human-wait total** | **n/a (autonomous)** |\n\n**diff:** +19/−10 (2 files) — `61d70991`, direct to `main` as internal maintenance\n\n#### overrides:\n\n1. **Did not run the pipeline for this ticket.** No review pass objected — there was nothing to\n   review — but this is a deviation from the instruction to take TKT-199 \"from start to finish\", so it\n   is recorded rather than buried. **Reason:** the deliverable did not exist; the defect was fixed by\n   TKT-251 before the ticket was claimed. Building a plan, a branch and a PR to re-fix working code\n   would have produced a diff whose only content was documentation, gated four times over.\n   `SKILL.md` routes documentation-only changes to a direct commit explicitly. **Residual risk:** if\n   the reader disagrees that COS #4 was documentation-only, the correction is to re-open TKT-199 and\n   run it — the commit is one revert.\n\n2. **`docs/reviews/2026-08-08-sdlc-board-validation.md` left stating TKT-199 is open.** Deliberate:\n   dated snapshots record what was believed on their date. **Residual risk:** a future reader greps\n   TKT-199, finds that line, and re-derives this. Mitigated by the ticket's own thread and by\n   ADR-042 now carrying the closure.\n\n#### learnings:\n\n1. **A ticket can be silently closed by another ticket's fix.** TKT-251 described the same defect in\n   different words (\"the 13 path-id transitions\" vs \"publish/archive accept a slot id with no\n   organizer\"), so nothing linked them and the board carried a fixed ticket for a day. **Target\n   house: process** — the shaping pass already mandates reading the code first, and that is exactly\n   what caught it; no rule change needed, but it is the second ticket in a row (TKT-202, TKT-199)\n   where the ticket text was materially wrong about the code. That pattern is the learning.\n2. **A mutation that breaks the mechanism *syntactically* proves nothing.** The untyped-`$2` attempt\n   failed eight tests and looked like strong evidence. **Target house: repo-local** — this is a sharp\n   corollary of the harness rule promoted this session\n   (`docs/learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md`). Added below.\n\n#### retro:\n\n**(1) What would have made this faster or better?**\nThe context-mémo omitted **ADR-042** even though the ticket's own COS #4 requires editing it — the\nmémo listed ADR-002 and ADR-009 only. A mémo that misses an ADR the COS *names in text* is a\nmechanical gap: *concrete change* — `decomposition.md`'s context-mémo section should say that any ADR\nnamed in the COS is a `governingAdrs` entry by construction. Not applied: it is a shared skill file\nand one instance is thin evidence; recorded here for the weekly review.\n\n**(2) What should the humans change?**\n**Nothing about the process — but note what this ticket cost to discover.** It sat in Backlog fixed\nfor a day. If tickets are routinely closed by sibling work, the cheap fix is social: when a ticket's\nfix subsumes another, say so in the subsuming ticket's closeout. TKT-251's closeout does not mention\nTKT-199. That is a habit, not a rule, and worth one line in the `done` step if it recurs.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Understood, and the answer changed the ticket: the defect it describes was fixed by TKT-251 (b599a75a, PR #224, 2026-08-16) before this ticket was ever claimed."
+    },
+    "scope": {
+      "state": "met",
+      "note": "Reduced to what was actually outstanding: COS #4 (ADR-042's adversary section) and a stale, actively misleading code comment. No source change — the mechanism is already correct at both tiers."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by execution, not reading: the organizer predicate was mutated and the cross-tenant test fails by name. See the kind=readiness comment."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-251 and TKT-192 are Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Documentation only. Per SKILL.md's 'what this pipeline is for', a change that only needs writing down is a direct commit, not a ticket — there is no decision to gate and no product risk. Committed as 61d70991 with the local gate green."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One commit."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS 1-3, 5-6 were already met by TKT-251; COS 4 met by this commit. Table in the kind=readiness comment."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs corrected: the ticket's own COS #4 names ADR-042, which the mémo omitted. ADR-002 and ADR-009 verified present at HEAD; ADR-042 resolves to ADR-042-staff-identity-and-backoffice-sessions.md."
+    }
+  }
 }
