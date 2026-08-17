@@ -2,7 +2,7 @@
   "key": "TKT-202",
   "type": "Story",
   "summary": "The gateway logs guest_order_ref, which ADR-012 says is never logged",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
