@@ -13,11 +13,15 @@
     "governingAdrs": [
       {
         "id": "ADR-012",
-        "why": "It is the clause being broken: guest_order_ref is a no-store retrieval capability, not logged."
+        "why": "The clause being broken, verbatim: guest_order_ref is 'a no-store guest retrieval capability' and is 'not logged'. COS #5 forces a choice -- make it true or amend it. Amending is the weaker option and must be argued, not defaulted to."
       },
       {
         "id": "ADR-021",
-        "why": "Name the adversary before claiming a fix. 'Anyone who can read logs' is a different adversary from 'anyone on the network', and the retention window is part of the exposure."
+        "why": "Name the adversary before claiming a fix. This bounds ANYONE WHO CAN READ LOGS, for the log retention window. It bounds nothing against someone with the access database, the collector, or a network position. Say that explicitly; do not write 'tamper-evident' or 'no longer exposed' without the qualifier."
+      },
+      {
+        "id": "ADR-049",
+        "why": "s TKT-223 is what upgraded this from a read-exposure to a takeover: a claim is 'destructive, exclusive, permanent and unrecoverable'. s TKT-222 records the reliance on the query string NOT being logged -- a fix that starts logging queries breaks it."
       }
     ],
     "reference": [
@@ -26,7 +30,29 @@
         "link": "shared/go/obs/requestlog.go:20"
       }
     ],
-    "capturedAt": "2026-08-04"
+    "capturedAt": "2026-08-17",
+    "governingTests": [
+      {
+        "path": "shared/go/obs/requestlog_test.go:28",
+        "why": "Pins the log line's field names and asserts path == \"/healthz\" exactly. The only in-repo consumer of the path field; a shape change fails here first. Note /healthz has no capability segment, so it must stay byte-identical -- the sanitiser is not allowed to reshape ordinary routes."
+      },
+      {
+        "path": "services/access/internal/store/lifecycle_smoke_test.go:890",
+        "why": "The live tripwire for this class: fails if 'guest_order_ref' (or qr_payload, buyer_id) appears in an alarm envelope. Precedent for the assertion shape this ticket should reuse -- forbid the string, not the specific route."
+      },
+      {
+        "path": "services/access/internal/lifecycle/canonical.go:50 + canonical_test.go:106",
+        "why": "The structural version of the same rule: Event deliberately HAS NO FIELD for guest_order_ref, so it cannot be passed by accident. The bar this ticket is measured against -- prefer making the capability unloggable to checking that it was not logged (AGENTS.md: make it unsubmittable, not validated)."
+      },
+      {
+        "path": "web/storefront/src/pages/[locale]/account/reset-password.astro:8-13",
+        "why": "Not a test but a load-bearing constraint written as a comment, and it cites THIS ticket by number: TKT-226 kept the reset token out of path segments precisely because this logger writes r.URL.Path. If the fix changes what is logged, re-read this -- the reasoning recorded there must stay true."
+      },
+      {
+        "path": "shared/go/contract/http.go:137",
+        "why": "The second raw-path logger, invisible from the ticket text. Not a test, but the site a plan that reads only requestlog.go will miss."
+      }
+    ]
   },
   "comments": [
     {
@@ -38,6 +64,45 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Annotated by TKT-223 — this is now a safety prerequisite, not logging hygiene\n\nTKT-223 shipped guest-order claiming, and its proof of ownership is the **order reference alone**\n(matching the email would refuse a buyer who signed up with a different address). ADR-049 § TKT-223\nrecords what that grants:\n\n> A claim is **destructive, exclusive, permanent and unrecoverable**. The first holder to claim takes\n> the order away from its buyer, and there is no un-claim path.\n\nThis ticket is where those references leak. Before TKT-223 a logged reference let a reader see\nsomeone's tickets; now it lets them **take the order**. The two follow-ups are related and neither\nsubstitutes for the other — **TKT-225** adds an operator un-claim path (recovery after the fact),\nthis one stops the leak (prevention).\n\nNothing about the defect changed. Its consequence did."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Readiness verdict: **8/8 met — ready for Gate 1**\n\nNo spikes needed and no open human decisions: every unknown resolved by reading the code. Three\nfindings below change the ticket's scope, so read them before prioritising.\n\n**1. It is not the gateway — it is the shared logger, in all six services.**\nThe ticket says \"the gateway logs `guest_order_ref`\". `shared/go/obs/requestlog.go:20` is mounted by\nthe gateway *and* access, catalog, commerce, inventory, payments (`git grep -n RequestLogger` → 6\nmounts). Access mounts it too, and access is the service that actually serves the guest routes. A\ngateway-only fix leaves five services writing the same line.\n\n**2. There is a second raw-path logger the ticket does not mention.**\n`shared/go/contract/http.go:137` logs `\"path\", r.URL.Path` on a contract-validation error. Same\nexposure class, different function. Fixing `requestlog.go` alone leaves this one open, and it is the\nkind of gap that reads as fixed afterwards.\n\n**3. The largest surface is a page route, not an API route.**\nThe storefront bundle page is `/{locale}/tickets/{orderRef}`\n(`web/storefront/src/pages/[locale]/tickets/[orderRef].astro`), served through the gateway's `/`\ncatch-all (`gateway/cmd/gateway/main.go:236`) and logged like everything else. Every buyer who opens\ntheir tickets writes the capability to the log via the page URL, before any `/api/access/` call is\nmade. Scoping the fix to `/api/access/...` would leave the exposure essentially intact.\n\n### The obvious remedy does not survive the read\n\nchi's `RoutePattern()` is the natural way to log a route shape, and it is available in the five\nservices — but **not at the gateway**, which registers prefix proxies (`mux.Handle(prefix, proxy)`)\nand never matches a per-route pattern. The gateway is exactly where the ticket locates the problem.\nSo the mechanism has to be a **declared capability-route-shape table consulted by the shared\nlogger**, not pattern substitution. Recorded in `readiness.approach` so the planner inherits the\ncorrection rather than the original suggestion.\n\n### The sweep the ticket asked for (\"does anything else already redeemed reach a log the same way?\")\n\nDone. Answers, with evidence:\n\n| Surface | Verdict |\n|---|---|\n| `guest_order_ref` in path (2 access routes + 1 storefront page route) | **Leaking.** This ticket. |\n| QR image link `?exp=&sig=` | **Not leaking.** Nothing in-repo logs `RawQuery` (`git grep RawQuery` → one parse site, zero log sites), and `qrlink.go` already bounds it to a 10-minute TTL for exactly this reason. |\n| Password-reset token | **Not leaking, deliberately.** `reset-password.astro:8-13` keeps it out of path segments *citing this ticket by number*. |\n| Claim endpoint | **Not leaking.** `POST /orders/claim` takes the ref in the **body** (`claim.go:26`), not the path. |\n| Every other `{id}` path param (catalog/commerce/inventory/payments/access) | **Not capabilities.** Ordinary identifiers behind separate auth; `/internal/` is edge-denied (`main.go:233`). |\n\nSo the ticket's closing hypothesis is confirmed with one correction: **the actual finding is that the\nlogger cannot express \"do not log this\"** — and the one capability that reaches it is this one, on\nthree routes rather than two.\n\n### COS #4 answered in advance\n\n\"Existing log consumers and any dashboard/alert keyed on `path`\" — there is exactly one in-repo\nconsumer: `shared/go/obs/requestlog_test.go:28`, which asserts `path == \"/healthz\"`. No dashboards,\nno alert rules, no smoke assertions on the field. `/healthz` has no capability segment, so the\nsanitiser must leave ordinary routes **byte-identical** — that is a constraint, not just an\nobservation.\n\n### Note for the planner on test design\n\nThe sanitiser is a guard with **three independent predicates** — route-shape match, capability\nsegment position, preservation of the remaining shape. A single \"the ref does not appear in the log\nline\" assertion stays green with predicates 2 and 3 deleted (it passes trivially if you log nothing\nat all). One case per predicate, each mutated separately. And prefer the `canonical.go` shape —\nmaking the capability *unloggable* — over checking after the fact that it was not logged.\n\n### Risk\n\n**`risk:low` NOT claimed.** It touches a shared observability package used by six services and the\nsubject matter is an authentication capability. Neither is trivial or isolated. The plan gate applies.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "guest_order_ref is a redeemable, unauthenticated capability that ADR-012 says is never logged; it is written to structured logs on every guest visit. Since TKT-223 redeeming it is destructive, exclusive and unrecoverable (ADR-049 s TKT-223), so a log reader can take an order, not merely read it."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the shared request logger (shared/go/obs/requestlog.go:20) and the contract validation logger (shared/go/contract/http.go:137) stop writing raw paths that carry a capability segment; a capability-segment rule expressed once and inherited; the gateway's proxied storefront page route /{locale}/tickets/{orderRef}. OUT: query-string logging (nothing in this repo logs RawQuery today and ADR-049 s TKT-222 relies on that -- do not start); the QR image link signature (already bounded to 10 min by qrlink.go and not in the path); log retention/redaction at the collector; making the ref itself non-capability (that is TKT-222's authenticated read, a different decision); an un-claim recovery path (TKT-225)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading. (1) chi's RoutePattern() is available in the five services but NOT at the gateway, which proxies by prefix (gateway/cmd/gateway/main.go:236) -- so the pattern-substitution approach cannot be the whole mechanism. (2) Exactly one log-field consumer exists (shared/go/obs/requestlog_test.go:28 asserts path == \"/healthz\"); no dashboard/alert keys on path anywhere in-repo, so COS #4 is satisfiable by inspection. (3) The sweep the ticket asked for is done -- see the kind=readiness comment; {ref} on the two access guest routes plus the storefront page route are the only capability-bearing path segments. Every other {id} is an ordinary identifier gated by separate auth."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-225 (operator un-claim) and TKT-222 (authenticated read) are related but neither blocks nor substitutes: this is prevention, they are recovery and redesign. No blocked-by links."
+    },
+    "approach": {
+      "state": "met",
+      "note": "VERIFIED AGAINST THE CODE, and the ticket's own framing is corrected by it. (a) The ticket says 'the gateway logs' -- the leak is in the SHARED logger, mounted identically by the gateway and all five services (git grep RequestLogger: 6 mounts). A gateway-only fix leaves five services leaking. (b) A second, unmentioned leak site: shared/go/contract/http.go:137 logs r.URL.Path on a contract-validation error. Same exposure, different function -- fixing one silently leaves the other. (c) A third surface the ticket misses and which is larger than the API route: the storefront PAGE url is /{locale}/tickets/{orderRef} (web/storefront/src/pages/[locale]/tickets/[orderRef].astro), proxied under the gateway's '/' catch-all and logged. Fixing only /api/access/... leaves the reference in the logs on every bundle page view. (d) Therefore the mechanism must be path-shape-derived at the logger, not RoutePattern()-derived: chi patterns do not exist at the gateway. The direction that survives the read is a sanitiser owned by shared/go/obs that both loggers call, driven by a declared list of capability-bearing route shapes, replacing the capability segment with a placeholder while keeping the route shape and leaving method/status/duration/trace_id intact. (e) DO NOT begin logging RawQuery as part of any 'log more shape' fix -- reset-password.astro and ADR-049 s TKT-222 both explicitly rely on the query string not being logged; that reliance is recorded in code comments and would be broken silently. PREDICATE COUNT for the test plan: the sanitiser is a guard whose decision has THREE independent inputs -- (1) the route shape matches a declared capability route, (2) the segment index within that shape is the capability position, (3) the non-capability segments and the trailing shape are preserved. One test per predicate, each passing the earlier ones, each mutated separately: a single 'the ref is not in the line' assertion passes with predicates 2 and 3 deleted."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, and it must be all three call sites at once -- a partial fix is indistinguishable from a fix in the logs, which is the failure mode this ticket exists to stop. Slice = the shared sanitiser + both loggers calling it + the three capability route shapes declared (access bundle, access qr.png, storefront ticket page) + ADR-012 reconciled. Fits a sprint comfortably; it is one shared package, two call sites and a table."
+    },
+    "success": {
+      "state": "met",
+      "note": "The ticket's six COS stand, with COS #2 sharpened to 'declared capability route shapes, applied by the shared logger' and COS #4 answered in advance: the only in-repo consumer is requestlog_test.go:28. Add a seventh, implied by (b) and (c): no in-repo logging call site writes a raw request path for a declared capability route -- asserted by a test that would catch a NEW logger being added without the sanitiser, not only the two that exist today."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked; governingAdrs and governingTests both populated and each cited ADR verified to resolve at HEAD (ADR-012, ADR-021, ADR-049 all present in docs/adr/)."
+    }
+  }
 }
