@@ -38,13 +38,74 @@
         "link": "https://github.com/mathd/ticketing_system/pull/193"
       }
     ],
-    "capturedAt": "2026-08-09"
+    "capturedAt": "2026-08-09",
+    "governingTests": [
+      {
+        "test": "services/catalog/internal/store/public_read_invalidation_test.go:129 TestEveryStoreMethodIsClassifiedForPublicReads",
+        "why": "AST-parses store.go and requires EVERY method on the Store interface to appear in publicReadEffect or readOnlyStoreMethods (:103). Adding the sweep to the Store interface fails make check until one line is added to readOnlyStoreMethods. The audit reads the interface, not the callers - 'it is only used by the CLI' is not an exemption. This is the single test this ticket will trip."
+      },
+      {
+        "test": "ADR-019 plan assertions - services/catalog/internal/store/season_smoke_test.go:36 assertReachesVia, bound per-query at pricing_smoke_test.go:246 and fees_smoke_test.go:415",
+        "why": "NOT a tripwire here, recorded so the plan does not invent an obligation. No test enumerates query constants and demands a plan assertion for each - the coupling is hand-written convention. A one-shot operator read is the documented counter-precedent (postgres.go:803,:844: 'One-shot operator read, not a hot path (ADR-019): no index is added for it'). Cite that comment rather than adding an index, and say so in the plan, because a reviewer reading priceRuleCandidatesQuery's neighbours will ask."
+      },
+      {
+        "test": "golangci rowserrcheck and errorlint (.golangci.yml, repo root, one config for all modules)",
+        "why": "Two live lint hazards for new code of this shape: a `for rows.Next()` loop over the join result that omits rows.Err() fails make lint (the config comment records three real silent-truncation sites it caught); and errorlint has comparison:true, so `err == ErrX` in the new tests fails - use errors.Is."
+      },
+      {
+        "test": "services/catalog/cmd/catalog subcommand tests - reemit_test.go:15, provision_staff_test.go:16",
+        "why": "Membership-only, never an exact set, so adding a sixth subcommand breaks nothing. The house convention is that each subcommand brings its OWN membership test - the plan must add one rather than assume coverage."
+      },
+      {
+        "test": "smoke/coverage_test.go:55, shared/go/cachetier/spec_audit_test.go:38, services/catalog/internal/api/write_credential_test.go:39",
+        "why": "Checked and NOT applicable, recorded so they are not re-investigated: all three are spec- or migration-driven (openapi.yaml operations, Cache-Control declarations, the smoke coverage service list). A CLI subcommand adds no OpenAPI operation, no handler and no migration, so none can fire."
+      }
+    ]
   },
   "comments": [
     {
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-237 ai-review — the accepted cost of a [high] fix\n\nNot a defect in the merged code. The fix was necessary and is correct; this records what it costs\nand gives the cost an owner, rather than leaving it in a code comment where nobody schedules it.\n\nNeeds shaping before Gate 1 — in particular whether this is a read endpoint, a CLI subcommand, or a\ngate-time check, and whether it should cover fee rules and split schedules in the same pass (they\nhave the same shape and the same blind spot)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping pass — 8/8 met, no spikes, no human decisions. Ready for Gate 1.\n\nShaped against the code at HEAD. The earlier readiness comment left one question open (\"whether it\nshould cover fee rules and split schedules\"); the schema answers it, so nothing is left for a human\nto decide. Three findings changed the ticket as filed:\n\n**1. A mismatch is a (rule, ticket type) PAIR, not a rule.** The ticket says \"every rule whose\ncurrency differs from its ticket type's\". A rule has no ticket type. All three rule tables are\npolymorphically scoped over `ticket_type|slot|series|event|venue` with **no FK** (`0012_price_rules.sql:19-21`,\n`0016_fee_rules.sql:22-25`), so a venue-scoped rule covers every ticket type under that venue, each\nwith its own `ticket_types.currency`. One rule can be simultaneously correct for one ticket type and\nwrong for another. The sweep's output unit, and the COS, are corrected accordingly.\n\n**2. Split schedules are out — on schema grounds, not judgement.** `split_schedules` has no currency\ncolumn, and the migration says why (`0017_payees_and_split_schedules.sql:57-59`): *\"Shares are basis\npoints, which are currency-independent; a column no code reads would only invite a mismatch check\nnobody needs.\"* Restated at `splits.go:16-17`. There is no mismatch to find, so including them would\nbe a sweep that can only ever report zero. Fee rules **are** in: `fee_rules.currency` exists and\n`SelectFeeRules` checks it (`fees.go:254-262`).\n\n**3. The sweep must not consult the channel registry.** `channels` is a lookup, not a constraint\n(`0018_channels.sql:10-17`) — no FK points at `price_rules.channel_code`. Enumerating registered\nchannels would systematically miss exactly the rules the COS demands (\"channels with no registry\nentry\"). The sweep reads `channel_code` off the rules and applies **no** channel predicate at all,\nwhich is both simpler and strictly more correct.\n\n**Approach, verified not inherited.** The sweep is the inverse of `pricingScopesQuery`\n(`pricing_postgres.go:50-56`): derive each ticket type's five scope identities, join the rule tables\non the matching `(scope_level, scope_id)` pair, compare currencies. One set-based query per rule\nkind, no window predicate and no channel predicate — the omissions are what let it see rules\nresolution deliberately ignores. CLI shape copies `access verify-lifecycle`\n(`access/cmd/access/lifecycle.go:212-241`).\n\n**One design fork left for Planning** (recorded, not open — it does not block Gate 1): putting the\nmethod on the `Store` interface trips the closed classification audit at\n`public_read_invalidation_test.go:129` and costs one line in `readOnlyStoreMethods`; keeping it on\n`*Postgres` alone dodges the audit. Recommendation: take the interface and the allowlist line — the\naudit existing is the point.\n\n**`governingTests` baked** (the mémo had none). One test will fire: the classification audit above.\nTwo lint hazards named (`rowserrcheck` on the row loop, `errorlint` in the new tests). Three\nplausible tripwires checked and recorded as **not** applicable so they are not re-investigated.\n\n**Risk:** `risk:low` **not** claimed. It touches a money path (price and fee rule currency) and adds\na new operator surface, which is a carve-out even though the change is read-only and additive. The\nplan gate stays.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TKT-237 correctly put channel eligibility ahead of the currency check, so a price rule with the wrong currency on an unused channel is invisible until a sale arrives on that channel. Give operators a way to find those rules first. pricing.go:290-296 is the code's own hand-off and names this ticket."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a read-only `catalog validate-rules` subcommand reporting every (rule, ticket type) pair whose currencies differ, across price_rules AND fee_rules, every channel (registered or not), every window state. OUT: split_schedules (schema-settled, see uncertainties); any write path; any gate; write-time currency validation (ticket's own non-goal); changing resolution semantics."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Three resolved by reading, none left open. (1) 'rules whose currency differs from its ticket type's' is NOT a per-row property: rule tables are polymorphically scoped (ticket_type|slot|series|event|venue) with NO FK (0012:19-21, 0016:22-25), so a venue-scoped rule covers many ticket types with independent ticket_types.currency values. The unit of a finding is a (rule, ticket_type) PAIR, not a rule. (2) split_schedules are out of scope on schema grounds, not judgement: they have no currency column, deliberately (0017:57-59, splits.go:16-17) - there is no mismatch to find. This settles the open question in the kind=readiness comment. (3) The channels registry is a lookup, not a constraint (0018:10-17), so the sweep must NOT enumerate `channels`; it reads channel_code off the rules themselves and is channel-agnostic by construction, which is exactly what the COS 'including channels with no registry entry' demands."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers, no links. Additive: one new query, one new subcommand, no migration, no OpenAPI operation, no change to any resolver. TKT-154 (unbounded price_amount) and TKT-155 (provenance over-disclosure) touch the same files but neither blocks nor is blocked by this."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Verified against the code, not inherited. The sweep is the INVERSE of pricingScopesQuery (pricing_postgres.go:50-56): join ticket_types -> performances -> events/venues + LEFT JOIN series_performances to derive each ticket type's five scope identities, then join price_rules/fee_rules on the matching (scope_level, scope_id) pair and compare rule.currency <> ticket_types.currency. One set-based query per rule kind - NOT a per-rule fan-out loop. Both rule tables use column name `currency`; ticket_types uses `currency` too. NO window and NO channel predicate in the sweep's WHERE - that is what makes it see rules resolution ignores, and it is the mirror of why the candidate queries omit them (pricing_postgres.go:62-84). CLI shape follows `access verify-lifecycle` (access/cmd/access/lifecycle.go:212-241): openDB via DATABASE_URL, context wider than migrate's 30s, print findings + an explicit scope statement, exit 1 on operational error. Wire into subcommands() at catalog/cmd/catalog/main.go:54 and print through an INJECTED io.Writer, copying provision_staff.go:31 so the output is assertable in a unit test. DESIGN FORK to settle in Planning: putting the method on the `Store` INTERFACE trips the closed classification audit (public_read_invalidation_test.go:129) and needs one line added to readOnlyStoreMethods (:103) - the TKT-235 precedent; keeping it on *Postgres only avoids the audit entirely. Prefer the Store interface + the allowlist line, because the audit existing is the point. Exit-code note: verify-lifecycle has only 0 and 1; a third code for 'findings found' would be an invention - this ticket reports and exits 0, since COS says it gates nothing."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole thing is one slice: two queries (price + fee), one subcommand, one Store method, tests. Well under a sprint. If it needed splitting, price_rules alone would be a coherent first slice - but fee_rules is the same query shape against a second table and splitting would cost more than it saves."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS as filed, sharpened by the fan-out finding: (a) reports every (rule, ticket_type) pair with differing currency across price_rules and fee_rules; (b) covers rules resolution would ignore - a foreign/unregistered channel_code, and a window not yet open or already past; (c) read-only, gates nothing; (d) the motivating test: a rule whose channel_code names a channel nobody buys through AND that is absent from the `channels` registry is FOUND by the sweep, while SelectPricingRule with a different channel resolves cleanly past it. make check green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at 2026-08-09 and re-resolved at shaping: ADR-036, ADR-046, ADR-021 all exist at HEAD under docs/adr/. governingTests added below - the mémo had none, and one of them will fire."
+    }
+  }
 }
