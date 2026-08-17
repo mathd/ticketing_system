@@ -87,7 +87,22 @@ naming a channel — is the capability this ADR removes, so the assertion could 
 preserved by preserving the defect. That file's header carries the same rationale, as its own
 instructions require.
 
-Also unchanged: the **seated** seam (TKT-176), and TKT-246's inventory decision.
+TKT-246's inventory decision is also unchanged.
+
+**The seated seam (TKT-176) is not "unchanged" — it is now unreachable, which is a stronger
+statement and was worth getting right** (found in adversarial review; an earlier draft of this ADR
+said "unchanged" and that was misleading). A seated claim carries no channel and ignores allocations
+entirely, and there is now no route by which a seated request could carry one at all:
+
+- the public contract has no `channel_code` (this ADR);
+- `PartnerReservationCreate` is **GA-only** — it declares no `seat_identities`, and
+  `commerce/api/openapi.yaml` says why: *"seated pools do not consult channel allocations at all
+  (TKT-176 owns that seam), so a seated partner sale would claim an authorization this contract
+  cannot deliver."*
+
+So the defect TKT-176 owns is now shut at the contract rather than open and forwarding nothing.
+TKT-176 still owns re-opening it deliberately, with allocations that seated claims actually
+consult.
 
 ## Consequences
 
@@ -106,11 +121,20 @@ Also unchanged: the **seated** seam (TKT-176), and TKT-246's inventory decision.
   as accepted behaviour: if that test ever fails, update this ADR rather than deleting it (the
   ADR-021 idiom).
 
-- **The exchange path is unaffected and its guard becomes belt-and-braces.** `holdExchangeTarget`
-  forwards a channel to inventory only when `src.ResellerID != nil`, because the reseller is the
-  authority and a source with no reseller was never an authorized channelled sale. New public rows
-  carry no channel, so new public exchanges are trivially public; the guard still matters for
-  historical rows and stays.
+- **The exchange path keeps its guard, and a historical residual is named rather than implied.**
+  `holdExchangeTarget` forwards a channel to inventory only when `src.ResellerID != nil`, because
+  the reseller is the authority and a source with no reseller was never an authorized channelled
+  sale. New public rows carry no channel, so new public exchanges are trivially public; the guard
+  becomes belt-and-braces for them and stays load-bearing for historical rows.
+
+  **The residual, stated plainly:** an exchange *reprices* the target through
+  `resolveTicketTypePrice(..., src.ChannelCode)` (`exchanges.go:145`), and `src` is loaded from the
+  DATABASE. So a pre-ADR-060 public row that carries a channel can still be repriced on that
+  channel's rules by exchanging it. This is not a new hole — the row already exists and its own
+  purchase was already priced that way — and it needs an existing order, so it is not reachable by
+  an arbitrary caller. It is deliberately not closed here: rewriting historical attribution would
+  change what those orders *were*, which is the thing ADR-024 protects. If it ever needs closing,
+  the shape is a repricing-time entitlement check, not a column backfill.
 
 - **`maxProperties` on `ReservationCreate` returns to 3.** The `not: {required: [quantity,
   seat_identities]}` clause **stays** even though the count alone would now exclude that shape: the

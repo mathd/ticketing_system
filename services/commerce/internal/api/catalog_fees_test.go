@@ -877,8 +877,22 @@ func TestReplacementGrossCarriesTheFeeAndRefusesOverflow(t *testing.T) {
 	}
 }
 
-// A public sale is priced on PUBLIC economics; a partner sale on its channel's —
-// and the money is asserted, not just the refusal (TKT-248, ADR-060).
+// A public request naming a channel never reaches catalog; a partner request does
+// (TKT-248, ADR-060).
+//
+// SCOPE, stated precisely because an earlier version of this test overclaimed it
+// (ai-review [medium]): this asserts WHICH QUERY CATALOG WAS ASKED, not what the
+// buyer was charged. It cannot assert money — the fakes run with a nil database,
+// so a reserve that got far enough to compose and return a total would panic on
+// the insert, and the 409 that stops it carries no amount. A previous version
+// returned `unit + passedOn/quantity` computed from values the FAKE itself
+// assigned, which is arithmetic over the fixture rather than an observation of
+// commerce, and would have passed had commerce added absorbed fees to the charge.
+//
+// The composed total is asserted where money actually moves, end to end through
+// the real stack: smoke/checkout_test.go's
+// TestFeeIncidenceChangesTheChargedTotalButNotTheFee. This test is the SEAM half —
+// which channel, if any, reaches catalog at all.
 //
 // This is the assertion the ticket's COS asks for and the one a refusal-only test
 // cannot make. The leak this ticket closes was never visible as an error: catalog
@@ -903,7 +917,7 @@ func TestReplacementGrossCarriesTheFeeAndRefusesOverflow(t *testing.T) {
 //     DIFFERENT amounts. The final check asserts they differ, so a fixture whose
 //     channels are economically identical fails loudly instead of passing
 //     vacuously.
-func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
+func TestAPublicRequestNamingAChannelNeverReachesCatalog(t *testing.T) {
 	const (
 		publicUnit   = 2500 // channel-agnostic price rule
 		publicFee    = 300  // channel-agnostic, passed_on -> reaches the buyer
@@ -911,18 +925,20 @@ func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
 		resellerFee  = 300  // reseller channel, absorbed -> never reaches the buyer
 		quantity     = 2
 	)
-	// From the requirement (ADR-046 §3), not from a run.
-	wantPublicPerTicket := int64(publicUnit + publicFee) // passed_on is added
-	wantPartnerPerTicket := int64(resellerUnit)          // absorbed is not
+	// The two arms are deliberately given DIFFERENT economics -- the reseller
+	// channel is cheaper, and its fee is absorbed rather than passed on -- so that
+	// the fake answers visibly different things depending on which channel it was
+	// asked about. What that difference COSTS a buyer is asserted end to end in
+	// smoke/checkout_test.go; here it only has to be non-identical, so that a
+	// channel reaching catalog is observable at all.
 
 	type asked struct {
 		price, fees             string
 		priceCalled, feesCalled bool
 	}
-	drive := func(t *testing.T, channel string) (asked, int64) {
+	drive := func(t *testing.T, channel string) asked {
 		t.Helper()
 		var got asked
-		var unit, passedOn int64
 		catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
@@ -944,9 +960,6 @@ func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
 			}
 			if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
 				got.fees, got.feesCalled = r.URL.RawQuery, true
-				if incidence == incidencePassedOn {
-					passedOn = f * quantity
-				}
 				_, _ = w.Write([]byte(`{"resolver_version":1,"evaluated_at":"2026-08-17T00:00:00Z",` +
 					`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
 					`"currency":"EUR","channel_code":` + chJSON + `,"fees":[{"fee_code":"s","winner":` +
@@ -956,7 +969,6 @@ func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
 				return
 			}
 			got.price, got.priceCalled = r.URL.RawQuery, true
-			unit = u
 			_, _ = w.Write([]byte(resolutionBodyFor(u, true, ch)))
 		}))
 		defer catalog.Close()
@@ -988,11 +1000,11 @@ func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
 		} else {
 			reserveInChannel(t, srv, "tkt248-"+t.Name(), channel)
 		}
-		return got, unit + passedOn/quantity
+		return got
 	}
 
 	t.Run("a public sale naming a channel is refused before any economics are decided", func(t *testing.T) {
-		got, _ := drive(t, "")
+		got := drive(t, "")
 		// The request NAMED reseller-acme. Before TKT-248 it would have been priced
 		// on that channel: catalog would have been asked for it and answered the
 		// cheaper, absorbed-fee economics below, and the buyer would have been
@@ -1005,36 +1017,14 @@ func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
 		}
 	})
 
-	t.Run("the public economics a refused caller cannot reach are genuinely cheaper", func(t *testing.T) {
-		// The fixture's own honesty check. The sub-test above asserts an ABSENCE,
-		// and an absence proves nothing if the two channels are economically
-		// identical — the leak would be invisible even with the guard gone. This
-		// pins the difference the fixture is built on, derived from ADR-046 §3.
-		if wantPublicPerTicket == wantPartnerPerTicket {
-			t.Fatalf("public (%d) and reseller (%d) economics are identical, so a leak would be "+
-				"undetectable and every assertion here is vacuous",
-				wantPublicPerTicket, wantPartnerPerTicket)
-		}
-		if wantPartnerPerTicket >= wantPublicPerTicket {
-			t.Fatalf("the reseller channel (%d) is not CHEAPER than public (%d); this ticket's "+
-				"defect is a buyer being charged LESS by naming someone else's channel, so the "+
-				"fixture must reproduce that direction", wantPartnerPerTicket, wantPublicPerTicket)
-		}
-	})
-
-	t.Run("a partner sale carries its credential's channel and takes its economics", func(t *testing.T) {
-		got, perTicket := drive(t, "reseller-acme")
+	t.Run("a partner request carries its credential's channel to catalog", func(t *testing.T) {
+		got := drive(t, "reseller-acme")
 		if !strings.Contains(got.price, "channel_code=reseller-acme") {
 			t.Fatalf("catalog's PRICE resolution was asked %q, want channel_code=reseller-acme — "+
 				"a partner's channel comes from its credential and must still reach catalog", got.price)
 		}
 		if !strings.Contains(got.fees, "channel_code=reseller-acme") {
 			t.Fatalf("catalog's FEE resolution was asked %q, want channel_code=reseller-acme", got.fees)
-		}
-		if perTicket != wantPartnerPerTicket {
-			t.Fatalf("a partner sale was priced at %d per ticket, want %d (%d face; the ABSORBED "+
-				"fee must not be added to the buyer's charge, ADR-046 §3)",
-				perTicket, wantPartnerPerTicket, resellerUnit)
 		}
 	})
 

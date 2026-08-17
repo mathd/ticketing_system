@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/getkin/kin-openapi/openapi3"
+
+	apispec "ticketing/services/commerce/api"
 )
 
 // The commerce -> inventory channel seam: STILL OPEN, and pinned open on purpose
@@ -75,51 +77,6 @@ type capturedHold struct {
 	// what commerce SENT, not what it answered).
 	status       int
 	catalogCalls int
-}
-
-// reserveThroughCommerceWithScope drives one reserve as an AUTHENTICATED partner,
-// whose channel comes from the credential (TKT-248). It is how a test gets a
-// channel onto a request now that a public body cannot carry one.
-func reserveThroughCommerceWithScope(t *testing.T, channel, requestBody string) capturedHold {
-	t.Helper()
-	var got capturedHold
-	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.catalogCalls++
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
-			_, _ = w.Write([]byte(emptyFeeResolutionBody(&channel)))
-			return
-		}
-		_, _ = w.Write([]byte(resolutionBodyFor(2500, false, &channel)))
-	}))
-	defer catalog.Close()
-
-	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/holds") {
-			raw, _ := io.ReadAll(r.Body)
-			got.path = r.URL.Path
-			got.body = map[string]any{}
-			_ = json.Unmarshal(raw, &got.body)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(409)
-		_, _ = w.Write([]byte(`{"error":"unavailable"}`))
-	}))
-	defer inventory.Close()
-
-	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
-	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(requestBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", "seam-scope-"+t.Name())
-	rec := httptest.NewRecorder()
-	srv.reserveWithScope(rec, req, &partnerScope{
-		OrganizerID: uuid.MustParse(pricingOrg),
-		ChannelCode: channel,
-		ResellerID:  uuid.MustParse(pricingReseller),
-	})
-	got.status = rec.Code
-	return got
 }
 
 // reserveThroughCommerceUnvalidated drives one reserve with response/request
@@ -299,24 +256,55 @@ func TestAnUnchannelledSaleForwardsNoChannelAtAll(t *testing.T) {
 // reseller sale silently consuming a GA channel's allocation. This test is the
 // guard on the non-goal — if it ever fails, TKT-176 was closed by accident and the
 // ADR needs updating, not the test.
-// TKT-248 changed only HOW this test gets a channel onto the request, not what it
-// asserts. It used to name the channel in a public body; that is no longer
-// possible (ADR-060), so the channel now comes from a partner scope -- the only
-// place a channel exists at all. The subject is unchanged: the seated hold body
-// commerce sends must still carry no channel.
-func TestTheSeatedHoldStillCarriesNoChannel(t *testing.T) {
-	got := reserveThroughCommerceWithScope(t, "reseller-acme",
-		`{"organizer_id":"`+pricingOrg+`","ticket_type_id":"`+pricingTT+
-			`","seat_identities":["A-1","A-2"]}`)
+// TKT-248 UPDATE: a CHANNELLED seated request is now UNREACHABLE, and this test
+// says so instead of pretending otherwise (ai-review [medium]).
+//
+// The original asserted that a seated hold carries no channel, driving it with a
+// public body that named one. Both vehicles for that request are gone:
+//
+//   - the PUBLIC contract no longer has `channel_code` (ADR-060);
+//   - the PARTNER contract is GA-only -- PartnerReservationCreate has no
+//     `seat_identities` at all, and openapi.yaml:325-327 says why: "seated pools do
+//     not consult channel allocations at all (TKT-176 owns that seam), so a seated
+//     partner sale would claim an authorization this contract cannot deliver".
+//
+// So there is no route by which a seated claim can carry a channel. An earlier
+// version of this test constructed one anyway by calling reserveWithScope directly
+// with seat_identities -- a request no client can send, which would have stayed
+// green regardless of the real wiring. That is the fixture-that-proves-nothing
+// shape, so it is replaced by asserting the two contracts that make it impossible.
+//
+// TKT-176 still owns the seated seam. What changed is that the way in is now shut
+// at the contract rather than open and forwarding nothing.
+func TestASeatedSaleCannotCarryAChannelAtAll(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if got.body == nil {
-		t.Fatal("commerce never called inventory's hold endpoint")
+	public, ok := doc.Components.Schemas["ReservationCreate"]
+	if !ok {
+		t.Fatal("no ReservationCreate schema")
 	}
-	if !strings.Contains(got.path, "/holds/seats") {
-		t.Fatalf("a seated request did not take the seated hold path (%s)", got.path)
+	if _, present := public.Value.Properties["channel_code"]; present {
+		t.Fatal("ReservationCreate declares channel_code again: a public seated request could " +
+			"then name a channel, and inventory's seat path does not read one -- a forward that " +
+			"consults no allocation and silently succeeds. TKT-248/ADR-060, TKT-176.")
 	}
-	if _, present := got.body["channel"]; present {
-		t.Fatal("the seated hold body now carries a channel: the seated seam is TKT-176's, and " +
-			"forwarding a channel inventory's seat path does not read is a half-fix that reads as done")
+
+	partner, ok := doc.Components.Schemas["PartnerReservationCreate"]
+	if !ok {
+		t.Fatal("no PartnerReservationCreate schema")
+	}
+	if _, present := partner.Value.Properties["seat_identities"]; present {
+		t.Fatal("PartnerReservationCreate declares seat_identities: a credentialled seated sale " +
+			"would carry the credential's channel into a claim path that ignores allocations " +
+			"entirely, which is the half-fix TKT-176 exists to prevent. If seated partner sales " +
+			"are wanted, that is TKT-176's design, not a schema addition here.")
+	}
+	// And the partner body still cannot name one directly either.
+	if _, present := partner.Value.Properties["channel_code"]; present {
+		t.Fatal("PartnerReservationCreate declares channel_code: a partner's channel must come " +
+			"from its credential and nothing else (ADR-056)")
 	}
 }

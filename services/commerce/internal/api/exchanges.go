@@ -383,13 +383,18 @@ func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType
 	// BOTH or NEITHER, gated on the RESELLER (ai-review [high] F2).
 	//
 	// Forwarding the channel whenever the source had one re-opens the bypass this
-	// ticket exists to close, one step removed in time. A PUBLIC reserve still
-	// persists whatever channel_code its unauthenticated body named -- it is used for
-	// fee resolution and reporting, and only the inventory forward was withheld. So a
-	// public buyer could name a reseller's channel, and a later exchange of that order
-	// would present the channel to inventory with no reseller identity, consuming an
-	// unbound allocation that nobody authorized them to touch. Every allocation is
-	// unbound today, so it would have been reachable on day one.
+	// ticket exists to close, one step removed in time. Until TKT-248, a PUBLIC
+	// reserve persisted whatever channel_code its unauthenticated body named -- used
+	// for fee resolution and reporting, with only the inventory forward withheld. So
+	// a public buyer could name a reseller's channel, and a later exchange of that
+	// order would present the channel to inventory with no reseller identity,
+	// consuming an unbound allocation nobody authorized them to touch. Every
+	// allocation is unbound today, so it was reachable on day one.
+	//
+	// TKT-248 / ADR-060 removed that field, so no NEW public reservation can carry a
+	// channel. Rows written before it still can, which is exactly why this gate
+	// stays: it is now belt-and-braces for new rows and load-bearing for historical
+	// ones.
 	//
 	// The reseller is the authority, not the channel: a source with no reseller was
 	// never an authorized channelled sale, whatever its channel_code says. Gating on

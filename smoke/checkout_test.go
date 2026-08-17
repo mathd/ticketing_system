@@ -1118,3 +1118,114 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 			"owed to somebody", feeLines, sawFee, feeTotal)
 	}
 }
+
+// The REVERSAL: incidence varies while the caller identity is held fixed the other
+// way round (TKT-248, ai-review [medium]).
+//
+// WHY THIS EXISTS. TKT-248 had to change the test above from two-channels to
+// partner-vs-public, because a public request can no longer name a channel and the
+// smoke stack enrols exactly one partner credential. That left its two arms
+// differing in THREE things at once: incidence, channel presence, and whether the
+// caller was authenticated. A build that ignored `incidence` entirely and instead
+// treated channel-less fees as passed-on and channel-scoped fees as absorbed would
+// satisfy every assertion up there.
+//
+// This test swaps ONLY the incidences on its own event: public/absorbed and
+// partner/passed_on. Read together the two tests hold the identity axis constant
+// across a flipped incidence, so nothing but `incidence` can explain both results.
+// Neither is sufficient alone; do not delete one because the other looks similar.
+func TestFeeIncidenceIsNotAProxyForTheCallerIdentity(t *testing.T) {
+	slot, ticketType := setupCheckoutOffer(t, "tkt248rev")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cat, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cat.Close(ctx) }()
+
+	var eventID string
+	if err = cat.QueryRow(ctx, `SELECT p.event_id FROM ticket_types t
+		JOIN performances p ON p.id = t.performance_id WHERE t.id = $1`, ticketType).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+
+	partnerCh := partnerChannel()
+	if partnerCh == "" {
+		t.Fatal("SMOKE_PARTNER_CHANNEL is not set")
+	}
+	// The incidences are the MIRROR of the test above: public absorbed, partner
+	// passed_on. Same amount, same code, same scope.
+	for _, r := range []struct {
+		channel   *string
+		incidence string
+	}{
+		{nil, "absorbed"},         // public: the organizer bears it
+		{&partnerCh, "passed_on"}, // partner channel: the buyer pays it
+	} {
+		if _, err = cat.Exec(ctx, `INSERT INTO fee_rules
+			(organizer_id, scope_level, scope_id, fee_code, basis, amount, currency, incidence, channel_code)
+			VALUES($1,'event',$2,'service','per_ticket_fixed',300,'EUR',$3,$4)`,
+			organizerID, eventID, r.incidence, r.channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
+	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
+		"organizer_id": organizerID,
+		"allocations": []map[string]any{
+			// Exactly the 2 the partner arm buys; capacity is 5 and an allocation
+			// reserves its cap away from the public pool.
+			{"channel": partnerCh, "cap": 2, "sold_by": partnerReseller()},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("allocate the partner channel: %d %s", code, body)
+	}
+
+	reserve := func(partner bool, key string) map[string]any {
+		t.Helper()
+		var code int
+		var body []byte
+		req := map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2}
+		if partner {
+			code, body = partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations", key, req)
+		} else {
+			code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", key, req)
+		}
+		if code != 201 {
+			t.Fatalf("reserve (partner=%v): %d %s", partner, code, body)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(body, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// PUBLIC is the absorbed arm here, and PARTNER is the passed-on one — the
+	// opposite of the test above.
+	publicRes := reserve(false, "tkt248rev-public")
+	partnerRes := reserve(true, "tkt248rev-partner")
+
+	const feeTotal = float64(600)
+	face := publicRes["face_value"].(float64)
+	if face <= 0 {
+		t.Fatalf("face_value = %v", publicRes["face_value"])
+	}
+	if partnerRes["face_value"] != face {
+		t.Errorf("face values differ (%v vs %v) — only the incidence was supposed to change",
+			face, partnerRes["face_value"])
+	}
+	if publicRes["amount"] != face {
+		t.Errorf("the PUBLIC total = %v, want the bare face %v: its rule is ABSORBED here, so a "+
+			"public sale must NOT be charged the fee. If this reads face+fee, incidence is being "+
+			"inferred from the caller rather than from the rule.", publicRes["amount"], face)
+	}
+	if partnerRes["amount"] != face+feeTotal {
+		t.Errorf("the PARTNER total = %v, want face %v + %v: its rule is PASSED_ON here. If this "+
+			"reads the bare face, incidence is being inferred from the channel rather than from "+
+			"the rule.", partnerRes["amount"], face, feeTotal)
+	}
+}
