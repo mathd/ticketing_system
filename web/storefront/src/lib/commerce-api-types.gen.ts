@@ -435,14 +435,6 @@ export interface components {
             organizer_id: string;
             /** Format: uuid */
             ticket_type_id: string;
-            /**
-             * @description The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
-             *     OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
-             *     It reaches catalog's fee resolution and STOPS THERE. Inventory's own channel_code is what channel allocations cap consumption against, so a channelled sale still takes that channel's fees while consuming public inventory. That is a known, open defect and TKT-246 owns it.
-             *     Forwarding this field to inventory is necessary but NOT sufficient, and must not be done alone: this operation is unauthenticated and takes the channel from the request body, so forwarding without an authorization rule would let any caller consume a reseller's allocation. Closing the seam means the allocation itself says who may sell it.
-             *     The SEATED half of this remains open and belongs to TKT-176: a seated claim carries no channel and ignores allocations entirely.
-             */
-            channel_code?: string;
             /** @description General admission: how many. Mutually exclusive with seat_identities. */
             quantity?: number;
             /** @description Reserved seating: exactly which seats, as stable "section/row/seat" identities read from the seat map. Mutually exclusive with quantity. The set is canonicalised (sorted, de-duplicated) by inventory, so [A,B] and [B,A] are the same request under one idempotency key — and the reservation's money follows the CLAIMED seat count, not the length of this array. */

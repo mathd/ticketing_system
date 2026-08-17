@@ -572,12 +572,6 @@ type ReservationFeeBreakdownIncidence string
 
 // ReservationCreate Exactly one of `quantity` (general admission) or `seat_identities` (reserved seating, TKT-173) — never both, never neither. That XOR is expressed by the property counts rather than a top-level `oneOf`: with two required properties, two optional ones and no additional properties allowed, `minProperties: 3` / `maxProperties: 3` admits exactly one of the alternatives. `oneOf` would be the obvious spelling and is avoided deliberately — the generator turns a top-level union into a json.RawMessage with As…/From… accessors instead of a usable request struct, which is a worse contract bought with a worse API. The handler enforces the same XOR independently; a caller invoking it directly must not be able to slip past the schema.
 type ReservationCreate struct {
-	// ChannelCode The sales channel this purchase is made through, selecting which fee rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) -- there is no channel registry, and inventing one here would decide TKT-17's story.
-	// OMITTING it is the default/public context, in which only channel-agnostic fee rules are eligible. It is NOT a wildcard: a channel-specific rule never applies to a sale that named no channel.
-	// It reaches catalog's fee resolution and STOPS THERE. Inventory's own channel_code is what channel allocations cap consumption against, so a channelled sale still takes that channel's fees while consuming public inventory. That is a known, open defect and TKT-246 owns it.
-	// Forwarding this field to inventory is necessary but NOT sufficient, and must not be done alone: this operation is unauthenticated and takes the channel from the request body, so forwarding without an authorization rule would let any caller consume a reseller's allocation. Closing the seam means the allocation itself says who may sell it.
-	// The SEATED half of this remains open and belongs to TKT-176: a seated claim carries no channel and ignores allocations entirely.
-	ChannelCode *string            `json:"channel_code,omitempty"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 
 	// Quantity General admission: how many. Mutually exclusive with seat_identities.

@@ -657,44 +657,44 @@ components:
         not be able to slip past the schema.
       required: [organizer_id, ticket_type_id]
       minProperties: 3
-      maxProperties: 4
+      # Back to 3 with channel_code removed (TKT-248): two required properties plus
+      # exactly one of the two alternatives. It was 4 while channel_code was an
+      # optional fourth.
+      maxProperties: 3
       # maxProperties alone STOPS expressing the XOR once a fifth property
       # exists (TKT-215): {organizer_id, ticket_type_id, quantity,
       # seat_identities} is four properties and would be admitted. `not` restores
       # it explicitly. It is invisible to the code generator -- which is what
       # ruled out a top-level oneOf -- so the request struct is unchanged.
+      #
+      # KEPT even though maxProperties: 3 now excludes that shape on its own. The
+      # count is a coincidence of today's field list -- it was 4 yesterday and a
+      # future optional property makes it 4 again -- while `not` says the XOR
+      # directly and stays true either way (TKT-248).
       not:
         required: [quantity, seat_identities]
       properties:
         organizer_id: {type: string, format: uuid}
         ticket_type_id: {type: string, format: uuid}
-        channel_code:
-          description: >
-            The sales channel this purchase is made through, selecting which fee
-            rules apply (TKT-215, ADR-046 §4). An exact opaque string (ADR-024) --
-            there is no channel registry, and inventing one here would decide
-            TKT-17's story.
-
-            OMITTING it is the default/public context, in which only
-            channel-agnostic fee rules are eligible. It is NOT a wildcard: a
-            channel-specific rule never applies to a sale that named no channel.
-
-            It reaches catalog's fee resolution and STOPS THERE. Inventory's own
-            channel_code is what channel allocations cap consumption against, so a
-            channelled sale still takes that channel's fees while consuming public
-            inventory. That is a known, open defect and TKT-246 owns it.
-
-            Forwarding this field to inventory is necessary but NOT sufficient, and
-            must not be done alone: this operation is unauthenticated and takes the
-            channel from the request body, so forwarding without an authorization
-            rule would let any caller consume a reseller's allocation. Closing the
-            seam means the allocation itself says who may sell it.
-
-            The SEATED half of this remains open and belongs to TKT-176: a seated
-            claim carries no channel and ignores allocations entirely.
-          type: string
-          minLength: 1
-          maxLength: 100
+        # NO `channel_code` (TKT-248, ADR-060). It was here until this operation's
+        # channel became an ENTITLEMENT question rather than a routing one.
+        #
+        # This operation is unauthenticated, and catalog resolves BOTH fee rules
+        # (ADR-046 §4) and -- since TKT-237 -- PRICE rules on the channel. So a
+        # body-supplied channel let a public caller choose their own price basis,
+        # and an `absorbed` fee rule made that a SMALLER charge with the organizer
+        # bearing the difference: a revenue leak, not a reporting artifact.
+        #
+        # Removing the property rather than validating it is the guard, exactly as
+        # PartnerReservationCreate already does: with `additionalProperties: false`
+        # the field is UNSUBMITTABLE, so there is no value to check and no check to
+        # get wrong. The handler refuses it too, for the day this contract is
+        # edited; that is a second line, not the mechanism.
+        #
+        # A partner's channel comes from its ADR-056 credential and nowhere else.
+        # The channels REGISTRY is untouched by this: it remains a lookup and not a
+        # sale constraint (ADR-024), and an unregistered or retired code still sells
+        # verbatim for an authenticated partner.
         quantity: {type: integer, minimum: 1, maximum: 50, description: 'General admission: how many. Mutually exclusive with seat_identities.'}
         seat_identities:
           type: array

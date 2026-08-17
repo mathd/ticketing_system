@@ -532,10 +532,17 @@ func validReservationShape(in reserveRequest) bool {
 // this ships the bypass would be live for exactly the allocations it is meant to
 // protect. The public route is therefore kept unable to reach the decision at all.
 //
-// The residual: a public sale naming a reseller channel still PRICES under that
-// channel's fee rules while consuming public stock. That is a fee-attribution defect,
-// not an inventory-theft one, and it is TKT-247's. Moving inventory now requires a
-// credential.
+// The residual was: a public sale naming a reseller channel still PRICES under that
+// channel's fee rules while consuming public stock -- a fee-attribution defect, not
+// an inventory-theft one, since moving inventory already required a credential.
+// (This comment said "TKT-247's", which was wrong: TKT-247 is a scanner-device
+// flake. It was TKT-248's.)
+//
+// CLOSED by TKT-248 / ADR-060, and closed by removing the capability rather than
+// checking it: `channel_code` no longer exists on ReservationCreate, so a public
+// caller cannot name a channel at all. A channel now reaches pricing only from an
+// authenticated partner credential -- which is also why this function's nil-scope
+// early return is the whole public story.
 func addSellerScope(body map[string]any, scope *partnerScope) {
 	if scope == nil {
 		return
@@ -633,6 +640,25 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 		// for the day that contract is edited, and it must not depend on the first.
 		channel := scope.ChannelCode
 		in.ChannelCode = &channel
+	} else if in.ChannelCode != nil {
+		// A PUBLIC caller may not name a channel at all (TKT-248, ADR-060).
+		//
+		// The real guard is that the field no longer exists on ReservationCreate,
+		// so with `additionalProperties: false` the contract refuses it at the edge
+		// and it is UNSUBMITTABLE rather than validated. This is the second line of
+		// defence, for the day that contract is edited -- the same reasoning as the
+		// partner overwrite above, and it must not depend on the first.
+		//
+		// Why it is refused rather than silently cleared: this route is
+		// unauthenticated, and catalog resolves BOTH fee rules (ADR-046 §4) and,
+		// since TKT-237, PRICE rules on the channel. So a body-supplied channel is a
+		// caller choosing their own price basis, and an `absorbed` fee rule makes
+		// that a smaller charge with the organizer eating the difference -- a
+		// revenue leak, not a reporting artifact. Clearing it silently would price
+		// them correctly while telling them nothing; a partner integrator who lost
+		// their credential would then be quietly under-billed instead of told.
+		write(w, 400, map[string]string{"error": "channel_code is not accepted on a public reservation"})
+		return
 	}
 	if !validReservationShape(in) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})

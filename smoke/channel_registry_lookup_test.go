@@ -42,6 +42,27 @@ package smoke_test
 // commit — see ADR-024 for the reasoning it would be overturning (historical
 // attribution must survive a channel being retired, which is why there is no FK).
 // Do not delete them to make a build green.
+//
+// TKT-248 UPDATE — the public half was narrowed, and this is the "say why".
+//
+// Under TKT-248, public reservations may not name a channel; the public half is
+// therefore narrowed to the refusal boundary, while the partner half remains the
+// end-to-end proof that an unregistered credential channel sells verbatim.
+// ADR-024's registry-as-lookup decision is unchanged.
+//
+// The distinction that makes this a narrowing rather than an overturning: there
+// were always two questions behind one field, and only the second one moved.
+//
+//	Is the code REGISTERED?  -> do not gate on it. Retired channels keep selling,
+//	                            historical attribution survives. ADR-024. UNCHANGED.
+//	Is the caller ENTITLED?  -> no, unless authenticated. ADR-060. THIS is new.
+//
+// Nothing on the sale path reads catalog's `channels` table, before or after. The
+// public half could not keep its old assertion because the capability it exercised
+// — a public caller naming a channel — was itself the defect (catalog resolves fee
+// AND price rules on the channel, so an `absorbed` rule undercharged the buyer and
+// the organizer bore it). The claim it used to prove now lives entirely in the
+// partner half below, which is untouched.
 
 import (
 	"context"
@@ -385,80 +406,49 @@ func checkoutReservation(t *testing.T, reservationID, key string) {
 	}
 }
 
-// TestAPublicSaleOnAnUnregisteredChannelCompletesEndToEnd is the public half of
-// TKT-241's claim.
+// TestAPublicSaleMayNotNameAChannelAtAll is the public half, NARROWED by TKT-248.
 //
-// The invariant: a channel code with no registry row prices, reserves, charges and
-// orders exactly as one with a row would, and is recorded verbatim on the order.
+// It used to assert that a public sale on an UNREGISTERED channel priced, reserved,
+// charged and ordered exactly as a registered one would -- TKT-241's
+// registry-is-a-lookup claim, proven end to end through the gateway.
 //
-// Unlike the inventory-store test this supersedes in scope, the sale here crosses
-// every layer a registry lookup could be added to — catalog price resolution, fee
-// resolution, split resolution, commerce orchestration, inventory and payments —
-// so a gate introduced at ANY of them turns this red.
-func TestAPublicSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
+// That scenario no longer exists. ADR-060 made naming a channel an ENTITLEMENT
+// question: `channel_code` is gone from ReservationCreate, so a public caller
+// cannot name any channel, registered or not. The old assertion could only be
+// preserved by keeping the capability that was the defect.
+//
+// WHAT THIS DOES NOT MEAN. ADR-024 is NOT overturned and the registry is still a
+// lookup, not a sale constraint. Nothing on the sale path reads catalog's
+// `channels` table, and an unregistered or retired code still sells verbatim --
+// that claim moved intact to the PARTNER half below, which is unchanged and is now
+// the sole end-to-end proof of it. The difference between the two halves is
+// authorization, not registration.
+//
+// So this half now pins the boundary that replaced it: the public route refuses the
+// field. If it ever goes green with a channel accepted, the entitlement is gone and
+// the fee/price leak is back.
+func TestAPublicSaleMayNotNameAChannelAtAll(t *testing.T) {
 	ctx := t.Context()
 	channel := tkt241Code(t, "public")
 	requireNotInRegistry(t, ctx, channel)
 
-	_, ticketType := publishedSlot(t, "TKT-241 Public Hall", 20)
-	payeeID := seedChannelFeeAndSplit(t, ctx, eventOf(t, ctx, ticketType), channel)
-
-	// NO inventory allocation for this code, and that is not an omission: the
-	// public route forwards no channel to inventory at all, so the hold is a
-	// public-pool hold and an allocation would be inert. addSellerScope returns
-	// early on a nil scope and is the single place a channel may reach inventory
-	// (services/commerce/internal/api/server.go:519-545, TKT-246). The IS NULL
-	// assertion below is what turns that reading into an executed fact.
-	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt241-public-"+channel,
+	_, ticketType := publishedSlot(t, "TKT-248 Public Hall", 20)
+	// NO fee/split seed, and that is deliberate rather than an omission: the
+	// request is refused before catalog is consulted at all, so a seeded rule could
+	// not affect the outcome and would be a decorative fixture implying this test
+	// observes a layer it never reaches (TKT-241's own lesson). The economics are
+	// asserted where they are decided, in
+	// services/commerce/internal/api/catalog_fees_test.go.
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt248-public-"+channel,
 		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType,
 			"quantity": 2, "channel_code": channel})
-	if code != http.StatusCreated {
-		t.Fatalf("reserve on unregistered channel %q: %d %s — an unregistered code must sell "+
-			"exactly as a registered one does (ADR-024). If something now consults catalog's "+
-			"channels registry on the sale path, that is the regression this test exists to "+
-			"catch; see the file header before changing this.", channel, code, body)
-	}
-	assertPassedOnFee(t, body, 2)
-
-	var reservation struct {
-		ID     string `json:"reservation_id"`
-		HoldID string `json:"hold_id"`
-	}
-	if err := json.Unmarshal(body, &reservation); err != nil {
-		t.Fatal(err)
-	}
-	// The split half of the traversal, observed rather than assumed (ai-review
-	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
-	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
-	checkoutReservation(t, reservation.ID, "tkt241-public-order-"+channel)
-
-	resChannel, orderChannel := commerceAttribution(t, ctx, reservation.ID)
-	if got := mustString(t, resChannel, "reservations.channel_code"); got != channel {
-		t.Fatalf("reservations.channel_code = %q, want %q verbatim", got, channel)
-	}
-	if got := mustString(t, orderChannel, "orders.channel_code"); got != channel {
-		t.Fatalf("orders.channel_code = %q, want %q verbatim — the code must survive the sale "+
-			"unmodified: no trimming, folding or normalisation (ADR-024, channels are exact "+
-			"opaque strings)", got, channel)
-	}
-
-	// And the CLAIM carries no channel. A second tripwire beside
-	// services/commerce/internal/api/channel_seam_test.go, one tier lower — that
-	// one pins the hold BODY commerce sends against a stub; this pins what the real
-	// inventory actually stored.
-	//
-	// It is asserted positively rather than left implied because the public/partner
-	// asymmetry is the reason TKT-241 is two tests instead of one, and because the
-	// repo contains a comment that reads the other way: smoke/checkout_test.go:906
-	// says a public channelled sale needs an inventory allocation. That was true
-	// while TKT-240's forward was in place and it was REVERTED — the forward let an
-	// unauthenticated caller drain a reseller's allocation. If this assertion ever
-	// goes red, the forward is back and the bypass with it; the fix is TKT-246's
-	// authorization shape, not deleting this line.
-	if got := claimAttribution(t, ctx, reservation.HoldID); got != nil {
-		t.Fatalf("claims.channel_code = %q for a PUBLIC sale, want NULL — the unauthenticated "+
-			"route is forwarding a body-supplied channel to inventory, which is the TKT-240 "+
-			"bypass its revert exists to prevent", *got)
+	if code != http.StatusBadRequest {
+		t.Fatalf("a public reserve naming channel %q answered %d, want 400: %s\n"+
+			"The public route is unauthenticated, and catalog resolves both fee (ADR-046) and "+
+			"price (TKT-237) rules on the channel -- so a body-supplied channel lets a caller "+
+			"choose their own price basis, and an `absorbed` fee makes that a SMALLER charge with "+
+			"the organizer bearing the difference. A partner's channel comes from its credential "+
+			"(ADR-056) and a public sale has none. TKT-248/ADR-060.", channel, code, body)
 	}
 }
 

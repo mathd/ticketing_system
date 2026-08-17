@@ -298,18 +298,41 @@ func feeStack(t *testing.T, feeStatus int, feeBody string) (*Server, *string, *b
 	return s, &askedFor, &inventoryCalled, func() { catalog.Close(); inventory.Close() }
 }
 
+// reserveInChannel drives one reserve that carries a channel.
+//
+// It goes through the PARTNER path (TKT-248). It used to post `channel_code` in a
+// public request body, and that is no longer a thing a caller can do: ADR-060 made
+// the channel an entitlement, so the field is gone from ReservationCreate and a
+// public request naming one is refused before any of this.
+//
+// The guards these tests exercise -- that the channel reaches catalog's price and
+// fee resolution, and that catalog's ECHO is validated against what was asked
+// (TKT-215, TKT-237) -- are all still real and all still matter. They simply live
+// on the authenticated path now, which is the only path a channelled sale exists
+// on. Routing them here keeps them asserting the mechanism instead of a scenario
+// nobody can reach.
+//
+// `channel == ""` still means a public, channel-less reserve, so the callers that
+// assert "no channel sends no parameter" keep testing exactly what they did.
 func reserveInChannel(t *testing.T, s *Server, key, channel string) *httptest.ResponseRecorder {
 	t.Helper()
-	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2`
-	if channel != "" {
-		body += `,"channel_code":"` + channel + `"`
-	}
-	body += `}`
+	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2}`
 	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", key)
 	res := httptest.NewRecorder()
-	s.Router(nil, true).ServeHTTP(res, req)
+	if channel == "" {
+		s.Router(nil, true).ServeHTTP(res, req)
+		return res
+	}
+	// The credential is the only source of a channel. Calling reserveWithScope
+	// directly is how the partner route reaches it (partner.go:82) once the
+	// credential has been resolved.
+	s.reserveWithScope(res, req, &partnerScope{
+		OrganizerID: uuid.MustParse(pricingOrg),
+		ChannelCode: channel,
+		ResellerID:  uuid.MustParse(pricingReseller),
+	})
 	return res
 }
 
@@ -410,10 +433,16 @@ func feeBodyWithFee(winner string) string {
 //
 // It used to be expressed by property COUNT alone — two required, two optional,
 // minProperties 3 / maxProperties 3 admits exactly one of quantity and
-// seat_identities. Adding channel_code raises the ceiling to 4, and
+// seat_identities. Adding channel_code raised the ceiling to 4, and
 // {organizer_id, ticket_type_id, quantity, seat_identities} is also four. The
-// count stops carrying the invariant at exactly that moment, which is why `not`
+// count stopped carrying the invariant at exactly that moment, which is why `not`
 // was added alongside it.
+//
+// TKT-248 removed channel_code, so the ceiling is back to 3 and the count would
+// once again exclude that shape on its own. `not` STAYS: the count matching is a
+// coincidence of today's field list — it was 4 yesterday and the next optional
+// property makes it 4 again — while `not` says the XOR directly. The "both" row
+// below must keep failing for the RULE, not for the arithmetic.
 //
 // The handler enforces the XOR independently, so this is not an exploitable
 // hole; the schema's own description is what says a direct caller "must not be
@@ -439,14 +468,20 @@ func TestTheContractRefusesBothQuantityAndSeats(t *testing.T) {
 			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT, "seat_identities": []any{"A/1/1"}},
 			valid: true,
 		},
-		"general admission in a channel": {
+		// INVERTED BY TKT-248. These two read `valid: true` until the public
+		// reservation lost `channel_code` entirely (ADR-060). They are kept as
+		// REFUSAL rows rather than deleted, because the schema is the real guard
+		// here -- the field is unsubmittable, not validated -- and a deleted row
+		// asserts nothing. Re-adding the property to ReservationCreate turns both
+		// red.
+		"general admission naming a channel": {
 			body:  map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT, "quantity": 2, "channel_code": "reseller"},
-			valid: true,
+			valid: false,
 		},
-		"seated in a channel": {
+		"seated naming a channel": {
 			body: map[string]any{"organizer_id": pricingOrg, "ticket_type_id": pricingTT,
 				"seat_identities": []any{"A/1/1"}, "channel_code": "reseller"},
-			valid: true,
+			valid: false,
 		},
 		// The row this test exists for. Four properties, so the count alone
 		// admits it.
@@ -839,5 +874,217 @@ func TestReplacementGrossCarriesTheFeeAndRefusesOverflow(t *testing.T) {
 				t.Errorf("replacementGross = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A public sale is priced on PUBLIC economics; a partner sale on its channel's —
+// and the money is asserted, not just the refusal (TKT-248, ADR-060).
+//
+// This is the assertion the ticket's COS asks for and the one a refusal-only test
+// cannot make. The leak this ticket closes was never visible as an error: catalog
+// resolves both PRICE (TKT-237) and FEE (ADR-046 §4) rules on the channel, so a
+// public caller naming a reseller's channel was quoted that channel's economics.
+// With `incidence: absorbed` the buyer is charged LESS — the organizer bears the
+// fee out of face value (ADR-046 §3) — so the defect SHOWS UP AS A SMALLER CHARGE.
+//
+// Asserted at the CATALOG BOUNDARY, which is where the money is decided and where
+// the leak crosses. It cannot be read off the reserve response: these fakes run
+// with a nil database, so the success path that returns `amount` would panic on
+// the insert, and the 409 that stops the run carries no quote. What commerce asks
+// catalog for IS the economics — that is the point of the ticket.
+//
+// Expected values are derived from the requirement, not observed from a run:
+// passed_on is added to the buyer's charge, absorbed is not (ADR-046 §3). An
+// expectation read off the code would have blessed the defect.
+//
+// WHAT EACH SEED IS FOR — "if I delete this, what goes red?":
+//   - the channel-agnostic price + passed_on fee: the public assertion.
+//   - the RESELLER absorbed fee: load-bearing. It is what makes the two paths cost
+//     DIFFERENT amounts. The final check asserts they differ, so a fixture whose
+//     channels are economically identical fails loudly instead of passing
+//     vacuously.
+func TestAPublicSaleIsPricedPubliclyAndAPartnerSaleOnItsChannel(t *testing.T) {
+	const (
+		publicUnit   = 2500 // channel-agnostic price rule
+		publicFee    = 300  // channel-agnostic, passed_on -> reaches the buyer
+		resellerUnit = 2000 // the reseller channel's price rule: cheaper
+		resellerFee  = 300  // reseller channel, absorbed -> never reaches the buyer
+		quantity     = 2
+	)
+	// From the requirement (ADR-046 §3), not from a run.
+	wantPublicPerTicket := int64(publicUnit + publicFee) // passed_on is added
+	wantPartnerPerTicket := int64(resellerUnit)          // absorbed is not
+
+	type asked struct {
+		price, fees             string
+		priceCalled, feesCalled bool
+	}
+	drive := func(t *testing.T, channel string) (asked, int64) {
+		t.Helper()
+		var got asked
+		var unit, passedOn int64
+		catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			// Answer for whichever channel was ASKED about. This is what lets the
+			// fixture show the leak: if the public path ever forwarded a channel
+			// again, it would be served the reseller economics here and the public
+			// assertion below would fail.
+			q := r.URL.Query().Get("channel_code")
+			var ch *string
+			u, f, incidence := int64(publicUnit), int64(publicFee), incidencePassedOn
+			if q != "" {
+				c := q
+				ch = &c
+				u, f, incidence = resellerUnit, resellerFee, incidenceAbsorbed
+			}
+			chJSON := "null"
+			if ch != nil {
+				chJSON = `"` + *ch + `"`
+			}
+			if strings.HasSuffix(r.URL.Path, "/fee-resolution") {
+				got.fees, got.feesCalled = r.URL.RawQuery, true
+				if incidence == incidencePassedOn {
+					passedOn = f * quantity
+				}
+				_, _ = w.Write([]byte(`{"resolver_version":1,"evaluated_at":"2026-08-17T00:00:00Z",` +
+					`"organizer_id":"` + pricingOrg + `","performance_id":"` + pricingSlot + `",` +
+					`"currency":"EUR","channel_code":` + chJSON + `,"fees":[{"fee_code":"s","winner":` +
+					`{"rule_id":"22222222-2222-2222-2222-222222222222","fee_code":"s",` +
+					`"basis":"per_ticket_fixed","amount":` + itoa(f) + `,"rate_bps":null,` +
+					`"currency":"EUR","incidence":"` + incidence + `"}}]}`))
+				return
+			}
+			got.price, got.priceCalled = r.URL.RawQuery, true
+			unit = u
+			_, _ = w.Write([]byte(resolutionBodyFor(u, true, ch)))
+		}))
+		defer catalog.Close()
+		inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(409) // stop after the quote; the money is decided by now
+			_, _ = w.Write([]byte(`{"error":"unavailable"}`))
+		}))
+		defer inventory.Close()
+
+		srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+		// The PUBLIC case posts a body that NAMES a reseller channel, through the
+		// unvalidated router. That is the whole point: a channel-free public body
+		// has nothing to leak, so a fixture built from one stays green with the
+		// guard deleted and proves nothing. Driving the request the ATTACKER would
+		// send is what makes this able to fail. The partner case takes its channel
+		// from the credential, as the real path does.
+		if channel == "" {
+			req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(
+				`{"organizer_id":"`+pricingOrg+`","ticket_type_id":"`+pricingTT+
+					`","quantity":`+itoa(quantity)+`,"channel_code":"reseller-acme"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "tkt248-public-"+t.Name())
+			// The HANDLER, not the router: request validation is unconditional
+			// (Router's bool is validateRESPONSES), so the schema would refuse this
+			// body first and this test would be about the schema. reserveWithScope
+			// with a nil scope IS the public path (server.go:595).
+			srv.reserveWithScope(httptest.NewRecorder(), req, nil)
+		} else {
+			reserveInChannel(t, srv, "tkt248-"+t.Name(), channel)
+		}
+		return got, unit + passedOn/quantity
+	}
+
+	t.Run("a public sale naming a channel is refused before any economics are decided", func(t *testing.T) {
+		got, _ := drive(t, "")
+		// The request NAMED reseller-acme. Before TKT-248 it would have been priced
+		// on that channel: catalog would have been asked for it and answered the
+		// cheaper, absorbed-fee economics below, and the buyer would have been
+		// charged LESS with the organizer bearing the difference.
+		if got.priceCalled || got.feesCalled {
+			t.Fatalf("commerce resolved economics for a public request that named a channel "+
+				"(price=%q fees=%q). The refusal must precede price and fee resolution — this is "+
+				"the leak TKT-248 closes, and reaching catalog at all means the channel was "+
+				"honoured (ADR-060).", got.price, got.fees)
+		}
+	})
+
+	t.Run("the public economics a refused caller cannot reach are genuinely cheaper", func(t *testing.T) {
+		// The fixture's own honesty check. The sub-test above asserts an ABSENCE,
+		// and an absence proves nothing if the two channels are economically
+		// identical — the leak would be invisible even with the guard gone. This
+		// pins the difference the fixture is built on, derived from ADR-046 §3.
+		if wantPublicPerTicket == wantPartnerPerTicket {
+			t.Fatalf("public (%d) and reseller (%d) economics are identical, so a leak would be "+
+				"undetectable and every assertion here is vacuous",
+				wantPublicPerTicket, wantPartnerPerTicket)
+		}
+		if wantPartnerPerTicket >= wantPublicPerTicket {
+			t.Fatalf("the reseller channel (%d) is not CHEAPER than public (%d); this ticket's "+
+				"defect is a buyer being charged LESS by naming someone else's channel, so the "+
+				"fixture must reproduce that direction", wantPartnerPerTicket, wantPublicPerTicket)
+		}
+	})
+
+	t.Run("a partner sale carries its credential's channel and takes its economics", func(t *testing.T) {
+		got, perTicket := drive(t, "reseller-acme")
+		if !strings.Contains(got.price, "channel_code=reseller-acme") {
+			t.Fatalf("catalog's PRICE resolution was asked %q, want channel_code=reseller-acme — "+
+				"a partner's channel comes from its credential and must still reach catalog", got.price)
+		}
+		if !strings.Contains(got.fees, "channel_code=reseller-acme") {
+			t.Fatalf("catalog's FEE resolution was asked %q, want channel_code=reseller-acme", got.fees)
+		}
+		if perTicket != wantPartnerPerTicket {
+			t.Fatalf("a partner sale was priced at %d per ticket, want %d (%d face; the ABSORBED "+
+				"fee must not be added to the buyer's charge, ADR-046 §3)",
+				perTicket, wantPartnerPerTicket, resellerUnit)
+		}
+	})
+
+}
+
+// A pre-TKT-248 public row that carried a channel does NOT replay under a
+// channel-less retry: it answers 409, and that is ACCEPTED behaviour (ADR-060).
+//
+// This test pins a known consequence so the claim cannot drift from the code — the
+// ADR-021 idiom. If it ever fails, the compatibility behaviour changed: update
+// ADR-060, do not delete this test.
+//
+// The behaviour: `channel_code` is gone from the public request, so a retry of a
+// reservation created before ADR-060 sends nil where the stored row has a channel.
+// sameTerms compares them exactly and refuses. A "legacy public replay" exception
+// was designed and REJECTED, because its only available predicate —
+// `channel_code IS NOT NULL AND reseller_id IS NULL` — is also the shape of a row
+// exchange_target_test.go calls "legal and routine", so it cannot distinguish what
+// it claims, and it would put a permanent conditional on a money path for a
+// transient condition.
+//
+// Why accepting it is safe: a 409 REFUSES rather than mischarges. The caller's
+// remedy is a new idempotency key. The alternative — replaying under relaxed terms
+// — is the one that could answer with the wrong money.
+func TestALegacyPublicRowWithAChannelDoesNotReplayChannelLess(t *testing.T) {
+	stored := "reseller-acme"
+	public := reserveRequest{
+		OrganizerID: uuid.MustParse(pricingOrg), TicketTypeID: uuid.MustParse(pricingTT),
+		Quantity: 2, ChannelCode: nil, // what a public caller can send after ADR-060
+	}
+
+	if sameTerms(public, 2, uuid.MustParse(pricingTT), &stored, nil) {
+		t.Fatal("a channel-less public retry matched a stored row that carries a channel. " +
+			"That would replay a reservation priced on a channel's economics under a request " +
+			"that named none — the terms are not the same and must not be treated as such. " +
+			"If relaxing this was deliberate, ADR-060's Consequences section is now wrong.")
+	}
+
+	// The control, so the assertion above cannot pass merely because sameTerms
+	// refuses everything: identical terms still match.
+	if !sameTerms(public, 2, uuid.MustParse(pricingTT), nil, nil) {
+		t.Fatal("a channel-less retry of a channel-less row was refused; sameTerms is refusing " +
+			"terms that ARE the same, and the assertion above proves nothing")
+	}
+
+	// And a partner row still replays on its own channel — unchanged by TKT-248.
+	partner := public
+	partner.ChannelCode = &stored
+	if !sameTerms(partner, 2, uuid.MustParse(pricingTT), &stored, nil) {
+		t.Fatal("a partner retry carrying its credential's channel no longer matches its own " +
+			"stored row: TKT-248 must not have changed the authenticated path")
 	}
 }
