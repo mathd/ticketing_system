@@ -3,8 +3,10 @@
   "type": "Task",
   "classification": "simple",
   "summary": "`make up` fails on the in-Docker scanner build (typescript@7.0.2), and four tickets have worked around it",
-  "status": "Ready",
-  "labels": [],
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
   "assignee": "agent",
   "pr": null,
   "links": [],
