@@ -136,6 +136,84 @@ func TestSanitizedPathHandlesTrailingSlash(t *testing.T) {
 	}
 }
 
+// Non-canonical spellings of a declared route must not evade the table.
+//
+// Found by probing rather than by reasoning, and every one of them was reaching
+// the logger: RequestLogger is mounted OUTSIDE the mux, so it writes the path
+// before any router normalises or rejects it — the request does not even have to
+// succeed, a 404 logs the same line. The earlier tests missed this because their
+// fixture only ever built canonical paths: a fixture that cannot reach the
+// failing state (AGENTS.md).
+//
+// These are not exotic. A double slash is what a misjoined base URL produces,
+// and case variance is what a hand-typed or proxied URL produces. Confirmed
+// end-to-end through the real logger before this test was written.
+//
+// Mutation this must catch: delete the canonicalisation in the matcher.
+func TestSanitizedPathIsNotEvadedByNonCanonicalSpellings(t *testing.T) {
+	for _, in := range []string{
+		"/API/ACCESS/orders/" + capRef + "/tickets",   // upper-case literals
+		"/Api/Access/Orders/" + capRef + "/Tickets",   // mixed case
+		"//api/access/orders/" + capRef + "/tickets",  // leading double slash
+		"/api/access//orders/" + capRef + "/tickets",  // interior double slash
+		"/api/access/orders/" + capRef + "/tickets//", // double trailing slash
+		"/api/access/./orders/" + capRef + "/tickets", // dot segment
+		"/EN/tickets/" + capRef,                       // storefront, upper locale
+		"//en/tickets/" + capRef,
+	} {
+		if got := obs.SanitizedPath(in); strings.Contains(got, capRef) {
+			t.Errorf("non-canonical spelling leaked the reference:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+}
+
+// The storefront rule matches a LOCALE, not "any first segment" (ai-review F2).
+//
+// The gateway owns /admin/ and /scanner/ alongside the "/" catch-all, so a rule
+// keyed on "any first segment" blanks the last segment of /admin/tickets/123 and
+// /scanner/tickets/abc — destroying exactly the identifiers an operator needs to
+// diagnose a misroute or a 404, in namespaces that carry no capability at all.
+//
+// Mutation this must catch: widen the locale position back to a bare variable
+// segment.
+func TestSanitizedPathStorefrontRuleIsScopedToRealLocales(t *testing.T) {
+	// Gateway-owned namespaces and arbitrary first segments: never a capability.
+	for _, in := range []string{
+		"/admin/tickets/123",
+		"/scanner/tickets/abc",
+		"/foo/tickets/bar",
+		"/api/tickets/xyz",
+	} {
+		if got := obs.SanitizedPath(in); got != in {
+			t.Errorf("non-locale namespace was rewritten:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+	// The real locales still sanitize.
+	for _, in := range []string{"/en/tickets/" + capRef, "/fr/tickets/" + capRef} {
+		if got := obs.SanitizedPath(in); strings.Contains(got, capRef) {
+			t.Errorf("locale route not sanitized:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+}
+
+// Canonicalisation must not become a licence to reshape ordinary routes: the
+// logged path still has to describe what was actually requested.
+func TestSanitizedPathLeavesNonCanonicalOrdinaryRoutesAlone(t *testing.T) {
+	for _, in := range []string{
+		"/healthz",
+		"//healthz",
+		"/HEALTHZ",
+		"/api/catalog//events",
+		"/en/account",
+		"/admin/tickets/123",
+		"/scanner/tickets/abc",
+	} {
+		if got := obs.SanitizedPath(in); got != in {
+			t.Errorf("ordinary route was altered:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+}
+
 // Percent-encoding cannot evade the table: Go decodes r.URL.Path before any
 // handler sees it, so "%32f1e..." arrives as "2f1e...". Documented as a test so
 // the next reader does not have to re-derive it — denyEncodedSeparators running

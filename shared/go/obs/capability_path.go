@@ -50,7 +50,8 @@ import "strings"
 
 // segment describes one position in a declared route shape.
 type segment struct {
-	literal string // matched exactly when kind == segLiteral
+	literal string   // matched (case-insensitively) when kind == segLiteral
+	oneOf   []string // the closed set, when kind == segOneOf
 	kind    segmentKind
 }
 
@@ -61,11 +62,17 @@ const (
 	// /orders/{ref}/tickets from /orders/{id}/refunds.
 	segLiteral segmentKind = iota
 	// segAny is a variable segment that is NOT a capability and is preserved
-	// verbatim: the locale, and the ticket id on the QR route. Preserved
-	// deliberately — see capabilityPlaceholder's doc for why.
+	// verbatim: the ticket id on the QR route. Preserved deliberately — see
+	// capabilityPlaceholder's doc for why.
 	segAny
 	// segCapability is the redeemable secret. This, and only this, is replaced.
 	segCapability
+	// segOneOf matches a closed set of literals. It exists because "any first
+	// segment" is too wide for the storefront rule: the gateway also owns
+	// /admin/ and /scanner/, so a bare variable there redacted the last segment
+	// of /admin/tickets/123 — no capability, and the identifier an operator
+	// needs to diagnose a misroute (ai-review F2).
+	segOneOf
 )
 
 // capabilityPlaceholder replaces a capability segment in emitted telemetry.
@@ -77,9 +84,30 @@ const (
 // line (obs.go) and are not derived from the capability.
 const capabilityPlaceholder = ":capability"
 
-func lit(s string) segment  { return segment{literal: s, kind: segLiteral} }
-func anySeg() segment       { return segment{kind: segAny} }
-func capSeg() segment       { return segment{kind: segCapability} }
+func lit(s string) segment { return segment{literal: s, kind: segLiteral} }
+func anySeg() segment      { return segment{kind: segAny} }
+func capSeg() segment      { return segment{kind: segCapability} }
+
+func oneOf(values ...string) segment { return segment{oneOf: values, kind: segOneOf} }
+
+// StorefrontLocalesForTest exposes the locale set so the drift test can compare
+// it against the storefront's own source. Not part of the operational surface.
+func StorefrontLocalesForTest() []string {
+	out := make([]string, len(storefrontLocales))
+	copy(out, storefrontLocales)
+	return out
+}
+
+// storefrontLocales mirrors LOCALES in web/storefront/src/lib/locales.ts.
+//
+// Duplicated across a language boundary, and the drift FAILS OPEN: a locale
+// added to the storefront but not here means /<new-locale>/tickets/{ref} stops
+// being sanitised and the reference goes back into the logs, silently — no test
+// in this package can notice, because the shape it would need to test is the one
+// nobody declared. That is the worst failure direction, so it is pinned by
+// TestStorefrontLocalesMatchTheStorefront, which reads locales.ts and fails when
+// the two lists disagree.
+var storefrontLocales = []string{"en", "fr"}
 
 // capabilityRoutes is the declared set. Adding a capability-bearing URL means
 // adding a row here — that is the whole extension point (COS #2).
@@ -101,7 +129,11 @@ var capabilityRoutes = [][]segment{
 	// is the highest-volume spelling: a buyer hits it before any /api/access
 	// call is made, so a fix scoped to the API routes would leave the reference
 	// in the logs on every visit.
-	{anySeg(), lit("tickets"), capSeg()},
+	//
+	// The locale is a CLOSED SET, not a variable: the gateway also owns /admin/
+	// and /scanner/ under the same catch-all, and a bare variable here redacted
+	// the last segment of /admin/tickets/123 (ai-review F2).
+	{oneOf(storefrontLocales...), lit("tickets"), capSeg()},
 }
 
 // SanitizedPath returns path with any declared capability segment replaced by
@@ -116,36 +148,60 @@ func SanitizedPath(path string) string {
 		return path
 	}
 
-	// A single trailing slash is a different string, so "/orders/{ref}/tickets/"
-	// would miss a table matched on "/orders/{ref}/tickets" and the reference
-	// would be logged. Normalise for MATCHING, then restore for OUTPUT, so the
-	// logged shape still reflects what was actually requested.
-	trimmed := path
-	trailing := ""
-	if len(trimmed) > 1 && strings.HasSuffix(trimmed, "/") {
-		trimmed = strings.TrimSuffix(trimmed, "/")
-		trailing = "/"
-	}
-
-	parts := strings.Split(strings.TrimPrefix(trimmed, "/"), "/")
+	// MATCH ON A CANONICAL FORM, REWRITE THE ORIGINAL.
+	//
+	// The logger is mounted OUTSIDE the mux, so it sees the path exactly as it
+	// arrived — before any router normalises it, and whether or not the request
+	// goes on to 404. So every spelling that a client can put on the wire has to
+	// be matched, not just the one the router would settle on. Confirmed by
+	// probing: "//api/access/orders/{ref}/tickets",
+	// "/api/access/orders/{ref}/tickets//", "/API/ACCESS/..." and a "." segment
+	// all reached the log with the reference intact before this was added.
+	//
+	// Two rules, both narrow:
+	//   - empty and "." segments are dropped (a double slash is what a misjoined
+	//     base URL produces; "." is inert in a path);
+	//   - literal comparison is case-insensitive, because the routes this table
+	//     declares are all lower-case ASCII literals.
+	//
+	// Case-folding applies ONLY to the literal comparison. The capability and
+	// any other variable segment are never compared case-insensitively, and the
+	// value returned is built from the ORIGINAL segments, so the logged line
+	// still shows what was actually requested.
+	indices, canonical := canonicalSegments(path)
 
 	for _, route := range capabilityRoutes {
-		if len(parts) != len(route) {
+		if len(canonical) != len(route) {
 			continue
 		}
-		if !matches(parts, route) {
+		if !matches(canonical, route) {
 			continue
 		}
-		out := make([]string, len(parts))
-		copy(out, parts)
+		// Rewrite in place on the original segmentation, so a non-canonical
+		// spelling is reported as sent, minus the capability.
+		out := strings.Split(path, "/")
 		for i, seg := range route {
 			if seg.kind == segCapability {
-				out[i] = capabilityPlaceholder
+				out[indices[i]] = capabilityPlaceholder
 			}
 		}
-		return "/" + strings.Join(out, "/") + trailing
+		return strings.Join(out, "/")
 	}
 	return path
+}
+
+// canonicalSegments returns the significant segments of path, together with
+// their index in strings.Split(path, "/") so the caller can rewrite the original
+// spelling rather than a normalised one.
+func canonicalSegments(path string) (indices []int, segments []string) {
+	for i, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." {
+			continue
+		}
+		indices = append(indices, i)
+		segments = append(segments, seg)
+	}
+	return indices, segments
 }
 
 // matches reports whether parts satisfies every literal position in route.
@@ -158,7 +214,23 @@ func matches(parts []string, route []segment) bool {
 	for i, seg := range route {
 		switch seg.kind {
 		case segLiteral:
-			if parts[i] != seg.literal {
+			// EqualFold, not ==: "/API/ACCESS/orders/{ref}/tickets" is the same
+			// route to every server that will serve it, and it reached the log
+			// with the reference intact while this compared exactly. Every
+			// literal in the table is lower-case ASCII, so folding cannot widen
+			// the match onto a different route.
+			if !strings.EqualFold(parts[i], seg.literal) {
+				return false
+			}
+		case segOneOf:
+			var ok bool
+			for _, v := range seg.oneOf {
+				if strings.EqualFold(parts[i], v) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
 				return false
 			}
 		case segAny, segCapability:

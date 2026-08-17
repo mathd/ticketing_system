@@ -4,8 +4,16 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+// NewTracerProviderForTest builds a provider through the SAME code path Setup
+// uses, so a regression test observes the production wiring rather than a chain
+// it assembled itself. Not part of the operational surface.
+func NewTracerProviderForTest(exportProcessor sdktrace.SpanProcessor) *sdktrace.TracerProvider {
+	return newTracerProvider(exportProcessor, nil)
+}
 
 // The span sink (TKT-202).
 //
@@ -41,6 +49,29 @@ import (
 // This calls the same SanitizedPath as the loggers, against the same declared
 // route table. Two tables would be two sources of truth, and COS #2 — "the next
 // capability URL inherits the rule" — fails the moment they drift.
+
+// newTracerProvider builds the tracer provider Setup installs.
+//
+// It exists so the capability regression test can exercise the SAME construction
+// production uses, rather than assembling its own provider and installing the
+// processor by hand. That distinction is not cosmetic: with the test building
+// its own chain, deleting the processor from Setup left the whole suite green
+// while every service exported the capability (ai-review F3). The test that
+// matters is the one that fails when the WIRING is removed, not when the
+// processor is broken.
+func newTracerProvider(exportProcessor sdktrace.SpanProcessor, res *resource.Resource) *sdktrace.TracerProvider {
+	// The export processor is wrapped, not replaced: otelhttp puts the raw
+	// request path on every server span, so without this a capability-bearing
+	// segment reaches the collector on every guest request (TKT-202, ADR-012).
+	// One install here covers all six services.
+	opts := []sdktrace.TracerProviderOption{
+		sdktrace.WithSpanProcessor(CapabilitySpanProcessor(exportProcessor)),
+	}
+	if res != nil {
+		opts = append(opts, sdktrace.WithResource(res))
+	}
+	return sdktrace.NewTracerProvider(opts...)
+}
 
 // capabilityURLPathKey is the semconv attribute otelhttp writes the raw request
 // path to. Matched by name deliberately: the alternative is importing the

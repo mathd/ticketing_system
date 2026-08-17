@@ -23,11 +23,25 @@ import (
 // walk the real source, collect the call sites, allow a named closed set, fail on
 // anything new. Reusing that pattern rather than inventing a second one.
 //
-// SCOPE, stated honestly: this scans Go source for `X.URL.Path` passed as a
-// logging argument. It cannot see a path that reaches a log through a variable
-// assigned several statements earlier, nor one emitted by a dependency — the OTel
-// span attribute is exactly that case, and it is covered behaviourally instead by
-// capability_span_test.go. This is a tripwire for the common shape, not a proof.
+// SCOPE — stated narrowly on purpose, because the honest bound is smaller than
+// "no emitter writes a raw path" and an overclaimed invariant is worse than a
+// modest one (ai-review F4).
+//
+// This test DOES catch: a `.URL.Path` passed directly to a structured logging
+// call; the same value passed via a single-hop alias (`p := r.URL.Path`); and an
+// expression that mixes a sanitized and a raw occurrence.
+//
+// This test does NOT catch: a path threaded through multiple assignments, a
+// struct field, a helper function, or a closure; a value reaching a log via
+// fmt.Sprintf into another variable first; a logger whose method name is not in
+// the table below; or anything emitted from inside a dependency — the OTel span
+// attribute is precisely that case, and it is covered behaviourally by
+// capability_span_test.go instead.
+//
+// A type-aware SSA dataflow pass would close the rest. That is deliberately not
+// built here: the sinks are two, they are named, and each is pinned by a
+// behavioural test. This is a TRIPWIRE for the shape a future author is actually
+// likely to write, not a proof of absence — do not cite it as one.
 func TestNoEmitterWritesARawRequestPath(t *testing.T) {
 	root := repoRoot(t)
 
@@ -81,6 +95,30 @@ func TestNoEmitterWritesARawRequestPath(t *testing.T) {
 		}
 		scanned++
 
+		// Collect single-hop aliases of the raw path first: `p := r.URL.Path`
+		// and `var p = r.URL.Path`. One hop, deliberately — this is a tripwire
+		// for the shape a tired author actually writes, not a dataflow engine.
+		rawPathAliases := map[string]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch decl := n.(type) {
+			case *ast.AssignStmt:
+				for i, rhs := range decl.Rhs {
+					if i < len(decl.Lhs) && isBareURLPath(rhs) {
+						if id, ok := decl.Lhs[i].(*ast.Ident); ok {
+							rawPathAliases[id.Name] = true
+						}
+					}
+				}
+			case *ast.ValueSpec:
+				for i, v := range decl.Values {
+					if i < len(decl.Names) && isBareURLPath(v) {
+						rawPathAliases[decl.Names[i].Name] = true
+					}
+				}
+			}
+			return true
+		})
+
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -91,17 +129,25 @@ func TestNoEmitterWritesARawRequestPath(t *testing.T) {
 				return true
 			}
 			for _, arg := range call.Args {
-				if !mentionsURLPath(arg) {
+				// Direct: the raw path appears in the argument expression.
+				if mentionsURLPath(arg) {
+					// Sanctioned only if EVERY occurrence in this expression is
+					// inside a SanitizedPath call. Checking merely that a
+					// wrapper is present would approve
+					// `log.Info(..., SanitizedPath(r.URL.Path), "raw", r.URL.Path)`
+					// (ai-review F4).
+					if !hasUnwrappedURLPath(arg) {
+						sanctionedHits++
+						continue
+					}
+					offenders = append(offenders, rel)
 					continue
 				}
-				// The path reaches this log call. It is sanctioned only if it
-				// passes through SanitizedPath on the way — that wrapper IS the
-				// mechanism, so its presence is the whole test.
-				if wrappedInSanitizer(arg) {
-					sanctionedHits++
-					continue
+				// Aliased: `p := r.URL.Path; log.Info(..., p)`. Same leak, one
+				// statement further away (ai-review F4).
+				if ident, ok := arg.(*ast.Ident); ok && rawPathAliases[ident.Name] {
+					offenders = append(offenders, rel)
 				}
-				offenders = append(offenders, rel)
 			}
 			return true
 		})
@@ -147,32 +193,59 @@ func mentionsURLPath(e ast.Expr) bool {
 	return found
 }
 
-// wrappedInSanitizer reports whether the raw path passes through SanitizedPath.
+// isBareURLPath reports whether an expression is exactly `<x>.URL.Path`.
+func isBareURLPath(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Path" {
+		return false
+	}
+	inner, ok := sel.X.(*ast.SelectorExpr)
+	return ok && inner.Sel.Name == "URL"
+}
+
+// hasUnwrappedURLPath reports whether any `.URL.Path` in e sits OUTSIDE a
+// SanitizedPath call.
 //
-// Matched on the function name alone, so it holds both for the in-package call
-// (`SanitizedPath(...)`) and the cross-package one (`obs.SanitizedPath(...)`).
-func wrappedInSanitizer(e ast.Expr) bool {
-	var found bool
-	ast.Inspect(e, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+// Asking "is every occurrence wrapped?" rather than "is a wrapper present?" is
+// the whole point: the weaker question approves an expression that logs the
+// sanitized value and the raw one side by side (ai-review F4). Matched on the
+// function name so it holds for both `SanitizedPath(...)` and
+// `obs.SanitizedPath(...)`.
+func hasUnwrappedURLPath(e ast.Expr) bool {
+	var unwrapped bool
+	var walk func(ast.Node)
+	walk = func(n ast.Node) {
+		if n == nil || unwrapped {
+			return
 		}
-		switch fn := call.Fun.(type) {
-		case *ast.Ident:
-			if fn.Name == "SanitizedPath" && mentionsURLPath(call) {
-				found = true
+		if call, ok := n.(*ast.CallExpr); ok && isSanitizerCall(call) {
+			// Everything inside a sanitizer call is accounted for.
+			return
+		}
+		if expr, ok := n.(ast.Expr); ok && isBareURLPath(expr) {
+			unwrapped = true
+			return
+		}
+		ast.Inspect(n, func(child ast.Node) bool {
+			if child == n || child == nil || unwrapped {
 				return false
 			}
-		case *ast.SelectorExpr:
-			if fn.Sel.Name == "SanitizedPath" && mentionsURLPath(call) {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
+			walk(child)
+			return false
+		})
+	}
+	walk(e)
+	return unwrapped
+}
+
+func isSanitizerCall(call *ast.CallExpr) bool {
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		return fn.Name == "SanitizedPath"
+	case *ast.SelectorExpr:
+		return fn.Sel.Name == "SanitizedPath"
+	}
+	return false
 }
 
 // repoRoot walks up from the test's directory to the module/workspace root.

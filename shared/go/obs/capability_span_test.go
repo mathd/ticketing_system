@@ -28,9 +28,11 @@ func TestServerSpanDoesNotCarryTheCapability(t *testing.T) {
 	const ref = "2f1e3d4c-5b6a-4978-8899-aabbccddeeff"
 
 	exp := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(obs.CapabilitySpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))),
-	)
+	// Built through the PRODUCTION construction path (the same helper Setup
+	// calls), not by installing the processor here: a test that assembles its
+	// own chain stays green when the processor is deleted from Setup, which is
+	// exactly what happened (ai-review F3).
+	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(exp))
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
 	h := obs.MiddlewareWithTracerProvider("svc", tp,
@@ -78,9 +80,11 @@ func TestServerSpanDoesNotCarryTheCapability(t *testing.T) {
 // useless for debugging (COS #1, COS #3).
 func TestServerSpanKeepsOrdinaryPathsIntact(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(obs.CapabilitySpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))),
-	)
+	// Built through the PRODUCTION construction path (the same helper Setup
+	// calls), not by installing the processor here: a test that assembles its
+	// own chain stays green when the processor is deleted from Setup, which is
+	// exactly what happened (ai-review F3).
+	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(exp))
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
 	h := obs.MiddlewareWithTracerProvider("svc", tp,
