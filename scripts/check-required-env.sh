@@ -47,8 +47,18 @@ COMPOSE_FILE="compose.yaml"
 # Emits `NAME<TAB>strict` for `:?` and `NAME<TAB>loose` for `?`. When a variable
 # appears in both forms anywhere in the file, strict wins — the stricter reading
 # is the one that has to hold for the stack to start.
+#
+# Two things Compose does NOT treat as requirements are stripped first, because
+# counting them would fail the gate on a VALID stack — the opposite failure, and
+# the one a checker is least likely to be forgiven for (ai-review pass 2):
+#
+#   * YAML comments — a `#` outside quotes starts one; nothing after it is config.
+#   * `$${VAR:?}`  — Compose's own escape for a literal `${…}`, passed through
+#     verbatim and never interpolated.
 required_vars() {
-	grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:?\?' "$COMPOSE_FILE" \
+	sed -e 's/\$\$/\n/g' "$COMPOSE_FILE" \
+		| sed -e 's/[[:space:]]#[^"'"'"']*$//' -e 's/^[[:space:]]*#.*$//' \
+		| grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:?\?' \
 		| sed -e 's/^\${//' \
 		| awk '{
 			if (sub(/:\?$/, "")) strict[$0] = 1

@@ -136,6 +136,16 @@ expect_fail "required stack env (a required credential generated empty)" check-r
 sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_UNGENERATED: ${SELFTEST_UNGENERATED?seeded by gate-selftest}\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
 expect_fail "required stack env (alternate \${VAR?} requirement form)" check-required-env
 
+# 9d. The OPPOSITE failure, and the one a gate is least forgiven for: refusing a
+#     VALID stack. Compose ignores a placeholder inside a YAML comment and treats
+#     `$${VAR:?}` as a literal — both confirmed against `docker compose config`
+#     with the variables unset. A checker that counted either would invent a
+#     missing credential and fail the gate on a config that starts perfectly well
+#     (ai-review pass 2). This is an expect_PASS: the seed must change nothing.
+sed -i '1i # a commented placeholder: ${SELFTEST_COMMENTED:?never a requirement}' compose.yaml
+sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_LITERAL: "$${SELFTEST_ESCAPED:?never a requirement}"\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
+expect_pass "required stack env (comments and \$\$-escapes are not requirements)" check-required-env
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1
