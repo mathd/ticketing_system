@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,7 +131,7 @@ func hasRule(findings []RuleCurrencyMismatch, ruleID uuid.UUID) bool {
 // Mutation: dedupe by rule id, or restrict the sweep to scope_level='ticket_type'.
 func TestRuleCurrencySweepReportsOnePairPerCoveredTicketType(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
-	_, orgID, venueID, _, slotID, _ := seedValidationChain(ctx, t, db, "sweep s1")
+	tt1, orgID, venueID, _, slotID, _ := seedValidationChain(ctx, t, db, "sweep s1")
 
 	// A second EUR ticket type on the same slot: both are covered by a venue rule.
 	var tt2 uuid.UUID
@@ -147,16 +148,87 @@ func TestRuleCurrencySweepReportsOnePairPerCoveredTicketType(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := findingsFor(all, orgID)
-	if len(got) != 2 {
-		t.Fatalf("one venue rule over two ticket types must report two pairs, got %d: %+v", len(got), got)
-	}
+
+	// The exact pair set, not a count. A count of two is also satisfied by
+	// reporting one ticket type twice, or by reporting the wrong pair alongside
+	// the right one — both real defects that "len == 2" would bless.
+	want := map[uuid.UUID]bool{tt1: true, tt2: true}
+	seen := map[uuid.UUID]int{}
 	for _, f := range got {
 		if f.RuleID != ruleID {
 			t.Errorf("unexpected rule in findings: %v", f.RuleID)
+			continue
 		}
+		seen[f.TicketTypeID]++
 		if f.RuleCurrency != "USD" || f.TicketTypeCurrency != "EUR" {
 			t.Errorf("currencies must be reported as stored: got rule=%q ticket=%q", f.RuleCurrency, f.TicketTypeCurrency)
 		}
+	}
+	for tt := range want {
+		if seen[tt] != 1 {
+			t.Errorf("ticket type %v must appear exactly once, appeared %d times", tt, seen[tt])
+		}
+	}
+	for tt, n := range seen {
+		if !want[tt] {
+			t.Errorf("unexpected ticket type %v in findings (%d times)", tt, n)
+		}
+	}
+}
+
+// EVERY scope level must actually match. This is the arm-level companion to the
+// predicate mutations: deleting four of the five tuples from the production IN
+// list left the rest of this suite green, because every other positive fixture
+// is venue-scoped. A sweep that silently sees only venue rules would report a
+// clean database while four kinds of misconfiguration sat in it (TKT-243
+// ai-review [medium]).
+//
+// One subtest per level, each asserting the exact (rule, ticket type) pair.
+// Mutation: delete any single tuple from the IN list — that level's subtest, and
+// only that one, goes red.
+func TestRuleCurrencySweepMatchesAtEveryScopeLevel(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	ttID, orgID, venueID, eventID, slotID, seriesID := seedValidationChain(ctx, t, db, "sweep all scopes")
+
+	for _, tc := range []struct {
+		level   string
+		scopeID uuid.UUID
+	}{
+		{"ticket_type", ttID},
+		{"slot", slotID},
+		{"series", seriesID},
+		{"event", eventID},
+		{"venue", venueID},
+	} {
+		t.Run(tc.level, func(t *testing.T) {
+			ruleID := insertPriceRule(ctx, t, db, orgID, tc.level, tc.scopeID, "USD", nil, nil, nil)
+			t.Cleanup(func() {
+				if _, err := db.ExecContext(ctx, `DELETE FROM price_rules WHERE id=$1`, ruleID); err != nil {
+					t.Fatal(err)
+				}
+			})
+
+			all, err := st.ListRuleCurrencyMismatches(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pairs int
+			for _, f := range findingsFor(all, orgID) {
+				if f.RuleID != ruleID {
+					continue
+				}
+				pairs++
+				if f.TicketTypeID != ttID {
+					t.Errorf("scope %s must pair with the seeded ticket type, got %v", tc.level, f.TicketTypeID)
+				}
+				if f.ScopeLevel != tc.level {
+					t.Errorf("finding must report the rule's own scope level, got %q", f.ScopeLevel)
+				}
+			}
+			if pairs != 1 {
+				t.Errorf("a %s-scoped mismatching rule must report exactly one pair, got %d", tc.level, pairs)
+			}
+		})
 	}
 }
 
@@ -375,6 +447,85 @@ func TestRuleCurrencySweepFindsWhatChannelScopedResolutionIgnores(t *testing.T) 
 	}
 	if !hasRule(findingsFor(all, orgID), ruleID) {
 		t.Error("the sweep must report a rule that channel-scoped resolution deliberately ignores — this is the ticket")
+	}
+}
+
+// The two table sweeps must see ONE snapshot.
+//
+// A supersession is two writes in one transaction — close the predecessor,
+// insert the successor (ADR-036 §3). Under READ COMMITTED such a transaction
+// committing between the price read and the fee read would let the report be
+// assembled from two states that never coexisted, and the dangerous shape is a
+// false CLEAN verdict: a mismatch live before and after the replacement, present
+// in neither snapshot. An operator reads "no currency mismatches" as an
+// all-clear, so that is the one answer this command must never invent.
+//
+// The two table sweeps must read ONE snapshot.
+//
+// A supersession is two writes in one transaction — close the predecessor,
+// insert the successor (ADR-036 §3). If the price read and the fee read took
+// independent snapshots, such a transaction committing between them would let
+// the report be assembled from two states that never coexisted. The dangerous
+// shape is not a missed row in general but a false CLEAN verdict: a mismatch
+// live before and after the replacement, present in neither snapshot. An
+// operator reads "no currency mismatches" as an all-clear, so that is the one
+// answer this command must never invent. ResolveTicketTypePrice takes the same
+// precaution for the same reason (pricing_postgres.go:121-126).
+//
+// WHAT THIS PROVES, AND WHAT IT DOES NOT — stated plainly, because a test whose
+// limits are unstated gets read as proving more than it does. It observes the
+// isolation level and read-only flag from INSIDE the sweep's own transaction,
+// via a view standing in for price_rules whose function reports what it sees.
+// It does NOT reproduce the interleaving. Two earlier attempts did try: the
+// first opened its own REPEATABLE READ transaction and called the unexported
+// helper, which passed with production downgraded to READ COMMITTED because it
+// was asserting against its own transaction — the "green test that cannot reach
+// the failing state" shape, caught by running the mutation. The second raced a
+// commit against a deliberately-slowed read and was timing-dependent, which in a
+// gate is worse than no test. This assertion is deterministic and still kills
+// the mutation that matters.
+//
+// Mutation: LevelRepeatableRead -> LevelReadCommitted, drop ReadOnly, or query
+// the pool instead of a transaction — each turns this red.
+func TestRuleCurrencySweepReadsBothTablesInOneSnapshot(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	_, orgID, venueID, _, _, _ := seedValidationChain(ctx, t, db, "sweep snapshot")
+	insertPriceRule(ctx, t, db, orgID, "venue", venueID, "USD", nil, nil, nil)
+
+	// price_rules is replaced by a view whose predicate ABORTS the read, with the
+	// observed transaction settings in the message. Raising is what makes this
+	// work inside a read-only transaction, where recording the observation to a
+	// table would itself fail.
+	if _, err := db.ExecContext(ctx, `
+		ALTER TABLE price_rules RENAME TO price_rules_real;
+		CREATE FUNCTION observe_sweep() RETURNS boolean LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'sweep_observed isolation=% read_only=%',
+				current_setting('transaction_isolation'), current_setting('transaction_read_only');
+		END $$;
+		CREATE VIEW price_rules AS
+			SELECT * FROM price_rules_real WHERE observe_sweep();`); err != nil {
+		t.Skipf("cannot install the observation seam: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DROP VIEW IF EXISTS price_rules`)
+		_, _ = db.Exec(`ALTER TABLE IF EXISTS price_rules_real RENAME TO price_rules`)
+		_, _ = db.Exec(`DROP FUNCTION IF EXISTS observe_sweep()`)
+	})
+
+	_, err := st.ListRuleCurrencyMismatches(ctx)
+	if err == nil {
+		t.Fatal("the seam must abort the sweep — it never read price_rules through the view")
+	}
+	observed := err.Error()
+	if !strings.Contains(observed, "sweep_observed") {
+		t.Fatalf("the sweep failed for an unrelated reason, so nothing was observed: %v", err)
+	}
+	if !strings.Contains(observed, "isolation=repeatable read") {
+		t.Errorf("both reads must share one snapshot, so the sweep runs at REPEATABLE READ; observed: %s", observed)
+	}
+	if !strings.Contains(observed, "read_only=on") {
+		t.Errorf("the sweep reports and writes nothing — its transaction must be read-only; observed: %s", observed)
 	}
 }
 

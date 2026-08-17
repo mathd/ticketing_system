@@ -138,16 +138,44 @@ ORDER BY r.organizer_id, t.id, r.id`
 // price and fee rules, whose currencies disagree and whose rule can still apply.
 //
 // Read-only. It answers a question; it decides nothing.
+//
+// Both table sweeps run in ONE read-only REPEATABLE READ transaction, for the
+// same reason ResolveTicketTypePrice does (pricing_postgres.go:121-126): two
+// reads that together form one answer must see one snapshot. Under READ
+// COMMITTED a supersession — close the predecessor, insert the successor, which
+// ADR-036 §3 requires to be a single transaction — could commit between the
+// price read and the fee read, and the report would be assembled from two
+// states that never coexisted. The dangerous shape is not a missed row in
+// general but a false CLEAN verdict: a mismatch live before and after the
+// replacement, visible in neither snapshot. An operator reads "no currency
+// mismatches" as an all-clear, so that is the one output this command must not
+// invent. Snapshot coherence, not locking — a concurrent write legitimately
+// lands before or after the snapshot.
 func (p *Postgres) ListRuleCurrencyMismatches(ctx context.Context) ([]RuleCurrencyMismatch, error) {
-	out, err := p.sweepRuleCurrency(ctx, RuleKindPrice, ruleCurrencyMismatchQuery("price_rules", `''`), nil)
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin rule currency sweep: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	out, err := sweepRuleCurrency(ctx, tx, RuleKindPrice, ruleCurrencyMismatchQuery("price_rules", `''`), nil)
 	if err != nil {
 		return nil, err
 	}
-	return p.sweepRuleCurrency(ctx, RuleKindFee, ruleCurrencyMismatchQuery("fee_rules", `r.fee_code`), out)
+	out, err = sweepRuleCurrency(ctx, tx, RuleKindFee, ruleCurrencyMismatchQuery("fee_rules", `r.fee_code`), out)
+	if err != nil {
+		return nil, err
+	}
+	// A read-only transaction cannot fail to commit for a conflict, but a
+	// connection lost mid-sweep can — and that must not read as a clean sweep.
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit rule currency sweep: %w", err)
+	}
+	return out, nil
 }
 
-func (p *Postgres) sweepRuleCurrency(ctx context.Context, kind RuleKind, query string, into []RuleCurrencyMismatch) ([]RuleCurrencyMismatch, error) {
-	rows, err := p.db.QueryContext(ctx, query)
+func sweepRuleCurrency(ctx context.Context, tx *sql.Tx, kind RuleKind, query string, into []RuleCurrencyMismatch) ([]RuleCurrencyMismatch, error) {
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("sweep %s rule currencies: %w", kind, err)
 	}
