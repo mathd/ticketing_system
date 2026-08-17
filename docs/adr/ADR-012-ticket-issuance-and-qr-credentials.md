@@ -55,6 +55,13 @@ Consequently a path that is not a declared capability route is returned **byte-f
 declared capability route" is judged on the reduced, case-folded form. `/healthz` and every ordinary
 route are unaffected.
 
+One further consequence, found by review rather than by design: on a path that **does** resolve to a
+capability route, every segment that `..` discarded is redacted too. `/api/access/orders/<ref-1>/../<ref-2>/tickets`
+resolves on `<ref-2>`, and redacting only the surviving segment left `<ref-1>` — an equally live,
+equally redeemable reference — in the line. Whether a discarded segment was a credential is not
+knowable at that point, so the rule is blunt on purpose: a segment thrown away by path traversal on a
+request that resolves to a capability route has no diagnostic value worth the risk.
+
 **The adversary, named (ADR-021).** This bounds **whoever can read this platform's logs and traces**,
 from the change forward. It bounds **nothing** against: a reference already written to a retained log
 or an exported trace (still valid — there is no rotation of the underlying capability); anyone with

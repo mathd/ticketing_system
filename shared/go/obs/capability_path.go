@@ -168,7 +168,7 @@ func SanitizedPath(path string) string {
 	// any other variable segment are never compared case-insensitively, and the
 	// value returned is built from the ORIGINAL segments, so the logged line
 	// still shows what was actually requested.
-	indices, canonical := canonicalSegments(path)
+	indices, canonical, poppedAt := canonicalSegments(path)
 
 	for _, route := range capabilityRoutes {
 		if len(canonical) != len(route) {
@@ -183,6 +183,27 @@ func SanitizedPath(path string) string {
 		for i, seg := range route {
 			if seg.kind == segCapability {
 				out[indices[i]] = capabilityPlaceholder
+			}
+		}
+		// EVERY segment that ".." discarded is redacted too, whatever position
+		// it was popped from (ai-review F9).
+		//
+		// The narrow version of this rule — redact only what was popped from a
+		// CAPABILITY position — was not enough: in
+		// "/api/<ref>/../access/orders/<ref-2>/tickets" the first reference is
+		// popped from a LITERAL position, so nothing claimed it and it stayed in
+		// the line. A sweep with live references in every junk slot found twelve
+		// such spellings.
+		//
+		// The rule is deliberately blunt, because the alternative requires
+		// knowing whether a discarded value was a credential, and it is not
+		// knowable here. What IS known: this request resolves to a capability
+		// route, and these segments were thrown away by path traversal on the
+		// way. A discarded segment has no diagnostic value that justifies the
+		// risk of it being a second live reference.
+		for _, popped := range poppedAt {
+			for _, idx := range popped {
+				out[idx] = capabilityPlaceholder
 			}
 		}
 		return strings.Join(out, "/")
@@ -205,7 +226,14 @@ func SanitizedPath(path string) string {
 // The popped entry's index goes with it, so the surviving segments keep pointing
 // at their real position in the original string and the rewrite still lands on
 // the right one.
-func canonicalSegments(path string) (indices []int, segments []string) {
+//
+// popped records, per surviving position, the original indices that were popped
+// AWAY from that position. Those segments are still present in the original
+// string, and if the position turns out to be a capability then every value ever
+// offered there is a live credential — not just the one that survived
+// (ai-review F9).
+func canonicalSegments(path string) (indices []int, segments []string, popped map[int][]int) {
+	popped = map[int][]int{}
 	for i, seg := range strings.Split(path, "/") {
 		switch seg {
 		case "", ".":
@@ -214,15 +242,17 @@ func canonicalSegments(path string) (indices []int, segments []string) {
 			// Pop, or ignore at the root: "/../x" is "/x" to the router, not an
 			// error. Never let it underflow into a negative index.
 			if n := len(segments); n > 0 {
-				indices = indices[:n-1]
-				segments = segments[:n-1]
+				slot := n - 1
+				popped[slot] = append(popped[slot], indices[slot])
+				indices = indices[:slot]
+				segments = segments[:slot]
 			}
 			continue
 		}
 		indices = append(indices, i)
 		segments = append(segments, seg)
 	}
-	return indices, segments
+	return indices, segments, popped
 }
 
 // matches reports whether parts satisfies every literal position in route.

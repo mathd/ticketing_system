@@ -226,6 +226,50 @@ func TestSanitizedPathReducesDotDotLikeTheRouter(t *testing.T) {
 	}
 }
 
+// A capability POPPED by ".." is still a live credential (ai-review F9).
+//
+// "/orders/<ref-1>/../<ref-2>/tickets" reduces to the bundle route on <ref-2>,
+// so <ref-2> is redacted — and <ref-1>, which was offered at the same capability
+// position and is equally redeemable, stayed in the emitted line verbatim.
+//
+// The earlier dot-dot test used a harmless "x" in the popped slot and asserted
+// only on the surviving reference, so it could not observe this. So did the
+// brute-force sweep written to attack that fix. Both were fixtures that cannot
+// reach the failing state.
+//
+// The invariant, stated without naming the implementation: NO value that was
+// ever offered at a capability position may appear in the output.
+//
+// Mutation this must catch: stop redacting popped indices.
+func TestSanitizedPathRedactsCapabilitiesPoppedByDotDot(t *testing.T) {
+	const r1 = "11111111-1111-4111-8111-111111111111"
+	const r2 = "22222222-2222-4222-8222-222222222222"
+	const r3 = "33333333-3333-4333-8333-333333333333"
+
+	for _, in := range []string{
+		"/api/access/orders/" + r1 + "/../" + r2 + "/tickets",
+		"/orders/" + r1 + "/../" + r2 + "/tickets",
+		"/en/tickets/" + r1 + "/../" + r2,
+		// Two pops onto the same position: every one of them was offered there.
+		"/orders/" + r1 + "/../" + r3 + "/../" + r2 + "/tickets",
+		// Popped from a LITERAL position, not a capability one. The first fix
+		// for this finding only redacted capability-position pops and left
+		// these — a sweep with live references in every junk slot found twelve
+		// spellings of it.
+		"/api/" + r1 + "/../access/orders/" + r2 + "/tickets",
+		"/" + r1 + "/../api/access/orders/" + r2 + "/tickets",
+		"/api/access/" + r1 + "/../orders/" + r2 + "/tickets",
+		"/en/" + r1 + "/../tickets/" + r2,
+	} {
+		got := obs.SanitizedPath(in)
+		for name, ref := range map[string]string{"r1": r1, "r2": r2, "r3": r3} {
+			if strings.Contains(in, ref) && strings.Contains(got, ref) {
+				t.Errorf("%s survived at a capability position:\n  in  = %s\n  got = %s", name, in, got)
+			}
+		}
+	}
+}
+
 // The storefront rule matches a LOCALE, not "any first segment" (ai-review F2).
 //
 // The gateway owns /admin/ and /scanner/ alongside the "/" catch-all, so a rule
