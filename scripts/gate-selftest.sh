@@ -121,6 +121,21 @@ expect_pass "required stack env (clean baseline)" check-required-env
 sed -i 's/ INVENTORY_STAFF_WRITE_TOKEN//' scripts/env-bootstrap.sh
 expect_fail "required stack env (compose requires a variable nothing generates)" check-required-env
 
+# 9b. Present-but-EMPTY is not generated (ai-review [high]). `${VAR:?}` rejects an
+#     empty value exactly as it rejects an unset one, so a checker comparing only
+#     NAMES passes here while `make up` still dies. Deleting a name (9 above)
+#     cannot expose that, which is why this is its own seed.
+printf '\nenv_set INVENTORY_STAFF_WRITE_TOKEN ""\n' >> scripts/env-bootstrap.sh
+expect_fail "required stack env (a required credential generated empty)" check-required-env
+
+# 9c. The OTHER required form (ai-review [medium]). Compose supports `${VAR?msg}`
+#     as well as `${VAR:?msg}`; a requirement written that way leaves the existing
+#     matches intact, so MIN_REQUIRED stays satisfied and an ungenerated credential
+#     escapes. Seeded as a NEW requirement rather than by rewriting an existing
+#     one, so the floor cannot be what catches it.
+sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_UNGENERATED: ${SELFTEST_UNGENERATED?seeded by gate-selftest}\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
+expect_fail "required stack env (alternate \${VAR?} requirement form)" check-required-env
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1
