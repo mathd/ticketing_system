@@ -5,7 +5,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 	"time"
 
@@ -460,7 +459,8 @@ func TestRuleCurrencySweepFindsWhatChannelScopedResolutionIgnores(t *testing.T) 
 // in neither snapshot. An operator reads "no currency mismatches" as an
 // all-clear, so that is the one answer this command must never invent.
 //
-// The two table sweeps must read ONE snapshot.
+// The two table sweeps must read ONE snapshot — and this test observes BOTH
+// reads, not just the first.
 //
 // A supersession is two writes in one transaction — close the predecessor,
 // insert the successor (ADR-036 §3). If the price read and the fee read took
@@ -472,60 +472,96 @@ func TestRuleCurrencySweepFindsWhatChannelScopedResolutionIgnores(t *testing.T) 
 // answer this command must never invent. ResolveTicketTypePrice takes the same
 // precaution for the same reason (pricing_postgres.go:121-126).
 //
-// WHAT THIS PROVES, AND WHAT IT DOES NOT — stated plainly, because a test whose
-// limits are unstated gets read as proving more than it does. It observes the
-// isolation level and read-only flag from INSIDE the sweep's own transaction,
-// via a view standing in for price_rules whose function reports what it sees.
-// It does NOT reproduce the interleaving. Two earlier attempts did try: the
-// first opened its own REPEATABLE READ transaction and called the unexported
-// helper, which passed with production downgraded to READ COMMITTED because it
-// was asserting against its own transaction — the "green test that cannot reach
-// the failing state" shape, caught by running the mutation. The second raced a
-// commit against a deliberately-slowed read and was timing-dependent, which in a
-// gate is worse than no test. This assertion is deterministic and still kills
-// the mutation that matters.
+// HOW IT PROVES IT. Both rule tables are replaced by views that carry a value
+// read from a `snapshot_marker` row. The price view is also slow (it sleeps),
+// and while the sweep is inside that first read this test COMMITS a change to
+// the marker. Under one REPEATABLE READ snapshot the later fee read still sees
+// the OLD marker; under two snapshots it sees the new one. The reported
+// fee_code carries the observed value out, so the assertion is on what the
+// second read actually saw.
 //
-// Mutation: LevelRepeatableRead -> LevelReadCommitted, drop ReadOnly, or query
-// the pool instead of a transaction — each turns this red.
+// This replaces two earlier versions that were discarded for being unable to
+// fail, each caught by running the mutation rather than by inspection: one
+// asserted against a transaction the test opened itself and survived downgrading
+// production to READ COMMITTED; the next aborted on the FIRST read and so proved
+// nothing about the fee read, surviving a mutation that moved only the fee sweep
+// onto its own transaction (TKT-243 ai-review pass 2).
+//
+// Mutations that must redden this: LevelRepeatableRead -> LevelReadCommitted;
+// moving EITHER sweep out of the shared transaction; dropping the transaction.
 func TestRuleCurrencySweepReadsBothTablesInOneSnapshot(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	_, orgID, venueID, _, _, _ := seedValidationChain(ctx, t, db, "sweep snapshot")
-	insertPriceRule(ctx, t, db, orgID, "venue", venueID, "USD", nil, nil, nil)
 
-	// price_rules is replaced by a view whose predicate ABORTS the read, with the
-	// observed transaction settings in the message. Raising is what makes this
-	// work inside a read-only transaction, where recording the observation to a
-	// table would itself fail.
+	// A mismatching fee rule: it is the row whose reported fee_code will carry
+	// the marker value the SECOND read observed.
+	insertFeeRule(ctx, t, db, orgID, "venue", venueID, "service", "USD", nil, nil, nil)
+
 	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE snapshot_marker (v text NOT NULL);
+		INSERT INTO snapshot_marker VALUES ('before');
+
+		-- The price view sleeps, so the sweep's first read is still running when
+		-- this test commits the marker change below. It also fixes the snapshot.
 		ALTER TABLE price_rules RENAME TO price_rules_real;
-		CREATE FUNCTION observe_sweep() RETURNS boolean LANGUAGE plpgsql AS $$
-		BEGIN
-			RAISE EXCEPTION 'sweep_observed isolation=% read_only=%',
-				current_setting('transaction_isolation'), current_setting('transaction_read_only');
-		END $$;
 		CREATE VIEW price_rules AS
-			SELECT * FROM price_rules_real WHERE observe_sweep();`); err != nil {
+			SELECT * FROM price_rules_real WHERE pg_sleep(2) IS NOT NULL;
+
+		-- The fee view smuggles the marker AS SEEN BY THE SECOND READ out through
+		-- fee_code, which the sweep already reports.
+		ALTER TABLE fee_rules RENAME TO fee_rules_real;
+		CREATE VIEW fee_rules AS
+			SELECT r.id, r.organizer_id, r.scope_level, r.scope_id,
+			       (SELECT v FROM snapshot_marker LIMIT 1) AS fee_code,
+			       r.basis, r.amount, r.rate_bps, r.currency, r.incidence,
+			       r.channel_code, r.priority, r.force_ancestor_override,
+			       r.effective_from, r.effective_until, r.created_at
+			FROM fee_rules_real r;`); err != nil {
 		t.Skipf("cannot install the observation seam: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DROP VIEW IF EXISTS price_rules`)
+		_, _ = db.Exec(`DROP VIEW IF EXISTS fee_rules`)
 		_, _ = db.Exec(`ALTER TABLE IF EXISTS price_rules_real RENAME TO price_rules`)
-		_, _ = db.Exec(`DROP FUNCTION IF EXISTS observe_sweep()`)
+		_, _ = db.Exec(`ALTER TABLE IF EXISTS fee_rules_real RENAME TO fee_rules`)
+		_, _ = db.Exec(`DROP TABLE IF EXISTS snapshot_marker`)
 	})
 
-	_, err := st.ListRuleCurrencyMismatches(ctx)
-	if err == nil {
-		t.Fatal("the seam must abort the sweep — it never read price_rules through the view")
+	type result struct {
+		findings []RuleCurrencyMismatch
+		err      error
 	}
-	observed := err.Error()
-	if !strings.Contains(observed, "sweep_observed") {
-		t.Fatalf("the sweep failed for an unrelated reason, so nothing was observed: %v", err)
+	done := make(chan result, 1)
+	go func() {
+		f, err := st.ListRuleCurrencyMismatches(ctx)
+		done <- result{f, err}
+	}()
+
+	// While the sweep is inside its slow FIRST read, commit the marker change.
+	time.Sleep(700 * time.Millisecond)
+	if _, err := db.ExecContext(ctx, `UPDATE snapshot_marker SET v = 'after'`); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(observed, "isolation=repeatable read") {
-		t.Errorf("both reads must share one snapshot, so the sweep runs at REPEATABLE READ; observed: %s", observed)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	if !strings.Contains(observed, "read_only=on") {
-		t.Errorf("the sweep reports and writes nothing — its transaction must be read-only; observed: %s", observed)
+	found := findingsFor(got.findings, orgID)
+
+	var fees []RuleCurrencyMismatch
+	for _, f := range found {
+		if f.Kind == RuleKindFee {
+			fees = append(fees, f)
+		}
+	}
+	if len(fees) == 0 {
+		t.Fatal("fixture invariant: the fee mismatch must be reported, else nothing was observed")
+	}
+	for _, f := range fees {
+		if f.FeeCode != "before" {
+			t.Errorf("the fee read must share the price read's snapshot and still see the pre-update marker; observed %q — the two reads took separate snapshots", f.FeeCode)
+		}
 	}
 }
 
