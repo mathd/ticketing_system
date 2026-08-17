@@ -4,7 +4,7 @@
   "summary": "A public sale still prices on a reseller's channel while consuming public stock (TKT-246 residual)",
   "status": "Building",
   "labels": [
-    "agent:ai-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": {
