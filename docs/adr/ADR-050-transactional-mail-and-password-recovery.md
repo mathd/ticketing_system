@@ -143,10 +143,13 @@ something over 72 bytes does not burn their one-shot link on a request that coul
 
 ### 5. The link carries the token in a query parameter, and the page posts it in a body
 
-Not a path segment: `shared/go/obs/requestlog.go` logs `r.URL.Path` on every service and the
-gateway, so a token in the path would be written to a log exactly the way TKT-202 records
-`guest_order_ref` being written today. The query string is not logged, which ADR-049 §
-*TKT-222 amendment* already relies on to put twenty uuids in a query.
+Not a path segment: `shared/go/obs/requestlog.go` logs the request path on every service and the
+gateway, so a token in a path segment would be written to a log the way `guest_order_ref` was until
+TKT-202. **This reasoning still holds after TKT-202** and is the reason to keep it holding: TKT-202
+sanitises *declared* capability route shapes (`shared/go/obs/capability_path.go`), so a token in a
+path the table does not declare would still be logged in full. Putting a credential in a path means
+adding a row to that table; the query keeps it out of the question. The query string is not logged,
+which ADR-049 § *TKT-222 amendment* already relies on to put twenty uuids in a query.
 
 **A URL fragment was considered and rejected.** A fragment never reaches any server including
 ours, so the page would have to read `location.hash` in the browser — making password recovery

@@ -19,8 +19,12 @@ shipped in its own words:
 The proof of ownership is the order reference **alone**, and that was deliberate: requiring the
 checkout email to match would refuse a buyer who later signed up with a different address, which is
 common and unfixable by them. The cost of that trade is that anyone holding a reference can take an
-order permanently — and references **do** leak. The gateway logs them via the URL path
-([TKT-202](../../.sdlc/), still open), which ADR-049 records as the cause rather than a coincidence.
+order permanently — and references **did** leak: every service logged them via the URL path
+([TKT-202](../../.sdlc/), **closed**), which ADR-049 records as the cause rather than a coincidence.
+TKT-202 closed the in-repo emitters — the request log, the contract-drift log and the OTel span
+attribute. It does **not** retroactively unleak references already written to retained logs, and it
+bounds only readers of this platform's telemetry (ADR-021: name the adversary). References that
+travelled through browser history, referrer headers or upstream proxies are untouched.
 
 Until this decision the only remedy was a manual `UPDATE` against the commerce database: no audit
 trail, no refusal for a malformed request, and the same hand that fixes a mistake can make one.
@@ -91,8 +95,8 @@ The reasoning, and it turns on who the operation is actually for:
   (ADR-049), so anyone blocked at the account level registers another account and claims again. The
   block reliably stops only the honest re-claimer.
 - **What does bound an attacker** is [ADR-051](./ADR-051-public-customer-surface-rate-limiting.md),
-  which rate-limits `/orders/claim` per subject and per source, and fixing the leak itself (TKT-202).
-  Neither is this ticket, and neither is replaced by a block.
+  which rate-limits `/orders/claim` per subject and per source, and fixing the leak itself
+  (TKT-202, now closed). Neither is this ticket, and neither is replaced by a block.
 
 A smoke test and a store test both pin the re-claim, so a later "hardening" has to argue with a test
 rather than quietly reverse this.
@@ -159,5 +163,7 @@ something else.
   and record a detachment from nobody. `compose.yaml` pins `postgres:18.4`; on an older server the
   statement is a syntax error at first execution — loud, not silently wrong.
 - **Still open:** no back-office surface (an operator needs the service credential), `actor` is
-  unauthenticated text, and the audit rows are ordinary commerce state. TKT-202 remains the cause of
-  the leak that makes wrongful claims possible in the first place.
+  unauthenticated text, and the audit rows are ordinary commerce state. TKT-202 — the leak that made
+  wrongful claims cheap in the first place — is closed for this platform's own telemetry, but a
+  reference already written to a retained log stays valid, so this decision's recovery path is not
+  made redundant by it.

@@ -70,6 +70,17 @@ func Client() *http.Client {
 
 // Middleware wraps an http.Handler with OTel server instrumentation
 // (span per request + http.server.* metrics).
+//
+// The spans this produces carry the raw request path as `url.path`, set inside
+// otelhttp. Setup installs CapabilitySpanProcessor on the tracer provider so a
+// capability-bearing segment never reaches the exporter (TKT-202, ADR-012).
 func Middleware(service string, next http.Handler) http.Handler {
 	return otelhttp.NewHandler(next, service)
+}
+
+// MiddlewareWithTracerProvider is Middleware bound to an explicit provider,
+// so a test can observe the exported spans without touching global state.
+// Production code uses Middleware and the provider Setup installs.
+func MiddlewareWithTracerProvider(service string, tp trace.TracerProvider, next http.Handler) http.Handler {
+	return otelhttp.NewHandler(next, service, otelhttp.WithTracerProvider(tp))
 }

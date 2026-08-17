@@ -39,8 +39,13 @@ func Setup(ctx context.Context, service string) (*slog.Logger, func(context.Cont
 	if err != nil {
 		return nil, nil, err
 	}
+	// The batcher is wrapped, not replaced: otelhttp puts the raw request path on
+	// every server span, so without this a capability-bearing segment would be
+	// exported to the collector on every guest request (TKT-202, ADR-012).
+	// One install here covers all six services.
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExp), sdktrace.WithResource(res))
+		sdktrace.WithSpanProcessor(CapabilitySpanProcessor(sdktrace.NewBatchSpanProcessor(traceExp))),
+		sdktrace.WithResource(res))
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagator)
 
