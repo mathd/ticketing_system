@@ -118,6 +118,22 @@ experiment stays valid.
   which the new tests go red and the pre-existing guards stay green. Without it, "we added a test
   for the gap" is unfalsifiable.
   ([a fixture that seeds two mechanisms](docs/learnings/2026-08-16-a-fixture-that-seeds-two-mechanisms.md))
+- **The fixture-that-cannot-fail question applies to your ATTACK HARNESS, and a guard can test the
+  mechanism while never testing the WIRING.** Two shapes from TKT-202, each one level up from a rule
+  already here. *One:* a brute-force sweep written to attack a redaction ran 576 arrangements and
+  passed while the defect was live — it put a harmless placeholder in the position that leaked, so it
+  could never observe one. For a "value must not appear in output" property, **every position the
+  generator can fill must be filled with the value that must not appear**. *Two:* deleting a span
+  processor from `setup.go` left the whole suite green, because the test built its own provider and
+  proved the processor *worked*; extracting a shared helper did not fix it, since replacing the call
+  **inside** `Setup` still compiled, still leaked, still passed. Ask which edit your test catches —
+  breaking the mechanism, or **removing it from the place that uses it** — and assert at the boundary
+  the value crosses on its way out (the wire, the row), not at the component supposed to be in the
+  path. Corollary for redaction specifically: sanitise on the **shape of the secret**, not route
+  identity — a check keyed on "is this a real route?" inherits the router's case and normalisation
+  rules and leaks on every spelling the router rejects, and the request logger runs *before* the
+  router. ([a harness that cannot catch what it hunts](docs/learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md),
+  ADR-012 § TKT-202)
 - **When a value must not be client-chosen, make it UNSUBMITTABLE — validating it is the slower way
   to lose.** Every fix that *checks* a submitted value keeps the trust boundary in the client and
   merely moves where it leaks. The tell is structural: if *"can the client influence this field?"*

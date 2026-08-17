@@ -330,3 +330,23 @@ a per-service suite that runs first, so the new tier never executed), and **a ti
 coverage for a known gap must demonstrate the gap** — one run with the new tests red and the
 pre-existing guards green, or "we added a test for it" is unfalsifiable.
 [full note](learnings/2026-08-16-a-fixture-that-seeds-two-mechanisms.md)
+
+## 2026-08-17 — A harness that cannot catch what it hunts (TKT-202)
+
+Nine findings across four adversarial passes on one diff; three were the same class, and two were
+defects in the *previous* pass's fixes. The class is already in this file — a fixture that cannot
+reach the failing state — but TKT-202 shows it biting one level up, in the **attack harness**. A
+brute-force sweep written specifically to attack the sanitiser ran **576 arrangements of `.`, `..`,
+empty and junk segments and passed while the defect was live**: it put a harmless `"x"` in the junk
+position and asserted only that the *surviving* reference was gone, so it could never observe a leak
+in the popped position. Re-run with live references in every slot it found the defect immediately,
+then found **twelve more spellings** the first fix still missed. For a "value must not appear in
+output" property, **every position the generator can fill must be filled with the value that must not
+appear**; a placeholder is a blind slot. The second shape: **a guard can test the mechanism and never
+test the wiring.** Deleting the span processor from `setup.go` left the whole suite green — the test
+built its own provider and proved the processor worked, not that production used it. Extracting a
+shared helper did *not* fix it: replacing the call *inside* `Setup` still compiled, still leaked,
+still passed, because the test exercised the helper. What held was asserting on **bytes that actually
+left the process** (the real `Setup`, a local collector, grep the OTLP payload). Ask which edit your
+test catches: breaking the mechanism, or removing it from the place that uses it.
+[full note](learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md)

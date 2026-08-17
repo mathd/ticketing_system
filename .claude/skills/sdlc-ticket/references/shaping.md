@@ -67,6 +67,19 @@ inheriting the suggestion would have spent a drafting run designing an interface
 If the proposed remedy does not survive the read, say so in `note` and record what replaces it — the
 correction is worth more to the drafter than the original suggestion was.
 
+**When the ticket is "stop emitting X", ENUMERATE THE SINKS — including ones inside dependencies —
+and put the list in the `note`. The sink list IS the scope.** A grep finds only in-repo emitters, so
+a ticket framed around the one the reporter noticed will be planned, implemented and reviewed against
+that one. TKT-202 was filed as "the gateway logs `guest_order_ref`". Reading the code found it was the
+*shared* logger in six binaries, plus a second emitter nobody mentioned, plus a page route larger than
+either — all three caught at shaping. The **fourth** sink was not: `otelhttp` sets the raw path as a
+span attribute from inside the dependency, and the spans export to a collector, so no grep of the repo
+could surface it. It was found at plan-review by asking what the middleware *does*, and had it been
+missed the ticket would have closed with the ADR's "not logged" claim still false. Ask, for each sink,
+*where does this value leave the process* — logs, traces, metrics, events, error payloads, downstream
+requests — and name the ones you checked and cleared, so "only these two" is a finding rather than an
+omission.
+
 **When the approach lands on a guard, COUNT ITS PREDICATES in the `note`.** A guard with several
 independent checks needs one test per check — an earlier refusal short-circuits the rest, so a
 single case proves one predicate and is silent about the others. That count is what the test plan
