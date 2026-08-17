@@ -113,8 +113,12 @@ main() {
 		return 1
 	fi
 
+	# Fail CLOSED and say so out loud. generated_vars has already explained itself
+	# on stderr; what matters is that a bootstrap that cannot run is never read as
+	# "nothing is missing". Written explicitly rather than left to `set -e` on the
+	# assignment, so the intent survives an edit to the flags at the top.
 	local generated
-	generated="$(generated_vars)"
+	generated="$(generated_vars)" || return 1
 
 	missing="$(comm -23 <(printf '%s\n' "$required") <(printf '%s\n' "$generated"))"
 
