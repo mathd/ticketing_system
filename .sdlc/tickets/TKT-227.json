@@ -5,7 +5,7 @@
   "summary": "`make up` fails on the in-Docker scanner build (typescript@7.0.2), and four tickets have worked around it",
   "status": "Building",
   "labels": [
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
   "pr": {
