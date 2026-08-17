@@ -840,6 +840,15 @@ func (f *fakeStore) ResolveTicketTypeFees(_ context.Context, ticketTypeID uuid.U
 	return sel, nil
 }
 
+// ListRuleCurrencyMismatches (TKT-243) has no API surface — it exists for the
+// `catalog validate-rules` CLI. Present only to satisfy store.Store, and
+// deliberately NOT reimplemented over the fake's rows: the mechanism under test
+// is the SQL scope-pair join, so an in-memory answer here would prove the fake
+// agrees with itself. rules_validation_smoke_test.go asserts it against Postgres.
+func (f *fakeStore) ListRuleCurrencyMismatches(context.Context) ([]store.RuleCurrencyMismatch, error) {
+	return nil, nil
+}
+
 // CreatePayee / CreateSplitSchedule mirror the store's contract closely enough
 // for the handler tests: the write gate refuses a scope_id that names no seeded
 // entity, exactly as the SQL gate does.

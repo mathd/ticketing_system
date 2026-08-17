@@ -58,6 +58,7 @@ func subcommands() map[string]func([]string) error {
 		"reemit-policies":          reemitPolicies,
 		"reemit-orphan-prevention": reemitOrphanPrevention,
 		"provision-staff":          provisionStaffCommand,
+		"validate-rules":           validateRulesCommand,
 	}
 }
 
