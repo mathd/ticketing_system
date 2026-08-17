@@ -211,31 +211,55 @@ func isBareURLPath(e ast.Expr) bool {
 // sanitized value and the raw one side by side (ai-review F4). Matched on the
 // function name so it holds for both `SanitizedPath(...)` and
 // `obs.SanitizedPath(...)`.
+// Implemented with ast.Inspect and a sanitizer-depth counter rather than a
+// hand-rolled recursion. The hand-rolled version was WRONG in a way that looked
+// right and tested green: ast.Inspect calls its visitor with the root node
+// first, and the callback returned false for `child == n`, so it never descended
+// past the root at all. `fmt.Sprintf("%s %s", SanitizedPath(r.URL.Path),
+// r.URL.Path)` was reported safe — precisely the expression this function exists
+// to reject (ai-review F6). The flat sibling-argument case appeared to work only
+// because each argument is inspected separately by the caller.
 func hasUnwrappedURLPath(e ast.Expr) bool {
-	var unwrapped bool
-	var walk func(ast.Node)
-	walk = func(n ast.Node) {
-		if n == nil || unwrapped {
-			return
-		}
-		if call, ok := n.(*ast.CallExpr); ok && isSanitizerCall(call) {
-			// Everything inside a sanitizer call is accounted for.
-			return
-		}
+	// Collect every raw-path node, and every raw-path node that sits inside a
+	// sanitizer call, then compare. Two independent walks rather than one
+	// stateful one: a depth counter unwound on ast.Inspect's nil callback
+	// decrements on EVERY node exit, not just the sanitizer's, so it dropped
+	// back to zero before reaching the wrapped path and reported
+	// SanitizedPath(r.URL.Path) as an offender. Caught by the table tests in
+	// capability_audit_helper_test.go, which is why they exist.
+	all := map[ast.Node]bool{}
+	ast.Inspect(e, func(n ast.Node) bool {
 		if expr, ok := n.(ast.Expr); ok && isBareURLPath(expr) {
-			unwrapped = true
-			return
+			all[n] = true
 		}
-		ast.Inspect(n, func(child ast.Node) bool {
-			if child == n || child == nil || unwrapped {
-				return false
-			}
-			walk(child)
-			return false
-		})
+		return true
+	})
+	if len(all) == 0 {
+		return false
 	}
-	walk(e)
-	return unwrapped
+
+	wrapped := map[ast.Node]bool{}
+	ast.Inspect(e, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isSanitizerCall(call) {
+			return true
+		}
+		// Everything beneath this call is accounted for.
+		ast.Inspect(call, func(inner ast.Node) bool {
+			if expr, ok := inner.(ast.Expr); ok && isBareURLPath(expr) {
+				wrapped[inner] = true
+			}
+			return true
+		})
+		return true
+	})
+
+	for n := range all {
+		if !wrapped[n] {
+			return true
+		}
+	}
+	return false
 }
 
 func isSanitizerCall(call *ast.CallExpr) bool {

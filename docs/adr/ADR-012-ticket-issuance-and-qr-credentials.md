@@ -39,8 +39,21 @@ that path:
    worst of the three, since the value left the process to a collector.
 
 All three now route the path through `obs.SanitizedPath`, which replaces **declared capability
-segments** and leaves every other route byte-identical. The rule is a table of route shapes
-(`shared/go/obs/capability_path.go`), so a future capability URL inherits it by adding a row.
+segments**. The rule is a table of route shapes (`shared/go/obs/capability_path.go`), so a future
+capability URL inherits it by adding a row.
+
+**Matching is deliberately broader than routing, and that is a decision, not an accident.** The
+sanitiser reduces `.`/`..`/empty segments the way `net/http`'s ServeMux does, and compares literals
+case-insensitively — so it also redacts the capability position of requests the routers would answer
+`404` or `307` to. The two errors are not symmetric: redacting a route-shaped 404 costs an operator
+one segment of a request that did nothing, whereas declining to redact it writes a **live,
+redeemable, unauthenticated credential** into the log. A 404 does not make the reference less valid,
+and the request logger runs *before* the router, so it records the path either way. Sanitisation
+therefore follows the **shape of the secret**, not route identity.
+
+Consequently a path that is not a declared capability route is returned **byte-for-byte**, but "not a
+declared capability route" is judged on the reduced, case-folded form. `/healthz` and every ordinary
+route are unaffected.
 
 **The adversary, named (ADR-021).** This bounds **whoever can read this platform's logs and traces**,
 from the change forward. It bounds **nothing** against: a reference already written to a retained log

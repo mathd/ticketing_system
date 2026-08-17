@@ -27,11 +27,12 @@ import (
 func TestServerSpanDoesNotCarryTheCapability(t *testing.T) {
 	const ref = "2f1e3d4c-5b6a-4978-8899-aabbccddeeff"
 
+	// This test covers the PROCESSOR's behaviour, using the shared construction
+	// helper. It deliberately does NOT claim to prove Setup installs it — two
+	// earlier versions claimed exactly that and were bypassable (ai-review F3,
+	// F7). The wiring is proven on the wire, in
+	// capability_setup_test.go's TestSetupExportsNoCapabilityOnTheWire.
 	exp := tracetest.NewInMemoryExporter()
-	// Built through the PRODUCTION construction path (the same helper Setup
-	// calls), not by installing the processor here: a test that assembles its
-	// own chain stays green when the processor is deleted from Setup, which is
-	// exactly what happened (ai-review F3).
 	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(exp))
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 

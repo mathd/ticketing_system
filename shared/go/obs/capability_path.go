@@ -193,9 +193,30 @@ func SanitizedPath(path string) string {
 // canonicalSegments returns the significant segments of path, together with
 // their index in strings.Split(path, "/") so the caller can rewrite the original
 // spelling rather than a normalised one.
+//
+// Empty and "." segments are dropped, and ".." pops the previous segment — the
+// same reduction net/http's ServeMux performs before matching. Doing less than
+// the router does is a leak, not a simplification: ServeMux answers
+// "/api/access/unused/../orders/{ref}/tickets" with a 307 to the canonical path,
+// so it is a WORKING request, and RequestLogger — mounted outside the mux — sees
+// the un-reduced spelling for both the redirect and the follow-up. Matching only
+// "." and "" left that reference in the log (ai-review F5).
+//
+// The popped entry's index goes with it, so the surviving segments keep pointing
+// at their real position in the original string and the rewrite still lands on
+// the right one.
 func canonicalSegments(path string) (indices []int, segments []string) {
 	for i, seg := range strings.Split(path, "/") {
-		if seg == "" || seg == "." {
+		switch seg {
+		case "", ".":
+			continue
+		case "..":
+			// Pop, or ignore at the root: "/../x" is "/x" to the router, not an
+			// error. Never let it underflow into a negative index.
+			if n := len(segments); n > 0 {
+				indices = indices[:n-1]
+				segments = segments[:n-1]
+			}
 			continue
 		}
 		indices = append(indices, i)
@@ -214,11 +235,28 @@ func matches(parts []string, route []segment) bool {
 	for i, seg := range route {
 		switch seg.kind {
 		case segLiteral:
-			// EqualFold, not ==: "/API/ACCESS/orders/{ref}/tickets" is the same
-			// route to every server that will serve it, and it reached the log
-			// with the reference intact while this compared exactly. Every
-			// literal in the table is lower-case ASCII, so folding cannot widen
-			// the match onto a different route.
+			// EqualFold, not ==, and this is DELIBERATELY BROADER THAN THE
+			// ROUTER (ai-review F8).
+			//
+			// The routers are case-sensitive: ServeMux answers 404 to
+			// "/API/ACCESS/orders/{ref}/tickets", and the storefront's isLocale
+			// is an exact match. So folding redacts the capability position of
+			// some requests no handler will serve.
+			//
+			// That is the intended trade, stated rather than stumbled into. The
+			// two errors are not symmetric: redacting a route-shaped 404 costs
+			// an operator one segment of a request that did nothing, while NOT
+			// redacting it writes a live, redeemable, unauthenticated credential
+			// to the log — the 404 does not make the reference any less valid,
+			// and RequestLogger records it either way because it runs before the
+			// router. Sanitising follows the SHAPE OF THE SECRET, not route
+			// identity.
+			//
+			// Folding cannot widen onto a different real route: every literal in
+			// the table is lower-case ASCII, so a fold can only match spellings
+			// that differ from a declared literal by case alone. If a
+			// case-distinct sibling route is ever added, this assumption breaks
+			// and the table needs explicit case handling.
 			if !strings.EqualFold(parts[i], seg.literal) {
 				return false
 			}

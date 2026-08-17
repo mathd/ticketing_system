@@ -167,6 +167,65 @@ func TestSanitizedPathIsNotEvadedByNonCanonicalSpellings(t *testing.T) {
 	}
 }
 
+// Sanitising is DELIBERATELY broader than routing (ai-review F8).
+//
+// The routers are case-sensitive — ServeMux 404s "/API/ACCESS/..." and the
+// storefront's isLocale is exact — so folding case redacts the capability
+// position of requests no handler will serve. That is the intended trade and it
+// is pinned here so a later reader cannot mistake it for an oversight and
+// "correct" it: the correction would write a live credential to the log, because
+// a 404 does not make the reference less redeemable and the logger runs before
+// the router.
+//
+// If this test is ever failing because the policy changed, the ADR-012 amendment
+// must change with it.
+func TestSanitizedPathRedactsRouteShaped404sOnPurpose(t *testing.T) {
+	for _, in := range []string{
+		"/API/ACCESS/orders/" + capRef + "/tickets", // ServeMux: 404
+		"/EN/tickets/" + capRef,                     // isLocale: exact, so no page
+	} {
+		if got := obs.SanitizedPath(in); strings.Contains(got, capRef) {
+			t.Errorf("a route-shaped request that no handler serves still leaked the reference:\n"+
+				"  in  = %s\n  got = %s\nThe 404 does not make the capability less valid.", in, got)
+		}
+	}
+}
+
+// A ".." spelling is a WORKING request, and it must not leak (ai-review F5).
+//
+// net/http's ServeMux reduces dot-dot segments before matching and answers
+// "/api/access/unused/../orders/{ref}/tickets" with a 307 to the canonical path
+// — verified, not assumed. RequestLogger runs outside the mux, so it sees the
+// un-reduced spelling on the redirect AND on the follow-up request. Dropping
+// only "" and "." left the reference in both lines.
+//
+// Mutation this must catch: remove the ".." case from canonicalSegments.
+func TestSanitizedPathReducesDotDotLikeTheRouter(t *testing.T) {
+	for _, in := range []string{
+		"/api/access/unused/../orders/" + capRef + "/tickets",
+		"/api/access/orders/x/../" + capRef + "/tickets",
+		"/en/x/../tickets/" + capRef,
+		"/a/b/../../api/access/orders/" + capRef + "/tickets",
+		"/../api/access/orders/" + capRef + "/tickets", // underflow at the root
+	} {
+		if got := obs.SanitizedPath(in); strings.Contains(got, capRef) {
+			t.Errorf("dot-dot spelling leaked the reference:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+
+	// Reduction must not invent a match: these do NOT reduce to a capability
+	// route and must come back untouched.
+	for _, in := range []string{
+		"/api/access/orders/" + capRef + "/../tickets", // ref is popped away
+		"/en/tickets/" + capRef + "/..",                // capability popped
+		"/admin/../scanner/tickets/abc",
+	} {
+		if got := obs.SanitizedPath(in); got != in {
+			t.Errorf("non-capability dot-dot path was rewritten:\n  in  = %s\n  got = %s", in, got)
+		}
+	}
+}
+
 // The storefront rule matches a LOCALE, not "any first segment" (ai-review F2).
 //
 // The gateway owns /admin/ and /scanner/ alongside the "/" catch-all, so a rule
