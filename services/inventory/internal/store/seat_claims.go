@@ -590,10 +590,10 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 		}
 		for _, a := range adjacency {
 			var l, r, storedKey sql.NullString
-			var storedPos, storedRank sql.NullInt32
+			var storedPos sql.NullInt32
 			err = tx.QueryRowContext(ctx,
-				`SELECT left_identity, right_identity, row_key, position, row_rank FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
-				slotID, a.SeatIdentity).Scan(&l, &r, &storedKey, &storedPos, &storedRank)
+				`SELECT left_identity, right_identity, row_key, position FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
+				slotID, a.SeatIdentity).Scan(&l, &r, &storedKey, &storedPos)
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: pool %s has no projection row for seat %q, which this publication describes",
 					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
@@ -611,16 +611,27 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 				return fmt.Errorf("%w: pool %s already holds different adjacency for seat %q — this publication describes another geometry",
 					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
 			}
-			// And the ORDERING, where the pool already has some (ai-review pass 2).
-			// Comparing only identities and edges left the door the guard exists to close:
+			// And the ORDERING, where the pool already has some (ai-review pass 2) — but
+			// only the parts of it that can change what "together" means.
+			//
+			// Comparing only identities and edges left the door this guard exists to close:
 			// a publication carrying the same chain with permuted row/position values passed
 			// every check and then overwrote the ordering, so two seats that are not
-			// neighbours could be returned as a contiguous run. Where the stored ordering is
-			// NULL this is the upgrade path and any incoming ordering is accepted, which is
-			// the whole point of the upsert.
+			// neighbours could be returned as one run. Row key and within-row position are
+			// therefore compared exactly.
+			//
+			// row_rank is DELIBERATELY excluded, and the asymmetry is the point (ai-review
+			// pass 4). A rank only reorders whole rows against each other; it cannot make two
+			// non-neighbours adjacent, because contiguity is decided within a row by position
+			// and the row key. So a differing rank is not a different geometry — and refusing
+			// it would make the very defect this ticket fixed unrepairable: a pool provisioned
+			// by the arrival-order ranking carries ranks the corrected derivation will not
+			// reproduce, and a correction wave re-emitting that exact immutable geometry would
+			// be rejected on the one field it exists to repair. The upsert updates the rank
+			// for the same reason it updates the metadata at all.
 			if storedKey.Valid {
 				if a.RowKey == nil || a.Position == nil || a.RowRank == nil ||
-					storedKey.String != *a.RowKey || storedPos.Int32 != *a.Position || storedRank.Int32 != *a.RowRank {
+					storedKey.String != *a.RowKey || storedPos.Int32 != *a.Position {
 					return fmt.Errorf("%w: pool %s already holds a different ordering for seat %q — this publication describes another geometry",
 						ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
 				}

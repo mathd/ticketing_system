@@ -1337,3 +1337,147 @@ func TestProvisionRefusesOrderingThatContradictsItsEdges(t *testing.T) {
 		t.Fatalf("an ordering that matches its edges must be accepted: %v", err)
 	}
 }
+
+// TestProvisionAcceptsEveryLegalProjectionShape is the counterweight to the rule above, and
+// it exists because a validator is as dangerous when it is too strict as when it is too
+// loose — the failure mode is just quieter. An over-strict rule here does not corrupt a
+// projection; it makes a legitimate publication fail closed and a performance provision no
+// inventory at all, which surfaces as an operator incident rather than as a wrong seat.
+//
+// Each shape is one catalog can genuinely produce, and each would be rejected by a plausible
+// over-reading of "positions run 1..N and name their neighbours".
+func TestProvisionAcceptsEveryLegalProjectionShape(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	chain := func(rows, per int) []SeatAdjacencyRow {
+		out := make([]SeatAdjacencyRow, 0, rows*per)
+		for r := 1; r <= rows; r++ {
+			for i := 1; i <= per; i++ {
+				pos, rank, key := int32(i), int32(r), "R"+strconv.Itoa(r)
+				id := func(n int) string { return "S/" + strconv.Itoa(r) + "/" + strconv.Itoa(n) }
+				row := SeatAdjacencyRow{SeatIdentity: id(i), RowKey: &key, Position: &pos, RowRank: &rank}
+				if i > 1 {
+					l := id(i - 1)
+					row.Left = &l
+				}
+				if i < per {
+					rr := id(i + 1)
+					row.Right = &rr
+				}
+				out = append(out, row)
+			}
+		}
+		return out
+	}
+
+	shapes := map[string][]SeatAdjacencyRow{
+		// A one-seat row has NO neighbours either side, and both nils are answers rather
+		// than gaps (ADR-041). A rule reading "position 1 must name position 2" rejects it.
+		"a single one-seat row": chain(1, 1),
+		// Boxes and accessible bays are rows of one, and a map can be entirely made of them.
+		"many one-seat rows": chain(5, 1),
+		// The full band a single hold may span.
+		"one row at the seat-set limit": chain(1, MaxSeatsPerHold),
+		"an ordinary grid":              chain(6, 6),
+	}
+	for name, adjacency := range shapes {
+		t.Run(name, func(t *testing.T) {
+			if err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 10000, true, adjacency); err != nil {
+				t.Fatalf("%s is a projection catalog can produce and must be accepted: %v", name, err)
+			}
+		})
+	}
+
+	// Rule OFF but ordered: the shape a future ticket produces when it decouples selection
+	// from the orphan rule, and one this validator must not pre-emptively forbid.
+	t.Run("rule off with an ordered projection", func(t *testing.T) {
+		if err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 1000, false, chain(2, 3)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// The pre-ADR-061 shape: edges, no ordering at all. Provisioning it is how an existing
+	// pool comes to exist, and refusing it would break every rule-enabled publication that
+	// predates this ticket.
+	t.Run("an unordered projection", func(t *testing.T) {
+		l, r := "A/1/1", "A/1/2"
+		if err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 1000, true,
+			[]SeatAdjacencyRow{{SeatIdentity: l, Right: &r}, {SeatIdentity: r, Left: &l}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestReProvisionRepairsARowRankWithoutTouchingTheRest is ai-review pass 4's [high], and it
+// is the sharpest kind of finding: a guard added in the previous pass made the defect fixed
+// in that same pass unrepairable.
+//
+// A pool provisioned by the arrival-order ranking carries ranks the corrected derivation does
+// not reproduce. If a re-provision compared ranks, the correction wave re-emitting that exact
+// immutable geometry would be refused on the one field it exists to repair, and the pool would
+// stay mis-ranked for ever — buyers seated in a row chosen by the producer's iteration order,
+// with the repair path closed.
+//
+// The asymmetry is safe because a rank only reorders whole ROWS. Contiguity is decided within
+// a row by position and row key, both of which are still compared exactly, so no rank change
+// can make two non-neighbours adjacent. It changes which legal run is offered first, never
+// whether a set of seats is a run.
+func TestReProvisionRepairsARowRankWithoutTouchingTheRest(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	seat := func(r, i int) string { return "S/" + strconv.Itoa(r) + "/" + strconv.Itoa(i) }
+	build := func(ranks map[int]int32) []SeatAdjacencyRow {
+		out := make([]SeatAdjacencyRow, 0, 4)
+		for r := 1; r <= 2; r++ {
+			for i := 1; i <= 2; i++ {
+				pos, rank, key := int32(i), ranks[r], "R"+strconv.Itoa(r)
+				row := SeatAdjacencyRow{SeatIdentity: seat(r, i), RowKey: &key, Position: &pos, RowRank: &rank}
+				if i > 1 {
+					l := seat(r, i-1)
+					row.Left = &l
+				}
+				if i < 2 {
+					rr := seat(r, i+1)
+					row.Right = &rr
+				}
+				out = append(out, row)
+			}
+		}
+		return out
+	}
+
+	// The mis-ranked state the old arrival-order derivation could produce: row 2 ranked first.
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(map[int]int32{1: 2, 2: 1})); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 2, 0, "EUR", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Seats, ",") != seat(2, 1)+","+seat(2, 2) {
+		t.Fatalf("precondition: the mis-ranked pool must serve row 2 first, got %v", got.Seats)
+	}
+
+	// The correction wave: same geometry, corrected ranks. It must be ACCEPTED.
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(map[int]int32{1: 1, 2: 2})); err != nil {
+		t.Fatalf("a rank-only correction must be applied, not refused — otherwise the arrival-order "+
+			"defect this ticket fixed can never be repaired on a pool that has it: %v", err)
+	}
+	var rank int32
+	if err := db.QueryRowContext(ctx,
+		`SELECT row_rank FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`, slot, seat(1, 1)).Scan(&rank); err != nil {
+		t.Fatal(err)
+	}
+	if rank != 1 {
+		t.Fatalf("row 1 rank = %d want 1 — the correction must actually land", rank)
+	}
+	// And a position change on the same pool is still refused, which is what makes the
+	// acceptance above about the RANK rather than about the guard being switched off.
+	shifted := build(map[int]int32{1: 1, 2: 2})
+	swap := int32(2)
+	shifted[0].Position = &swap
+	one := int32(1)
+	shifted[1].Position = &one
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, shifted); !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v want ErrSeatProjectionIncomplete — within-row position still decides what "+
+			"'together' means and must not be rewritten", err)
+	}
+}

@@ -111,7 +111,15 @@ same transaction and pool lock as the claim.
    order: the projection carries both, and `row_rank` counts rows across the map in catalog's
    own (section position, row position) order.
 
-   Keeping these separate cost a review round. Ordering rows by `row_key` alone made *"the
+   Row order comes from the **declared** `(section position, row position)`, not from the order
+   catalog's response happens to list rows in. That order is the producer's SQL rather than a
+   contract this consumer can check, and inventory holds no geometry to notice the day it
+   changes; the response carries both positions explicitly, and they are validated for presence,
+   positivity and uniqueness before being trusted — the same fail-closed treatment every other
+   field of that response already gets, and now warranted because they permanently decide a
+   buyer-visible order.
+
+   Keeping key and rank separate cost a review round. Ordering rows by `row_key` alone made *"the
    first run in projected order"* mean *"the first run in a row chosen by UUID"*, and **every
    store and handler test passed anyway**, because each supplies its own row keys and naturally
    picks names that sort the way its fixture reads. Only a real catalog publication hands
@@ -225,9 +233,18 @@ and leave a projection neither input describes. ADR-029 already makes that unrea
 the ordinary path — a published version is immutable and the pool refuses a different
 `seat_map_id` — so the check is defence in depth against a catalog integrity violation, made
 explicit because the failure it prevents is silent and lands on the correction-wave path. It
-compares identities, edges **and ordering**: a publication carrying the same chain with permuted
-row/position values would otherwise pass every other check and then overwrite the ordering, so
-that two seats which are not neighbours could be returned as one contiguous run. The edges are the substrate arbitration runs
+compares identities, edges, the row key **and the within-row position**: a publication carrying
+the same chain with permuted position values would otherwise pass every other check and then
+overwrite the ordering, so that two seats which are not neighbours could be returned as one
+contiguous run.
+
+**`row_rank` is deliberately excluded from that comparison**, and the asymmetry is load-bearing.
+A rank only reorders whole rows against each other; contiguity is decided *within* a row by
+position and row key, so no rank change can make two non-neighbours adjacent — it changes which
+legal run is offered first, never whether a set of seats is a run. Comparing it would make the
+arrival-order defect below **unrepairable**: a pool provisioned before that fix carries ranks the
+corrected derivation does not reproduce, and the correction wave re-emitting that exact immutable
+geometry would be refused on the one field it exists to repair. The edges are the substrate arbitration runs
 on: a live claim was decided against them as they stood, and a later publication that rewrote
 them would retroactively change what that decision meant. The ordering columns are additive,
 read only by selection, and carry no such history. Changing that clause to update the edges as

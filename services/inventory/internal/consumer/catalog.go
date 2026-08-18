@@ -311,8 +311,31 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	}
 	refs := make([]rowRef, 0, 16)
 	seq := 0
+	// Validate the positions BEFORE trusting them (ai-review). They became load-bearing the
+	// moment row order was derived from them, and this resolver fails closed on every other
+	// malformed field for the same reason: a missing JSON number decodes as 0, sorts first,
+	// and commits a wrong buyer-visible row order permanently — the event is consumed in the
+	// same transaction, so nothing later repairs it. Catalog's own schema forbids these
+	// shapes today; that is a property of the producer, not a guarantee this consumer can
+	// check, which is exactly the reasoning already applied to seat positions below.
+	sectionPositions := map[int32]struct{}{}
 	for _, section := range body.Sections {
+		if section.Position <= 0 {
+			return nil, fmt.Errorf("%w: seat map %s has a section with position %d", ErrGeometryInvalid, seatMapID, section.Position)
+		}
+		if _, dup := sectionPositions[section.Position]; dup {
+			return nil, fmt.Errorf("%w: seat map %s repeats section position %d", ErrGeometryInvalid, seatMapID, section.Position)
+		}
+		sectionPositions[section.Position] = struct{}{}
+		rowPositions := map[int32]struct{}{}
 		for _, row := range section.Rows {
+			if row.Position <= 0 {
+				return nil, fmt.Errorf("%w: seat map %s has a row with position %d", ErrGeometryInvalid, seatMapID, row.Position)
+			}
+			if _, dup := rowPositions[row.Position]; dup {
+				return nil, fmt.Errorf("%w: seat map %s repeats row position %d within a section", ErrGeometryInvalid, seatMapID, row.Position)
+			}
+			rowPositions[row.Position] = struct{}{}
 			refs = append(refs, rowRef{sectionPos: section.Position, rowPos: row.Position, seq: seq, row: row})
 			seq++
 		}
