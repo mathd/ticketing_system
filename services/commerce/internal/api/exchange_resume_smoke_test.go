@@ -194,6 +194,10 @@ type stubPolicy struct {
 	// factsFail makes payments refuse the journal call, which is the handler's 503 branch
 	// and therefore the interruption: charged, not settled.
 	factsFail atomic.Bool
+	// finalizeFails makes inventory refuse the finalize transition, which is what a
+	// TERMINAL target claim (expired or released) looks like to commerce — inventory
+	// answers ErrConflict for any transition out of a terminal state.
+	finalizeFails atomic.Bool
 }
 
 func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubPolicy) *exchangeStack {
@@ -220,6 +224,11 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			_, _ = w.Write([]byte(`{"seated":false}`))
 		case strings.HasSuffix(r.URL.Path, "/finalize"):
 			c.hit("finalize")
+			if policy.finalizeFails.Load() {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"status":"finalizing"}`))
 		case strings.HasSuffix(r.URL.Path, "/confirm"):
 			c.hit("confirm")
@@ -634,5 +643,79 @@ func TestAResumeRequiresTheSameRequestNotJustTheSameKey(t *testing.T) {
 	settled, _, _, _, _ := s.exchangeRow(t, ctx, f.organizer, key)
 	if settled {
 		t.Error("the mismatched request settled the exchange")
+	}
+}
+
+// A TERMINAL target claim wedges the exchange — and this test PINS that, rather than
+// claiming it is fixed (ai-review pass 1, [high]).
+//
+// The state: the basis is recorded and the target claim has since gone `expired` or
+// `released`. Inventory refuses any transition out of a terminal state, so `finalize` is a
+// conflict, and the handler answers 409 forever. The `order_exchanges_one_per_source` index
+// then blocks a corrected exchange, and the refund path treats any exchange row as a live
+// exchange — so the source order is stuck.
+//
+// **It is real, and it is not this ticket's, because it is not this ticket's doing.** Before
+// TKT-167 the same replay fell through to the forward path, where `holdExchangeTarget`
+// replays the same `exchange-target:` key, inventory's CreateHold hits `existing.expired()`
+// and returns ErrConflict, and the handler answered — verbatim — the same 409 "exchange
+// target is unavailable". Same wedge, same status, same message, both before and after.
+// The resume changes WHICH call refuses, not whether one does.
+//
+// **No money is stranded by it.** The two are ordered `finalize` then settle, and finalize
+// takes the claim out of the expiry predicate (`liveClaims` counts `finalizing`
+// unconditionally). So a claim that expires before finalize was never charged against, and a
+// charge implies finalize already succeeded and the claim can no longer expire. The only
+// other route to terminal is an explicit release, and the exchange path issues exactly one —
+// `releaseExchangeHold` on a BIND failure, before any basis exists and before any money
+// moves. The review's "released after capture" case has no producer in this code.
+//
+// So what is left is a WEDGED ORDER with no money in flight, which wants an unwind path
+// (delete the exchange binding, free the order for a corrected attempt) — a new capability,
+// not a fix to this diff. Pinned here in the shape ADR-021's rollback-gap test uses: if this
+// test ever fails, the gap was closed and this test should be replaced by one asserting the
+// new behaviour, not deleted.
+func TestATerminalTargetClaimWedgesTheExchangeAndStrandsNoMoney(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "wedge-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1500)
+	s := exchangeStackFor(t, db, f, policy)
+	const key = "wedge-1"
+
+	// The claim went terminal before finalize: inventory refuses the transition.
+	policy.finalizeFails.Store(true)
+
+	code, _ := s.exchange(t, f, key)
+	if code != http.StatusConflict {
+		t.Fatalf("first attempt answered %d, want 409 — a terminal target claim is refused at finalize", code)
+	}
+	// The basis IS durable at this point, which is what makes every retry take the resume
+	// branch rather than the forward path.
+	settled, basis, _, _, _ := s.exchangeRow(t, ctx, f.organizer, key)
+	if !basis || settled {
+		t.Fatalf("basis=%t settled=%t, want basis=true settled=false", basis, settled)
+	}
+
+	// The retry takes the RESUME branch and reaches the same refusal.
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusConflict {
+		t.Fatalf("the retry answered %d %v, want 409. If this now succeeds, the terminal-claim "+
+			"gap was closed — update this test to assert the new behaviour rather than deleting it", code, out)
+	}
+
+	// THE PART THAT MATTERS: no money moved, in either attempt. The wedge costs a stuck
+	// order, not a stranded charge, and that is the whole reason it is not a blocker.
+	if got := s.payments.count("charge-submissions"); got != 0 {
+		t.Errorf("%d charge submissions against an exchange that never finalized, want 0. "+
+			"finalize precedes settlement precisely so a target that cannot be secured is "+
+			"refused before the buyer is charged", got)
+	}
+	if got := s.payments.count("refund-submissions"); got != 0 {
+		t.Errorf("%d refund submissions, want 0", got)
+	}
+	settled, _, _, _, _ = s.exchangeRow(t, ctx, f.organizer, key)
+	if settled {
+		t.Error("the exchange settled despite never finalizing its target claim")
 	}
 }
