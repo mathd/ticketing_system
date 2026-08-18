@@ -198,6 +198,8 @@ type FactResult struct {
 
 // OperationState defines model for OperationState.
 type OperationState struct {
+	CapturedAmount         *int64              `json:"captured_amount,omitempty"`
+	Currency               *string             `json:"currency,omitempty"`
 	FactId                 *openapi_types.UUID `json:"fact_id,omitempty"`
 	OccurredAt             *time.Time          `json:"occurred_at,omitempty"`
 	Resolved               bool                `json:"resolved"`
@@ -265,6 +267,13 @@ type PSPStatus struct {
 
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
 type PSPStatusOutcome string
+
+// RefundLegState defines model for RefundLegState.
+type RefundLegState struct {
+	Amount    int64  `json:"amount"`
+	Completed bool   `json:"completed"`
+	Currency  string `json:"currency"`
+}
 
 // SettlementFee One fee and the payees it resolved to.
 type SettlementFee struct {
@@ -343,6 +352,13 @@ type GetOrderSettlementParams struct {
 type PspStatusParams struct {
 	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+}
+
+// GetRefundLegParams defines parameters for GetRefundLeg.
+type GetRefundLegParams struct {
+	OrganizerId          openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+	SourceIdempotencyKey string             `form:"source_idempotency_key" json:"source_idempotency_key"`
+	RefundIdempotencyKey string             `form:"refund_idempotency_key" json:"refund_idempotency_key"`
 }
 
 // ChargeJSONRequestBody defines body for Charge for application/json ContentType.

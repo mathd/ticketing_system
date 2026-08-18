@@ -61,6 +61,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/internal/charges", s.charge)
 	r.Get("/internal/orders/{orderId}/settlement", s.getOrderSettlement)
 	r.Get("/internal/operations", s.operation)
+	r.Get("/internal/refund-legs", s.refundLeg)
 	r.Get("/internal/psp/status", s.pspStatus)
 	r.Post("/internal/psp/void", s.pspVoid)
 	r.Post("/internal/psp/refund", s.pspRefund)
@@ -137,10 +138,22 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 	// occurred_at is returned for EVERY found operation (TKT-115): it is the durable
 	// bind time commerce derives the status-replay deadline from — an unresolved
 	// operation is exactly the caller that needs it.
+	// An explicit map, never the store row: store.Operation carries the provider payment
+	// and charge references and the payment-method reference, and marshalling it would put
+	// all three on the wire. The response is assembled field by field so that adding one is
+	// a deliberate act (ADR-032 §Provider-neutral evidence reads).
 	out := map[string]any{"resolved": op.Resolved, "occurred_at": op.OccurredAt}
 	if op.Resolved {
 		out["status"] = op.Status
 		out["fact_id"] = op.FactID
+	}
+	// Amount evidence for a captured operation only (TKT-168). The condition is on the
+	// provider state rather than on Resolved: a resolved-but-declined operation moved no
+	// money, and answering 0 for it would be indistinguishable from a genuine zero capture.
+	// CapturedAmount, never RequestAmount — what was asked for is not what moved.
+	if op.ProviderState == "captured" {
+		out["captured_amount"] = op.CapturedAmount
+		out["currency"] = op.RequestCurrency
 	}
 	if deadline, bounded := statusReplayDeadline(op, s.statusReplayRetention); bounded {
 		out["status_replay_deadline_at"] = deadline
