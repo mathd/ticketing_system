@@ -88,6 +88,11 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 		"starts_at": "2026-12-01T20:00:00Z", "timezone": "Europe/Paris",
 		"seat_map_id": seatMap["id"],
 	})
+	ticketType := created(t, catalog+"/ticket-types", map[string]any{
+		"performance_id": seated["id"],
+		"name":           map[string]string{"fr": "Place", "en": "Seat"},
+		"price":          map[string]any{"amount": 5000, "currency": "EUR"},
+	})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, seated["id"]), nil); code != http.StatusOK {
 		t.Fatalf("publish seated performance: %d %s", code, body)
 	}
@@ -109,11 +114,10 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	ticketType := "11111111-1111-1111-1111-111111111111"
 	hold := func(key string, count int) (int, []byte) {
 		return postBestAvailable(t, key, map[string]any{
 			"organizer_id": organizerID, "slot_id": seated["id"], "seat_count": count,
-			"ticket_type_id": ticketType, "unit_amount": 5000, "currency": "EUR",
+			"ticket_type_id": ticketType["id"], "unit_amount": 5000, "currency": "EUR",
 		})
 	}
 	var out struct {
