@@ -282,6 +282,39 @@ func TestASeatedSaleCannotCarryAChannelAtAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// WHICH SCHEMA EACH OPERATION ACTUALLY USES, asserted first (ai-review pass 2
+	// [high]). Inspecting the two component definitions alone does not pin the
+	// boundary: repointing /partners/reservations at ReservationCreate would admit
+	// seat_identities, authentication would then inject the credential's channel,
+	// and the seated path would carry one -- while every property assertion below
+	// stayed green. The wiring is half the claim.
+	bodySchemaRef := func(path string) string {
+		t.Helper()
+		item := doc.Paths.Find(path)
+		if item == nil || item.Post == nil {
+			t.Fatalf("no POST %s in the contract", path)
+		}
+		body := item.Post.RequestBody
+		if body == nil || body.Value == nil {
+			t.Fatalf("POST %s declares no request body", path)
+		}
+		media := body.Value.Content.Get("application/json")
+		if media == nil || media.Schema == nil {
+			t.Fatalf("POST %s declares no application/json schema", path)
+		}
+		return media.Schema.Ref
+	}
+	if ref := bodySchemaRef("/reservations"); ref != "#/components/schemas/ReservationCreate" {
+		t.Fatalf("POST /reservations takes %q, want ReservationCreate -- the public route must "+
+			"not be repointed at a schema that carries a channel (TKT-248/ADR-060)", ref)
+	}
+	if ref := bodySchemaRef("/partners/reservations"); ref != "#/components/schemas/PartnerReservationCreate" {
+		t.Fatalf("POST /partners/reservations takes %q, want PartnerReservationCreate -- "+
+			"repointing it at a schema with seat_identities would let a credentialled seated "+
+			"sale carry the credential's channel into a claim path that ignores allocations "+
+			"entirely (TKT-176)", ref)
+	}
+
 	public, ok := doc.Components.Schemas["ReservationCreate"]
 	if !ok {
 		t.Fatal("no ReservationCreate schema")

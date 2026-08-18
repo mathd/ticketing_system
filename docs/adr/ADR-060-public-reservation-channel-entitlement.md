@@ -121,20 +121,24 @@ consult.
   as accepted behaviour: if that test ever fails, update this ADR rather than deleting it (the
   ADR-021 idiom).
 
-- **The exchange path keeps its guard, and a historical residual is named rather than implied.**
-  `holdExchangeTarget` forwards a channel to inventory only when `src.ResellerID != nil`, because
-  the reseller is the authority and a source with no reseller was never an authorized channelled
-  sale. New public rows carry no channel, so new public exchanges are trivially public; the guard
-  becomes belt-and-braces for them and stays load-bearing for historical rows.
+- **The exchange path is closed on the same rule, in two places.** The reseller — not the channel —
+  is the authority, so an exchange takes the source's channel only when `src.ResellerID != nil`.
+  That guard already governed the inventory forward (`holdExchangeTarget`); this ADR extends it to
+  **price resolution** (`repricingChannel`, `exchanges.go`).
 
-  **The residual, stated plainly:** an exchange *reprices* the target through
-  `resolveTicketTypePrice(..., src.ChannelCode)` (`exchanges.go:145`), and `src` is loaded from the
-  DATABASE. So a pre-ADR-060 public row that carries a channel can still be repriced on that
-  channel's rules by exchanging it. This is not a new hole — the row already exists and its own
-  purchase was already priced that way — and it needs an existing order, so it is not reachable by
-  an arbitrary caller. It is deliberately not closed here: rewriting historical attribution would
-  change what those orders *were*, which is the thing ADR-024 protects. If it ever needs closing,
-  the shape is a repricing-time entitlement check, not a column backfill.
+  The second half was found in adversarial review and is worth recording, because an earlier draft
+  of this ADR argued the opposite and was **wrong**. That draft accepted legacy repricing on the
+  grounds that "its own purchase was already priced that way". It is not the same purchase: an
+  exchange prices a **different ticket type**, named in the *current* request, against **current**
+  rules — which may not have existed when the source was bought. So a pre-ADR-060 public row,
+  carrying whatever channel an unauthenticated caller once typed into its body, could still pick the
+  price basis for a brand-new sale. Staff authentication on the exchange does not rescue it: a
+  perfectly normal staff exchange would honour an attacker-chosen basis.
+
+  **Keeping the stored attribution does not require pricing on it.** Historical rows keep their
+  `channel_code` and `reseller_id` untouched — that is what ADR-024 protects — and the resolution
+  simply stops trusting an attribution no credential ever vouched for. A source with no reseller
+  reprices publicly, which is what its original hold already was.
 
 - **`maxProperties` on `ReservationCreate` returns to 3.** The `not: {required: [quantity,
   seat_identities]}` clause **stays** even though the count alone would now exclude that shape: the
@@ -147,7 +151,16 @@ consult.
 ## The adversary
 
 Worth naming, per ADR-021's discipline. This closes **an unauthenticated caller choosing their own
-price basis**. It does not claim anything about an authenticated partner naming its own channel —
-that is what the credential is for — nor about an operator with database access, who can write any
-`channel_code` to any row directly. This is an entitlement boundary on a public request, not
-tamper-evidence.
+price basis** — at the point of sale *and*, after the review pass above, at the point of exchange,
+which is where the same choice could otherwise have been laundered through a legacy row into a
+brand-new sale.
+
+It does not claim anything about an authenticated partner naming its own channel — that is what the
+credential is for — nor about an operator with database access, who can write any `channel_code` to
+any row directly. This is an entitlement boundary on a request, not tamper-evidence.
+
+**What is deliberately NOT changed: historical rows.** A pre-ADR-060 public reservation keeps the
+channel it was sold under, and the order and settlement records that reference it are untouched.
+Their money already moved; rewriting their attribution would change what those sales *were*, which
+is the thing ADR-024 exists to protect. The entitlement rule governs what happens NEXT — pricing a
+new reservation, or an exchange target — never what already happened.

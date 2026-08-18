@@ -142,7 +142,23 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Price the target through catalog's RULE RESOLUTION — never the raw column, never the
 	// source's snapshot (ADR-036 §5/§6).
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID, src.Quantity, src.ChannelCode)
+	//
+	// The channel is taken from the source ONLY when the source had a reseller
+	// (TKT-248, ai-review pass 2 [medium]). The reseller is the authority, exactly
+	// as it is for the inventory forward below, and for a sharper reason here: this
+	// prices a DIFFERENT ticket type (TargetTicketTypeID comes from the request)
+	// against CURRENT rules. A pre-ADR-060 public row carries whatever channel an
+	// unauthenticated caller once put in its body, so honouring it would let that
+	// long-past choice pick the price basis for a brand-new sale — including rules
+	// written after the original purchase. "Its own purchase was already priced that
+	// way" does not justify the target's price, and keeping the stored attribution
+	// does not require pricing on it: the row keeps its channel_code, this
+	// resolution just stops trusting it.
+	//
+	// A source with no reseller therefore reprices PUBLICLY, which is what its
+	// original hold already was.
+	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID,
+		src.Quantity, repricingChannel(src))
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})
@@ -738,4 +754,24 @@ func (s *Server) returnExchangedCapacity(r *http.Request, ex commercestore.Excha
 	}
 	ex.CapacityReturned = true
 	return ex
+}
+
+// repricingChannel decides which channel, if any, prices an exchange TARGET.
+//
+// The reseller is the authority, not the channel — the same rule holdExchangeTarget
+// applies to the inventory forward, and for a sharper reason here (TKT-248,
+// ai-review pass 2). This prices a DIFFERENT ticket type against CURRENT rules, so
+// honouring a channel that no credential ever vouched for lets a long-past,
+// unauthenticated choice pick the price basis for a brand-new sale.
+//
+// Before ADR-060 a public reserve persisted whatever channel its body named, so
+// `channel_code != NULL, reseller_id == NULL` is a legal and routine historical
+// row. Those rows KEEP their attribution; this function only stops that attribution
+// from deciding money. A source with no reseller reprices publicly, which is what
+// its original hold already was.
+func repricingChannel(src commercestore.ExchangeSource) *string {
+	if src.ResellerID == nil {
+		return nil
+	}
+	return src.ChannelCode
 }

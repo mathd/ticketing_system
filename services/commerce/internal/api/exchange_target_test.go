@@ -149,3 +149,59 @@ func TestAnUnchannelledExchangeTargetIsUnchanged(t *testing.T) {
 		t.Fatal("an unchannelled source sent a reseller_id")
 	}
 }
+
+// An exchange reprices on the source's channel ONLY when a reseller vouched for it
+// (TKT-248, ai-review pass 2 [medium]).
+//
+// The sibling of TestAPublicExchangeTargetCarriesNoChannelEvenWhenTheSourceNamedOne
+// above, one step earlier in the request: that one stops a legacy channel reaching
+// INVENTORY, this one stops it reaching catalog's PRICE resolution.
+//
+// Why it is not covered by the other: they are different decisions on different
+// values. The inventory forward decides whose allocation is consumed; this decides
+// what the buyer is charged, for a ticket type named in THIS request, against rules
+// that may not have existed when the source was bought. Deleting either guard
+// leaves the other's test green.
+//
+// `channel_code != NULL, reseller_id == NULL` is a legal historical row: before
+// ADR-060 a public reserve persisted whatever channel its unauthenticated body
+// named. The row keeps that attribution — this only stops it deciding money.
+func TestExchangeRepricingTakesTheChannelOnlyFromAResellerSource(t *testing.T) {
+	channel := "reseller-acme"
+	reseller := uuid.New()
+
+	for name, tc := range map[string]struct {
+		src  commercestore.ExchangeSource
+		want *string
+	}{
+		"a public source's channel does not price the target": {
+			// Typed by an anonymous buyer, never authenticated.
+			src:  commercestore.ExchangeSource{ChannelCode: &channel, ResellerID: nil, Currency: "EUR"},
+			want: nil,
+		},
+		"a reseller source keeps pricing on its own channel": {
+			src:  commercestore.ExchangeSource{ChannelCode: &channel, ResellerID: &reseller, Currency: "EUR"},
+			want: &channel,
+		},
+		"a public source with no channel is unchanged": {
+			src:  commercestore.ExchangeSource{ChannelCode: nil, ResellerID: nil, Currency: "EUR"},
+			want: nil,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := repricingChannel(tc.src)
+			switch {
+			case tc.want == nil && got != nil:
+				t.Fatalf("repriced on channel %q from a source no credential vouched for. The "+
+					"target is a DIFFERENT ticket type priced against CURRENT rules, so this "+
+					"lets a long-past unauthenticated choice pick the price basis for a new "+
+					"sale (ADR-060).", *got)
+			case tc.want != nil && got == nil:
+				t.Fatal("a RESELLER source lost its channel: an authorized channelled sale must " +
+					"still exchange onto its own channel's economics")
+			case tc.want != nil && got != nil && *got != *tc.want:
+				t.Fatalf("repriced on %q, want %q", *got, *tc.want)
+			}
+		})
+	}
+}
