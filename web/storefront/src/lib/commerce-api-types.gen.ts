@@ -693,6 +693,12 @@ export interface components {
             capacity_returned: boolean;
             replay: boolean;
         };
+        ExchangePending: {
+            /** Format: uuid */
+            exchange_id: string;
+            /** @enum {string} */
+            status: "confirmation_pending";
+        };
         ExchangeSwitched: {
             /** Format: uuid */
             organizer_id: string;
@@ -1372,6 +1378,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Exchange"];
+                };
+            };
+            /** @description Charged; confirmation pending — replay the same key to resume */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExchangePending"];
                 };
             };
             400: components["responses"]["Error"];
