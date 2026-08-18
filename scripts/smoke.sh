@@ -86,6 +86,18 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS commerce_bulkrefund_smoke" \
   -c "CREATE DATABASE commerce_bulkrefund_smoke OWNER commerce" >/dev/null
+# A FOURTH database, for ./internal/api (TKT-167). Commerce's first DB-backed test under
+# internal/api — the exchange-resume suite, which needs a handler AND a database at once.
+# The rule the three blocks above learned the hard way applies unchanged: `go test
+# ./internal/...` runs packages concurrently, so a fourth store.Migrate caller sharing
+# commerce_store_smoke races the others' migrations. It also shares no TABLE state: the
+# resume tests settle exchanges, and ./internal/store has a test that counts
+# `completion_outbox` rows for subject `order.exchanged` across the whole table — sharing
+# a database made that count 6 instead of 1, which reads as a product defect in the
+# outbox's deterministic id rather than as two suites in one schema.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS commerce_api_smoke" \
+  -c "CREATE DATABASE commerce_api_smoke OWNER commerce" >/dev/null
 # No -run filter: every smoke test in this package is part of the gate. An allowlist
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
@@ -98,6 +110,7 @@ COMMERCE_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhos
 COMMERCE_BULKREFUND_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_bulkrefund_smoke" \
 COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_mailer_smoke" \
 COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
+COMMERCE_API_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_api_smoke" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/access"

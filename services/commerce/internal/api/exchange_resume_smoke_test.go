@@ -38,8 +38,9 @@ import (
 //     fail on the second request only and provider calls cannot be counted.
 //
 // So this file is the first DB-backed test under commerce's internal/api. scripts/smoke.sh
-// already runs `./internal/...` for exactly this eventuality — the comment there says
-// "nothing lives there for commerce yet".
+// already runs `./internal/...` for exactly this eventuality — the comment there said
+// "nothing lives there for commerce yet" — and now also creates this package its own
+// database, which the same script's history says is not optional (see exchangeAPIDB).
 //
 // THE INTERRUPTION IS DRIVEN THROUGH THE HANDLER, never seeded. Writing basis_at into
 // order_exchanges directly would produce a green test whose precondition the code under
@@ -92,12 +93,24 @@ func newCountingStub(t *testing.T, h func(*countingStub, http.ResponseWriter, *h
 	return c
 }
 
-// exchangeAPIDB opens the same store-smoke database the store tier uses, and migrates it.
+// exchangeAPIDB opens this package's OWN smoke database and migrates it.
+//
+// Its own, not ./internal/store's, and the rule is the repo's rather than this ticket's:
+// `go test ./internal/...` runs packages concurrently, so a second store.Migrate caller
+// sharing one database races the first's migration. scripts/smoke.sh records that lesson
+// three times over (TKT-226, TKT-198) and dsn_isolation_smoke_test.go now fails if a
+// package is added without its own DSN.
+//
+// Sharing also cost a real, misleading failure before it was fixed: these tests settle
+// exchanges, and ./internal/store's TestExchangeSettlementOwesTheSwitchEvent counts
+// `completion_outbox` rows for subject `order.exchanged` across the WHOLE table. In one
+// database that count was 6 rather than 1 — which reads exactly like the outbox's
+// deterministic event id having broken, in a test this ticket never touched.
 func exchangeAPIDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("COMMERCE_TEST_DATABASE_URL")
+	dsn := os.Getenv("COMMERCE_API_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("COMMERCE_TEST_DATABASE_URL is not set")
+		t.Skip("COMMERCE_API_TEST_DATABASE_URL is not set")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -140,10 +153,16 @@ func seedExchangeSource(t *testing.T, db *sql.DB, ctx context.Context, key strin
 		f.order, f.reservation, key, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
+	// Cleanup is ordered by foreign key and, for completion_outbox, keyed the way that
+	// table actually is: it has NO organizer_id column, so the obvious
+	// `WHERE organizer_id=$1` is not merely useless — it errors, and these deliberately
+	// ignore their errors, so it would fail silently and leave every row behind.
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM order_facts WHERE organizer_id=$1`, f.organizer)
 		_, _ = db.Exec(`DELETE FROM order_exchanges WHERE organizer_id=$1`, f.organizer)
-		_, _ = db.Exec(`DELETE FROM completion_outbox WHERE organizer_id=$1`, f.organizer)
+		_, _ = db.Exec(`DELETE FROM completion_outbox WHERE order_id IN
+			(SELECT o.id FROM orders o JOIN reservations r ON r.id = o.reservation_id
+			 WHERE r.organizer_id=$1)`, f.organizer)
 		_, _ = db.Exec(`DELETE FROM orders WHERE reservation_id IN
 			(SELECT id FROM reservations WHERE organizer_id=$1)`, f.organizer)
 		_, _ = db.Exec(`DELETE FROM reservations WHERE organizer_id=$1`, f.organizer)
@@ -217,8 +236,8 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			// collision that reads exactly like a product defect in the replacement write.
 			n := c.hit("holds")
 			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"hold_id":%q}`,
-				uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, n)))))
+			_, _ = fmt.Fprintf(w, `{"hold_id":%q}`,
+				uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, n)))
 		default:
 			c.hit("unexpected:" + r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

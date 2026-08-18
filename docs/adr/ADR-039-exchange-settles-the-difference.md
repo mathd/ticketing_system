@@ -5,7 +5,9 @@ Date: 2026-07-31
 ## Status
 
 Accepted (TKT-158; decision taken under the owner-waived gates of that run, recorded on the ticket
-and on epic TKT-9). Fourth slice of TKT-9. **Completed by TKT-166** (the entitlement switch).
+and on epic TKT-9). Fourth slice of TKT-9. **Completed by TKT-166** (the entitlement switch), and
+**amended by TKT-167** (§3c: an exchange interrupted after the money moved resumes from its
+persisted basis — also taken under waived gates, `config.gates: autonomous`).
 
 Builds on [ADR-037](./ADR-037-post-purchase-refund-money-protocol.md) (refund money protocol) and
 [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) (reversal obligations and their ordering).
@@ -115,6 +117,57 @@ is strictly worse than a nullable column.
 This is an **honest-caller** guarantee, not tamper-evidence ([ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)):
 anyone holding the internal token can call inventory directly and skip all of it. The adversary here
 is a crash, not a writer.
+
+### 3c. An exchange interrupted after the money moved resumes from its persisted basis (TKT-167)
+
+`switch_pending` is the safe state this design *ends* in. There is a second intermediate state it
+passes *through*, and it is not safe: **the delta charged, `settled_at` still NULL.** The buyer is
+out of pocket and commerce has recorded nothing. Everything between the provider call and
+`CompleteExchangeSettlement` — the confirm, both gross facts, the replacement write — can land there.
+
+TKT-158 built the answer and did not connect it. It persists the full basis (target hold,
+replacement reservation, unit amount, slot, total, signed delta, price snapshot) **before** calling
+the provider, precisely so a retry settles the same numbers. But an unsettled replay fell through to
+the forward path, which re-prices through catalog and re-submits the target hold *before* it loads
+the basis. Both re-derivations fail exactly where recovery is needed:
+
+- **catalog unreachable** → 502 at the reprice. Recovery blocked by a dependency the exchange had
+  already finished with.
+- **the target price moved** → inventory's claim fingerprint covers `unit_amount`, so the same
+  `exchange-target:<exchange id>` key at a new price is `ErrIdempotency`, not a replay. The guard is
+  working as designed; the retry is simply asking the wrong question.
+
+So an unsettled replay with a recorded basis now **branches before any external call** and drives
+only the steps after the basis. It calls no catalog and takes no new hold.
+
+**This does not weaken [ADR-036](./ADR-036-pricing-rules-representation.md).** Catalog *was* the
+single authority for this price; `target_unit_amount` / `target_total` / `target_price_snapshot` are
+that authority's answer, persisted at the moment it was given. Re-resolving would not be more
+faithful to ADR-036 — it would settle money against a price the buyer never agreed to and journal a
+provenance snapshot describing a resolution that happened *after* the charge. Consuming the stored
+resolution is the §5 provenance rule working, not an exception to it.
+
+**Eligibility is deliberately not re-checked.** The resume reads the source through
+`BindOrderExchange`, whose replay branch returns before the `completed` check and the refund
+exclusion. A source that became ineligible *after* the provider moved money still resumes: refusing
+there strands a charge, and there is no state to protect that is worth that.
+
+**The resume re-submits the charge, and must.** Commerce cannot know whether the first submission
+reached the provider — that is the whole predicament. What makes the repeat harmless is the
+deterministic key `exchange-charge:<exchange id>`: payments converges it onto the one operation
+(ADR-032, `payment_operations`' primary key). The invariant is therefore *one key*, not *one
+submission*, and stating it the other way round would ask commerce to guess that the money already
+moved, which is the guess this whole mechanism exists to remove.
+
+`RecordExchangeBasis` became **record-or-load** for the same reason. Reporting only "you lost the
+race" left the losing writer with nothing to do but refuse; it now receives the basis that actually
+persisted and continues on it. A missing exchange returns `sql.ErrNoRows` rather than a zero basis —
+zero total, zero delta, nil hold reads as an ordinary even exchange settling nothing.
+
+**The 202 was undeclared.** The handler has answered `202 confirmation_pending` since TKT-158 on the
+confirm-failure branch, and the contract did not list it, so the response validator turned it into a
+500 ([ADR-028](./ADR-028-response-drift-fail-closed.md)). The one state a retry can recover from was
+being reported to its caller as an outage. Declared in TKT-167.
 
 ### 4. The replacement order deliberately owes no issuance event
 
