@@ -421,32 +421,41 @@ func loadExchangeBasis(ctx context.Context, q rowQuerier, org, exchangeID uuid.U
 
 // mapBindInsertError turns the exchange INSERT's failure into the error the handler acts on.
 //
-// WHICH unique index fired decides who owns the target hold, and collapsing the two was a
-// real defect (TKT-167 ai-review pass 3). It is a named function so the mapping is testable
-// against real constraint violations rather than only through a concurrency scenario.
+// WHICH unique index fired decides who owns the target hold, and collapsing them was a real
+// defect (TKT-167 ai-review pass 3), while enumerating them the OTHER way round was an
+// incomplete fix for it (pass 4). Both are recorded because the second mistake is the
+// instructive one.
 //
-//   order_exchanges_pkey (organizer_id, id) — the SAME exchange identity is already bound.
-//     Both requests derived that id from (organizer, idempotency key), so they also derived
-//     the same `exchange-target:<id>` hold key and SHARE one claim. This is
-//     ErrExchangeConflict: the other request owns the hold and may already have finalized
-//     it. Reported as ErrOrderNotExchangeable, the handler released the WINNER's claim —
-//     after its capture, if the timing fell that way — leaving the buyer charged with no
-//     target inventory and no recovery.
+// The handler releases the target hold on every bind error except ErrExchangeConflict. The
+// hold is keyed `exchange-target:<ExchangeID(organizer, idempotency_key)>`, so ANY collision
+// on that identity means another request already holds the SAME claim — releasing it kills a
+// claim that may be finalized and already charged against, leaving the buyer paid with no
+// target. Only `order_exchanges_one_per_source` means something different: a DIFFERENT
+// exchange owns this source order, nothing bound under this identity, so the caller's hold is
+// its own and releasing it is the correct cleanup.
 //
-//     Not an exotic interleaving: the lookup above runs in a transaction whose only row lock
-//     is `FOR UPDATE OF o` on the SOURCE order, so two requests naming DIFFERENT source
-//     orders lock different rows, both observe no exchange, and both reach the INSERT.
+// **The default is therefore the SAFE answer, and only the one provably-safe-to-release index
+// is enumerated.** The first version of this fix inverted that — it named
+// `order_exchanges_pkey` and let everything else fall through to ErrOrderNotExchangeable —
+// and missed `order_exchanges_organizer_id_idempotency_key_key`, migration 0010's
+// `UNIQUE (organizer_id, idempotency_key)`. That index means the same thing as the primary
+// key (same identity, shared hold) and the catch-all sent it to the releasing branch, so the
+// defect survived the fix through a different constraint. Enumerating the dangerous cases
+// requires knowing all of them; enumerating the safe one requires knowing one, and a future
+// index added to this table fails safe by default.
 //
-//   order_exchanges_one_per_source — a DIFFERENT exchange already owns this order. Nothing
-//     bound under this identity, so the caller's hold is its own and releasing it is right.
+// Not reachable via BindOrderExchange today — the id is derived from the same
+// (organizer, key) that index covers, so the pkey collides first — but the mapping must not
+// depend on which of two equivalent constraints PostgreSQL happens to report.
 func mapBindInsertError(err error) error {
 	switch violatedConstraint(err) {
-	case "order_exchanges_pkey":
-		return ErrExchangeConflict
 	case "":
+		// Not a unique violation at all.
 		return err
-	default:
+	case "order_exchanges_one_per_source":
 		return ErrOrderNotExchangeable
+	default:
+		return ErrExchangeConflict
 	}
 }
 

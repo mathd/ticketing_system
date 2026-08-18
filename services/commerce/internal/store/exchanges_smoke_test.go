@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -1068,7 +1069,9 @@ func TestABindCollidingOnTheExchangeIdentityReportsConflict(t *testing.T) {
 	// defect: a DIFFERENT exchange owning the source order must stay not-exchangeable, since
 	// there the hold really is the caller's to release.
 	// A DISTINCT identity (new uuid, new key) aimed at the source order the winner already
-	// exchanged: that trips one_per_source instead.
+	// exchanged: that trips one_per_source instead, and must map the OTHER way. A fix in one
+	// direction that broke the other would be invisible to a test checking only the case
+	// that failed.
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,
 		                            idempotency_key,request_fingerprint,quantity,source_total,
@@ -1085,5 +1088,38 @@ func TestABindCollidingOnTheExchangeIdentityReportsConflict(t *testing.T) {
 		t.Fatalf("a one-per-source collision maps to %v, want ErrOrderNotExchangeable — a "+
 			"different exchange owns the order, so this caller's hold IS its own to release",
 			mapBindInsertError(err))
+	}
+
+	// AND the third index, which the first version of this fix missed (pass 4).
+	// `UNIQUE (organizer_id, idempotency_key)` from migration 0010 means the same thing as
+	// the primary key — same identity, shared hold — but a fix that enumerated the pkey and
+	// let everything else fall through to ErrOrderNotExchangeable sent this one to the
+	// releasing branch, so the defect survived through a different constraint.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,
+		                            idempotency_key,request_fingerprint,quantity,source_total,
+		                            source_gross_total,currency,actor,reason)
+		VALUES($1,$2,$3,$4,'shared','fp3',2,2000,2000,'EUR','a','r')`,
+		loser.OrganizerID, uuid.New(), loser.OrderID, uuid.New())
+	if err == nil {
+		t.Fatal("the (organizer, idempotency_key) index did not fire")
+	}
+	if got := violatedConstraint(err); got != "order_exchanges_organizer_id_idempotency_key_key" {
+		t.Fatalf("constraint = %q, want order_exchanges_organizer_id_idempotency_key_key", got)
+	}
+	if !errors.Is(mapBindInsertError(err), ErrExchangeConflict) {
+		t.Fatalf("a (organizer, idempotency_key) collision maps to %v, want ErrExchangeConflict. "+
+			"That pair IS the exchange identity and therefore the target hold key, so the hold is "+
+			"shared and must not be released — the same hazard as the pkey, through another index",
+			mapBindInsertError(err))
+	}
+
+	// And the property the enumeration rests on: an UNKNOWN constraint must fail SAFE. A
+	// future index on this table is the next version of the bug that reached pass 4, and the
+	// only defence that survives not knowing about it is the default.
+	if !errors.Is(mapBindInsertError(&pgconn.PgError{Code: "23505", ConstraintName: "order_exchanges_some_future_index"}), ErrExchangeConflict) {
+		t.Fatal("an unrecognised unique violation must map to ErrExchangeConflict — the default " +
+			"has to be the answer that does NOT release a possibly-shared hold, or every index " +
+			"added to this table reinstates the defect until someone remembers to enumerate it")
 	}
 }
