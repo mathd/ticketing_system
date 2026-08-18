@@ -385,9 +385,19 @@ func MarkRefundTicketsVoided(ctx context.Context, db *sql.DB, org, refundID uuid
 // Guarded on the column still being NULL for the same reason as MarkRefundTicketsVoided:
 // the timestamp is evidence of when the obligation was discharged, and a retry must not
 // rewrite it.
+//
+// Also guarded on `tickets_voided_at IS NOT NULL` since TKT-163. 0009 deliberately left
+// that ordering to application code — "Commerce enforces that ordering — it will not
+// attempt the return until tickets_voided_at is set" — which was a sufficient guarantee
+// while DriveReversal was the ONE caller. TKT-163 adds a second (the reconciler runner),
+// and one-caller-enforces-it stops being a guarantee once callers multiply. Freeing the
+// seat while the ticket still admits is the one ordering that can OVERSELL (ADR-038 §1),
+// so it is now the database's rule as well — here and in a CHECK constraint (0021),
+// matching what `order_exchanges` has carried since 0011.
 func MarkRefundCapacityReturned(ctx context.Context, db *sql.DB, org, refundID uuid.UUID) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE order_refunds SET capacity_returned_at=now()
-		WHERE organizer_id=$1 AND id=$2 AND capacity_returned_at IS NULL`, org, refundID)
+		WHERE organizer_id=$1 AND id=$2 AND capacity_returned_at IS NULL
+		  AND tickets_voided_at IS NOT NULL`, org, refundID)
 	return err
 }

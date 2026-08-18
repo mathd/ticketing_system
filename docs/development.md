@@ -383,6 +383,59 @@ The batch bounds one claim and, through it, the lease.
 Why a second run cannot double-refund, and why the refund key ignores the run:
 [ADR-040](adr/ADR-040-event-cancellation-bulk-refund-runs.md) §3.
 
+## Refund reversal reconciliation
+
+A refund has two obligations beyond the money: the tickets must be **voided** and the seat's
+**capacity returned**. Both are discharged after the money has already moved, so either can be left
+outstanding by an access outage, an unset `ACCESS_URL`, or a refund that outruns issuance (access
+answers `503` — "not yet", not "nothing to void").
+
+Since TKT-163 a background runner in commerce drives them to completion. **No operator action is
+needed for the ordinary case**, and replaying the refund by hand is no longer the recovery path.
+
+Reading the state of an outstanding reversal:
+
+```sql
+-- outstanding obligations, newest first
+SELECT id, order_id, tickets_voided_at IS NOT NULL AS voided,
+       capacity_returned_at IS NOT NULL AS capacity_back,
+       reversal_attempts, reversal_next_attempt_at, reversal_parked_at, reversal_last_error
+FROM order_refunds
+WHERE status='completed'
+  AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL)
+ORDER BY created_at DESC;
+```
+
+| State | Means |
+|---|---|
+| `voided=f`, attempts rising, `parked_at` null | Access is unavailable or has not issued the tickets yet. Retrying on backoff; nothing to do. |
+| `voided=t`, `capacity_back=f`, `parked_at` null | The tickets no longer admit; the seat has not come back. Under-selling, which is the safe direction. Retrying. |
+| `parked_at` set | **The runner has given up** after `reversal_attempts` reached 10 without progress. `reversal_last_error` says which half kept failing. This needs a human. |
+| Both timestamps set | Complete. The row is no longer claimed or scanned. |
+
+**A parked row is almost always a seated partial return.** Inventory refuses to return part of a
+seated claim — nothing associates an issued ticket with a seat identity, so no subset of seats can be
+derived (TKT-164) — and no number of retries changes that. The buyer has their money and the tickets
+are void; only the seat is stuck. Unparking has no operator command yet (TKT-146, which owns the same
+gap for parked recovery orders).
+
+**Attempts reset on progress.** An outage of any length costs one attempt per pass while nothing
+moves, and the first discharged obligation restores the full budget — so a long outage does not park
+refunds that are recovering.
+
+Metrics (commerce's first): `commerce.refund.reversal.outstanding`,
+`commerce.refund.reversal.parked`, `commerce.refund.reversal.oldest_age_seconds`. Sustained nonzero
+`outstanding` means a downstream is not recovering; any nonzero `parked` means work is owed that
+nothing is driving. Alert on `parked`.
+
+Tuning: `REFUND_REVERSAL_INTERVAL` (default `1m`) and `REFUND_REVERSAL_BATCH` (default `16`). A
+restart drains immediately, so the interval bounds the steady state, not recovery from a deploy.
+
+**`ACCESS_URL` is required for readiness.** Without it commerce boots and still refunds money, but
+ticket voiding can never be discharged — by the runner or anything else — so `/readyz` answers `503`
+with `access_configured: unhealthy` while `/healthz` stays green. Rationale, and why this does not
+contradict ADR-021 §D6: [ADR-062](adr/ADR-062-refund-reversal-reconciliation.md) §5.
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new

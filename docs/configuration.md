@@ -39,6 +39,19 @@ The HTTP variables above, `PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, plus one URL pe
 `STOREFRONT_URL`, `SCANNER_URL`. The gateway refuses to start if a registered route's
 env var is missing — the route table is explicit by design.
 
+## Commerce: ACCESS_URL and the refund reversal runner
+
+`ACCESS_URL` is how commerce voids a refunded order's tickets. The binary still **starts** without
+it — a refund returns the money and records the obligation either way — but its absence fails
+**readiness**: `/readyz` answers `503` with `access_configured: unhealthy` while `/healthz` stays
+green, so a misconfigured deployment is not routed traffic and is not mistaken for a dead process.
+Without it nothing, including the reconciler, can ever discharge ticket voiding
+([ADR-062](adr/ADR-062-refund-reversal-reconciliation.md) §5).
+
+`REFUND_REVERSAL_INTERVAL` (default `1m`) and `REFUND_REVERSAL_BATCH` (default `16`) tune the runner
+that drives outstanding reversals. Operator surface and the meaning of each state:
+`docs/development.md` § Refund reversal reconciliation.
+
 ## Compose host ports (dev defaults / smoke)
 
 All published ports bind to `127.0.0.1`. `GATEWAY_PORT` 8080/18080 · `POSTGRES_PORT` 5432/15432 · `NATS_PORT` 4222/14222 ·
