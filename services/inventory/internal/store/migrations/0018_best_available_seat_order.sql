@@ -34,14 +34,27 @@
 ALTER TABLE seat_claim_adjacency ADD COLUMN row_key  text;
 ALTER TABLE seat_claim_adjacency ADD COLUMN position integer;
 
+-- row_rank orders the ROWS, and it is separate from row_key because identity and order are
+-- two different facts. row_key must be the row's catalog uuid: labels repeat across sections
+-- ("row A" exists in every one), so a label-keyed projection merges rows that never touch.
+-- But a uuid sorts arbitrarily, so ordering by it makes "the first run in projected order"
+-- mean "the first run in a random row" -- which is what it meant until an end-to-end test
+-- caught it, because every lower tier supplies its own row keys and can pick names that
+-- happen to sort right.
+--
+-- The rank is (section position, row position) flattened at derivation, so it orders rows the
+-- way the venue does.
+ALTER TABLE seat_claim_adjacency ADD COLUMN row_rank integer;
+
 -- Both or neither. A row carrying one half of the ordering pair is meaningless: a
 -- position with no row does not say what it is a position IN, and a row with no
 -- position does not order anything. Making the half-populated state unrepresentable is
 -- cheaper than teaching every reader to distrust it.
 ALTER TABLE seat_claim_adjacency ADD CONSTRAINT seat_claim_adjacency_order_shape CHECK (
-    (row_key IS NULL     AND position IS NULL)
+    (row_key IS NULL     AND position IS NULL AND row_rank IS NULL)
     OR
-    (row_key IS NOT NULL AND position IS NOT NULL AND length(btrim(row_key)) > 0 AND position > 0)
+    (row_key IS NOT NULL AND position IS NOT NULL AND row_rank IS NOT NULL
+     AND length(btrim(row_key)) > 0 AND position > 0 AND row_rank > 0)
 );
 
 -- No two seats share a position within a row. The consumer already refuses a duplicate
@@ -51,7 +64,7 @@ ALTER TABLE seat_claim_adjacency ADD CONSTRAINT seat_claim_adjacency_order_shape
 -- order among ties is the kind of defect that passes every test on a fixture with no
 -- ties. Partial so pre-metadata rows (all NULL) do not collide with each other.
 CREATE UNIQUE INDEX seat_claim_adjacency_row_position
-    ON seat_claim_adjacency (pool_id, row_key, position)
+    ON seat_claim_adjacency (pool_id, row_rank, row_key, position)
     WHERE row_key IS NOT NULL;
 
 -- +goose Down
@@ -69,5 +82,6 @@ $$;
 -- +goose StatementEnd
 DROP INDEX IF EXISTS seat_claim_adjacency_row_position;
 ALTER TABLE seat_claim_adjacency DROP CONSTRAINT IF EXISTS seat_claim_adjacency_order_shape;
+ALTER TABLE seat_claim_adjacency DROP COLUMN IF EXISTS row_rank;
 ALTER TABLE seat_claim_adjacency DROP COLUMN IF EXISTS position;
 ALTER TABLE seat_claim_adjacency DROP COLUMN IF EXISTS row_key;

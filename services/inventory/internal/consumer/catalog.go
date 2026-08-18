@@ -100,6 +100,11 @@ type SeatAdjacency struct {
 	Right        *string
 	RowKey       string
 	Position     int32
+	// RowRank orders the ROWS. Separate from RowKey because identity and order are two
+	// different facts: RowKey must be the row's uuid (labels repeat across sections), and a
+	// uuid sorts arbitrarily. Assigned by walking sections and rows in the order catalog
+	// returns them, which the public geometry read guarantees is position order.
+	RowRank int32
 }
 
 type CatalogResolver struct {
@@ -240,9 +245,11 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			Status string    `json:"status"`
 		} `json:"map"`
 		Sections []struct {
-			Rows []struct {
-				ID    uuid.UUID      `json:"id"`
-				Seats []geometrySeat `json:"seats"`
+			Position int32 `json:"position"`
+			Rows     []struct {
+				ID       uuid.UUID      `json:"id"`
+				Position int32          `json:"position"`
+				Seats    []geometrySeat `json:"seats"`
 			} `json:"rows"`
 		} `json:"sections"`
 	}
@@ -281,8 +288,14 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	// survive would put two adjacency rows on one seat and make the claim-path lookup
 	// depend on which one it happened to match (ai-review).
 	seen := map[string]struct{}{}
+	// rank counts rows across the whole map in the order catalog lists them. The public
+	// geometry read documents sections and rows as position-ordered, and this is where that
+	// order is turned into something inventory can sort by -- it holds neither the section
+	// nor the row position, only what this loop writes down.
+	rank := int32(0)
 	for _, section := range body.Sections {
 		for _, row := range section.Rows {
+			rank++
 			seats := append([]geometrySeat(nil), row.Seats...)
 			// Positions must be present, positive and unique within the row. A missing
 			// position decodes as zero and a duplicate makes sort order arbitrary — either
@@ -327,7 +340,7 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 				// here is what makes "adjacent in the row" and "consecutive positions" the
 				// same statement; carrying the raw value through would make three
 				// neighbouring seats read as three separate one-seat runs.
-				adj := SeatAdjacency{SeatIdentity: id, RowKey: rowKey, Position: int32(i + 1)}
+				adj := SeatAdjacency{SeatIdentity: id, RowKey: rowKey, RowRank: rank, Position: int32(i + 1)}
 				if i > 0 {
 					left := identities[i-1]
 					adj.Left = &left

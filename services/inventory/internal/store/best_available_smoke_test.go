@@ -33,7 +33,8 @@ func seededBestAvailablePool(t *testing.T, ctx context.Context, st *Postgres, ro
 		for s := 1; s <= perRow; s++ {
 			pos := int32(s)
 			key := rowKey
-			row := SeatAdjacencyRow{SeatIdentity: seat(r, s), RowKey: &key, Position: &pos}
+			rank := int32(r)
+			row := SeatAdjacencyRow{SeatIdentity: seat(r, s), RowKey: &key, Position: &pos, RowRank: &rank}
 			if s > 1 {
 				left := seat(r, s-1)
 				row.Left = &left
@@ -189,7 +190,8 @@ func TestBestAvailableNeverSpansRows(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			pos := int32(base + i)
 			key := rowKey
-			row := SeatAdjacencyRow{SeatIdentity: seat(r, base+i), RowKey: &key, Position: &pos}
+			rank := int32(r)
+			row := SeatAdjacencyRow{SeatIdentity: seat(r, base+i), RowKey: &key, Position: &pos, RowRank: &rank}
 			if i > 0 {
 				left := seat(r, base+i-1)
 				row.Left = &left
@@ -401,7 +403,8 @@ func TestBestAvailableRespectsTheAggregateCeiling(t *testing.T) {
 	for s := 1; s <= 6; s++ {
 		pos := int32(s)
 		key := rowKey
-		row := SeatAdjacencyRow{SeatIdentity: "A/1/" + strconv.Itoa(s), RowKey: &key, Position: &pos}
+		rank := int32(1)
+		row := SeatAdjacencyRow{SeatIdentity: "A/1/" + strconv.Itoa(s), RowKey: &key, Position: &pos, RowRank: &rank}
 		if s > 1 {
 			left := "A/1/" + strconv.Itoa(s-1)
 			row.Left = &left
@@ -508,7 +511,8 @@ func TestBestAvailableIgnoresTheRuleOnARuleOffPool(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		pos := int32(i)
 		key := rowKey
-		row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
+		rank := int32(1)
+		row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos, RowRank: &rank}
 		if i > 1 {
 			left := seat(i - 1)
 			row.Left = &left
@@ -701,7 +705,8 @@ func TestReProvisionFillsOrderingMetadataWithoutRewritingEdges(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		pos := int32(i)
 		key := rowKey
-		row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
+		rank := int32(1)
+		row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos, RowRank: &rank}
 		if i > 1 {
 			left := seat(i - 1)
 			row.Left = &left
@@ -801,8 +806,8 @@ func TestBestAvailableSelectionIsIndexScoped(t *testing.T) {
 	// would fail for a reason that has nothing to do with scoping. 3000 seats is an ordinary
 	// arena, and it is the scale at which terminating early stops being a rounding error.
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO seat_claim_adjacency(pool_id, seat_identity, row_key, position)
-		SELECT $1, 'B/' || r || '/' || c, 'B/' || r, c
+		INSERT INTO seat_claim_adjacency(pool_id, seat_identity, row_key, position, row_rank)
+		SELECT $1, 'B/' || r || '/' || c, 'B/' || r, c, 100 + r
 		FROM generate_series(1, 60) r, generate_series(1, 50) c`, slot); err != nil {
 		t.Fatal(err)
 	}
@@ -818,8 +823,8 @@ func TestBestAvailableSelectionIsIndexScoped(t *testing.T) {
 			FROM generate_series(1, 200)
 			RETURNING slot_id
 		)
-		INSERT INTO seat_claim_adjacency(pool_id, seat_identity, row_key, position)
-		SELECT p.slot_id, 'Z/1/' || g, 'Z/1', g
+		INSERT INTO seat_claim_adjacency(pool_id, seat_identity, row_key, position, row_rank)
+		SELECT p.slot_id, 'Z/1/' || g, 'Z/1', g, 1
 		FROM pools p, generate_series(1, 25) g`); err != nil {
 		t.Fatal(err)
 	}
@@ -1055,26 +1060,31 @@ func TestBestAvailableReplayRefusesAFullyReturnedClaim(t *testing.T) {
 	}
 }
 
-// TestReProvisionRefusesADifferentGeometry is ai-review's [medium]. The upsert fills ordering
-// metadata and deliberately leaves the arbitration edges alone, which is right when both
-// publications describe the same geometry — and splices two generations together when they do
-// not: rows the new set omits survive and stay selectable, rows it adds name neighbours that
-// were never updated to name them back, and the result is a projection neither input describes.
+// TestReProvisionRefusesADifferentGeometry is ai-review's [medium], strengthened after a
+// second pass found the first version toothless: it provisioned two seats and re-provisioned
+// three, so it always exited at the count check and the whole per-seat comparison could be
+// deleted with the test still green. Every case below is EQUAL-CARDINALITY, so the count
+// check cannot answer any of them.
 //
-// ADR-029 makes this unreachable through the ordinary path (a published version is immutable
-// and the pool refuses a different seat_map_id), so this is defence in depth against a catalog
-// integrity violation. It is checked rather than assumed because the failure is silent and
-// lands on the correction-wave path.
+// The guard exists because the upsert fills ordering metadata and deliberately leaves the
+// arbitration edges alone — right when both publications describe the same geometry, and a
+// splice of two generations when they do not. ADR-029 makes that unreachable through the
+// ordinary path (a published version is immutable, and the pool refuses a different
+// seat_map_id), so this is defence in depth against a catalog integrity violation, checked
+// rather than assumed because the failure is silent and lands on the correction-wave path.
 func TestReProvisionRefusesADifferentGeometry(t *testing.T) {
-	ctx, st, _ := storeForTest(t, 10*time.Minute)
-	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
 	seat := func(i int) string { return "A/1/" + strconv.Itoa(i) }
-	build := func(n int) []SeatAdjacencyRow {
+	// chain builds an n-seat row, optionally permuting the ORDERING while leaving every
+	// identity and every edge exactly as they were.
+	chain := func(n int, order []int) []SeatAdjacencyRow {
 		out := make([]SeatAdjacencyRow, 0, n)
 		for i := 1; i <= n; i++ {
 			pos := int32(i)
-			key := "A/1"
-			row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
+			if order != nil {
+				pos = int32(order[i-1])
+			}
+			key, rank := "A/1", int32(1)
+			row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos, RowRank: &rank}
 			if i > 1 {
 				l := seat(i - 1)
 				row.Left = &l
@@ -1087,23 +1097,156 @@ func TestReProvisionRefusesADifferentGeometry(t *testing.T) {
 		}
 		return out
 	}
-	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(2)); err != nil {
+
+	cases := map[string]func() []SeatAdjacencyRow{
+		// Same count, one identity swapped for another: the per-seat lookup must miss.
+		"a seat replaced": func() []SeatAdjacencyRow {
+			rows := chain(4, nil)
+			rows[3].SeatIdentity = "A/1/99"
+			l := seat(3)
+			rows[3].Left = &l
+			r := "A/1/99"
+			rows[2].Right = &r
+			return rows
+		},
+		// Same identities, one edge pointing somewhere else: the edge comparison must catch it.
+		"an edge changed": func() []SeatAdjacencyRow {
+			rows := chain(4, nil)
+			rows[0].Right = nil
+			rows[1].Left = nil
+			return rows
+		},
+		// Same identities AND same edges, ordering permuted. This is the case the first
+		// version of the guard let through, and the one with teeth: it would overwrite the
+		// ordering so that two seats which are not neighbours read as a contiguous run.
+		"ordering permuted": func() []SeatAdjacencyRow {
+			return chain(4, []int{3, 4, 1, 2})
+		},
+	}
+
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, st, _ := storeForTest(t, 10*time.Minute)
+			org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+			if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, chain(4, nil)); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build()); !errors.Is(err, ErrSeatProjectionIncomplete) {
+				t.Fatalf("err = %v want ErrSeatProjectionIncomplete — a re-provision describing different "+
+					"geometry must be refused, not merged column-wise into the stored one", err)
+			}
+			// The stored projection is untouched by the refusal, asserted per seat rather
+			// than by a count: a count survives a write that changed every row.
+			for i := 1; i <= 4; i++ {
+				var pos int32
+				if err := st.db.QueryRowContext(ctx,
+					`SELECT position FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
+					slot, seat(i)).Scan(&pos); err != nil {
+					t.Fatalf("%s: %v", seat(i), err)
+				}
+				if pos != int32(i) {
+					t.Fatalf("%s position = %d want %d — the refusal must leave the stored set intact", seat(i), pos, i)
+				}
+			}
+		})
+	}
+
+	// And the identical set is still accepted, which is what makes the refusals above about
+	// the DIFFERENCE rather than about re-provisioning at all.
+	t.Run("the same geometry is accepted", func(t *testing.T) {
+		ctx, st, _ := storeForTest(t, 10*time.Minute)
+		org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+		if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, chain(4, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, chain(4, nil)); err != nil {
+			t.Fatalf("re-provisioning the same geometry must succeed: %v", err)
+		}
+	})
+}
+
+// TestBestAvailableReplayRefusesAPartiallyReleasedClaim is ai-review's second-pass [high].
+// The first version of the spent-claim guard checked `live == 0`, which is the fully returned
+// case and only that. A claim with one seat released and the rest live would replay ALL of
+// them, and the caller would pin a seat that has since been reallocated — reporting an
+// allocation the claim does not hold, or provoking a deterministic pin rejection that
+// releases the seats it does. The schema permits that skew deliberately, so partial liveness
+// is a state to refuse rather than one to interpret.
+func TestBestAvailableReplayRefusesAPartiallyReleasedClaim(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := seededBestAvailablePool(t, ctx, st, 1, 10)
+	key, tt := uuid.NewString(), uuid.New()
+
+	first, err := st.CreateBestAvailableSeatHold(ctx, org, slot, tt, 3, 0, "EUR", key)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// A three-seat geometry over the same pool and map: internally reciprocal, and NOT the
-	// set already stored. Both inputs pass validateAdjacency, which is why the check has to
-	// compare against what is stored rather than only validating what arrives.
-	err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(3))
-	if !errors.Is(err, ErrSeatProjectionIncomplete) {
-		t.Fatalf("err = %v want ErrSeatProjectionIncomplete — a re-provision describing different "+
-			"geometry must be refused, not merged column-wise into the stored one", err)
-	}
-	// And the stored projection was not touched by the refusal.
-	var rows int
-	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1`, slot).Scan(&rows); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE claims SET status='confirmed' WHERE id=$1`, first.Claim.ID); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 2 {
-		t.Fatalf("projection rows = %d want 2 — the refusal must leave the stored set intact", rows)
+	// Exactly one seat released: two are still live, so the old `live == 0` guard passes.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE claim_seats SET released_at=now() WHERE claim_id=$1 AND seat_identity=$2`,
+		first.Claim.ID, first.Seats[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, tt, 3, 0, "EUR", key)
+	if err == nil {
+		t.Fatalf("a replay onto a partially released claim returned %v — %s is free again and may "+
+			"already belong to someone else", got.Seats, first.Seats[0])
+	}
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v want ErrConflict", err)
+	}
+}
+
+// TestBestAvailableOrdersRowsByRankNotByRowKey pins the defect that only the end-to-end tier
+// could see, and the reason it could see it.
+//
+// row_key is the row's catalog UUID, because labels repeat across sections. A UUID sorts
+// arbitrarily — so ordering rows by it made "the first run in projected order" mean "the first
+// run in a random row". Every store and handler test passed anyway, because each supplies its
+// own row keys and naturally picks names that sort the way the fixture reads ("A/1" before
+// "A/2"). Only a real catalog publication hands inventory keys whose sort order has nothing to
+// do with the venue's, and that is what caught it.
+//
+// So the fixture here does what production does and the earlier fixtures did not: it gives the
+// FIRST row a key that sorts LAST. If ordering falls back to row_key, the answer comes from the
+// wrong row.
+func TestBestAvailableOrdersRowsByRankNotByRowKey(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	// Row 1 is "zzz" and row 2 is "aaa": lexically reversed against their true order.
+	keys := []string{"zzz-row-one", "aaa-row-two"}
+	seat := func(r, i int) string { return "R" + strconv.Itoa(r) + "/" + strconv.Itoa(i) }
+	adjacency := make([]SeatAdjacencyRow, 0, 8)
+	for r := 1; r <= 2; r++ {
+		for i := 1; i <= 4; i++ {
+			pos, rank, key := int32(i), int32(r), keys[r-1]
+			row := SeatAdjacencyRow{SeatIdentity: seat(r, i), RowKey: &key, Position: &pos, RowRank: &rank}
+			if i > 1 {
+				l := seat(r, i-1)
+				row.Left = &l
+			}
+			if i < 4 {
+				rr := seat(r, i+1)
+				row.Right = &rr
+			}
+			adjacency = append(adjacency, row)
+		}
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, false, adjacency); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 2, 0, "EUR", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{seat(1, 1), seat(1, 2)}
+	if strings.Join(got.Seats, ",") != strings.Join(want, ",") {
+		t.Fatalf("seats = %v want %v — rows are ordered by their RANK, which is the venue's order; "+
+			"row_key is an opaque identity and sorting by it puts the buyer in a row chosen by uuid", got.Seats, want)
 	}
 }

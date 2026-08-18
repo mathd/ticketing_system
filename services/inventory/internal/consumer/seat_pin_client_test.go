@@ -337,6 +337,18 @@ func TestSeatMapAdjacencyKeepsRowsDistinctWhenLabelsRepeat(t *testing.T) {
 	if len(keys) != 2 {
 		t.Fatalf("distinct row keys = %d want 2 — two sections' \"row A\" are different rows", len(keys))
 	}
+	// And the two rows get DISTINCT ranks, in the order catalog listed them (TKT-81). The
+	// key keeps them apart; the rank puts them in the venue's order, and a uuid cannot do
+	// the second job — sorting by it would seat a buyer in a row chosen at random.
+	for _, a := range got {
+		want := int32(1)
+		if strings.HasPrefix(a.SeatIdentity, "R/") {
+			want = 2
+		}
+		if a.RowRank != want {
+			t.Fatalf("%s rank = %d want %d — rows rank in the order catalog lists them", a.SeatIdentity, a.RowRank, want)
+		}
+	}
 }
 
 func TestSeatMapAdjacencyNeverConnectsRowsOrSections(t *testing.T) {

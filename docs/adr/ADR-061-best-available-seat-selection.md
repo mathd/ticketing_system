@@ -86,9 +86,18 @@ same transaction and pool lock as the claim.
    is legal spacing, not missing seats. Re-basing at derivation is what makes "adjacent in the
    row" and "consecutive positions" the same statement; carrying raw values through would read
    three neighbouring seats as three one-seat runs.
-3. **`row_key` is the row's catalog UUID, not its label.** Labels repeat across sections —
-   "row A" exists in every one — and a label-keyed projection would merge rows that do not
-   touch.
+3. **`row_key` is the row's catalog UUID, not its label, and `row_rank` orders the rows.**
+   Labels repeat across sections — "row A" exists in every one — so a label-keyed projection
+   merges rows that do not touch. But a UUID sorts arbitrarily, so identity cannot double as
+   order: the projection carries both, and `row_rank` counts rows across the map in catalog's
+   own (section position, row position) order.
+
+   Keeping these separate cost a review round. Ordering rows by `row_key` alone made *"the
+   first run in projected order"* mean *"the first run in a row chosen by UUID"*, and **every
+   store and handler test passed anyway**, because each supplies its own row keys and naturally
+   picks names that sort the way its fixture reads. Only a real catalog publication hands
+   inventory keys whose sort order has nothing to do with the venue's, so only the end-to-end
+   tier could see it. A regression test now gives the first row a key that sorts last.
 4. **This is an ordering, not a ranking.** A lower `row_key` is not a better seat. The system
    holds no seat-desirability data, and this ADR does not invent any. When real rank arrives
    (TKT-3, TKT-5) it becomes a new comparator ahead of this one; the shape of the query is
@@ -137,7 +146,14 @@ one hold — a silent double-sale, and the failure mode most specific to this en
 The fingerprint carries a mode discriminator so a key spent on a named-seat hold conflicts here
 rather than replaying.
 
-**And a claim whose seats have all been given back is spent, whatever its status says.**
+**And a replay must answer with the original allocation or not at all.** Every seat the claim
+named must still be live: partial liveness is a state to refuse, not one to interpret. A first
+version of this guard checked only the fully-returned case, and a claim with one seat released
+and the rest held would have replayed all of them — pinning a seat that may since have been
+reallocated, and so either reporting an allocation the claim does not hold or provoking a
+deterministic pin rejection that releases the seats it does.
+
+**A claim whose seats have all been given back is spent, whatever its status says.**
 `claims.status` and `claim_seats.released_at` are not coupled by the schema — the refund path
 states this where it releases them — so a fully returned seated claim sits at `confirmed` with
 every seat row released. Replaying onto it would re-pin seats that are free again and report a
@@ -189,7 +205,10 @@ rows the new set omits, add rows naming neighbours that were never updated to na
 and leave a projection neither input describes. ADR-029 already makes that unreachable through
 the ordinary path — a published version is immutable and the pool refuses a different
 `seat_map_id` — so the check is defence in depth against a catalog integrity violation, made
-explicit because the failure it prevents is silent and lands on the correction-wave path. The edges are the substrate arbitration runs
+explicit because the failure it prevents is silent and lands on the correction-wave path. It
+compares identities, edges **and ordering**: a publication carrying the same chain with permuted
+row/position values would otherwise pass every other check and then overwrite the ordering, so
+that two seats which are not neighbours could be returned as one contiguous run. The edges are the substrate arbitration runs
 on: a live claim was decided against them as they stood, and a later publication that rewrote
 them would retroactively change what that decision meant. The ordering columns are additive,
 read only by selection, and carry no such history. Changing that clause to update the edges as

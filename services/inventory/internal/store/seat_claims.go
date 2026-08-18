@@ -232,17 +232,19 @@ func validateAdjacency(rows []SeatAdjacencyRow) error {
 func validateAdjacencyOrder(rows []SeatAdjacencyRow) error {
 	ordered := 0
 	seen := map[string]map[int32]string{}
+	rankOf := map[string]int32{}
+	keyOf := map[int32]string{}
 	for _, r := range rows {
-		if r.RowKey == nil && r.Position == nil {
+		if r.RowKey == nil && r.Position == nil && r.RowRank == nil {
 			continue
 		}
-		if r.RowKey == nil || r.Position == nil {
-			return fmt.Errorf("%w: seat %q carries half an ordering (row=%v position=%v)",
-				ErrSeatProjectionIncomplete, r.SeatIdentity, r.RowKey, r.Position)
+		if r.RowKey == nil || r.Position == nil || r.RowRank == nil {
+			return fmt.Errorf("%w: seat %q carries a partial ordering (row=%v rank=%v position=%v)",
+				ErrSeatProjectionIncomplete, r.SeatIdentity, r.RowKey, r.RowRank, r.Position)
 		}
-		if strings.TrimSpace(*r.RowKey) == "" || *r.Position <= 0 {
-			return fmt.Errorf("%w: seat %q has an unusable ordering (row=%q position=%d)",
-				ErrSeatProjectionIncomplete, r.SeatIdentity, *r.RowKey, *r.Position)
+		if strings.TrimSpace(*r.RowKey) == "" || *r.Position <= 0 || *r.RowRank <= 0 {
+			return fmt.Errorf("%w: seat %q has an unusable ordering (row=%q rank=%d position=%d)",
+				ErrSeatProjectionIncomplete, r.SeatIdentity, *r.RowKey, *r.RowRank, *r.Position)
 		}
 		ordered++
 		if seen[*r.RowKey] == nil {
@@ -253,6 +255,16 @@ func validateAdjacencyOrder(rows []SeatAdjacencyRow) error {
 				ErrSeatProjectionIncomplete, other, r.SeatIdentity, *r.Position, *r.RowKey)
 		}
 		seen[*r.RowKey][*r.Position] = r.SeatIdentity
+		if prior, ok := rankOf[*r.RowKey]; ok && prior != *r.RowRank {
+			return fmt.Errorf("%w: row %q carries ranks %d and %d — a row has one place in the order",
+				ErrSeatProjectionIncomplete, *r.RowKey, prior, *r.RowRank)
+		}
+		rankOf[*r.RowKey] = *r.RowRank
+		if prior, ok := keyOf[*r.RowRank]; ok && prior != *r.RowKey {
+			return fmt.Errorf("%w: rank %d is claimed by rows %q and %q — two rows cannot share a place",
+				ErrSeatProjectionIncomplete, *r.RowRank, prior, *r.RowKey)
+		}
+		keyOf[*r.RowRank] = *r.RowKey
 	}
 	if ordered != 0 && ordered != len(rows) {
 		return fmt.Errorf("%w: %d of %d seats carry ordering metadata — a partly ordered projection hides the rows it omits",
@@ -389,6 +401,11 @@ type SeatAdjacencyRow struct {
 	Right        *string
 	RowKey       *string
 	Position     *int32
+	// RowRank orders the ROWS, and it is separate from RowKey because identity and order
+	// are two different facts. RowKey is the row's catalog uuid, which sorts arbitrarily;
+	// ordering by it made "the first run in projected order" mean "the first run in a
+	// random row". Derived from (section position, row position).
+	RowRank *int32
 }
 
 // ProvisionSeated records a seated pool for a slot (catalog schema-4/5 seated
@@ -515,10 +532,11 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 				ErrSeatProjectionIncomplete, slotID, storedSeats, len(adjacency))
 		}
 		for _, a := range adjacency {
-			var l, r sql.NullString
+			var l, r, storedKey sql.NullString
+			var storedPos, storedRank sql.NullInt32
 			err = tx.QueryRowContext(ctx,
-				`SELECT left_identity, right_identity FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
-				slotID, a.SeatIdentity).Scan(&l, &r)
+				`SELECT left_identity, right_identity, row_key, position, row_rank FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
+				slotID, a.SeatIdentity).Scan(&l, &r, &storedKey, &storedPos, &storedRank)
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: pool %s has no projection row for seat %q, which this publication describes",
 					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
@@ -536,14 +554,28 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 				return fmt.Errorf("%w: pool %s already holds different adjacency for seat %q — this publication describes another geometry",
 					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
 			}
+			// And the ORDERING, where the pool already has some (ai-review pass 2).
+			// Comparing only identities and edges left the door the guard exists to close:
+			// a publication carrying the same chain with permuted row/position values passed
+			// every check and then overwrote the ordering, so two seats that are not
+			// neighbours could be returned as a contiguous run. Where the stored ordering is
+			// NULL this is the upgrade path and any incoming ordering is accepted, which is
+			// the whole point of the upsert.
+			if storedKey.Valid {
+				if a.RowKey == nil || a.Position == nil || a.RowRank == nil ||
+					storedKey.String != *a.RowKey || storedPos.Int32 != *a.Position || storedRank.Int32 != *a.RowRank {
+					return fmt.Errorf("%w: pool %s already holds a different ordering for seat %q — this publication describes another geometry",
+						ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
+				}
+			}
 		}
 	}
 	for _, a := range adjacency {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity,row_key,position)
-			VALUES($1,$2,$3,$4,$5,$6)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity,row_key,position,row_rank)
+			VALUES($1,$2,$3,$4,$5,$6,$7)
 			ON CONFLICT(pool_id,seat_identity) DO UPDATE
-			SET row_key = EXCLUDED.row_key, position = EXCLUDED.position`,
-			slotID, a.SeatIdentity, a.Left, a.Right, a.RowKey, a.Position); err != nil {
+			SET row_key = EXCLUDED.row_key, position = EXCLUDED.position, row_rank = EXCLUDED.row_rank`,
+			slotID, a.SeatIdentity, a.Left, a.Right, a.RowKey, a.Position, a.RowRank); err != nil {
 			return err
 		}
 	}
@@ -1266,10 +1298,10 @@ var (
 // plan, which would defeat the ADR-019 plan probe that has to EXPLAIN this exact statement.
 const bestAvailableRunQuery = `
 WITH ordered AS (
-	SELECT a.seat_identity, a.row_key, a.position, a.left_identity, a.right_identity
+	SELECT a.seat_identity, a.row_key, a.row_rank, a.position, a.left_identity, a.right_identity
 	  FROM seat_claim_adjacency a
 	 WHERE a.pool_id = $1 AND a.row_key IS NOT NULL
-	 ORDER BY a.row_key, a.position
+	 ORDER BY a.row_rank, a.row_key, a.position
 	 LIMIT 400
 ),
 -- CONTEXT, not candidates. The orphan predicate asks about seats one and two positions
@@ -1284,9 +1316,9 @@ WITH ordered AS (
 -- the scan whenever the window is. Bounded by the same argument as the scan itself -- at
 -- most two rows' worth of extra rows, each reached through the same index.
 context AS (
-	SELECT o.seat_identity, o.row_key, o.position, o.left_identity, o.right_identity FROM ordered o
+	SELECT o.seat_identity, o.row_key, o.row_rank, o.position, o.left_identity, o.right_identity FROM ordered o
 	UNION
-	SELECT a.seat_identity, a.row_key, a.position, a.left_identity, a.right_identity
+	SELECT a.seat_identity, a.row_key, a.row_rank, a.position, a.left_identity, a.right_identity
 	  FROM seat_claim_adjacency a
 	  JOIN (SELECT row_key, min(position) AS lo, max(position) AS hi FROM ordered GROUP BY row_key) b
 	    ON b.row_key = a.row_key
@@ -1314,13 +1346,13 @@ grp AS (
 	  FROM free f
 ),
 windows AS (
-	SELECT g.row_key, g.position AS start_position,
+	SELECT g.row_key, g.row_rank, g.position AS start_position,
 	       array_agg(g2.seat_identity ORDER BY g2.position) AS seats,
 	       min(g2.position) AS lo, max(g2.position) AS hi
 	  FROM grp g
 	  JOIN grp g2 ON g2.row_key = g.row_key AND g2.island = g.island
 	              AND g2.position >= g.position AND g2.position < g.position + $3
-	 GROUP BY g.row_key, g.island, g.position
+	 GROUP BY g.row_key, g.row_rank, g.island, g.position
 	HAVING count(*) = $3
 ),
 legal AS (
@@ -1345,7 +1377,7 @@ legal AS (
 	   )
 ),
 chosen AS (
-	SELECT row_key, start_position, seats FROM legal ORDER BY row_key, start_position LIMIT 1
+	SELECT row_key, row_rank, start_position, seats FROM legal ORDER BY row_rank, row_key, start_position LIMIT 1
 )
 -- Unnested back into rows rather than returned as text[]: pgx's database/sql path has no
 -- []string scanner, and adding an array driver for one column is a dependency this does not
@@ -1389,7 +1421,7 @@ func claimedSeats(ctx context.Context, tx *sql.Tx, pool, claimID uuid.UUID) ([]s
 		LEFT JOIN seat_claim_adjacency a
 		       ON a.pool_id = cs.pool_id AND a.seat_identity = cs.seat_identity
 		WHERE cs.claim_id = $1 AND cs.pool_id = $2
-		ORDER BY a.row_key NULLS LAST, a.position NULLS LAST, cs.seat_identity`, claimID, pool)
+		ORDER BY a.row_rank NULLS LAST, a.row_key NULLS LAST, a.position NULLS LAST, cs.seat_identity`, claimID, pool)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1516,11 +1548,17 @@ func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, t
 		if serr != nil {
 			return SeatHold{}, serr
 		}
-		// A claim whose seats have all been given back is spent, whatever its status says.
-		// The key cannot be replayed onto it: returning it would re-pin seats that are free
-		// again and report a false success, which is exactly the reasoning the released and
-		// expired cases above already apply. ErrConflict tells the caller to hold anew.
-		if live == 0 {
+		// EVERY seat the claim named must still be live, not merely one of them (ai-review
+		// pass 2). The first version of this guard checked `live == 0`, which is the fully
+		// returned case and only that; a claim with one seat released and two still held
+		// would replay all three, and the caller would pin a seat that has since been
+		// reallocated -- reporting an allocation the claim does not hold, or provoking a
+		// deterministic pin rejection that releases the seats it does.
+		//
+		// The schema permits that skew deliberately (the refund path says so where it
+		// releases rows), so partial liveness is a state to REFUSE, not one to interpret.
+		// A replay must answer with the original allocation or not at all.
+		if live != len(seats) || int32(live) != existing.Quantity {
 			return SeatHold{}, ErrConflict
 		}
 		existing.Kind = "buyer"

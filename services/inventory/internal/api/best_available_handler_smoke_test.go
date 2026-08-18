@@ -58,7 +58,8 @@ func bestAvailableAPIStore(t *testing.T, seats int) (*store.Postgres, uuid.UUID,
 	for i := 1; i <= seats; i++ {
 		pos := int32(i)
 		key := rowKey
-		row := store.SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
+		rank := int32(1)
+		row := store.SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos, RowRank: &rank}
 		if i > 1 {
 			left := seat(i - 1)
 			row.Left = &left
