@@ -73,7 +73,7 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 		row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
 			"section_id": section["id"], "label": "ABCDEFGH"[r-1 : r], "position": r,
 		})
-		for i := 1; i <= 5; i++ {
+		for i := 1; i <= 6; i++ {
 			created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
 				"row_id": row["id"], "label": fmt.Sprint(i), "position": i,
 			})
@@ -154,10 +154,10 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 		t.Fatalf("replay returned %s/%v, original was %s/%v", out.HoldID, out.Seats, first.HoldID, first.Seats)
 	}
 
-	// Row A now has seats 4 and 5 free; row B is untouched. A party of FOUR therefore has
+	// Row A now has seats 4, 5 and 6 free; row B is untouched. A party of FOUR therefore has
 	// no run in row A and must land wholly in row B — the property that proves the row
-	// boundary survived the wire. A projection that lost row_key would happily answer
-	// A/4, A/5, B/1, B/2 and call them adjacent.
+	// boundary survived the wire. A projection that lost row_key would see A/4, A/5, A/6,
+	// B/1 ... as one long free stretch and happily answer with seats from both rows.
 	ccode, cbody := hold("ba-cross-"+suffix, 4)
 	if ccode != http.StatusCreated {
 		t.Fatalf("best-available 4 = %d %s want 201", ccode, cbody)
