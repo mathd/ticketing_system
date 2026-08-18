@@ -126,10 +126,17 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**An exchange interrupted after the money moved must resume from what it persisted.**\n\nBlocker satisfied: `blocked-by TKT-158` is **Done**, and TKT-158 is precisely what persists the\nbasis this ticket resumes from.\n\n**Sequencing note for whoever claims it:** take this **before** TKT-168. This one fixes the\nbehaviour (an unsettled replay re-resolves the price instead of using the persisted basis, so a\nprice change makes inventory reject the retry); TKT-168 makes that behaviour *provable*. Doing them\nthe other way round produces a test that pins the current, wrong amounts.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — Ready → Planning\n\nRunning **gateless per `config.gates: autonomous`**: gates 2–4 are taken by agent judgement, Gate 1\nwas the owner's (2026-08-17 promotion comment). Local tracker backend (`config.tracker: \"local\"`).\n\n**Selection reason:** the owner asked for TKT-167 by name. It is genuinely in `Ready` (verified\nagainst the board, not the request), all eight DoR items are `met`/`deferred` with none `open`, and\nits single `blocked-by` — **TKT-158** — is **Done** (PR #143 merged). The ticket's own Gate 1 note\nsequences it **before TKT-168**, which is still in `Ready`; taking this one first is what that note\nasks for.\n\n**Risk verdict: `risk:low` NOT claimed.** Stated explicitly rather than left implicit. This touches a\n**money path** — the exchange settlement sequence in `services/commerce/internal/api/exchanges.go`\nand `RecordExchangeBasis` in `.../store/exchanges.go` — which is one of the label's named carve-outs.\nThe plan gate stands.\n\n**Branch:** `TKT-167-resume-exchange-from-basis` off `origin/main` (`a4a1b986`)."
     }
   ],
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null
 }
