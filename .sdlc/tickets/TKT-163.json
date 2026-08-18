@@ -108,7 +108,7 @@
       "key": "TKT-157"
     }
   ],
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -117,6 +117,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nShapeable now, better after TKT-161. Two obligations of identical shape will exist then, and deciding the mechanism against one of them risks a design that has to be retrofitted for the second.\n\n**Concerns:** (1) sequencing, above. (2) The `ACCESS_URL`-as-readiness question is a deployment-contract decision, not purely engineering.\n\n**Verdict:** CONCERNS — proceedable, but hold for TKT-161."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**Outstanding refund reversals are never retried automatically.**\n\nIts deferral has now been *satisfied*, which is why it is promotable. `uncertainties`,\n`dependencies` and `approach` were all deferred with one shared reason: *\"best taken after TKT-161,\nwhen both obligations exist and one mechanism can cover both.\"* **TKT-161 is Done.** The condition\nthe deferral named has been met, so the Planning-time call (runner vs outbox vs external\nreconciler) can now be taken against both obligations rather than retrofitted to one.\n\n**On `approach: deferred` and the money-path carve-out** — `shaping.md` says a deferred approach\ndoes *not* pass when a ticket touches money. Called out rather than glossed: the exception does not\nbite here, because what is deferred is a **mechanism choice among three known options**, not a\ndecision about who may spend or what a trust boundary is. The obligation is already visible\n(`order_refunds.tickets_voided_at IS NULL`) and already retryable by replaying the idempotency key.\nIf Planning finds the choice is actually about authorization, that is a signal to stop and\nre-shape.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
     }
   ]
 }
