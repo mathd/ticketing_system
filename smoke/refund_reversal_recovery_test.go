@@ -47,7 +47,14 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 	// assertions are written against. A context that expired mid-recovery would leave
 	// access stopped for every later test in this package, which is the one failure mode
 	// worth over-budgeting for.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	//
+	// 10 minutes rather than 5 because the outer context must OUTLAST the poll it wraps:
+	// verified by running this against a build with the reconciler unwired, where a 5m
+	// context expired first and the failure read "context deadline exceeded" from a psql
+	// call — true, but it names the harness rather than the defect. The poll's own
+	// deadline has to be the thing that fires, so the message says which obligation was
+	// never discharged.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	container := project + "-access-1"
@@ -121,13 +128,23 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 	if deadline < 90*time.Second {
 		deadline = 90 * time.Second
 	}
+	// A read error is retried, not fatal: psql can lose a race with a container restart,
+	// and killing the poll on it would report a transport hiccup as "the reconciler never
+	// ran". The distinction matters because this poll IS the assertion — when it fails, the
+	// message is the whole diagnosis.
 	retry(t, deadline, func() error {
-		s := readRefundState(t, ctx, refund.RefundID)
+		s, err := refundStateOf(ctx, refund.RefundID)
+		if err != nil {
+			return fmt.Errorf("read refund row: %w", err)
+		}
 		if !s.TicketsVoided {
-			return fmt.Errorf("tickets still not voided: %+v", s)
+			return fmt.Errorf("tickets STILL not voided %s after access came back: nothing is "+
+				"driving the outstanding reversal — is the runner wired into run()? state=%+v",
+				deadline, s)
 		}
 		if !s.CapacityReturned {
-			return fmt.Errorf("capacity still not returned: %+v", s)
+			return fmt.Errorf("tickets voided but capacity STILL not returned %s after access "+
+				"came back: the second obligation is not being driven; state=%+v", deadline, s)
 		}
 		return nil
 	})
@@ -146,24 +163,36 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 // So it reads the row. `psql` in the postgres container rather than a Go driver, because the
 // smoke package talks to the stack over docker and has no database dependency — adding one
 // for two booleans would be the larger change.
-func readRefundState(t *testing.T, ctx context.Context, refundID string) refundState {
-	t.Helper()
+func refundStateOf(ctx context.Context, refundID string) (refundState, error) {
 	out, err := dockerRun(ctx, "exec", project+"-postgres-1", "psql", "-U", "commerce",
 		"-d", "commerce", "-tA", "-c",
 		fmt.Sprintf(`SELECT tickets_voided_at IS NOT NULL, capacity_returned_at IS NOT NULL
 		             FROM order_refunds WHERE id='%s'`, refundID))
 	if err != nil {
-		t.Fatalf("read refund row: %v: %s", err, out)
+		return refundState{}, fmt.Errorf("%v: %s", err, out)
 	}
 	fields := strings.Split(strings.TrimSpace(out), "|")
 	if len(fields) != 2 {
-		t.Fatalf("refund %s not found in commerce (psql said %q)", refundID, strings.TrimSpace(out))
+		return refundState{}, fmt.Errorf("refund %s not found in commerce (psql said %q)",
+			refundID, strings.TrimSpace(out))
 	}
 	return refundState{
 		RefundID:         refundID,
 		TicketsVoided:    fields[0] == "t",
 		CapacityReturned: fields[1] == "t",
+	}, nil
+}
+
+// readRefundState is the fatal form, for the single observation that must succeed on the
+// first try — the one taken while access is stopped, where a retry would only give the
+// reconciler time to change the answer being asserted.
+func readRefundState(t *testing.T, ctx context.Context, refundID string) refundState {
+	t.Helper()
+	s, err := refundStateOf(ctx, refundID)
+	if err != nil {
+		t.Fatalf("read refund row: %v", err)
 	}
+	return s
 }
 
 // reversalInterval mirrors the runner's default and its env override, so the poll deadline
