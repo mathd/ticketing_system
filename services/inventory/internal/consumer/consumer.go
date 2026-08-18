@@ -193,8 +193,10 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 			return provisionInput{}, fmt.Errorf("%w: schema-5 adjacency projection: %v", errResolveUnavailable, err)
 		}
 		for _, a := range adjacency {
+			rowKey, position, rank := a.RowKey, a.Position, a.RowRank
 			in.adjacency = append(in.adjacency, store.SeatAdjacencyRow{
 				SeatIdentity: a.SeatIdentity, Left: a.Left, Right: a.Right,
+				RowKey: &rowKey, Position: &position, RowRank: &rank,
 			})
 		}
 		return in, nil

@@ -208,6 +208,8 @@ type Postgres struct {
 	ttl time.Duration
 	// quarantineCap overrides MaxCatalogQuarantinePending in tests; 0 = the constant.
 	quarantineCap int
+	// baScan overrides MaxBestAvailableScan in tests; 0 = the constant (seat_claims.go).
+	baScan int32
 	// The availability-cache invalidation seam (TKT-205) —
 	// availability_invalidation.go.
 	invalidatorFields

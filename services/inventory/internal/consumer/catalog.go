@@ -80,13 +80,39 @@ type geometrySeat struct {
 	Position     int32  `json:"position"`
 }
 
+// geometryRow is the boundary decode of one row. Named so the ranking pass below can sort
+// rows by their declared position without restating the shape.
+type geometryRow struct {
+	ID       uuid.UUID      `json:"id"`
+	Position int32          `json:"position"`
+	Seats    []geometrySeat `json:"seats"`
+}
+
 // SeatAdjacency is one seat and its immediate neighbours in its row, derived from the
 // published geometry's `position` order. A nil neighbour is a row end — a real answer,
 // not missing data.
+//
+// RowKey and Position are the same geometry expressed the other way, kept for
+// best-available selection (TKT-81). Until this ticket they were computed here and
+// discarded three lines later: the derivation sorts a row by position and emits only the
+// resulting edges. Neighbour edges answer "would this selection strand anything"; they
+// cannot answer "find four seats together", because a linked list has no head to index
+// and no order to sort by.
+//
+// RowKey is the row's catalog UUID, not its label. Labels are not unique across sections
+// ("row A" exists in every one of them), so a label-keyed projection would merge rows that
+// never touch and offer runs spanning a gangway.
 type SeatAdjacency struct {
 	SeatIdentity string
 	Left         *string
 	Right        *string
+	RowKey       string
+	Position     int32
+	// RowRank orders the ROWS. Separate from RowKey because identity and order are two
+	// different facts: RowKey must be the row's uuid (labels repeat across sections), and a
+	// uuid sorts arbitrarily. Assigned by walking sections and rows in the order catalog
+	// returns them, which the public geometry read guarantees is position order.
+	RowRank int32
 }
 
 type CatalogResolver struct {
@@ -227,9 +253,8 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			Status string    `json:"status"`
 		} `json:"map"`
 		Sections []struct {
-			Rows []struct {
-				Seats []geometrySeat `json:"seats"`
-			} `json:"rows"`
+			Position int32         `json:"position"`
+			Rows     []geometryRow `json:"rows"`
 		} `json:"sections"`
 	}
 	// The body is buffered BEFORE decoding so a transport failure mid-stream is
@@ -267,8 +292,68 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	// survive would put two adjacency rows on one seat and make the claim-path lookup
 	// depend on which one it happened to match (ai-review).
 	seen := map[string]struct{}{}
+	// Rank rows by their DECLARED (section position, row position), not by the order they
+	// happen to arrive in.
+	//
+	// The response is documented as position-ordered and today it is, but the ordering is the
+	// producer's SQL rather than a contract this consumer can check, and it carries the
+	// positions explicitly. Reading them is both cheaper to trust and self-describing: a
+	// projection built from arrival order is silently wrong the day the producer adds a JOIN,
+	// and nothing downstream could tell -- inventory holds no geometry to compare against.
+	//
+	// Sorting is stable on the pair, so two sections at the same position (which catalog's
+	// own uniqueness rules forbid, but which this consumer must not assume) fall back to
+	// arrival order rather than becoming non-deterministic.
+	type rowRef struct {
+		sectionPos, rowPos int32
+		seq                int
+		row                geometryRow
+	}
+	refs := make([]rowRef, 0, 16)
+	seq := 0
+	// Validate the positions BEFORE trusting them (ai-review). They became load-bearing the
+	// moment row order was derived from them, and this resolver fails closed on every other
+	// malformed field for the same reason: a missing JSON number decodes as 0, sorts first,
+	// and commits a wrong buyer-visible row order permanently — the event is consumed in the
+	// same transaction, so nothing later repairs it. Catalog's own schema forbids these
+	// shapes today; that is a property of the producer, not a guarantee this consumer can
+	// check, which is exactly the reasoning already applied to seat positions below.
+	sectionPositions := map[int32]struct{}{}
 	for _, section := range body.Sections {
+		if section.Position <= 0 {
+			return nil, fmt.Errorf("%w: seat map %s has a section with position %d", ErrGeometryInvalid, seatMapID, section.Position)
+		}
+		if _, dup := sectionPositions[section.Position]; dup {
+			return nil, fmt.Errorf("%w: seat map %s repeats section position %d", ErrGeometryInvalid, seatMapID, section.Position)
+		}
+		sectionPositions[section.Position] = struct{}{}
+		rowPositions := map[int32]struct{}{}
 		for _, row := range section.Rows {
+			if row.Position <= 0 {
+				return nil, fmt.Errorf("%w: seat map %s has a row with position %d", ErrGeometryInvalid, seatMapID, row.Position)
+			}
+			if _, dup := rowPositions[row.Position]; dup {
+				return nil, fmt.Errorf("%w: seat map %s repeats row position %d within a section", ErrGeometryInvalid, seatMapID, row.Position)
+			}
+			rowPositions[row.Position] = struct{}{}
+			refs = append(refs, rowRef{sectionPos: section.Position, rowPos: row.Position, seq: seq, row: row})
+			seq++
+		}
+	}
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].sectionPos != refs[j].sectionPos {
+			return refs[i].sectionPos < refs[j].sectionPos
+		}
+		if refs[i].rowPos != refs[j].rowPos {
+			return refs[i].rowPos < refs[j].rowPos
+		}
+		return refs[i].seq < refs[j].seq
+	})
+	rank := int32(0)
+	{
+		for _, ref := range refs {
+			row := ref.row
+			rank++
 			seats := append([]geometrySeat(nil), row.Seats...)
 			// Positions must be present, positive and unique within the row. A missing
 			// position decodes as zero and a duplicate makes sort order arbitrary — either
@@ -297,8 +382,23 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 				seen[id] = struct{}{}
 				identities = append(identities, id)
 			}
+			// A row with no id cannot be keyed, and keying it on anything else (its
+			// label, its index) would merge rows across sections or renumber them on the
+			// next publication. Deterministically unusable, so terminate rather than
+			// project a geometry whose rows cannot be told apart (TKT-81).
+			if row.ID == uuid.Nil {
+				return nil, fmt.Errorf("%w: seat map %s has a row with no id", ErrGeometryInvalid, seatMapID)
+			}
+			rowKey := row.ID.String()
 			for i, id := range identities {
-				adj := SeatAdjacency{SeatIdentity: id}
+				// Position is the seat's rank WITHIN THIS ROW after the sort above, not
+				// catalog's raw position value. Catalog positions are unique and ascending
+				// but need not be contiguous — a row authored 10, 20, 30 is legal — and the
+				// selection query groups runs by consecutive positions. Re-basing to 1..n
+				// here is what makes "adjacent in the row" and "consecutive positions" the
+				// same statement; carrying the raw value through would make three
+				// neighbouring seats read as three separate one-seat runs.
+				adj := SeatAdjacency{SeatIdentity: id, RowKey: rowKey, RowRank: rank, Position: int32(i + 1)}
 				if i > 0 {
 					left := identities[i-1]
 					adj.Left = &left

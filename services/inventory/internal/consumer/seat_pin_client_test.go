@@ -251,7 +251,8 @@ func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
 	id := uuid.New()
 	// Deliberately out of order, and with position GAPS: gaps are spacing, not missing
 	// seats, so 10/20/40 is still three adjacent seats.
-	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"rows":[{"seats":[
+	row := uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"position":1,"rows":[{"id":"` + row.String() + `","position":1,"seats":[
 		{"seat_identity":"A/1/3","position":40},
 		{"seat_identity":"A/1/1","position":10},
 		{"seat_identity":"A/1/2","position":20}]}]}]}`
@@ -276,13 +277,85 @@ func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
 	if got[2].SeatIdentity != "A/1/3" || got[2].Right != nil || *got[2].Left != "A/1/2" {
 		t.Fatalf("last seat: %+v", got[2])
 	}
+	// The ordering half (TKT-81), derived from the same sort and pinned here for the same
+	// reason: this is the only place the geometry exists, so it is the only place fidelity
+	// can be established.
+	//
+	// Positions are RE-BASED to 1..n, and this fixture is why. Catalog's raw positions here
+	// are 10, 20 and 40 — legal, since positions must ascend and be unique but need not be
+	// contiguous ("gaps are spacing, not missing seats", above). Carrying those through
+	// would make the selection query, which groups runs by CONSECUTIVE positions, read this
+	// row as three separate one-seat runs and never offer the party of three that is
+	// plainly sitting there.
+	for i, want := range []int32{1, 2, 3} {
+		if got[i].RowKey != row.String() {
+			t.Fatalf("seat %d row key = %q want %q — the row's catalog id, not its label", i, got[i].RowKey, row)
+		}
+		if got[i].Position != want {
+			t.Fatalf("seat %d position = %d want %d — positions are re-based to 1..n so adjacency and consecutiveness agree", i, got[i].Position, want)
+		}
+	}
+}
+
+// TestSeatMapAdjacencyRefusesARowWithNoId: a row that cannot be keyed cannot be projected
+// (TKT-81). Keying on anything else available — the label, the index in the response —
+// merges rows across sections ("row A" exists in every one) or renumbers them on the next
+// publication, and either produces a projection that offers runs spanning a gangway.
+// Deterministically unusable, so it terminates rather than parking for ever.
+func TestSeatMapAdjacencyRefusesARowWithNoId(t *testing.T) {
+	id := uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"position":1,"rows":[{"position":1,"seats":[
+		{"seat_identity":"A/1/1","position":1},
+		{"seat_identity":"A/1/2","position":2}]}]}]}`
+
+	_, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if !errors.Is(err, ErrGeometryInvalid) {
+		t.Fatalf("err = %v want ErrGeometryInvalid — an unkeyable row must terminate, not retry", err)
+	}
+}
+
+// TestSeatMapAdjacencyKeepsRowsDistinctWhenLabelsRepeat is the reason RowKey is the row's
+// id. Two sections each hold a "row A" at the same positions; a label-keyed or
+// position-keyed projection collapses them into one row, and best-available then offers a
+// party seats on both sides of a gangway and calls them adjacent.
+func TestSeatMapAdjacencyKeepsRowsDistinctWhenLabelsRepeat(t *testing.T) {
+	id, r1, r2 := uuid.New(), uuid.New(), uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+		{"position":1,"rows":[{"id":"` + r1.String() + `","position":1,"label":"A","seats":[
+			{"seat_identity":"L/A/1","position":1},{"seat_identity":"L/A/2","position":2}]}]},
+		{"position":2,"rows":[{"id":"` + r2.String() + `","position":1,"label":"A","seats":[
+			{"seat_identity":"R/A/1","position":1},{"seat_identity":"R/A/2","position":2}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]struct{}{}
+	for _, a := range got {
+		keys[a.RowKey] = struct{}{}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("distinct row keys = %d want 2 — two sections' \"row A\" are different rows", len(keys))
+	}
+	// And the two rows get DISTINCT ranks, in the order catalog listed them (TKT-81). The
+	// key keeps them apart; the rank puts them in the venue's order, and a uuid cannot do
+	// the second job — sorting by it would seat a buyer in a row chosen at random.
+	for _, a := range got {
+		want := int32(1)
+		if strings.HasPrefix(a.SeatIdentity, "R/") {
+			want = 2
+		}
+		if a.RowRank != want {
+			t.Fatalf("%s rank = %d want %d — rows rank in the order catalog lists them", a.SeatIdentity, a.RowRank, want)
+		}
+	}
 }
 
 func TestSeatMapAdjacencyNeverConnectsRowsOrSections(t *testing.T) {
 	id := uuid.New()
 	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
-		{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]},
-		{"rows":[{"seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
+		{"position":1,"rows":[{"id":"` + uuid.New().String() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]},
+		{"position":2,"rows":[{"id":"` + uuid.New().String() + `","position":1,"seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
 
 	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
 	if err != nil {
@@ -303,29 +376,29 @@ func TestSeatMapAdjacencyFailsClosedOnMalformedGeometry(t *testing.T) {
 	id, other := uuid.New(), uuid.New()
 	pub := `"status":"published"`
 	for name, body := range map[string]string{
-		"wrong map version": `{"map":{"id":"` + other.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
-		"draft geometry":    `{"map":{"id":"` + id.String() + `","status":"draft"},"sections":[{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
+		"wrong map version": `{"map":{"id":"` + other.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
+		"draft geometry":    `{"map":{"id":"` + id.String() + `","status":"draft"},"sections":[{"position":1,"rows":[{"position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
 		"no seats at all":   `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[]}`,
 		// A zero position is what an OMITTED position decodes to, so this also covers
 		// a seat whose position the producer forgot to send.
-		"zero position": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"zero position": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"A/1/1","position":0},{"seat_identity":"A/1/2","position":1}]}]}]}`,
 		// Equal positions make sort order arbitrary — the derived neighbours would
 		// differ run to run.
-		"duplicate position in a row": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"duplicate position in a row": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"A/1/1","position":1},{"seat_identity":"A/1/2","position":1}]}]}]}`,
-		"duplicate identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"duplicate identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"A/1/1","position":1}]},{"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`,
 		// "A/1/1" and " A/1/1" are the same seat to catalog and to a human; two rows
 		// on one seat would make the claim-path lookup depend on which one it matched.
-		"whitespace-variant identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"whitespace-variant identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"A/1/1","position":1},{"seat_identity":" A/1/1","position":2}]}]}]}`,
-		"blank identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"blank identity": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"   ","position":1}]}]}]}`,
 		// A valid prefix followed by garbage: one Decode would accept the prefix and
 		// commit it as authoritative, permanently, since the same transaction consumes
 		// the event.
-		"trailing bytes after a valid document": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"rows":[{"seats":[
+		"trailing bytes after a valid document": `{"map":{"id":"` + id.String() + `",` + pub + `},"sections":[{"position":1,"rows":[{"position":1,"seats":[
 			{"seat_identity":"A/1/1","position":1}]}]}]} {"map":{"id":"junk"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -399,4 +472,94 @@ func TestSeatMapAdjacencyTreatsAnInterruptedBodyAsTransient(t *testing.T) {
 	if errors.Is(err, ErrGeometryInvalid) {
 		t.Fatalf("err = %v — a dropped connection is transient; terminating on it loses the publication", err)
 	}
+}
+
+// TestSeatMapAdjacencyRanksRowsByDeclaredPositionNotArrivalOrder pins the ranking against the
+// producer's iteration order rather than with it (TKT-81).
+//
+// Catalog's geometry read orders rows by position across the WHOLE map and then files each
+// into its section, so today arrival order and (section, row) order agree. That is the
+// producer's SQL, not a contract this consumer can check, and inventory holds no geometry to
+// notice the day it changes. The response carries the positions explicitly, so the rank is
+// computed from them.
+//
+// The fixture arrives deliberately out of order: section 2 first, and within each section the
+// higher row position first. The ranks must still follow (section position, row position).
+func TestSeatMapAdjacencyRanksRowsByDeclaredPositionNotArrivalOrder(t *testing.T) {
+	id := uuid.New()
+	r := func() string { return uuid.New().String() }
+	s2r2, s2r1, s1r2, s1r1 := r(), r(), r(), r()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+		{"position":2,"rows":[
+			{"id":"` + s2r2 + `","position":2,"seats":[{"seat_identity":"B/2/1","position":1}]},
+			{"id":"` + s2r1 + `","position":1,"seats":[{"seat_identity":"B/1/1","position":1}]}]},
+		{"position":1,"rows":[
+			{"id":"` + s1r2 + `","position":2,"seats":[{"seat_identity":"A/2/1","position":1}]},
+			{"id":"` + s1r1 + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int32{"A/1/1": 1, "A/2/1": 2, "B/1/1": 3, "B/2/1": 4}
+	for _, a := range got {
+		if a.RowRank != want[a.SeatIdentity] {
+			t.Fatalf("%s rank = %d want %d — rows rank by (section position, row position), not by the order the response happened to list them",
+				a.SeatIdentity, a.RowRank, want[a.SeatIdentity])
+		}
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d seats want 4", len(got))
+	}
+}
+
+// TestSeatMapAdjacencyRefusesMalformedSectionOrRowPositions is ai-review pass 4's [medium].
+// Section and row positions became load-bearing the moment row order was derived from them,
+// and until then nothing checked them — while every other field in this response is checked,
+// for the reason that applies here too: a missing JSON number decodes as 0, sorts first, and
+// commits a wrong buyer-visible row order permanently, because the event is consumed in the
+// same transaction and nothing later repairs it.
+//
+// Catalog's schema forbids these shapes today. That is a property of the producer, not a
+// guarantee this consumer can check — the same argument the seat-position validation above
+// already makes.
+func TestSeatMapAdjacencyRefusesMalformedSectionOrRowPositions(t *testing.T) {
+	id := uuid.New()
+	r := func() string { return uuid.New().String() }
+	cases := map[string]string{
+		"a section with no position":  `"sections":[{"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]`,
+		"a negative section position": `"sections":[{"position":-1,"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]`,
+		"two sections at one position": `"sections":[
+			{"position":1,"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]},
+			{"position":1,"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"B/1/1","position":1}]}]}]`,
+		"a row with no position": `"sections":[{"position":1,"rows":[{"id":"` + r() + `","seats":[{"seat_identity":"A/1/1","position":1}]}]}]`,
+		"two rows at one position in a section": `"sections":[{"position":1,"rows":[
+			{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]},
+			{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/2/1","position":1}]}]}]`,
+	}
+	for name, sections := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := `{"map":{"id":"` + id.String() + `","status":"published"},` + sections + `}`
+			_, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+			if !errors.Is(err, ErrGeometryInvalid) {
+				t.Fatalf("err = %v want ErrGeometryInvalid — an ambiguous or absent declared position "+
+					"decides row order permanently and must terminate, not be guessed at", err)
+			}
+		})
+	}
+
+	// The same row positions repeated in DIFFERENT sections are legal — every section starts
+	// its own row numbering — and refusing them would break most real maps.
+	t.Run("row positions repeat across sections", func(t *testing.T) {
+		body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+			{"position":1,"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]},
+			{"position":2,"rows":[{"id":"` + r() + `","position":1,"seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
+		got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got[0].RowRank == got[1].RowRank {
+			t.Fatalf("two sections' first rows are different rows and must rank apart: %+v", got)
+		}
+	})
 }

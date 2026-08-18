@@ -53,6 +53,8 @@ const (
 	AllocationCapBelowConsumption ErrorCode = "allocation_cap_below_consumption"
 	AllocationCapsExceedCapacity  ErrorCode = "allocation_caps_exceed_capacity"
 	AllocationRevisionMismatch    ErrorCode = "allocation_revision_mismatch"
+	BestAvailableUnavailable      ErrorCode = "best_available_unavailable"
+	BestAvailableUnsupported      ErrorCode = "best_available_unsupported"
 	ChannelWindowClosed           ErrorCode = "channel_window_closed"
 	OrphanedSeats                 ErrorCode = "orphaned_seats"
 	PinUnavailable                ErrorCode = "pin_unavailable"
@@ -71,6 +73,10 @@ func (e ErrorCode) Valid() bool {
 	case AllocationCapsExceedCapacity:
 		return true
 	case AllocationRevisionMismatch:
+		return true
+	case BestAvailableUnavailable:
+		return true
+	case BestAvailableUnsupported:
 		return true
 	case ChannelWindowClosed:
 		return true
@@ -173,6 +179,18 @@ type Availability struct {
 
 // AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
 type AvailabilityOfferingStatus string
+
+// BestAvailableSeatHoldCreate A best-available request (TKT-81). Identical to SeatHoldCreate except that it names a PARTY SIZE instead of seats: the caller does not choose, and cannot influence, which seats it receives. That is deliberate rather than a simplification — a client-supplied seat preference on this path would be a second, unauthenticated way to steer an allocation, and the response is the only place the chosen seats appear.
+type BestAvailableSeatHoldCreate struct {
+	Currency    string             `json:"currency"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// SeatCount How many adjacent seats to select. Bounded by the same 1..50 band a named-seat hold is: one claim, one insert, one bounded scan.
+	SeatCount    int32              `json:"seat_count"`
+	SlotId       openapi_types.UUID `json:"slot_id"`
+	TicketTypeId openapi_types.UUID `json:"ticket_type_id"`
+	UnitAmount   int64              `json:"unit_amount"`
+}
 
 // CacheControlStatus defines model for CacheControlStatus.
 type CacheControlStatus struct {
@@ -292,7 +310,7 @@ type Error struct {
 	// Channel The offending allocation's raw channel code, present only on `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to.
 	Channel *string `json:"channel,omitempty"`
 
-	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -300,7 +318,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
@@ -565,6 +583,11 @@ type CreateSeatHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// CreateBestAvailableSeatHoldParams defines parameters for CreateBestAvailableSeatHold.
+type CreateBestAvailableSeatHoldParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // PlaceGroupReservationParams defines parameters for PlaceGroupReservation.
 type PlaceGroupReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -658,6 +681,9 @@ type CreateHoldJSONRequestBody = HoldCreate
 
 // CreateSeatHoldJSONRequestBody defines body for CreateSeatHold for application/json ContentType.
 type CreateSeatHoldJSONRequestBody = SeatHoldCreate
+
+// CreateBestAvailableSeatHoldJSONRequestBody defines body for CreateBestAvailableSeatHold for application/json ContentType.
+type CreateBestAvailableSeatHoldJSONRequestBody = BestAvailableSeatHoldCreate
 
 // PutCacheControlJSONRequestBody defines body for PutCacheControl for application/json ContentType.
 type PutCacheControlJSONRequestBody = CacheControlUpdate

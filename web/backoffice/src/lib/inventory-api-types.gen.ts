@@ -60,6 +60,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/holds/seats/best-available": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Atomically select and hold a contiguous run of N seats (TKT-81)
+         * @description Selects a free contiguous run of `seat_count` seats and claims it in the SAME transaction, under the same pool row lock the named-seat path takes (ADR-010) — so selection and claim cannot race, and two callers can never be offered the same run. The response carries the seats that were chosen; the request does not name any.
+         *
+         *     "Contiguous" means consecutive seats in ONE row of the pool's projected geometry. Rows and sections never connect (ADR-041), so a run never spans a gangway. Ordering is the seat map's own `position` order as projected at provisioning: it is an ordering, NOT a quality ranking — the system holds no seat-desirability data, and a lower row is not claimed to be a better seat.
+         *
+         *     Bounded on purpose: the search reads at most a fixed number of seats in projected order (ADR-061), because it runs under the lock that serialises every claimant on the performance. So this returns the first eligible run within that window, not the best run in the house, and a refusal means "not within the window", not "nowhere".
+         *
+         *     Party splitting is NOT performed: if no single run is long enough the request is refused rather than split across rows. On a pool with orphan prevention enabled (ADR-041) a run that would strand a lone free seat is skipped, and the request is refused only when every candidate run would strand one.
+         *
+         *     Idempotency covers the REQUEST, not the outcome — same key plus same organizer/slot/ticket type/count/price replays the original hold and returns the seats it already holds, rather than selecting a second run. A key already spent on a named-seat hold conflicts here rather than replaying.
+         */
+        post: operations["createBestAvailableSeatHold"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/slots/{id}/availability": {
         parameters: {
             query?: never;
@@ -380,10 +408,10 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
+             * @description Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021).
              * @enum {string}
              */
-            code?: "slot_archived" | "slot_closed" | "channel_window_closed" | "presale_code_invalid" | "seat_taken" | "seat_unavailable" | "pin_unavailable" | "orphaned_seats" | "allocation_caps_exceed_capacity" | "allocation_cap_below_consumption" | "allocation_revision_mismatch";
+            code?: "slot_archived" | "slot_closed" | "channel_window_closed" | "presale_code_invalid" | "seat_taken" | "seat_unavailable" | "pin_unavailable" | "orphaned_seats" | "best_available_unavailable" | "best_available_unsupported" | "allocation_caps_exceed_capacity" | "allocation_cap_below_consumption" | "allocation_revision_mismatch";
             /** @description The offending allocation's raw channel code, present only on `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to. */
             channel?: string;
             /** @description With `seat_taken`: the requested seats another live claim already holds, sorted (TKT-173). With `orphaned_seats`: the FREE seats this selection would strand with no free neighbour in their row (ADR-041, TKT-182) — seats the buyer did NOT request, so a caller must not assume these are a subset of what it asked for. Seats the request could have had are NOT listed — a caller re-renders exactly what it must give up. Knowable only inside the claim transaction that arbitrated: an answer computed afterwards, by re-reading occupancy say, describes a different moment and can name seats this request never lost. */
@@ -480,6 +508,23 @@ export interface components {
             /** Format: uuid */
             slot_id: string;
             seat_identities: string[];
+            /** Format: uuid */
+            ticket_type_id: string;
+            /** Format: int64 */
+            unit_amount: number;
+            currency: string;
+        };
+        /** @description A best-available request (TKT-81). Identical to SeatHoldCreate except that it names a PARTY SIZE instead of seats: the caller does not choose, and cannot influence, which seats it receives. That is deliberate rather than a simplification — a client-supplied seat preference on this path would be a second, unauthenticated way to steer an allocation, and the response is the only place the chosen seats appear. */
+        BestAvailableSeatHoldCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            slot_id: string;
+            /**
+             * Format: int32
+             * @description How many adjacent seats to select. Bounded by the same 1..50 band a named-seat hold is: one claim, one insert, one bounded scan.
+             */
+            seat_count: number;
             /** Format: uuid */
             ticket_type_id: string;
             /** Format: int64 */
@@ -892,6 +937,30 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SeatHoldCreate"];
+            };
+        };
+        responses: {
+            200: components["responses"]["SeatHold"];
+            201: components["responses"]["SeatHold"];
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createBestAvailableSeatHold: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BestAvailableSeatHoldCreate"];
             };
         };
         responses: {
