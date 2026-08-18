@@ -97,6 +97,14 @@ same transaction and pool lock as the claim.
    answer is the first legal run *within that window*, and a refusal means "not within the
    window", never "nowhere in the house". This is stated in the OpenAPI description as well as
    here, because a caller who believes the stronger claim will read a refusal as a sellout.
+6. **The cap bounds which seats are CANDIDATES, not what the rule may know.** The orphan
+   predicate reads two positions past each end of the scanned window — its entire reach — so a
+   window at the very edge is judged against real occupancy rather than against the absence of
+   data. Those context seats are never selectable. The distinction cost a review round to
+   learn: an earlier version judged a boundary flank using only the scanned set, treating
+   *"I did not read that seat"* as *"that seat is taken"*, and refused legal runs. Failing safe
+   is the right instinct about **granting** a stranding run; it is not a licence to refuse a
+   legal one, and a test asserting the refusal made the defect look intentional.
 
 ### The relaxation rules (the story's AC2), explicit and deterministic
 
@@ -128,6 +136,15 @@ one hold — a silent double-sale, and the failure mode most specific to this en
 
 The fingerprint carries a mode discriminator so a key spent on a named-seat hold conflicts here
 rather than replaying.
+
+**And a claim whose seats have all been given back is spent, whatever its status says.**
+`claims.status` and `claim_seats.released_at` are not coupled by the schema — the refund path
+states this where it releases them — so a fully returned seated claim sits at `confirmed` with
+every seat row released. Replaying onto it would re-pin seats that are free again and report a
+false success, which is the reasoning the released and expired cases already apply; it answers
+`ErrConflict` instead. This bites harder here than on the named-seat path, because the request
+carries no seats and so offers nothing to cross-check the answer against — the replay simply
+returned the original quantity with an empty seat set.
 
 ### Two refusal codes, and they must not be collapsed
 
@@ -166,7 +183,13 @@ correction wave is a silent no-op on every adjacency row and the pool stays unse
 ever while the wave reports success.
 
 So the conflict clause now updates **`row_key` and `position` only**, and deliberately leaves
-`left_identity` and `right_identity` untouched. The edges are the substrate arbitration runs
+`left_identity` and `right_identity` untouched. **A publication describing a *different* set is
+refused outright** rather than merged: a column-wise merge across two generations would keep
+rows the new set omits, add rows naming neighbours that were never updated to name them back,
+and leave a projection neither input describes. ADR-029 already makes that unreachable through
+the ordinary path — a published version is immutable and the pool refuses a different
+`seat_map_id` — so the check is defence in depth against a catalog integrity violation, made
+explicit because the failure it prevents is silent and lands on the correction-wave path. The edges are the substrate arbitration runs
 on: a live claim was decided against them as they stood, and a later publication that rewrote
 them would retroactively change what that decision meant. The ordering columns are additive,
 read only by selection, and carry no such history. Changing that clause to update the edges as

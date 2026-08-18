@@ -485,6 +485,59 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 	// columns are additive, read only by selection, and carry no such history. Changing
 	// this line to update the edges too is not a cleanup -- it is a different decision
 	// about immutability, and belongs in an ADR.
+	// Refuse a projection that is not the SAME SET as the one already stored (ai-review).
+	//
+	// The upsert above fills ordering metadata on an existing pool and leaves the arbitration
+	// edges alone, which is right when both publications describe the same geometry. If they
+	// do not — a seat added, a seat dropped, an edge changed — a column-wise merge would
+	// splice one generation's ordering onto another's edges and leave a projection neither
+	// input describes: rows omitted by the new set survive and stay selectable, and rows it
+	// adds name neighbours that were never updated to name them back.
+	//
+	// ADR-029 already makes that unreachable through the ordinary path: a published seat-map
+	// version is immutable, a version IS a seat_maps row, and the identity check above refuses
+	// any publication naming a different seat_map_id. So this is defence in depth against a
+	// catalog integrity violation rather than a live defect — but the failure it prevents is
+	// silent projection poisoning on the correction-wave path, which per ADR-021 is exactly
+	// where an honest-writer guarantee should be checked rather than assumed.
+	//
+	// Scoped to publications that CARRY a projection. A schema-4 replay arrives with none
+	// and is not describing a geometry at all, so comparing it against the stored set would
+	// read "I said nothing" as "I said something different" and refuse a legal replay.
+	var storedSeats int
+	if err = tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1`, slotID).Scan(&storedSeats); err != nil {
+		return err
+	}
+	if storedSeats > 0 && len(adjacency) > 0 {
+		if storedSeats != len(adjacency) {
+			return fmt.Errorf("%w: pool %s has a %d-seat projection and this publication describes %d",
+				ErrSeatProjectionIncomplete, slotID, storedSeats, len(adjacency))
+		}
+		for _, a := range adjacency {
+			var l, r sql.NullString
+			err = tx.QueryRowContext(ctx,
+				`SELECT left_identity, right_identity FROM seat_claim_adjacency WHERE pool_id=$1 AND seat_identity=$2`,
+				slotID, a.SeatIdentity).Scan(&l, &r)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: pool %s has no projection row for seat %q, which this publication describes",
+					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
+			}
+			if err != nil {
+				return err
+			}
+			same := func(stored sql.NullString, incoming *string) bool {
+				if incoming == nil {
+					return !stored.Valid
+				}
+				return stored.Valid && stored.String == *incoming
+			}
+			if !same(l, a.Left) || !same(r, a.Right) {
+				return fmt.Errorf("%w: pool %s already holds different adjacency for seat %q — this publication describes another geometry",
+					ErrSeatProjectionIncomplete, slotID, a.SeatIdentity)
+			}
+		}
+	}
 	for _, a := range adjacency {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity,row_key,position)
 			VALUES($1,$2,$3,$4,$5,$6)
@@ -1219,6 +1272,27 @@ WITH ordered AS (
 	 ORDER BY a.row_key, a.position
 	 LIMIT 400
 ),
+-- CONTEXT, not candidates. The orphan predicate asks about seats one and two positions
+-- outside a window, so a window sitting at the very edge of the scan has flanks whose own
+-- neighbours fall past the cap. Judging those with only the scanned set in hand meant treating
+-- "I cannot see it" as "it is taken", which refused legal runs at the boundary -- a bounded
+-- scan is allowed to stop looking for candidates, but it must not start inventing
+-- occupancy (ai-review).
+--
+-- Two extra positions per row is exactly the predicate's reach: it inspects position lo-1
+-- and hi+1 (the flanks) and lo-2 / hi+2 (each flank's other side), and lo-1/hi+1 are inside
+-- the scan whenever the window is. Bounded by the same argument as the scan itself -- at
+-- most two rows' worth of extra rows, each reached through the same index.
+context AS (
+	SELECT o.seat_identity, o.row_key, o.position, o.left_identity, o.right_identity FROM ordered o
+	UNION
+	SELECT a.seat_identity, a.row_key, a.position, a.left_identity, a.right_identity
+	  FROM seat_claim_adjacency a
+	  JOIN (SELECT row_key, min(position) AS lo, max(position) AS hi FROM ordered GROUP BY row_key) b
+	    ON b.row_key = a.row_key
+	 WHERE a.pool_id = $1 AND a.row_key IS NOT NULL
+	   AND (a.position IN (b.lo - 2, b.lo - 1, b.hi + 1, b.hi + 2))
+),
 taken AS (
 	SELECT cs.seat_identity
 	  FROM claim_seats cs JOIN claims cl ON cl.id = cs.claim_id
@@ -1227,6 +1301,13 @@ taken AS (
 free AS (
 	SELECT o.* FROM ordered o
 	 WHERE NOT EXISTS (SELECT 1 FROM taken t WHERE t.seat_identity = o.seat_identity)
+),
+-- The same freeness test over the wider set. Used ONLY by the orphan predicate: a seat
+-- outside the scan may be someone's neighbour but is never itself selectable, which is what
+-- keeps the cap meaningful.
+free_context AS (
+	SELECT c.* FROM context c
+	 WHERE NOT EXISTS (SELECT 1 FROM taken t WHERE t.seat_identity = c.seat_identity)
 ),
 grp AS (
 	SELECT f.*, f.position - row_number() OVER (PARTITION BY f.row_key ORDER BY f.position) AS island
@@ -1252,12 +1333,12 @@ legal AS (
 		-- flank, hi+2 for the right. That side is unavailable when no FREE seat sits there,
 		-- which covers both "taken" and "row ends here". A seat with no edges at all is a
 		-- one-seat row and is never strandable, which is the NOT(both NULL) guard.
-		SELECT 1 FROM grp n
+		SELECT 1 FROM free_context n
 		 WHERE n.row_key = w.row_key
 		   AND n.position IN (w.lo - 1, w.hi + 1)
 		   AND NOT (n.left_identity IS NULL AND n.right_identity IS NULL)
 		   AND NOT EXISTS (
-			SELECT 1 FROM grp o
+			SELECT 1 FROM free_context o
 			 WHERE o.row_key = n.row_key
 			   AND o.position = CASE WHEN n.position < w.lo THEN n.position - 1 ELSE n.position + 1 END
 		   )
@@ -1293,29 +1374,40 @@ func bestAvailableFingerprint(org, slot, ticketType uuid.UUID, count int32, unit
 }
 
 // claimedSeats reads back the seats a claim holds, in projected order where the projection
-// has one and by identity otherwise. It exists for the best-available replay: the request
-// cannot reconstruct the seat set, so the row is the only source of truth for what a retry
-// is a retry OF.
-func claimedSeats(ctx context.Context, tx *sql.Tx, pool, claimID uuid.UUID) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT cs.seat_identity
+// has one and by identity otherwise, and separately reports how many are still LIVE. It
+// exists for the best-available replay: the request cannot reconstruct the seat set, so the
+// row is the only source of truth for what a retry is a retry OF.
+//
+// It returns every row, released or not, and lets the caller decide — for the reason the
+// refund path states where it releases them: `claims.status` and `claim_seats.released_at`
+// are not coupled by the schema, so "the claim is confirmed" and "its seats are still
+// consumed" are two different questions. A reader that answers the second by filtering the
+// first silently reports an empty seat set for a fully returned claim.
+func claimedSeats(ctx context.Context, tx *sql.Tx, pool, claimID uuid.UUID) ([]string, int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT cs.seat_identity, (cs.released_at IS NULL) AS live
 		FROM claim_seats cs
 		LEFT JOIN seat_claim_adjacency a
 		       ON a.pool_id = cs.pool_id AND a.seat_identity = cs.seat_identity
-		WHERE cs.claim_id = $1 AND cs.pool_id = $2 AND cs.released_at IS NULL
+		WHERE cs.claim_id = $1 AND cs.pool_id = $2
 		ORDER BY a.row_key NULLS LAST, a.position NULLS LAST, cs.seat_identity`, claimID, pool)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []string
+	live := 0
 	for rows.Next() {
 		var seat string
-		if err = rows.Scan(&seat); err != nil {
-			return nil, err
+		var isLive bool
+		if err = rows.Scan(&seat, &isLive); err != nil {
+			return nil, 0, err
 		}
 		out = append(out, seat)
+		if isLive {
+			live++
+		}
 	}
-	return out, rows.Err()
+	return out, live, rows.Err()
 }
 
 // CreateBestAvailableSeatHold selects and claims a contiguous run of `count` seats in ONE
@@ -1414,9 +1506,22 @@ func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, t
 		// difference that makes a best-available retry safe: the request carries a party
 		// size, so re-deriving a set from it would produce a DIFFERENT run and hand the
 		// caller two holds under one key.
-		seats, serr := claimedSeats(ctx, tx, slot, existing.ID)
+		//
+		// Read RELEASED rows too, and then decide (ai-review). `claims.status` and
+		// `claim_seats.released_at` are not coupled by the schema — the refund path says so
+		// in as many words — so a FULLY RETURNED seated claim sits at status 'confirmed'
+		// with every seat row released. Filtering on live rows made that replay answer with
+		// the original quantity and an EMPTY seat set, which the caller then tried to pin.
+		seats, live, serr := claimedSeats(ctx, tx, slot, existing.ID)
 		if serr != nil {
 			return SeatHold{}, serr
+		}
+		// A claim whose seats have all been given back is spent, whatever its status says.
+		// The key cannot be replayed onto it: returning it would re-pin seats that are free
+		// again and report a false success, which is exactly the reasoning the released and
+		// expired cases above already apply. ErrConflict tells the caller to hold anew.
+		if live == 0 {
+			return SeatHold{}, ErrConflict
 		}
 		existing.Kind = "buyer"
 		return SeatHold{Claim: existing, SeatMapID: seatMapID.UUID, Seats: seats, PinnedBy: pinnedBy(existing.ID), Replay: true}, p.commitAvailability(tx, slot)

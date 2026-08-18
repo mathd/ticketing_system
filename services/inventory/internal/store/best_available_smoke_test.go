@@ -687,28 +687,27 @@ func TestReProvisionFillsOrderingMetadataWithoutRewritingEdges(t *testing.T) {
 		t.Fatalf("precondition: the pool must start unsupported, got %v", err)
 	}
 
-	// The correction wave: a FRESH event id carrying ordering metadata AND — deliberately —
-	// a DIFFERENT set of edges.
+	// The correction wave: a FRESH event id carrying the same geometry plus ordering.
 	//
-	// The differing edges are what make the second half of this test falsifiable. With
-	// identical edges either way, a conflict clause that rewrote them is undetectable: the
-	// value written equals the value already there. So the upgrade presents a reversed
-	// chain (each seat naming the opposite neighbours), which no honest publication would
-	// ever send, and the assertion below is that the ORIGINAL edges survived it. That is the
-	// immutability property stated as something a test can see, rather than as a comment.
+	// The edges match the stored ones on purpose. An earlier version of this test sent a
+	// deliberately REVERSED chain to make "the edges were not rewritten" falsifiable, and
+	// ai-review's third finding removed the need: a re-provision describing different
+	// geometry is now REFUSED outright (TestReProvisionRefusesADifferentGeometry), so the
+	// reversed input no longer reaches the upsert at all. The edge-preservation assertion
+	// below therefore checks that the upgrade path leaves them alone, and the refusal test
+	// covers the case where a publication tries to change them.
 	after := make([]SeatAdjacencyRow, 0, 4)
 	rowKey := "A/1"
 	for i := 1; i <= 4; i++ {
 		pos := int32(i)
 		key := rowKey
 		row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
-		// Reversed: seat i names i+1 on its LEFT and i-1 on its RIGHT.
-		if i < 4 {
-			left := seat(i + 1)
+		if i > 1 {
+			left := seat(i - 1)
 			row.Left = &left
 		}
-		if i > 1 {
-			right := seat(i - 1)
+		if i < 4 {
+			right := seat(i + 1)
 			row.Right = &right
 		}
 		after = append(after, row)
@@ -919,39 +918,192 @@ func TestBestAvailableScanCapConstantsAgree(t *testing.T) {
 	}
 }
 
-// TestBestAvailableOrphanCheckAtTheScanBoundary probes a seam the design creates and the
-// other tests cannot reach: `grp` holds only the seats INSIDE the scan cap, so a window
-// selected at the very edge of the cap has a flanking seat the orphan filter cannot see.
+// TestBestAvailableJudgesTheOrphanRuleBeyondTheScanCap replaces a test that blessed a
+// defect, and the way it did so is the lesson.
 //
-// The question is what happens then, and the answer must not be "a seat is silently
-// stranded". Cap 6 over a row of 20, with seat 1 taken. Inside the window the free seats are
-// 2..6; a party of 4 takes 2,3,4,5 and leaves seat 6 flanked by the selection on one side and
-// by seat 7 — which is free, but OUTSIDE the cap and therefore invisible to `grp` — on the
-// other.
+// The first version asserted that a window at the very edge of the scan is REFUSED, on the
+// reasoning that the filter cannot see a flank's neighbour beyond the cap and should fail
+// safe. It was green, well named, and wrong — ai-review found it. Failing safe is the right
+// instinct about *granting* a stranding run; it is not a licence to refuse a legal one. The
+// bounded scan is allowed to stop looking for candidates. It must not start inventing
+// occupancy for seats it did not read, and "I cannot see it, therefore it is taken" is
+// exactly that.
 //
-// The filter treats an unseen neighbour as unavailable, so it refuses the window rather than
-// assuming the best. That is the conservative direction: it can decline a legal selection at
-// the boundary, never grant a stranding one. The alternative — treating "not in grp" as
-// "free" — would make the cap silently weaken the orphan rule, which is the one thing a
-// bounded scan must not do.
-func TestBestAvailableOrphanCheckAtTheScanBoundary(t *testing.T) {
+// The fix gives the predicate two positions of CONTEXT past the scan window — its whole
+// reach — without making those seats selectable. This test pins the resulting behaviour with
+// the review's own scenario: a row of 405 against a cap of 400, positions 1..395 taken.
+// Window 396..399 is legal, because seat 400 keeps its free neighbour 401 — a seat the
+// selection scan never reads. The old code refused; the answer must be 396..399.
+func TestBestAvailableJudgesTheOrphanRuleBeyondTheScanCap(t *testing.T) {
 	ctx, st, _ := storeForTest(t, 10*time.Minute)
-	st.baScan = 6
-	org, slot, seat := seededBestAvailablePool(t, ctx, st, 1, 20)
-	hold(t, ctx, st, org, slot, seat(1, 1))
+	org, slot, seat := seededBestAvailablePool(t, ctx, st, 1, 405)
+	taken := make([]string, 0, 395)
+	for i := 1; i <= 395; i++ {
+		taken = append(taken, seat(1, i))
+	}
+	// Seeded directly: the arrangement is this test's INPUT, and routing it through
+	// CreateSeatHold would let the orphan rule refuse the precondition and leave the fixture
+	// unable to reach the state it names.
+	seedTakenSeats(t, ctx, st, org, slot, taken)
 
-	_, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString())
+	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString())
+	if err != nil {
+		t.Fatalf("err = %v — 396..399 is legal: seat 400 keeps its free neighbour 401, and a seat "+
+			"the scan did not read is not thereby occupied", err)
+	}
+	want := []string{seat(1, 396), seat(1, 397), seat(1, 398), seat(1, 399)}
+	if strings.Join(got.Seats, ",") != strings.Join(want, ",") {
+		t.Fatalf("seats = %v want %v", got.Seats, want)
+	}
+	// The complement, on the same fixture shape: when the seat past the cap is genuinely
+	// TAKEN, the flank really is stranded and the window really must be refused. Without
+	// this half the test above is satisfied by a filter that was simply switched off.
+	org2, slot2, seat2 := seededBestAvailablePool(t, ctx, st, 1, 405)
+	taken2 := make([]string, 0, 396)
+	for i := 1; i <= 395; i++ {
+		taken2 = append(taken2, seat2(1, i))
+	}
+	taken2 = append(taken2, seat2(1, 401)) // beyond the cap, and occupied
+	seedTakenSeats(t, ctx, st, org2, slot2, taken2)
+
+	got2, err := st.CreateBestAvailableSeatHold(ctx, org2, slot2, uuid.New(), 4, 0, "EUR", uuid.NewString())
+	if err == nil && strings.Join(got2.Seats, ",") == strings.Join([]string{seat2(1, 396), seat2(1, 397), seat2(1, 398), seat2(1, 399)}, ",") {
+		t.Fatal("396..399 strands seat 400 when 401 is taken, and must not be selected — the context " +
+			"read must inform the rule, not disable it")
+	}
+}
+
+// seedTakenSeats marks seats consumed by writing the claim directly. Tests that need an
+// ARRANGEMENT as their input use this rather than CreateSeatHold, whose own orphan rule
+// would refuse many legal-to-construct arrangements and leave the fixture unable to reach
+// the state the test names.
+func seedTakenSeats(t *testing.T, ctx context.Context, st *Postgres, org, slot uuid.UUID, seats []string) {
+	t.Helper()
+	if len(seats) == 0 {
+		return
+	}
+	if _, err := st.db.ExecContext(ctx, `
+		WITH c AS (
+			INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint)
+			VALUES(gen_random_uuid(),$1,$2,$3,'held',now()+interval '1 hour',gen_random_uuid()::text,'seed')
+			RETURNING id)
+		INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
+		SELECT c.id,$2,s FROM c, unnest($4::text[]) AS s`, org, slot, len(seats), seats); err != nil {
+		t.Fatalf("seeding taken seats: %v", err)
+	}
+}
+
+// TestBestAvailableReplayRefusesAFullyReturnedClaim is ai-review's second [high], and the
+// shape is one the named-seat path never has to face.
+//
+// `claims.status` and `claim_seats.released_at` are NOT coupled by the schema — the refund
+// path says so where it releases them — so a fully returned seated claim sits at status
+// 'confirmed' with every seat row released. The replay branch accepted it as live, and
+// because the request carries only a party size there was nothing to cross-check the answer
+// against: it returned the original quantity with an EMPTY seat set, which the caller then
+// tried to pin.
+//
+// A claim whose seats have all been given back is spent, whatever its status says. The key
+// cannot be replayed onto it — returning it would re-pin seats that are free again and
+// report a false success, the same reasoning the released and expired branches already apply.
+func TestBestAvailableReplayRefusesAFullyReturnedClaim(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot, _ := seededBestAvailablePool(t, ctx, st, 1, 10)
+	key := uuid.NewString()
+	tt := uuid.New()
+
+	first, err := st.CreateBestAvailableSeatHold(ctx, org, slot, tt, 3, 0, "EUR", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The state a full seated refund leaves behind: the claim stays confirmed, every seat
+	// row is released. Written directly so this test pins the STATE rather than the refund
+	// path that produces it — the coupling it guards against is exactly the assumption that
+	// those two move together.
+	if _, err := db.ExecContext(ctx, `UPDATE claims SET status='confirmed' WHERE id=$1`, first.Claim.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1`, first.Claim.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, tt, 3, 0, "EUR", key)
 	if err == nil {
-		t.Fatal("a window whose flank lies beyond the scan cap must be refused, not granted on an assumption about seats the query cannot see")
+		t.Fatalf("a replay onto a fully returned claim returned %d seats (%v) — the key is spent and "+
+			"those seats are free again", len(got.Seats), got.Seats)
 	}
-	if !errors.Is(err, ErrBestAvailableUnavailable) {
-		t.Fatalf("err = %v want ErrBestAvailableUnavailable", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v want ErrConflict", err)
 	}
-	// Raising the cap so the flank becomes visible turns the same request into a success —
-	// which is what makes the refusal above a statement about the BOUNDARY rather than about
-	// a pool that had no answer.
-	st.baScan = MaxBestAvailableScan
-	if _, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString()); err != nil {
-		t.Fatalf("with the whole row visible the selection is legal: %v", err)
+	// And a confirmed claim whose seats are STILL live replays normally, which is what makes
+	// the refusal above about the returned seats rather than about the status.
+	org2, slot2, _ := seededBestAvailablePool(t, ctx, st, 1, 10)
+	key2 := uuid.NewString()
+	live, err := st.CreateBestAvailableSeatHold(ctx, org2, slot2, tt, 3, 0, "EUR", key2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE claims SET status='confirmed' WHERE id=$1`, live.Claim.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.CreateBestAvailableSeatHold(ctx, org2, slot2, tt, 3, 0, "EUR", key2)
+	if err != nil {
+		t.Fatalf("a confirmed claim with live seats must still replay: %v", err)
+	}
+	if strings.Join(again.Seats, ",") != strings.Join(live.Seats, ",") {
+		t.Fatalf("replay seats %v != original %v", again.Seats, live.Seats)
+	}
+}
+
+// TestReProvisionRefusesADifferentGeometry is ai-review's [medium]. The upsert fills ordering
+// metadata and deliberately leaves the arbitration edges alone, which is right when both
+// publications describe the same geometry — and splices two generations together when they do
+// not: rows the new set omits survive and stay selectable, rows it adds name neighbours that
+// were never updated to name them back, and the result is a projection neither input describes.
+//
+// ADR-029 makes this unreachable through the ordinary path (a published version is immutable
+// and the pool refuses a different seat_map_id), so this is defence in depth against a catalog
+// integrity violation. It is checked rather than assumed because the failure is silent and
+// lands on the correction-wave path.
+func TestReProvisionRefusesADifferentGeometry(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
+	seat := func(i int) string { return "A/1/" + strconv.Itoa(i) }
+	build := func(n int) []SeatAdjacencyRow {
+		out := make([]SeatAdjacencyRow, 0, n)
+		for i := 1; i <= n; i++ {
+			pos := int32(i)
+			key := "A/1"
+			row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &pos}
+			if i > 1 {
+				l := seat(i - 1)
+				row.Left = &l
+			}
+			if i < n {
+				r := seat(i + 1)
+				row.Right = &r
+			}
+			out = append(out, row)
+		}
+		return out
+	}
+	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(2)); err != nil {
+		t.Fatal(err)
+	}
+	// A three-seat geometry over the same pool and map: internally reciprocal, and NOT the
+	// set already stored. Both inputs pass validateAdjacency, which is why the check has to
+	// compare against what is stored rather than only validating what arrives.
+	err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, true, build(3))
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v want ErrSeatProjectionIncomplete — a re-provision describing different "+
+			"geometry must be refused, not merged column-wise into the stored one", err)
+	}
+	// And the stored projection was not touched by the refusal.
+	var rows int
+	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM seat_claim_adjacency WHERE pool_id=$1`, slot).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("projection rows = %d want 2 — the refusal must leave the stored set intact", rows)
 	}
 }
