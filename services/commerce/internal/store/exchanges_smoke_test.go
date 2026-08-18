@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -215,7 +216,7 @@ func TestCompleteExchangeSettlementIsOnceOnly(t *testing.T) {
 
 	// source_total is 2000 (2 × 1000), so a target of 4000 makes the delta +2000 — and the
 	// CHECK enforces exactly that relationship (ai-review F4).
-	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if _, recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 4000, DeltaAmount: 2000, TargetUnitAmount: 2000,
 	}); err != nil || !recorded {
@@ -285,21 +286,21 @@ func TestExchangeBasisRefusesAnInconsistentDelta(t *testing.T) {
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 1000, DeltaAmount: 9000, TargetUnitAmount: 500,
 	}
-	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
+	if _, _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
 		t.Fatal("the database accepted a delta that is not target - source")
 	}
 	// And the total must be the product, which is the other half of the same discipline.
 	basis.DeltaAmount, basis.TargetUnitAmount = -1000, 999
-	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
+	if _, _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err == nil {
 		t.Fatal("the database accepted a total that is not quantity × unit")
 	}
 	basis.TargetUnitAmount = 500 // 2 × 500 = 1000 ✓, delta 1000 - 2000 = -1000 ✓
-	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || !recorded {
+	if _, recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || !recorded {
 		t.Fatalf("a consistent basis must be accepted: %v recorded=%t", err, recorded)
 	}
 	// Second writer: the row is taken, and it must be TOLD so rather than receiving nil and
 	// continuing on a basis the money does not use (ai-review pass 3).
-	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || recorded {
+	if _, recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, basis); err != nil || recorded {
 		t.Fatalf("a second basis write reported recorded=%t (err %v); it must report false", recorded, err)
 	}
 }
@@ -380,7 +381,7 @@ func TestExchangeSettlementOwesTheSwitchEvent(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
 		t.Fatal(err)
 	}
-	if recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if _, recorded, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 4000, DeltaAmount: 2000, TargetUnitAmount: 2000,
 	}); err != nil || !recorded {
@@ -491,7 +492,7 @@ func TestExchangeReversalProgressIsThreeOrderedFacts(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if _, _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 1500, DeltaAmount: 500, TargetUnitAmount: 1500,
 	}); err != nil {
@@ -557,7 +558,7 @@ func TestExchangeProjectionCarriesTheCapacityFact(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if _, _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 1500, DeltaAmount: 500, TargetUnitAmount: 1500,
 	}); err != nil {
@@ -611,7 +612,7 @@ func TestReplayRepairsASettledExchangeThatOwesNoEvent(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_outbox WHERE order_id=$1`, rep.OrderID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
+	if _, _, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, ExchangeBasis{
 		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
 		TargetTotal: 1500, DeltaAmount: 500, TargetUnitAmount: 1500,
 	}); err != nil {
@@ -800,4 +801,205 @@ func TestLoadExchangeSourceCarriesTheChannel(t *testing.T) {
 			t.Fatalf("ChannelCode = %q for a sale that named no channel, want nil", *src.ChannelCode)
 		}
 	})
+}
+
+// A CONCURRENT loser continues with the WINNER's basis, never its own (TKT-167, COS 3).
+//
+// TKT-158 made RecordExchangeBasis report `false` to a losing writer, and the handler
+// answered 409 rather than guess — correct, and as far as that ticket could go. It leaves
+// the loser unable to RESUME, which is the whole point here: the money's basis is the
+// persisted one, and a caller that cannot read it back can only refuse.
+//
+// Driven through a real row lock rather than two sequential calls. Sequential calls prove
+// the `basis_at IS NULL` guard and nothing about concurrency: the loser's UPDATE would
+// never have waited on anything, so a fallback SELECT that reads a stale snapshot would
+// pass just as well. Here the loser's UPDATE blocks on the winner's uncommitted row, wakes
+// after the commit, matches zero rows because `basis_at` is no longer NULL, and must then
+// read what the winner actually wrote.
+//
+// The two bases differ in EVERY field, so the assertion cannot be satisfied by accident:
+// a function that returned the caller's own input would have to coincide on seven values.
+func TestTheLoserOfABasisRaceContinuesWithTheWinnersBasis(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-basis-race", 2, 1000) // source_total 2000
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "x-race-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2 × 1500 = 3000, delta 3000 - 2000 = +1000. An upgrade.
+	winner := ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 3000, DeltaAmount: 1000, TargetUnitAmount: 1500,
+		PriceSnapshot: []byte(`{"who":"winner"}`),
+	}
+	// 2 × 900 = 1800, delta 1800 - 2000 = -200. A downgrade — the opposite MONEY DIRECTION,
+	// so a loser that kept its own basis would not merely settle a different number, it
+	// would call the refund leg instead of the charge leg.
+	loser := ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 1800, DeltaAmount: -200, TargetUnitAmount: 900,
+		PriceSnapshot: []byte(`{"who":"loser"}`),
+	}
+
+	// The winner writes inside a transaction it holds open, so the loser's UPDATE has a
+	// live row lock to block on.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE order_exchanges
+		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6,
+		    target_unit_amount=$7, target_slot_id=$8, target_price_snapshot=$9, basis_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL`,
+		ex.OrganizerID, ex.ID, winner.TargetHoldID, winner.ReplacementReservationID,
+		winner.TargetTotal, winner.DeltaAmount, winner.TargetUnitAmount, winner.TargetSlotID,
+		winner.PriceSnapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	type outcome struct {
+		basis   ExchangeBasis
+		written bool
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		got, written, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, loser)
+		done <- outcome{got, written, err}
+	}()
+
+	// The loser must actually be BLOCKED, not merely slower. Without this the test could
+	// pass on a race it never created — the goroutine finishing after the commit for
+	// timing reasons, proving nothing about the lock. pg_stat_activity is the only place
+	// that fact is observable.
+	waitForBlockedWriter(t, db, ctx)
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the losing writer never returned after the winner committed")
+	}
+	if got.err != nil {
+		t.Fatalf("the loser must resolve, not error: %v", got.err)
+	}
+	if got.written {
+		t.Fatal("the loser reported written=true; only the writer that set basis_at may claim it")
+	}
+	if got.basis.TargetTotal != winner.TargetTotal || got.basis.DeltaAmount != winner.DeltaAmount ||
+		got.basis.TargetUnitAmount != winner.TargetUnitAmount {
+		t.Fatalf("the loser continued on money that was never persisted: got total=%d delta=%d unit=%d, "+
+			"want the winner's %d/%d/%d. Settling its own basis charges an amount the row does not record",
+			got.basis.TargetTotal, got.basis.DeltaAmount, got.basis.TargetUnitAmount,
+			winner.TargetTotal, winner.DeltaAmount, winner.TargetUnitAmount)
+	}
+	if got.basis.TargetHoldID != winner.TargetHoldID ||
+		got.basis.ReplacementReservationID != winner.ReplacementReservationID ||
+		got.basis.TargetSlotID != winner.TargetSlotID {
+		t.Fatalf("the loser continued on identities the row does not name: hold=%s reservation=%s slot=%s, "+
+			"want %s/%s/%s. Finalizing a hold nobody recorded strands the claim the money bought",
+			got.basis.TargetHoldID, got.basis.ReplacementReservationID, got.basis.TargetSlotID,
+			winner.TargetHoldID, winner.ReplacementReservationID, winner.TargetSlotID)
+	}
+	// Compared as JSON, not as bytes: the column is `jsonb`, which reparses and reserializes
+	// on the way in, so `{"who":"winner"}` comes back as `{"who": "winner"}`. That is
+	// canonicalization, not drift — and the replacement's own price_resolution_snapshot is
+	// jsonb too (migration 0006), so both sides of the round trip normalize identically.
+	// Asserting bytes here would pin PostgreSQL's spacing, which is not the invariant.
+	assertSameJSON(t, got.basis.PriceSnapshot, winner.PriceSnapshot,
+		"the replacement's provenance must describe the basis the money actually used (ADR-036 §5)")
+}
+
+// The FIRST writer is told it wrote, and reads back exactly what it sent.
+//
+// The companion to the race above: `written` is what tells the handler whether the basis
+// it is holding is its own commitment or somebody else's, and a function that always
+// answered false would satisfy the loser test alone.
+func TestTheWriterOfABasisIsToldItWroteIt(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "exch-basis-writer", 2, 1000)
+	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "x-writer-1", uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 3000, DeltaAmount: 1000, TargetUnitAmount: 1500,
+		PriceSnapshot: []byte(`{"who":"mine"}`),
+	}
+	got, written, err := RecordExchangeBasis(ctx, db, ex.OrganizerID, ex.ID, mine)
+	if err != nil || !written {
+		t.Fatalf("the first writer must report written=true: written=%t err=%v", written, err)
+	}
+	if got.TargetTotal != mine.TargetTotal || got.DeltaAmount != mine.DeltaAmount ||
+		got.TargetUnitAmount != mine.TargetUnitAmount || got.TargetHoldID != mine.TargetHoldID ||
+		got.ReplacementReservationID != mine.ReplacementReservationID ||
+		got.TargetSlotID != mine.TargetSlotID {
+		t.Fatalf("the writer read back a basis that is not what it wrote: %+v vs %+v", got, mine)
+	}
+	assertSameJSON(t, got.PriceSnapshot, mine.PriceSnapshot, "the writer's own snapshot")
+}
+
+// An exchange that does not exist is an ERROR, not a zero basis.
+//
+// The record-or-load shape has a third outcome the two-valued one did not: the UPDATE
+// matches nothing AND the SELECT finds nothing. Returning a zero-valued basis there would
+// hand the handler total=0, delta=0 and a nil hold — a settlement of nothing against a
+// claim that does not exist — and every field would look like an ordinary even exchange.
+func TestRecordExchangeBasisRefusesAnExchangeThatDoesNotExist(t *testing.T) {
+	db, ctx := outboxDB(t)
+	_, written, err := RecordExchangeBasis(ctx, db, uuid.New(), uuid.New(), ExchangeBasis{
+		TargetHoldID: uuid.New(), ReplacementReservationID: uuid.New(), TargetSlotID: uuid.New(),
+		TargetTotal: 1000, DeltaAmount: 0, TargetUnitAmount: 500,
+	})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("err = %v, want sql.ErrNoRows — a missing exchange must not resolve to a zero basis", err)
+	}
+	if written {
+		t.Fatal("written=true for an exchange that does not exist")
+	}
+}
+
+// waitForBlockedWriter blocks until some backend is waiting on a lock, which is the only
+// observable proof that the concurrent writer reached the UPDATE and was stopped by it.
+func waitForBlockedWriter(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND state = 'active'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("no writer ever blocked on the row lock — the race this test needs was never created, " +
+		"so a passing result would prove nothing about concurrency")
+}
+
+// assertSameJSON compares two jsonb payloads by VALUE. The column reserializes on write, so
+// byte equality would assert PostgreSQL's whitespace rather than the snapshot's content.
+func assertSameJSON(t *testing.T, got, want []byte, why string) {
+	t.Helper()
+	var g, w any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Fatalf("stored snapshot is not JSON (%s): %v", got, err)
+	}
+	if err := json.Unmarshal(want, &w); err != nil {
+		t.Fatalf("expected snapshot is not JSON (%s): %v", want, err)
+	}
+	if !reflect.DeepEqual(g, w) {
+		t.Fatalf("price snapshot = %s, want %s — %s", got, want, why)
+	}
 }

@@ -335,27 +335,81 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	return s, true, nil
 }
 
-// RecordExchangeBasis commits what the settlement will be, BEFORE the provider is called.
-// Once-only: a replay reads it back rather than re-deriving, which is what makes a retry
-// after a successful charge and a failed later step settle the same numbers (ai-review F3).
-func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID, basis ExchangeBasis) (bool, error) {
-	result, err := db.ExecContext(ctx, `
+// RecordExchangeBasis commits what the settlement will be, BEFORE the provider is called,
+// and returns the AUTHORITATIVE persisted basis whether or not this caller wrote it.
+//
+// Record-or-load (TKT-167). TKT-158 returned only `recorded bool`, which told a losing
+// writer that its basis was not the money's basis and left it nothing to do but refuse —
+// the handler answered 409. That is safe and it is not recovery: the persisted basis is
+// exactly what a retry needs, and a function that will not hand it back forces every
+// caller to re-derive the thing the row already knows.
+//
+// The returned basis is the row's, always. `written` is true only for the caller whose
+// UPDATE set basis_at, because the handler has to be able to tell its own commitment from
+// somebody else's — the two are indistinguishable in the values alone.
+//
+// The fallback SELECT is correct under concurrency and not merely a retry: a losing UPDATE
+// BLOCKS on the winner's row lock, so by the time it reports zero rows the winner has
+// committed and the subsequent read sees it. There is no window in which the update
+// matches nothing because the winner is still in flight.
+func RecordExchangeBasis(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID, basis ExchangeBasis) (ExchangeBasis, bool, error) {
+	var out ExchangeBasis
+	err := db.QueryRowContext(ctx, `
 		UPDATE order_exchanges
 		SET target_hold_id=$3, replacement_reservation_id=$4, target_total=$5, delta_amount=$6,
 		    target_unit_amount=$7, target_slot_id=$8, target_price_snapshot=$9, basis_at=now()
-		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL`,
+		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NULL
+		RETURNING target_hold_id,replacement_reservation_id,target_total,delta_amount,
+		          target_unit_amount,target_slot_id,target_price_snapshot`,
 		org, exchangeID, basis.TargetHoldID, basis.ReplacementReservationID, basis.TargetTotal,
-		basis.DeltaAmount, basis.TargetUnitAmount, basis.TargetSlotID, basis.PriceSnapshot)
-	if err != nil {
-		return false, err
+		basis.DeltaAmount, basis.TargetUnitAmount, basis.TargetSlotID, basis.PriceSnapshot).
+		Scan(&out.TargetHoldID, &out.ReplacementReservationID, &out.TargetTotal, &out.DeltaAmount,
+			&out.TargetUnitAmount, &out.TargetSlotID, &out.PriceSnapshot)
+	if err == nil {
+		return out, true, nil
 	}
-	n, err := result.RowsAffected()
-	// false means another writer got there first. The caller must NOT continue with its
-	// own local basis — the persisted one is the money's basis, and the two can differ
-	// (ai-review pass 3). Reloading and resuming from the authoritative row is TKT-167's;
-	// refusing to proceed on an unpersisted basis is this ticket's, because continuing
-	// silently is a defect in the code this ticket wrote.
-	return n == 1, err
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ExchangeBasis{}, false, err
+	}
+	// Zero rows means either a basis is already there or the exchange does not exist, and
+	// those must not answer alike: a missing row returning a zero-valued basis would hand
+	// the caller total 0, delta 0 and a nil hold — a settlement of nothing that reads as an
+	// ordinary even exchange. sql.ErrNoRows propagates instead.
+	loaded, found, err := loadExchangeBasis(ctx, db, org, exchangeID)
+	if err != nil {
+		return ExchangeBasis{}, false, err
+	}
+	if !found {
+		return ExchangeBasis{}, false, sql.ErrNoRows
+	}
+	return loaded, false, nil
+}
+
+// loadExchangeBasis reads a persisted basis. `found` is false when the exchange has no row
+// or the row has no basis yet — the caller decides which of those it can tolerate.
+func loadExchangeBasis(ctx context.Context, q rowQuerier, org, exchangeID uuid.UUID) (ExchangeBasis, bool, error) {
+	var out ExchangeBasis
+	var hold, reservation, slot uuid.NullUUID
+	var total, delta, unit sql.NullInt64
+	err := q.QueryRowContext(ctx, `
+		SELECT target_hold_id,replacement_reservation_id,target_total,delta_amount,
+		       target_unit_amount,target_slot_id,target_price_snapshot
+		FROM order_exchanges WHERE organizer_id=$1 AND id=$2 AND basis_at IS NOT NULL`,
+		org, exchangeID).
+		Scan(&hold, &reservation, &total, &delta, &unit, &slot, &out.PriceSnapshot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExchangeBasis{}, false, nil
+	}
+	if err != nil {
+		return ExchangeBasis{}, false, err
+	}
+	// Every column is NOT NULL together with basis_at — migration 0010's
+	// order_exchanges_basis_shape CHECK is what makes that true, so this reads them
+	// through Null* types only because the columns are nullable in the schema, not
+	// because a half-populated basis is representable.
+	out.TargetHoldID, out.ReplacementReservationID, out.TargetSlotID = hold.UUID, reservation.UUID, slot.UUID
+	out.TargetTotal, out.DeltaAmount, out.TargetUnitAmount = total.Int64, delta.Int64, unit.Int64
+	return out, true, nil
 }
 
 // ExchangeBasis is everything the settlement and the replacement are built from, committed
