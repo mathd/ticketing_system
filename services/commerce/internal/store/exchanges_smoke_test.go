@@ -1123,3 +1123,54 @@ func TestABindCollidingOnTheExchangeIdentityReportsConflict(t *testing.T) {
 			"added to this table reinstates the defect until someone remembers to enumerate it")
 	}
 }
+
+// The mapping is WIRED INTO BindOrderExchange, not merely correct in isolation
+// (TKT-167, ai-review pass 4 [medium]).
+//
+// The test above proves mapBindInsertError classifies each constraint correctly. It stays
+// GREEN if line 286's `return Exchange{}, mapBindInsertError(err)` becomes
+// `return Exchange{}, err` — verified by running that mutation — because it calls the helper
+// itself and never drives a losing bind. That is this repo's standing distinction between
+// breaking a mechanism and removing it from the place that uses it (AGENTS.md, TKT-202): a
+// guard that tests the mechanism and not the wiring catches the wrong edit.
+//
+// So this one goes through BindOrderExchange and asserts on what IT returns.
+//
+// The losing INSERT is reached without a goroutine race by exploiting the lookup's scope: it
+// keys on ExchangeID(organizer, key), so seeding a row under a DIFFERENT id that still
+// collides on `UNIQUE (organizer_id, idempotency_key)` leaves the lookup finding nothing and
+// the INSERT colliding — the same code path a real concurrent loser takes, made
+// deterministic. A goroutine race would test the scheduler; this tests the boundary.
+func TestBindOrderExchangeReturnsConflictForAnIdentityCollision(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "bind-wiring", 2, 1000)
+
+	// A row holding this organizer+key under an unrelated id and an unrelated source order.
+	// The lookup (which keys on the DERIVED id) misses it; the INSERT cannot.
+	other, _ := seedCompleted(t, db, ctx, "bind-wiring-other", 2, 1000)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE reservations SET organizer_id=$1 WHERE id=$2`, c.OrganizerID, other.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,
+		                            idempotency_key,request_fingerprint,quantity,source_total,
+		                            source_gross_total,currency,actor,reason)
+		VALUES($1,$2,$3,$4,$5,'squatter',2,2000,2000,'EUR','a','r')`,
+		c.OrganizerID, uuid.New(), other.OrderID, uuid.New(), "wiring-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := BindOrderExchange(ctx, db, exchangeRequest(c, "wiring-key", uuid.New()))
+	if err == nil {
+		t.Fatal("the identity collision did not surface — this fixture no longer reaches the INSERT")
+	}
+	if !errors.Is(err, ErrExchangeConflict) {
+		t.Fatalf("BindOrderExchange returned %v, want ErrExchangeConflict.\n\n"+
+			"This is the WIRING assertion: the handler releases the target hold on every bind "+
+			"error except ErrExchangeConflict, and the hold is keyed on the very identity that "+
+			"just collided — so any other answer here makes a losing request release a claim "+
+			"another request may already have finalized and charged against. Returning the raw "+
+			"INSERT error, or dropping the mapBindInsertError call, both land here.", err)
+	}
+}
