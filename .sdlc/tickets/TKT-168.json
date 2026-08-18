@@ -122,10 +122,17 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**Payments exposes no provider-neutral amount evidence.**\n\nNo blockers. TKT-158 and TKT-167 both benefit from it; neither blocks it.\n\n**Why this one matters beyond its own scope** — its ticket text carries the tell: *\"changing the\ncharge from the computed delta to `1` leaves every assertion green.\"* That is the vacuous-assertion\nclass this codebase keeps paying for (TKT-241 existed entirely for it; TKT-248 shipped three more\ninstances). Closing it gives the exchange and refund paths an oracle they currently lack.\n\nBest claimed **after TKT-167**, so the evidence it adds describes fixed behaviour rather than\npinning the defect.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-168\n\n**Backend:** local tracker (`config.tracker: \"local\"`), state on `sdlc-state`.\n**Mode:** running gateless per `config.gates: \"autonomous\"` — Gates 2, 3 and 4 are taken by\nagent judgement; Gate 1 (this ticket's promotion to Ready) was the owner's, on 2026-08-17.\n\n**Selection reason:** the owner asked for TKT-168 by name. It sits in `Ready` with all eight DoR\nitems `met` or `deferred`, none `open`, and its only link is `found-in: TKT-158` — not a blocker.\nIts recommended predecessor TKT-167 is **merged on `main`** (`60449fec`), so the evidence this\nticket adds will describe fixed behaviour rather than pin a defect, exactly as the Gate 1 note\nasked.\n\n**Verified before claiming, not assumed:**\n- board status is `Ready` and `labels` is empty (read from `GET /board`, not from the request);\n- zero open blockers — no `blocks`/`blocked-by` links exist on the ticket;\n- `origin/main` is at `60449fec` (TKT-167 merged), and the branch is cut from it.\n\n**Branch:** `TKT-168-provider-neutral-amount-evidence` off `origin/main`.\n\n**Risk verdict — `risk:low` NOT claimed.** Stated explicitly rather than left to silence. Two of\nthe label's carve-outs apply directly: this is a **money path** (captured amounts and refund-leg\namounts are the subject, not a side effect), and it amends a **binding ADR** (ADR-032's\nprovider-neutrality rule), which is a decision rather than a mechanical change. The plan gate is\nwhere a wrong call about what may cross the neutrality boundary gets reversed, so it runs.\n\n**Early read of the code, so Planning starts from the tree and not from the ticket text.** The\nticket says the evidence \"does not exist to assert against\"; that is true of the *read surface*,\nnot of the *stored state*. `payment_operations` already persists `captured_amount` and\n`request_currency` (`services/payments/internal/store/store.go:472`, read by `LookupOperation` at\n:500), and `payment_refund_legs` already persists a leg's `amount`, `currency` and `status` keyed by\n`(organizer, source_idempotency_key, refund_idempotency_key)`\n(`services/payments/internal/store/refund_legs.go`). So the work is **exposing** durable state\nunder an explicit neutrality decision, not recording anything new — which matches the ticket's own\n\"no change to what the journal records\" constraint. Whether the captured amount rides on the\nexisting `OperationState` or on a separate evidence read is the Planning-time call the DoR\ndeferred.\n"
     }
   ],
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null
 }
