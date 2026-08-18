@@ -83,10 +83,23 @@ type geometrySeat struct {
 // SeatAdjacency is one seat and its immediate neighbours in its row, derived from the
 // published geometry's `position` order. A nil neighbour is a row end — a real answer,
 // not missing data.
+//
+// RowKey and Position are the same geometry expressed the other way, kept for
+// best-available selection (TKT-81). Until this ticket they were computed here and
+// discarded three lines later: the derivation sorts a row by position and emits only the
+// resulting edges. Neighbour edges answer "would this selection strand anything"; they
+// cannot answer "find four seats together", because a linked list has no head to index
+// and no order to sort by.
+//
+// RowKey is the row's catalog UUID, not its label. Labels are not unique across sections
+// ("row A" exists in every one of them), so a label-keyed projection would merge rows that
+// never touch and offer runs spanning a gangway.
 type SeatAdjacency struct {
 	SeatIdentity string
 	Left         *string
 	Right        *string
+	RowKey       string
+	Position     int32
 }
 
 type CatalogResolver struct {
@@ -228,6 +241,7 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 		} `json:"map"`
 		Sections []struct {
 			Rows []struct {
+				ID    uuid.UUID      `json:"id"`
 				Seats []geometrySeat `json:"seats"`
 			} `json:"rows"`
 		} `json:"sections"`
@@ -297,8 +311,23 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 				seen[id] = struct{}{}
 				identities = append(identities, id)
 			}
+			// A row with no id cannot be keyed, and keying it on anything else (its
+			// label, its index) would merge rows across sections or renumber them on the
+			// next publication. Deterministically unusable, so terminate rather than
+			// project a geometry whose rows cannot be told apart (TKT-81).
+			if row.ID == uuid.Nil {
+				return nil, fmt.Errorf("%w: seat map %s has a row with no id", ErrGeometryInvalid, seatMapID)
+			}
+			rowKey := row.ID.String()
 			for i, id := range identities {
-				adj := SeatAdjacency{SeatIdentity: id}
+				// Position is the seat's rank WITHIN THIS ROW after the sort above, not
+				// catalog's raw position value. Catalog positions are unique and ascending
+				// but need not be contiguous — a row authored 10, 20, 30 is legal — and the
+				// selection query groups runs by consecutive positions. Re-basing to 1..n
+				// here is what makes "adjacent in the row" and "consecutive positions" the
+				// same statement; carrying the raw value through would make three
+				// neighbouring seats read as three separate one-seat runs.
+				adj := SeatAdjacency{SeatIdentity: id, RowKey: rowKey, Position: int32(i + 1)}
 				if i > 0 {
 					left := identities[i-1]
 					adj.Left = &left

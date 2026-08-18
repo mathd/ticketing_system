@@ -240,7 +240,13 @@ forge candidates at will.
   schema fork must be rolled out in a fixed order across three services.
 - **Bounded.** This ADR decides *arbitration*, not selection. Best-available seating
   (TKT-81) will need adjacency too and can read the same projection, but its relaxation
-  rules are its own decision.
+  rules are its own decision. **Settled in [ADR-061](ADR-061-best-available-seat-selection.md)**
+  (TKT-81), which found the projection necessary but not sufficient: the neighbour edges answer
+  arbitration's question and cannot answer selection's, because a linked list has no head to
+  index and no order to sort by. It therefore keeps the row and position this ADR's derivation
+  already computed and discarded, and — consequentially for the rules above — it made the
+  adjacency upsert asymmetric, so a correction wave can add ordering metadata to an existing
+  pool while the arbitration edges stay immutable.
 - **Not covered.** Rules other than single-seat orphans — price-tier adjacency,
   accessible-seat pairing, party splitting across rows. Each would need its own data and
   most would need more than left/right neighbours.

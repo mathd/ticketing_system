@@ -114,6 +114,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// The reseller-bearing hold, behind /internal/ so the edge refuses it (TKT-246).
 	r.Post("/internal/holds", s.internalOnly(s.createInternalHold))
 	r.Post("/holds/seats", s.createSeatHold)
+	r.Post("/holds/seats/best-available", s.createBestAvailableSeatHold)
 	r.Get("/slots/{id}/availability", s.availability)
 	r.Get("/slots/{id}/seat-occupancy", s.seatOccupancy)
 	r.Post("/internal/holds/{id}/confirm", s.internalOnly(s.transition("confirmed")))
@@ -363,6 +364,45 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	sh, err := s.st.CreateSeatHold(ctx, in.OrganizerID, in.SlotID, in.TicketTypeID, in.SeatIdentities, in.UnitAmount, in.Currency, key)
+	s.finishSeatHold(w, r, in.OrganizerID, sh, err)
+}
+
+// createBestAvailableSeatHold selects a contiguous run of seat_count seats and holds it
+// (TKT-81). Everything after the store call is the named-seat path's, verbatim via
+// finishSeatHold: the same hold-then-pin obligation, the same compensation on a
+// deterministic pin rejection, the same 503-keep-the-hold on a transient one. That sharing
+// is deliberate — the pin rules are ADR-031's, not this endpoint's, and a second copy is
+// how the two would drift apart the first time one of them was fixed.
+func (s *Server) createBestAvailableSeatHold(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		OrganizerID  uuid.UUID `json:"organizer_id"`
+		SlotID       uuid.UUID `json:"slot_id"`
+		SeatCount    int32     `json:"seat_count"`
+		TicketTypeID uuid.UUID `json:"ticket_type_id"`
+		UnitAmount   int64     `json:"unit_amount"`
+		Currency     string    `json:"currency"`
+	}
+	err := httpx.DecodeJSON(w, r, &in, 1<<20)
+	if err != nil || in.OrganizerID == uuid.Nil || in.SlotID == uuid.Nil ||
+		in.SeatCount < 1 || in.SeatCount > store.MaxSeatsPerHold || in.UnitAmount < 0 ||
+		in.TicketTypeID == uuid.Nil || in.Currency != "EUR" {
+		write(w, 400, map[string]string{"error": "invalid best-available seat hold request"})
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 200 {
+		write(w, 400, map[string]string{"error": "Idempotency-Key required"})
+		return
+	}
+	ctx := r.Context()
+	sh, err := s.st.CreateBestAvailableSeatHold(ctx, in.OrganizerID, in.SlotID, in.TicketTypeID, in.SeatCount, in.UnitAmount, in.Currency, key)
+	s.finishSeatHold(w, r, in.OrganizerID, sh, err)
+}
+
+// finishSeatHold maps a seated-hold outcome to a response and discharges the post-commit
+// pin obligation (ADR-031). Shared by both seated entry points.
+func (s *Server) finishSeatHold(w http.ResponseWriter, r *http.Request, org uuid.UUID, sh store.SeatHold, err error) {
+	ctx := r.Context()
 	if err != nil {
 		// A contended seat set names the seats that actually lost (TKT-173). The
 		// caller is a buyer's reservation, and re-rendering a picker needs the
@@ -388,21 +428,36 @@ func (s *Server) createSeatHold(w http.ResponseWriter, r *http.Request) {
 			write(w, 409, map[string]string{"error": err.Error(), "code": "seat_taken"})
 			return
 		}
+		// The two best-available refusals stay distinct all the way to the wire (TKT-81).
+		// Neither carries seat_identities: nothing was chosen, so there is nothing to name,
+		// and inventing a list here would be a third meaning for a field that already
+		// carries two opposite ones (requested-and-lost vs free-and-unrequested).
+		//
+		// Unsupported is checked first only for readability; the two are disjoint by
+		// construction, since an unsupported pool refuses before selection runs.
+		if errors.Is(err, store.ErrBestAvailableUnsupported) {
+			write(w, 409, map[string]string{"error": err.Error(), "code": "best_available_unsupported"})
+			return
+		}
+		if errors.Is(err, store.ErrBestAvailableUnavailable) {
+			write(w, 409, map[string]string{"error": err.Error(), "code": "best_available_unavailable"})
+			return
+		}
 		problem(w, err)
 		return
 	}
 	// Clean up pins left by holds this transaction swept-expired (best-effort — a leaked
 	// pin fails safe, blocking a now-safe edit, never orphaning; ADR-031).
 	for _, ref := range sh.ExpiredPins {
-		_ = s.pinner.UnpinSeats(ctx, in.OrganizerID, ref.SeatMapID, ref.Seats, ref.PinnedBy)
+		_ = s.pinner.UnpinSeats(ctx, org, ref.SeatMapID, ref.Seats, ref.PinnedBy)
 	}
 	// Hold-then-pin (+ replay-re-pin): always pin before returning success, replay too.
-	if err := s.pinner.PinSeats(ctx, in.OrganizerID, sh.SeatMapID, sh.Seats, sh.PinnedBy); err != nil {
+	if err := s.pinner.PinSeats(ctx, org, sh.SeatMapID, sh.Seats, sh.PinnedBy); err != nil {
 		if errors.Is(err, consumer.ErrSeatPinRejected) {
 			// Deterministic: a named seat is not in the current published map. Retrying
 			// cannot help, and the batch pin is all-or-nothing so nothing landed — release
 			// the invalid hold and report conflict.
-			_, _ = s.st.Transition(ctx, in.OrganizerID, sh.Claim.ID, "released")
+			_, _ = s.st.Transition(ctx, org, sh.Claim.ID, "released")
 			write(w, 409, map[string]string{"error": "one or more seats are not available in the current seat map", "code": "seat_unavailable"})
 			return
 		}

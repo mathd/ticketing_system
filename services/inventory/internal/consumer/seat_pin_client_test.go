@@ -251,7 +251,8 @@ func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
 	id := uuid.New()
 	// Deliberately out of order, and with position GAPS: gaps are spacing, not missing
 	// seats, so 10/20/40 is still three adjacent seats.
-	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"rows":[{"seats":[
+	row := uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"rows":[{"id":"` + row.String() + `","seats":[
 		{"seat_identity":"A/1/3","position":40},
 		{"seat_identity":"A/1/1","position":10},
 		{"seat_identity":"A/1/2","position":20}]}]}]}`
@@ -276,13 +277,73 @@ func TestSeatMapAdjacencyDerivesNeighboursFromPosition(t *testing.T) {
 	if got[2].SeatIdentity != "A/1/3" || got[2].Right != nil || *got[2].Left != "A/1/2" {
 		t.Fatalf("last seat: %+v", got[2])
 	}
+	// The ordering half (TKT-81), derived from the same sort and pinned here for the same
+	// reason: this is the only place the geometry exists, so it is the only place fidelity
+	// can be established.
+	//
+	// Positions are RE-BASED to 1..n, and this fixture is why. Catalog's raw positions here
+	// are 10, 20 and 40 — legal, since positions must ascend and be unique but need not be
+	// contiguous ("gaps are spacing, not missing seats", above). Carrying those through
+	// would make the selection query, which groups runs by CONSECUTIVE positions, read this
+	// row as three separate one-seat runs and never offer the party of three that is
+	// plainly sitting there.
+	for i, want := range []int32{1, 2, 3} {
+		if got[i].RowKey != row.String() {
+			t.Fatalf("seat %d row key = %q want %q — the row's catalog id, not its label", i, got[i].RowKey, row)
+		}
+		if got[i].Position != want {
+			t.Fatalf("seat %d position = %d want %d — positions are re-based to 1..n so adjacency and consecutiveness agree", i, got[i].Position, want)
+		}
+	}
+}
+
+// TestSeatMapAdjacencyRefusesARowWithNoId: a row that cannot be keyed cannot be projected
+// (TKT-81). Keying on anything else available — the label, the index in the response —
+// merges rows across sections ("row A" exists in every one) or renumbers them on the next
+// publication, and either produces a projection that offers runs spanning a gangway.
+// Deterministically unusable, so it terminates rather than parking for ever.
+func TestSeatMapAdjacencyRefusesARowWithNoId(t *testing.T) {
+	id := uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[{"rows":[{"seats":[
+		{"seat_identity":"A/1/1","position":1},
+		{"seat_identity":"A/1/2","position":2}]}]}]}`
+
+	_, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if !errors.Is(err, ErrGeometryInvalid) {
+		t.Fatalf("err = %v want ErrGeometryInvalid — an unkeyable row must terminate, not retry", err)
+	}
+}
+
+// TestSeatMapAdjacencyKeepsRowsDistinctWhenLabelsRepeat is the reason RowKey is the row's
+// id. Two sections each hold a "row A" at the same positions; a label-keyed or
+// position-keyed projection collapses them into one row, and best-available then offers a
+// party seats on both sides of a gangway and calls them adjacent.
+func TestSeatMapAdjacencyKeepsRowsDistinctWhenLabelsRepeat(t *testing.T) {
+	id, r1, r2 := uuid.New(), uuid.New(), uuid.New()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+		{"rows":[{"id":"` + r1.String() + `","label":"A","seats":[
+			{"seat_identity":"L/A/1","position":1},{"seat_identity":"L/A/2","position":2}]}]},
+		{"rows":[{"id":"` + r2.String() + `","label":"A","seats":[
+			{"seat_identity":"R/A/1","position":1},{"seat_identity":"R/A/2","position":2}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]struct{}{}
+	for _, a := range got {
+		keys[a.RowKey] = struct{}{}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("distinct row keys = %d want 2 — two sections' \"row A\" are different rows", len(keys))
+	}
 }
 
 func TestSeatMapAdjacencyNeverConnectsRowsOrSections(t *testing.T) {
 	id := uuid.New()
 	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
-		{"rows":[{"seats":[{"seat_identity":"A/1/1","position":1}]}]},
-		{"rows":[{"seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
+		{"rows":[{"id":"` + uuid.New().String() + `","seats":[{"seat_identity":"A/1/1","position":1}]}]},
+		{"rows":[{"id":"` + uuid.New().String() + `","seats":[{"seat_identity":"B/1/1","position":1}]}]}]}`
 
 	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
 	if err != nil {

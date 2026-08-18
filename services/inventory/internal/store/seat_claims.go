@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -207,6 +208,56 @@ func validateAdjacency(rows []SeatAdjacencyRow) error {
 			}
 		}
 	}
+	return validateAdjacencyOrder(rows)
+}
+
+// validateAdjacencyOrder checks the ordering half of a projection (TKT-81), on the same
+// terms as the edges above: internal consistency at the moment it is written, which is the
+// only thing this layer can establish. Fidelity to catalog's geometry is settled where the
+// ordering is DERIVED (SeatMapAdjacency), because that is the only place the geometry
+// exists -- re-checking it here would mean re-deriving it from data the store does not
+// have (ADR-041's own statement of this limit, applied to the new columns).
+//
+// Three properties, each unsound rather than merely untidy if violated:
+//
+//   - All or none. A projection where some seats carry ordering and others do not makes
+//     selection silently partial: the seats with no metadata are invisible to it, so a row
+//     reads as shorter than it is and runs that exist are never offered.
+//   - Both halves together. A position with no row does not say what it is a position in.
+//     (The database CHECK says this too; a projection is rejected before it reaches SQL so
+//     the error names the seat rather than a constraint.)
+//   - Unique position within a row. The ordering is only deterministic if it is total, and
+//     a selection that returns an arbitrary order among ties passes every test written on
+//     a fixture that has none.
+func validateAdjacencyOrder(rows []SeatAdjacencyRow) error {
+	ordered := 0
+	seen := map[string]map[int32]string{}
+	for _, r := range rows {
+		if r.RowKey == nil && r.Position == nil {
+			continue
+		}
+		if r.RowKey == nil || r.Position == nil {
+			return fmt.Errorf("%w: seat %q carries half an ordering (row=%v position=%v)",
+				ErrSeatProjectionIncomplete, r.SeatIdentity, r.RowKey, r.Position)
+		}
+		if strings.TrimSpace(*r.RowKey) == "" || *r.Position <= 0 {
+			return fmt.Errorf("%w: seat %q has an unusable ordering (row=%q position=%d)",
+				ErrSeatProjectionIncomplete, r.SeatIdentity, *r.RowKey, *r.Position)
+		}
+		ordered++
+		if seen[*r.RowKey] == nil {
+			seen[*r.RowKey] = map[int32]string{}
+		}
+		if other, dup := seen[*r.RowKey][*r.Position]; dup {
+			return fmt.Errorf("%w: seats %q and %q share position %d in row %q",
+				ErrSeatProjectionIncomplete, other, r.SeatIdentity, *r.Position, *r.RowKey)
+		}
+		seen[*r.RowKey][*r.Position] = r.SeatIdentity
+	}
+	if ordered != 0 && ordered != len(rows) {
+		return fmt.Errorf("%w: %d of %d seats carry ordering metadata — a partly ordered projection hides the rows it omits",
+			ErrSeatProjectionIncomplete, ordered, len(rows))
+	}
 	return nil
 }
 
@@ -320,10 +371,24 @@ func seatFingerprint(org, slot, ticketType uuid.UUID, seats []string, unitAmount
 
 // SeatAdjacencyRow is one seat's immediate neighbours in its row, as projected from the
 // pool's exact published seat-map version (ADR-041). A nil neighbour is a row end.
+//
+// RowKey and Position are the ORDERING half, added for best-available selection
+// (TKT-81 / ADR-061). The neighbour edges answer "given these seats, is anything
+// stranded?"; they cannot answer "find me four seats together", because a linked list has
+// no head to index and no order to sort by. Catalog's geometry carries both facts and
+// inventory already reads them -- SeatMapAdjacency sorts each row by position and then
+// discards the row and the position, keeping only the edges. These two fields keep them.
+//
+// Both nil means this projection predates ADR-061. That is a distinguishable state rather
+// than a gap, in the same way orphan_prevention_enabled distinguishes a rule-off pool from
+// one whose projection failed to load: best-available refuses such a pool with its own
+// code, and the repair is a re-provision, not a smaller party.
 type SeatAdjacencyRow struct {
 	SeatIdentity string
 	Left         *string
 	Right        *string
+	RowKey       *string
+	Position     *int32
 }
 
 // ProvisionSeated records a seated pool for a slot (catalog schema-4/5 seated
@@ -403,10 +468,29 @@ func (p *Postgres) ProvisionSeated(ctx context.Context, eventID, slotID, organiz
 			}
 		}
 	}
+	// The conflict clause is ASYMMETRIC, and the asymmetry is the point (TKT-81).
+	//
+	// DO NOTHING is right for a replay and wrong for an upgrade -- the same distinction
+	// the pool row above has to make, and invisible here for the same reason: both arrive
+	// as "the row already exists". A pool provisioned before ADR-061 carries adjacency
+	// edges and no ordering metadata, and the only thing that can supply that metadata is
+	// a re-provision carrying real catalog geometry. Under DO NOTHING that re-provision is
+	// a silent no-op on every row, so the pool stays unselectable for ever while the
+	// correction wave reports success.
+	//
+	// So the ordering columns take EXCLUDED, and the neighbour edges deliberately do not.
+	// The edges are the substrate ADR-041 arbitrates on and fail-closes against; a live
+	// claim was decided against the edges as they stood, and a later publication that
+	// rewrote them would retroactively change what that decision meant. The ordering
+	// columns are additive, read only by selection, and carry no such history. Changing
+	// this line to update the edges too is not a cleanup -- it is a different decision
+	// about immutability, and belongs in an ADR.
 	for _, a := range adjacency {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity)
-			VALUES($1,$2,$3,$4) ON CONFLICT(pool_id,seat_identity) DO NOTHING`,
-			slotID, a.SeatIdentity, a.Left, a.Right); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO seat_claim_adjacency(pool_id,seat_identity,left_identity,right_identity,row_key,position)
+			VALUES($1,$2,$3,$4,$5,$6)
+			ON CONFLICT(pool_id,seat_identity) DO UPDATE
+			SET row_key = EXCLUDED.row_key, position = EXCLUDED.position`,
+			slotID, a.SeatIdentity, a.Left, a.Right, a.RowKey, a.Position); err != nil {
 			return err
 		}
 	}
@@ -1045,4 +1129,465 @@ func (p *Postgres) SeatPinRef(ctx context.Context, org, claimID uuid.UUID) (PinR
 		return PinRef{}, false, nil
 	}
 	return PinRef{SeatMapID: seatMapID.UUID, Seats: seats, PinnedBy: pinnedBy(claimID)}, true, nil
+}
+
+// MaxBestAvailableScan bounds how many projected seats one best-available request reads
+// before giving up (TKT-81 / ADR-061).
+//
+// The cap exists because the scan runs under the pool row lock that serialises every
+// claimant on the performance, and the expensive case is not the exotic one: once a show
+// is nearly sold out, EVERY request is a request that finds no run, and that is exactly
+// when contention peaks. An uncapped scan is O(map) on the platform's hottest lock, which
+// is the cost ADR-041 rejected when it rewrote orphanedSeatsQuery for the same reason.
+//
+// 400 = 8x MaxSeatsPerHold. Wide enough that the largest legal party still has real room
+// to find a run, and wide enough that a request is never capped before exhausting the row
+// it started in on any realistic house. It is a constant rather than a tuning knob because
+// a per-pool value would be a promise about latency this system cannot keep.
+//
+// What it buys is bounded work; what it costs is honesty about the semantics. Best
+// available means "the first eligible run within the first MaxBestAvailableScan seats in
+// projected order", not "the best run in the house". That is stated here, in ADR-061, and
+// in the OpenAPI description, because a caller who believes the second will read a refusal
+// as a sellout.
+const MaxBestAvailableScan = 400
+
+// maxBestAvailableScanSQL is MaxBestAvailableScan as it appears INSIDE bestAvailableRunQuery.
+// The two are pinned equal by TestBestAvailableScanCapConstantsAgree — a Go const cannot be
+// interpolated into another const, and a silent divergence would make the shipped bound
+// differ from the documented one with nothing to notice.
+const maxBestAvailableScanSQL = "LIMIT 400"
+
+var (
+	// ErrBestAvailableUnavailable reports that this pool cannot seat a party of N right
+	// now: no free run that long within the scanned window. RETRYABLE, and a smaller
+	// party may well succeed — the caller should offer fewer seats, not report a sellout.
+	ErrBestAvailableUnavailable = errors.New("no contiguous run of that size is available")
+	// ErrBestAvailableUnsupported reports that this pool has no ordering projection, so
+	// best-available cannot be answered here AT ALL. Deterministic: it will never succeed,
+	// for any N, until the pool is re-provisioned with ADR-061 geometry.
+	//
+	// Distinct from ErrBestAvailableUnavailable on purpose, and the distinction is the same
+	// one ADR-041 drew between a rule-off pool and a pool whose projection failed to load:
+	// one is a property of the request, the other is an operational defect, and collapsing
+	// them makes a broken pool look like a sold-out show to everyone who could fix it.
+	ErrBestAvailableUnsupported = errors.New("this slot does not support best-available selection")
+)
+
+// bestAvailableRunQuery finds the first free contiguous run of $3 seats in the pool's
+// projected order, and returns its seat identities in that order.
+//
+// The shape, and why each part is the way it is:
+//
+//   - **`ordered`** reads the projection through (pool_id, row_key, position) — the index
+//     migration 0018 adds — ordered, and LIMITed to $4. The ORDER BY is served by the
+//     index, so the LIMIT terminates the scan rather than sorting the pool and then
+//     discarding: that is the difference between a bounded read and an O(map) read wearing
+//     a bound, and it is why the plan test asserts the absence of a Sort node rather than
+//     merely the presence of an index.
+//   - **`free`** marks each scanned seat as takeable or not under exactly the claim path's
+//     own liveness predicate (released_at IS NULL AND consumingClaims), evaluated after the
+//     caller's sweepExpired — so a seat whose hold has lapsed counts as free here, as it
+//     does everywhere else.
+//   - **`grp`** is the standard gaps-and-islands trick: `position - row_number()` over the
+//     free seats of a row is constant exactly across a maximal run of consecutive
+//     positions. It groups runs without a recursive term, which matters because the
+//     recursive alternative is the linked-list walk this whole design exists to avoid.
+//   - **`run`** keeps only runs long enough, and `windows` slides a window of exactly $3
+//     seats along each of them. A run of 6 offers four windows for a party of 3; the extra
+//     windows are what let the orphan filter reject one without refusing the request.
+//   - **`legal`** drops any window whose placement would strand a seat. A seat is stranded
+//     when it is free, is not in the window, and every neighbour it HAS is either taken or
+//     inside the window. Only the two seats flanking a window can be newly stranded by it —
+//     the same "candidates are the neighbours of the selection" bound ADR-041 established,
+//     which is what keeps this proportional to the window rather than the row. NULL
+//     neighbour means no neighbour, so a row end has one and a one-seat row has none.
+//     Pre-existing orphans are untouched: a seat already isolated fails the "free" test on
+//     at least one side regardless of this window, and refusing on its account would poison
+//     every later claim in the row for ever (ADR-041's "only NEWLY orphaned" rule).
+//   - The final ORDER BY picks the earliest legal window in projected order, and re-emits
+//     its seats in position order so the caller receives a run, not a set.
+//
+// $1 pool, $2 orphan rule on, $3 party size. The scan cap is INTERPOLATED, not bound:
+// it is a compile-time constant, and Postgres folds a LIMIT parameter into the generic
+// plan, which would defeat the ADR-019 plan probe that has to EXPLAIN this exact statement.
+const bestAvailableRunQuery = `
+WITH ordered AS (
+	SELECT a.seat_identity, a.row_key, a.position, a.left_identity, a.right_identity
+	  FROM seat_claim_adjacency a
+	 WHERE a.pool_id = $1 AND a.row_key IS NOT NULL
+	 ORDER BY a.row_key, a.position
+	 LIMIT 400
+),
+taken AS (
+	SELECT cs.seat_identity
+	  FROM claim_seats cs JOIN claims cl ON cl.id = cs.claim_id
+	 WHERE cs.pool_id = $1 AND cs.released_at IS NULL AND ` + consumingClaims + `
+),
+free AS (
+	SELECT o.* FROM ordered o
+	 WHERE NOT EXISTS (SELECT 1 FROM taken t WHERE t.seat_identity = o.seat_identity)
+),
+grp AS (
+	SELECT f.*, f.position - row_number() OVER (PARTITION BY f.row_key ORDER BY f.position) AS island
+	  FROM free f
+),
+windows AS (
+	SELECT g.row_key, g.position AS start_position,
+	       array_agg(g2.seat_identity ORDER BY g2.position) AS seats,
+	       min(g2.position) AS lo, max(g2.position) AS hi
+	  FROM grp g
+	  JOIN grp g2 ON g2.row_key = g.row_key AND g2.island = g.island
+	              AND g2.position >= g.position AND g2.position < g.position + $3
+	 GROUP BY g.row_key, g.island, g.position
+	HAVING count(*) = $3
+),
+legal AS (
+	SELECT w.* FROM windows w
+	 WHERE NOT $2 OR NOT EXISTS (
+		-- The only seats this window can newly strand are the two flanking it: a seat
+		-- becomes isolated only when one of its own neighbours is taken now (ADR-041).
+		-- n is such a flank (it comes from grp, so it is FREE by construction), and it
+		-- is stranded when its OTHER side is not free either -- position lo-2 for the left
+		-- flank, hi+2 for the right. That side is unavailable when no FREE seat sits there,
+		-- which covers both "taken" and "row ends here". A seat with no edges at all is a
+		-- one-seat row and is never strandable, which is the NOT(both NULL) guard.
+		SELECT 1 FROM grp n
+		 WHERE n.row_key = w.row_key
+		   AND n.position IN (w.lo - 1, w.hi + 1)
+		   AND NOT (n.left_identity IS NULL AND n.right_identity IS NULL)
+		   AND NOT EXISTS (
+			SELECT 1 FROM grp o
+			 WHERE o.row_key = n.row_key
+			   AND o.position = CASE WHEN n.position < w.lo THEN n.position - 1 ELSE n.position + 1 END
+		   )
+	   )
+),
+chosen AS (
+	SELECT row_key, start_position, seats FROM legal ORDER BY row_key, start_position LIMIT 1
+)
+-- Unnested back into rows rather than returned as text[]: pgx's database/sql path has no
+-- []string scanner, and adding an array driver for one column is a dependency this does not
+-- need. WITH ORDINALITY preserves the array's order, which IS the run's order.
+SELECT s.seat FROM chosen c, unnest(c.seats) WITH ORDINALITY AS s(seat, ord) ORDER BY s.ord`
+
+// bestAvailableFingerprint binds an idempotency key to the INTENT of a best-available
+// request rather than to its outcome (TKT-81).
+//
+// This is the one structural difference from seatFingerprint, and it is forced: a
+// best-available request does not carry seats, so there is nothing outcome-shaped to hash
+// at the moment the key must be resolved. Hashing the party size instead means a retry
+// under the same key is recognised as the same request, replays the ORIGINAL claim, and
+// re-reads the seats it already selected from claim_seats -- rather than running selection
+// a second time and handing out a second run under a key the caller believes names one
+// hold.
+//
+// The "best:" prefix is not decoration. Without a mode discriminator a named-seat request
+// and a best-available request under one key hash over different tuples that could
+// coincide, and one would replay the other's claim; with it, they collide as
+// ErrIdempotency, which is the correct answer to reusing a spent key for a different kind
+// of request.
+func bestAvailableFingerprint(org, slot, ticketType uuid.UUID, count int32, unitAmount int64, currency string) string {
+	s := fmt.Sprintf("best:%s:%s:%s:%d:%d:%s", org, slot, ticketType, count, unitAmount, currency)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
+}
+
+// claimedSeats reads back the seats a claim holds, in projected order where the projection
+// has one and by identity otherwise. It exists for the best-available replay: the request
+// cannot reconstruct the seat set, so the row is the only source of truth for what a retry
+// is a retry OF.
+func claimedSeats(ctx context.Context, tx *sql.Tx, pool, claimID uuid.UUID) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT cs.seat_identity
+		FROM claim_seats cs
+		LEFT JOIN seat_claim_adjacency a
+		       ON a.pool_id = cs.pool_id AND a.seat_identity = cs.seat_identity
+		WHERE cs.claim_id = $1 AND cs.pool_id = $2 AND cs.released_at IS NULL
+		ORDER BY a.row_key NULLS LAST, a.position NULLS LAST, cs.seat_identity`, claimID, pool)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return nil, err
+		}
+		out = append(out, seat)
+	}
+	return out, rows.Err()
+}
+
+// CreateBestAvailableSeatHold selects and claims a contiguous run of `count` seats in ONE
+// transaction under the pool row lock (TKT-81 / ADR-061, AC1).
+//
+// The single-transaction property is the whole ticket. Selection outside the lock is
+// advisory: two claimants would each pick the same free run, and one of them would lose at
+// the insert -- or, worse, they would pick overlapping runs and jointly strand what was
+// between them. Here the pool row is held FOR UPDATE before anything is read, so what
+// selection sees is what the insert gets, and every other claimant on this performance is
+// behind us.
+//
+// The order of operations is CreateSeatHold's, deliberately and in the same sequence,
+// because each position was argued for there: lock, then replay, then guard the offering,
+// then sweep expiry, then the aggregate ceiling, then -- where the named-seat path
+// arbitrates a given set -- CHOOSE a set, then write. Two consequences of that placement
+// are worth naming. Selection runs after sweepExpired, so a seat whose hold lapsed is
+// selectable rather than invisible. And the ceiling runs before selection, so a drained
+// pool refuses on headroom without paying for a scan, and never reports "no run" about a
+// map that is full of runs.
+//
+// There is no retry loop, and its absence is a design statement rather than an omission
+// (AC3's "bounded retries"). Serialisation happens in the lock queue, so by the time this
+// transaction reads the projection there is nothing left to race with; a retry could only
+// fire on a conflict that cannot occur, and an unbounded one would turn a sold-out pool
+// into a lock convoy.
+func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, ticketType uuid.UUID, count int32, unitAmount int64, currency, key string) (SeatHold, error) {
+	if count <= 0 || count > MaxSeatsPerHold {
+		return SeatHold{}, ErrSeatSetInvalid
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var capacity, confirmed int32
+	var target sql.NullInt32
+	var lifecycle, closure, kind string
+	var seatMapID uuid.NullUUID
+	var orphanPrevention bool
+	// closure_status stays last before FROM (lock-handshake pattern; see CreateHold).
+	err = tx.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,inventory_kind,seat_map_id,orphan_prevention_enabled,closure_status
+		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).
+		Scan(&capacity, &confirmed, &target, &lifecycle, &kind, &seatMapID, &orphanPrevention, &closure)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatHold{}, ErrNotFound
+	}
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if kind != "seated" || !seatMapID.Valid {
+		return SeatHold{}, ErrPoolKindMismatch
+	}
+	limit := capacity
+	if target.Valid {
+		limit = target.Int32
+	}
+	fp := bestAvailableFingerprint(org, slot, ticketType, count, unitAmount, currency)
+
+	// Replay BEFORE selection, and this ordering is the safety property, not a shortcut.
+	// Selecting first and then discovering the key was spent would already have read a run
+	// as available that the original claim holds -- harmless here only because the
+	// transaction rolls back, and a trap for anyone who later moves a write above it.
+	//
+	// Scoped to the PUBLIC namespace explicitly, for the reason CreateSeatHold's comment
+	// gives: 0016 made (organizer_id, idempotency_key) non-unique across reseller scopes.
+	var existing Claim
+	var existingFP string
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
+		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+	if err == nil {
+		if existingFP != fp {
+			return SeatHold{}, ErrIdempotency
+		}
+		if existing.expired() {
+			if _, err = tx.ExecContext(ctx, `UPDATE claims SET status='expired',updated_at=now() WHERE id=$1 AND status='held'`, existing.ID); err != nil {
+				return SeatHold{}, err
+			}
+			if err = appendHistory(ctx, tx, org, existing.ID, nil, "expire", "system", "ttl_elapsed", existing.Quantity, 0, "expired", nil, nil); err != nil {
+				return SeatHold{}, err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE claim_seats SET released_at=now() WHERE claim_id=$1 AND released_at IS NULL`, existing.ID); err != nil {
+				return SeatHold{}, err
+			}
+			if err = p.commitAvailability(tx, slot); err != nil {
+				return SeatHold{}, err
+			}
+			return SeatHold{}, ErrConflict
+		}
+		if existing.Status == "released" || existing.Status == "expired" {
+			return SeatHold{}, ErrConflict
+		}
+		// The seats come from the ROW, never from a second selection. This is the
+		// difference that makes a best-available retry safe: the request carries a party
+		// size, so re-deriving a set from it would produce a DIFFERENT run and hand the
+		// caller two holds under one key.
+		seats, serr := claimedSeats(ctx, tx, slot, existing.ID)
+		if serr != nil {
+			return SeatHold{}, serr
+		}
+		existing.Kind = "buyer"
+		return SeatHold{Claim: existing, SeatMapID: seatMapID.UUID, Seats: seats, PinnedBy: pinnedBy(existing.ID), Replay: true}, p.commitAvailability(tx, slot)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return SeatHold{}, err
+	}
+
+	if err = guardOffering(lifecycle, closure); err != nil {
+		return SeatHold{}, err
+	}
+	expiredPins, err := seatsAboutToExpire(ctx, tx, slot, seatMapID.UUID)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if err = sweepExpired(ctx, tx, slot); err != nil {
+		return SeatHold{}, err
+	}
+	var held int32
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND `+liveClaims, slot).Scan(&held); err != nil {
+		return SeatHold{}, err
+	}
+	if int64(confirmed)+int64(held)+int64(count) > int64(limit) {
+		return SeatHold{}, ErrUnavailable
+	}
+
+	// A pool with no ordering projection cannot be selected over, and saying so is a
+	// different answer from "cannot seat your party" -- one is repaired by re-provisioning,
+	// the other by asking for fewer seats. Checked BEFORE the scan so an unsupported pool
+	// is answered without touching the projection at all, and checked as its own predicate
+	// rather than inferred from an empty result, which is what would make the two
+	// indistinguishable again.
+	var ordered bool
+	if err = tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM seat_claim_adjacency WHERE pool_id=$1 AND row_key IS NOT NULL)`, slot).
+		Scan(&ordered); err != nil {
+		return SeatHold{}, err
+	}
+	if !ordered {
+		return SeatHold{}, ErrBestAvailableUnsupported
+	}
+
+	canon, err := bestAvailableRun(ctx, tx, slot, orphanPrevention, count, p.bestAvailableScan())
+	if err != nil {
+		return SeatHold{}, err
+	}
+
+	// The named-seat path's own guards, run on the set this transaction chose. Neither can
+	// fire while the lock is held and the selection query is correct -- which is precisely
+	// why they are here. contendedSeats re-asserts against claim_seats that nothing chosen
+	// is live, and orphanedSeats re-runs projectionGapsQuery, the fail-closed audit that
+	// refuses an unsound projection. A selection built on a projection with a missing or
+	// one-way edge is wrong in a way no amount of correct SQL downstream can detect, and
+	// the cost of both checks is proportional to the party, not the map.
+	contended, err := contendedSeats(ctx, tx, slot, canon)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if len(contended) > 0 {
+		return SeatHold{}, &SeatTakenError{Seats: contended}
+	}
+	if orphanPrevention {
+		stranded, oerr := orphanedSeats(ctx, tx, slot, canon)
+		if oerr != nil {
+			return SeatHold{}, oerr
+		}
+		if len(stranded) > 0 {
+			// Unreachable while `legal` filters correctly: the query excludes exactly the
+			// windows this would refuse. Kept as the boundary, not the belt -- if the two
+			// ever disagree the honest answer is a refusal, not a stranded seat, and a
+			// caller reading `orphaned_seats` learns which seats to add.
+			return SeatHold{}, &SeatOrphanedError{Seats: stranded}
+		}
+	}
+
+	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: count, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`,
+		c.ID, org, slot, ticketType, count, unitAmount, currency, p.ttl.String(), key, fp).Scan(&c.ExpiresAt, &c.ServerTime)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	inserted := 0
+	seatRows, err := tx.QueryContext(ctx, `INSERT INTO claim_seats(claim_id,pool_id,seat_identity)
+		SELECT $1, $2, s FROM unnest($3::text[]) AS s
+		RETURNING seat_identity`, c.ID, slot, canon)
+	if err != nil {
+		if isUniqueViolation(err, "claim_seats_one_live_per_seat") {
+			return SeatHold{}, ErrSeatTaken
+		}
+		return SeatHold{}, err
+	}
+	for seatRows.Next() {
+		var seat string
+		if err = seatRows.Scan(&seat); err != nil {
+			_ = seatRows.Close()
+			return SeatHold{}, err
+		}
+		inserted++
+	}
+	if err = seatRows.Err(); err != nil {
+		_ = seatRows.Close()
+		return SeatHold{}, err
+	}
+	if err = seatRows.Close(); err != nil {
+		return SeatHold{}, err
+	}
+	if inserted != len(canon) {
+		return SeatHold{}, fmt.Errorf("seat insert wrote %d of %d rows", inserted, len(canon))
+	}
+	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "seat_hold", count, count, "held", nil, nil); err != nil {
+		return SeatHold{}, err
+	}
+	if err = p.commitAvailability(tx, slot); err != nil {
+		return SeatHold{}, err
+	}
+	// Seats are returned in PROJECTED order, which is the order the query emitted them in
+	// and the order a buyer reads a row -- not canonicalSeats' lexical sort. A run is a
+	// sequence, and "seats 9, 10, 11" sorted lexically reads as 10, 11, 9.
+	return SeatHold{Claim: c, SeatMapID: seatMapID.UUID, Seats: canon, PinnedBy: pinnedBy(c.ID), ExpiredPins: expiredPins}, nil
+}
+
+// bestAvailableScan is the scan cap this store applies, MaxBestAvailableScan unless a test
+// has narrowed it. The seam exists because the cap governs exactly one behaviour -- which
+// seats the bounded scan ADMITS, and therefore what the projected scan order is actually
+// load-bearing for -- and that behaviour is unobservable on any fixture smaller than the
+// cap. A test that cannot reach the cap cannot show the ordering matters, and a 400-seat
+// fixture in a suite that runs per-schema is a poor trade for the same proof.
+func (p *Postgres) bestAvailableScan() int32 {
+	if p.baScan > 0 {
+		return p.baScan
+	}
+	return MaxBestAvailableScan
+}
+
+// bestAvailableRun runs the selection query and returns the chosen run in projected order,
+// or ErrBestAvailableUnavailable when no legal window exists within the scan cap.
+//
+// An empty result and a short result are both refusals rather than partial successes: the
+// query emits a window only when it has exactly `count` seats, so a different length means
+// the query and this function disagree about what was asked, and selling a partial run
+// would be worse than refusing.
+func bestAvailableRun(ctx context.Context, tx *sql.Tx, pool uuid.UUID, orphanPrevention bool, count, scan int32) ([]string, error) {
+	q := bestAvailableRunQuery
+	if scan != MaxBestAvailableScan {
+		// Only a test narrows the cap (see bestAvailableScan). Rebuilding the statement
+		// rather than binding the limit keeps the SHIPPED query a single const the plan
+		// probe can EXPLAIN verbatim, which is the whole reason it is a const.
+		q = strings.Replace(q, maxBestAvailableScanSQL, "LIMIT "+strconv.Itoa(int(scan)), 1)
+	}
+	rows, err := tx.QueryContext(ctx, q, pool, orphanPrevention, count)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]string, 0, count)
+	for rows.Next() {
+		var seat string
+		if err = rows.Scan(&seat); err != nil {
+			return nil, err
+		}
+		out = append(out, seat)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrBestAvailableUnavailable
+	}
+	if int32(len(out)) != count {
+		return nil, fmt.Errorf("selection returned %d seats for a party of %d", len(out), count)
+	}
+	return out, nil
 }
