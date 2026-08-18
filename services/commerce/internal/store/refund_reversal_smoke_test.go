@@ -38,12 +38,26 @@ func completedRefund(t *testing.T, db *sql.DB, ctx context.Context, key string, 
 	if mutate != nil {
 		mutate(&s)
 	}
+	// The row has to satisfy the table's own shape, not just this file's interests:
+	// idempotency_key/actor/reason are NOT NULL, and 0007's status CHECK ties
+	// `completed` to a non-null completed_at AND payment_fact_id (and `pending` to both
+	// being null). Getting that wrong is how a fixture fails for a reason the test is
+	// not about — which is what the first run of this file did.
+	var completedAt any
+	var factID any
+	if s.Status == "completed" {
+		completedAt, factID = time.Now(), uuid.New()
+	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO order_refunds(id,order_id,organizer_id,request_fingerprint,quantity,unit_amount,amount,currency,status,
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,
+		                          actor,reason,status,completed_at,payment_fact_id,
 		                          tickets_voided_at,capacity_returned_at,reversal_parked_at,reversal_next_attempt_at,
 		                          reversal_attempts,reversal_claim_id,reversal_lease_until)
-		VALUES($1,$2,$3,$4,$5,1250,2500,'EUR',$6,$7,$8,$9,coalesce($10,now()),$11,$12,$13)`,
-		s.ID, s.OrderID, s.OrganizerID, "fingerprint-"+key, s.Quantity, s.Status,
+		VALUES($1,$2,$3,$4,$5,$6,1250,2500,'EUR',
+		       'ops@example.test','reversal reconciliation test',$7,$8,$9,
+		       $10,$11,$12,coalesce($13,now()),$14,$15,$16)`,
+		s.ID, s.OrderID, s.OrganizerID, "key-"+key, "fingerprint-"+key, s.Quantity,
+		s.Status, completedAt, factID,
 		s.VoidedAt, s.ReturnedAt, s.ParkedAt, s.NextAttemptAt, s.Attempts, s.ClaimID, s.LeaseUntil); err != nil {
 		t.Fatal(err)
 	}
