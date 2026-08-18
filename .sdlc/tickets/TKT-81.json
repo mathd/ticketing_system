@@ -2,7 +2,7 @@
   "key": "TKT-81",
   "type": "Story",
   "summary": "US-018: Best-available seat selection",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -82,6 +82,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nShaped at TKT-4 decomposition (2026-07-16). Classification: complex. All 8 DoR items met/deferred — claimable once prioritized (and blockers Done, where wired)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**US-018: Best-available seat selection.**\n\nBlocker satisfied: `blocked-by TKT-80` (US-017, seat-level claims) is **Done**, so the seat claims\nthis builds on exist.\n\n⚠ **One thing to check at claim time, and it is not a DoR failure.** The ticket's AC says contiguity\ncomes from *\"the map's adjacency/rank data (TKT-3 provides both)\"* — and **TKT-3 is a Backlog\nepic**. Its `dependencies` item is correctly `met`, because the wired blocker (TKT-80) is closed and\nadjacency projection did ship via TKT-181. But whoever claims this should confirm the *rank* data it\nwants actually exists before Planning, rather than discovering it mid-draft. If it does not, that is\na re-shape, not a blocker.\n\n`uncertainties: deferred` — the contiguity-relaxation rules are a Planning-time design call, which\nis a legitimate deferral: it is a product-shaped choice inside a known mechanism, not an unresolved\ntrust boundary.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
     }
   ],
   "parent": "TKT-4"
