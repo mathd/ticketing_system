@@ -18,6 +18,9 @@ const (
 	pricingTT   = "00000000-0000-0000-0000-000000000002"
 	pricingSlot = "00000000-0000-0000-0000-000000000009"
 	pricingRule = "00000000-0000-0000-0000-0000000000a1"
+	// The reseller behind reserveInChannel's partner scope (TKT-248): a channelled
+	// sale exists only on the authenticated path now.
+	pricingReseller = "00000000-0000-0000-0000-0000000000b1"
 )
 
 // resolutionBody is a well-formed PriceResolution with a winning rule.

@@ -722,8 +722,8 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 		"starts_at": "2026-11-05T20:00:00Z", "timezone": "UTC", "seat_map_id": seatMap["id"]})
 	tt := created(t, catalog+"/ticket-types", map[string]any{
 		"performance_id": perf["id"],
-		"name":  map[string]string{"fr": "Place", "en": "Seat"},
-		"price": map[string]any{"amount": 3000, "currency": "EUR"}})
+		"name":           map[string]string{"fr": "Place", "en": "Seat"},
+		"price":          map[string]any{"amount": 3000, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {
 		t.Fatalf("publish performance: %d %s", code, body)
 	}
@@ -869,12 +869,21 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 // composing them, and payments capturing the result.
 //
 // FIXTURE NOTE: the two rules carry the SAME amount and OPPOSITE incidence. A
-// fixture where the two channels also differed in amount could not tell "the
+// fixture where the two arms also differed in amount could not tell "the
 // incidence changed what the buyer pays" from "the fee itself was different" —
 // which is precisely the confusion a build that treats incidence as a display
 // flag would produce.
+//
+// TKT-248 changed WHICH TWO ARMS, and nothing else. It used to be two channels,
+// both named by a public request body. Public reservations may no longer name a
+// channel (ADR-060), and the smoke stack enrols exactly one partner credential —
+// so two channelled sales are no longer constructible here. The arms are now the
+// PARTNER's channel (absorbed) and the PUBLIC context (passed_on), which differ
+// in exactly the one dimension the test is about while still being two real
+// end-to-end sales through the whole stack. The claim, the amounts and every
+// assertion below are untouched.
 func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
-	_, ticketType := setupCheckoutOffer(t, "tkt215")
+	slot, ticketType := setupCheckoutOffer(t, "tkt215")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -891,9 +900,22 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	}
 	// Same code, same amount, same scope — only the channel and the incidence
 	// differ, so nothing else can explain a difference in the charged total.
-	for _, r := range []struct{ channel, incidence string }{
-		{"tkt215-passed", "passed_on"},
-		{"tkt215-absorbed", "absorbed"},
+	//
+	// One rule is channel-AGNOSTIC (channel_code NULL), which is what a public sale
+	// resolves; the other is scoped to the partner's channel. Omitting a channel is
+	// the default/public context and never matches a channel-specific rule
+	// (ADR-046 §4), so the two arms cannot cross-contaminate.
+	partnerCh := partnerChannel()
+	if partnerCh == "" {
+		t.Fatal("SMOKE_PARTNER_CHANNEL is not set: a channelled sale needs the credential's " +
+			"channel, and after ADR-060 there is no other way to make one")
+	}
+	for _, r := range []struct {
+		channel   *string
+		incidence string
+	}{
+		{nil, "passed_on"},       // public: the buyer pays the fee
+		{&partnerCh, "absorbed"}, // partner channel: the organizer bears it
 	} {
 		if _, err = cat.Exec(ctx, `INSERT INTO fee_rules
 			(organizer_id, scope_level, scope_id, fee_code, basis, amount, currency, incidence, channel_code)
@@ -915,13 +937,41 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	// sell. That is not a workaround for the test — it is the new requirement, and
 	// the same one every fee-only channel in a real deployment must satisfy before
 	// this ships.
-	reserveIn := func(channel, key string) map[string]any {
+	//
+	// TKT-246 added the second half: the allocation must also say WHO may consume
+	// it (`sold_by`), because the partner arm below sells with a credential and
+	// inventory judges seller before capacity, under the pool row lock.
+	allocURL := fmt.Sprintf("%s/internal/slots/%s/channel-allocations", inventoryURL, slot)
+	if code, body := internalJSON(t, http.MethodPut, allocURL, "", map[string]any{
+		"organizer_id": organizerID,
+		"allocations": []map[string]any{
+			// cap EXACTLY the partner arm's 2. The slot's GA capacity is 5
+			// (setupCheckoutOffer), an allocation reserves its cap away from the
+			// public pool, and the public arm below also buys 2 -- so a larger cap
+			// starves the public arm and it fails with "inventory unavailable"
+			// while looking like a pricing defect.
+			{"channel": partnerCh, "cap": 2, "sold_by": partnerReseller()},
+		},
+	}); code != http.StatusOK {
+		t.Fatalf("allocate the partner channel: %d %s", code, body)
+	}
+
+	// `partner` false is the PUBLIC arm: no channel is named, which is the only
+	// shape a public request has after ADR-060 and which resolves the
+	// channel-agnostic rule. `partner` true goes through the credentialled route,
+	// whose channel comes from the credential and never from a body.
+	reserveIn := func(partner bool, key string) map[string]any {
 		t.Helper()
-		code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", key,
-			map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType,
-				"quantity": 2, "channel_code": channel})
+		var code int
+		var body []byte
+		req := map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2}
+		if partner {
+			code, body = partnerDo(t, http.MethodPost, "/api/commerce/partners/reservations", key, req)
+		} else {
+			code, body = postWithKey(t, gatewayURL+"/api/commerce/reservations", key, req)
+		}
 		if code != 201 {
-			t.Fatalf("reserve in %s: %d %s", channel, code, body)
+			t.Fatalf("reserve (partner=%v): %d %s", partner, code, body)
 		}
 		var out map[string]any
 		if err := json.Unmarshal(body, &out); err != nil {
@@ -935,8 +985,8 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	// the claim under test is "incidence changes the charged total by exactly the
 	// fee", and pinning the fixture's unit price would test the seed data instead
 	// — which is how the first version of this test failed for the wrong reason.
-	passed := reserveIn("tkt215-passed", "tkt215-passed")
-	absorbed := reserveIn("tkt215-absorbed", "tkt215-absorbed")
+	passed := reserveIn(false, "tkt215-passed")
+	absorbed := reserveIn(true, "tkt215-absorbed")
 
 	const feeTotal = float64(600)
 	face := passed["face_value"].(float64)
@@ -1066,5 +1116,96 @@ func TestFeeIncidenceChangesTheChargedTotalButNotTheFee(t *testing.T) {
 	if feeLines != int64(feeTotal) || !sawFee {
 		t.Errorf("fee lines total %d (service seen: %v), want %v — the fee the buyer paid must be "+
 			"owed to somebody", feeLines, sawFee, feeTotal)
+	}
+}
+
+// Incidence decides the charge with the CALLER HELD CONSTANT (TKT-248, ai-review
+// pass 2 [medium]).
+//
+// WHY THIS EXISTS. TKT-248 had to change the test above from two-channels to
+// partner-vs-public, because a public request can no longer name a channel and the
+// smoke stack enrols exactly one partner credential. That left its arms differing
+// in THREE things at once — incidence, channel presence, and whether the caller
+// was authenticated — so a build that ignored `incidence` entirely and instead
+// treated channel-less fees as passed-on and channel-scoped fees as absorbed would
+// satisfy every assertion up there.
+//
+// This test removes the confound rather than balancing it: ONE public reservation,
+// ONE caller, carrying TWO fee codes that differ only in incidence. Nothing about
+// the caller, the channel or the credential varies, so `incidence` is the only
+// thing that can explain the two fees landing differently.
+//
+// (Two rules for the SAME code would not work: ADR-046 resolves one winner per fee
+// code, so the second could never apply. Two codes is what makes a single-caller
+// fixture possible at all.)
+func TestIncidenceDecidesTheChargeForOneCaller(t *testing.T) {
+	_, ticketType := setupCheckoutOffer(t, "tkt248inc")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cat, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cat.Close(ctx) }()
+
+	var eventID string
+	if err = cat.QueryRow(ctx, `SELECT p.event_id FROM ticket_types t
+		JOIN performances p ON p.id = t.performance_id WHERE t.id = $1`, ticketType).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both channel-AGNOSTIC, so both apply to the same public sale. Same amount,
+	// same basis, same scope — only the fee code and the incidence differ.
+	for _, r := range []struct{ feeCode, incidence string }{
+		{"service", "passed_on"}, // the buyer pays this one
+		{"facility", "absorbed"}, // the organizer bears this one
+	} {
+		if _, err = cat.Exec(ctx, `INSERT INTO fee_rules
+			(organizer_id, scope_level, scope_id, fee_code, basis, amount, currency, incidence, channel_code)
+			VALUES($1,'event',$2,$3,'per_ticket_fixed',300,'EUR',$4,NULL)`,
+			organizerID, eventID, r.feeCode, r.incidence); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt248inc",
+		map[string]any{"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 2})
+	if code != 201 {
+		t.Fatalf("reserve: %d %s", code, body)
+	}
+	var res map[string]any
+	if err = json.Unmarshal(body, &res); err != nil {
+		t.Fatal(err)
+	}
+
+	// 300 per ticket x 2 = 600 for EACH code. Asserted relative to the observed
+	// face value rather than a hardcoded price, so this tests the rule and not the
+	// seed data.
+	const perCode = float64(600)
+	face := res["face_value"].(float64)
+	if face <= 0 {
+		t.Fatalf("face_value = %v", res["face_value"])
+	}
+	if res["amount"] != face+perCode {
+		t.Errorf("charged total = %v, want face %v + %v: exactly ONE of the two fees is "+
+			"passed_on. face+1200 means an absorbed fee reached the buyer; a bare face means a "+
+			"passed_on fee did not (ADR-046 §3).", res["amount"], face, perCode)
+	}
+
+	// BOTH fees are recorded, which is the half that stops incidence being read as
+	// "the absorbed fee did not apply" — TKT-217 still owes it to a payee.
+	items, ok := res["fee_breakdown"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("want both fee codes in the breakdown, got %v", res["fee_breakdown"])
+	}
+	seen := map[string]float64{}
+	for _, it := range items {
+		item := it.(map[string]any)
+		seen[item["fee_code"].(string)] = item["amount"].(float64)
+	}
+	if seen["service"] != perCode || seen["facility"] != perCode {
+		t.Errorf("fee amounts = %v, want %v for both codes — an absorbed fee is still OWED, "+
+			"it is simply not charged to the buyer", seen, perCode)
 	}
 }

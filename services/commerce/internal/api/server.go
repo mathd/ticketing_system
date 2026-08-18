@@ -358,27 +358,36 @@ type reserveRequest struct {
 	// computed over the canonical form and a second canonicaliser here would be a
 	// second definition of "the same request".
 	SeatIdentities []string `json:"seat_identities,omitempty"`
-	// ChannelCode selects which fee rules apply (TKT-215 / ADR-046 §4). A
-	// POINTER, not a string: nil is the default/public context in which only
-	// channel-agnostic rules are eligible, and that is NOT the same as a caller
-	// sending an empty channel. Omitting it is not a wildcard.
+	// ChannelCode selects which fee rules (TKT-215 / ADR-046 §4) and, since
+	// TKT-237, which PRICE rules apply. A POINTER, not a string: nil is the
+	// default/public context in which only channel-agnostic rules are eligible, and
+	// that is NOT the same as a caller sending an empty channel. Omitting it is not
+	// a wildcard.
 	//
-	// It reaches catalog's fee resolution and STOPS THERE. Inventory's channel_code
-	// is what channel_allocations cap consumption against (ADR-024), so a
-	// reseller-channel sale still takes that channel's fees while consuming public
-	// inventory. That is a known, open defect.
+	// IT CANNOT BE SET BY A PUBLIC CALLER (TKT-248, ADR-060). `channel_code` is gone
+	// from ReservationCreate, so a public body naming one is refused by the contract
+	// and again by reserveWithScope below. The field survives on this struct because
+	// the PARTNER path fills it -- from the credential, never from a body -- and both
+	// paths share one reserve implementation.
 	//
-	// TKT-240 closed this by forwarding the channel here, and the closure was
-	// REVERTED after its own adversarial review. Forwarding is necessary but not
-	// sufficient: this route is UNAUTHENTICATED and takes channel_code from the
-	// request body, so forwarding alone lets any caller name a reseller's channel
-	// and consume its allocation with no credential — executed and confirmed, not
-	// theorised. Closing the seam is therefore an AUTHORIZATION change, not a
-	// plumbing change: the allocation has to say who may sell it, judged where the
-	// stock is, under the pool row lock (the shape ADR-055 gave requires_code).
+	// The history, because the shape of the fix matters more than the fix:
 	//
-	// TKT-246 owns that. Do not re-add the forward on its own — see
-	// channel_seam_test.go, which pins this route as channel-free until then.
+	// TKT-240 tried to close the commerce->inventory seam by forwarding the channel
+	// here, and the closure was REVERTED after its own adversarial review. Forwarding
+	// is necessary but not sufficient while the route is UNAUTHENTICATED and takes
+	// the channel from the body: it lets any caller name a reseller's channel and
+	// consume its allocation with no credential -- executed and confirmed, not
+	// theorised. TKT-246 then closed the inventory half by making the allocation say
+	// who may sell it, judged under the pool row lock (ADR-055's requires_code
+	// shape), and left the PRICING half open because forwarding a body-supplied
+	// channel was still the same bypass.
+	//
+	// TKT-248 closed that half by removing the capability rather than checking it:
+	// with no field, there is no body-supplied channel to price on. A channelled sale
+	// now exists only behind a credential.
+	//
+	// Do not re-add this field to the public contract -- see channel_seam_test.go,
+	// which pins the route as channel-free, and ADR-060.
 	ChannelCode *string `json:"channel_code,omitempty"`
 }
 
@@ -532,10 +541,17 @@ func validReservationShape(in reserveRequest) bool {
 // this ships the bypass would be live for exactly the allocations it is meant to
 // protect. The public route is therefore kept unable to reach the decision at all.
 //
-// The residual: a public sale naming a reseller channel still PRICES under that
-// channel's fee rules while consuming public stock. That is a fee-attribution defect,
-// not an inventory-theft one, and it is TKT-247's. Moving inventory now requires a
-// credential.
+// The residual was: a public sale naming a reseller channel still PRICES under that
+// channel's fee rules while consuming public stock -- a fee-attribution defect, not
+// an inventory-theft one, since moving inventory already required a credential.
+// (This comment said "TKT-247's", which was wrong: TKT-247 is a scanner-device
+// flake. It was TKT-248's.)
+//
+// CLOSED by TKT-248 / ADR-060, and closed by removing the capability rather than
+// checking it: `channel_code` no longer exists on ReservationCreate, so a public
+// caller cannot name a channel at all. A channel now reaches pricing only from an
+// authenticated partner credential -- which is also why this function's nil-scope
+// early return is the whole public story.
 func addSellerScope(body map[string]any, scope *partnerScope) {
 	if scope == nil {
 		return
@@ -633,6 +649,25 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 		// for the day that contract is edited, and it must not depend on the first.
 		channel := scope.ChannelCode
 		in.ChannelCode = &channel
+	} else if in.ChannelCode != nil {
+		// A PUBLIC caller may not name a channel at all (TKT-248, ADR-060).
+		//
+		// The real guard is that the field no longer exists on ReservationCreate,
+		// so with `additionalProperties: false` the contract refuses it at the edge
+		// and it is UNSUBMITTABLE rather than validated. This is the second line of
+		// defence, for the day that contract is edited -- the same reasoning as the
+		// partner overwrite above, and it must not depend on the first.
+		//
+		// Why it is refused rather than silently cleared: this route is
+		// unauthenticated, and catalog resolves BOTH fee rules (ADR-046 §4) and,
+		// since TKT-237, PRICE rules on the channel. So a body-supplied channel is a
+		// caller choosing their own price basis, and an `absorbed` fee rule makes
+		// that a smaller charge with the organizer eating the difference -- a
+		// revenue leak, not a reporting artifact. Clearing it silently would price
+		// them correctly while telling them nothing; a partner integrator who lost
+		// their credential would then be quietly under-billed instead of told.
+		write(w, 400, map[string]string{"error": "channel_code is not accepted on a public reservation"})
+		return
 	}
 	if !validReservationShape(in) {
 		write(w, 400, map[string]string{"error": "invalid reservation"})

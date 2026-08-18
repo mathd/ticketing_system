@@ -142,7 +142,22 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Price the target through catalog's RULE RESOLUTION — never the raw column, never the
 	// source's snapshot (ADR-036 §5/§6).
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID, src.Quantity, src.ChannelCode)
+	//
+	// The channel is taken from the source ONLY when the source had a reseller
+	// (TKT-248, ai-review pass 2 [medium]). The reseller is the authority, exactly
+	// as it is for the inventory forward below, and for a sharper reason here: this
+	// prices a DIFFERENT ticket type (TargetTicketTypeID comes from the request)
+	// against CURRENT rules. A pre-ADR-060 public row carries whatever channel an
+	// unauthenticated caller once put in its body, so honouring it would let that
+	// long-past choice pick the price basis for a brand-new sale — including rules
+	// written after the original purchase. "Its own purchase was already priced that
+	// way" does not justify the target's price, and keeping the stored attribution
+	// does not require pricing on it: the row keeps its channel_code, this
+	// resolution just stops trusting it.
+	//
+	// A source with no reseller therefore reprices PUBLICLY, which is what its
+	// original hold already was.
+	resolution, err := s.repriceExchangeTarget(r, in.TargetTicketTypeID, in.OrganizerID, src)
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})
@@ -383,13 +398,18 @@ func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType
 	// BOTH or NEITHER, gated on the RESELLER (ai-review [high] F2).
 	//
 	// Forwarding the channel whenever the source had one re-opens the bypass this
-	// ticket exists to close, one step removed in time. A PUBLIC reserve still
-	// persists whatever channel_code its unauthenticated body named -- it is used for
-	// fee resolution and reporting, and only the inventory forward was withheld. So a
-	// public buyer could name a reseller's channel, and a later exchange of that order
-	// would present the channel to inventory with no reseller identity, consuming an
-	// unbound allocation that nobody authorized them to touch. Every allocation is
-	// unbound today, so it would have been reachable on day one.
+	// ticket exists to close, one step removed in time. Until TKT-248, a PUBLIC
+	// reserve persisted whatever channel_code its unauthenticated body named -- used
+	// for fee resolution and reporting, with only the inventory forward withheld. So
+	// a public buyer could name a reseller's channel, and a later exchange of that
+	// order would present the channel to inventory with no reseller identity,
+	// consuming an unbound allocation nobody authorized them to touch. Every
+	// allocation is unbound today, so it was reachable on day one.
+	//
+	// TKT-248 / ADR-060 removed that field, so no NEW public reservation can carry a
+	// channel. Rows written before it still can, which is exactly why this gate
+	// stays: it is now belt-and-braces for new rows and load-bearing for historical
+	// ones.
 	//
 	// The reseller is the authority, not the channel: a source with no reseller was
 	// never an authorized channelled sale, whatever its channel_code says. Gating on
@@ -597,6 +617,16 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	// The same reasoning the customer_id copy below already applies, extended to the
 	// two columns it did not cover. That comment says an exchange is "the same
 	// purchase in a different seat" -- who sold that purchase does not change either.
+	//
+	// ATTRIBUTION AND PRICING ARE DELIBERATELY ALLOWED TO DISAGREE (TKT-248). For a
+	// legacy PUBLIC source that carries a channel, this copies that channel_code
+	// while repricingChannel() resolved the target's price with no channel at all --
+	// so the replacement's price_resolution_snapshot names no channel and its
+	// channel_code does. That is not drift to be tidied away: the columns say WHO
+	// the sale is attributed to, which must survive unchanged (ADR-024), and the
+	// snapshot says HOW this particular price was reached, which is now public
+	// because no credential ever vouched for that channel. Making either follow the
+	// other would falsify one of them.
 	if _, err := s.db.ExecContext(r.Context(), `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,channel_code,reseller_id)
 		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12,src.channel_code,src.reseller_id
@@ -733,4 +763,37 @@ func (s *Server) returnExchangedCapacity(r *http.Request, ex commercestore.Excha
 	}
 	ex.CapacityReturned = true
 	return ex
+}
+
+// repricingChannel decides which channel, if any, prices an exchange TARGET.
+//
+// The reseller is the authority, not the channel — the same rule holdExchangeTarget
+// applies to the inventory forward, and for a sharper reason here (TKT-248,
+// ai-review pass 2). This prices a DIFFERENT ticket type against CURRENT rules, so
+// honouring a channel that no credential ever vouched for lets a long-past,
+// unauthenticated choice pick the price basis for a brand-new sale.
+//
+// Before ADR-060 a public reserve persisted whatever channel its body named, so
+// `channel_code != NULL, reseller_id == NULL` is a legal and routine historical
+// row. Those rows KEEP their attribution; this function only stops that attribution
+// from deciding money. A source with no reseller reprices publicly, which is what
+// its original hold already was.
+func repricingChannel(src commercestore.ExchangeSource) *string {
+	if src.ResellerID == nil {
+		return nil
+	}
+	return src.ChannelCode
+}
+
+// repriceExchangeTarget is the one place an exchange's target price is resolved,
+// and the only caller of repricingChannel.
+//
+// It exists so the DECISION and the CALL are one testable unit. A test that only
+// exercised repricingChannel would restate that function and stay green if this
+// call site were changed back to passing src.ChannelCode directly -- which is
+// exactly the revert the guard exists to prevent (ai-review pass 3).
+func (s *Server) repriceExchangeTarget(r *http.Request, targetTicketType, organizer uuid.UUID,
+	src commercestore.ExchangeSource) (priceResolution, error) {
+	return s.resolveTicketTypePrice(r.Context(), targetTicketType, organizer,
+		src.Quantity, repricingChannel(src))
 }

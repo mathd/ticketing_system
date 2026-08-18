@@ -149,3 +149,87 @@ func TestAnUnchannelledExchangeTargetIsUnchanged(t *testing.T) {
 		t.Fatal("an unchannelled source sent a reseller_id")
 	}
 }
+
+// An exchange reprices on the source's channel ONLY when a reseller vouched for it
+// (TKT-248, ai-review pass 2 [medium]; wiring fixed after pass 3 [medium]).
+//
+// The sibling of TestAPublicExchangeTargetCarriesNoChannelEvenWhenTheSourceNamedOne
+// above, one step earlier in the request: that one stops a legacy channel reaching
+// INVENTORY, this one stops it reaching catalog's PRICE resolution. Different
+// decisions on different values -- one decides whose allocation is consumed, the
+// other what the buyer is charged for a ticket type named in THIS request against
+// CURRENT rules -- so deleting either guard leaves the other's test green.
+//
+// IT ASSERTS THE QUERY CATALOG ACTUALLY RECEIVED, not what a helper returned. An
+// earlier version called repricingChannel() directly, which merely restated that
+// function: reverting the call site to pass src.ChannelCode left it green while
+// reopening the hole. Driving repriceExchangeTarget -- the one place the decision
+// and the resolve call live together -- is what makes that revert fail here.
+//
+// `channel_code != NULL, reseller_id == NULL` is a legal historical row: before
+// ADR-060 a public reserve persisted whatever channel its unauthenticated body
+// named. The row keeps that attribution; this only stops it deciding money.
+func TestExchangeRepricingTakesTheChannelOnlyFromAResellerSource(t *testing.T) {
+	channel := "reseller-acme"
+	reseller := uuid.New()
+
+	for name, tc := range map[string]struct {
+		src       commercestore.ExchangeSource
+		wantQuery string
+	}{
+		"a public source's channel does not price the target": {
+			// Typed by an anonymous buyer, never authenticated.
+			src:       commercestore.ExchangeSource{ChannelCode: &channel, ResellerID: nil, Quantity: 2, Currency: "EUR"},
+			wantQuery: "",
+		},
+		"a reseller source keeps pricing on its own channel": {
+			src:       commercestore.ExchangeSource{ChannelCode: &channel, ResellerID: &reseller, Quantity: 2, Currency: "EUR"},
+			wantQuery: "channel_code=reseller-acme",
+		},
+		"a public source with no channel is unchanged": {
+			src:       commercestore.ExchangeSource{ChannelCode: nil, ResellerID: nil, Quantity: 2, Currency: "EUR"},
+			wantQuery: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var asked string
+			var called bool
+			catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked, called = r.URL.RawQuery, true
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				// Echo whichever channel was asked about: commerce validates the
+				// echo (TKT-237), so a stub answering null would fail every
+				// channelled reprice before this test could observe anything.
+				var ch *string
+				if q := r.URL.Query().Get("channel_code"); q != "" {
+					c := q
+					ch = &c
+				}
+				_, _ = w.Write([]byte(resolutionBodyFor(2500, true, ch)))
+			}))
+			defer catalog.Close()
+
+			srv := New(nil, http.DefaultClient, catalog.URL, "", "", "secret")
+			req := httptest.NewRequest(http.MethodPost, "/exchanges", nil)
+			if _, err := srv.repriceExchangeTarget(req, uuid.MustParse(pricingTT),
+				uuid.MustParse(pricingOrg), tc.src); err != nil {
+				t.Fatalf("reprice: %v", err)
+			}
+			if !called {
+				t.Fatal("catalog was never asked to price the target: this test cannot observe " +
+					"the decision it exists to check")
+			}
+			if asked != tc.wantQuery {
+				if tc.wantQuery == "" {
+					t.Fatalf("catalog was asked %q, want no channel. The target is a DIFFERENT "+
+						"ticket type priced against CURRENT rules, so pricing on a channel no "+
+						"credential vouched for lets a long-past unauthenticated choice pick the "+
+						"basis for a new sale (ADR-060).", asked)
+				}
+				t.Fatalf("catalog was asked %q, want %q — an authorized channelled sale must "+
+					"still exchange onto its own channel's economics", asked, tc.wantQuery)
+			}
+		})
+	}
+}
