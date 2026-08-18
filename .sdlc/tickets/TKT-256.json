@@ -1,0 +1,24 @@
+{
+  "key": "TKT-256",
+  "type": "Task",
+  "classification": "simple",
+  "summary": "GET /internal/operations can answer 500 and does not declare it",
+  "description": "Found by the TKT-168 plan review (Amendment 3), as incidental scope.\n\n`GET /internal/operations` can answer **500**: `s.operation` writes\n`500 {\"error\": \"lookup operation\"}` when `LookupOperation` fails\n(`services/payments/internal/api/server.go`). The operation's `responses:` block in\n`services/payments/api/openapi.yaml` declares only `200`, `400`, `401`, `404`.\n\nUnder ADR-028 the service fails closed and validates responses against the spec, so an\nundeclared status is itself a contract violation — the 500 a caller receives during a database\nfault is not the 500 the handler meant to send, and the real cause is obscured exactly when\nsomeone is debugging an outage.\n\n**Why it was not fixed in TKT-168:** that ticket's diff is a money-evidence change and does not\ntouch this code path. The declaration gap pre-dates it. Folding an unrelated contract correction\ninto a money diff was judged the worse trade at plan review; the fix is a one-line spec addition\nplus a regen, and it deserves its own commit message saying why.\n\n**Worth checking while here:** whether OTHER operations in the payments contract (and the other\nservices' contracts) have the same shape — a handler that can write a status the spec does not\ndeclare. If several do, this becomes a small sweep rather than a one-liner, and possibly a test\nthat walks each handler's reachable statuses.\n\n**Acceptance Criteria:**\n- [ ] `/internal/operations` declares `500` in `services/payments/api/openapi.yaml`.\n- [ ] Regenerated code committed before the gate (ADR-009 — `check-generate` diffs against HEAD).\n- [ ] A check for the same shape elsewhere in the payments contract, with findings either fixed\n      here or split into their own ticket.\n- [ ] `make check` green.\n",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-168"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-168 ai-review triage (incidental)\n\nRaised at TKT-168's plan review and deliberately **not** fixed there: pre-existing gap, untouched code path, and mixing a contract correction into a money-evidence diff was the worse trade.\n\n**Not shaped yet** — no `readiness` object, so Gate 1 is blocked until someone fills the DoR. The open question that decides its size is whether this is one missing status or a class: if several handlers can emit statuses their specs do not declare, the deliverable is a sweep plus a guard, not a one-line spec edit."
+    }
+  ]
+}
