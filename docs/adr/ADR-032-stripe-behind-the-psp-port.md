@@ -11,6 +11,9 @@ Completes the PSP-port, compensation and keyring surface deferred by ADR-016 §D
 fixes the port's *contract* and the Stripe-specific mappings behind it. It does not supersede
 ADR-016 or ADR-011 — it satisfies preconditions they left open.
 
+Amended by **TKT-168** (§Provider-neutral evidence reads): what a read-only evidence surface may and
+may not publish, written down explicitly rather than left to be re-derived per endpoint.
+
 ## Context
 
 TKT-43 shipped the checkout recovery state machine (ADR-016) against a **fake PSP** whose
@@ -86,6 +89,55 @@ concrete Stripe mappings. Constraints:
 `payment_operations` (and a `payment_compensations` child table keyed by source operation + kind);
 the journal payload stays restricted to `order_id` (`store.go` payload guard). Provider IDs are
 mutable operational evidence, not canonical business facts.
+
+#### Provider-neutral evidence reads (amended, TKT-168)
+
+**A read-only evidence surface MAY publish normalized money evidence payments already holds:** for
+a captured operation, the **captured amount in integer minor units and its ISO currency**; for a
+post-purchase refund leg, its **completion state, amount in integer minor units, and ISO currency**.
+These are provider-neutral because they describe *the movement as payments recorded it* — how much
+money it moved, in which currency, and whether the leg settled — and not the processor, the
+instrument, or the provider object that carried it. (What that record is and is not evidence OF is
+bounded below; read that paragraph before citing these fields.)
+
+**The boundary MUST NOT publish** provider payment, charge or refund references (`pi_`/`ch_`/`re_`);
+provider-specific state strings; **provider idempotency keys** (a leg's derived key is what makes it
+replayable at the provider); payment-method references; credentials; or any secret material.
+Application-owned lookup keys — an operation's idempotency key, a leg's refund key — are *request
+identity*, not provider identity, and may be supplied as query parameters. Handlers assemble these
+responses **field by field and never marshal the store row**, so publishing a new field is a
+deliberate act rather than a consequence of adding a column.
+
+**This is not a new boundary; it is the existing one written down.** `PSPStatus`
+(`/internal/psp/status`) has published `authorized_amount`, `captured_amount` and `currency` since
+TKT-114/S2 under exactly this rule, and `PSPPartialRefundResult` returns a leg's `amount` and
+`currency`. What TKT-168 adds is the same evidence on the **pure** reads. The distinction matters
+and is the reason the existing surface was not simply reused: `/internal/psp/status` **resolves**
+— for an unresolved operation it calls the provider (retrieve, or same-key replay) and can answer
+502 or 409. `GET /internal/operations` and `GET /internal/refund-legs` answer from stored state
+alone. A caller that must not cause provider traffic — a test, a reconciliation sweep — could
+therefore prove *that* a charge ran but never *what it moved*, and had no read at all for a refund
+leg, so a refund call replaced by a successful no-op was indistinguishable from one that moved
+money.
+
+**Bounded precisely: this is payments' RECORD of the movement, not the provider's confirmation of
+it.** Say which, the way ADR-021 insists on naming the adversary before writing "tamper-evident".
+`psp.Result` carries no monetary value; the charge path persists the **requested** amount as the
+captured amount, and a refund leg's amount is the one it BOUND, fixed before the provider call. The
+Stripe adapter parses neither `amount_received` nor the refund object's returned `amount` into that
+evidence. So these reads answer *"what payments durably recorded for this operation"* — which is
+exactly what a caller needs to detect a caller-side defect (a wrong delta, a skipped call, a
+no-op'd refund), and is **not** an independent check on the processor. A provider that captured or
+refunded a different amount would not be caught here. Closing that gap means recording
+provider-confirmed amounts distinctly and failing closed on disagreement: **TKT-257**, raised by
+TKT-168's adversarial review. Until it lands, do not cite these fields as proof the *provider*
+moved that money.
+
+**These are evidence reads, not ledger reads, and they change nothing about what is recorded.** They
+bind no operation and no leg, call no provider, and append no fact. The journal payload stays
+restricted to `order_id`; provider identity and payment-method data stay confined to payments-owned
+rows. Money attribution — who was owed what — remains `GET /internal/orders/{orderId}/settlement`'s
+job (ADR-048), which is a different question from how much the provider took.
 
 **Compensation is journalled as facts.** Void appends `payment.voided`; refund appends
 `payment.refunded` — appended entries reversing an authorize/capture, never mutations (ADR-016
@@ -271,7 +323,7 @@ This ADR governs the whole ticket; the code lands in dependency-ordered slices:
 
 ## References
 
-- TKT-56
+- TKT-56, TKT-168 (§Provider-neutral evidence reads)
 - [ADR-016: Checkout recovery state machine](ADR-016-checkout-recovery-state-machine.md) — §Decision
   3 (normalized terminal-no-side-effect, lookup-vs-status split), §Decision 4 (compensation as facts),
   §Decision 8 (keyring)

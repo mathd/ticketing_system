@@ -75,6 +75,29 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /internal/refund-legs:
+    get:
+      # Read-only evidence for ONE post-purchase refund leg (TKT-168, ADR-032
+      # §Provider-neutral evidence reads). A leg is addressed by three parts — the
+      # organizer, the CHARGE's idempotency key it refunds, and its own refund key — which
+      # is why it is its own path rather than a variant of /internal/operations: that read
+      # is keyed by a single idempotency key and answers about a different record.
+      #
+      # Strictly a read: it binds nothing, calls no provider, and appends no fact. It
+      # exists because a caller could previously prove a charge ran but not that a refund
+      # leg had settled, nor for how much — so a refund replaced by a successful no-op was
+      # indistinguishable from one that moved money.
+      operationId: getRefundLeg
+      parameters:
+        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: source_idempotency_key, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: refund_idempotency_key, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+      responses:
+        '200': {description: Refund leg evidence, content: {application/json: {schema: {$ref: '#/components/schemas/RefundLegState'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/psp/status:
     get:
       # Provider-neutral status resolution (ADR-032 §Status/replay). A resolved operation
@@ -377,3 +400,27 @@ components:
         # NEW PaymentIntent — and the operation is manual reconciliation, not retry
         # fodder (ADR-032 §Status/replay amendment).
         status_replay_deadline_at: {type: string, format: date-time}
+        # Provider-neutral amount evidence (TKT-168, ADR-032 §Provider-neutral evidence
+        # reads). Present ONLY for an operation that captured: these say how much money
+        # moved, and an operation that has not captured has no such answer. Omitted rather
+        # than zeroed — a zero cannot be told apart from a genuine zero-value capture.
+        #
+        # Neutral by the same rule PSPStatus already publishes them under: an amount in
+        # integer minor units and its ISO currency describe the movement, not the
+        # processor, the instrument, or the provider object that produced it.
+        captured_amount: {type: integer, format: int64}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+    RefundLegState:
+      # One post-purchase refund leg's evidence (TKT-168). Never contains the provider
+      # idempotency key, the provider reference, or any other provider identity — the leg
+      # row carries both, and neither crosses this boundary.
+      type: object
+      additionalProperties: false
+      required: [completed, amount, currency]
+      properties:
+        # false while the leg is BOUND: the provider call has not settled. A bound leg is
+        # money the buyer has not been given back yet, so it must be distinguishable from a
+        # completed one rather than collapsed into "a refund exists".
+        completed: {type: boolean}
+        amount: {type: integer, format: int64}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}

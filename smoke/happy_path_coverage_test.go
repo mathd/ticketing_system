@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -301,10 +302,21 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// passed (ai-review F5).
 	// No organizer_id: catalog takes it from the assertion (TKT-245), and the
 	// schema refuses a submitted one rather than ignoring it.
+	// The two seeded face values, and the exchange delta the RULE says must move between
+	// them. Derived from the seeds, never from a response: an expected amount read out of
+	// commerce's own answer would compare commerce's arithmetic with itself, which is the
+	// gap TKT-168 exists to close. Quantity is one and this performance seeds no fee rule,
+	// so face value is the whole of it (Exchange.SourceTotal is face alone — a fee rule
+	// seeded here later must update these constants, and this test is where that surfaces).
+	const (
+		gaPrice     int64 = 2500 // publishedSlot's GA type
+		dearerPrice int64 = 5000 // the "Dearer" type created just below
+		exchangeGap       = dearerPrice - gaPrice
+	)
 	dearerType := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
 		"performance_id": slot,
 		"name":           map[string]string{"fr": "Cher", "en": "Dearer"},
-		"price":          map[string]any{"amount": 5000, "currency": "EUR"}})
+		"price":          map[string]any{"amount": dearerPrice, "currency": "EUR"}})
 	dearer := fmt.Sprint(dearerType["id"])
 
 	// UPGRADE: exactly the difference is charged, once.
@@ -332,7 +344,11 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// previous assertions read the delta out of commerce's response, so replacing either
 	// payment call with a successful no-op left them all green. This asserts the provider
 	// operation actually exists, for the exact amount, under the deterministic key.
-	assertExchangeCharge(t, organizerID, upgraded.ExchangeID)
+	//
+	// TKT-168: the expected amount is the SEEDED gap, not upgraded.DeltaAmount. Until
+	// payments exposed a captured amount this helper could only prove the charge ran;
+	// changing it to 1 left every assertion green.
+	assertExchangeCharge(t, organizerID, upgraded.ExchangeID, exchangeGap)
 	// switch_pending is the point: settled, and the buyer still holds valid OLD tickets
 	// until TKT-166 switches them.
 	if upgraded.Status != "switch_pending" || upgraded.TicketsExchanged || upgraded.Replay {
@@ -471,7 +487,12 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &downReservation); err != nil {
 		t.Fatal(err)
 	}
-	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "cov-down-order-"+slot,
+	// The checkout key is bound to a variable because it is ALSO the payments identity of
+	// this order's charge: commerce persists orders.idempotency_key as the exchange's
+	// PaymentSourceKey, and a downgrade's refund leg hangs off that key rather than off any
+	// exchange-scoped one. It is the source half of the refund leg's three-part identity.
+	downOrderKey := "cov-down-order-" + slot
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", downOrderKey,
 		map[string]any{"reservation_id": downReservation["reservation_id"], "name": "Downgrade Buyer",
 			"email": "downgrade@example.test", "payment_token": "fake-ok"})
 	if code != http.StatusOK {
@@ -502,6 +523,12 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	}
 	// The opposite leg: a refund of exactly the difference, and NO charge — asserting the
 	// wrong branch did not also run is half the point.
+	//
+	// TKT-168: before the refund-leg evidence read existed, only the negative half was
+	// assertable here. A downgrade whose refund call was replaced by a successful no-op
+	// passed, because nothing could see the leg. Both halves now run: the leg settled for
+	// exactly the seeded gap, and the charge branch did not fire.
+	assertExchangeRefund(t, organizerID, downOrderKey, downgraded.ExchangeID, exchangeGap)
 	assertNoExchangeCharge(t, organizerID, downgraded.ExchangeID)
 
 	// Same ticket type: an EQUAL exchange, which must settle no money at all and still
@@ -555,7 +582,10 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 // the exchange's deterministic key, captured, for exactly the delta. Reading commerce's
 // own response cannot show this — that is the assertion gap ai-review pass 2 found, where
 // replacing the payment call with a no-op left every check green.
-func assertExchangeCharge(t *testing.T, organizerID, exchangeID string) {
+// want is the amount the RULE says must move, derived from the seeded ticket prices by the
+// caller — never read back out of commerce's response, which would compare commerce's
+// arithmetic with itself.
+func assertExchangeCharge(t *testing.T, organizerID, exchangeID string, want int64) {
 	t.Helper()
 	code, body := internalJSON(t, http.MethodGet,
 		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil)
@@ -563,18 +593,66 @@ func assertExchangeCharge(t *testing.T, organizerID, exchangeID string) {
 		t.Fatalf("exchange charge operation missing: %d %s", code, body)
 	}
 	var op struct {
-		Resolved bool   `json:"resolved"`
-		Status   string `json:"status"`
+		Resolved       bool   `json:"resolved"`
+		Status         string `json:"status"`
+		CapturedAmount *int64 `json:"captured_amount"`
+		Currency       string `json:"currency"`
 	}
 	if err := json.Unmarshal(body, &op); err != nil {
 		t.Fatal(err)
 	}
-	// OperationState deliberately exposes no amount (it is provider-neutral evidence, not
-	// a ledger read), so this proves the charge RAN, under the deterministic exchange key,
-	// and captured. The amount is separately guaranteed by the database CHECK that delta =
-	// target - source, and by payments deriving the charge from the amount commerce sent.
 	if !op.Resolved || op.Status != "captured" {
 		t.Fatalf("exchange charge = %+v, want a resolved captured operation", op)
+	}
+	// TKT-168: the captured amount is now provider-neutral evidence payments publishes
+	// (ADR-032 §Provider-neutral evidence reads), so an upgrade that charged the wrong
+	// amount is visible here. A POINTER on purpose — a missing field must fail loudly
+	// rather than decode to a zero that some other assertion might accept.
+	if op.CapturedAmount == nil {
+		t.Fatalf("exchange charge exposes no captured amount: %s", body)
+	}
+	if *op.CapturedAmount != want {
+		t.Fatalf("exchange charge captured %d, want the price difference %d", *op.CapturedAmount, want)
+	}
+	if op.Currency != "EUR" {
+		t.Fatalf("exchange charge currency = %q, want EUR", op.Currency)
+	}
+}
+
+// assertExchangeRefund proves the DOWNGRADE leg reached payments and SETTLED, for exactly
+// the seeded difference. sourceKey is the source order's checkout idempotency key, which is
+// what commerce persists as the exchange's PaymentSourceKey and therefore the key the leg
+// is bound against; the leg's own key is exchange-scoped.
+//
+// Before TKT-168 nothing could read a leg, so this half of the money movement was proven
+// only by commerce's own response — replacing the refund call with a successful no-op left
+// the suite green.
+func assertExchangeRefund(t *testing.T, organizerID, sourceKey, exchangeID string, want int64) {
+	t.Helper()
+	code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/refund-legs?organizer_id=%s&source_idempotency_key=%s&refund_idempotency_key=%s",
+			paymentsURL, organizerID, url.QueryEscape(sourceKey), url.QueryEscape("exchange-refund:"+exchangeID)), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("exchange refund leg missing: %d %s", code, body)
+	}
+	var leg struct {
+		Completed bool   `json:"completed"`
+		Amount    int64  `json:"amount"`
+		Currency  string `json:"currency"`
+	}
+	if err := json.Unmarshal(body, &leg); err != nil {
+		t.Fatal(err)
+	}
+	// Completion is asserted separately from the amount: a leg that BOUND for the right
+	// amount and never settled is money the buyer never got back.
+	if !leg.Completed {
+		t.Fatalf("exchange refund leg = %+v, want a completed leg", leg)
+	}
+	if leg.Amount != want {
+		t.Fatalf("exchange refund leg returned %d, want the price difference %d", leg.Amount, want)
+	}
+	if leg.Currency != "EUR" {
+		t.Fatalf("exchange refund leg currency = %q, want EUR", leg.Currency)
 	}
 }
 
