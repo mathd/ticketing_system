@@ -95,9 +95,10 @@ mutable operational evidence, not canonical business facts.
 **A read-only evidence surface MAY publish normalized money evidence payments already holds:** for
 a captured operation, the **captured amount in integer minor units and its ISO currency**; for a
 post-purchase refund leg, its **completion state, amount in integer minor units, and ISO currency**.
-These are provider-neutral because they describe *the movement* — how much money changed hands, in
-which currency, and whether it settled — and not the processor, the instrument, or the provider
-object that carried it.
+These are provider-neutral because they describe *the movement as payments recorded it* — how much
+money it moved, in which currency, and whether the leg settled — and not the processor, the
+instrument, or the provider object that carried it. (What that record is and is not evidence OF is
+bounded below; read that paragraph before citing these fields.)
 
 **The boundary MUST NOT publish** provider payment, charge or refund references (`pi_`/`ch_`/`re_`);
 provider-specific state strings; **provider idempotency keys** (a leg's derived key is what makes it
@@ -118,6 +119,19 @@ alone. A caller that must not cause provider traffic — a test, a reconciliatio
 therefore prove *that* a charge ran but never *what it moved*, and had no read at all for a refund
 leg, so a refund call replaced by a successful no-op was indistinguishable from one that moved
 money.
+
+**Bounded precisely: this is payments' RECORD of the movement, not the provider's confirmation of
+it.** Say which, the way ADR-021 insists on naming the adversary before writing "tamper-evident".
+`psp.Result` carries no monetary value; the charge path persists the **requested** amount as the
+captured amount, and a refund leg's amount is the one it BOUND, fixed before the provider call. The
+Stripe adapter parses neither `amount_received` nor the refund object's returned `amount` into that
+evidence. So these reads answer *"what payments durably recorded for this operation"* — which is
+exactly what a caller needs to detect a caller-side defect (a wrong delta, a skipped call, a
+no-op'd refund), and is **not** an independent check on the processor. A provider that captured or
+refunded a different amount would not be caught here. Closing that gap means recording
+provider-confirmed amounts distinctly and failing closed on disagreement: **TKT-257**, raised by
+TKT-168's adversarial review. Until it lands, do not cite these fields as proof the *provider*
+moved that money.
 
 **These are evidence reads, not ledger reads, and they change nothing about what is recorded.** They
 bind no operation and no leg, call no provider, and append no fact. The journal payload stays

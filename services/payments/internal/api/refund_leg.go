@@ -55,6 +55,11 @@ func (s *Server) refundLeg(w http.ResponseWriter, r *http.Request) {
 	// and marshalling it would publish the provider idempotency key that makes a leg
 	// replayable at the provider. Completed is the row's settled state, not merely
 	// "a leg exists" — a bound leg is money the buyer has not received back.
+	//
+	// Amount is the amount the leg BOUND, which completion does not currently revise
+	// against the provider's answer (TKT-257) — the same figure the write response and the
+	// compensating fact already carry. It proves the leg was created for this amount and
+	// settled; it is not the provider's confirmation that this amount came back.
 	write(w, 200, map[string]any{
 		"completed": leg.Completed,
 		"amount":    leg.Amount,

@@ -150,7 +150,13 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 	// Amount evidence for a captured operation only (TKT-168). The condition is on the
 	// provider state rather than on Resolved: a resolved-but-declined operation moved no
 	// money, and answering 0 for it would be indistinguishable from a genuine zero capture.
-	// CapturedAmount, never RequestAmount — what was asked for is not what moved.
+	//
+	// CapturedAmount, never RequestAmount: they are distinct columns and reading the wrong
+	// one is a real defect. Be precise about what this proves, though — today the charge
+	// path POPULATES captured_amount from the request, because psp.Result carries no
+	// monetary value (TKT-257). So this is payments' durable record of the movement, which
+	// is what catches a caller-side defect — a wrong delta, a skipped call, a no-op'd
+	// refund — and is not an independent check on the processor.
 	if op.ProviderState == "captured" {
 		out["captured_amount"] = op.CapturedAmount
 		out["currency"] = op.RequestCurrency
