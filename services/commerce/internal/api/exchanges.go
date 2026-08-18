@@ -157,8 +157,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	//
 	// A source with no reseller therefore reprices PUBLICLY, which is what its
 	// original hold already was.
-	resolution, err := s.resolveTicketTypePrice(r.Context(), in.TargetTicketTypeID, in.OrganizerID,
-		src.Quantity, repricingChannel(src))
+	resolution, err := s.repriceExchangeTarget(r, in.TargetTicketTypeID, in.OrganizerID, src)
 	if err != nil {
 		if errors.Is(err, errResolveUnavailable) {
 			write(w, http.StatusBadGateway, map[string]string{"error": "catalog unavailable"})
@@ -618,6 +617,16 @@ func (s *Server) persistExchangeReplacement(r *http.Request, ex commercestore.Ex
 	// The same reasoning the customer_id copy below already applies, extended to the
 	// two columns it did not cover. That comment says an exchange is "the same
 	// purchase in a different seat" -- who sold that purchase does not change either.
+	//
+	// ATTRIBUTION AND PRICING ARE DELIBERATELY ALLOWED TO DISAGREE (TKT-248). For a
+	// legacy PUBLIC source that carries a channel, this copies that channel_code
+	// while repricingChannel() resolved the target's price with no channel at all --
+	// so the replacement's price_resolution_snapshot names no channel and its
+	// channel_code does. That is not drift to be tidied away: the columns say WHO
+	// the sale is attributed to, which must survive unchanged (ADR-024), and the
+	// snapshot says HOW this particular price was reached, which is now public
+	// because no credential ever vouched for that channel. Making either follow the
+	// other would falsify one of them.
 	if _, err := s.db.ExecContext(r.Context(), `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status,price_resolution_snapshot,channel_code,reseller_id)
 		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12,src.channel_code,src.reseller_id
@@ -774,4 +783,17 @@ func repricingChannel(src commercestore.ExchangeSource) *string {
 		return nil
 	}
 	return src.ChannelCode
+}
+
+// repriceExchangeTarget is the one place an exchange's target price is resolved,
+// and the only caller of repricingChannel.
+//
+// It exists so the DECISION and the CALL are one testable unit. A test that only
+// exercised repricingChannel would restate that function and stay green if this
+// call site were changed back to passing src.ChannelCode directly -- which is
+// exactly the revert the guard exists to prevent (ai-review pass 3).
+func (s *Server) repriceExchangeTarget(r *http.Request, targetTicketType, organizer uuid.UUID,
+	src commercestore.ExchangeSource) (priceResolution, error) {
+	return s.resolveTicketTypePrice(r.Context(), targetTicketType, organizer,
+		src.Quantity, repricingChannel(src))
 }
