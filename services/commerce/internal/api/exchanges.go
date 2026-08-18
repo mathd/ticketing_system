@@ -118,6 +118,50 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AN UNSETTLED REPLAY WITH A PERSISTED BASIS RESUMES FROM IT (TKT-167).
+	//
+	// This is the window the basis was built for and the one TKT-158 did not use it on: the
+	// delta CHARGED and a later step failed, so the buyer is out of pocket and the exchange
+	// is unsettled. Falling through to the forward path re-prices through catalog and
+	// re-submits the hold before ever loading the basis, and both of those fail in exactly
+	// the situations recovery has to survive:
+	//
+	//   - catalog unreachable  -> 502 at the reprice, and the charged buyer stays stranded;
+	//   - the target price moved -> inventory's claim fingerprint covers unit_amount
+	//     (services/inventory/internal/store/store.go), so the SAME `exchange-target:` key
+	//     with a new price is ErrIdempotency, not a replay.
+	//
+	// Neither is a real obstacle: nothing about finishing this exchange needs a new price or
+	// a new claim. Both were resolved before the money moved and both are on the row.
+	//
+	// ADR-036 is satisfied, not bypassed. Catalog WAS the single authority for this price;
+	// TargetUnitAmount/TargetTotal/TargetPriceSnapshot are that authority's result, persisted
+	// at basis time. Re-resolving would not be more faithful to ADR-036 — it would settle
+	// money against a price the buyer never agreed to and journal a provenance snapshot
+	// describing a resolution that happened after the charge.
+	if found && existing.BasisRecorded && !existing.Settled {
+		// BindOrderExchange, not LoadExchangeSource, and the difference is the point.
+		//
+		// The resume needs five fields the exchange row does not carry — SourceReservation,
+		// BuyerID, HoldID, SlotID, PaymentSourceKey — and BindOrderExchange's replay branch
+		// returns exactly those, from a locked read of the source order, BEFORE it reaches
+		// the `status != "completed"` check and the refund exclusion. So an exchange whose
+		// source has since become ineligible still resumes, which is the only defensible
+		// answer once the provider has moved money: refusing here strands a charge. It
+		// binds nothing — the row already exists, so the INSERT is never reached.
+		ex, err := commercestore.BindOrderExchange(r.Context(), s.db, request)
+		if err != nil {
+			code, message := exchangeProblem(err)
+			if code == http.StatusInternalServerError {
+				slog.Default().ErrorContext(r.Context(), "resume exchange", "exchange_id", existing.ID, "err", err)
+			}
+			write(w, code, map[string]string{"error": message})
+			return
+		}
+		s.completeExchangeFromBasis(w, r, ex, true)
+		return
+	}
+
 	// ELIGIBILITY, and nothing durable yet (ai-review F2). Binding before these checks left
 	// a row behind on every refusal — a typo or a sold-out target then made the order
 	// permanently unreversible, because the one-per-order index blocked a corrected attempt
@@ -218,26 +262,55 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 			TargetUnitAmount:         resolution.ResolvedPrice.Amount,
 			PriceSnapshot:            []byte(resolution.raw),
 		}
-		recorded, err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, basis)
+		// Record-or-LOAD (TKT-167). A losing writer used to be told only that it lost and
+		// answered 409; now it receives the basis that actually persisted and continues on
+		// THAT. `persisted` is the row's, whoever wrote it — which is the whole invariant:
+		// the money's basis is the one in the database, never the one in this request's
+		// hand, and the two can differ by a whole price change.
+		persisted, _, err := commercestore.RecordExchangeBasis(r.Context(), s.db, ex.OrganizerID, ex.ID, basis)
 		if err != nil {
 			slog.Default().ErrorContext(r.Context(), "record exchange basis", "err", err)
 			write(w, 500, map[string]string{"error": "persist exchange"})
 			return
 		}
-		if !recorded {
-			// Another writer persisted a basis first, and the money's basis is theirs, not
-			// the one in this request's hand. Continuing on an unpersisted basis is how a
-			// reservation ends up storing a snapshot that disagrees with the exchange row
-			// (ai-review pass 3). Resuming from the authoritative row is TKT-167; refusing
-			// to guess is this ticket's job.
-			write(w, http.StatusConflict, map[string]string{"error": "exchange is already in flight; retry with the same key"})
-			return
-		}
-		ex.TargetHoldID, ex.ReplacementReservationID = basis.TargetHoldID, basis.ReplacementReservationID
-		ex.TargetSlotID, ex.TargetUnitAmount, ex.TargetPriceSnapshot = basis.TargetSlotID, basis.TargetUnitAmount, basis.PriceSnapshot
-		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = basis.TargetTotal, basis.DeltaAmount, true
+		ex.TargetHoldID, ex.ReplacementReservationID = persisted.TargetHoldID, persisted.ReplacementReservationID
+		ex.TargetSlotID, ex.TargetUnitAmount, ex.TargetPriceSnapshot = persisted.TargetSlotID, persisted.TargetUnitAmount, persisted.PriceSnapshot
+		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = persisted.TargetTotal, persisted.DeltaAmount, true
 	}
 
+	s.completeExchangeFromBasis(w, r, ex, false)
+}
+
+// completeExchangeFromBasis is everything after the basis is durable: the representability
+// check, finalize, the single provider movement, confirm, both gross facts, the replacement,
+// and settlement.
+//
+// It is one function called from two places — the forward path and TKT-167's resume — on
+// purpose. Two copies of a money sequence acquire different retry semantics the first time
+// one of them is edited, and the whole premise of the resume is that the second pass through
+// these steps behaves exactly like the first. Every step here is already idempotent under
+// the exchange identity, which is what makes calling it twice safe:
+//
+//   - finalize/confirm: inventory answers a transition to a state the claim already holds
+//     as satisfied rather than as a conflict;
+//   - the delta: keyed `exchange-charge:<id>` / `exchange-refund:<id>`, so payments converges
+//     a repeat onto the one provider operation — and delta 0 calls nobody at all;
+//   - the facts: deterministic ids + ON CONFLICT DO NOTHING, occurred_at from the row's
+//     stored created_at rather than the clock (ADR-037 §5), so a replay rebuilds
+//     byte-identical content;
+//   - the replacement: deterministic ids + ON CONFLICT(id) DO NOTHING;
+//   - settlement: guarded on settled_at IS NULL.
+//
+// `ex` must carry the persisted basis AND the source fields the exchange row does not hold
+// (SourceReservation, BuyerID, HoldID, PaymentSourceKey) — both callers fill them before
+// calling, from LoadExchangeSource and BindOrderExchange respectively.
+//
+// `replay` is what the caller knows and this function cannot infer: the forward path is
+// driving these steps for the first time, the resume is driving them again. The row looks
+// identical from here either way, which is exactly why it is a parameter rather than a
+// derivation — a resume reporting `replay: false` would tell an operator reconciling a
+// charged-but-unsettled exchange that they were looking at a fresh one.
+func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Request, ex commercestore.Exchange, replay bool) {
 	// Prove the whole exchange is REPRESENTABLE before ANYTHING becomes hard to
 	// undo (ai-review passes 3 and 4). The carried fee is added to the target to
 	// produce the replacement's gross, and an unrepresentable sum has no good
@@ -288,7 +361,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ex.ReplacementOrderID, ex.Settled = replacement, true
-	writeExchange(w, ex, false)
+	writeExchange(w, ex, replay)
 }
 
 // shouldReleaseHoldOnBindError decides whether the hold this request took belongs to it.

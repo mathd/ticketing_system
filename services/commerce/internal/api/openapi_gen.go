@@ -132,6 +132,21 @@ func (e ExchangeStatus) Valid() bool {
 	}
 }
 
+// Defines values for ExchangePendingStatus.
+const (
+	ConfirmationPending ExchangePendingStatus = "confirmation_pending"
+)
+
+// Valid indicates whether the value is a known member of the ExchangePendingStatus enum.
+func (e ExchangePendingStatus) Valid() bool {
+	switch e {
+	case ConfirmationPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OrderResultStatus.
 const (
 	Completed OrderResultStatus = "completed"
@@ -377,6 +392,15 @@ type ExchangeCreate struct {
 	Reason             string             `json:"reason"`
 	TargetTicketTypeId openapi_types.UUID `json:"target_ticket_type_id"`
 }
+
+// ExchangePending defines model for ExchangePending.
+type ExchangePending struct {
+	ExchangeId openapi_types.UUID    `json:"exchange_id"`
+	Status     ExchangePendingStatus `json:"status"`
+}
+
+// ExchangePendingStatus defines model for ExchangePending.Status.
+type ExchangePendingStatus string
 
 // ExchangeSwitchResult defines model for ExchangeSwitchResult.
 type ExchangeSwitchResult struct {

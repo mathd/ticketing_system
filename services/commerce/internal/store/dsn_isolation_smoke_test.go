@@ -39,6 +39,7 @@ var commerceSmokeDSNVars = []string{
 	"COMMERCE_BULKREFUND_TEST_DATABASE_URL", // ./internal/bulkrefund
 	"COMMERCE_MAILER_TEST_DATABASE_URL",     // ./internal/mailer
 	"COMMERCE_MIGRATION_TEST_DATABASE_URL",  // ./internal/store migration-upgrade harness (own schemas)
+	"COMMERCE_API_TEST_DATABASE_URL",        // ./internal/api (TKT-167)
 }
 
 // TestCommerceSmokeDatabasesAreIsolated fails when two commerce smoke packages would

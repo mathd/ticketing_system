@@ -409,6 +409,16 @@ paths:
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExchangeCreate'}}}}
       responses:
         '200': {description: Settled (or replay), content: {application/json: {schema: {$ref: '#/components/schemas/Exchange'}}}}
+        # The money moved and the target claim did not confirm (TKT-167). A REAL,
+        # retryable state, and the whole reason the basis is persisted before the
+        # provider is called: replaying the same key resumes from that basis and
+        # finishes, with no second provider movement.
+        #
+        # It was undeclared until TKT-167, which made it a 500 under the response
+        # validator (ADR-028) — an outage-shaped answer to the one state that is
+        # recoverable by retrying. The handler has written it since TKT-158; only the
+        # contract was missing, so nothing but the declaration changes here.
+        '202': {description: 'Charged; confirmation pending — replay the same key to resume', content: {application/json: {schema: {$ref: '#/components/schemas/ExchangePending'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
@@ -1106,6 +1116,16 @@ components:
         tickets_exchanged: {type: boolean}
         capacity_returned: {type: boolean}
         replay: {type: boolean}
+    ExchangePending:
+      type: object
+      additionalProperties: false
+      required: [exchange_id, status]
+      properties:
+        exchange_id: {type: string, format: uuid}
+        # One value, deliberately: this schema answers exactly one situation, and an
+        # open string would let a future branch answer 202 with a state nobody
+        # declared — which is the drift the response validator exists to catch.
+        status: {type: string, enum: [confirmation_pending]}
     ExchangeSwitched:
       type: object
       additionalProperties: false
