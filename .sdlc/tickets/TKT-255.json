@@ -1,0 +1,25 @@
+{
+  "key": "TKT-255",
+  "type": "Story",
+  "parent": "TKT-9",
+  "classification": "complex",
+  "summary": "An exchange whose target claim went terminal is wedged, with no unwind path",
+  "description": "Found by the TKT-167 adversarial review (pass 1, [high]), verified by execution and carried\nout of that ticket as a **pre-existing** gap rather than a regression.\n\n**The state.** An exchange records its basis, and the target claim then goes `expired` (its TTL\nelapsed before `finalize`) or `released`. Inventory refuses every transition out of a terminal\nstate, so `finalize` answers `ErrConflict` and commerce answers **409 \"exchange target is\nunavailable\"** — forever. The durable `order_exchanges` row then blocks a corrected attempt via\n`order_exchanges_one_per_source`, and the refund path treats any exchange row as a live exchange.\n**The source order is stuck, and nothing in the system can unstick it.**\n\n**Why it is not TKT-167's.** Before that ticket the same replay fell through to the forward path,\nwhere `holdExchangeTarget` replays the same `exchange-target:` key, inventory's `CreateHold` hits\n`existing.expired()` and returns `ErrConflict`, and the handler answered the identical 409. Same\nwedge, same status, same message, before and after. TKT-167 changed WHICH call refuses, not\nwhether one does.\n\n**No money is stranded, and that is why it is not a blocker.** The sequence is `finalize` then\nsettle, and finalize takes the claim out of the expiry predicate (`liveClaims` counts `finalizing`\nunconditionally). So a claim expiring before finalize was never charged against, and a charge\nimplies finalize succeeded and the claim can no longer expire. The only other route to terminal is\nan explicit release, and the exchange path issues exactly one — `releaseExchangeHold` on a BIND\nfailure, before any basis exists and before any money moves. The review's \"released after capture\"\ncase has no producer in this code. **Executed, not argued:**\n`TestATerminalTargetClaimWedgesTheExchangeAndStrandsNoMoney` drives both attempts and asserts 409,\nzero charge submissions, unsettled.\n\nThat test **pins the gap** in ADR-021's rollback-gap shape. If it ever fails, this ticket was\nclosed — update the test, do not delete it.\n\n**Acceptance Criteria:**\n- [ ] An exchange whose target claim is terminal and which has moved **no money** can be unwound:\n      the binding is removed, the source order is free for a corrected attempt, and the refund path\n      stops treating it as live. Proven against a real terminal claim, not a stubbed conflict.\n- [ ] The unwind **refuses** when money did move — it must be impossible to delete the binding of a\n      settled or charged exchange. Proven against payments-side evidence, not commerce's flags.\n- [ ] Whether this is a staff operation, an automatic sweep, or part of the resume is an open\n      design question. Whichever is chosen, the wedged state must be **discoverable** — an operator\n      cannot unwind what no read surfaces.\n- [ ] `TestATerminalTargetClaimWedgesTheExchangeAndStrandsNoMoney` is updated (not deleted) to\n      assert the new behaviour.\n\nQuality gates: `make check` green; money integer minor units.",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-167"
+    }
+  ],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Needs shaping before Gate 1\n\nFiled by the TKT-167 ai-review triage as an **incidental** finding — real, pre-existing, and out of\nthat ticket's scope. Not shaped: the DoR is unfilled and the central design question (staff\noperation vs sweep vs resume-integrated) is open and is a human's call.\n\n**Carries no money risk in its current state**, which is why it was not fixed under TKT-167's\nchurn budget. The cost is a permanently unreversible order, which is a real product defect and a\nsupport burden, not a financial one.\n\nWorth sequencing with **TKT-163** (refund reversal retries) and the rest of the\n\"obligation interrupted mid-flight\" family — this is the third member."
+    }
+  ]
+}
