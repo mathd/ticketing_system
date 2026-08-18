@@ -176,6 +176,15 @@ exists are in *Historical* at the bottom; their files are kept.
   shared input cannot notice that the real one is missing** — `scripts/check-required-env.sh` now
   compares the two, deriving the expectation from the requirement rather than from the behaviour.
 
+- [**A test that restates its helper does not pin the wiring**](./learnings/2026-08-17-a-test-that-restates-its-helper.md) —
+  TKT-248 shipped three tests that could not fail, all caught by cross-model review: one proved the
+  SCHEMA while the handler guard was deletable (request validation is unconditional —
+  `Router`'s bool is `validateResponses`), one returned arithmetic over values its own fake had
+  assigned and called it money, and one called the decision helper directly so reverting the CALL
+  SITE left it green. One shape: asserting inside the process instead of at the boundary the value
+  crosses. For every guard, name the edit that REMOVES IT FROM THE PLACE THAT USES IT — not the one
+  that breaks it — and check the test catches that.
+
 ## Security
 
 - [**A fingerprint of a symmetric secret is an oracle**](./learnings/2026-07-30-a-fingerprint-of-a-symmetric-secret-is-an-oracle.md) —
