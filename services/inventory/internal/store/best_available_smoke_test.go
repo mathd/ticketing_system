@@ -918,3 +918,40 @@ func TestBestAvailableScanCapConstantsAgree(t *testing.T) {
 		t.Fatalf("the shipped query does not contain %q — the scan cap in the SQL has drifted from the constant", maxBestAvailableScanSQL)
 	}
 }
+
+// TestBestAvailableOrphanCheckAtTheScanBoundary probes a seam the design creates and the
+// other tests cannot reach: `grp` holds only the seats INSIDE the scan cap, so a window
+// selected at the very edge of the cap has a flanking seat the orphan filter cannot see.
+//
+// The question is what happens then, and the answer must not be "a seat is silently
+// stranded". Cap 6 over a row of 20, with seat 1 taken. Inside the window the free seats are
+// 2..6; a party of 4 takes 2,3,4,5 and leaves seat 6 flanked by the selection on one side and
+// by seat 7 — which is free, but OUTSIDE the cap and therefore invisible to `grp` — on the
+// other.
+//
+// The filter treats an unseen neighbour as unavailable, so it refuses the window rather than
+// assuming the best. That is the conservative direction: it can decline a legal selection at
+// the boundary, never grant a stranding one. The alternative — treating "not in grp" as
+// "free" — would make the cap silently weaken the orphan rule, which is the one thing a
+// bounded scan must not do.
+func TestBestAvailableOrphanCheckAtTheScanBoundary(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	st.baScan = 6
+	org, slot, seat := seededBestAvailablePool(t, ctx, st, 1, 20)
+	hold(t, ctx, st, org, slot, seat(1, 1))
+
+	_, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString())
+	if err == nil {
+		t.Fatal("a window whose flank lies beyond the scan cap must be refused, not granted on an assumption about seats the query cannot see")
+	}
+	if !errors.Is(err, ErrBestAvailableUnavailable) {
+		t.Fatalf("err = %v want ErrBestAvailableUnavailable", err)
+	}
+	// Raising the cap so the flank becomes visible turns the same request into a success —
+	// which is what makes the refusal above a statement about the BOUNDARY rather than about
+	// a pool that had no answer.
+	st.baScan = MaxBestAvailableScan
+	if _, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString()); err != nil {
+		t.Fatalf("with the whole row visible the selection is legal: %v", err)
+	}
+}

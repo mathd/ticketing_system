@@ -69,12 +69,10 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 	section := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/sections", map[string]any{
 		"name": "Stalls", "position": 1,
 	})
-	rows := make([]any, 0, 2)
 	for r := 1; r <= 2; r++ {
 		row := created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/rows", map[string]any{
-			"section_id": section["id"], "label": fmt.Sprint("ABCDEFGH"[r-1 : r]), "position": r,
+			"section_id": section["id"], "label": "ABCDEFGH"[r-1 : r], "position": r,
 		})
-		rows = append(rows, row["id"])
 		for i := 1; i <= 5; i++ {
 			created(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/seats", map[string]any{
 				"row_id": row["id"], "label": fmt.Sprint(i), "position": i,
