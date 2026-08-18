@@ -86,6 +86,25 @@ same transaction and pool lock as the claim.
    is legal spacing, not missing seats. Re-basing at derivation is what makes "adjacent in the
    row" and "consecutive positions" the same statement; carrying raw values through would read
    three neighbouring seats as three one-seat runs.
+
+   **And the ordering must DESCRIBE THE EDGES, which is checked rather than assumed.** A
+   projection carries two descriptions of one geometry: the edges say who sits beside whom, the
+   positions say where each seat sits. Selection reads only the positions and arbitration reads
+   only the edges, so nothing made them agree — and every check that existed (unique positions,
+   reciprocal edges) was satisfied by a projection where they did not. Chain A-B-C-D-E-F-G with
+   positions B=1, E=2, C=3 … sold **B and E as a two-seat run**; they are four seats apart, and
+   the orphan filter agreed they were neighbours because it reasons in the same positional
+   space. So within a row, positions run 1..N and the seat at position *i* names position *i-1*
+   as its left and *i+1* as its right. Executed, not argued: that permutation was run and did
+   commit before the rule existed.
+
+   A structural consequence worth recording, because it makes a green suite misleading: with
+   every row re-based to 1..N, a new row always restarts at position 1 — a decrease — while
+   `row_number()` only increases, so the gaps-and-islands difference **cannot** repeat across a
+   row boundary. The island `PARTITION BY row_key` and the window join's row predicate are
+   therefore redundant given the re-basing, and no fixture can kill either. They stay because a
+   future change to the island expression would make them load-bearing again, and the tests say
+   plainly that they prove the *property* rather than those two predicates.
 3. **`row_key` is the row's catalog UUID, not its label, and `row_rank` orders the rows.**
    Labels repeat across sections — "row A" exists in every one — so a label-keyed projection
    merges rows that do not touch. But a UUID sorts arbitrarily, so identity cannot double as

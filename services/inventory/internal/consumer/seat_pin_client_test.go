@@ -473,3 +473,42 @@ func TestSeatMapAdjacencyTreatsAnInterruptedBodyAsTransient(t *testing.T) {
 		t.Fatalf("err = %v — a dropped connection is transient; terminating on it loses the publication", err)
 	}
 }
+
+// TestSeatMapAdjacencyRanksRowsByDeclaredPositionNotArrivalOrder pins the ranking against the
+// producer's iteration order rather than with it (TKT-81).
+//
+// Catalog's geometry read orders rows by position across the WHOLE map and then files each
+// into its section, so today arrival order and (section, row) order agree. That is the
+// producer's SQL, not a contract this consumer can check, and inventory holds no geometry to
+// notice the day it changes. The response carries the positions explicitly, so the rank is
+// computed from them.
+//
+// The fixture arrives deliberately out of order: section 2 first, and within each section the
+// higher row position first. The ranks must still follow (section position, row position).
+func TestSeatMapAdjacencyRanksRowsByDeclaredPositionNotArrivalOrder(t *testing.T) {
+	id := uuid.New()
+	r := func() string { return uuid.New().String() }
+	s2r2, s2r1, s1r2, s1r1 := r(), r(), r(), r()
+	body := `{"map":{"id":"` + id.String() + `","status":"published"},"sections":[
+		{"position":2,"rows":[
+			{"id":"` + s2r2 + `","position":2,"seats":[{"seat_identity":"B/2/1","position":1}]},
+			{"id":"` + s2r1 + `","position":1,"seats":[{"seat_identity":"B/1/1","position":1}]}]},
+		{"position":1,"rows":[
+			{"id":"` + s1r2 + `","position":2,"seats":[{"seat_identity":"A/2/1","position":1}]},
+			{"id":"` + s1r1 + `","position":1,"seats":[{"seat_identity":"A/1/1","position":1}]}]}]}`
+
+	got, err := geometryServer(t, 200, body).SeatMapAdjacency(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int32{"A/1/1": 1, "A/2/1": 2, "B/1/1": 3, "B/2/1": 4}
+	for _, a := range got {
+		if a.RowRank != want[a.SeatIdentity] {
+			t.Fatalf("%s rank = %d want %d — rows rank by (section position, row position), not by the order the response happened to list them",
+				a.SeatIdentity, a.RowRank, want[a.SeatIdentity])
+		}
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d seats want 4", len(got))
+	}
+}

@@ -173,19 +173,24 @@ func TestBestAvailableScanCapBoundsTheWork(t *testing.T) {
 // is stripped of its PARTITION BY, because `position - row_number()` over a flat walk still
 // happens to separate two rows whose positions both restart at 1.
 //
-// What defeats a flat walk is positions that CONTINUE across the boundary. Here row A/2's
-// seats are numbered 4,5,6 rather than 1,2,3 — a legal projection, since position is only
-// required to be unique and ascending within its own row. Free seats are A/1/2, A/1/3,
-// A/2/4, A/2/5 at positions 2,3,4,5: consecutive as a flat sequence, and two separate
-// 2-runs once the row boundary is honoured. A selection that forgets the boundary sells a
-// party of four two seats in one row and two in another, and calls them adjacent.
+// What defeats a flat walk is the ISLAND arithmetic, not exotic positions. Both rows run
+// 1..3 (the derivation re-bases every row, and validateAdjacencyOrder now requires it), and
+// the seats free are A/1/2, A/1/3, A/2/1, A/2/2. Walked as one flat list ordered by
+// (row, position) those four are consecutive entries, so a `position - row_number()` that
+// forgets to partition by row assigns them one island and offers all four as a run —
+// selling a party of four two seats in one row and two in another, and calling them
+// adjacent. Partitioned, they are two separate 2-runs and a party of four has no answer.
+//
+// An earlier version of this fixture numbered row 2 as 4,5,6 to make the flat walk see one
+// contiguous position range. That is not a projection this system can produce — every row
+// is re-based — so it tested the query against an input reality never supplies.
 func TestBestAvailableNeverSpansRows(t *testing.T) {
 	ctx, st, db := storeForTest(t, 10*time.Minute)
 	org, slot, seatMap := uuid.New(), uuid.New(), uuid.New()
 	seat := func(r, s int) string { return "A/" + strconv.Itoa(r) + "/" + strconv.Itoa(s) }
 
 	adjacency := make([]SeatAdjacencyRow, 0, 6)
-	for r, base := range map[int]int{1: 1, 2: 4} {
+	for r, base := range map[int]int{1: 1, 2: 1} {
 		rowKey := "A/" + strconv.Itoa(r)
 		for i := 0; i < 3; i++ {
 			pos := int32(base + i)
@@ -206,31 +211,52 @@ func TestBestAvailableNeverSpansRows(t *testing.T) {
 	if err := st.ProvisionSeated(ctx, uuid.New(), slot, org, seatMap, 1000, false, adjacency); err != nil {
 		t.Fatal(err)
 	}
-	// Free: A/1/2, A/1/3 (positions 2,3) and A/2/4, A/2/5 (positions 4,5).
-	hold(t, ctx, st, org, slot, seat(1, 1), seat(2, 6))
+	// Row 1 keeps seats 2 and 3; row 2 keeps 1 and 2. Four free seats, no four-run.
+	//
+	// What this test observes, stated honestly rather than assumed — because the obvious
+	// claim ("this proves the row partition is load-bearing") is false, and a comment
+	// asserting it would be worse than no comment.
+	//
+	// The boundary is enforced in three places: the island PARTITION, the window JOIN's row
+	// predicate, and the flank lookups in the orphan filter. Neither of the first two can be
+	// killed by any fixture, and the reason is structural rather than a gap in the fixtures.
+	// validateAdjacencyOrder now requires every row to run 1..N, so a new row always restarts
+	// at position 1 — a decrease — while row_number() only ever increases. Their difference
+	// therefore CANNOT repeat across a boundary: the island value changes by construction, so
+	// even a flat unpartitioned walk separates the rows, and matching windows on island alone
+	// cannot pair seats from two rows. Both predicates are redundant given the re-basing.
+	//
+	// They stay, because the redundancy is a consequence of an invariant enforced elsewhere
+	// and a future change to either could make them load-bearing again — but nobody should
+	// read this suite as proving they work. What it proves is the PROPERTY, which is the
+	// thing the product cares about: four free seats split across two rows are not a
+	// three-run, and each row's own 2-run is still sellable.
+	hold(t, ctx, st, org, slot, seat(1, 1), seat(2, 3))
 
-	if _, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 4, 0, "EUR", uuid.NewString()); !errors.Is(err, ErrBestAvailableUnavailable) {
-		t.Fatalf("err = %v want ErrBestAvailableUnavailable — four free seats at consecutive positions in TWO rows are not a run", err)
+	// Four free seats and the longest run in either row is 2, so a party of THREE has no
+	// answer. An island-only join assembles one from A/1/2, A/1/3 and a row-2 seat.
+	if _, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 3, 0, "EUR", uuid.NewString()); !errors.Is(err, ErrBestAvailableUnavailable) {
+		t.Fatalf("err = %v want ErrBestAvailableUnavailable — four free seats split across two rows are not a three-run", err)
 	}
 	// Nothing was written by the refusal — a partial claim here would be the worst outcome
 	// of all, and a refusal that still consumed seats looks identical from the error alone.
 	var live int
 	if err := db.QueryRowContext(ctx,
 		`SELECT count(*) FROM claim_seats cs JOIN claims c ON c.id=cs.claim_id
-		 WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND c.quantity=4`, slot).Scan(&live); err != nil {
+		 WHERE cs.pool_id=$1 AND cs.released_at IS NULL AND c.quantity=3`, slot).Scan(&live); err != nil {
 		t.Fatal(err)
 	}
 	if live != 0 {
 		t.Fatalf("a refused best-available wrote %d seat rows", live)
 	}
-	// And each row's own 2-run is still sellable, so the refusal above is about the
-	// BOUNDARY rather than about a pool with nothing left in it.
-	got, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 2, 0, "EUR", uuid.NewString())
+	// And each row's own 2-run is still sellable, so the refusal above is about the BOUNDARY
+	// rather than about a pool with nothing left in it.
+	rest, err := st.CreateBestAvailableSeatHold(ctx, org, slot, uuid.New(), 2, 0, "EUR", uuid.NewString())
 	if err != nil {
-		t.Fatalf("a 2-run exists in each row and must be sold: %v", err)
+		t.Fatalf("each row still holds a 2-run and one must be sold: %v", err)
 	}
-	if strings.Join(got.Seats, ",") != seat(1, 2)+","+seat(1, 3) {
-		t.Fatalf("seats = %v want the first row's run", got.Seats)
+	if strings.Join(rest.Seats, ",") != seat(1, 2)+","+seat(1, 3) {
+		t.Fatalf("seats = %v want row 1's run", rest.Seats)
 	}
 }
 
@@ -1248,5 +1274,66 @@ func TestBestAvailableOrdersRowsByRankNotByRowKey(t *testing.T) {
 	if strings.Join(got.Seats, ",") != strings.Join(want, ",") {
 		t.Fatalf("seats = %v want %v — rows are ordered by their RANK, which is the venue's order; "+
 			"row_key is an opaque identity and sorting by it puts the buyer in a row chosen by uuid", got.Seats, want)
+	}
+}
+
+// TestProvisionRefusesOrderingThatContradictsItsEdges is ai-review pass 3's [high], and the
+// defect it names was executed before it was fixed: the projection sold two seats four apart
+// as a contiguous run.
+//
+// A projection carries TWO descriptions of one geometry. The edges say who sits next to whom;
+// the positions say where each seat sits. Selection reads only the positions and arbitration
+// reads only the edges, so nothing forced them to agree — and every check that existed
+// (unique positions, one rank per row, reciprocal edges) was satisfied by a projection where
+// they did not. Chain A-B-C-D-E-F-G with positions B=1, E=2, C=3, D=4, F=5, G=6, A=7: with A
+// taken, best-available returned B and E as a two-seat run. The orphan filter could not catch
+// it either, because it reasons in the same positional space and agreed they were neighbours.
+//
+// The rule is now that within a row positions run 1..N and the seat at position i names
+// position i-1 as its left and i+1 as its right — which makes the two descriptions the same
+// statement. Checked where the projection is BUILT, because the claim path cannot re-derive it
+// from data it does not hold (ADR-041's division of labour).
+func TestProvisionRefusesOrderingThatContradictsItsEdges(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	seat := func(i int) string { return "A/1/" + string(rune('A'+i-1)) }
+	build := func(pos map[int]int32) []SeatAdjacencyRow {
+		out := make([]SeatAdjacencyRow, 0, 7)
+		for i := 1; i <= 7; i++ {
+			p := pos[i]
+			key, rank := "A/1", int32(1)
+			row := SeatAdjacencyRow{SeatIdentity: seat(i), RowKey: &key, Position: &p, RowRank: &rank}
+			if i > 1 {
+				l := seat(i - 1)
+				row.Left = &l
+			}
+			if i < 7 {
+				r := seat(i + 1)
+				row.Right = &r
+			}
+			out = append(out, row)
+		}
+		return out
+	}
+
+	// The exact permutation from the finding.
+	permuted := build(map[int]int32{2: 1, 5: 2, 3: 3, 4: 4, 6: 5, 7: 6, 1: 7})
+	err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 1000, true, permuted)
+	if !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v want ErrSeatProjectionIncomplete — an ordering that contradicts the edges "+
+			"lets selection sell non-adjacent seats as a run", err)
+	}
+
+	// A gap in the positions is the same class of defect: 1..N must be total, or a row reads
+	// as shorter than it is and runs that exist are never offered.
+	gapped := build(map[int]int32{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 8})
+	if err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 1000, true, gapped); !errors.Is(err, ErrSeatProjectionIncomplete) {
+		t.Fatalf("err = %v want ErrSeatProjectionIncomplete — positions must run 1..N with no gap", err)
+	}
+
+	// And the honest ordering is accepted, which is what makes the refusals above about the
+	// CONTRADICTION rather than about ordered projections in general.
+	if err := st.ProvisionSeated(ctx, uuid.New(), uuid.New(), uuid.New(), uuid.New(), 1000, true,
+		build(map[int]int32{1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7})); err != nil {
+		t.Fatalf("an ordering that matches its edges must be accepted: %v", err)
 	}
 }

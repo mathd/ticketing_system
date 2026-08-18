@@ -270,6 +270,63 @@ func validateAdjacencyOrder(rows []SeatAdjacencyRow) error {
 		return fmt.Errorf("%w: %d of %d seats carry ordering metadata — a partly ordered projection hides the rows it omits",
 			ErrSeatProjectionIncomplete, ordered, len(rows))
 	}
+	if ordered == 0 {
+		return nil
+	}
+	// The ordering must DESCRIBE THE EDGES, not merely be well formed beside them (ai-review
+	// pass 3). Everything above proves the ordering is internally tidy — unique positions, one
+	// rank per row — and none of it makes the two descriptions of the same geometry agree.
+	//
+	// They are two descriptions: the edges say who sits next to whom, the positions say where
+	// each seat sits, and selection reads only the positions while arbitration reads only the
+	// edges. A projection with chain A-B-C-D-E-F-G and positions B=1, E=2, C=3 ... passes every
+	// other check, and best-available then offers B and E as a two-seat run — they hold
+	// consecutive positions and are four seats apart. The orphan filter cannot save it either:
+	// it reasons in the same positional space, so it agrees they are neighbours. Executed, not
+	// argued: that exact permutation sold B+E as "together" before this check existed.
+	//
+	// So: within each row, positions form 1..N, and the seat at position i names position i-1
+	// as its left and i+1 as its right. That makes the two descriptions the same statement,
+	// and it is checked here because this is where a projection is built — the claim path
+	// cannot re-derive it from data it does not hold (ADR-041's own division of labour).
+	byRowPos := map[string]map[int32]SeatAdjacencyRow{}
+	for _, r := range rows {
+		if byRowPos[*r.RowKey] == nil {
+			byRowPos[*r.RowKey] = map[int32]SeatAdjacencyRow{}
+		}
+		byRowPos[*r.RowKey][*r.Position] = r
+	}
+	for rowKey, seats := range byRowPos {
+		n := int32(len(seats))
+		for pos := int32(1); pos <= n; pos++ {
+			seat, ok := seats[pos]
+			if !ok {
+				return fmt.Errorf("%w: row %q has %d seats but no seat at position %d — positions must run 1..N",
+					ErrSeatProjectionIncomplete, rowKey, n, pos)
+			}
+			names := func(edge *string, neighbourPos int32, side string) error {
+				want, exists := seats[neighbourPos]
+				switch {
+				case !exists && edge != nil:
+					return fmt.Errorf("%w: seat %q is at the %s end of row %q but names %q as its %s neighbour",
+						ErrSeatProjectionIncomplete, seat.SeatIdentity, side, rowKey, *edge, side)
+				case exists && edge == nil:
+					return fmt.Errorf("%w: seat %q sits beside %q in row %q but names no %s neighbour",
+						ErrSeatProjectionIncomplete, seat.SeatIdentity, want.SeatIdentity, rowKey, side)
+				case exists && *edge != want.SeatIdentity:
+					return fmt.Errorf("%w: seat %q names %q as its %s neighbour but position %d holds %q — the ordering and the adjacency describe different geometries",
+						ErrSeatProjectionIncomplete, seat.SeatIdentity, *edge, side, neighbourPos, want.SeatIdentity)
+				}
+				return nil
+			}
+			if err := names(seat.Left, pos-1, "left"); err != nil {
+				return err
+			}
+			if err := names(seat.Right, pos+1, "right"); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

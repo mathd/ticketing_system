@@ -80,6 +80,14 @@ type geometrySeat struct {
 	Position     int32  `json:"position"`
 }
 
+// geometryRow is the boundary decode of one row. Named so the ranking pass below can sort
+// rows by their declared position without restating the shape.
+type geometryRow struct {
+	ID       uuid.UUID      `json:"id"`
+	Position int32          `json:"position"`
+	Seats    []geometrySeat `json:"seats"`
+}
+
 // SeatAdjacency is one seat and its immediate neighbours in its row, derived from the
 // published geometry's `position` order. A nil neighbour is a row end — a real answer,
 // not missing data.
@@ -245,12 +253,8 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 			Status string    `json:"status"`
 		} `json:"map"`
 		Sections []struct {
-			Position int32 `json:"position"`
-			Rows     []struct {
-				ID       uuid.UUID      `json:"id"`
-				Position int32          `json:"position"`
-				Seats    []geometrySeat `json:"seats"`
-			} `json:"rows"`
+			Position int32         `json:"position"`
+			Rows     []geometryRow `json:"rows"`
 		} `json:"sections"`
 	}
 	// The body is buffered BEFORE decoding so a transport failure mid-stream is
@@ -288,13 +292,44 @@ func (r *CatalogResolver) SeatMapAdjacency(ctx context.Context, seatMapID uuid.U
 	// survive would put two adjacency rows on one seat and make the claim-path lookup
 	// depend on which one it happened to match (ai-review).
 	seen := map[string]struct{}{}
-	// rank counts rows across the whole map in the order catalog lists them. The public
-	// geometry read documents sections and rows as position-ordered, and this is where that
-	// order is turned into something inventory can sort by -- it holds neither the section
-	// nor the row position, only what this loop writes down.
-	rank := int32(0)
+	// Rank rows by their DECLARED (section position, row position), not by the order they
+	// happen to arrive in.
+	//
+	// The response is documented as position-ordered and today it is, but the ordering is the
+	// producer's SQL rather than a contract this consumer can check, and it carries the
+	// positions explicitly. Reading them is both cheaper to trust and self-describing: a
+	// projection built from arrival order is silently wrong the day the producer adds a JOIN,
+	// and nothing downstream could tell -- inventory holds no geometry to compare against.
+	//
+	// Sorting is stable on the pair, so two sections at the same position (which catalog's
+	// own uniqueness rules forbid, but which this consumer must not assume) fall back to
+	// arrival order rather than becoming non-deterministic.
+	type rowRef struct {
+		sectionPos, rowPos int32
+		seq                int
+		row                geometryRow
+	}
+	refs := make([]rowRef, 0, 16)
+	seq := 0
 	for _, section := range body.Sections {
 		for _, row := range section.Rows {
+			refs = append(refs, rowRef{sectionPos: section.Position, rowPos: row.Position, seq: seq, row: row})
+			seq++
+		}
+	}
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].sectionPos != refs[j].sectionPos {
+			return refs[i].sectionPos < refs[j].sectionPos
+		}
+		if refs[i].rowPos != refs[j].rowPos {
+			return refs[i].rowPos < refs[j].rowPos
+		}
+		return refs[i].seq < refs[j].seq
+	})
+	rank := int32(0)
+	{
+		for _, ref := range refs {
+			row := ref.row
 			rank++
 			seats := append([]geometrySeat(nil), row.Seats...)
 			// Positions must be present, positive and unique within the row. A missing
