@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,9 +166,14 @@ func TestBestAvailableSelectsAContiguousRunEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(cbody, &out); err != nil {
 		t.Fatalf("response: %v (%s)", err, cbody)
 	}
+	// Matched on the identity PREFIX rather than by indexing into the string. The first
+	// version of this assertion read s[6], which is the '/' in "Stalls/B/1" and never the row
+	// letter — so it rejected a correct answer twice before the arithmetic was the suspect.
+	// An identity is section/row/seat and the row is the second segment; say that, do not
+	// count characters.
 	for _, s := range out.Seats {
-		if len(s) < 8 || s[6] != 'B' {
-			t.Fatalf("seats = %v — a four-seat run must be wholly within row B; row A has only two free seats left, so any answer containing an A seat means the row boundary was lost between catalog and inventory", out.Seats)
+		if !strings.HasPrefix(s, "Stalls/B/") {
+			t.Fatalf("seats = %v — a four-seat run must be wholly within row B; row A has only three free seats left, so any answer containing an A seat means the row boundary was lost between catalog and inventory", out.Seats)
 		}
 	}
 
