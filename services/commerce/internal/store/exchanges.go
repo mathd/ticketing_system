@@ -22,6 +22,17 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// violatedConstraint names the constraint a unique violation broke, or "" for any other
+// error. WHICH index fired is load-bearing here — two of them mean opposite things about
+// who owns the target hold (see BindOrderExchange's INSERT).
+func violatedConstraint(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
+	}
+	return ""
+}
+
 // Exchanges (TKT-158, ADR-039). An exchange is a reversal AND a sale.
 //
 // It is deliberately NOT a refund plus a checkout. Composing those merged primitives —
@@ -272,11 +283,7 @@ func BindOrderExchange(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		in.OrganizerID, id, in.SourceOrderID, in.TargetTicketTypeID, in.IdempotencyKey, fingerprint,
 		quantity, total, gross, currency, in.Actor, in.Reason); err != nil {
-		if isUniqueViolation(err) {
-			// The one-per-source index: another exchange already owns this order.
-			return Exchange{}, ErrOrderNotExchangeable
-		}
-		return Exchange{}, err
+		return Exchange{}, mapBindInsertError(err)
 	}
 	bound, found, err := lookupExchange(ctx, tx, in.OrganizerID, id)
 	if err != nil {
@@ -410,6 +417,37 @@ func loadExchangeBasis(ctx context.Context, q rowQuerier, org, exchangeID uuid.U
 	out.TargetHoldID, out.ReplacementReservationID, out.TargetSlotID = hold.UUID, reservation.UUID, slot.UUID
 	out.TargetTotal, out.DeltaAmount, out.TargetUnitAmount = total.Int64, delta.Int64, unit.Int64
 	return out, true, nil
+}
+
+// mapBindInsertError turns the exchange INSERT's failure into the error the handler acts on.
+//
+// WHICH unique index fired decides who owns the target hold, and collapsing the two was a
+// real defect (TKT-167 ai-review pass 3). It is a named function so the mapping is testable
+// against real constraint violations rather than only through a concurrency scenario.
+//
+//   order_exchanges_pkey (organizer_id, id) — the SAME exchange identity is already bound.
+//     Both requests derived that id from (organizer, idempotency key), so they also derived
+//     the same `exchange-target:<id>` hold key and SHARE one claim. This is
+//     ErrExchangeConflict: the other request owns the hold and may already have finalized
+//     it. Reported as ErrOrderNotExchangeable, the handler released the WINNER's claim —
+//     after its capture, if the timing fell that way — leaving the buyer charged with no
+//     target inventory and no recovery.
+//
+//     Not an exotic interleaving: the lookup above runs in a transaction whose only row lock
+//     is `FOR UPDATE OF o` on the SOURCE order, so two requests naming DIFFERENT source
+//     orders lock different rows, both observe no exchange, and both reach the INSERT.
+//
+//   order_exchanges_one_per_source — a DIFFERENT exchange already owns this order. Nothing
+//     bound under this identity, so the caller's hold is its own and releasing it is right.
+func mapBindInsertError(err error) error {
+	switch violatedConstraint(err) {
+	case "order_exchanges_pkey":
+		return ErrExchangeConflict
+	case "":
+		return err
+	default:
+		return ErrOrderNotExchangeable
+	}
 }
 
 // ExchangeBasis is everything the settlement and the replacement are built from, committed

@@ -1003,3 +1003,87 @@ func assertSameJSON(t *testing.T, got, want []byte, why string) {
 		t.Fatalf("price snapshot = %s, want %s — %s", got, want, why)
 	}
 }
+
+// The bind race that shares a hold answers CONFLICT, not not-exchangeable (TKT-167,
+// ai-review pass 3 [high]).
+//
+// Two requests with the same organizer and idempotency key but DIFFERENT source orders
+// derive the same ExchangeID — and therefore the same `exchange-target:<id>` inventory key,
+// so they share one claim. The bind transaction's only row lock is `FOR UPDATE OF o` on the
+// SOURCE order, so those two lock different rows: both can pass the lookup seeing no
+// exchange and both reach the INSERT. One loses on `order_exchanges_pkey`.
+//
+// What the loser is TOLD decides whether the winner survives. The handler releases the
+// target hold on every bind error except ErrExchangeConflict, and the hold is SHARED — so
+// mapping this collision to ErrOrderNotExchangeable made the loser release the claim the
+// winner had already finalized, and possibly already charged against. That is the buyer-paid
+// wedge, reachable by two ordinary commerce callers rather than by anyone holding a service
+// token.
+//
+// The distinction is the CONSTRAINT NAME, which is why the code branches on it rather than
+// on isUniqueViolation: order_exchanges_one_per_source means a different exchange owns the
+// order and the hold really is ours to release; order_exchanges_pkey means the opposite.
+func TestABindCollidingOnTheExchangeIdentityReportsConflict(t *testing.T) {
+	db, ctx := outboxDB(t)
+	winner, _ := seedCompleted(t, db, ctx, "bind-race-winner", 2, 1000)
+	loser, _ := seedCompleted(t, db, ctx, "bind-race-loser", 2, 1000)
+	// One organizer, so the two share an ExchangeID for a shared idempotency key.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE reservations SET organizer_id=$1 WHERE id=$2`, winner.OrganizerID, loser.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	loser.OrganizerID = winner.OrganizerID
+	target := uuid.New()
+
+	if _, err := BindOrderExchange(ctx, db, exchangeRequest(winner, "shared", target)); err != nil {
+		t.Fatalf("winner bind: %v", err)
+	}
+
+	// The loser reaching the INSERT is what the concurrent interleaving produces; driven
+	// here by inserting a row the loser's own INSERT would collide with. The error the
+	// STORE maps is the thing under test.
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,
+		                            idempotency_key,request_fingerprint,quantity,source_total,
+		                            source_gross_total,currency,actor,reason)
+		VALUES($1,$2,$3,$4,$5,'other-fingerprint',2,2000,2000,'EUR','a','r')`,
+		loser.OrganizerID, ExchangeID(loser.OrganizerID, "shared"), loser.OrderID, target, "shared")
+	if err == nil {
+		t.Fatal("the identity collision did not fire — this fixture can no longer reach the race")
+	}
+	if got := violatedConstraint(err); got != "order_exchanges_pkey" {
+		t.Fatalf("constraint = %q, want order_exchanges_pkey. If the schema changed, this test's "+
+			"whole premise moved and the mapping below must be re-derived", got)
+	}
+
+	// THE ASSERTION: that collision is a CONFLICT.
+	if !errors.Is(mapBindInsertError(err), ErrExchangeConflict) {
+		t.Fatalf("an identity collision maps to %v, want ErrExchangeConflict. As "+
+			"ErrOrderNotExchangeable the handler releases the SHARED target hold — the winner's "+
+			"finalized, possibly already-charged claim — and the buyer is left paid with no target",
+			mapBindInsertError(err))
+	}
+
+	// And the sibling constraint still means the opposite, or the fix has merely moved the
+	// defect: a DIFFERENT exchange owning the source order must stay not-exchangeable, since
+	// there the hold really is the caller's to release.
+	// A DISTINCT identity (new uuid, new key) aimed at the source order the winner already
+	// exchanged: that trips one_per_source instead.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,
+		                            idempotency_key,request_fingerprint,quantity,source_total,
+		                            source_gross_total,currency,actor,reason)
+		VALUES($1,$2,$3,$4,$5,'fp',2,2000,2000,'EUR','a','r')`,
+		winner.OrganizerID, uuid.New(), winner.OrderID, uuid.New(), "distinct-key")
+	if err == nil {
+		t.Fatal("the one-per-source index did not fire")
+	}
+	if got := violatedConstraint(err); got != "order_exchanges_one_per_source" {
+		t.Fatalf("constraint = %q, want order_exchanges_one_per_source", got)
+	}
+	if !errors.Is(mapBindInsertError(err), ErrOrderNotExchangeable) {
+		t.Fatalf("a one-per-source collision maps to %v, want ErrOrderNotExchangeable — a "+
+			"different exchange owns the order, so this caller's hold IS its own to release",
+			mapBindInsertError(err))
+	}
+}
