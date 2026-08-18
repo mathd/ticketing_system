@@ -121,9 +121,14 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nCarved out of TKT-158 at its churn-cap stop, with the design half-built: the basis it resumes from already exists and is already constrained by the database.\n\n**Concerns:** none blocking. One to carry: **design with TKT-163.** Both are \"an obligation interrupted after money moved needs a durable resume\", and solving them separately risks two mechanisms for one problem.\n\n**Verdict:** PASS."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**An exchange interrupted after the money moved must resume from what it persisted.**\n\nBlocker satisfied: `blocked-by TKT-158` is **Done**, and TKT-158 is precisely what persists the\nbasis this ticket resumes from.\n\n**Sequencing note for whoever claims it:** take this **before** TKT-168. This one fixes the\nbehaviour (an unsettled replay re-resolves the price instead of using the persisted basis, so a\nprice change makes inventory reject the retry); TKT-168 makes that behaviour *provable*. Doing them\nthe other way round produces a test that pins the current, wrong amounts.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
     }
   ],
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null
