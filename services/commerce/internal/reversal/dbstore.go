@@ -20,16 +20,16 @@ func (d DBStore) Claim(ctx context.Context, limit int, lease time.Duration) ([]s
 	return store.ClaimOutstandingReversals(ctx, d.DB, limit, lease)
 }
 
-func (d DBStore) Release(ctx context.Context, refundID, claimID uuid.UUID, progressed bool, cause string) error {
-	return store.ReleaseReversalClaim(ctx, d.DB, refundID, claimID, progressed, cause)
+func (d DBStore) Release(ctx context.Context, org, refundID, claimID uuid.UUID, voidedAtClaim, capacityAtClaim bool, cause string) error {
+	return store.ReleaseReversalClaim(ctx, d.DB, org, refundID, claimID, voidedAtClaim, capacityAtClaim, cause)
 }
 
-func (d DBStore) Finish(ctx context.Context, refundID, claimID uuid.UUID) error {
-	return store.FinishReversalClaim(ctx, d.DB, refundID, claimID)
+func (d DBStore) Finish(ctx context.Context, org, refundID, claimID uuid.UUID) error {
+	return store.FinishReversalClaim(ctx, d.DB, org, refundID, claimID)
 }
 
-func (d DBStore) Abandon(ctx context.Context, refundID, claimID uuid.UUID) error {
-	return store.AbandonReversalClaim(ctx, d.DB, refundID, claimID)
+func (d DBStore) Abandon(ctx context.Context, org, refundID, claimID uuid.UUID) error {
+	return store.AbandonReversalClaim(ctx, d.DB, org, refundID, claimID)
 }
 
 func (d DBStore) Backlog(ctx context.Context) (store.ReversalBacklog, error) {

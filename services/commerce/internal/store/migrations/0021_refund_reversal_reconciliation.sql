@@ -78,6 +78,30 @@ CREATE INDEX order_refunds_reversal_queue_idx
       AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL);
 
 -- +goose Down
+-- Fails closed once the reconciler has recorded anything, the way 0008 and 0009 do for the
+-- obligations themselves. A silent rollback would drop parking decisions, attempt counts and
+-- the last recorded error — so re-applying 0021 would silently UNPARK every permanently
+-- refused obligation with a fresh budget, hand them back to the runner to hammer through
+-- another ten attempts, and erase the diagnostics an operator needs to tell why they parked
+-- (ai-review F5). Dropping a lease is harmless; dropping the memory of a decision is not.
+--
+-- A row that has only ever been claimed and released cleanly carries no state worth keeping:
+-- attempts back at 0, never parked, no error. Those roll back freely, which keeps the escape
+-- hatch open for a deploy that has to be undone before any real reconciliation happened.
+LOCK TABLE order_refunds IN ACCESS EXCLUSIVE MODE;
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM order_refunds
+        WHERE reversal_parked_at IS NOT NULL
+           OR reversal_attempts > 0
+           OR reversal_last_error IS NOT NULL
+    ) THEN
+        RAISE EXCEPTION 'cannot roll back 0021: refund reversals have parked, failed or been retried — rolling back would unpark them with a fresh retry budget and erase why they parked';
+    END IF;
+END $$;
+-- +goose StatementEnd
 DROP INDEX order_refunds_reversal_queue_idx;
 ALTER TABLE order_refunds DROP CONSTRAINT order_refunds_capacity_after_void;
 ALTER TABLE order_refunds DROP CONSTRAINT order_refunds_reversal_claim_shape;

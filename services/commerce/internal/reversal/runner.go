@@ -38,9 +38,13 @@ import (
 // PostgreSQL by the store's smoke tests, because that is the tier those mechanisms live at.
 type Store interface {
 	Claim(ctx context.Context, limit int, lease time.Duration) ([]store.ClaimedReversal, error)
-	Release(ctx context.Context, refundID, claimID uuid.UUID, progressed bool, cause string) error
-	Finish(ctx context.Context, refundID, claimID uuid.UUID) error
-	Abandon(ctx context.Context, refundID, claimID uuid.UUID) error
+	// Release takes the obligations as OBSERVED AT CLAIM TIME and decides progress in SQL
+	// against the row as it stands. It does not take a `progressed bool`: this runner does
+	// not hold a monopoly on discharging a reversal, so a verdict computed from its own
+	// before/after would be wrong exactly when a concurrent replay helped (ai-review F2).
+	Release(ctx context.Context, org, refundID, claimID uuid.UUID, voidedAtClaim, capacityAtClaim bool, cause string) error
+	Finish(ctx context.Context, org, refundID, claimID uuid.UUID) error
+	Abandon(ctx context.Context, org, refundID, claimID uuid.UUID) error
 	Backlog(ctx context.Context) (store.ReversalBacklog, error)
 }
 
@@ -56,19 +60,25 @@ type Reverser interface {
 // chain grow together rather than drifting apart.
 const MaxCallsPerRefund = 2
 
-// LeaseFor sizes the batch lease from the caller's own I/O budget. A batch is driven
-// sequentially and each refund can make MaxCallsPerRefund calls, each bounded only by the
-// HTTP client timeout, so the pass's worst case is batch × calls × timeout. Sizing the
-// lease from an unrelated per-row guess is how it silently ends up shorter than the batch
-// it protects: the lease lapses mid-pass, a successor claims rows the first runner is still
-// driving, and the claim token only fences the final database write — not the HTTP call
-// already in flight.
+// LeaseFor sizes the batch lease from the I/O budget of the client that will actually make
+// the calls. A batch is driven sequentially and each refund can make MaxCallsPerRefund
+// calls, each bounded only by that client's timeout, so the pass's worst case is
+// batch × calls × timeout.
+//
+// **Pass the timeout of the transport DriveReversal really uses**, which is
+// `obs.Client()`'s (`shared/go/obs`), not some other worker's constant. The first version of
+// this call site borrowed `recoveryCallTimeout` (10s) while the refund service runs on
+// obs.Client (30s), giving a 380s lease over work that can take 960s (ai-review F1). A lease
+// shorter than the work it protects is worse than no lease: a second replica reclaims rows
+// the first is still driving, and the claim token fences only the final database write —
+// never the access or inventory call already in flight. `LeaseIsNotShorterThanItsBatch`
+// pins the relationship so the two cannot drift apart again.
 func LeaseFor(batch int, callTimeout time.Duration) time.Duration {
 	if batch <= 0 {
 		batch = 1
 	}
 	if callTimeout <= 0 {
-		callTimeout = 10 * time.Second
+		callTimeout = 30 * time.Second
 	}
 	// Plus a margin for database work and scheduling between calls.
 	return time.Duration(batch)*MaxCallsPerRefund*callTimeout + 60*time.Second
@@ -159,25 +169,30 @@ func (r *Runner) drive(ctx context.Context, c store.ClaimedReversal) bool {
 	after := r.reverser.DriveReversal(ctx, c.Refund)
 
 	if after.TicketsVoided && after.CapacityReturned {
-		if err := r.store.Finish(ctx, after.ID, c.ClaimID); err != nil {
+		if err := r.store.Finish(ctx, after.OrganizerID, after.ID, c.ClaimID); err != nil {
 			r.log.ErrorContext(ctx, "finish reversal claim", "refund_id", after.ID, "err", err)
 		}
 		return true
 	}
 
-	// Still outstanding. Whether this pass made PROGRESS is what decides between backing
-	// off with the budget reset and spending it down toward parking. Commerce cannot see
-	// WHY a downstream refused — inventory's partial-seated refusal (TKT-164) is decided
-	// from `claim_seats` and `claims.returned_quantity` in ITS database — so a permanently
-	// undischargeable obligation is recognised by making no progress, never by predicting
-	// the refusal from state commerce does not have.
-	progressed := c.Progressed(after)
+	// Still outstanding as far as THIS claimant can see. Whether the row actually made
+	// progress is decided by the store, against the row as it stands, from the obligations
+	// observed at claim time — because a concurrent staff replay or cancellation run can
+	// discharge one of these obligations without this runner's knowledge, and calling that
+	// "no progress" would park a recovering refund (ai-review F2).
+	//
+	// Progress is what decides between backing off with the budget reset and spending it
+	// down toward parking. Commerce cannot see WHY a downstream refused — inventory's
+	// partial-seated refusal (TKT-164) is decided from `claim_seats` and
+	// `claims.returned_quantity` in ITS database — so a permanently undischargeable
+	// obligation is recognised by making no progress, never by predicting the refusal.
 	cause := "ticket voiding outstanding"
 	if after.TicketsVoided {
 		cause = "capacity return outstanding"
 	}
-	if err := r.store.Release(ctx, after.ID, c.ClaimID, progressed, cause); err != nil {
-		r.log.ErrorContext(ctx, "release reversal claim", "refund_id", after.ID, "err", err)
+	if err := r.store.Release(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID,
+		c.Refund.TicketsVoided, c.Refund.CapacityReturned, cause); err != nil {
+		r.log.ErrorContext(ctx, "release reversal claim", "refund_id", c.Refund.ID, "err", err)
 	}
 	return false
 }
@@ -198,7 +213,7 @@ func (r *Runner) abandonUndriven(claims []store.ClaimedReversal) {
 	for _, c := range claims {
 		// Conditional on the claim token in SQL, so a lease that lapsed and was re-claimed
 		// by a successor mid-shutdown is left alone.
-		if err := r.store.Abandon(ctx, c.Refund.ID, c.ClaimID); err != nil {
+		if err := r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID); err != nil {
 			r.log.WarnContext(ctx, "abandon undriven reversal claim", "refund_id", c.Refund.ID, "err", err)
 			continue
 		}

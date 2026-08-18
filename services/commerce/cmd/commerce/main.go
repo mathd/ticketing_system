@@ -375,9 +375,15 @@ func run() error {
 	//
 	// Through the SAME refund unit as the other two callers — it drives only DriveReversal,
 	// so there is one reversal path with three callers and this runner cannot move money.
+	// The lease is sized from obs.ClientTimeout, NOT from recoveryCallTimeout: the refund
+	// service drives its calls through the API server's own transport, which is
+	// obs.Client() at 30s. Borrowing recovery's 10s constant here produced a lease three
+	// times shorter than the work it protects, letting a second replica reclaim rows the
+	// first was still driving (ai-review F1). Derived from the real value so the two cannot
+	// drift apart.
 	reversals := reversal.New(reversal.DBStore{DB: db}, srvHandler.Refunds(),
 		reversalInterval(), reversalBatch(),
-		reversal.LeaseFor(reversalBatch(), recoveryCallTimeout), log)
+		reversal.LeaseFor(reversalBatch(), obs.ClientTimeout), log)
 	// Commerce's first metrics (the MeterProvider has been live since obs.Setup; nothing
 	// had registered an instrument). Observability, not a gate — a failure to register
 	// gauges must not keep the service from refunding, so it is logged, not returned.

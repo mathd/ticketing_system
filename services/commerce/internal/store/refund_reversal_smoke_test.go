@@ -214,15 +214,116 @@ func TestALiveLeaseHidesARowAndAnExpiredOneReleasesIt(t *testing.T) {
 
 // Claiming charges an attempt. Without the charge nothing ever spends the budget and
 // nothing ever parks.
-func TestClaimingChargesAnAttempt(t *testing.T) {
+// The attempt is charged by the RELEASE, not by the claim (ai-review F4).
+//
+// Charging at claim time means a crash, an OOM or a SIGKILL between claiming and driving
+// spends budget on rows that were never attempted — and since parking only ever happens on
+// release, repeated crash-after-claim cycles could walk a row most of the way to its limit
+// without one real failure, then park it on the first transient one. Both halves are
+// asserted, because "the claim does not charge" alone would be satisfied by a version that
+// never charges at all and therefore never parks.
+func TestTheAttemptIsChargedByTheReleaseNotTheClaim(t *testing.T) {
 	db, ctx := outboxDB(t)
 	s := completedRefund(t, db, ctx, "reversal-attempt", func(s *refundSeed) { s.Attempts = 4 })
+
 	c, ok := claimReversal(t, db, ctx, s.ID)
 	if !ok {
 		t.Fatal("not claimable")
 	}
-	if c.Attempts != 5 {
-		t.Fatalf("attempts = %d, want 5", c.Attempts)
+	if c.Attempts != 4 {
+		t.Fatalf("attempts = %d after claiming, want the original 4: a claim that charges "+
+			"spends budget on work a crash may never perform", c.Attempts)
+	}
+
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID, false, false,
+		"ticket voiding outstanding"); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	if err := db.QueryRowContext(ctx, `SELECT reversal_attempts FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 5 {
+		t.Fatalf("attempts = %d after a failed drive, want 5: nothing spends the budget, so "+
+			"a permanently refused obligation never parks", attempts)
+	}
+}
+
+// A lease that simply LAPSES — the crash case — costs the row nothing. This is what makes
+// the bound honest: an expired claim is indistinguishable from one that never happened, so
+// a process that dies mid-batch cannot walk its rows toward parking.
+func TestAnExpiredLeaseCostsNoBudget(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := completedRefund(t, db, ctx, "reversal-lapsed", func(s *refundSeed) {
+		s.Attempts = 3
+		dead := uuid.New()
+		s.ClaimID, s.LeaseUntil = &dead, reversalAgo(time.Hour) // a claimant that died holding it
+	})
+	c, ok := claimReversal(t, db, ctx, s.ID)
+	if !ok {
+		t.Fatal("a row whose claimant died was not reclaimable")
+	}
+	if c.Attempts != 3 {
+		t.Fatalf("attempts = %d, want the original 3: a crash between claim and drive must "+
+			"not spend the row's failure budget", c.Attempts)
+	}
+}
+
+// ai-review F3: every statement keys on the FULL composite (organizer_id, id).
+//
+// `order_refunds`' primary key is (organizer_id, id) — `id` alone is not unique by schema.
+// A claim matching on `id` alone would hand one eligible row's claim token to every same-id
+// row in another tenant, INCLUDING rows that satisfied none of the eligibility predicates,
+// and the runner would then drive a pending refund's reversal: tickets voided before the
+// money moved.
+//
+// The fixture constructs exactly that: the same refund id under two organizers, one eligible
+// and one PENDING. It is unreachable through the product path today (a refund id is a SHA-1
+// over its organizer), which is precisely why it has to be seeded directly — the defect is in
+// the SQL's shape, not in the data the happy path happens to produce.
+func TestClaimingIsScopedByTheCompositeKeyNotTheRefundIDAlone(t *testing.T) {
+	db, ctx := outboxDB(t)
+	shared := uuid.New()
+
+	eligible := completedRefund(t, db, ctx, "reversal-tenant-a", func(s *refundSeed) {
+		s.ID = shared
+	})
+	// Same refund id, different organizer, and NOT eligible: its money has not moved.
+	victim := completedRefund(t, db, ctx, "reversal-tenant-b", func(s *refundSeed) {
+		s.ID = shared
+		s.Status = "pending"
+	})
+
+	claimed, err := ClaimOutstandingReversals(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawEligible bool
+	for _, c := range claimed {
+		if c.Refund.ID == shared && c.Refund.OrganizerID == victim.OrganizerID {
+			t.Fatal("a PENDING refund belonging to another organizer was claimed because it " +
+				"shares a refund id with an eligible one: its tickets would be voided before " +
+				"its money moved")
+		}
+		if c.Refund.ID == shared && c.Refund.OrganizerID == eligible.OrganizerID {
+			sawEligible = true
+		}
+	}
+	if !sawEligible {
+		t.Fatal("the eligible row was not claimed at all")
+	}
+
+	// The victim's lease must be untouched — an unscoped UPDATE would have stamped it with
+	// the same claim token even though it was never returned to the caller.
+	var claim uuid.NullUUID
+	if err := db.QueryRowContext(ctx, `SELECT reversal_claim_id FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
+		victim.OrganizerID, shared).Scan(&claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Valid {
+		t.Fatalf("another organizer's row was leased by this claim (%v): the UPDATE matched "+
+			"on id alone", claim.UUID)
 	}
 }
 
@@ -235,7 +336,7 @@ func TestReleaseIsFencedByTheClaimToken(t *testing.T) {
 	if !ok {
 		t.Fatal("not claimable")
 	}
-	if err := ReleaseReversalClaim(ctx, db, s.ID, uuid.New(), false, "a stale claimant"); err != nil {
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, uuid.New(), false, false, "a stale claimant"); err != nil {
 		t.Fatal(err)
 	}
 	var claim uuid.NullUUID
@@ -262,7 +363,7 @@ func TestAReversalThatNeverProgressesParks(t *testing.T) {
 	if !ok {
 		t.Fatal("not claimable")
 	}
-	if err := ReleaseReversalClaim(ctx, db, s.ID, c.ClaimID, false, "capacity return outstanding"); err != nil {
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID, true, false, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
 	var parked sql.NullTime
@@ -296,17 +397,24 @@ func TestProgressResetsTheAttemptBudgetAndClearsTheBackoff(t *testing.T) {
 	if !ok {
 		t.Fatal("not claimable")
 	}
-	// The voiding half landed; capacity is still owed.
-	if _, err := db.ExecContext(ctx, `UPDATE order_refunds SET tickets_voided_at=now() WHERE id=$1`, s.ID); err != nil {
+	// The voiding half lands from OUTSIDE this claim — a staff replay or a cancellation run,
+	// neither of which takes this lease. The release is then told what THIS claimant saw at
+	// claim time (nothing discharged), which is exactly the ai-review F2 case: a verdict
+	// computed from the claimant's own before/after would read "no progress" here and, at
+	// this attempt count, park a refund that just advanced.
+	if _, err := db.ExecContext(ctx, `UPDATE order_refunds SET tickets_voided_at=now() WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReleaseReversalClaim(ctx, db, s.ID, c.ClaimID, true, "capacity return outstanding"); err != nil {
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID, false, false, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
 	var attempts int
 	var parked sql.NullTime
-	if err := db.QueryRowContext(ctx, `SELECT reversal_attempts,reversal_parked_at FROM order_refunds WHERE id=$1`,
-		s.ID).Scan(&attempts, &parked); err != nil {
+	var next time.Time
+	if err := db.QueryRowContext(ctx, `SELECT reversal_attempts,reversal_parked_at,reversal_next_attempt_at
+		FROM order_refunds WHERE organizer_id=$1 AND id=$2`, s.OrganizerID, s.ID).
+		Scan(&attempts, &parked, &next); err != nil {
 		t.Fatal(err)
 	}
 	if attempts != 0 {
@@ -314,24 +422,66 @@ func TestProgressResetsTheAttemptBudgetAndClearsTheBackoff(t *testing.T) {
 			"still park", attempts)
 	}
 	if parked.Valid {
-		t.Fatal("a refund that made progress was parked anyway")
+		t.Fatal("a refund that made progress was parked anyway — this is the concurrent-replay " +
+			"case, and parking it strands the capacity return with nothing driving it")
 	}
-	if _, ok := claimReversal(t, db, ctx, s.ID); !ok {
-		t.Fatal("a refund that made progress was not immediately retryable, so the rest of " +
-			"its reversal waits out a backoff it did not earn")
+	// Prompt, but NOT instantly re-claimable (own finding S1): `RunOnce` drains in a loop, so
+	// a zero backoff lets the same row be re-driven inside the same pass, hammering a
+	// downstream that just half-failed and resetting its budget each time.
+	if !next.After(time.Now()) {
+		t.Fatal("a progressed refund became claimable immediately: the drain loop will " +
+			"re-drive it within the same pass, with no backoff at all")
+	}
+	if next.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("a progressed refund waits until %s — it is recovering, and its remaining "+
+			"obligation should not sit out a full backoff", next)
 	}
 }
 
-// Abandoning an undriven claim refunds the attempt charged at claim time and leaves the row
-// immediately reclaimable — a shutdown must not cost budget or park anything.
-func TestAbandonRefundsTheAttemptAndReleasesImmediately(t *testing.T) {
+// A row that became FULLY discharged between the drive and the release is not parked, even
+// at the budget boundary. Parking a complete reversal would put a permanent "needs a human"
+// marker on work that is finished — and because the claim query skips parked rows, nothing
+// would ever look at it again to notice.
+func TestAReversalCompletedBySomeoneElseIsNotParked(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := completedRefund(t, db, ctx, "reversal-completed-elsewhere", func(s *refundSeed) {
+		s.Attempts = MaxReversalAttempts - 1
+	})
+	c, ok := claimReversal(t, db, ctx, s.ID)
+	if !ok {
+		t.Fatal("not claimable")
+	}
+	// A replay outside this lease discharges BOTH obligations while this claimant fails.
+	if _, err := db.ExecContext(ctx, `
+		UPDATE order_refunds SET tickets_voided_at=now(), capacity_returned_at=now()
+		WHERE organizer_id=$1 AND id=$2`, s.OrganizerID, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID, false, false,
+		"ticket voiding outstanding"); err != nil {
+		t.Fatal(err)
+	}
+	var parked sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT reversal_parked_at FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID).Scan(&parked); err != nil {
+		t.Fatal(err)
+	}
+	if parked.Valid {
+		t.Fatal("a fully discharged reversal was parked: it would carry a permanent " +
+			"needs-a-human marker for work that is already done")
+	}
+}
+
+// Abandoning an undriven claim leaves the row immediately reclaimable and costs it nothing —
+// a shutdown must not spend budget or park anything.
+func TestAbandonCostsNoBudgetAndReleasesImmediately(t *testing.T) {
 	db, ctx := outboxDB(t)
 	s := completedRefund(t, db, ctx, "reversal-abandon", func(s *refundSeed) { s.Attempts = 3 })
 	c, ok := claimReversal(t, db, ctx, s.ID)
 	if !ok {
 		t.Fatal("not claimable")
 	}
-	if err := AbandonReversalClaim(ctx, db, s.ID, c.ClaimID); err != nil {
+	if err := AbandonReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID); err != nil {
 		t.Fatal(err)
 	}
 	var attempts int

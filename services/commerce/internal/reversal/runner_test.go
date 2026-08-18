@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/commerce/internal/store"
+	"ticketing/shared/obs"
 )
 
 // The runner's DECISIONS live here, against fake ports: which rows get released with
@@ -24,6 +25,9 @@ type call struct {
 }
 
 type fakeStore struct {
+	// rows is the DURABLE state, as the database would hold it. Release consults it rather
+	// than trusting the claimant, which is the whole point of ai-review F2.
+	rows      map[uuid.UUID]store.Refund
 	batches   [][]store.ClaimedReversal
 	claims    int
 	released  []call
@@ -45,12 +49,19 @@ func (f *fakeStore) Claim(_ context.Context, _ int, _ time.Duration) ([]store.Cl
 	return b, nil
 }
 
-func (f *fakeStore) Release(_ context.Context, refundID, _ uuid.UUID, progressed bool, cause string) error {
+// Release mirrors the real signature: it is told what the claimant OBSERVED at claim time
+// and decides progress itself. The fake reproduces the store's rule — progress is measured
+// against the row as it stands now, not against the claimant's after-value — so a test can
+// exercise the case that motivated it: someone else discharged an obligation while this
+// claimant's own call failed.
+func (f *fakeStore) Release(_ context.Context, _, refundID, _ uuid.UUID, voidedAtClaim, capacityAtClaim bool, cause string) error {
+	row := f.rows[refundID]
+	progressed := (row.TicketsVoided && !voidedAtClaim) || (row.CapacityReturned && !capacityAtClaim)
 	f.released = append(f.released, call{refund: store.Refund{ID: refundID}, progressed: progressed, cause: cause})
 	return nil
 }
 
-func (f *fakeStore) Finish(_ context.Context, refundID, _ uuid.UUID) error {
+func (f *fakeStore) Finish(_ context.Context, _, refundID, _ uuid.UUID) error {
 	f.finished = append(f.finished, refundID)
 	return nil
 }
@@ -59,7 +70,7 @@ func (f *fakeStore) Finish(_ context.Context, refundID, _ uuid.UUID) error {
 // store write fails on a cancelled context, so a fake that ignores ctx cannot tell a
 // shutdown release that lands from one that silently does not — and the whole point of the
 // abandon path is that it runs on a context detached from the cancelled one.
-func (f *fakeStore) Abandon(ctx context.Context, refundID, _ uuid.UUID) error {
+func (f *fakeStore) Abandon(ctx context.Context, _, refundID, _ uuid.UUID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -101,6 +112,16 @@ func runner(st Store, rev Reverser) *Runner {
 	return New(st, rev, time.Minute, 8, time.Minute, nil)
 }
 
+// storeWith builds a fake whose DURABLE rows already hold `rows` — the state the database
+// would be in when Release consults it. Separating this from the reverser's answer is what
+// lets a test say "someone else discharged this while my own call failed".
+func storeWith(batch []store.ClaimedReversal, rows map[uuid.UUID]store.Refund) *fakeStore {
+	if rows == nil {
+		rows = map[uuid.UUID]store.Refund{}
+	}
+	return &fakeStore{rows: rows, batches: [][]store.ClaimedReversal{batch}}
+}
+
 // A reversal that completes is finished, not released: nothing should schedule another
 // attempt at an obligation that is discharged.
 func TestACompletedReversalIsFinished(t *testing.T) {
@@ -109,7 +130,7 @@ func TestACompletedReversalIsFinished(t *testing.T) {
 	done := claimed.Refund
 	done.TicketsVoided, done.CapacityReturned = true, true
 
-	st := &fakeStore{batches: [][]store.ClaimedReversal{{claimed}}}
+	st := storeWith([]store.ClaimedReversal{claimed}, nil)
 	rev := &fakeReverser{after: map[uuid.UUID]store.Refund{id: done}}
 
 	if got := runner(st, rev).RunOnce(context.Background()); got != 1 {
@@ -132,7 +153,7 @@ func TestDischargingOneObligationCountsAsProgress(t *testing.T) {
 	half := claimed.Refund
 	half.TicketsVoided = true // capacity still outstanding
 
-	st := &fakeStore{batches: [][]store.ClaimedReversal{{claimed}}}
+	st := storeWith([]store.ClaimedReversal{claimed}, map[uuid.UUID]store.Refund{id: half})
 	rev := &fakeReverser{after: map[uuid.UUID]store.Refund{id: half}}
 
 	runner(st, rev).RunOnce(context.Background())
@@ -156,23 +177,55 @@ func TestDischargingOneObligationCountsAsProgress(t *testing.T) {
 func TestDischargingTheCapacityHalfAloneCountsAsProgress(t *testing.T) {
 	id := uuid.New()
 	claimed := outstanding(id, true, false, 3) // voided earlier, capacity still owed
-	both := claimed.Refund
-	both.CapacityReturned = true
+	// The capacity return lands, but the row is NOT complete afterwards — voiding was
+	// recorded by an earlier pass and the drive answers with only what it did. This is the
+	// arrangement that reaches Release rather than Finish, so the capacity half of the
+	// progress rule is actually exercised.
+	durable := claimed.Refund
+	durable.CapacityReturned = true
+	drove := claimed.Refund
+	drove.TicketsVoided = false // this claimant could not confirm voiding this pass
+	drove.CapacityReturned = true
 
-	st := &fakeStore{batches: [][]store.ClaimedReversal{{claimed}}}
-	rev := &fakeReverser{after: map[uuid.UUID]store.Refund{id: both}}
+	st := storeWith([]store.ClaimedReversal{claimed}, map[uuid.UUID]store.Refund{id: durable})
+	rev := &fakeReverser{after: map[uuid.UUID]store.Refund{id: drove}}
 
 	runner(st, rev).RunOnce(context.Background())
 
-	// Both obligations are now discharged, so this one finishes rather than releasing —
-	// which is why the assertion is on Progressed directly as well: the finish path does
-	// not consult it, and a defect in the capacity half of progress would hide here.
-	if len(st.finished) != 1 {
-		t.Fatalf("finished = %v, want one row", st.finished)
+	if len(st.released) != 1 {
+		t.Fatalf("released = %d calls, want 1", len(st.released))
 	}
-	if !claimed.Progressed(both) {
+	if !st.released[0].progressed {
 		t.Fatal("discharging the capacity half was not reported as progress: a refund whose " +
 			"voiding landed earlier and whose capacity lands now would spend budget while recovering")
+	}
+}
+
+// ai-review F2: progress is whatever the DATABASE shows, not what this claimant managed.
+// The staff refund endpoint and the cancellation runner drive the same reversal without
+// taking this lease, so a replay can persist a discharge while this claimant's own call
+// fails. Calling that "no progress" parks a row that just advanced — and at the budget
+// boundary it parks it permanently, with the remaining obligation owed and nothing driving.
+func TestProgressIsReadFromTheRowNotFromThisClaimantsResult(t *testing.T) {
+	id := uuid.New()
+	claimed := outstanding(id, false, false, store.MaxReversalAttempts-1)
+	// Someone else voided the tickets while this claimant was mid-flight.
+	durable := claimed.Refund
+	durable.TicketsVoided = true
+
+	st := storeWith([]store.ClaimedReversal{claimed}, map[uuid.UUID]store.Refund{id: durable})
+	// This claimant's own drive achieved nothing: its access call failed.
+	rev := &fakeReverser{}
+
+	runner(st, rev).RunOnce(context.Background())
+
+	if len(st.released) != 1 {
+		t.Fatalf("released = %d calls, want 1", len(st.released))
+	}
+	if !st.released[0].progressed {
+		t.Fatal("a concurrent replay discharged an obligation and this pass reported no " +
+			"progress: at the budget boundary that parks a refund that is recovering, and " +
+			"its remaining obligation is then owed with nothing driving it")
 	}
 }
 
@@ -182,7 +235,7 @@ func TestAPassThatDischargesNothingIsNotProgress(t *testing.T) {
 	id := uuid.New()
 	claimed := outstanding(id, true, false, 4) // voided already; capacity refused forever
 
-	st := &fakeStore{batches: [][]store.ClaimedReversal{{claimed}}}
+	st := storeWith([]store.ClaimedReversal{claimed}, nil)
 	rev := &fakeReverser{} // returns its input unchanged: nothing moved
 
 	runner(st, rev).RunOnce(context.Background())
@@ -244,6 +297,45 @@ func TestAbandonSurvivesACancelledContext(t *testing.T) {
 	if len(st.abandoned) != 1 {
 		t.Fatalf("abandoned = %v, want one row: a shutdown release that rides the cancelled "+
 			"context never lands", st.abandoned)
+	}
+}
+
+// ai-review F1: the lease must outlast the work it protects, and the number it is derived
+// from must be the timeout of the client that actually makes the calls.
+//
+// The first version borrowed `recoveryCallTimeout` (10s) while the refund service drives its
+// calls through obs.Client (30s), giving a 380s lease over work that can take 960s. A lease
+// shorter than its own batch is worse than none: a second replica reclaims rows the first is
+// still driving, and the claim token fences only the final database write — never the access
+// or inventory call already in flight.
+//
+// Asserted as a RELATIONSHIP rather than against the literal 1020s, so the test survives a
+// change to the batch, the call count or obs.ClientTimeout and only fails if the lease stops
+// covering the work.
+func TestTheLeaseOutlastsTheBatchItProtects(t *testing.T) {
+	for _, batch := range []int{1, 8, 16, 64} {
+		worstCase := time.Duration(batch) * MaxCallsPerRefund * obs.ClientTimeout
+		got := LeaseFor(batch, obs.ClientTimeout)
+		if got <= worstCase {
+			t.Fatalf("batch %d: lease %s does not outlast its own worst case %s — a second "+
+				"replica can reclaim rows this pass is still driving", batch, got, worstCase)
+		}
+	}
+}
+
+// And the failure it is meant to catch: sizing from a timeout SMALLER than the client's
+// really uses produces a lease that does not cover the work. This is the mutation, written
+// as a test, because the defect was not in LeaseFor — it was in what the caller passed.
+func TestSizingTheLeaseFromTheWrongTimeoutUnderCoversTheBatch(t *testing.T) {
+	const wrong = 10 * time.Second // recoveryCallTimeout, the value that shipped in the first draft
+	if wrong >= obs.ClientTimeout {
+		t.Skip("obs.ClientTimeout is no longer larger than the recovery constant; this test's premise is gone")
+	}
+	batch := 16
+	worstCase := time.Duration(batch) * MaxCallsPerRefund * obs.ClientTimeout
+	if LeaseFor(batch, wrong) > worstCase {
+		t.Fatal("sizing from the wrong timeout accidentally still covers the batch, so this " +
+			"test cannot detect the defect it names")
 	}
 }
 
