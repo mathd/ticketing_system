@@ -117,9 +117,14 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nShapeable, with one genuine decision in it: whether a captured amount belongs on a surface ADR-032 made deliberately provider-neutral. It probably does — the journal already records it — but that is a decision, which is why this is a ticket and not a commit.\n\n**Concerns:** (1) the neutrality question above. (2) It exists because money-path tests could not prove what moved; until it lands, TKT-158's and TKT-167's payment assertions are weaker than they read.\n\n**Verdict:** CONCERNS — proceedable."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 — promoted to Ready (owner, 2026-08-17)\n\n**Payments exposes no provider-neutral amount evidence.**\n\nNo blockers. TKT-158 and TKT-167 both benefit from it; neither blocks it.\n\n**Why this one matters beyond its own scope** — its ticket text carries the tell: *\"changing the\ncharge from the computed delta to `1` leaves every assertion green.\"* That is the vacuous-assertion\nclass this codebase keeps paying for (TKT-241 existed entirely for it; TKT-248 shipped three more\ninstances). Closing it gives the exchange and refund paths an oracle they currently lack.\n\nBest claimed **after TKT-167**, so the evidence it adds describes fixed behaviour rather than\npinning the defect.\n\n**Verified before promoting, not assumed:** all eight DoR items are `met` or `deferred` with none\n`open`, and every `blocked-by` link resolves to a **Done** ticket. Promoted as part of a sweep of\nevery fully-shaped Backlog ticket, on the owner's instruction.\n"
     }
   ],
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null
