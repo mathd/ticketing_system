@@ -316,6 +316,43 @@ SMOKE_ACCESS_URL=http://localhost:${ACCESS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 
+# QUIESCE THE ONLY LIVE WRITER BEFORE ANY JOURNAL VERIFICATION (TKT-254).
+#
+# Everything from here to the final verify-journal below reads, corrupts and RESTORES
+# the payments journal. All of it assumed nothing else was writing. Something was.
+#
+# commerce runs background tickers -- recovery (internal/recovery/runner.go), bulk
+# refunds, reversals, the exchange sweep -- and the recovery runner's OrderFailed POSTs
+# payments /internal/facts, which appends to this journal for the seeded organizer. It
+# ticks every RECOVERY_INTERVAL, which compose.smoke.yaml pins at 2s for this stack, and
+# it always has work: smoke/psp_recovery_test.go deliberately backdates orders past the
+# claim grace period so the runner picks them up.
+#
+# The failure that follows is not a race the verifier loses and re-wins on a retry -- it
+# is DURABLE CORRUPTION. The restores below snapshot journal_entries, then reinstate it
+# with DELETE + INSERT ... SELECT several statements later. An append that commits inside
+# that window is not in the snapshot, so the DELETE removes it and the INSERT does not
+# put it back -- while its journal_heads update survives. Every later append then chains
+# onto a row that no longer exists, and verify-journal reports a sequence gap about a
+# journal the writer never got wrong. That is TKT-254: `broken chain organizer=...0001
+# sequence=167` on a catalog-only change, green on the next run.
+#
+# `stop`, not `pause` or `scale 0`: only stop drains accepted HTTP requests before
+# cancelling the workers (services/commerce/cmd/commerce/main.go -- srv.Shutdown, then
+# stopWorkers). -t 45 covers the 10s HTTP drain plus each worker's 5s grace. The backup
+# below is taken only AFTER this returns, because a worker inside its grace window can
+# still append.
+#
+# It is never restarted. Nothing after this line uses commerce, and a restart would be
+# actively harmful: Runner.Run calls RunOnce BEFORE its first tick, so restarting near
+# the restore block appends immediately. If you add a commerce-dependent check below,
+# it goes ABOVE this line -- not after a restart.
+#
+# What this does and does not claim: the writer is stopped before the window opens. It is
+# not a claim that no write can occur -- compose stop cannot recall a request payments has
+# already accepted. The ordering above is what makes that window empty in practice.
+compose stop -t 45 commerce
+
 # ADR-003: verify the populated canonical journal before Compose teardown.
 compose exec -T payments /app verify-concurrent-append
 compose exec -T payments /app verify-journal

@@ -303,7 +303,39 @@ func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement [
 }
 
 func (j *Journal) Verify(ctx context.Context) error {
-	rows, err := j.db.QueryContext(ctx, `SELECT fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries ORDER BY organizer_id,sequence`)
+	return j.verify(ctx, nil)
+}
+
+// verify is Verify with a test seam. `afterEntries` runs once the entry scan has been
+// fully consumed and closed, and before the head scan — the exact window in which a
+// concurrent append used to make an intact journal look desynchronized. Production
+// passes nil; only TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot passes a
+// callback, because the interleaving cannot be constructed from outside this function.
+func (j *Journal) verify(ctx context.Context, afterEntries func()) error {
+	// Both scans read one snapshot (TKT-254). Without this they were two statements on a
+	// pooled *sql.DB -- two snapshots, possibly two connections -- so an append that
+	// committed between them made the head scan see a sequence the entry scan never had,
+	// and an intact journal was reported as `journal head mismatch`. ADR-003 puts this
+	// check in the gate and ADR-021 requires that an integrity claim not cry wolf; a
+	// verifier that raises a false alarm against a live database teaches operators to
+	// distrust the alarm.
+	//
+	// This is NOT the fix for TKT-254's smoke flake, and must not be read as one. That
+	// flake is a row the harness deleted and never restored -- durable corruption, which
+	// a consistent snapshot still reports, correctly. The flake's fix is the commerce
+	// quiesce in scripts/smoke.sh. Deleting either change because the other exists
+	// reopens a different defect.
+	//
+	// ReadOnly is enforcement, not decoration: it makes "this transaction exists to take
+	// a snapshot, not to write" a rule PostgreSQL applies rather than a comment a future
+	// edit can walk past. First REPEATABLE READ in this repo -- every other BeginTx here
+	// passes nil, which is READ COMMITTED and correct for the write paths that use it.
+	tx, err := j.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries ORDER BY organizer_id,sequence`)
 	if err != nil {
 		return err
 	}
@@ -323,8 +355,18 @@ func (j *Journal) Verify(ctx context.Context) error {
 		if prev == nil {
 			prev = make([]byte, 32)
 		}
-		if e.Sequence != seqByOrg[e.OrganizerID]+1 || !hmac.Equal(prev, e.PreviousHash) {
-			return fmt.Errorf("broken chain organizer=%s sequence=%d", e.OrganizerID, e.Sequence)
+		// Two independent failures, two messages (TKT-254). These used to share one
+		// `broken chain` string behind a disjunction, and because `||` short-circuits,
+		// the log could not say which condition fired or what was expected — a missing
+		// row and an edited link are very different incidents, and telling them apart
+		// took a full investigation.
+		if want := seqByOrg[e.OrganizerID] + 1; e.Sequence != want {
+			return fmt.Errorf("journal sequence gap organizer=%s expected_sequence=%d observed_sequence=%d",
+				e.OrganizerID, want, e.Sequence)
+		}
+		if !hmac.Equal(prev, e.PreviousHash) {
+			return fmt.Errorf("journal previous hash mismatch organizer=%s sequence=%d expected_previous_hash=%s observed_previous_hash=%s",
+				e.OrganizerID, e.Sequence, Hex(prev), Hex(e.PreviousHash))
 		}
 		c, _ := canonical(e.Fact, e.Sequence)
 		sum := hash(prev, c)
@@ -344,7 +386,13 @@ func (j *Journal) Verify(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	headRows, err := j.db.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if afterEntries != nil {
+		afterEntries()
+	}
+	headRows, err := tx.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
 	if err != nil {
 		return err
 	}

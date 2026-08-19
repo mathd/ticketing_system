@@ -780,3 +780,167 @@ func TestSmokeJournalKeyLiteralsGuardDetectsDrift(t *testing.T) {
 		})
 	}
 }
+
+// --- TKT-254: diagnosability and read-snapshot consistency -------------------
+
+// COS B. `broken chain` used to be one message for two independent failures, because
+// the predicate that produced it was a disjunction that short-circuits:
+//
+//	if e.Sequence != seqByOrg[e.OrganizerID]+1 || !hmac.Equal(prev, e.PreviousHash)
+//
+// An operator reading `broken chain organizer=… sequence=167` could not tell a MISSING
+// ROW from a REWRITTEN LINK, and the message named neither what was expected nor what
+// was found. That cost a full investigation on TKT-254, where the two have completely
+// different consequences: a gap is a row that is not there, a link mismatch is a row
+// that was edited.
+//
+// One subtest per predicate, each mutating ONLY its own field and leaving the other
+// satisfied. A fixture that trips both would prove one branch and be silent about the
+// other, because the first refusal short-circuits the second — the same reason a guard
+// with N predicates needs N tests.
+func TestJournalVerifyNamesWhichChainCheckFailed(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org := uuid.New()
+
+	first, _, err := j.Append(ctx, fact(org))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := j.Append(ctx, fact(org))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture must verify clean BEFORE anything is broken, or a failure below could
+	// be about some other entry entirely and the subtests would pass for the wrong reason.
+	if err := j.Verify(ctx); err != nil {
+		t.Fatalf("fixture does not verify clean before mutation: %v", err)
+	}
+
+	// journal_entries carries the append-only trigger, so every mutation here needs it
+	// off. USER (not ALL): only the append-only trigger is a user trigger.
+	exec(t, db, ctx, `ALTER TABLE journal_entries DISABLE TRIGGER USER`)
+	t.Cleanup(func() { exec(t, db, ctx, `ALTER TABLE journal_entries ENABLE TRIGGER USER`) })
+
+	t.Run("a sequence gap says so, and names expected and observed", func(t *testing.T) {
+		// Push the second entry from n+1 to n+2 and leave previous_hash correct: this
+		// reaches the sequence predicate with the link predicate still satisfied.
+		exec(t, db, ctx, `UPDATE journal_entries SET sequence=$1 WHERE fact_id=$2`, second.Sequence+1, second.ID)
+		defer exec(t, db, ctx, `UPDATE journal_entries SET sequence=$1 WHERE fact_id=$2`, second.Sequence, second.ID)
+
+		err := j.Verify(ctx)
+		if err == nil {
+			t.Fatal("a sequence gap verified clean")
+		}
+		msg := err.Error()
+		// The diagnosis itself...
+		if !strings.Contains(msg, "sequence gap") {
+			t.Errorf("error %q does not diagnose a sequence gap", msg)
+		}
+		// ...and the two values that make it actionable without opening the database.
+		// Asserted separately from the diagnosis: a message that says "sequence gap" and
+		// nothing else is exactly the message this test exists to replace.
+		if !strings.Contains(msg, fmt.Sprintf("expected_sequence=%d", second.Sequence)) {
+			t.Errorf("error %q does not name the expected sequence %d", msg, second.Sequence)
+		}
+		if !strings.Contains(msg, fmt.Sprintf("observed_sequence=%d", second.Sequence+1)) {
+			t.Errorf("error %q does not name the observed sequence %d", msg, second.Sequence+1)
+		}
+		if strings.Contains(msg, "previous hash") {
+			t.Errorf("a pure sequence gap reported a previous-hash problem: %q", msg)
+		}
+	})
+
+	t.Run("a rewritten link says so, and names expected and observed", func(t *testing.T) {
+		// Rewrite ONLY previous_hash and leave the sequence correct: this reaches the
+		// link predicate with the sequence predicate satisfied. The value is not the
+		// zero hash — a zero would also be what a first-entry link looks like, so a
+		// verifier that special-cased it could pass for the wrong reason.
+		broken := []byte("0123456789abcdef0123456789abcdef")
+		exec(t, db, ctx, `UPDATE journal_entries SET previous_hash=$1 WHERE fact_id=$2`, broken, second.ID)
+		defer exec(t, db, ctx, `UPDATE journal_entries SET previous_hash=$1 WHERE fact_id=$2`, second.PreviousHash, second.ID)
+
+		err := j.Verify(ctx)
+		if err == nil {
+			t.Fatal("a rewritten previous_hash verified clean")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "previous hash mismatch") {
+			t.Errorf("error %q does not diagnose a previous-hash mismatch", msg)
+		}
+		if !strings.Contains(msg, "expected_previous_hash="+Hex(first.EntryHash)) {
+			t.Errorf("error %q does not name the expected previous hash %s", msg, Hex(first.EntryHash))
+		}
+		if !strings.Contains(msg, "observed_previous_hash="+Hex(broken)) {
+			t.Errorf("error %q does not name the observed previous hash %s", msg, Hex(broken))
+		}
+		if strings.Contains(msg, "sequence gap") {
+			t.Errorf("a pure link mismatch reported a sequence gap: %q", msg)
+		}
+	})
+
+	// Both mutations are reverted by their defers; the journal must be clean again, or a
+	// later test in this package inherits the corruption and fails for a reason that has
+	// nothing to do with it (Verify scans EVERY organizer).
+	if err := j.Verify(ctx); err != nil {
+		t.Fatalf("entries not restored after the subtests: %v", err)
+	}
+}
+
+// COS C. Verify used to read journal_entries and journal_heads as two separate
+// statements on a pooled *sql.DB with no transaction — two snapshots, possibly two
+// connections. Against a LIVE database that is a false-alarm generator: a perfectly
+// legal append committing between the two reads makes the heads scan see a sequence the
+// entries scan never had, and Verify reports `journal head mismatch` about a journal
+// that is entirely intact.
+//
+// That matters beyond tidiness. ADR-003 puts verify-journal in the gate, and ADR-021 is
+// emphatic that an integrity claim must not cry wolf: an operator who runs verification
+// against a live database and gets a false alarm learns to distrust the alarm.
+//
+// This is NOT the TKT-254 smoke flake and must not be read as its fix. That flake is a
+// row the harness deleted and never restored — durable corruption, which a consistent
+// snapshot still reports, correctly. The two share a function and nothing else.
+//
+// The seam: the private `verify` takes a callback run after the entry scan has been
+// fully consumed and closed, and before the head scan. Production `Verify` passes nil.
+// A hand-written two-query test would prove nothing about the real code path.
+func TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org := uuid.New()
+
+	if _, _, err := j.Append(ctx, fact(org)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second connection: the callback appends while the verification transaction is
+	// open, so it cannot share the verifier's connection.
+	writer, err := sql.Open("pgx", testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+
+	var appendErr error
+	var appended Entry
+	err = j.verify(ctx, func() {
+		appended, _, appendErr = New(writer, fullRing(t)).Append(ctx, fact(org))
+	})
+	if appendErr != nil {
+		t.Fatalf("the interleaved append itself failed, so this test proved nothing: %v", appendErr)
+	}
+	// The interleaving must actually have happened, or a green result here means the
+	// callback silently did nothing — a test that cannot reach the state it is about.
+	if appended.Sequence != 2 {
+		t.Fatalf("interleaved append landed at sequence %d, want 2; the fixture did not construct the race", appended.Sequence)
+	}
+	if err != nil {
+		t.Fatalf("a legal append between the two reads was reported as corruption: %v", err)
+	}
+
+	// And the journal really is fine — a full verification after the fact agrees.
+	if err := j.Verify(ctx); err != nil {
+		t.Fatalf("journal does not verify after the interleaved append: %v", err)
+	}
+}
