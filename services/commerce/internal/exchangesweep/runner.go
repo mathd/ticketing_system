@@ -267,8 +267,15 @@ func (r *Runner) drive(ctx context.Context, c store.ClaimedExchangeReversal) boo
 	// whole-line and never seated).
 	cause := "capacity return outstanding"
 	if !after.TicketsExchanged {
-		// The sweep cannot discharge this one and never will: the switch is access's fact.
-		// The row is counted (Backlog.AwaitingSwitch) and left visible rather than driven.
+		// The sweep cannot discharge this one: the switch is access's fact. The row is
+		// counted (Backlog.AwaitingSwitch) and left visible rather than driven.
+		//
+		// The store decides what that COSTS, and the answer is nothing: an awaiting-switch
+		// row keeps its budget and never parks, because parking a row for a condition this
+		// service cannot influence would exclude it from the claim predicate forever — and
+		// the capacity would be stranded by the mechanism added to prevent that (ai-review
+		// F1). The decision lives in SQL, keyed on the row's own state rather than on this
+		// cause string, so a mis-typed cause cannot change what a row is charged.
 		cause = "awaiting access switch confirmation"
 	}
 	if err := r.store.Release(ctx, c.Exchange.OrganizerID, c.Exchange.ID, c.ClaimID,

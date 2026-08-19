@@ -129,6 +129,20 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 // discharging an exchange — the tickets-switched callback drives the same obligation
 // whenever access redelivers — so a verdict computed from the claimant's own before/after
 // would be wrong exactly when a concurrent callback helped (ADR-062 ai-review F2).
+//
+// AN EXCHANGE AWAITING ITS SWITCH IS NOT A FAILED ATTEMPT (ai-review F1). It is the one
+// outstanding state the sweep can do nothing about — the marker is access's fact — so
+// charging it an attempt spends a budget against a condition this service cannot influence,
+// and after MaxExchangeReversalAttempts passes the row PARKS. That is the defect, and it is
+// worse than doing nothing: the claim predicate excludes parked rows, so when access finally
+// confirms the switch and its own capacity return fails, the sweep can never reclaim the row
+// and the capacity is stranded permanently — by the mechanism added to prevent exactly that.
+// It would also block 0022's rollback with attempts and an error recorded for work never
+// attempted.
+//
+// So the charge is keyed on the ROW's state, in SQL: `awaiting_switch` rows have their lease
+// released, keep their budget, and come back on a fixed interval. They stay visible through
+// the `awaiting_switch` gauge, which is what "monitored rather than driven" means.
 func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchangeID, claimID uuid.UUID,
 	switchedAtClaim, capacityAtClaim bool, cause string) error {
 	_, err := db.ExecContext(ctx, `
@@ -142,16 +156,23 @@ func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchang
 		    -- nothing ever clears the field, and 0022's rollback guard then reads it as
 		    -- failed reconciliation and refuses a legitimate rollback.
 		    reversal_last_error=CASE WHEN observed.still_outstanding THEN $4 ELSE NULL END,
+		    -- An awaiting_switch row never charges: see the note above. The budget exists to
+		    -- bound retries against a downstream this service is ASKING, and it asks none here.
 		    reversal_attempts=CASE
 		        WHEN observed.progressed OR NOT observed.still_outstanding THEN 0
+		        WHEN observed.awaiting_switch THEN order_exchanges.reversal_attempts
 		        ELSE order_exchanges.reversal_attempts+1
 		    END,
 		    reversal_next_attempt_at=now() + CASE
 		        WHEN observed.progressed THEN make_interval(secs => $6)
+		        -- A fixed interval rather than a backoff: there is no failing downstream to
+		        -- spare, and the row must be picked up promptly once access confirms.
+		        WHEN observed.awaiting_switch THEN make_interval(secs => $9)
 		        ELSE least(make_interval(secs => power(2, least(order_exchanges.reversal_attempts+1, 8))::double precision), interval '5 minutes')
 		    END,
 		    reversal_parked_at=CASE
 		        WHEN NOT observed.progressed AND observed.still_outstanding
+		             AND NOT observed.awaiting_switch
 		             AND order_exchanges.reversal_attempts+1>=$5 THEN now()
 		        ELSE NULL
 		    END
@@ -167,7 +188,11 @@ func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchang
 		        ((tickets_exchanged_at IS NOT NULL) AND NOT $7::boolean)  -- $7 = switchedAtClaim
 		         OR ((capacity_returned_at IS NOT NULL) AND NOT $8::boolean)  -- $8 = capacityAtClaim
 		         AS progressed,
-		        (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL) AS still_outstanding
+		        (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL) AS still_outstanding,
+		        -- Read from the ROW, not from the claim-time observation: access may have
+		        -- confirmed the switch mid-flight, and this claimant's failed capacity call
+		        -- IS then a real attempt against inventory.
+		        (tickets_exchanged_at IS NULL) AS awaiting_switch
 		    FROM order_exchanges WHERE organizer_id=$1 AND id=$2
 		) AS observed
 		WHERE order_exchanges.organizer_id=$1 AND order_exchanges.id=$2
@@ -179,9 +204,21 @@ func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchang
 		/* $5 */ MaxExchangeReversalAttempts,
 		/* $6 */ progressedFloorSeconds,
 		/* $7 */ switchedAtClaim,
-		/* $8 */ capacityAtClaim)
+		/* $8 */ capacityAtClaim,
+		/* $9 */ awaitingSwitchFloorSeconds)
 	return err
 }
+
+// awaitingSwitchFloorSeconds is how long a settled exchange whose switch access has not
+// confirmed waits before the sweep looks at it again.
+//
+// It is a flat interval, not a backoff, and it charges nothing. Such a row is not failing —
+// it is waiting on another service's event, and the sweep re-reads it only to keep the
+// `awaiting_switch` gauge honest and to pick the capacity work up promptly once the marker
+// lands. Long enough not to spin on a stuck consumer; short enough that a recovered exchange
+// is discharged in about a minute rather than after a backoff that grew while nothing was
+// wrong.
+const awaitingSwitchFloorSeconds = 60.0
 
 // FinishExchangeReversalClaim closes a fully discharged exchange: lease and token released,
 // budget restored, error cleared.

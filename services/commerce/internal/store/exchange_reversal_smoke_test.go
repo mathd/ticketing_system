@@ -342,66 +342,107 @@ func TestAnExchangeThatNeverProgressesParks(t *testing.T) {
 //
 // Delete `organizer_id=$1` from any of those statements and this is what goes red. The
 // runner's fakes cannot catch it: they scope in Go what the SQL must scope.
-func TestOneTenantsReleaseDoesNotTouchAnotherTenantsRowWithTheSameID(t *testing.T) {
-	db, ctx := outboxDB(t)
+// AI-REVIEW F2. The composite-key fence, tested so it can actually FAIL.
+//
+// The first version of this test made the other tenant's row unclaimable to isolate the
+// release — and thereby left its `reversal_claim_id` NULL, so the claim-token predicate
+// (`AND reversal_claim_id=$3`) rejected it on its own. Deleting `organizer_id=$1` changed
+// nothing and the test stayed green: a fixture that cannot reach the failing state, produced
+// while fixing a different failure.
+//
+// The fix is to give both tenants' rows the SAME live claim token. Then the token predicate
+// no longer discriminates and the organizer predicate is the only thing standing between one
+// tenant's write and another's row — which is the claim under test. Setting the token
+// directly is legitimate here: this file's subject is which rows a statement MATCHES, and the
+// fixture must be able to express a collision the claim path would never hand out.
+//
+// One test per fenced statement, because each carries its own WHERE clause and deleting the
+// predicate from one is invisible to a test that exercises another.
+func exchangePairSharingAClaim(t *testing.T, db *sql.DB, ctx context.Context, key string) (mine, theirs exchangeSeed, claim uuid.UUID) {
+	t.Helper()
 	now := time.Now()
-	future := now.Add(time.Hour)
 	shared := uuid.New()
+	claim = uuid.New()
+	lease := now.Add(time.Hour)
 
-	mine := settledExchange(t, db, ctx, "tenant-mine", func(s *exchangeSeed) {
+	mine = settledExchange(t, db, ctx, key+"-mine", func(s *exchangeSeed) {
 		s.ID = shared
 		s.SwitchedAt = &now
+		s.ClaimID, s.LeaseUntil = &claim, &lease
 	})
-	// The other tenant's row carries the SAME exchange id and is deliberately NOT
-	// claimable — its next attempt is an hour out. That isolation is what makes this a test
-	// about RELEASE rather than about claim: if both rows were eligible, one 50-row claim
-	// would lease both (correctly), and "the other row is leased" would be true without any
-	// cross-tenant write having happened.
-	theirs := settledExchange(t, db, ctx, "tenant-theirs", func(s *exchangeSeed) {
-		s.ID = shared
+	theirs = settledExchange(t, db, ctx, key+"-theirs", func(s *exchangeSeed) {
+		s.ID = shared // same exchange id, same claim token, different organizer
 		s.SwitchedAt = &now
 		s.Attempts = 7
-		s.NextAttemptAt = &future
+		s.ClaimID, s.LeaseUntil = &claim, &lease
 	})
 	if mine.OrganizerID == theirs.OrganizerID {
 		t.Fatal("fixture is broken: the two rows must belong to different tenants")
 	}
-	if _, ok := claimExchange(t, db, ctx, shared); !ok {
-		t.Fatal("the claimable row was not claimed")
-	}
-	// Exactly one row was claimed, and it is mine — otherwise the assertions below are
-	// about the wrong row.
-	got := readExchange(t, db, ctx, mine.OrganizerID, shared)
-	if got.ClaimID == nil {
-		t.Fatal("this tenant's row was not the one claimed; the fixture no longer isolates the case")
-	}
-	claimID := *got.ClaimID
+	return mine, theirs, claim
+}
 
-	if err := ReleaseExchangeReversalClaim(ctx, db, mine.OrganizerID, shared, claimID,
+func TestReleaseIsFencedByTheFullCompositeKey(t *testing.T) {
+	db, ctx := outboxDB(t)
+	mine, theirs, claim := exchangePairSharingAClaim(t, db, ctx, "fence-release")
+
+	if err := ReleaseExchangeReversalClaim(ctx, db, mine.OrganizerID, mine.ID, claim,
 		true, false, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
 
-	// THE ASSERTION: the other tenant's row is untouched. Its attempt count is the sharpest
-	// witness — release is the statement that increments it, so a statement matched on `id`
-	// alone would push this tenant's failure onto a stranger's budget and eventually park a
-	// row that never failed at all.
-	other := readExchange(t, db, ctx, theirs.OrganizerID, shared)
+	// The other tenant's row is untouched. Its attempt count is the sharpest witness:
+	// release is the statement that increments it, so an id-only match charges this
+	// tenant's failure to a stranger's budget and eventually parks a row that never failed.
+	other := readExchange(t, db, ctx, theirs.OrganizerID, theirs.ID)
 	if other.Attempts != 7 {
-		t.Fatalf("the other tenant's attempts moved from 7 to %d: a statement matched on `id` "+
-			"alone and charged this tenant's failure to another tenant's budget", other.Attempts)
+		t.Fatalf("the other tenant's attempts moved 7 -> %d: ReleaseExchangeReversalClaim "+
+			"matched on `id` alone and reached across the tenant boundary", other.Attempts)
 	}
-	if other.ClaimID != nil || other.LeaseUntil != nil {
-		t.Fatal("the other tenant's row was leased by this tenant's claim")
+	if other.ClaimID == nil || other.LeaseUntil == nil {
+		t.Fatal("the other tenant's lease was released by this tenant's call")
 	}
-	if other.ParkedAt != nil {
-		t.Fatal("the other tenant's row was parked by this tenant's release")
+	// And this tenant's row DID move, so the statement ran at all.
+	if got := readExchange(t, db, ctx, mine.OrganizerID, mine.ID); got.Attempts != 1 || got.ClaimID != nil {
+		t.Fatalf("this tenant's row was not released (attempts=%d claim=%v); the assertions "+
+			"above would then prove nothing", got.Attempts, got.ClaimID)
 	}
-	// And mine did move, so the release actually ran — otherwise this test would pass
-	// against a release that is a no-op.
-	if after := readExchange(t, db, ctx, mine.OrganizerID, shared); after.Attempts != 1 {
-		t.Fatalf("this tenant's attempts = %d, want 1: the release under test did not run, so "+
-			"the assertions above prove nothing", after.Attempts)
+}
+
+func TestFinishIsFencedByTheFullCompositeKey(t *testing.T) {
+	db, ctx := outboxDB(t)
+	mine, theirs, claim := exchangePairSharingAClaim(t, db, ctx, "fence-finish")
+
+	if err := FinishExchangeReversalClaim(ctx, db, mine.OrganizerID, mine.ID, claim); err != nil {
+		t.Fatal(err)
+	}
+
+	other := readExchange(t, db, ctx, theirs.OrganizerID, theirs.ID)
+	if other.Attempts != 7 || other.ClaimID == nil {
+		t.Fatalf("FinishExchangeReversalClaim cleared another tenant's reconciliation state "+
+			"(attempts %d, claim %v): finishing one tenant's exchange must not tell another "+
+			"tenant's row that its obligation is discharged", other.Attempts, other.ClaimID)
+	}
+	if got := readExchange(t, db, ctx, mine.OrganizerID, mine.ID); got.ClaimID != nil || got.Attempts != 0 {
+		t.Fatalf("this tenant's row was not finished (claim=%v attempts=%d)", got.ClaimID, got.Attempts)
+	}
+}
+
+func TestAbandonIsFencedByTheFullCompositeKey(t *testing.T) {
+	db, ctx := outboxDB(t)
+	mine, theirs, claim := exchangePairSharingAClaim(t, db, ctx, "fence-abandon")
+
+	if err := AbandonExchangeReversalClaim(ctx, db, mine.OrganizerID, mine.ID, claim); err != nil {
+		t.Fatal(err)
+	}
+
+	other := readExchange(t, db, ctx, theirs.OrganizerID, theirs.ID)
+	if other.ClaimID == nil || other.LeaseUntil == nil {
+		t.Fatal("AbandonExchangeReversalClaim released another tenant's lease: a shutdown in " +
+			"one tenant's pass would hand another tenant's in-flight rows to a competing claimant")
+	}
+	if got := readExchange(t, db, ctx, mine.OrganizerID, mine.ID); got.ClaimID != nil {
+		t.Fatal("this tenant's claim was not abandoned")
 	}
 }
 
@@ -540,5 +581,98 @@ func TestTheOldestAgeIsMeasuredFromSettlementNotCreation(t *testing.T) {
 		t.Fatalf("oldest age = %ds, which is the ROW's age, not the OBLIGATION's: an exchange "+
 			"bound long before it settled would inflate the gauge while owing nothing",
 			b.OldestAgeSeconds)
+	}
+}
+
+// AI-REVIEW F1. An exchange awaiting its switch must NEVER park, however many passes see it.
+//
+// The defect this pins: the sweep claims every settled outstanding exchange, including ones
+// access has not confirmed, and DriveExchange correctly does nothing with them. If that
+// release charged an attempt, the row would park after MaxExchangeReversalAttempts passes —
+// and the claim predicate excludes parked rows, so when access finally confirmed the switch
+// and its own capacity return failed, the sweep could never reclaim it. The capacity would be
+// stranded permanently BY THE MECHANISM ADDED TO PREVENT THAT.
+//
+// One pass cannot see this. The single-pass safety test is green either way, which is why
+// this test drives the budget to exhaustion.
+func TestAnExchangeAwaitingItsSwitchNeverParksHoweverManyPasses(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := settledExchange(t, db, ctx, "awaiting-never-parks", nil) // settled, switch unconfirmed
+
+	for pass := 0; pass < MaxExchangeReversalAttempts+3; pass++ {
+		// The row is due on a flat interval, so make it due again rather than waiting.
+		if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
+			s.OrganizerID, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		c, ok := claimExchange(t, db, ctx, s.ID)
+		if !ok {
+			t.Fatalf("pass %d: the row was not claimable; an awaiting-switch exchange must stay "+
+				"visible to the sweep so its gauge stays honest", pass)
+		}
+		if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
+			c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "awaiting access switch confirmation"); err != nil {
+			t.Fatal(err)
+		}
+		got := readExchange(t, db, ctx, s.OrganizerID, s.ID)
+		if got.ParkedAt != nil {
+			t.Fatalf("pass %d: the row PARKED while waiting for access. Parking is for work "+
+				"that failed against a downstream; this row asked nobody. Once parked it is "+
+				"excluded from the claim predicate forever, so a later switch confirmation "+
+				"whose capacity return fails can never be swept", pass)
+		}
+		if got.Attempts != 0 {
+			t.Fatalf("pass %d: attempts = %d, want 0: waiting on another service's event is "+
+				"not a failed attempt, and spending the budget on it is what leads to parking",
+				pass, got.Attempts)
+		}
+	}
+}
+
+// The other half of F1, and what makes the test above prove something: once access DOES
+// confirm the switch, the row is swept normally — with its full budget, and a genuine
+// capacity failure now does charge.
+func TestOnceAccessConfirmsTheSwitchTheRowIsSweptNormally(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := settledExchange(t, db, ctx, "late-switch", nil)
+
+	// Several passes while access is silent.
+	for pass := 0; pass < 3; pass++ {
+		if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
+			s.OrganizerID, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		c, ok := claimExchange(t, db, ctx, s.ID)
+		if !ok {
+			t.Fatalf("pass %d: not claimable", pass)
+		}
+		if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
+			c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "awaiting access switch confirmation"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Access confirms.
+	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now(), reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := claimExchange(t, db, ctx, s.ID)
+	if !ok {
+		t.Fatal("a switched exchange with capacity outstanding was not claimable: this is the " +
+			"state the whole sweep exists to drive")
+	}
+	if !c.Exchange.TicketsExchanged {
+		t.Fatal("the claim did not observe the switch")
+	}
+	// Now a real capacity failure — and THIS one charges, because it asked inventory.
+	if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
+		c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readExchange(t, db, ctx, s.OrganizerID, s.ID); got.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1: the budget must be intact when the row becomes "+
+			"actionable, and a genuine inventory failure must still be charged — otherwise "+
+			"nothing ever parks and a permanently refused return spins forever", got.Attempts)
 	}
 }

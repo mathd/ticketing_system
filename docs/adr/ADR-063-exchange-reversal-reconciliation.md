@@ -84,6 +84,17 @@ it represents (an access consumer that stopped delivering) has a different owner
 from the first (inventory refusing), which is why it gets its own gauge rather than being folded into
 `outstanding`.
 
+**An awaiting-switch row is not a failed attempt, and must never park** (ai-review F1). The first
+implementation charged it an attempt on every pass, exactly as a failed capacity return is charged.
+That parks the row after ten passes — and because the claim predicate excludes parked rows, when
+access finally confirms the switch and its own capacity return fails, the sweep can never reclaim it.
+The capacity would be stranded permanently *by the mechanism added to prevent that*, with attempts and
+an error recorded for work never attempted (which would also block 0022's rollback). So the charge is
+keyed on the **row's own state, in SQL**: an unswitched row releases its lease, keeps its budget, and
+returns on a flat 60-second interval rather than a backoff — there is no failing downstream to spare,
+and it must be picked up promptly once the marker lands. A budget bounds retries against a service
+being *asked*; this row asks nobody.
+
 ### 3. Parking is copied; ADR-062's REASON for it is not
 
 ADR-062 §2's parking rationale is inventory's refusal of a **partial return of a seated claim**
