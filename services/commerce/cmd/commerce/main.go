@@ -24,6 +24,7 @@ import (
 	commerceapi "ticketing/services/commerce/internal/api"
 	"ticketing/services/commerce/internal/bulkrefund"
 	commerceevents "ticketing/services/commerce/internal/events"
+	"ticketing/services/commerce/internal/exchangesweep"
 	"ticketing/services/commerce/internal/mailer"
 	"ticketing/services/commerce/internal/outbox"
 	"ticketing/services/commerce/internal/recovery"
@@ -392,6 +393,25 @@ func run() error {
 	}
 	stopReversals := start(log, "refund reversal runner", reversals.Run)
 
+	// The exchange sweep (TKT-259, ADR-063): the same shape for `order_exchanges`, whose
+	// obligations had no commerce-side sweep at all — their only retry was access's
+	// JetStream redelivery, driven by the tickets-switched callback answering 502. That
+	// callback REMAINS the first line; this is the backstop for rows it gave up on.
+	//
+	// Through the SAME discharge unit the callback uses, so the two cannot drift, and a
+	// port with one method is what keeps this runner unable to move money or mark a switch.
+	// The lease is sized from obs.ClientTimeout for the reason ADR-062's ai-review F1
+	// recorded on the refund side: the discharge unit borrows the API server's `call`,
+	// which runs on obs.Client() at 30s, and a lease shorter than the work it protects lets
+	// a second replica reclaim rows the first is still driving.
+	sweeps := exchangesweep.New(exchangesweep.DBStore{DB: db}, srvHandler.Exchanges(),
+		exchangeSweepInterval(), exchangeSweepBatch(),
+		exchangesweep.LeaseFor(exchangeSweepBatch(), obs.ClientTimeout), log)
+	if err := sweeps.ObserveMetrics(otel.Meter("ticketing/commerce/exchangesweep")); err != nil {
+		log.WarnContext(ctx, "exchange sweep metrics unavailable; the sweep still runs", "err", err)
+	}
+	stopSweeps := start(log, "exchange sweep runner", sweeps.Run)
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
@@ -408,6 +428,10 @@ func run() error {
 		// through the shared refund unit, and stopping the reversal runner first would not
 		// quiesce that.
 		stopReversals()
+		// The exchange sweep with them, and for the same reason: a claimed exchange hands
+		// its lease back on shutdown, and doing that before the paths it depends on go away
+		// is what makes an orderly restart differ from a crash only in latency.
+		stopSweeps()
 		// Recovery next: it completes orders through the outbox, so stopping the
 		// drainer first would strand a row this pass just owed until the next boot.
 		stopRecovery()
@@ -578,6 +602,40 @@ func reversalInterval() time.Duration {
 // no money path, where a cancellation order makes up to four including the provider.
 func reversalBatch() int {
 	if v := os.Getenv("REFUND_REVERSAL_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 16
+}
+
+// exchangeSweepInterval bounds how long an outstanding exchange obligation waits for a
+// retry. Matches the refund reconciler's minute, for the same reason: every row this sweep
+// claims has already failed against something unavailable, and re-asking a downed service
+// every ten seconds is how a reconciler becomes a second outage. An outstanding exchange
+// obligation is UNDER-selling in the meantime (the source capacity is not back), which is
+// the safe direction.
+//
+// A restart drains immediately regardless (Runner.Run), so this bounds the steady state, not
+// recovery from a deploy.
+//
+// A plain default, never a compose `${VAR:?}`: a mandatory marker with no matching emitter
+// in scripts/env-bootstrap.sh fails `make check`'s check-required-env stage (TKT-227).
+func exchangeSweepInterval() time.Duration {
+	if v := os.Getenv("EXCHANGE_REVERSAL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return time.Minute
+}
+
+// exchangeSweepBatch bounds one claim, and with it the lease. The same 16 as the refund
+// reconciler even though each row here makes at most ONE downstream call rather than two —
+// the batch bounds how many rows a pass claims, and the call count is expressed in
+// MaxCallsPerExchange, where LeaseFor reads it.
+func exchangeSweepBatch() int {
+	if v := os.Getenv("EXCHANGE_REVERSAL_BATCH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}

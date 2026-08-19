@@ -168,7 +168,10 @@ Safe to add: `capacity_returned_at` has exactly one writer in commerce, downstre
   answering 502. If that consumer dead-letters, nothing revisits those rows. All four COS name
   refunds and exchanges have a different eligibility model, so they are a follow-up ticket, filed at
   this ticket's closeout. Named here because a gap recorded in an ADR is findable and a gap recorded
-  nowhere is not.
+  nowhere is not. **Closed by [ADR-063](./ADR-063-exchange-reversal-reconciliation.md) (TKT-259)**,
+  which found the eligibility difference to be sharper than "different": an exchange's switch marker
+  is *access's* fact, so a sweep can drive the capacity half and must never assert the other —
+  §2 there, and the reason §2 of THIS ADR does not transfer wholesale.
 - **Unparking.** TKT-146, above.
 - **Seated partial returns.** TKT-164 owns the repair. Here they are parked and counted.
 - **Whether inventory should demand proof of prior voiding.** TKT-165, unchanged.

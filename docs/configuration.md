@@ -52,6 +52,11 @@ Without it nothing, including the reconciler, can ever discharge ticket voiding
 that drives outstanding reversals. Operator surface and the meaning of each state:
 `docs/development.md` § Refund reversal reconciliation.
 
+`EXCHANGE_REVERSAL_INTERVAL` (default `1m`) and `EXCHANGE_REVERSAL_BATCH` (default `16`) tune the
+equivalent sweep for outstanding exchange obligations. Both are plain defaults with no compose `:?`
+marker — they are tuning knobs, not credentials. Operator surface and the meaning of each state:
+`docs/development.md` § Exchange obligation sweep.
+
 ## Compose host ports (dev defaults / smoke)
 
 All published ports bind to `127.0.0.1`. `GATEWAY_PORT` 8080/18080 · `POSTGRES_PORT` 5432/15432 · `NATS_PORT` 4222/14222 ·
