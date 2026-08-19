@@ -61,11 +61,18 @@ ALTER TABLE order_exchanges
 --
 -- `settled_at IS NOT NULL` is in the predicate rather than the key: an unsettled exchange
 -- owes nothing yet, and including it would make the index carry every in-flight bind.
+-- The predicate matches the claim's ACTIONABLE set exactly: settled, switched, capacity
+-- outstanding, unparked. A settled exchange still awaiting its switch is deliberately absent
+-- from both — commerce can do nothing with it, and letting a large awaiting-switch backlog
+-- into a LIMIT-ed, next-attempt-ordered queue would push genuinely actionable capacity
+-- returns past the runner's per-pass bound. Those rows are monitored by the awaiting_switch
+-- gauge instead, which reads them directly.
 CREATE INDEX order_exchanges_reversal_queue_idx
     ON order_exchanges (reversal_next_attempt_at, organizer_id, id)
     WHERE settled_at IS NOT NULL
-      AND reversal_parked_at IS NULL
-      AND (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL);
+      AND tickets_exchanged_at IS NOT NULL
+      AND capacity_returned_at IS NULL
+      AND reversal_parked_at IS NULL;
 
 -- +goose Down
 -- Fails closed once the reconciler has recorded anything, exactly as 0021 does. A silent

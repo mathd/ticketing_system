@@ -84,16 +84,34 @@ it represents (an access consumer that stopped delivering) has a different owner
 from the first (inventory refusing), which is why it gets its own gauge rather than being folded into
 `outstanding`.
 
-**An awaiting-switch row is not a failed attempt, and must never park** (ai-review F1). The first
-implementation charged it an attempt on every pass, exactly as a failed capacity return is charged.
-That parks the row after ten passes — and because the claim predicate excludes parked rows, when
-access finally confirms the switch and its own capacity return fails, the sweep can never reclaim it.
-The capacity would be stranded permanently *by the mechanism added to prevent that*, with attempts and
-an error recorded for work never attempted (which would also block 0022's rollback). So the charge is
-keyed on the **row's own state, in SQL**: an unswitched row releases its lease, keeps its budget, and
-returns on a flat 60-second interval rather than a backoff — there is no failing downstream to spare,
-and it must be picked up promptly once the marker lands. A budget bounds retries against a service
-being *asked*; this row asks nobody.
+**An awaiting-switch row is not claimed at all** — and it took three review passes to land there,
+which is worth recording because each intermediate position looked correct.
+
+The first implementation claimed such rows and *charged them an attempt*, exactly as a failed capacity
+return is charged. That parks the row after ten passes — and because the claim predicate excludes
+parked rows, when access finally confirms the switch and its own capacity return fails, the sweep can
+never reclaim it. The capacity would have been stranded permanently *by the mechanism added to prevent
+that* (ai-review F1).
+
+The second stopped charging them but still claimed them. Two defects survived. The release still wrote
+`reversal_last_error`, and 0022's rollback guard refuses on any non-NULL error — so the routine,
+transient state of waiting for access would have made the migration unrollbackable, for work where
+nothing was even attempted (F3). And the claim is `ORDER BY reversal_next_attempt_at` with a `LIMIT`,
+inside a pass bounded at `MaxBatchesPerPass` batches, so a large awaiting-switch backlog after an
+access outage fills every batch with rows commerce can do nothing about and pushes genuinely actionable
+capacity returns past the bound — head-of-line blocking that delays exactly what the sweep exists to do
+(F4).
+
+So the actionable set is now `settled AND switched AND capacity outstanding AND unparked`, in the claim
+and in the partial index alike. Excluding awaiting-switch rows costs nothing, because there was never
+anything to do with them: `DriveExchange` refuses an unswitched row anyway. **The sweep is not how they
+are observed — the `awaiting_switch` gauge is**, and it reads them directly. When access confirms, the
+row becomes claimable immediately, with its budget untouched and no backoff to wait out.
+
+The release still carries the awaiting-switch arms as a second line of defence, because the state
+remains *reachable*: the marker is read from the row at release time and a concurrent writer can clear
+it between claim and release. The rule in one sentence — **a budget and an error describe what a row
+asked a downstream and how that went; a row that asked nobody has neither.**
 
 ### 3. Parking is copied; ADR-062's REASON for it is not
 

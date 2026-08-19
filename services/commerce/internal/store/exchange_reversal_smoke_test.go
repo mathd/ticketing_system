@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -154,8 +155,8 @@ func TestConjunct1AnUnsettledExchangeIsNotClaimed(t *testing.T) {
 	}
 }
 
-// Conjunct 2: at least one obligation outstanding. A fully discharged exchange must never be
-// claimed again — re-driving it would ask inventory to return capacity a second time.
+// Conjunct 2: capacity still outstanding. A fully discharged exchange must never be claimed
+// again — re-driving it would ask inventory to return capacity a second time.
 func TestConjunct2AFullyDischargedExchangeIsNotClaimed(t *testing.T) {
 	db, ctx := outboxDB(t)
 	now := time.Now()
@@ -250,27 +251,37 @@ func TestClaimingDoesNotChargeAnAttempt(t *testing.T) {
 // crossed, it type-checks, runs, and reports progress exactly backwards.
 func TestProgressOnTheSwitchAloneResetsTheBudget(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := settledExchange(t, db, ctx, "progress-switch", func(s *exchangeSeed) { s.Attempts = 4 })
+	now := time.Now()
+	// Claimed as ACTIONABLE (switched, capacity outstanding) — the only shape the claim
+	// offers since F4 narrowed it. The claim-time observation is then contradicted by a
+	// concurrent writer clearing the marker, which is the state the awaiting_switch arms of
+	// the release exist for and the only way this direction of the pairing is reachable.
+	s := settledExchange(t, db, ctx, "progress-switch", func(s *exchangeSeed) {
+		s.SwitchedAt = &now
+		s.Attempts = 4
+	})
 
 	c, ok := claimExchange(t, db, ctx, s.ID)
 	if !ok {
 		t.Fatal("not claimed")
 	}
-	if c.Exchange.TicketsExchanged {
-		t.Fatal("fixture: the switch must be outstanding AT CLAIM TIME for this to be progress")
+	if !c.Exchange.TicketsExchanged {
+		t.Fatal("fixture: the claim must observe the switch present")
 	}
-	// The callback lands while this claimant is in flight: the switch, and only the switch.
-	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now() WHERE organizer_id=$1 AND id=$2`,
-		s.OrganizerID, s.ID); err != nil {
-		t.Fatal(err)
-	}
+
+	// THE PAIRING TEST. Release is told switchedAtClaim=false while the row HAS the marker,
+	// which is exactly what a claimant sees when access confirms mid-flight. Progress must be
+	// read as "the switch moved", and it can only be read that way if $7 is paired with
+	// tickets_exchanged_at rather than with capacity_returned_at — crossed, the pairing
+	// type-checks, runs, and reports progress backwards.
 	if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
-		c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
+		false, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
 	if got := readExchange(t, db, ctx, s.OrganizerID, s.ID); got.Attempts != 0 {
-		t.Fatalf("attempts = %d, want 0: the SWITCH moved since claim time, which is progress — "+
-			"a budget that does not reset would retire an exchange that is recovering", got.Attempts)
+		t.Fatalf("attempts = %d, want 0: the SWITCH is present and was not present at claim "+
+			"time, which is progress — a budget that does not reset would retire an exchange "+
+			"that is recovering", got.Attempts)
 	}
 }
 
@@ -584,95 +595,138 @@ func TestTheOldestAgeIsMeasuredFromSettlementNotCreation(t *testing.T) {
 	}
 }
 
-// AI-REVIEW F1. An exchange awaiting its switch must NEVER park, however many passes see it.
+// AI-REVIEW F1/F4. A settled exchange awaiting its switch is NOT CLAIMED AT ALL, however
+// long it waits — and it therefore cannot be charged, cannot record an error, and cannot
+// park.
 //
-// The defect this pins: the sweep claims every settled outstanding exchange, including ones
-// access has not confirmed, and DriveExchange correctly does nothing with them. If that
-// release charged an attempt, the row would park after MaxExchangeReversalAttempts passes —
-// and the claim predicate excludes parked rows, so when access finally confirmed the switch
-// and its own capacity return failed, the sweep could never reclaim it. The capacity would be
-// stranded permanently BY THE MECHANISM ADDED TO PREVENT THAT.
+// The history is worth keeping, because two passes were needed to get here. The first
+// version claimed such rows and charged them an attempt, so after
+// MaxExchangeReversalAttempts passes the row PARKED — and the claim predicate excludes
+// parked rows, so a later switch confirmation whose capacity return failed could never be
+// swept. The capacity would have been stranded permanently by the mechanism added to
+// prevent that. The second version stopped charging them but still claimed them, which left
+// two defects: an error string written for work never attempted (blocking 0022's rollback,
+// F3) and a large awaiting-switch backlog filling every LIMIT-ed, next-attempt-ordered batch
+// and pushing actionable capacity returns past the runner's per-pass bound (F4).
 //
-// One pass cannot see this. The single-pass safety test is green either way, which is why
-// this test drives the budget to exhaustion.
-func TestAnExchangeAwaitingItsSwitchNeverParksHoweverManyPasses(t *testing.T) {
+// Excluding them costs nothing: DriveExchange refuses an unswitched row anyway. They are
+// monitored by the awaiting_switch gauge, not by the sweep.
+func TestAnExchangeAwaitingItsSwitchIsNeverClaimedAndAccruesNoState(t *testing.T) {
 	db, ctx := outboxDB(t)
-	s := settledExchange(t, db, ctx, "awaiting-never-parks", nil) // settled, switch unconfirmed
+	s := settledExchange(t, db, ctx, "awaiting-not-claimed", nil) // settled, switch unconfirmed
 
 	for pass := 0; pass < MaxExchangeReversalAttempts+3; pass++ {
-		// The row is due on a flat interval, so make it due again rather than waiting.
-		if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
-			s.OrganizerID, s.ID); err != nil {
-			t.Fatal(err)
+		if _, ok := claimExchange(t, db, ctx, s.ID); ok {
+			t.Fatalf("pass %d: a settled exchange awaiting its switch was CLAIMED. Commerce "+
+				"can do nothing with it — the marker is access's fact — and letting these "+
+				"into a bounded, next-attempt-ordered queue starves the actionable rows the "+
+				"sweep exists to drive", pass)
 		}
-		c, ok := claimExchange(t, db, ctx, s.ID)
-		if !ok {
-			t.Fatalf("pass %d: the row was not claimable; an awaiting-switch exchange must stay "+
-				"visible to the sweep so its gauge stays honest", pass)
-		}
-		if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
-			c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "awaiting access switch confirmation"); err != nil {
-			t.Fatal(err)
-		}
-		got := readExchange(t, db, ctx, s.OrganizerID, s.ID)
-		if got.ParkedAt != nil {
-			t.Fatalf("pass %d: the row PARKED while waiting for access. Parking is for work "+
-				"that failed against a downstream; this row asked nobody. Once parked it is "+
-				"excluded from the claim predicate forever, so a later switch confirmation "+
-				"whose capacity return fails can never be swept", pass)
-		}
-		if got.Attempts != 0 {
-			t.Fatalf("pass %d: attempts = %d, want 0: waiting on another service's event is "+
-				"not a failed attempt, and spending the budget on it is what leads to parking",
-				pass, got.Attempts)
-		}
+	}
+
+	got := readExchange(t, db, ctx, s.OrganizerID, s.ID)
+	if got.Attempts != 0 {
+		t.Fatalf("attempts = %d, want 0: waiting on another service's event is not a failed "+
+			"attempt, and spending the budget on it is what leads to parking", got.Attempts)
+	}
+	if got.ParkedAt != nil {
+		t.Fatal("the row PARKED while waiting for access. Once parked it is excluded from the " +
+			"claim predicate forever, so a later switch confirmation whose capacity return " +
+			"fails could never be swept")
+	}
+	// F3: the rollback guard. 0022's Down refuses on ANY non-null last error, so writing a
+	// cause here would make a routine wait for access permanently unrollbackable.
+	var lastError *string
+	if err := db.QueryRowContext(ctx, `SELECT reversal_last_error FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID).Scan(&lastError); err != nil {
+		t.Fatal(err)
+	}
+	if lastError != nil {
+		t.Fatalf("reversal_last_error = %q for a row that never attempted anything. 0022's "+
+			"rollback guard refuses on any non-NULL error, so the ordinary transient state of "+
+			"waiting for access would make the migration unrollbackable", *lastError)
 	}
 }
 
-// The other half of F1, and what makes the test above prove something: once access DOES
-// confirm the switch, the row is swept normally — with its full budget, and a genuine
-// capacity failure now does charge.
-func TestOnceAccessConfirmsTheSwitchTheRowIsSweptNormally(t *testing.T) {
+// The other half, and what makes the test above prove something: once access confirms the
+// switch the row becomes claimable IMMEDIATELY, with its full budget, and a genuine capacity
+// failure now does charge and can eventually park.
+func TestOnceAccessConfirmsTheSwitchTheRowBecomesActionable(t *testing.T) {
 	db, ctx := outboxDB(t)
 	s := settledExchange(t, db, ctx, "late-switch", nil)
 
-	// Several passes while access is silent.
-	for pass := 0; pass < 3; pass++ {
-		if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
-			s.OrganizerID, s.ID); err != nil {
-			t.Fatal(err)
-		}
-		c, ok := claimExchange(t, db, ctx, s.ID)
-		if !ok {
-			t.Fatalf("pass %d: not claimable", pass)
-		}
-		if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
-			c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "awaiting access switch confirmation"); err != nil {
-			t.Fatal(err)
-		}
+	if _, ok := claimExchange(t, db, ctx, s.ID); ok {
+		t.Fatal("claimable before the switch; this fixture cannot show the transition")
 	}
 
-	// Access confirms.
-	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now(), reversal_next_attempt_at=now()-interval '1 second' WHERE organizer_id=$1 AND id=$2`,
+	// Access confirms. Nothing else changes — in particular next_attempt_at is untouched,
+	// because the row was never released and so was never pushed into the future.
+	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now() WHERE organizer_id=$1 AND id=$2`,
 		s.OrganizerID, s.ID); err != nil {
 		t.Fatal(err)
 	}
+
 	c, ok := claimExchange(t, db, ctx, s.ID)
 	if !ok {
 		t.Fatal("a switched exchange with capacity outstanding was not claimable: this is the " +
-			"state the whole sweep exists to drive")
+			"exact state the sweep exists to drive, and it must become actionable the moment " +
+			"access confirms rather than after any backoff")
 	}
 	if !c.Exchange.TicketsExchanged {
 		t.Fatal("the claim did not observe the switch")
 	}
-	// Now a real capacity failure — and THIS one charges, because it asked inventory.
+	// A real capacity failure — and THIS one charges, because it asked inventory.
 	if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
 		c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
-	if got := readExchange(t, db, ctx, s.OrganizerID, s.ID); got.Attempts != 1 {
+	got := readExchange(t, db, ctx, s.OrganizerID, s.ID)
+	if got.Attempts != 1 {
 		t.Fatalf("attempts = %d, want 1: the budget must be intact when the row becomes "+
 			"actionable, and a genuine inventory failure must still be charged — otherwise "+
 			"nothing ever parks and a permanently refused return spins forever", got.Attempts)
+	}
+}
+
+// F4 directly: a backlog of awaiting-switch rows larger than one batch must not keep an
+// actionable row out of the claim. Ordered by next_attempt_at, the awaiting rows are OLDER
+// here, so an unfiltered queue would return them first and the actionable row would be
+// outside the LIMIT.
+func TestAnActionableRowIsClaimedDespiteAnOlderAwaitingSwitchBacklog(t *testing.T) {
+	db, ctx := outboxDB(t)
+	old := time.Now().Add(-24 * time.Hour)
+	now := time.Now()
+
+	// More awaiting-switch rows than the claim limit used below, all older.
+	for i := 0; i < 12; i++ {
+		settledExchange(t, db, ctx, fmt.Sprintf("f4-awaiting-%d", i), func(s *exchangeSeed) {
+			s.NextAttemptAt = &old
+		})
+	}
+	// One actionable row, newer than every one of them.
+	actionable := settledExchange(t, db, ctx, "f4-actionable", func(s *exchangeSeed) {
+		s.SwitchedAt = &now
+		s.NextAttemptAt = &now
+	})
+
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, db, 5, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, c := range claimed {
+		if c.Exchange.ID == actionable.ID {
+			found = true
+		}
+		if !c.Exchange.TicketsExchanged {
+			t.Fatalf("the claim returned an unswitched exchange (%v): commerce can do nothing "+
+				"with it, and every slot it occupies is one an actionable row does not get",
+				c.Exchange.ID)
+		}
+	}
+	if !found {
+		t.Fatal("a switched, capacity-outstanding exchange was crowded out of the claim by " +
+			"older rows awaiting their switch — head-of-line blocking that delays exactly the " +
+			"work the sweep exists to do, while the capacity under-sells")
 	}
 }

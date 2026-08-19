@@ -143,9 +143,13 @@ func TestACompletedExchangeIsFinished(t *testing.T) {
 }
 
 // THE SAFETY TEST (ADR-063). An exchange whose switch access has not confirmed is released,
-// never completed and never driven to a capacity return — and the cause names why, so an
-// operator reading `reversal_last_error` can tell "inventory is refusing" from "access never
-// told us".
+// never completed and never driven to a capacity return.
+//
+// Since ai-review F4 the claim query no longer OFFERS such a row, so this state should not
+// reach the runner in production. The test is kept, and matters more rather than less: the
+// marker is read from the row, so a concurrent writer can clear it between claim and
+// release, and this is the behaviour that must hold when it does. Defence in depth is only
+// depth if something proves the inner layer still works.
 //
 // The mechanism is structural: the Discharger port has no method that could set the marker.
 // If a future edit gives the runner one, this test is what goes red.

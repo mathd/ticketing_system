@@ -68,7 +68,26 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 		WITH claimable AS (
 			SELECT organizer_id, id FROM order_exchanges
 			WHERE settled_at IS NOT NULL
-			  AND (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL)
+			  -- ACTIONABLE only: switched, capacity outstanding. A row awaiting its switch
+			  -- is deliberately NOT claimed (ai-review pass 2, F4).
+			  --
+			  -- The first fix made such rows harmless to claim — no attempt charged, no
+			  -- parking. It did not make them free: the claim is ORDER BY next_attempt_at
+			  -- with a LIMIT, and a pass is bounded at MaxBatchesPerPass batches, so a large
+			  -- awaiting-switch backlog after an access outage fills every batch with rows
+			  -- on which commerce performs no work and pushes genuinely actionable capacity
+			  -- returns past the pass bound — head-of-line blocking that delays exactly what
+			  -- the sweep exists to do, while the capacity under-sells.
+			  --
+			  -- Excluding them costs nothing, because there was never anything to do: the
+			  -- switch is access's fact and DriveExchange refuses an unswitched row anyway.
+			  -- They stay visible through ReadExchangeReversalBacklog's awaiting_switch
+			  -- count, which is what "monitored rather than driven" means — the sweep is not
+			  -- how they are observed, the gauge is. When access confirms the switch the row
+			  -- becomes claimable immediately, with its next-attempt time still at its
+			  -- default of the row's creation time and its budget untouched.
+			  AND tickets_exchanged_at IS NOT NULL
+			  AND capacity_returned_at IS NULL
 			  AND reversal_parked_at IS NULL
 			  AND reversal_next_attempt_at<=now()
 			  AND (reversal_lease_until IS NULL OR reversal_lease_until<=now())
@@ -130,19 +149,20 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 // whenever access redelivers — so a verdict computed from the claimant's own before/after
 // would be wrong exactly when a concurrent callback helped (ADR-062 ai-review F2).
 //
-// AN EXCHANGE AWAITING ITS SWITCH IS NOT A FAILED ATTEMPT (ai-review F1). It is the one
-// outstanding state the sweep can do nothing about — the marker is access's fact — so
-// charging it an attempt spends a budget against a condition this service cannot influence,
-// and after MaxExchangeReversalAttempts passes the row PARKS. That is the defect, and it is
-// worse than doing nothing: the claim predicate excludes parked rows, so when access finally
-// confirms the switch and its own capacity return fails, the sweep can never reclaim the row
-// and the capacity is stranded permanently — by the mechanism added to prevent exactly that.
-// It would also block 0022's rollback with attempts and an error recorded for work never
-// attempted.
+// AN EXCHANGE AWAITING ITS SWITCH IS NOT A FAILED ATTEMPT, and the awaiting_switch arms
+// below encode that (ai-review F1, then F3/F4).
 //
-// So the charge is keyed on the ROW's state, in SQL: `awaiting_switch` rows have their lease
-// released, keep their budget, and come back on a fixed interval. They stay visible through
-// the `awaiting_switch` gauge, which is what "monitored rather than driven" means.
+// The claim query no longer offers such a row at all, so in the normal case these arms are
+// unreachable. They are kept as the second line of defence, because the state IS reachable:
+// the marker is read from the row at release time, and a concurrent writer can clear it
+// between claim and release. Without them, such a row would be charged an attempt, have an
+// error written, and eventually PARK — and since the claim predicate excludes parked rows,
+// a later switch confirmation whose capacity return failed could never be swept. The
+// capacity would be stranded by the mechanism added to prevent that, and the recorded error
+// would block 0022's rollback for work never attempted.
+//
+// The rule in one sentence: a budget and an error describe what this row ASKED a downstream
+// and how that went. A row that asked nobody has neither.
 func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchangeID, claimID uuid.UUID,
 	switchedAtClaim, capacityAtClaim bool, cause string) error {
 	_, err := db.ExecContext(ctx, `
@@ -155,7 +175,17 @@ func ReleaseExchangeReversalClaim(ctx context.Context, db OutboxDB, org, exchang
 		    -- error on work that succeeded — the claim query never selects it again, so
 		    -- nothing ever clears the field, and 0022's rollback guard then reads it as
 		    -- failed reconciliation and refuses a legitimate rollback.
-		    reversal_last_error=CASE WHEN observed.still_outstanding THEN $4 ELSE NULL END,
+		    -- An awaiting-switch row records NO error, and CLEARS one it recorded before
+		    -- (ai-review pass 2, F3). The first fix stopped charging such a row an attempt
+		    -- but still wrote a cause into the error column — and 0022's rollback guard
+		    -- refuses on any non-NULL error, so the routine, transient state of waiting for
+		    -- access would have made the migration unrollbackable, for work where nothing
+		    -- failed and nothing was even attempted. The column means "the last thing this
+		    -- row tried, and how it failed"; a row that tried nothing has no answer to it.
+		    reversal_last_error=CASE
+		        WHEN observed.still_outstanding AND NOT observed.awaiting_switch THEN $4
+		        ELSE NULL
+		    END,
 		    -- An awaiting_switch row never charges: see the note above. The budget exists to
 		    -- bound retries against a downstream this service is ASKING, and it asks none here.
 		    reversal_attempts=CASE

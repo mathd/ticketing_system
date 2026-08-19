@@ -454,11 +454,14 @@ consumed.
 | settled, switch not confirmed | access has not told commerce the old tickets stopped admitting | **access** — check its consumer and dead-letter queue |
 | parked | no progress after the bounded budget | a human; investigate before unparking |
 
-**The sweep never writes `tickets_exchanged_at`.** That marker is access's fact, and migration 0011
-gates the capacity return on it because freeing the seat while the ticket still admits is the one
-ordering that can oversell. A settled exchange whose switch is unconfirmed is therefore *counted and
-monitored*, never completed — ADR-063 §2. A rising `awaiting_switch` is an access incident, not an
-inventory one, and the two need different responders.
+**The sweep never writes `tickets_exchanged_at`, and never claims a row that lacks it.** That marker
+is access's fact, and migration 0011 gates the capacity return on it because freeing the seat while the
+ticket still admits is the one ordering that can oversell. A settled exchange whose switch is
+unconfirmed is *counted and monitored*, never claimed and never completed — ADR-063 §2. It accrues no
+attempts and no error, so it can never park and can never block a migration rollback, and it becomes
+actionable the moment access confirms, with no backoff to wait out. **A rising `awaiting_switch` is an
+access incident, not an inventory one** — check access's consumer and its dead-letter queue, not
+inventory.
 
 **Attempts reset on progress.** An outage of any length costs one attempt per pass while nothing
 moves, and the first discharged obligation restores the full budget.
