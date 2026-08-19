@@ -13,6 +13,90 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-243's gate run — incidental, not that ticket's to fix\n\nTriaged as **incidental** under the pipeline's rule: it is real, it is reproducible-in-principle, and\nit is entirely outside TKT-243's diff (catalog only). Fixing it there would have meant an unrelated\npayments change riding a catalog PR.\n\n**Evidence it is not TKT-243's:** the identical commit passed `make check` on the immediately\nfollowing run, and the ticket's diff contains no payments code.\n\nNeeds shaping before Gate 1 — in particular, whether this reproduces under deliberate load\n(`compose.onsale-load.yaml` is already part of every smoke stack) and whether it shares a root cause\nwith TKT-234."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaped. COS 1 is discharged here: it is explanation **(1), harness-only** — with a sharper cause than the ticket assumed, and one twist that changes the fix.\n\nThe ticket asks to determine which of two explanations is true **with evidence, by reproduction not\nargument**. The reproduction is not available on demand — the flake is timing-dependent and the\nidentical commit passed on re-run. What *is* available, and is stronger than a lucky re-trigger, is\na closed mechanical chain read at HEAD in which every link is a file and a line. It is below. The\nimplementation still owes a **deterministic test**; that is where the \"executed, not argued\" rule\ngets paid.\n\n#### Why a correctly-written journal cannot hold a sequence gap\n\nEvery append funnels through `AppendWithSettlement`, which takes `SELECT last_sequence,last_hash\nFROM journal_heads WHERE organizer_id=$1 **FOR UPDATE**` (`store.go:262`), derives `seq++` under that\nlock, and writes the entry and the head update **in one transaction** (`store.go:283-287`). A\nconcurrent appender cannot even read the head until the first commits, and a rollback undoes both\nrows. So per organizer, sequences are allocated serially and commit in order. **No correct write\npath can produce a gap** — which means the gap was created from outside the write path.\n\n#### Where it is created\n\n`scripts/smoke.sh`'s corruption block, and it is worse than a race — it is **durable corruption**:\n\n| line | what happens |\n|---|---|\n| `:338` | `CREATE TABLE journal_entries_smoke_backup AS TABLE journal_entries` — snapshot taken. Same statement runs `ALTER TABLE journal_entries **DISABLE TRIGGER ALL**`, so the append-only guard is off for the whole block. |\n| `:340-345` | corruption + `expect_verify_failure` — **seconds** of wall time, each `psql -c` its own transaction (`:325`). |\n| `:342`, `:346` | `DELETE FROM journal_entries; INSERT INTO journal_entries SELECT * FROM journal_entries_smoke_backup;` |\n\nAn append that commits **after** `:338` is not in the backup. The restore's `DELETE` removes it and\nthe `INSERT ... SELECT` does not put it back — but its `journal_heads` update survives until `:350`.\nThe next append then takes `seq++` from the surviving head and chains onto a row **that no longer\nexists**. That is a permanent, self-perpetuating gap, and `:351`'s bare `verify-journal` reports it\nas `broken chain organizer=… sequence=N`. Under `set -euo pipefail` (`:8`) its non-zero exit aborts\nthe stage — matching the ticket's log, which shows no `smoke:` prefix line and therefore came from a\n**bare** invocation (`:321` or `:351`), not from `expect_verify_failure`, which swallows output.\n\n#### Who is writing\n\nThe stack is still serving HTTP — teardown is only the `EXIT` trap (`:37`). Commerce runs a recovery\nticker (`recovery/runner.go:218-231`) whose `JournalFact.OrderFailed` POSTs payments\n`/internal/facts` (`recovery/clients.go:341-361`) → `api/server.go:179` → `journal.Append`, for\norganizer `…0001`. And it is fast: `scripts/smoke.sh:32` adds `compose.smoke.yaml` on the default\nnon-hermetic path, which sets **`RECOVERY_INTERVAL: 2s`** (`compose.smoke.yaml:16`). A writer fires\nevery two seconds for the entire block.\n\nIt also always has work. `smoke/psp_recovery_test.go:64,382-384` deliberately backdate `updated_at`\nby 10 minutes and NULL the lease — defeating `ClaimStuckOrders`' 2-minute grace\n(`store/recovery.go:81`) on purpose, so claimable residue is guaranteed rather than incidental. The\nintermittency is just whether a 2-second tick lands inside the window on a given run.\n\n#### The twist, and why the obvious fix is the wrong one\n\nThe instinctive remedy is to make the read consistent — wrap `Journal.Verify` in a `REPEATABLE READ`\ntransaction. **That does not fix this.** The corruption is in the table, not in the read: a\nconsistent snapshot of a journal that really is missing row 166 still reports the gap, correctly. The\nonly remedy that removes the cause is to **stop the writer** for the duration of the corruption\nblock. Scope it to **commerce**, not to one runner — `bulkrefund/runner.go:465-473` reaches payments\ntoo — and place the quiesce **after** the Go smoke suite, since `smoke/psp_recovery_test.go` requires\na live runner claiming its orders within 45s.\n\n#### A second, separate defect — same function, not this flake\n\n`Journal.Verify` runs its `journal_entries` scan (`store.go:306`) and its `journal_heads` scan\n(`store.go:347`) as two statements on a pooled `*sql.DB` with **no `BeginTx`** — two snapshots,\npossibly two connections. Against a live database that is a real false-alarm source, and ADR-003 puts\n`verify-journal` in the gate precisely so it does not cry wolf. It is in scope for this ticket\nbecause it is four lines away and cheap. **It must be fixed and tested as its own thing**: it\nproduces `journal head mismatch`, *never* `broken chain`, so folding it into the flake's narrative\nwould attach the wrong evidence to the wrong claim.\n\n#### Corrections to the ticket text, recorded rather than inherited\n\n- **\"Same shape as TKT-234 … may share a root cause\" — does not survive the read.** TKT-234 is about\n  trails whose primary sort key is a non-monotonic wall clock (`ORDER BY occurred_at`). The payments\n  journal orders by `sequence` (`store.go:306`). Different mechanism; no shared cause.\n- **\"reproduce it, do not argue it\"** — honoured in the only form available. The flake cannot be\n  replayed on demand, so the deliverable is a test that constructs the gap **deterministically**, and\n  the closeout must say exactly that rather than claim a reproduction it did not get.\n- The ticket's own last COS (\"the message should tell the two apart\") is **half the diagnosis cost\n  here**: `e.Sequence != seqByOrg+1 || !hmac.Equal(prev, e.PreviousHash)` short-circuits, so the log\n  cannot say which condition fired. Splitting it is cheap and independently worth doing.\n\n#### DoR\n\nAll 8 items **met**; context-mémo baked (`governingAdrs` ×4, all resolving at HEAD; `governingTests`\n×4, including `TestSmokeJournalKeyLiteralsMatchScript`, which **reads `scripts/smoke.sh`** — the file\nthis ticket edits).\n\n**`risk:low` is NOT claimed.** The change touches `scripts/smoke.sh`, which *is* the local gate's\nsmoke stage (CI config by the label's own carve-out), and a money-path audit surface. The plan gate\nstands.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "make check's smoke stage aborts intermittently on `broken chain organizer=...0001 sequence=N` from payments Journal.Verify. Root cause found by reading (see kind=readiness): a LIVE commerce recovery runner appends to the journal while smoke.sh's corruption/restore block non-atomically snapshots and restores journal_entries, so an append landing in that window is deleted and never restored -- a PERMANENT gap, not a transient read skew."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: quiesce the live journal writer (commerce) around scripts/smoke.sh's journal corruption/restore block so the verify block is deterministic; split the two-condition `broken chain` message so a gap and a hash mismatch are distinguishable from the log alone; a test that fails against today's message. OUT (non-goals, per ticket): chain construction and hash discipline (ADR-016/ADR-021). ALSO OUT, deliberately: wrapping Journal.Verify in a REPEATABLE READ transaction -- see approach."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The two candidate explanations in the ticket body are now settled: it is (1) test-harness only. Evidence chain, all read at HEAD: (a) every journal append funnels through AppendWithSettlement's `SELECT ... FOR UPDATE` on journal_heads (store.go:262), so no correctly-written journal can hold a sequence gap; (b) the gap is therefore externally created -- scripts/smoke.sh:338 backs up journal_entries, :342/:346 restore it with `DELETE ... ; INSERT ... SELECT backup`, and the block runs `ALTER TABLE journal_entries DISABLE TRIGGER ALL` (:338) so the append-only guard is OFF throughout; (c) the stack is still serving HTTP -- teardown is only the EXIT trap (:37); (d) commerce's recovery runner ticks on a timer (recovery/runner.go:218-231) and its JournalFact.OrderFailed POSTs payments /internal/facts (recovery/clients.go:341-361) -> server.go:179 -> journal.Append, for organizer ...0001; (e) scripts/smoke.sh:32 adds compose.smoke.yaml on the default non-hermetic path, which sets RECOVERY_INTERVAL: 2s (compose.smoke.yaml:16), so the writer fires every 2s for the whole block; (f) smoke/psp_recovery_test.go:64,382-384 deliberately backdate updated_at by 10 minutes and NULL the lease, defeating ClaimStuckOrders' 2-minute grace (store/recovery.go:81) and guaranteeing claimable residue. Remaining uncertainty is only WHICH of the block's windows lost the append, which the fix does not need to distinguish."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-234 is explicitly NOT a shared root cause -- it is about trails ordered by a non-monotonic wall clock (ORDER BY occurred_at); the payments journal orders by `sequence` (store.go:306), so the ticket body's 'same shape as TKT-234' guess does not survive the read. Record that, do not inherit it."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Quiesce the writer for the corruption/restore block -- NOT a snapshot read. Reasoning, since the obvious remedy is the wrong one: the corruption is DURABLE. An append lost between the :338 backup and the :342 restore is gone from journal_entries while journal_heads keeps its sequence, so every later append chains onto a row that no longer exists. Wrapping Journal.Verify in REPEATABLE READ makes the read consistent and still reports the gap, because the gap is really in the table. Quiescing commerce is the only remedy that removes the cause. Scope note: commerce is the unit to stop, not one runner -- recovery/runner.go reaches payments via OrderFailed/Void/Refund AND bulkrefund/runner.go reaches it too (ErrPaymentsRefused/ErrJournalUnavailable, runner.go:465-473). SECOND, SEPARATE defect found while reading, worth fixing in the same ticket because it is in the same function and cheap: Journal.Verify runs its journal_entries scan (store.go:306) and its journal_heads scan (store.go:347) as two statements on a pooled *sql.DB with no BeginTx, so they take two different snapshots on possibly two different connections. That one produces `journal head mismatch`, never `broken chain` -- so it is NOT this flake, and it must be fixed and tested as its own thing rather than folded into the flake's narrative."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, all three COS: (1) smoke.sh stops commerce before the journal corruption/restore block and restarts it after; (2) the `broken chain` predicate splits into two messages naming the expected and observed sequence, and the expected vs observed previous_hash; (3) a Go test that fails against today's single message. Small and self-contained -- one shell file, one Go file, one test file."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS as written on the ticket, with the first one now discharged AT SHAPING (explanation (1), by reading, with the file:line chain above). What implementation still owes: the determinism fix, the message split, and a test that goes red against HEAD. Note the demonstration constraint honestly -- the flake is timing-dependent, so 'a run that previously failed' cannot be replayed on demand; the honest evidence is a test that constructs the gap deterministically plus a green make check, and the closeout must say that rather than claim a reproduction it did not get."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked below"
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-003-append-only-audit-trail.md",
+        "constrains": "Why verify-journal runs in the gate at all, and the exact scope of the integrity claim: modification and insertion are evident, coordinated rollback is NOT. This ticket must not widen or narrow that claim -- it only makes the CHECK deterministic."
+      },
+      {
+        "adr": "ADR-016-checkout-recovery-state-machine.md",
+        "constrains": "Owns the recovery runner that is the live writer here (Decision 3: the runner resolves against payments rather than guessing). Quiescing commerce during the smoke verify block must not change the runner's own predicates or its production interval -- only when the smoke script lets it run."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "The naming discipline for any integrity claim: say which adversary you mean. This ticket's write-up must call the failure a HARNESS artifact, not an integrity finding, and must not let 'the verifier cried wolf' drift into 'the verifier is unsound'."
+      },
+      {
+        "adr": "ADR-048-settlement-ledger.md",
+        "constrains": "settlement_entries carries an FK to journal_entries, which is why smoke.sh restores with DELETE rather than TRUNCATE (:332-337). Any change to the restore block must preserve that, or the restore starts failing on referential integrity."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/payments/internal/store/journal_smoke_test.go:701 TestSmokeJournalKeyLiteralsMatchScript",
+        "why": "READS scripts/smoke.sh and fails if the JOURNAL_KEY_ID / JOURNAL_SIGNING_KEY / JOURNAL_HISTORICAL_KEYS values there drift from the Go constants. This ticket edits smoke.sh. Safe as long as no journal-key assignment is added, moved into a variable, or reformatted across a line continuation -- the extractor is a regexp over `NAME=([^\\s\\\\]*)`."
+      },
+      {
+        "test": "services/payments/internal/store/journal_smoke_test.go:421 TestJournalRotationKeepsHistoryVerifiable",
+        "why": "Leaves the mixed-key journal that smoke.sh:190-211 asserts on. Do not reorder the payments store-suite block relative to the packaged verify-journal checks."
+      },
+      {
+        "test": "scripts/smoke.sh:187-199 the mixed_kids fixture guard",
+        "why": "Fails closed if payments_store_smoke holds fewer than 2 distinct key ids. Unrelated to the fix but sits in the same file -- do not disturb."
+      },
+      {
+        "test": "smoke/psp_recovery_test.go",
+        "why": "Depends on a LIVE recovery runner claiming its backdated orders within 45s. If the fix stops commerce, it must restart it and it must not run while these tests are running -- the quiesce belongs AFTER the Go smoke suite, around the corruption block only."
+      }
+    ],
+    "keyFiles": [
+      "services/payments/internal/store/store.go:305-370 (Journal.Verify -- the two-condition message at :327, the two unsynchronized queries at :306 and :347)",
+      "scripts/smoke.sh:319-351 (the verify + corruption/restore block)",
+      "services/commerce/internal/recovery/runner.go:218-231 (the ticker), clients.go:341-361 (the journal POST)",
+      "compose.smoke.yaml:16 (RECOVERY_INTERVAL: 2s), scripts/smoke.sh:32 (where that file is applied)"
+    ],
+    "risk": "not-low: touches CI/gate config (scripts/smoke.sh is the local gate's smoke stage) and a money-path audit surface. The plan gate is NOT skipped."
+  }
 }
