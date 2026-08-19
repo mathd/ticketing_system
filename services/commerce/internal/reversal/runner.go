@@ -130,6 +130,20 @@ func (r *Runner) Run(ctx context.Context) {
 // It drains rather than doing one batch per tick: a backlog deeper than one batch would
 // otherwise wait a whole interval per batch, which after a long outage is exactly when the
 // backlog is deepest and the wait is least affordable.
+// MaxBatchesPerPass bounds one drain (ai-review pass 3).
+//
+// A pass drains rather than doing one batch per tick, because after an outage the backlog is
+// deepest exactly when waiting an interval per batch is least affordable. But an UNBOUNDED
+// drain is two defects at once: the per-pass `driven` set grows for as long as the loop runs,
+// and a workload arriving at or above processing rate means the loop never returns at all —
+// so the set grows for the life of the process and the ticker never fires again.
+//
+// A bound makes both finite. What is left undrained is not lost: it is claimable, and the
+// next tick is a minute away at most. The number is deliberately generous — 64 batches of 16
+// is 1024 refunds per pass — because the common case is a backlog far smaller than one batch
+// and the bound should only ever bite on a genuinely pathological queue.
+const MaxBatchesPerPass = 64
+
 // ONE DRIVE PER REFUND PER PASS, enforced here rather than left to the backoff (ai-review
 // pass 2). A released row becomes due again after its floor or its backoff — both of which
 // can be shorter than the time the rest of a slow batch takes — so a drain loop that only
@@ -137,12 +151,11 @@ func (r *Runner) Run(ctx context.Context) {
 // At the extreme that lets one row spend its whole attempt budget and PARK inside a single
 // RunOnce, which is the opposite of what a bounded budget spread over passes is for.
 //
-// `driven` is per-pass and discarded when it returns, so it costs one map for the duration
-// of a drain and keeps no order id beyond it.
+// `driven` is per-pass, bounded by MaxBatchesPerPass × batch, and discarded on return.
 func (r *Runner) RunOnce(ctx context.Context) int {
 	var resolved int
 	driven := make(map[uuid.UUID]struct{})
-	for {
+	for pass := 0; pass < MaxBatchesPerPass; pass++ {
 		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
@@ -166,8 +179,23 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 			}
 			if _, seen := driven[c.Refund.ID]; seen {
 				// Already driven this pass. Hand the claim straight back — undriven, so it
-				// costs no attempt — and let the next pass pick it up on its own schedule.
-				r.abandonUndriven(claimed[i : i+1])
+				// costs no attempt.
+				//
+				// It stays DUE, so the store can offer it again immediately: `Abandon`
+				// clears the lease and the token and deliberately does not touch
+				// next_attempt_at, since the row was never tried. That is why a duplicate
+				// must not merely be skipped — a batch made entirely of duplicates would
+				// otherwise spin. The `fresh == 0` exit below is what stops it, and the
+				// bound above is what stops everything else.
+				//
+				// On the CALLER's context, not abandonUndriven's detached one: that exists
+				// because a shutdown's context is already cancelled, and reusing it here
+				// would both mislabel this as a shutdown and let a degraded database burn a
+				// 5s timeout per duplicate that cancellation cannot interrupt.
+				if err := r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID); err != nil {
+					r.log.WarnContext(ctx, "hand back a reversal claim already driven this pass",
+						"refund_id", c.Refund.ID, "err", err)
+				}
 				continue
 			}
 			driven[c.Refund.ID] = struct{}{}
@@ -178,10 +206,20 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 		}
 		// A batch that was full but contained nothing new means the queue is now just this
 		// pass's own releases coming back round; stop rather than spin.
+		//
+		// This can end a drain while genuinely new work sorts behind those duplicates —
+		// accepted, and bounded in cost: the claim is ordered by next_attempt_at, a
+		// duplicate's is in the past and a fresh row's is at most a minute out, so the next
+		// tick reaches them. Trading a bounded delay for a loop that cannot spin is the
+		// right side of that: the obligations are under-selling while they wait, never
+		// over-selling.
 		if len(claimed) < r.batch || fresh == 0 {
 			return resolved
 		}
 	}
+	r.log.InfoContext(ctx, "reversal drain hit its per-pass bound; the rest waits for the next tick",
+		"batches", MaxBatchesPerPass, "driven", len(driven))
+	return resolved
 }
 
 // drive discharges what it can of one refund's reversal and records the outcome. It

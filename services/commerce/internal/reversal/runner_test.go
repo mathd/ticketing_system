@@ -33,7 +33,11 @@ type fakeStore struct {
 	released  []call
 	finished  []uuid.UUID
 	abandoned []uuid.UUID
-	claimErr  error
+	// abandonedLive records, per abandon, whether the context carried a deadline. The
+	// shutdown path detaches with a 5s timeout; the already-driven path must use the
+	// caller's. A test that only counts abandons cannot tell them apart.
+	abandonedLive []bool
+	claimErr      error
 }
 
 func (f *fakeStore) Claim(_ context.Context, _ int, _ time.Duration) ([]store.ClaimedReversal, error) {
@@ -75,6 +79,8 @@ func (f *fakeStore) Abandon(ctx context.Context, _, refundID, _ uuid.UUID) error
 		return err
 	}
 	f.abandoned = append(f.abandoned, refundID)
+	_, hasDeadline := ctx.Deadline()
+	f.abandonedLive = append(f.abandonedLive, !hasDeadline)
 	return nil
 }
 
@@ -375,6 +381,60 @@ func TestARefundIsDrivenAtMostOncePerPass(t *testing.T) {
 	if len(st.abandoned) == 0 {
 		t.Fatal("a claim re-offered within the same pass was neither driven nor abandoned, " +
 			"so it stays leased for no reason")
+	}
+	// And handed back on the CALLER's context. abandonUndriven detaches from the caller
+	// because a shutdown's context is already cancelled; borrowing that here would mislabel
+	// normal operation as a shutdown and swallow a real failure behind an unrelated 5s
+	// timeout. The fake records which context each abandon arrived on, so the two paths are
+	// distinguishable rather than merely both "an abandon happened".
+	for _, live := range st.abandonedLive {
+		if !live {
+			t.Fatal("a claim skipped as already-driven was handed back on a DETACHED context: " +
+				"that path exists for shutdown, and using it here hides failures and logs " +
+				"normal operation as a shutdown")
+		}
+	}
+}
+
+// endlessStore always answers with a FULL batch of brand-new refunds — a queue arriving at
+// or above processing rate, which the scripted-batch fake above cannot represent because it
+// runs out of batches. This is the shape that made an unbounded drain a memory defect
+// (ai-review pass 3): a loop with no bound never returns, so its per-pass dedup set grows for
+// the life of the process and the ticker never fires again.
+type endlessStore struct{ claims int }
+
+func (e *endlessStore) Claim(_ context.Context, limit int, _ time.Duration) ([]store.ClaimedReversal, error) {
+	e.claims++
+	batch := make([]store.ClaimedReversal, limit)
+	for i := range batch {
+		batch[i] = outstanding(uuid.New(), false, false, 0)
+	}
+	return batch, nil
+}
+
+func (e *endlessStore) Release(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, bool, bool, string) error {
+	return nil
+}
+func (e *endlessStore) Finish(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error  { return nil }
+func (e *endlessStore) Abandon(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error { return nil }
+func (e *endlessStore) Backlog(context.Context) (store.ReversalBacklog, error) {
+	return store.ReversalBacklog{}, nil
+}
+
+// ai-review pass 3: a pass ENDS, even against a queue that never runs dry.
+//
+// Without the bound this test does not fail — it hangs, which is the honest shape of the
+// defect: the drain never returns, so the runner's ticker never fires again and the dedup set
+// grows until the process dies. The assertion on the claim count is what pins the bound
+// itself; `go test`'s timeout is what catches its absence.
+func TestAPassIsBoundedAgainstAQueueThatNeverEmpties(t *testing.T) {
+	st := &endlessStore{}
+	New(st, &fakeReverser{}, time.Minute, 4, time.Minute, nil).RunOnce(context.Background())
+
+	if st.claims != MaxBatchesPerPass {
+		t.Fatalf("claimed %d batches, want exactly %d: an unbounded drain never returns, so "+
+			"the ticker stops firing and the per-pass dedup set grows without limit",
+			st.claims, MaxBatchesPerPass)
 	}
 }
 
