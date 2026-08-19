@@ -108,10 +108,15 @@ anything to do with them: `DriveExchange` refuses an unswitched row anyway. **Th
 are observed — the `awaiting_switch` gauge is**, and it reads them directly. When access confirms, the
 row becomes claimable immediately, with its budget untouched and no backoff to wait out.
 
-The release still carries the awaiting-switch arms as a second line of defence, because the state
-remains *reachable*: the marker is read from the row at release time and a concurrent writer can clear
-it between claim and release. The rule in one sentence — **a budget and an error describe what a row
-asked a downstream and how that went; a row that asked nobody has neither.**
+The release still carries the awaiting-switch arms, but **not** because a concurrent writer can clear
+the marker — a third pass established that no such writer exists (`MarkExchangeTicketsSwitched` is the
+only writer of `tickets_exchanged_at`, and it only ever goes NULL → `now()`). That justification was
+written, believed, and false. They are kept as **admin-write / corruption handling**: a repair script
+or a restore that rolls a marker back, which ADR-021's adversary language already places outside what
+any of this constrains. They make that case benign instead of silently destructive.
+
+The rule in one sentence — **a budget and an error describe what a row asked a downstream and how that
+went; a row that asked nobody has neither.**
 
 ### 3. Parking is copied; ADR-062's REASON for it is not
 

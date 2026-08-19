@@ -249,14 +249,37 @@ func TestClaimingDoesNotChargeAnAttempt(t *testing.T) {
 // here, in each direction, because a fixture that moves both cannot detect the release
 // query crossing its column/observation pairing ($7 with capacity, $8 with the switch):
 // crossed, it type-checks, runs, and reports progress exactly backwards.
-func TestProgressOnTheSwitchAloneResetsTheBudget(t *testing.T) {
+// AI-REVIEW pass 3, F7. The column/observation pairing, tested so it can actually fail.
+//
+// `progressed` is
+//
+//	(tickets_exchanged_at IS NOT NULL AND NOT $7) OR (capacity_returned_at IS NOT NULL AND NOT $8)
+//
+// with $7 = switchedAtClaim and $8 = capacityAtClaim. Crossing the two type-checks, runs,
+// and reports progress backwards.
+//
+// DISCRIMINATING THE CROSSING TAKES A SPECIFIC FIXTURE, and two earlier attempts at this
+// test could not do it — each was written, looked right, and survived the mutant:
+//
+//   - `false, false` against switched=SET, capacity=NULL: both arms read the same flag, so
+//     correct and crossed both compute true.
+//   - `true, false` against switched=SET, capacity=SET: both columns are set, so each arm
+//     can rescue the other and both compute true.
+//
+// What discriminates is exactly ONE column set, with the observations ASYMMETRIC and matched
+// to that column: switched=SET, capacity=NULL, $7=true, $8=false. Correct pairing asks
+// "did the switch move since I saw it?" — no, it was already set — and reports NO progress.
+// Crossed pairing tests the switch against $8=false and reports progress that never happened,
+// resetting a budget that should have been spent.
+//
+// The generalisable rule, which is the reason for this comment: a test for a SWAP needs the
+// two swapped things to be distinguishable in every position, or it proves only that the
+// query runs.
+func TestProgressReadsEachColumnAgainstItsOwnClaimTimeObservation(t *testing.T) {
 	db, ctx := outboxDB(t)
 	now := time.Now()
-	// Claimed as ACTIONABLE (switched, capacity outstanding) — the only shape the claim
-	// offers since F4 narrowed it. The claim-time observation is then contradicted by a
-	// concurrent writer clearing the marker, which is the state the awaiting_switch arms of
-	// the release exist for and the only way this direction of the pairing is reachable.
-	s := settledExchange(t, db, ctx, "progress-switch", func(s *exchangeSeed) {
+	// Switched at claim time, capacity outstanding, and NOTHING moves during the drive.
+	s := settledExchange(t, db, ctx, "pairing", func(s *exchangeSeed) {
 		s.SwitchedAt = &now
 		s.Attempts = 4
 	})
@@ -265,23 +288,22 @@ func TestProgressOnTheSwitchAloneResetsTheBudget(t *testing.T) {
 	if !ok {
 		t.Fatal("not claimed")
 	}
-	if !c.Exchange.TicketsExchanged {
-		t.Fatal("fixture: the claim must observe the switch present")
+	if !c.Exchange.TicketsExchanged || c.Exchange.CapacityReturned {
+		t.Fatal("fixture: the claim must observe switched=true, capacity=false, or the swap " +
+			"is invisible to this test")
 	}
 
-	// THE PAIRING TEST. Release is told switchedAtClaim=false while the row HAS the marker,
-	// which is exactly what a claimant sees when access confirms mid-flight. Progress must be
-	// read as "the switch moved", and it can only be read that way if $7 is paired with
-	// tickets_exchanged_at rather than with capacity_returned_at — crossed, the pairing
-	// type-checks, runs, and reports progress backwards.
 	if err := ReleaseExchangeReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID,
-		false, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
+		c.Exchange.TicketsExchanged /* $7 = true */, c.Exchange.CapacityReturned /* $8 = false */, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
-	if got := readExchange(t, db, ctx, s.OrganizerID, s.ID); got.Attempts != 0 {
-		t.Fatalf("attempts = %d, want 0: the SWITCH is present and was not present at claim "+
-			"time, which is progress — a budget that does not reset would retire an exchange "+
-			"that is recovering", got.Attempts)
+
+	if got := readExchange(t, db, ctx, s.OrganizerID, s.ID); got.Attempts != 5 {
+		t.Fatalf("attempts = %d, want 5: nothing moved during this drive — the switch was "+
+			"ALREADY set when the row was claimed, so it is not progress. Reading 0 here means "+
+			"the switch column was compared against the CAPACITY observation, which is the "+
+			"$7/$8 crossing: it type-checks, runs, and hands a failing row a fresh budget "+
+			"every pass, so it can never park", got.Attempts)
 	}
 }
 

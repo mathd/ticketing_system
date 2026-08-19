@@ -152,14 +152,24 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 // AN EXCHANGE AWAITING ITS SWITCH IS NOT A FAILED ATTEMPT, and the awaiting_switch arms
 // below encode that (ai-review F1, then F3/F4).
 //
-// The claim query no longer offers such a row at all, so in the normal case these arms are
-// unreachable. They are kept as the second line of defence, because the state IS reachable:
-// the marker is read from the row at release time, and a concurrent writer can clear it
-// between claim and release. Without them, such a row would be charged an attempt, have an
-// error written, and eventually PARK — and since the claim predicate excludes parked rows,
-// a later switch confirmation whose capacity return failed could never be swept. The
-// capacity would be stranded by the mechanism added to prevent that, and the recorded error
-// would block 0022's rollback for work never attempted.
+// The claim query no longer offers such a row, and these arms are therefore NOT reachable
+// through any application path — stated plainly, because the previous version of this
+// comment justified them with a concurrent writer clearing the marker, and that writer does
+// not exist: MarkExchangeTicketsSwitched is the only writer of tickets_exchanged_at and it
+// only ever goes NULL -> now() (ai-review pass 3, F7). Claiming a race that cannot happen is
+// how a false invariant gets written down and then believed.
+//
+// They are kept as ADMIN-WRITE / CORRUPTION handling, which is a real if narrow class: a
+// human or a repair script clearing the marker on a claimed row, or a restore that rolls one
+// back. ADR-021's rule applies — this is honest-writer consistency, and a writer with
+// database access is outside what any of this constrains. The arms make the failure mode
+// benign rather than silently destructive: without them such a row would be charged, have an
+// error written, and eventually PARK, and since the claim excludes parked rows a later switch
+// confirmation whose capacity return failed could never be swept. The recorded error would
+// also block 0022's rollback for work never attempted.
+//
+// The runner's TestAnExchangeAwaitingItsSwitchIsNeverCompleted covers the same state at the
+// decision tier.
 //
 // The rule in one sentence: a budget and an error describe what this row ASKED a downstream
 // and how that went. A row that asked nobody has neither.
