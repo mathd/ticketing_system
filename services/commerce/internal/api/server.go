@@ -23,6 +23,7 @@ import (
 
 	apispec "ticketing/services/commerce/api"
 	commerceevents "ticketing/services/commerce/internal/events"
+	"ticketing/services/commerce/internal/exchanges"
 	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
@@ -70,6 +71,9 @@ type Server struct {
 	// event-cancellation bulk runner (TKT-159). Rebuilt by WithAccess because the access
 	// URL arrives after New.
 	refunds *refunds.Service
+	// exchanges discharges an exchange's capacity obligation. Shared with the sweep
+	// (internal/exchangesweep) so the callback and the backstop cannot drift (TKT-259).
+	exchanges *exchanges.Service
 	// limiters bound the public, credential-free customer surface (TKT-224,
 	// ADR-051). In-process and per-replica — see shared/go/ratelimit's package doc
 	// for exactly what that does and does not bound.
@@ -90,6 +94,7 @@ func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token st
 	}
 	s := &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
 	s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+	s.exchanges = exchanges.New(db, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
 	return s
 }
@@ -147,6 +152,11 @@ func (s *Server) WithClock(now func() time.Time) *Server {
 // (TKT-159) refunds through exactly the same protocol the staff endpoint does, rather than
 // composing a second money path.
 func (s *Server) Refunds() *refunds.Service { return s.refunds }
+
+// Exchanges exposes the shared exchange discharge unit to cmd/commerce, which hands it to
+// the sweep. The sweep drives only this — it must never be able to move money or mark a
+// switch, and a port with one method is a stronger guarantee of that than a comment.
+func (s *Server) Exchanges() *exchanges.Service { return s.exchanges }
 
 // WithAccess supplies the access base URL for refund ticket voiding. A separate setter
 // rather than a seventh positional argument: every existing New caller keeps compiling,

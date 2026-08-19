@@ -201,6 +201,11 @@ type stubPolicy struct {
 	// confirmFails makes inventory refuse confirm, which is the handler's 202
 	// `confirmation_pending` branch: the money moved and the capacity did not confirm.
 	confirmFails atomic.Bool
+	// capacityReturnFails makes inventory refuse the SOURCE line's refund-capacity call,
+	// which is the exchange sweep's failure mode (TKT-259): the switch is committed and the
+	// capacity is not back. Toggling it is how a test drives "the callback 502'd, redelivery
+	// died, then inventory recovered".
+	capacityReturnFails atomic.Bool
 }
 
 func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubPolicy) *exchangeStack {
@@ -241,6 +246,18 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 				return
 			}
 			_, _ = w.Write([]byte(`{"status":"confirmed"}`))
+		case strings.HasSuffix(r.URL.Path, "/refund-capacity"):
+			// The SOURCE line's capacity coming back — the obligation the exchange sweep
+			// drives (TKT-259). Counted, because "the sweep discharged it" is measured by
+			// this call happening after the callback failed, and "exactly once" is what
+			// distinguishes a discharge from a double return.
+			c.hit("refund-capacity")
+			if policy.capacityReturnFails.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"inventory unavailable"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status":"returned"}`))
 		case strings.HasSuffix(r.URL.Path, "/holds"):
 			// The stub returns a hold id DERIVED FROM THE CALL NUMBER, so a second hold is
 			// a different id. Returning a constant would hide a re-hold: the resume would
@@ -301,6 +318,8 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 	// the 202 it would police is pinned separately, in exchange_pending_test.go.
 	r := chi.NewRouter()
 	r.Post("/internal/orders/{id}/exchanges", srv.exchangeOrder)
+	// The access callback, mounted so a test can drive the real discharge path (TKT-259).
+	r.Post("/internal/exchanges/{id}/tickets-switched", srv.exchangeTicketsSwitched)
 	return &exchangeStack{db: db, handler: r, token: token,
 		catalog: catalog, inventory: inventory, payments: payments}
 }
@@ -653,7 +672,6 @@ func TestAResumeRequiresTheSameRequestNotJustTheSameKey(t *testing.T) {
 		t.Error("the mismatched request settled the exchange")
 	}
 }
-
 
 // A target claim that goes terminal BEFORE finalize wedges the exchange, and charges nothing
 // (ai-review pass 1 [high]; scope corrected by pass 2 [high]).

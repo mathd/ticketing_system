@@ -798,7 +798,7 @@ func (s *Server) exchangeTicketsSwitched(w http.ResponseWriter, r *http.Request)
 		}
 		ex.TicketsExchanged = true
 	}
-	ex = s.returnExchangedCapacity(r, ex)
+	ex = s.exchanges.DriveExchange(r.Context(), ex)
 	if !ex.CapacityReturned {
 		// The switch is committed and recorded either way — that is the half that had to
 		// happen first. Answering 502 keeps the caller's message unacknowledged so the
@@ -809,34 +809,6 @@ func (s *Server) exchangeTicketsSwitched(w http.ResponseWriter, r *http.Request)
 	write(w, http.StatusOK, map[string]any{"exchange_id": ex.ID, "tickets_exchanged": true, "capacity_returned": true})
 }
 
-// returnExchangedCapacity gives the OLD line's capacity back, reusing the refund-capacity
-// operation and its receipt. The exchange id is the deterministic `refund_id`, so a repeat
-// answers as a replay rather than returning capacity twice.
-//
-// Reusing a refund-named contract for an exchange is a real cost — the receipt in
-// `claim_history` says `refund_return` for something nobody refunded — and it buys the
-// idempotent, seated-aware return that already exists. The source claim is GA by
-// construction (TKT-158 refuses a seated source), and the return is FULL, which is the
-// case ADR-038 §9 says is the only one seated claims accept anyway.
-func (s *Server) returnExchangedCapacity(r *http.Request, ex commercestore.ExchangeSwitch) commercestore.ExchangeSwitch {
-	if ex.CapacityReturned || s.inventoryURL == "" || ex.SourceHoldID == uuid.Nil {
-		return ex
-	}
-	code, _, err := s.call(r.Context(), http.MethodPost,
-		fmt.Sprintf("%s/internal/holds/%s/refund-capacity", s.inventoryURL, ex.SourceHoldID), "",
-		map[string]any{"organizer_id": ex.OrganizerID, "refund_id": ex.ID, "quantity": ex.Quantity}, true)
-	if err != nil || code != http.StatusOK {
-		slog.Default().WarnContext(r.Context(), "exchange capacity not returned; left outstanding",
-			"exchange_id", ex.ID, "hold_id", ex.SourceHoldID, "status", code, "err", err)
-		return ex
-	}
-	if err := commercestore.MarkExchangeCapacityReturned(r.Context(), s.db, ex.OrganizerID, ex.ID); err != nil {
-		slog.Default().ErrorContext(r.Context(), "record exchange capacity return", "exchange_id", ex.ID, "err", err)
-		return ex
-	}
-	ex.CapacityReturned = true
-	return ex
-}
 
 // repricingChannel decides which channel, if any, prices an exchange TARGET.
 //

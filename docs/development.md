@@ -436,6 +436,43 @@ ticket voiding can never be discharged — by the runner or anything else — so
 with `access_configured: unhealthy` while `/healthz` stays green. Rationale, and why this does not
 contradict ADR-021 §D6: [ADR-062](adr/ADR-062-refund-reversal-reconciliation.md) §5.
 
+## Exchange obligation sweep
+
+`order_exchanges` carries two obligations — the switch (`tickets_exchanged_at`) and the source line's
+capacity (`capacity_returned_at`). The tickets-switched callback discharges both on the happy path and
+answers **502** when capacity is unresolved, which keeps access's message unacknowledged so JetStream
+redelivers. The sweep (TKT-259, [ADR-063](adr/ADR-063-exchange-reversal-reconciliation.md)) is the
+backstop for rows redelivery gave up on — a dead-lettered message, or an `order.exchanged` never
+consumed.
+
+**The four states, and who owns each:**
+
+| State | Meaning | Who resolves it |
+|---|---|---|
+| both timestamps set | complete | — |
+| switched, capacity outstanding | safe under-sell; inventory refused or was down | **the sweep**, automatically |
+| settled, switch not confirmed | access has not told commerce the old tickets stopped admitting | **access** — check its consumer and dead-letter queue |
+| parked | no progress after the bounded budget | a human; investigate before unparking |
+
+**The sweep never writes `tickets_exchanged_at`.** That marker is access's fact, and migration 0011
+gates the capacity return on it because freeing the seat while the ticket still admits is the one
+ordering that can oversell. A settled exchange whose switch is unconfirmed is therefore *counted and
+monitored*, never completed — ADR-063 §2. A rising `awaiting_switch` is an access incident, not an
+inventory one, and the two need different responders.
+
+**Attempts reset on progress.** An outage of any length costs one attempt per pass while nothing
+moves, and the first discharged obligation restores the full budget.
+
+Metrics: `commerce.exchange.reversal.outstanding`, `commerce.exchange.reversal.parked`,
+`commerce.exchange.reversal.awaiting_switch`, `commerce.exchange.reversal.oldest_age_seconds`. The age
+is measured from **settlement**, not row creation — an exchange is bound before it settles, and a bind
+that never settled owes nothing. Alert on `parked` and on a sustained `awaiting_switch`.
+
+Tuning: `EXCHANGE_REVERSAL_INTERVAL` (default `1m`) and `EXCHANGE_REVERSAL_BATCH` (default `16`). A
+restart drains immediately, so the interval bounds the steady state, not recovery from a deploy.
+
+Unparking has no operator command yet (TKT-146, which owns the same gap for parked recovery orders).
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new
