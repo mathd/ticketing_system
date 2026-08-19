@@ -339,6 +339,45 @@ func TestSizingTheLeaseFromTheWrongTimeoutUnderCoversTheBatch(t *testing.T) {
 	}
 }
 
+// ai-review pass 2: one drive per refund per pass, even when the queue keeps offering it.
+//
+// A released row becomes due again after its floor or its backoff, and both can be shorter
+// than a slow batch takes, so a drain that only re-claimed would drive the same refund
+// repeatedly inside one pass — at the extreme spending its whole budget and parking it
+// there. The fake here models exactly that hostile queue: every batch is FULL and offers the
+// same refund again.
+//
+// Asserting on the drive count is what makes this catch the defect; the previous version
+// asserted only that next_attempt_at was in the future, which the old code satisfied while
+// still re-driving.
+func TestARefundIsDrivenAtMostOncePerPass(t *testing.T) {
+	id := uuid.New()
+	row := outstanding(id, false, false, 0)
+	st := &fakeStore{
+		rows: map[uuid.UUID]store.Refund{},
+		// Three full batches (batch size 1), all offering the same refund — the shape a
+		// re-claim inside one pass produces.
+		batches: [][]store.ClaimedReversal{{row}, {row}, {row}},
+	}
+	rev := &fakeReverser{} // never discharges anything: the row stays outstanding
+
+	New(st, rev, time.Minute, 1, time.Minute, nil).RunOnce(context.Background())
+
+	if len(rev.seen) != 1 {
+		t.Fatalf("drove the same refund %d times in one pass, want 1: a row can spend its "+
+			"whole attempt budget and park inside a single drain", len(rev.seen))
+	}
+	if len(st.released) != 1 {
+		t.Fatalf("released %d times, want 1: each re-drive charges another attempt", len(st.released))
+	}
+	// The re-offered claims must be handed back UNDRIVEN rather than silently dropped, or
+	// they sit leased until the lease lapses while their obligation is overdue.
+	if len(st.abandoned) == 0 {
+		t.Fatal("a claim re-offered within the same pass was neither driven nor abandoned, " +
+			"so it stays leased for no reason")
+	}
+}
+
 // A claim error ends the pass rather than spinning.
 func TestAClaimFailureEndsThePass(t *testing.T) {
 	st := &fakeStore{claimErr: errors.New("database is down")}

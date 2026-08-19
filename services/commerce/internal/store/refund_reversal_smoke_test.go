@@ -461,14 +461,70 @@ func TestAReversalCompletedBySomeoneElseIsNotParked(t *testing.T) {
 		"ticket voiding outstanding"); err != nil {
 		t.Fatal(err)
 	}
+	// The WHOLE terminal state, not just parked_at (ai-review pass 2). The first version of
+	// this test constructed exactly this sequence and asserted only that the row was not
+	// parked — which it was not — while the release wrote this claimant's failure onto a row
+	// that had just SUCCEEDED. Nothing ever clears that: the claim query skips discharged
+	// rows, so Finish never runs on it, and 0021's rollback guard reads any non-null
+	// last_error as failed reconciliation and refuses a legitimate rollback. A test that
+	// builds the right scenario and looks at the wrong column is the shape that hides a
+	// defect while appearing to cover it.
 	var parked sql.NullTime
-	if err := db.QueryRowContext(ctx, `SELECT reversal_parked_at FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
-		s.OrganizerID, s.ID).Scan(&parked); err != nil {
+	var lastErr sql.NullString
+	var attempts int
+	if err := db.QueryRowContext(ctx, `
+		SELECT reversal_parked_at, reversal_last_error, reversal_attempts
+		FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID).Scan(&parked, &lastErr, &attempts); err != nil {
 		t.Fatal(err)
 	}
 	if parked.Valid {
 		t.Fatal("a fully discharged reversal was parked: it would carry a permanent " +
 			"needs-a-human marker for work that is already done")
+	}
+	if lastErr.Valid {
+		t.Fatalf("a completed reversal kept a failure message (%q): nothing will ever clear "+
+			"it, and 0021's rollback guard reads it as failed reconciliation", lastErr.String)
+	}
+	if attempts != 0 {
+		t.Fatalf("attempts = %d on a completed reversal, want 0: it is finished, not failing", attempts)
+	}
+}
+
+// The other half of the same defect, asserted where it actually bites: a refund that
+// completed while someone else held the claim must not block the down migration. The guard
+// is deliberately broad (any parked row, any attempts, any error), so a row that succeeds
+// through this path has to come out genuinely clean or the guard misfires on healthy data.
+func TestAConcurrentlyCompletedReversalDoesNotTripTheRollbackGuard(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := completedRefund(t, db, ctx, "reversal-rollback-guard", nil)
+	c, ok := claimReversal(t, db, ctx, s.ID)
+	if !ok {
+		t.Fatal("not claimable")
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE order_refunds SET tickets_voided_at=now(), capacity_returned_at=now()
+		WHERE organizer_id=$1 AND id=$2`, s.OrganizerID, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseReversalClaim(ctx, db, s.OrganizerID, s.ID, c.ClaimID, false, false,
+		"ticket voiding outstanding"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guard's own predicate, run against this row.
+	var trips bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM order_refunds
+			WHERE organizer_id=$1 AND id=$2
+			  AND (reversal_parked_at IS NOT NULL OR reversal_attempts > 0 OR reversal_last_error IS NOT NULL)
+		)`, s.OrganizerID, s.ID).Scan(&trips); err != nil {
+		t.Fatal(err)
+	}
+	if trips {
+		t.Fatal("a reversal that COMPLETED trips 0021's rollback guard, so a deploy that " +
+			"needs undoing is refused on the strength of work that succeeded")
 	}
 }
 

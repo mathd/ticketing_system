@@ -130,8 +130,18 @@ func (r *Runner) Run(ctx context.Context) {
 // It drains rather than doing one batch per tick: a backlog deeper than one batch would
 // otherwise wait a whole interval per batch, which after a long outage is exactly when the
 // backlog is deepest and the wait is least affordable.
+// ONE DRIVE PER REFUND PER PASS, enforced here rather than left to the backoff (ai-review
+// pass 2). A released row becomes due again after its floor or its backoff — both of which
+// can be shorter than the time the rest of a slow batch takes — so a drain loop that only
+// re-claimed would happily pick the same refund up again in a later batch of the same pass.
+// At the extreme that lets one row spend its whole attempt budget and PARK inside a single
+// RunOnce, which is the opposite of what a bounded budget spread over passes is for.
+//
+// `driven` is per-pass and discarded when it returns, so it costs one map for the duration
+// of a drain and keeps no order id beyond it.
 func (r *Runner) RunOnce(ctx context.Context) int {
 	var resolved int
+	driven := make(map[uuid.UUID]struct{})
 	for {
 		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
 		if err != nil {
@@ -143,6 +153,7 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 		if len(claimed) == 0 {
 			return resolved
 		}
+		var fresh int
 		for i, c := range claimed {
 			// Checked per ROW, not per batch: an interrupted pass must leave the rest of
 			// its claim immediately reclaimable rather than parking it behind the full
@@ -153,11 +164,21 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 				r.abandonUndriven(claimed[i:])
 				return resolved
 			}
+			if _, seen := driven[c.Refund.ID]; seen {
+				// Already driven this pass. Hand the claim straight back — undriven, so it
+				// costs no attempt — and let the next pass pick it up on its own schedule.
+				r.abandonUndriven(claimed[i : i+1])
+				continue
+			}
+			driven[c.Refund.ID] = struct{}{}
+			fresh++
 			if r.drive(ctx, c) {
 				resolved++
 			}
 		}
-		if len(claimed) < r.batch {
+		// A batch that was full but contained nothing new means the queue is now just this
+		// pass's own releases coming back round; stop rather than spin.
+		if len(claimed) < r.batch || fresh == 0 {
 			return resolved
 		}
 	}

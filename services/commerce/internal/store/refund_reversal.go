@@ -178,13 +178,24 @@ func ReleaseReversalClaim(ctx context.Context, db OutboxDB, org, refundID, claim
 		UPDATE order_refunds SET
 		    reversal_lease_until=NULL,
 		    reversal_claim_id=NULL,
-		    reversal_last_error=$4,
+		    -- A row that is no longer outstanding gets FINISH semantics, not release
+		    -- semantics (ai-review pass 2). Someone else — a staff replay, a cancellation
+		    -- run — can complete both obligations while this claimant is mid-flight, and
+		    -- writing this claimant's failure onto a finished row leaves a permanent error
+		    -- on work that succeeded: the claim query never selects it again, so nothing
+		    -- ever clears the field, and 0021's rollback guard then reads it as failed
+		    -- reconciliation and refuses a legitimate rollback.
+		    reversal_last_error=CASE WHEN observed.still_outstanding THEN $4 ELSE NULL END,
 		    -- The attempt is charged HERE, on a drive that actually ran and did not
 		    -- complete — not at claim time, where a crash would spend it on work that
-		    -- never happened (ai-review F4).
-		    reversal_attempts=CASE WHEN observed.progressed THEN 0 ELSE order_refunds.reversal_attempts+1 END,
+		    -- never happened (ai-review F4). A row that is already complete is charged
+		    -- nothing: there is no failure to record.
+		    reversal_attempts=CASE
+		        WHEN observed.progressed OR NOT observed.still_outstanding THEN 0
+		        ELSE order_refunds.reversal_attempts+1
+		    END,
 		    reversal_next_attempt_at=now() + CASE
-		        WHEN observed.progressed THEN make_interval(secs => $7)
+		        WHEN observed.progressed THEN make_interval(secs => $6)
 		        ELSE least(make_interval(secs => power(2, least(order_refunds.reversal_attempts+1, 8))::double precision), interval '5 minutes')
 		    END,
 		    reversal_parked_at=CASE
@@ -195,15 +206,26 @@ func ReleaseReversalClaim(ctx context.Context, db OutboxDB, org, refundID, claim
 		FROM (
 		    SELECT
 		        -- Progress measured against the DATABASE, not the caller's in-memory view.
-		        ((tickets_voided_at IS NOT NULL) AND NOT $6::boolean)
-		         OR ((capacity_returned_at IS NOT NULL) AND NOT $8::boolean) AS progressed,
+		        -- Each half pairs a COLUMN with the claim-time observation OF THAT COLUMN;
+		        -- crossing them ($7 with capacity, $8 with voiding) type-checks, runs, and
+		        -- reports progress exactly backwards, so the pairing is spelled out rather
+		        -- than left to positional luck.
+		        ((tickets_voided_at    IS NOT NULL) AND NOT $7::boolean)  -- $7 = voidedAtClaim
+		         OR ((capacity_returned_at IS NOT NULL) AND NOT $8::boolean)  -- $8 = capacityAtClaim
+		         AS progressed,
 		        (tickets_voided_at IS NULL OR capacity_returned_at IS NULL) AS still_outstanding
 		    FROM order_refunds WHERE organizer_id=$1 AND id=$2
 		) AS observed
 		WHERE order_refunds.organizer_id=$1 AND order_refunds.id=$2
 		  AND order_refunds.reversal_claim_id=$3`,
-		org, refundID, claimID, cause, MaxReversalAttempts,
-		voidedAtClaim, progressedFloorSeconds, capacityAtClaim)
+		/* $1 */ org,
+		/* $2 */ refundID,
+		/* $3 */ claimID,
+		/* $4 */ cause,
+		/* $5 */ MaxReversalAttempts,
+		/* $6 */ progressedFloorSeconds,
+		/* $7 */ voidedAtClaim,
+		/* $8 */ capacityAtClaim)
 	return err
 }
 
