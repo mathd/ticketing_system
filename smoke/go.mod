@@ -1,6 +1,6 @@
 module ticketing/smoke
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/getkin/kin-openapi v0.146.0

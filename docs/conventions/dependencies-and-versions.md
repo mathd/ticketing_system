@@ -7,7 +7,7 @@ release**, looked up at implementation time — never assumed from memory. Appli
 TypeScript, Vite, PostgreSQL, Redis, NATS, GitHub Actions, linters, everything. Pinning behind
 latest requires a stated compatibility reason, recorded next to the pin.
 
-Current anchors (update as they move): Go 1.26.5 · Node 24.18.0 · pnpm 11 (pinned via `packageManager`,
+Current anchors (update as they move): Go 1.26.6 · Node 24.18.0 · pnpm 11 (pinned via `packageManager`,
 which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.4 · Vite 8 ·
 React 19 · TypeScript 6.
 
