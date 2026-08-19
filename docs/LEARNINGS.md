@@ -374,3 +374,47 @@ ErrNotFound`. After a mutation goes red, read which tests failed and what they s
 **semantic** failure, not a **structural** one, and a broad cluster of unrelated failures usually means
 you broke the scaffolding.
 [full note](learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md)
+
+## "Ancestor of the review base" is not "shipped"
+
+A review scoped to a diff sees **commit topology**, never **deployment state**, and the two look
+identical from inside the diff. Two of TKT-259's third-pass findings — one `[high]` — reasoned
+correctly from a false premise: migration `0022` was introduced in a commit that was an *ancestor of
+the review base*, so the reviewer concluded databases had applied it and demanded a forward migration
+to repair legacy rows and replace an index. That commit existed only on the unmerged branch;
+`git merge-base --is-ancestor <sha> origin/main` returned false and both findings evaporated. Any
+finding of the form *"this breaks existing data / deployments / consumers"* carries an unstated
+shipped-premise — resolve it against `origin/main` before accepting **or** refuting. And record the
+refutation: the remediation is exactly what the *next* change to that file will need. Note also that
+**refuted ≠ overridden** — a gateless run's `overrides:` list should not conflate an objection you
+proceeded against with one that rested on a checkably false fact.
+[full note](learnings/2026-08-18-ancestor-of-the-base-is-not-shipped.md)
+
+## A test for a SWAP needs the two swapped things distinguishable in every position
+
+The [green-test-that-cannot-reach-the-failing-state](learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md)
+rule has a sharper form for swapped arguments. TKT-259's release query pairs each column with its own
+claim-time observation (`$7` with the switch, `$8` with the capacity); crossing them type-checks, runs
+and reports progress backwards. **Three** successive versions of the test named for that pairing could
+not detect it: `false,false` against one set column made both arms read the same flag, and
+`true,false` against *two* set columns let either arm carry the `OR` alone. Only one set column with
+asymmetric flags matched to it discriminates. For a predicate over `(column_a, flag_a)` and
+`(column_b, flag_b)`: the columns must differ, the flags must differ, and the differing flag must
+guard the differing column. Mutation testing did go red — on three *other* tests, which is how the
+vacuous one kept looking covered.
+[full note](learnings/2026-08-18-a-test-for-a-swap-needs-distinguishable-positions.md)
+
+## Harmless is not free: check a fix against the QUEUE's ordering, not just its correctness
+
+TKT-259's first review pass found rows being charged retries for a condition they could not influence,
+until they parked and became permanently unreachable. The fix — stop charging them — closed the
+finding exactly and was still wrong: the claim is `ORDER BY next_attempt_at` with a `LIMIT` inside a
+bounded pass, so a backlog of those now-harmless rows filled every batch and pushed actionable work
+past the bound. Harmless individually, expensive collectively, and the cost fell on exactly the work
+the sweep existed to do. When a fix's shape is *"this is now harmless to process"*, ask whether it
+still occupies a slot in something **bounded** (`LIMIT`, batch, pass cap, pool, buffer) and what the
+**ordering** does — with `ORDER BY` + `LIMIT`, older unresolvable rows outrank newer actionable ones
+precisely because nothing ever resolves them. If the processor does nothing with them, exclude them;
+visibility is a gauge's job, not the work queue's. The tell for the meta-failure: pass 1's fix
+answered the question asked and made the better answer harder to see.
+[full note](learnings/2026-08-18-harmless-is-not-free-in-a-bounded-queue.md)
