@@ -20,6 +20,134 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Needs shaping before Gate 1\n\nFiled at TKT-163's closeout with the gap documented and its mechanism traced, but **not shaped**:\nno `readiness` object, no context-mémo bake. The 8-item DoR has to be filled before this is\npromotable, and the open question in AC 2 (extend `internal/reversal` vs a second runner) is a real\ndesign decision, not a formality — ADR-062 and ADR-040 both argue against one state machine serving\ntwo lifecycles, and both also argue against duplicating a proven lifecycle. That tension is the\nticket's actual work.\n\nNot blocked by anything. TKT-163 is Done."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaped — 8/8 DoR met, ready for Gate 1\n\nShaped by reading the code at HEAD, not by inheriting the ticket text. Four things the read changed:\n\n**1. AC 2's open design question is answered, not deferred.** The ticket framed extend-`internal/reversal` vs a second runner as the ticket's real work. Reading settles it: `reversal.Store`/`Reverser` are typed on `store.Refund` and `refunds.Service.DriveReversal`, so there is nothing to hand them for an exchange; and **ADR-062 §1 already took this exact decision for this exact reason** when it declined to extend `internal/recovery` or `internal/bulkrefund`. A second runner reusing the *shape* — not a generic engine — is the consistent choice. Recorded in `approach` with all three reasons.\n\n**2. The real work is an EXTRACTION, and the ticket does not mention it.** The exchange discharge lives on the HTTP handler as `(*Server).returnExchangedCapacity(r *http.Request, ...)` — it takes a `*http.Request`, so **no runner can call it as it stands**. The refund side never had this problem: `DriveReversal(ctx, Refund)` was already a ctx-taking unit. Lifting that into a shared unit both callers use is this ticket's main structural risk, and it was invisible in the ticket text. This is the shaping.md rule about a proposed remedy being a hypothesis: the ticket's 'the refund runner's shape is likely reusable' is true of the *runner* and false of the *discharge*.\n\n**3. Exchange eligibility genuinely differs — and in the opposite direction from what the ticket implies.** ADR-062 §2's load-bearing park-don't-predict case is inventory's **partial seated** refusal. For exchanges that is largely unreachable: ADR-039's Consequences records exchanges as whole-line only, and TKT-158 refuses a seated source outright, so the source claim is GA by construction and the return is FULL. Park-on-no-progress is still copied (the general 'refused shapes nobody enumerated' argument stands, and predicting refusals is exactly what ADR-062 forbade) — but **the plan must not restate the seated rationale as if it were this ticket's**, and the ADR must say which of ADR-062's reasoning transfers.\n\n**4. AC 4 decided: the 502-and-redelivery stays as first line, the sweep is the backstop.** It discharges in milliseconds on the happy path against a sweep interval of a minute; removing it would make every exchange wait on a poll for no benefit.\n\n**Guard predicate count (shaping.md):** the claim predicate carries **five** independent conjuncts, so it needs five tests, each passing the earlier ones and each mutated separately — an earlier refusal short-circuits the rest. Listed in `approach`.\n\n**`governingTests` built by reading, not inherited** — TKT-163's mémo predated the requirement and carried `null`. Six live tripwires found, including `readiness_test.go` (a config precondition must fail `/readyz` and *not* `/healthz`, or compose startup deadlocks) and `check-required-env.sh` (a new `:?` in compose.yaml without a matching `env-bootstrap.sh` emitter fails the gate). All seven `governingAdrs` verified to resolve to real files at HEAD.\n\n**Not `risk:low`** — new migration, a new background worker, an extraction across an HTTP boundary, and it sits next to the oversell-safety ordering of ADR-038 §1. The plan gate should run.\n\n**One incidental finding, deliberately NOT absorbed into this ticket.** `LoadExchangeSwitch` (`store/exchanges.go:638`) joins `reservations` on `r.id = o.reservation_id` with **no organizer predicate** — the same unscoped-join shape ADR-062's ai-review caught as F3 on the refund side, which is why the refund query carries `AND res.organizer_id = c.organizer_id`. The exchange row itself is organizer-scoped, so this is only reachable if an order or reservation already crosses tenants; it is a defence-in-depth gap, not a live leak. Filing it separately rather than widening this ticket."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "order_exchanges carries two obligations of a refund's shape (tickets_exchanged_at, capacity_returned_at) and nothing in commerce ever sweeps them. Their only retry is access's JetStream redelivery, driven by commerce answering 502 from POST /internal/exchanges/{id}/tickets-switched. If that consumer dead-letters, or order.exchanged is never consumed, the obligation is outstanding forever with nobody revisiting the row. Verified at HEAD: no query anywhere selects exchanges by outstanding obligation."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a commerce-side sweep that drives outstanding exchange obligations (switch marker + source-capacity return) to completion, with the same visibility ADR-062 §4 required (gauges) so COS 1's second branch is earned. OUT: the money path (settled_at is durable and already recovered by TKT-167's resume); unparking (TKT-146 owns it for the identical refund/recovery problem — inventing a second operator path here would guarantee two); the 502-and-redelivery mechanism, which STAYS as first line (see approach)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "AC 2's open design question is resolved at shaping rather than deferred, because reading the code settles it: a SECOND runner in internal/exchangesweep, not an extension of internal/reversal. Three independent reasons, each verified. (1) TYPE: reversal.Store/Reverser are typed on store.Refund and refunds.Service.DriveReversal; order_exchanges is a different table with a different key shape and no Refund to hand it. (2) PRECEDENT: ADR-062 §1 already took exactly this decision for exactly this reason ('different eligibility, different terminal states, and one state machine serving all three would be readable by nobody') when it declined to extend internal/recovery or internal/bulkrefund; extending reversal now would contradict the ADR whose shape we are copying. (3) ADR-040 and ADR-062 both warn against one state machine serving two lifecycles. What IS reused is the SHAPE (claim under lease with a fencing claim token, observe-don't-predict progress, attempts reset on progress, park at a bound, gauges) — copied deliberately, not abstracted into a generic engine."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. TKT-163 is Done and shipped the pattern being copied; TKT-161/166/167 shipped the columns and the resume this builds on. TKT-146 (unparking) and TKT-164 (seated repair) are referenced, not depended on."
+    },
+    "approach": {
+      "state": "met",
+      "note": "A leased runner in commerce copying internal/reversal's lifecycle, driving a shared exchange-discharge unit. THE REAL WORK IS AN EXTRACTION, and it is verified against the code rather than assumed: today the discharge logic lives on the HTTP handler as (*Server).returnExchangedCapacity(*http.Request, ...) in services/commerce/internal/api/exchanges.go:818-840 — it takes a *http.Request, so a runner cannot call it. The refund side has no such problem because refunds.Service.DriveReversal(ctx, Refund) was already a ctx-taking unit off the handler. So this ticket must first lift the exchange discharge into a ctx-taking unit both the endpoint and the runner call — one discharge path, two callers, mirroring ADR-062's 'one reversal path, three callers'. Extracting it is the ticket's main structural risk and the endpoint's existing behaviour (mark-switch-first, then 502 when capacity is unresolved) must be preserved exactly: that ordering is ADR-038 §1 safety, not preference, and is a CHECK constraint since migration 0011. AC 4 resolved: the 502-and-redelivery stays as first line, sweep as backstop — it discharges in milliseconds on the happy path, the sweep's interval is a minute, and removing it would make every exchange wait on a poll. GUARD PREDICATE COUNT (shaping.md): the claim predicate has FIVE independent conjuncts to test separately, since an earlier refusal short-circuits the rest — settled_at IS NOT NULL; (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL); parked_at IS NULL; next_attempt_at<=now(); lease free. One case per conjunct, each passing the earlier ones, each mutated separately. ELIGIBILITY DIFFERS FROM REFUNDS AND THAT IS THE INTERESTING PART: ADR-062 §2's load-bearing park-don't-predict case is inventory's partial-seated refusal, which for exchanges is LARGELY UNREACHABLE — ADR-039 Consequences records that exchanges are whole-line only and TKT-158 refuses a seated source outright, so the source claim is GA by construction and the return is FULL (the comment at exchanges.go already says so). Park-on-no-progress is still copied, because 'permanently refused shapes nobody has enumerated' is the general case ADR-062 §2 argued for and predicting refusals is what it forbade — but the plan must NOT restate the seated rationale as if it were this ticket's, and the ADR must say which of ADR-062's reasoning transfers and which does not."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, and it is sprint-sized because the lifecycle it copies already exists and is proven: (a) extract the ctx-taking exchange discharge unit from the handler, endpoint behaviour unchanged; (b) migration adding the sweep columns to order_exchanges (lease/claim/attempts/next_attempt_at/parked_at), mirroring migration 0021's shape on order_refunds; (c) claim/release/finish/abandon SQL + the runner; (d) gauges + wiring + docs/ADR. No follow-on slice is needed for the COS."
+    },
+    "success": {
+      "state": "met",
+      "note": "The four COS as written, with AC 2 and AC 4 now decided at shaping (second runner; 502 stays first line). AC 3's test is the load-bearing one and must drive the real failure — a settled+switched exchange whose capacity return never happened — then prove the sweep discharges it, WITHOUT the read itself driving the thing under test (the TKT-163 trap, restated in COS 3)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below in `context`, with governingAdrs re-resolved against docs/adr/ at HEAD (all seven verified to resolve to real files) and a non-empty governingTests list — TKT-163's mémo predated the governingTests requirement and carried null, so this one was built by reading, not inherited."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-18",
+    "binding": [
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-18",
+        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths. This ticket must not touch money at all: the exchange's money leg (settled_at) is out of scope."
+      },
+      {
+        "id": "AGENTS.md",
+        "date": "2026-08-18",
+        "rule": "A test must live at the tier its mechanism does; a green test that cannot reach the failing state proves nothing. The sweep's SQL predicates live in PostgreSQL, so their tests belong in a store smoke test against real PostgreSQL — a Go fake would scope in Go what the SQL must scope."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Refund-side reconciler this copies (runner, store SQL, metrics, tests)",
+        "link": "services/commerce/internal/reversal/"
+      },
+      {
+        "summary": "The exchange discharge that must be extracted, and its 502 retry contract",
+        "link": "services/commerce/internal/api/exchanges.go:763-840"
+      },
+      {
+        "summary": "Refund-side migration whose column shape this mirrors",
+        "link": "services/commerce/internal/store/migrations/0021_refund_reversal_reconciliation.sql"
+      },
+      {
+        "summary": "Operator surface to mirror for the new runner",
+        "link": "docs/development.md § Refund reversal reconciliation"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-062",
+        "why": "The direct precedent and the thing to copy AND to differ from deliberately. §1 is the separate-runner argument (reuse the shape, not the state machine). §2 is park-don't-predict: observe refusals, never enumerate them — but its seated-partial rationale is refund-specific and must NOT be restated here (ADR-039 makes exchanges whole-line and unseated). §3 attempts-reset-on-progress is what makes a bounded budget safe against a long outage and transfers unchanged. §4 parking is only honest if someone can see it — gauges are required, not optional. Its own Consequences section names THIS ticket as the deliberate gap."
+      },
+      {
+        "id": "ADR-038",
+        "why": "§1: capacity must never come back before the tickets stopped admitting — the one ordering that can OVERSELL, hence a safety property, not a preference. §7 is the 'visible and retryable, nothing retries it' state this ticket closes on the exchange side."
+      },
+      {
+        "id": "ADR-039",
+        "why": "The exchange lifecycle itself. §3b fixes the marker-before-capacity ordering; §6 'an order is reversed once' (unconditional unique index on source_order_id); Consequences records whole-line-only and that a seated order cannot be exchanged AT ALL — which is precisely why ADR-062 §2's seated-partial case does not transfer. §3c is TKT-167's resume-from-persisted-basis, a neighbouring mechanism not to duplicate."
+      },
+      {
+        "id": "ADR-040",
+        "why": "'Reported, not repaired' is bounded to cancellation runs (ADR-062 clarified this). Cited so the plan does not read it as forbidding this reconciler, and for its warning against one state machine serving two lifecycles."
+      },
+      {
+        "id": "ADR-010",
+        "why": "Inventory's claim transaction is the contention path. The capacity return goes through inventory's row-locked refund-capacity operation; the sweep must not invent a second way to give capacity back."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before writing any integrity claim. Everything here is HONEST-WRITER consistency against crashes, restarts and two replicas — NOT tamper-evidence. Anyone with commerce DB write access can clear a lease or forge a discharge timestamp. ADR-062's Consequences has the exact wording to reuse."
+      },
+      {
+        "id": "ADR-022",
+        "why": "Migrations run out-of-band via each binary's migrate subcommand as a one-shot Compose job. The new migration must follow that placement; the server path never migrates."
+      }
+    ],
+    "governingTests": [
+      {
+        "path": "services/commerce/cmd/commerce/readiness_test.go",
+        "why": "TKT-163/ADR-062 §5 split /healthz and /readyz and pinned BOTH halves: a missing ACCESS_URL must fail readiness but must NOT fail liveness, because the container healthcheck probes /healthz and the gateway waits on it. If this ticket adds any config precondition for the exchange sweep, it must extend readinessChecks the same way — a liveness failure would deadlock compose startup."
+      },
+      {
+        "path": "scripts/check-required-env.sh",
+        "why": "TKT-227's invariant: every credential the dev stack refuses to start without must be produced by scripts/env-bootstrap.sh, and the expected set is derived from compose.yaml's `:?` markers. New tuning env vars (interval/batch) must NOT be given `:?` in compose.yaml unless env-bootstrap also emits them, or `make check`'s check-required-env stage fails. Follow REFUND_REVERSAL_* which are plain defaults."
+      },
+      {
+        "path": "services/commerce/internal/store/migration_smoke_test.go",
+        "why": "Migration Down paths are pinned here: TestMigration0012DownRefusesToDestroyCancellationHistory and TestMigration0014DownRefusesToDestroyFeeComposition establish that a Down which would destroy real history must refuse, and DownTo pins the target explicitly so the next migration cannot move it. A new migration lands in this file's blast radius and must be checked against it."
+      },
+      {
+        "path": "services/commerce/internal/reversal/runner_test.go",
+        "why": "The behavioural spec to mirror, test for test — including the ones that exist because ai-review found the defect: ProgressIsReadFromTheRowNotFromThisClaimantsResult (a concurrent replay must not be read as no-progress), TheLeaseOutlastsTheBatchItProtects + SizingTheLeaseFromTheWrongTimeoutUnderCoversTheBatch (the lease must be sized from the timeout of the client that actually makes the calls), ARefundIsDrivenAtMostOncePerPass, and APassIsBoundedAgainstAQueueThatNeverEmpties. A copied runner that does not copy these tests copies the code without the reasons."
+      },
+      {
+        "path": "services/commerce/internal/store/refund_reversal_smoke_test.go",
+        "why": "The tier rule made concrete: the claim/lease/backoff/parking predicates are exercised against real PostgreSQL, because that is where they live. The exchange equivalents belong at the same tier."
+      },
+      {
+        "path": "services/commerce/internal/api/exchange_resume_smoke_test.go",
+        "why": "TKT-167's resume-from-persisted-basis. The extraction in this ticket touches the same endpoint region; this test is what would notice the endpoint's behaviour changing during the lift."
+      }
+    ]
+  }
 }
