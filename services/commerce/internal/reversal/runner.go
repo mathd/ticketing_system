@@ -192,9 +192,19 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 				// because a shutdown's context is already cancelled, and reusing it here
 				// would both mislabel this as a shutdown and let a degraded database burn a
 				// 5s timeout per duplicate that cancellation cannot interrupt.
+				// The ctx.Err() check above is NOT atomic with this call: a shutdown landing
+				// between them, or while the write is in flight, fails it on a cancelled
+				// context (ai-review pass 4). Logging and moving on would leave the row
+				// leased for the full lease — ~17 minutes at the defaults — with its
+				// obligation outstanding the whole time. So a cancellation here falls back
+				// to the detached path, which is exactly the case that path exists for.
 				if err := r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID); err != nil {
-					r.log.WarnContext(ctx, "hand back a reversal claim already driven this pass",
-						"refund_id", c.Refund.ID, "err", err)
+					if ctx.Err() != nil {
+						r.abandonUndriven(claimed[i : i+1])
+					} else {
+						r.log.WarnContext(ctx, "hand back a reversal claim already driven this pass",
+							"refund_id", c.Refund.ID, "err", err)
+					}
 				}
 				continue
 			}

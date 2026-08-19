@@ -438,6 +438,64 @@ func TestAPassIsBoundedAgainstAQueueThatNeverEmpties(t *testing.T) {
 	}
 }
 
+// cancellingStore cancels the caller the instant a duplicate hand-back is attempted, which
+// is the race the ctx.Err() check above the call cannot close: the check and the write are
+// not atomic, so a shutdown can land between them.
+type cancellingStore struct {
+	fakeStore
+	cancel  func()
+	armed   bool
+	attempt int
+}
+
+func (c *cancellingStore) Abandon(ctx context.Context, org, refundID, claimID uuid.UUID) error {
+	c.attempt++
+	if c.armed && c.attempt == 1 {
+		// Fire the shutdown, then answer as the real store would on a dead context.
+		c.cancel()
+		return context.Canceled
+	}
+	return c.fakeStore.Abandon(ctx, org, refundID, claimID)
+}
+
+// ai-review pass 4: a shutdown racing a duplicate hand-back must not strand the row.
+//
+// Losing this race leaves an already-driven but still-outstanding refund LEASED for the full
+// lease — about 17 minutes at the defaults — with its tickets possibly still admitting. The
+// fallback to the detached path is what closes it, and it is the case that path exists for.
+func TestACancellationDuringDuplicateHandBackStillReleasesTheClaim(t *testing.T) {
+	id := uuid.New()
+	row := outstanding(id, false, false, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	st := &cancellingStore{
+		fakeStore: fakeStore{
+			rows:    map[uuid.UUID]store.Refund{},
+			batches: [][]store.ClaimedReversal{{row}, {row}},
+		},
+		cancel: cancel,
+		armed:  true,
+	}
+	New(st, &fakeReverser{}, time.Minute, 1, time.Minute, nil).RunOnce(ctx)
+
+	if len(st.abandoned) == 0 {
+		t.Fatal("a duplicate hand-back that lost the shutdown race left the refund leased: " +
+			"its obligation stays outstanding for the whole lease, with nothing driving it")
+	}
+	// The recovery must go through the DETACHED path — the caller's context is dead, so a
+	// retry on it would fail identically and prove nothing.
+	var detached bool
+	for _, live := range st.abandonedLive {
+		if !live {
+			detached = true
+		}
+	}
+	if !detached {
+		t.Fatal("the fallback did not use the detached context, so it cannot have succeeded " +
+			"against a cancelled caller")
+	}
+}
+
 // A claim error ends the pass rather than spinning.
 func TestAClaimFailureEndsThePass(t *testing.T) {
 	st := &fakeStore{claimErr: errors.New("database is down")}
