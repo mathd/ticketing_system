@@ -108,15 +108,15 @@
       "key": "TKT-157"
     }
   ],
-  "status": "Building",
+  "status": "PO Review",
   "labels": [
-    "agent:ai-review"
+    "needs:human"
   ],
   "assignee": "agent",
   "pr": {
     "number": 238,
     "url": "https://github.com/mathd/ticketing_system/pull/238",
-    "state": "open"
+    "state": "merged"
   },
   "comments": [
     {
