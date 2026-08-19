@@ -152,6 +152,13 @@ starting another run — which §3 makes safe.
   money and the tickets are void.
 - **Outstanding obligations on refunds this run did not create are reported, not repaired.** Driving
   them would need their original idempotency keys, which the refund row does not carry.
+  *Bounded to this runner by [ADR-062](./ADR-062-refund-reversal-reconciliation.md) (TKT-163): it is
+  a limitation of a **cancellation run**, not a system-wide prohibition on repairing a foreign
+  refund's reversal. The reason it holds here is that a ledger row cannot re-derive the refund it
+  does not own; a dedicated reconciler claims the `order_refunds` row itself and calls
+  `DriveReversal` with it, which needs no idempotency key at all. Such obligations are therefore now
+  repaired — just not by this runner, and a run that reports `failed/reversal_outstanding` is still
+  reporting the truth as of when it looked.*
 - **`already_refunded` is decided from whether a PREVIOUS run had already refunded the order**, not
   from the refund unit's replay flag. Replay cannot tell a second run apart from this run resuming
   after a crash, and would mis-attribute both directions. The answer is recorded on the ledger row

@@ -134,6 +134,10 @@ field is **required** in the response, not omitted, because a caller who cannot 
 
 ### 7. No recovery runner
 
+***Superseded by [ADR-062](./ADR-062-refund-reversal-reconciliation.md) (TKT-163). The section is
+kept as written because the reasoning was correct for its moment and the amendment below is only
+intelligible against it.***
+
 Retry is a **replay of the same refund idempotency key**, which resumes whatever is outstanding —
 the path ADR-037 already built. **Nothing retries on its own**: an access outage, or a refund that
 outruns issuance, leaves the tickets valid until something replays the refund. That is the accepted
@@ -146,6 +150,28 @@ commit schema and a service dependency that TKT-158 and TKT-159 would have to re
 `ACCESS_URL` is optional in commerce for the same reason: without it a refund still returns the
 money and leaves voiding outstanding. Degrading beats refusing to start, for an obligation
 discharged after the money has already moved.
+
+**What TKT-163 changed, and what it did not.** "Adding one later is additive" was the escape clause,
+and it has now been taken: `internal/reversal` claims outstanding refunds under a lease and drives
+them through the same `DriveReversal` this ADR specifies. The rejection above is not overturned — it
+was right that a second state machine is a large cost against an *unstated* requirement, and the
+requirement has since been stated (TKT-163's COS 1). What is **not** retried automatically is
+anything this ADR did not already make idempotent: the runner adds no new reversal semantics, only a
+caller.
+
+Two consequences worth naming here rather than only in ADR-062:
+
+- **A reversal can now stop permanently, visibly.** Attempts are bounded (reset on progress) and an
+  obligation that never advances **parks**. That is not a weakening of "outstanding work stays
+  visible" — a parked row is still outstanding, still counted, and now also counted *separately* so
+  an operator can tell "retrying" from "given up". The alternative, retrying forever, starves the
+  queue behind the one row nobody can fix (a seated partial return — TKT-164).
+- **`ACCESS_URL`'s optionality is narrowed.** The binary still boots without it and a refund still
+  returns money — that much of this section stands. But its absence now **fails readiness**, because
+  the sentence above ("leaves voiding outstanding") stopped being the whole truth once something was
+  supposed to be discharging it: a reconciler that silently cannot run turns a visible outstanding
+  obligation into an invisible one. ADR-062 §5 has the reasoning, including why this does not
+  contradict ADR-021 §D6's refusal to gate readiness on a dependency.
 
 ### 8. Capacity returns are accounted, not transitioned (TKT-161)
 

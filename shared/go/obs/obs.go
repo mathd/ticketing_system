@@ -58,6 +58,16 @@ func (h *traceHandler) WithGroup(name string) slog.Handler {
 // something stricter still pass a per-request context (the gateway's health fan-out does).
 const clientTimeout = 30 * time.Second
 
+// ClientTimeout is the bound above, exported for callers that must SIZE something against
+// the calls this client makes rather than guess at them.
+//
+// The motivating case is a worker lease: commerce's reversal reconciler leases a batch of
+// refunds and drives each through this client, so its lease has to outlast batch × calls ×
+// this. Its first version borrowed another worker's 10s constant and produced a lease three
+// times shorter than the work it protected (TKT-163 ai-review F1). A copied number cannot
+// track a change here; this can.
+const ClientTimeout = clientTimeout
+
 // Client returns an http.Client that injects the W3C traceparent header
 // from the request context. All cross-service calls go through this.
 func Client() *http.Client {

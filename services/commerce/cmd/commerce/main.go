@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 
 	commerceapi "ticketing/services/commerce/internal/api"
 	"ticketing/services/commerce/internal/bulkrefund"
@@ -26,6 +27,7 @@ import (
 	"ticketing/services/commerce/internal/mailer"
 	"ticketing/services/commerce/internal/outbox"
 	"ticketing/services/commerce/internal/recovery"
+	"ticketing/services/commerce/internal/reversal"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/httpx"
 	"ticketing/shared/mail"
@@ -216,7 +218,7 @@ func run() error {
 	}
 
 	r := chi.NewRouter()
-	health := httpx.Healthz(serviceName,
+	liveness := []httpx.NamedCheck{
 		httpx.Check("db", func() error {
 			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -228,26 +230,54 @@ func run() error {
 			}
 			return nil
 		}),
-	)
-	r.Method(http.MethodGet, "/healthz", health)
-	r.Method(http.MethodGet, "/readyz", health)
+	}
+	accessURL := os.Getenv("ACCESS_URL")
+	// Liveness and readiness stop being the same handler here (TKT-163, ADR-062 — they
+	// were identical since the service was scaffolded).
+	//
+	// `/healthz` answers "this process is working": the database and the broker. It is what
+	// the container healthcheck probes (`healthcheck` above, compose.yaml), and what the
+	// gateway's `depends_on: service_healthy` waits on — so anything added HERE can keep the
+	// stack from starting.
+	//
+	// `/readyz` additionally answers "this deployment is configured to keep its promises".
+	// Without ACCESS_URL, commerce still refunds money and still records the obligation, but
+	// NOTHING can ever discharge it — the reconciler included, since it drives voiding
+	// through that URL. ADR-038 §7 made that a deliberate degradation on the grounds the
+	// obligation stayed visible and retryable; TKT-163 makes it worse rather than better,
+	// because a reconciler that silently cannot run converts a visible outstanding
+	// obligation into an invisible one. A misconfigured deployment must not take traffic.
+	//
+	// It is a CONFIGURATION check, never a reachability one. ADR-021 §D6 rejected gating
+	// readiness on a runtime dependency's liveness — "a broker blip would close every
+	// turnstile" — and that reasoning is sound and applies to anything that can flap. A
+	// missing environment variable cannot flap: it is a static fact settled at startup, and
+	// it is wrong for the whole life of the process or not at all.
+	readiness := readinessChecks(liveness, accessURL)
+	mountHealth(r, liveness, readiness)
 	catalogURL, inventoryURL, paymentsURL := os.Getenv("CATALOG_URL"), os.Getenv("INVENTORY_URL"), os.Getenv("PAYMENTS_URL")
 	if catalogURL == "" || inventoryURL == "" || paymentsURL == "" {
 		return errors.New("CATALOG_URL, INVENTORY_URL and PAYMENTS_URL required")
 	}
-	// ACCESS_URL is optional, unlike the three above (TKT-157). Without it a refund
-	// still returns the money and leaves ticket voiding outstanding and retryable —
-	// degrading rather than refusing to start is the right failure for an obligation
-	// that is discharged after the money has already moved.
+	// ACCESS_URL is still optional at the BINARY level, unlike the three above (TKT-157):
+	// without it commerce boots, refunds still return the money, and the obligation is
+	// still recorded rather than lost. That part of ADR-038 §7 is unchanged, and it is
+	// still the right failure for an obligation discharged after the money has moved.
 	//
-	// Bound to a variable rather than inlined: the cancellation refund runner (TKT-159)
-	// refunds through this server's own refund unit, so both callers share one money path.
+	// What changed in TKT-163 is that its absence now fails READINESS (see the split
+	// above). Booting degraded and being routed traffic are different questions, and only
+	// the second one was ever really answered by "optional".
+	//
+	// Read into a variable above rather than inlined here: three things consume it now —
+	// the refund unit, the readiness probe, and this comment's original reason, the
+	// cancellation refund runner (TKT-159), which refunds through this server's own refund
+	// unit so both callers share one money path.
 	publicURL := os.Getenv("PUBLIC_BASE_URL")
 	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
 		WithPaymentsToken(paymentsToken).
 		WithStaffWriteCredential(staffWriteToken).
 		WithCustomerAssertionKey(assertionKey).
-		WithAccess(os.Getenv("ACCESS_URL")).
+		WithAccess(accessURL).
 		WithPublicURL(publicURL)
 	commerceapi.WarnIfResetMailUnconfigured(log, publicURL)
 	r.Mount("/", srvHandler.Router(log, validateResponses))
@@ -338,6 +368,30 @@ func run() error {
 		recovery.LeaseFor(cancellationBatch(), recoveryCallTimeout))
 	stopCancellations := start(log, "cancellation refund runner", cancellations.Run)
 
+	// Outstanding refund reversals (TKT-163, ADR-062). ADR-038 §7 shipped the reversal as
+	// "visible and retryable" with nothing retrying it: an access outage left refunded
+	// tickets admitting until a human replayed the idempotency key, and the caller got a
+	// 200. This is the thing that comes back for them.
+	//
+	// Through the SAME refund unit as the other two callers — it drives only DriveReversal,
+	// so there is one reversal path with three callers and this runner cannot move money.
+	// The lease is sized from obs.ClientTimeout, NOT from recoveryCallTimeout: the refund
+	// service drives its calls through the API server's own transport, which is
+	// obs.Client() at 30s. Borrowing recovery's 10s constant here produced a lease three
+	// times shorter than the work it protects, letting a second replica reclaim rows the
+	// first was still driving (ai-review F1). Derived from the real value so the two cannot
+	// drift apart.
+	reversals := reversal.New(reversal.DBStore{DB: db}, srvHandler.Refunds(),
+		reversalInterval(), reversalBatch(),
+		reversal.LeaseFor(reversalBatch(), obs.ClientTimeout), log)
+	// Commerce's first metrics (the MeterProvider has been live since obs.Setup; nothing
+	// had registered an instrument). Observability, not a gate — a failure to register
+	// gauges must not keep the service from refunding, so it is logged, not returned.
+	if err := reversals.ObserveMetrics(otel.Meter("ticketing/commerce/reversal")); err != nil {
+		log.WarnContext(ctx, "refund reversal metrics unavailable; the reconciler still runs", "err", err)
+	}
+	stopReversals := start(log, "refund reversal runner", reversals.Run)
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	log.InfoContext(ctx, "listening", "addr", srv.Addr)
@@ -347,6 +401,13 @@ func run() error {
 		// the paths it depends on go away, so a successor reclaims it immediately rather
 		// than after the lease expires.
 		stopCancellations()
+		// Reversals next, for the same reason and one step weaker: a claimed refund
+		// mid-reversal hands its lease back on shutdown (abandonUndriven), so stopping it
+		// before the drainers keeps that release ahead of anything it might need. It stops
+		// AFTER cancellations because a cancellation run drives reversals of its own
+		// through the shared refund unit, and stopping the reversal runner first would not
+		// quiesce that.
+		stopReversals()
 		// Recovery next: it completes orders through the outbox, so stopping the
 		// drainer first would strand a row this pass just owed until the next boot.
 		stopRecovery()
@@ -457,6 +518,71 @@ func cancellationBatch() int {
 		}
 	}
 	return 8
+}
+
+// mountHealth puts each probe set on its own path.
+//
+// Extracted for the same reason as readinessChecks, one level up: a test that only exercises
+// readinessChecks proves the RULE and says nothing about whether anything MOUNTS it. Deleting
+// the split — serving the liveness set on both paths — leaves such a test green, because the
+// rule it tests is still correct and simply no longer reached. So the wiring is a seam a test
+// can call, and the assertion is made at the router, which is the boundary the answer
+// actually crosses on its way out.
+func mountHealth(r chi.Router, liveness, readiness []httpx.NamedCheck) {
+	r.Method(http.MethodGet, "/healthz", httpx.Healthz(serviceName, liveness...))
+	r.Method(http.MethodGet, "/readyz", httpx.Healthz(serviceName, readiness...))
+}
+
+// readinessChecks builds the readiness probe set: everything liveness answers, plus the
+// configuration a deployment needs to keep the promises it makes to callers.
+//
+// A function rather than an expression inside run() so the rule is reachable by a test —
+// run() needs a database, a broker and four credentials, so a check written inline there is
+// only ever exercised by starting the whole service, which is how a readiness rule ends up
+// asserted by nothing.
+//
+// It takes the liveness set rather than rebuilding it, so the two cannot drift into
+// answering different questions about the same process.
+func readinessChecks(liveness []httpx.NamedCheck, accessURL string) []httpx.NamedCheck {
+	return append(append([]httpx.NamedCheck{}, liveness...),
+		httpx.Check("access_configured", func() error {
+			if accessURL == "" {
+				return errors.New("ACCESS_URL is unset; refund ticket voiding can never be discharged")
+			}
+			return nil
+		}),
+	)
+}
+
+// reversalInterval bounds how long an outstanding reversal obligation waits for a retry.
+// The LONGEST of the four, deliberately: every row this runner claims has already failed at
+// least once against a downstream that was unavailable, and re-asking a service that is down
+// every ten seconds is how a reconciler becomes a second outage. The obligation is
+// under-selling in the meantime (the tickets are void, the seat is not back), which is the
+// safe direction — unlike a stuck checkout, whose seat is leaking, or a cancellation run,
+// whose operator is waiting for a report.
+//
+// A restart drains immediately regardless (Runner.Run), so this bounds the steady state, not
+// recovery from a deploy.
+func reversalInterval() time.Duration {
+	if v := os.Getenv("REFUND_REVERSAL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return time.Minute
+}
+
+// reversalBatch bounds one claim, and with it the lease. Larger than the cancellation
+// runner's: each row here makes at most two downstream calls (void, then capacity) against
+// no money path, where a cancellation order makes up to four including the provider.
+func reversalBatch() int {
+	if v := os.Getenv("REFUND_REVERSAL_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 16
 }
 
 // credentialsAreDistinct refuses a deployment where any two of commerce's three
