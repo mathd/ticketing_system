@@ -50,27 +50,43 @@ func settledExchange(t *testing.T, db *sql.DB, ctx context.Context, key string, 
 	if mutate != nil {
 		mutate(&s)
 	}
-	// The row must satisfy the table's own shape, not just this file's interests: 0010's
-	// CHECKs tie settlement to a replacement order, a target total and a delta, and
-	// `tickets_exchanged_at` may not precede `settled_at`. Getting that wrong is how a
-	// fixture fails for a reason the test is not about.
-	var replacement any
-	var targetTotal, delta any
+	// The row must satisfy the table's own shape, not just this file's interests, and 0010's
+	// CHECKs are strict about it. `order_exchanges_basis_shape` is ALL-OR-NOTHING across
+	// seven columns (basis_at, target_hold_id, replacement_reservation_id, target_total,
+	// delta_amount, target_unit_amount, target_slot_id); `order_exchanges_settlement_shape`
+	// additionally requires a replacement order and a basis before settled_at may be set;
+	// `_delta_is_the_difference` and `_total_is_the_product` then pin the arithmetic. Setting
+	// a convenient subset is how a fixture fails for a reason the test is not about — this
+	// one did, on the first gate run, in eleven tests at once.
+	//
+	// The numbers are an EVEN exchange, chosen so the money arithmetic is trivially valid:
+	// quantity × unit = target_total = source_total, so delta is zero. No money moves here.
+	var replacementOrder, replacementReservation, targetHold, targetSlot, basisAt any
+	var targetTotal, delta, targetUnit any
 	if s.SettledAt != nil {
-		replacement = c.OrderID
-		targetTotal, delta = int64(2500), int64(0)
+		const unit = int64(1250)
+		replacementOrder, replacementReservation = c.OrderID, c.ReservationID
+		targetHold, targetSlot = uuid.New(), c.SlotID
+		basisAt = *s.SettledAt
+		targetUnit = unit
+		targetTotal = unit * int64(s.Quantity)
+		delta = targetTotal.(int64) - int64(2500)
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO order_exchanges(organizer_id,id,source_order_id,replacement_order_id,target_ticket_type_id,
 		                            idempotency_key,request_fingerprint,quantity,source_total,source_gross_total,
-		                            target_total,delta_amount,currency,actor,reason,settled_at,
+		                            target_total,delta_amount,target_unit_amount,target_hold_id,
+		                            replacement_reservation_id,target_slot_id,basis_at,
+		                            currency,actor,reason,settled_at,
 		                            tickets_exchanged_at,capacity_returned_at,
 		                            reversal_parked_at,reversal_next_attempt_at,reversal_attempts,
 		                            reversal_claim_id,reversal_lease_until)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,2500,2500,$9,$10,'EUR','ops@example.test','exchange sweep test',
-		       $11,$12,$13,$14,coalesce($15,now()),$16,$17,$18)`,
-		s.OrganizerID, s.ID, s.OrderID, replacement, uuid.New(),
-		"xkey-"+key, "xfingerprint-"+key, s.Quantity, targetTotal, delta,
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,2500,2500,$9,$10,$11,$12,$13,$14,$15,
+		       'EUR','ops@example.test','exchange sweep test',
+		       $16,$17,$18,$19,coalesce($20,now()),$21,$22,$23)`,
+		s.OrganizerID, s.ID, s.OrderID, replacementOrder, uuid.New(),
+		"xkey-"+key, "xfingerprint-"+key, s.Quantity,
+		targetTotal, delta, targetUnit, targetHold, replacementReservation, targetSlot, basisAt,
 		s.SettledAt, s.SwitchedAt, s.ReturnedAt,
 		s.ParkedAt, s.NextAttemptAt, s.Attempts, s.ClaimID, s.LeaseUntil); err != nil {
 		t.Fatal(err)
@@ -329,46 +345,63 @@ func TestAnExchangeThatNeverProgressesParks(t *testing.T) {
 func TestOneTenantsReleaseDoesNotTouchAnotherTenantsRowWithTheSameID(t *testing.T) {
 	db, ctx := outboxDB(t)
 	now := time.Now()
+	future := now.Add(time.Hour)
 	shared := uuid.New()
 
 	mine := settledExchange(t, db, ctx, "tenant-mine", func(s *exchangeSeed) {
 		s.ID = shared
 		s.SwitchedAt = &now
 	})
+	// The other tenant's row carries the SAME exchange id and is deliberately NOT
+	// claimable — its next attempt is an hour out. That isolation is what makes this a test
+	// about RELEASE rather than about claim: if both rows were eligible, one 50-row claim
+	// would lease both (correctly), and "the other row is leased" would be true without any
+	// cross-tenant write having happened.
 	theirs := settledExchange(t, db, ctx, "tenant-theirs", func(s *exchangeSeed) {
-		s.ID = shared // same exchange id, different organizer
+		s.ID = shared
 		s.SwitchedAt = &now
 		s.Attempts = 7
+		s.NextAttemptAt = &future
 	})
 	if mine.OrganizerID == theirs.OrganizerID {
 		t.Fatal("fixture is broken: the two rows must belong to different tenants")
 	}
-
-	c, ok := claimExchange(t, db, ctx, shared)
-	if !ok {
-		t.Fatal("neither row was claimed")
+	if _, ok := claimExchange(t, db, ctx, shared); !ok {
+		t.Fatal("the claimable row was not claimed")
 	}
-	if err := ReleaseExchangeReversalClaim(ctx, db, c.Exchange.OrganizerID, shared, c.ClaimID,
-		c.Exchange.TicketsExchanged, c.Exchange.CapacityReturned, "capacity return outstanding"); err != nil {
+	// Exactly one row was claimed, and it is mine — otherwise the assertions below are
+	// about the wrong row.
+	got := readExchange(t, db, ctx, mine.OrganizerID, shared)
+	if got.ClaimID == nil {
+		t.Fatal("this tenant's row was not the one claimed; the fixture no longer isolates the case")
+	}
+	claimID := *got.ClaimID
+
+	if err := ReleaseExchangeReversalClaim(ctx, db, mine.OrganizerID, shared, claimID,
+		true, false, "capacity return outstanding"); err != nil {
 		t.Fatal(err)
 	}
 
-	// The OTHER tenant's row must be untouched: same attempts, no lease, no error.
-	other := mine
-	if c.Exchange.OrganizerID == mine.OrganizerID {
-		other = theirs
+	// THE ASSERTION: the other tenant's row is untouched. Its attempt count is the sharpest
+	// witness — release is the statement that increments it, so a statement matched on `id`
+	// alone would push this tenant's failure onto a stranger's budget and eventually park a
+	// row that never failed at all.
+	other := readExchange(t, db, ctx, theirs.OrganizerID, shared)
+	if other.Attempts != 7 {
+		t.Fatalf("the other tenant's attempts moved from 7 to %d: a statement matched on `id` "+
+			"alone and charged this tenant's failure to another tenant's budget", other.Attempts)
 	}
-	before := 0
-	if other.OrganizerID == theirs.OrganizerID {
-		before = 7
-	}
-	got := readExchange(t, db, ctx, other.OrganizerID, shared)
-	if got.Attempts != before {
-		t.Fatalf("the other tenant's attempts moved from %d to %d: a statement matched on `id` "+
-			"alone and reached across the tenant boundary", before, got.Attempts)
-	}
-	if got.ClaimID != nil || got.LeaseUntil != nil {
+	if other.ClaimID != nil || other.LeaseUntil != nil {
 		t.Fatal("the other tenant's row was leased by this tenant's claim")
+	}
+	if other.ParkedAt != nil {
+		t.Fatal("the other tenant's row was parked by this tenant's release")
+	}
+	// And mine did move, so the release actually ran — otherwise this test would pass
+	// against a release that is a no-op.
+	if after := readExchange(t, db, ctx, mine.OrganizerID, shared); after.Attempts != 1 {
+		t.Fatalf("this tenant's attempts = %d, want 1: the release under test did not run, so "+
+			"the assertions above prove nothing", after.Attempts)
 	}
 }
 
