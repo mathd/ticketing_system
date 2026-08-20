@@ -216,53 +216,53 @@ echo "### 7. the guard's predicate, against synthetic job states"
 # So the predicate is also exercised directly, against payloads shaped like the ones gh
 # emits, including states that cannot be staged on demand: two unfinished jobs, an empty
 # array, an unknown future conclusion.
-PRED='(.jobs | length) > 0
-      and ([.jobs[] | select(.status != "completed")] | length) == 1
-      and ([.jobs[]
-            | select(.status == "completed")
-            | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")
-           ] | length) == 0'
-
-# Guard against the predicate here drifting from the shipped one — the failure mode this
-# whole script exists to prevent. Compare token-by-token, ignoring whitespace.
-norm () { tr -d ' \n\\' ; }
-for w in hermetic security; do
-  shipped=$(python3 - "$w" <<'PY' || true
+# THE PREDICATE UNDER TEST IS EXTRACTED, NOT COPIED (ai-review pass 4).
+#
+# An earlier version kept its own copy of the jq program and compared it to the shipped one
+# after deleting whitespace. That comparison was unsound in a way worth recording: `norm`
+# stripped spaces inside string literals too, so a shipped predicate broken to `"com pleted"`
+# compared EQUAL to the correct copy, and the synthetic cases then ran the correct copy while
+# the workflow shipped the broken one. A drift check that can bless the drift is worse than
+# none. Extracting and executing the real program removes the copy entirely, and lets the
+# workflow be reformatted without failing this suite.
+PRED=$(python3 - "$WORKFLOW" <<'PY'
 import yaml, sys
 r = yaml.safe_load(open('.github/workflows/'+sys.argv[1]+'.yaml'))['jobs']['scheduled-recovery-notice']['steps'][0]['run']
 marker = '(.jobs | length) > 0'
 if marker not in r:
-    sys.exit(1)          # the shipped guard is not the one this script knows about
+    sys.exit(1)   # the shipped guard is not the shape this suite knows how to drive
 i = r.index(marker)
 sys.stdout.write(r[i:r.index(chr(39)+')', i)])
 PY
-) || shipped=""
-  [ -n "$shipped" ] && rc=0 || rc=$?
-  assert "$rc" "could not find this script's predicate in $w.yaml — the shipped guard has been rewritten, and these synthetic cases would be testing a predicate nothing ships"
-  [ "$(printf '%s' "$shipped" | norm)" = "$(printf '%s' "$PRED" | norm)" ] && rc=0 || rc=$?
-  assert "$rc" "the predicate in this script has drifted from the one in $w.yaml; they must be identical or these cases prove nothing"
-done
-ok "predicate matches both workflows"
+) || PRED=""
+[ -n "$PRED" ] && rc=0 || rc=$?
+assert "$rc" "could not extract the recovery guard's predicate from $WORKFLOW.yaml — it has been rewritten, and these cases would prove nothing about what ships"
+ok "predicate extracted from $WORKFLOW.yaml"
 
 check_pred () {  # check_pred <expected> <description> <json>
   got=$(printf '%s' "$3" | jq "$PRED" 2>/dev/null || echo ERROR)
   [ "$got" = "$1" ] && rc=0 || rc=$?; assert "$rc" "$2 (expected $1, got $got)"
   ok "$2"
 }
-# The live shape: this job running, everything else finished cleanly.
+# The live shape: this job running, the sibling notifier skipped, workloads green.
 check_pred true  "live run with only this job in flight is clean" \
   '{"jobs":[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"skipped"},{"status":"in_progress","conclusion":""}]}'
+# An omitted job that was SKIPPED — a false `if`, a missing input — must block. This is the
+# case an unconditional skip allowance blessed: workloads green, sibling skipped, and a scan
+# that never ran (ai-review pass 4).
+check_pred false "a second skipped job blocks the close" \
+  '{"jobs":[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"skipped"},{"status":"completed","conclusion":"skipped"},{"status":"in_progress","conclusion":""}]}'
 # The omitted-job race: a second job still going.
 check_pred false "a second unfinished job blocks the close" \
   '{"jobs":[{"status":"completed","conclusion":"success"},{"status":"queued","conclusion":""},{"status":"in_progress","conclusion":""}]}'
-# Each blocking conclusion, beside an otherwise clean run.
+# Each blocking conclusion, beside an otherwise live-shaped run.
 for c in failure cancelled timed_out action_required stale; do
   check_pred false "a $c job blocks the close" \
-    "{\"jobs\":[{\"status\":\"completed\",\"conclusion\":\"$c\"},{\"status\":\"in_progress\",\"conclusion\":\"\"}]}"
+    "{\"jobs\":[{\"status\":\"completed\",\"conclusion\":\"$c\"},{\"status\":\"completed\",\"conclusion\":\"skipped\"},{\"status\":\"in_progress\",\"conclusion\":\"\"}]}"
 done
 # An unknown future conclusion must fail closed, not sail through.
 check_pred false "an unrecognised conclusion blocks the close" \
-  '{"jobs":[{"status":"completed","conclusion":"something_github_added_later"},{"status":"in_progress","conclusion":""}]}'
+  '{"jobs":[{"status":"completed","conclusion":"something_github_added_later"},{"status":"completed","conclusion":"skipped"},{"status":"in_progress","conclusion":""}]}'
 # Degenerate payloads.
 check_pred false "an empty jobs array is not clean" '{"jobs":[]}'
 check_pred false "a run with nothing in flight is not the live state" \

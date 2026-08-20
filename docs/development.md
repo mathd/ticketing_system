@@ -1185,11 +1185,18 @@ later scheduled run that is genuinely green comments and closes it.
   `contents: read` back too.
 - **Adding a top-level job? Add it to both notifier jobs' `needs:`.** The recovery job does not trust
   `needs:` alone — it asks the run how many jobs concluded `failure`, `cancelled` or `timed_out`
-  (`gh run view --json jobs`) and closes the issue only when **every finished job finished
-  acceptably** (`success`, `neutral`, `skipped`) **and exactly one job is still in flight** — itself.
+  (`gh run view --json jobs`) and closes the issue only when **exactly one job is still in flight**
+  (itself) **and exactly one finished job did not succeed** (the sibling notifier, which is skipped on
+  every run where the other one fires).
   Anything else — `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, a conclusion GitHub
-  adds later, or a *second* unfinished job — blocks the close. That second clause is what catches a
-  top-level job omitted from `needs:` while it is still queued.
+  adds later, a *second* unfinished job, or a *second* skipped job — blocks the close. The last two
+  are what catch a top-level job omitted from `needs:`: still queued, or skipped by a false `if` or a
+  missing input. Allowing skips freely would have closed the outage while a scan that was supposed to
+  run never did — in `security.yaml`, a silently-unperformed CVE sweep reported as clean.
+
+  **Known gap:** the guard takes one snapshot and does not retry. If a job row is transiently
+  unsettled when it looks, this run declines to close and the issue stays open until the next
+  scheduled run clears it. Self-correcting, and preferred over retry logic inside an alarm path.
 
   It reads `status`, not just `conclusion`, and that is not cosmetic: **`gh run view --json jobs`
   renders a running job's conclusion as the empty string, not JSON null**, so a guard written against

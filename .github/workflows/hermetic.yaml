@@ -162,18 +162,29 @@ jobs:
           #      issue, forever. Verified against a live in-progress run, not assumed.
           #
           # The invariant, stated without reference to any implementation detail: this run
-          # is clean when every job that has FINISHED finished acceptably, and the only job
-          # still going is this one. Both halves are load-bearing — the second is what
-          # catches a top-level job omitted from `needs:` that is still queued or running,
-          # which would otherwise let this job close a genuine outage before that job goes
-          # red (ai-review pass 3).
+          # is clean when the only job still going is this one, and among the finished jobs
+          # exactly one did not succeed — the sibling notifier, which is skipped on every
+          # run where this one fires. Every clause is load-bearing.
+          #
+          #   - "only one still going" catches a top-level job omitted from `needs:` that is
+          #     still queued or running, which would otherwise let this job close a genuine
+          #     outage before that job goes red (pass 3).
+          #   - "exactly ONE non-success", rather than allowing `skipped` freely, catches an
+          #     omitted job that was SKIPPED — by a false `if`, or a missing input. Allowing
+          #     every skip would close the outage while a scan that was supposed to run never
+          #     did, which in security.yaml means silently reporting a clean CVE sweep that
+          #     did not happen (pass 4).
+          #
+          # A skipped job reports status `completed` with conclusion `skipped`, so it is
+          # counted here rather than in the still-going clause — verified against real runs,
+          # not assumed. If a third notifier job is ever added, this count changes with it.
           verdict=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '
             (.jobs | length) > 0
             and ([.jobs[] | select(.status != "completed")] | length) == 1
             and ([.jobs[]
                   | select(.status == "completed")
-                  | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")
-                 ] | length) == 0')
+                  | select(.conclusion != "success" and .conclusion != "neutral")
+                 ] | length) == 1')
           if [ "$verdict" != "true" ]; then
             gh issue comment "$existing" --body "A scheduled run reached the recovery step, but not every job in it finished cleanly (see the run for which), so this stays open. Run: $RUN_URL"
             exit 0
