@@ -1,0 +1,19 @@
+{
+  "key": "TKT-263",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-146"
+    }
+  ],
+  "summary": "Decide whether parked recovery orders should alarm (TKT-146 deferred)",
+  "comments": [],
+  "description": "Deferred out of TKT-146 at shaping, with a stated reason rather than silently.\n\nTKT-146 asked for three things. Two shipped — `commerce list-parked` and `commerce unpark-order`, with an audit trail. The third was *\"a decision on whether parked orders should alarm\"*, and it was scoped out because:\n\n1. commerce has **no metrics or alerting surface** to hang it on — it would have meant designing one inside a ticket whose subject was an operator command; and\n2. the operator read is the **prerequisite** for any alert. There was nothing to alert *about* in a form anyone could act on until `list-parked` existed.\n\nBoth reasons are now half-spent: (2) is closed, (1) is not.\n\n**The actual question.** A parked order is, by construction, one the system has given up on and a human has not yet looked at. Nothing currently tells anyone it exists — an operator has to *think to run* `list-parked`. That is a discovery gap, not a mechanism gap.\n\nWorth deciding together:\n- Does commerce get a metric (a gauge of parked orders, split by status), an event, or a log line — and where does it go? This is the (1) that is still open.\n- Should `reconciliation_required` (which may hold **captured** money — ADR-016 §Consequences) alarm differently from attempt-exhausted parking? The two have very different urgency.\n- What is the threshold? One parked order is normal operational residue; a growing count is an incident. An alert on `> 0` will be muted within a week.\n- Age matters more than count: an order parked six hours ago and untouched is the signal, not the fact of parking.\n\n`risk:low` — the likely deliverable is a decision plus a small emitter, and the read surface it depends on already exists and is tested."
+}
