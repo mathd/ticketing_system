@@ -1185,11 +1185,13 @@ later scheduled run that is genuinely green comments and closes it.
   `contents: read` back too.
 - **Adding a top-level job? Add it to both notifier jobs' `needs:`.** The recovery job does not trust
   `needs:` alone — it asks the run how many jobs concluded `failure`, `cancelled` or `timed_out`
-  (`gh run view --json jobs`) and refuses to close the issue unless that count is zero. That turns a
-  forgotten `needs:` entry from a silent false recovery into a visible no-close, but it is a backstop,
-  not a substitute. It counts *bad* conclusions rather than requiring every job to be `success`, and
-  filters on no job names at all — an earlier version excluded the notifier jobs by display-name
-  prefix, which tied the guard to a `name:` field anyone can edit.
+  (`gh run view --json jobs`) and refuses to close the issue unless **every** job concluded
+  `success`, `neutral`, `skipped`, or is still running. Anything else — `failure`, `cancelled`,
+  `timed_out`, `action_required`, `stale`, or a conclusion GitHub adds later — blocks the close. That
+  turns a forgotten `needs:` entry from a silent false recovery into a visible no-close, but it is a
+  backstop, not a substitute. It is an **allowlist** deliberately: two earlier versions failed open,
+  one by excluding notifier jobs on a display-name prefix (a `name:` field anyone can edit), the next
+  by counting only failures, which let a still-running omitted job pass.
 - **Both notifier jobs carry `!cancelled()`.** GitHub re-evaluates a running job's `if` during
   cancellation and keeps the job when it still holds, so without it a cancelled run could still write
   to the issue — contradicting the rule that a cancelled run reports nothing.
@@ -1203,12 +1205,19 @@ later scheduled run that is genuinely green comments and closes it.
 ### Verifying a change to it
 
 ```bash
-bash scripts/verify-scheduled-notifier.sh
+bash scripts/verify-scheduled-notifier.sh all        # both workflows
+bash scripts/verify-scheduled-notifier.sh hermetic   # just one
 ```
 
-Extracts the `run:` blocks verbatim from `hermetic.yaml` and drives them against the real GitHub API
-with a throwaway label — create, dedupe over three failures, recover, close, and the no-op path —
-cleaning up after itself.
+Extracts the `run:` blocks verbatim from the named workflow and drives them against the real GitHub
+API with a throwaway label — create, dedupe over three failures, the guard **refusing** to close
+while a job failed, recover, close, and the no-op path — cleaning up after itself.
+
+**Run `all`, not one.** The two workflows carry independent inlined copies, so a suite that reads
+only `hermetic.yaml` says nothing about `security.yaml` — which is exactly the coupling the
+change-both-copies rule above creates. Every assertion is fatal: an earlier version used
+`[ x = y ] && echo ok`, which under `set -e` cannot fail the script, and it printed a success banner
+while the issue body was missing its link to the failed run.
 
 **What it does not cover, and nothing local does:** GitHub's own evaluation of `if:`, `needs:`,
 `permissions:` and matrix aggregation. Nothing in `make check` parses or executes workflow YAML, so a
