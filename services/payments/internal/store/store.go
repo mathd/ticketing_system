@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"strings"
 	"time"
 
@@ -306,12 +307,30 @@ func (j *Journal) Verify(ctx context.Context) error {
 	return j.verify(ctx, nil)
 }
 
-// verify is Verify with a test seam. `afterEntries` runs once the entry scan has been
-// fully consumed and closed, and before the head scan — the exact window in which a
-// concurrent append used to make an intact journal look desynchronized. Production
-// passes nil; only TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot passes a
-// callback, because the interleaving cannot be constructed from outside this function.
-func (j *Journal) verify(ctx context.Context, afterEntries func()) error {
+// verifyProbe is the test seam for the read-snapshot contract (TKT-254). It is not a
+// hook for "run something in the middle": it reports what each of the two scans
+// ACTUALLY OBSERVED, which is the only thing that pins the contract.
+//
+// The distinction cost a review round. An earlier version was a single `afterEntries
+// func()` and a test asserting the interleaved append happened — and that test stayed
+// GREEN under a coordinated reversion (transaction removed AND the callback moved above
+// the entry scan), because it constrained where the callback ran rather than what the
+// verifier saw. A seam that only says "now" can be satisfied by moving "now".
+//
+// afterEntries runs once the entry scan is consumed and closed, and receives the highest
+// sequence that scan saw per organizer. afterHeads runs once the head scan is consumed
+// and receives the last_sequence it read. A shared snapshot means the two agree even
+// when a concurrent append commits between them; two snapshots means they diverge. The
+// test asserts the agreement, so no placement of the callback can fake it.
+type verifyProbe struct {
+	afterEntries func(seqByOrg map[uuid.UUID]int64)
+	afterHeads   func(headByOrg map[uuid.UUID]int64)
+}
+
+// verify is Verify with the probe seam above. Production passes nil and pays nothing;
+// only TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot passes a probe, because the
+// interleaving it needs cannot be constructed from outside this function.
+func (j *Journal) verify(ctx context.Context, probe *verifyProbe) error {
 	// Both scans read one snapshot (TKT-254). Without this they were two statements on a
 	// pooled *sql.DB -- two snapshots, possibly two connections -- so an append that
 	// committed between them made the head scan see a sequence the entry scan never had,
@@ -389,14 +408,20 @@ func (j *Journal) verify(ctx context.Context, afterEntries func()) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if afterEntries != nil {
-		afterEntries()
+	if probe != nil && probe.afterEntries != nil {
+		probe.afterEntries(maps.Clone(seqByOrg))
 	}
 	headRows, err := tx.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = headRows.Close() }()
+	// Recorded for the probe only: the head loop consumes seqByOrg as it goes, so what
+	// the head scan READ has to be captured here or it is gone by the time the probe runs.
+	var headByOrg map[uuid.UUID]int64
+	if probe != nil && probe.afterHeads != nil {
+		headByOrg = map[uuid.UUID]int64{}
+	}
 	for headRows.Next() {
 		var org uuid.UUID
 		var seq int64
@@ -404,13 +429,25 @@ func (j *Journal) verify(ctx context.Context, afterEntries func()) error {
 		if err := headRows.Scan(&org, &seq, &sum); err != nil {
 			return err
 		}
+		if headByOrg != nil {
+			headByOrg[org] = seq
+		}
 		if seqByOrg[org] != seq || !hmac.Equal(prevByOrg[org], sum) {
+			// Report what the scans read BEFORE returning. Otherwise the probe never
+			// fires on exactly the runs where the contract is broken, and the test can
+			// only say "the seam did not run" instead of naming the divergence.
+			if probe != nil && probe.afterHeads != nil {
+				probe.afterHeads(headByOrg)
+			}
 			return fmt.Errorf("journal head mismatch organizer=%s", org)
 		}
 		delete(seqByOrg, org)
 	}
 	if err := headRows.Err(); err != nil {
 		return err
+	}
+	if probe != nil && probe.afterHeads != nil {
+		probe.afterHeads(headByOrg)
 	}
 	if len(seqByOrg) != 0 {
 		return errors.New("journal entries missing head")

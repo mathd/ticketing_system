@@ -902,9 +902,18 @@ func TestJournalVerifyNamesWhichChainCheckFailed(t *testing.T) {
 // row the harness deleted and never restored — durable corruption, which a consistent
 // snapshot still reports, correctly. The two share a function and nothing else.
 //
-// The seam: the private `verify` takes a callback run after the entry scan has been
-// fully consumed and closed, and before the head scan. Production `Verify` passes nil.
-// A hand-written two-query test would prove nothing about the real code path.
+// WHAT THIS TEST ASSERTS, AND WHY IT IS NOT "THE CALLBACK RAN IN THE MIDDLE".
+// An earlier version of this test took a bare `func()` seam and asserted that the
+// interleaved append had happened. It passed under a coordinated reversion — transaction
+// removed AND the callback moved above the entry scan — because it constrained where the
+// callback ran rather than what the verifier saw. Executed, not argued: that version
+// went green with the defect live (ai-review pass 1, [medium]).
+//
+// So this asserts the CONTRACT instead: the two scans agree about the journal. A shared
+// snapshot makes the head scan blind to an append that commits after the entry scan, so
+// entries-max and head-last-sequence match. Two snapshots make them differ by exactly the
+// interleaved append. No placement of the callback can produce agreement from two
+// snapshots, because the divergence is created by the commit, not by the call.
 func TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot(t *testing.T) {
 	db, ctx := journalDB(t)
 	j := New(db, fullRing(t))
@@ -924,16 +933,47 @@ func TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot(t *testing.T) {
 
 	var appendErr error
 	var appended Entry
-	err = j.verify(ctx, func() {
-		appended, _, appendErr = New(writer, fullRing(t)).Append(ctx, fact(org))
+	var sawEntries, sawHeads int64
+	var entriesProbed, headsProbed bool
+
+	err = j.verify(ctx, &verifyProbe{
+		afterEntries: func(seqByOrg map[uuid.UUID]int64) {
+			entriesProbed = true
+			sawEntries = seqByOrg[org]
+			// Commit a legal append INTO the window between the two scans.
+			appended, _, appendErr = New(writer, fullRing(t)).Append(ctx, fact(org))
+		},
+		afterHeads: func(headByOrg map[uuid.UUID]int64) {
+			headsProbed = true
+			sawHeads = headByOrg[org]
+		},
 	})
+
+	// Preconditions. Each of these guards a way this test could pass while observing
+	// nothing — the failure mode the test itself is about.
 	if appendErr != nil {
 		t.Fatalf("the interleaved append itself failed, so this test proved nothing: %v", appendErr)
 	}
-	// The interleaving must actually have happened, or a green result here means the
-	// callback silently did nothing — a test that cannot reach the state it is about.
+	if !entriesProbed || !headsProbed {
+		t.Fatalf("probes did not both fire (entries=%v heads=%v); the seam did not run where this test needs it",
+			entriesProbed, headsProbed)
+	}
 	if appended.Sequence != 2 {
 		t.Fatalf("interleaved append landed at sequence %d, want 2; the fixture did not construct the race", appended.Sequence)
+	}
+	if sawEntries != 1 {
+		t.Fatalf("the entry scan saw sequence %d, want 1; it ran after the interleaved append, so there was no window to test", sawEntries)
+	}
+
+	// THE CONTRACT. The head scan runs after a commit that advanced the head to 2. Under
+	// one snapshot it still reads 1 and agrees with the entry scan; under two snapshots it
+	// reads 2 and disagrees. This is what a moved callback cannot fake.
+	if sawHeads != sawEntries {
+		t.Errorf("the two scans disagree: entries saw sequence %d, heads saw %d — they did not read one snapshot",
+			sawEntries, sawHeads)
+	}
+	if sawHeads != 1 {
+		t.Errorf("the head scan saw sequence %d, want 1: it observed an append that committed after the entry scan", sawHeads)
 	}
 	if err != nil {
 		t.Fatalf("a legal append between the two reads was reported as corruption: %v", err)

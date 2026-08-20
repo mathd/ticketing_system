@@ -348,10 +348,43 @@ go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 # the restore block appends immediately. If you add a commerce-dependent check below,
 # it goes ABOVE this line -- not after a restart.
 #
-# What this does and does not claim: the writer is stopped before the window opens. It is
-# not a claim that no write can occur -- compose stop cannot recall a request payments has
-# already accepted. The ordering above is what makes that window empty in practice.
+# What this claims, precisely: the producer is stopped AND payments is observed to have no
+# non-idle backend on the journal's database before the window opens. Stopping commerce
+# alone would not be enough -- see the drain barrier immediately below, which is the half
+# that closes the request payments had already accepted.
 compose stop -t 45 commerce
+
+# ...and then WAIT FOR PAYMENTS TO DRAIN, which stopping commerce does not prove
+# (ai-review pass 1, [medium]). `compose stop` closes the door on NEW calls; it cannot
+# recall one payments has already accepted. A worker that sent /internal/facts and was
+# then cancelled leaves payments committing an append after `stop` has returned — and an
+# append that commits after the backup below is exactly the row the restore deletes and
+# never puts back. The barrier has to be on the PAYMENTS side, not the caller's.
+#
+# `state <> 'idle'` is the predicate that matters: a pooled connection sitting idle holds
+# no statement and cannot append, while any other state (active, idle in transaction) is
+# work that can still reach journal_entries. pid <> pg_backend_pid() excludes this very
+# query. datname='payments' scopes it to the live journal's database, not the isolated
+# *_smoke ones the store suites use.
+#
+# 30 × 1s, then fail loudly rather than proceeding: a barrier that gives up quietly and
+# lets the corruption block open anyway is worse than no barrier, because the gate then
+# reports the resulting sequence gap as an integrity failure. If this ever trips, the
+# thing to investigate is what is still writing, not this timeout.
+payments_drained=0
+for _ in $(seq 1 30); do
+  busy=$(docker exec "$(compose ps -q postgres)" psql -U postgres -tAc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND state <> 'idle' AND pid <> pg_backend_pid()")
+  case "$busy" in
+    ''|*[!0-9]*) echo "smoke: could not count active payments backends (got: '$busy')" >&2; exit 1 ;;
+  esac
+  if [ "$busy" -eq 0 ]; then payments_drained=1; break; fi
+  sleep 1
+done
+if [ "$payments_drained" -ne 1 ]; then
+  echo "smoke: payments still had active backends 30s after commerce stopped; refusing to open the journal corruption window" >&2
+  exit 1
+fi
 
 # ADR-003: verify the populated canonical journal before Compose teardown.
 compose exec -T payments /app verify-concurrent-append
