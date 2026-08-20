@@ -1,0 +1,17 @@
+{
+  "key": "TKT-264",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-213"
+    }
+  ],
+  "summary": "CVE-2026-56864 in golang.org/x/mod v0.37.0 — security workflow red on main for 3+ weeks",
+  "comments": [],
+  "description": "Found while verifying TKT-213, and it is that ticket's premise confirmed by accident.\n\n`repository-scan` (trivy, in `.github/workflows/security.yaml`) fails on:\n\n```\ngolang.org/x/mod  CVE-2026-56864  HIGH  fixed\n  installed: v0.37.0   fixed in: 0.40.0\n  \"A malicious GOSUMDB was capable of serving arbitrary module ...\"\n```\n\n**It has been failing on `main` for at least three consecutive weekly runs** — 2026-08-03, 08-10, 08-17 — and nobody knew, because until TKT-213 merged, a scheduled workflow failure notified no one. TKT-213 does not fix this; it is the reason anyone will be told about the next one.\n\n**Scope of the exposure, stated honestly rather than inflated.** `x/mod` is an **indirect** dependency (`// indirect` in the module graph), and the advisory is about a malicious `GOSUMDB` serving arbitrary module content — a supply-chain path that matters at build/dependency-resolution time, not a runtime path in any shipped service. It is a HIGH that should be closed promptly, not an incident.\n\n**Wanted:**\n- Bump `golang.org/x/mod` to >= 0.40.0 across the workspace. It is indirect, so the bump likely comes via whichever direct dependency pulls it — find that first rather than adding a bare `require`, and say which one it was.\n- `make check` green, and `repository-scan` green.\n- **Confirm the notifier does its job on the way out**: once this lands, the next scheduled `security` run should CLOSE the outage issue TKT-213's notifier will have opened. That is the first real end-to-end proof of the recovery path, which TKT-213 could only verify synthetically — worth capturing in the closeout rather than letting it pass unremarked.\n\n**Note for whoever picks this up:** check whether other advisories have accumulated behind this one. Three weeks of unread scans means the first green run may reveal a queue, and trivy stops at the first failure per target rather than reporting everything."
+}
