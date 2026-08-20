@@ -349,9 +349,9 @@ go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 # it goes ABOVE this line -- not after a restart.
 #
 # What this claims, precisely: the producer is stopped AND payments is observed to have no
-# non-idle backend on the journal's database before the window opens. Stopping commerce
-# alone would not be enough -- see the drain barrier immediately below, which is the half
-# that closes the request payments had already accepted.
+# busy client backend on the journal's database before the window opens. Two conditions,
+# neither sufficient alone -- and NOT a proof that no append can occur. The drain barrier
+# below states exactly what it does and does not cover; read it before trusting either.
 compose stop -t 45 commerce
 
 # ...and then WAIT FOR PAYMENTS TO DRAIN, which stopping commerce does not prove
@@ -371,6 +371,16 @@ compose stop -t 45 commerce
 # reasoned: `SELECT (NULL <> 'idle') IS NULL` is true, `SELECT (NULL IS DISTINCT FROM
 # 'idle')` is true.
 #
+# backend_type='client backend' is the other half, and it is about FALSE POSITIVES rather
+# than false negatives (ai-review pass 3). Most server processes carry datname NULL and are
+# already excluded -- verified: checkpointer, walwriter, background writer, io worker and
+# both launchers all report NULL. An AUTOVACUUM WORKER does not: it runs with datname set to
+# the database it is vacuuming and a non-idle state, so it would be counted as a journal
+# writer. It cannot append a fact, it has no completion bound, and a wraparound vacuum
+# resists interruption -- so counting it means unrelated maintenance can hold this loop past
+# its timeout and fail the whole smoke stage. A barrier that fails the gate for a reason
+# that has nothing to do with the journal is worse than the flake it replaces.
+#
 # pid <> pg_backend_pid() excludes this very query. datname='payments' scopes it to the
 # live journal's database, not the isolated *_smoke ones the store suites use --
 # pg_stat_activity is cluster-wide, so the filter is doing real work here.
@@ -380,25 +390,44 @@ compose stop -t 45 commerce
 # reports the resulting sequence gap as an integrity failure. If this ever trips, the
 # thing to investigate is what is still writing, not this timeout.
 #
-# THE RESIDUAL, stated because it was argued and accepted rather than missed (ai-review
-# pass 2). A handler payments accepted but that has not yet reached BeginTx is invisible
-# to this poll -- it holds no backend, so a zero sample does not prove it is gone. Closing
-# that would mean quiescing payments itself, and payments cannot be stopped here: it is
-# the container the four verify-journal calls below `compose exec` into. Converting those
-# to one-off containers would change what they prove (a fresh container is not the running
-# service, which is the point of the ADR-016 §D8 multi-key check) and is a redesign, not a
-# fix.
+# THE RESIDUAL, AND WHAT IS *NOT* BOUNDED. Stated plainly because an earlier version of this
+# comment claimed a bound that does not exist, and a false reassurance in a comment is worse
+# than an admitted gap (ai-review pass 3, [high]).
 #
-# What bounds the residual instead: commerce is the ONLY caller of payments in this
-# repository (four call sites, all in services/commerce), and its shutdown drains HTTP for
-# up to 10s BEFORE cancelling workers -- so a worker's in-flight request completes or is
-# refused, rather than being abandoned mid-call. The stop and this poll are two conditions
-# stacked, not one. If a journal flake ever recurs here despite both, this comment is the
-# thing to disbelieve first, and TKT-261 is where the general shape of the problem lives.
+# A handler payments accepted but that has not yet reached BeginTx is invisible to this poll:
+# it holds no backend, so a zero sample does not prove it is gone.
+#
+# The retracted claim, so nobody re-derives it: commerce's shutdown does NOT bound this.
+# `srv.Shutdown` drains commerce's INBOUND handlers, and with no inbound traffic it returns
+# at once rather than after its 10s budget; the workers run on independent contexts and are
+# cancelled only afterwards by stopWorkers (services/commerce/cmd/commerce/main.go). Worse,
+# cancelling a worker aborts the CLIENT side of a request payments has already accepted --
+# it does not stop the server handler. So the ordering bounds inbound drain, not the
+# outbound call that appends to the journal.
+#
+# What IS true, and is the honest basis for shipping this:
+#   - commerce is the ONLY caller of payments in this repository -- four call sites, all
+#     under services/commerce (the one smoke test that POSTs /api/payments/internal/facts is
+#     refused at the gateway edge and never reaches payments). Stopping it removes every
+#     producer.
+#   - stopWorkers cancels each worker and BLOCKS up to 5s for it to exit, so a worker cannot
+#     still be starting new requests once `compose stop` has returned.
+#   - the poll then requires payments to show no busy client backend.
+# The uncovered case is narrow and specific: a request accepted by payments in the instant
+# before its producer was cancelled, still ahead of BeginTx when the poll samples zero.
+#
+# Closing even that means quiescing payments itself, and payments cannot be stopped here --
+# it is the container the four verify-journal calls below `compose exec` into. Converting
+# those to one-off containers would change what they prove (a fresh container is not the
+# running service, which is the point of the ADR-016 §D8 multi-key check). That is a
+# redesign, not a fix, and it is TKT-261's shape of problem rather than this ticket's.
+#
+# If a journal flake recurs here despite the stop and the poll, THIS is the gap to suspect
+# first.
 payments_drained=0
 for _ in $(seq 1 30); do
   busy=$(docker exec "$(compose ps -q postgres)" psql -U postgres -tAc \
-    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND state IS DISTINCT FROM 'idle' AND pid <> pg_backend_pid()")
+    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND backend_type='client backend' AND state IS DISTINCT FROM 'idle' AND pid <> pg_backend_pid()")
   case "$busy" in
     ''|*[!0-9]*) echo "smoke: could not count active payments backends (got: '$busy')" >&2; exit 1 ;;
   esac
