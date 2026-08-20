@@ -2,7 +2,7 @@
   "key": "TKT-146",
   "type": "Task",
   "summary": "No operator path to resolve or unpark a parked recovery order (TKT-116 ai-review incidental)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
