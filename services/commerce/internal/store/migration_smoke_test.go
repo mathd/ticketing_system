@@ -466,3 +466,94 @@ func TestMigration0014DownRefusesToDestroyFeeComposition(t *testing.T) {
 		t.Fatalf("0014 down on fee-free data: %v", err)
 	}
 }
+
+// Migration 0023's Down refuses while operator unpark evidence exists (TKT-146).
+//
+// The evidence is the only commerce-local record that a human ever intervened in recovery,
+// and there is no honest way to translate it into the pre-0023 schema — so the Down fails
+// loudly rather than dropping it, the way 0005 refuses its own durable recovery evidence and
+// 0012 refuses cancellation refund runs.
+//
+// DownTo(22) then Down(), NOT DownTo(23): provider.Down rolls back exactly one migration, so
+// aiming at 23 would work only while 0023 happens to be last. That is precisely the drift
+// TKT-173 recorded when the 0012 test silently stopped testing 0012.
+func TestMigration0023DownRefusesToDestroyUnparkEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	orderID := seedV4Order(t, ctx, db, "release_pending")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_recovery_unparks
+		  (id,order_id,reason,pre_recovery_attempts,pre_recovery_parked_at,pre_recovery_last_error)
+		VALUES($1,$2,'psp restored; re-driving',10,now(),'psp unreachable')`,
+		uuid.New(), orderID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.DownTo(ctx, 22); err == nil {
+		t.Fatal("0023 rolled back over existing operator unpark evidence — the guard is missing")
+	}
+
+	// And with the evidence cleared it rolls back cleanly, so the guard is a guard rather
+	// than a permanently broken Down.
+	if _, err := db.ExecContext(ctx, `DELETE FROM order_recovery_unparks`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 22); err != nil {
+		t.Fatalf("0023 down on an empty history: %v", err)
+	}
+}
+
+// The database-tier constraints on the unpark evidence table are live (TKT-146).
+//
+// pre_recovery_parked_at NOT NULL is the one that matters most and is easiest to mistake for
+// incidental nullability housekeeping: it is a second enforcement of the store guard's "is it
+// parked?" predicate, and it is what makes "an unpark row proves the order was parked" true at
+// the schema level rather than by Go convention. A blank reason is refused for the same kind of
+// reason — the reason is the only part of the record a later reader cannot reconstruct.
+func TestMigration0023ConstrainsUnparkEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	orderID := seedV4Order(t, ctx, db, "release_pending")
+
+	insert := func(reason string, attempts int, parkedAt any) error {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO order_recovery_unparks
+			  (id,order_id,reason,pre_recovery_attempts,pre_recovery_parked_at)
+			VALUES($1,$2,$3,$4,$5)`, uuid.New(), orderID, reason, attempts, parkedAt)
+		return err
+	}
+	if err := insert("   ", 10, time.Now()); err == nil {
+		t.Fatal("a whitespace-only reason was accepted; the evidence row would look complete and say nothing")
+	}
+	if err := insert("", 10, time.Now()); err == nil {
+		t.Fatal("an empty reason was accepted")
+	}
+	if err := insert("psp restored", -1, time.Now()); err == nil {
+		t.Fatal("a negative pre_recovery_attempts was accepted")
+	}
+	if err := insert("psp restored", 10, nil); err == nil {
+		t.Fatal("a NULL pre_recovery_parked_at was accepted; an unpark row must prove the order was parked")
+	}
+	// The control: the same insert with every value valid succeeds, so the four refusals
+	// above are the constraints firing and not a broken statement.
+	if err := insert("psp restored; re-driving", 10, time.Now()); err != nil {
+		t.Fatalf("a valid unpark evidence row was refused: %v", err)
+	}
+	// A row must name a real order.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_recovery_unparks
+		  (id,order_id,reason,pre_recovery_attempts,pre_recovery_parked_at)
+		VALUES($1,$2,'orphan',1,now())`, uuid.New(), uuid.New()); err == nil {
+		t.Fatal("unpark evidence was accepted for an order that does not exist")
+	}
+}

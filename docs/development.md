@@ -145,6 +145,80 @@ uuid; identities are composed server-side from labels), and catalog enforces no 
 those columns, which is what TKT-143 is for. The failure is loud and names the cursor; no pin is
 wrongly removed.
 
+## Parked recovery orders (TKT-146)
+
+Commerce's recovery runner re-drives orders stranded in a non-terminal state. When an order
+exhausts its budget (`MaxRecoveryAttempts`, 10), `ReleaseStuckOrder` sets `recovery_parked_at` and
+stops: `ClaimStuckOrders` excludes parked rows, so **nothing in the service revisits a parked
+order** (ADR-016 §Decision 1, deliberately — an order that failed ten re-drives should not keep
+failing them on a timer). `ParkForReconciliation` parks the harder case, moving the order to
+`reconciliation_required`.
+
+Parking hands the problem to a human. These two commands are what the human uses.
+
+```bash
+docker compose exec commerce /app list-parked
+# order=0f9c… status=release_pending attempts=10 parked_at=2026-08-19T14:02:11Z \
+#   terminal_outcome=timeout last_error=psp unreachable
+# order=1a3e… status=reconciliation_required attempts=4 parked_at=2026-08-18T09:41:55Z \
+#   terminal_outcome=<none> last_error=captured payment whose claim is gone
+
+docker compose exec commerce /app unpark-order 0f9c…  "psp restored; re-driving (OPS-4412)"
+```
+
+Both need only the service's usual `DATABASE_URL`. `list-parked` exits **zero** when nothing is
+parked — "nothing to do" is not a failure, the same contract `reconcile-pins` states — and non-zero
+only on a store failure, so a wrapper can tell an empty queue from a broken one.
+
+**What `unpark-order` does, exactly.** It clears `recovery_parked_at`, resets `recovery_attempts`
+to 0, makes the order due immediately, and clears any stale claim and lease. `recovery_last_error`
+is **retained** as operator context. The attempts reset is not cosmetic: `ReleaseStuckOrder`
+re-parks on `recovery_attempts >= MaxRecoveryAttempts`, so clearing the marker alone would buy
+exactly one re-drive before the order parked again.
+
+**What it does not do — and this is the part to be careful about.** It does not resolve the order.
+It makes the order *drivable again* by the existing runner under the existing rules; whether the
+re-drive succeeds depends on whatever was failing. It never touches `status`, never reads or writes
+`terminal_outcome`, never calls the PSP, and writes no money column.
+
+**It is not, however, a decision with no bearing on money.** A parked `reconciliation_required`
+order may hold **captured** funds (ADR-016 §Consequences), and clearing its marker is what re-admits
+it to the runner's `resolveReconciliation`. What happens there depends on the provider evidence:
+
+- `captured` **with positive durable captured-amount evidence** → submitted for refund, and only
+  *afterwards* does `inventory.Release` discover whether the claim was already confirmed, re-parking
+  as *"refunded money against a confirmed claim"* when it was.
+- `captured` **with no such evidence** (an operation predating payments migration 0002) → re-parks in
+  one pass as *"operation predates durable provider evidence"*, without refunding.
+- anything else → the shared provider-status decision table (voids release, refunded finishes,
+  unknown retries).
+
+That ordering is the runner's and predates these commands — any unparked `reconciliation_required`
+row reaches it, and migration 0005's backfill created a population of them — but it is what an
+operator is switching on.
+
+So: **read `last_error` and establish what the order actually needs before unparking one.** If the
+underlying condition has not been fixed, the order burns a fresh budget of ten attempts and parks
+again. If it is a `reconciliation_required` row whose claim may have been confirmed or manually
+repaired, resolve that first — unparking it asks the runner to re-decide on PSP evidence alone.
+
+**It refuses three ways, distinguishably**, because during an incident the three call for different
+next actions: the order does not exist (wrong id); the order is not parked (someone already did
+this, or it was never parked); the order's status is not one the runner can claim. The third is
+reachable only by a direct database write — no code path in the service produces a parked row with
+a non-claimable status — and it is a fail-closed guard, because clearing the marker there would
+look like a resolution while leaving the order just as unreachable.
+
+**Every unpark is recorded** in `order_recovery_unparks`: the order, when, the operator's stated
+reason, and the pre-unpark attempts, park timestamp and last error — the three values the unpark
+destroys on the order row. The reason is required and cannot be blank; it is the only part of the
+record a later reader cannot reconstruct.
+
+**Scope of that claim (ADR-021).** This is evidence about an **honest operator**. It is append-only
+by application behaviour, not tamper-evident: anyone holding commerce's database credentials can
+insert, alter or delete these rows and nothing here detects it. The migration's `Down` refuses while
+evidence exists, which protects against an accidental rollback — not against a writer.
+
 ## Access ticket lifecycle trail operations
 
 The trail is chained per ticket and checkpointed per organizer
@@ -1082,6 +1156,91 @@ are currency-independent; ADR-047), so they cannot mismatch.
 under honest-writer assumptions**. It reads the same tables a writer with catalog database access
 writes, so it is not an integrity control and proves nothing against someone who can insert or alter
 rules directly. It catches configuration mistakes, not tampering.
+
+## When a scheduled workflow fails (TKT-213)
+
+Two workflows run on a weekly cron and are **not** part of the per-PR gate:
+
+- `hermetic-smoke` (Mondays 06:00 UTC) — the full in-Docker build path. `make check` uses the fast
+  host-built path, so this is what keeps the two honest.
+- `security` (Mondays 07:00 UTC) — re-scans every dependency even when nothing changed, which is how
+  a newly-disclosed CVE in untouched code gets caught.
+
+Both used to fail into the void. `hermetic-smoke` was red on `main` for nine days in August 2026 and
+was found only because an unrelated PR happened to touch `compose.yaml` and trip its path filter.
+
+**Now a failed scheduled run opens a GitHub issue** labelled `scheduled-workflow-failure`, carrying a
+link to the failed run. Repeated failures comment on the same issue rather than opening new ones — one
+issue per outage, not per run and not per matrix leg (`security` has eight `govulncheck` legs). A
+later scheduled run that is genuinely green comments and closes it.
+
+**PR-triggered failures do not open issues.** A red check on a PR is already in front of its author.
+
+### Things worth knowing before you edit either workflow
+
+- **`permissions:` at job level replaces the workflow-level block; it does not merge.** This repo's
+  `default_workflow_permissions` is `read`, so the notifier jobs declare `issues: write` explicitly.
+  Omit it and the step 403s — a notifier that "runs" and tells nobody, which is the failure this whole
+  mechanism exists to prevent. If you add a checkout step to a notifier job in `security.yaml`, add
+  `contents: read` back too.
+- **Adding a top-level job? Add it to both notifier jobs' `needs:`.** The recovery job does not trust
+  `needs:` alone — it asks the run how many jobs concluded `failure`, `cancelled` or `timed_out`
+  (`gh run view --json jobs`) and closes the issue only when **exactly one job is still in flight**
+  (itself) **and exactly one finished job did not succeed** (the sibling notifier, which is skipped on
+  every run where the other one fires).
+  Anything else — `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, a conclusion GitHub
+  adds later, a *second* unfinished job, or a *second* skipped job — blocks the close. The last two
+  are what catch a top-level job omitted from `needs:`: still queued, or skipped by a false `if` or a
+  missing input. Allowing skips freely would have closed the outage while a scan that was supposed to
+  run never did — in `security.yaml`, a silently-unperformed CVE sweep reported as clean.
+
+  **Known gap:** the guard takes one snapshot and does not retry. If a job row is transiently
+  unsettled when it looks, this run declines to close and the issue stays open until the next
+  scheduled run clears it. Self-correcting, and preferred over retry logic inside an alarm path.
+
+  It reads `status`, not just `conclusion`, and that is not cosmetic: **`gh run view --json jobs`
+  renders a running job's conclusion as the empty string, not JSON null**, so a guard written against
+  `null` treats its own still-running job as unacceptable and never closes anything. Four versions of
+  this guard were wrong before this one — by display-name prefix, by counting only failures, by
+  requiring exactly one JSON null, and by that empty-string confusion. Change it carefully.
+- **Both notifier jobs carry `!cancelled()`.** GitHub re-evaluates a running job's `if` during
+  cancellation and keeps the job when it still holds, so without it a cancelled run could still write
+  to the issue — contradicting the rule that a cancelled run reports nothing.
+- **The notifier is inlined in each workflow rather than shared as a script**, deliberately. A shared
+  script needs `actions/checkout`, which would run the notifier *from the commit under test* — so a
+  bad `main` would break the alarm whose job is to report that `main` is bad. The cost is a
+  near-duplicate block in the two files: change one, change the other.
+- **The issue is matched by a marker keyed on the workflow's file path**, not its display name, so
+  renaming a workflow does not orphan its open issue.
+
+### Verifying a change to it
+
+```bash
+bash scripts/verify-scheduled-notifier.sh all        # both workflows
+bash scripts/verify-scheduled-notifier.sh hermetic   # just one
+```
+
+Extracts the `run:` blocks verbatim from the named workflow and drives them against the real GitHub
+API with a throwaway label — create, dedupe over three failures, the guard **refusing** to close
+while a job failed, close, and the no-op path — cleaning up after itself.
+
+It also exercises the guard's predicate directly against **synthetic job payloads**, because the live
+state cannot be staged from real run data: a completed historical run has nothing in flight, while the
+guard always has exactly one job running when it asks. That gap hid a real defect for a review round.
+The synthetic cases cover each blocking conclusion, an unknown future conclusion, a second unfinished
+job, and an empty jobs array — and the suite fails if its copy of the predicate drifts from either
+workflow's.
+
+**Run `all`, not one.** The two workflows carry independent inlined copies, so a suite that reads
+only `hermetic.yaml` says nothing about `security.yaml` — which is exactly the coupling the
+change-both-copies rule above creates. Every assertion is fatal: an earlier version used
+`[ x = y ] && echo ok`, which under `set -e` cannot fail the script, and it printed a success banner
+while the issue body was missing its link to the failed run.
+
+**What it does not cover, and nothing local does:** GitHub's own evaluation of `if:`, `needs:`,
+`permissions:` and matrix aggregation. Nothing in `make check` parses or executes workflow YAML, so a
+green gate says nothing about this mechanism. The wiring is confirmed by watching a real run: on a PR
+touching these files, both notifier jobs must appear as **skipped**.
 
 ## Conventions
 

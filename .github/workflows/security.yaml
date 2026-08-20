@@ -22,8 +22,12 @@ permissions:
 
 # Cancel superseded in-flight security runs on the same PR/branch.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # github.event_name is part of the group so a manual dispatch cannot cancel an in-flight
+  # scheduled run, and cancel-in-progress is off for scheduled runs entirely: a cancelled
+  # run notifies nothing, so one scheduled run cancelling another would drop an outage
+  # silently (TKT-213). Same reasoning as hermetic.yaml.
+  group: security-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   # Which manifests changed on this PR. The repository scan never consults this:
@@ -130,3 +134,141 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           format: table
+
+  # --- Scheduled-failure notification (TKT-213) ----------------------------------
+  #
+  # The near-duplicate of hermetic.yaml's pair of jobs; the reasoning for inlining rather
+  # than sharing a script lives there in full. Change one, change both.
+  #
+  # TWO THINGS DIFFER HERE and both matter.
+  #
+  # 1. `needs:` names the three TOP-LEVEL jobs, so this runs ONCE per run. govulncheck is
+  #    an 8-leg matrix; depending on the legs individually would open eight issues for one
+  #    bad Monday, which trains people to ignore the channel.
+  # 2. This workflow sets a workflow-level `permissions: contents: read`, and a job-level
+  #    block REPLACES it rather than merging. These jobs need no repository contents (no
+  #    checkout), so they declare only what they use — but anyone adding a checkout step
+  #    here must add `contents: read` back or it will fail.
+  scheduled-failure-notice:
+    name: Notify - scheduled security failure
+    if: ${{ failure() && !cancelled() && github.event_name == 'schedule' }}
+    needs: [govulncheck, pnpm-audit, repository-scan]
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update the outage issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MARKER: "<!-- scheduled-workflow-failure: .github/workflows/security.yaml -->"
+          LABEL: scheduled-workflow-failure
+        run: |
+          set -Eeuo pipefail
+          gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")" | grep -qx true ||
+            gh label create "$LABEL" --color D73A4A \
+              --description "A scheduled GitHub Actions workflow is failing"
+          existing=$(gh issue list --state open --label "$LABEL" --limit 100 --json number,body \
+            --jq "map(select(.body|contains(\"$MARKER\")))|.[0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+            exit 0
+          fi
+          body=$(cat <<EOF
+          $MARKER
+
+          The scheduled **security** workflow failed.
+
+          Failed run: $RUN_URL
+          Commit: \`$GITHUB_SHA\`
+
+          The weekly run re-scans every dependency even when nothing changed, so it is what
+          catches a newly-disclosed CVE in code that has not been touched. A per-PR run only
+          fires when dependency or build files change, which means a failure here can sit
+          unnoticed indefinitely — open the run to see which of govulncheck, pnpm-audit or
+          the repository scan is red.
+
+          This issue closes itself when a later scheduled run succeeds.
+          EOF
+          )
+          gh issue create --label "$LABEL" \
+            --title "Scheduled workflow failure: security" \
+            --body "$(printf '%s' "$body" | sed 's/^          //')"
+
+  # A no-op on almost every run, by design. See hermetic.yaml.
+  scheduled-recovery-notice:
+    name: Close - scheduled security recovery (usually a no-op)
+    if: ${{ success() && !cancelled() && github.event_name == 'schedule' }}
+    needs: [govulncheck, pnpm-audit, repository-scan]
+    permissions:
+      issues: write
+      actions: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close the outage issue if this run really was clean
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MARKER: "<!-- scheduled-workflow-failure: .github/workflows/security.yaml -->"
+          LABEL: scheduled-workflow-failure
+        run: |
+          set -Eeuo pipefail
+          existing=$(gh issue list --state open --label "$LABEL" --limit 100 --json number,body \
+            --jq "map(select(.body|contains(\"$MARKER\")))|.[0].number // empty")
+          if [ -z "$existing" ]; then
+            echo "no open outage issue for this workflow; nothing to close"
+            exit 0
+          fi
+          # Evidence, not inference: a job added to this workflow but missing from the
+          # needs: list above would be invisible here, and this job would close a genuine
+          # outage. Ask the run what every job actually concluded. This matters more here
+          # than in hermetic.yaml — security.yaml has three top-level jobs and a matrix,
+          # so it is the one likely to grow a fourth.
+          # FAIL CLOSED, on STATUS as well as conclusion, and filtering on no job names.
+          #
+          # Four earlier versions of this guard were each wrong, and the reasons are worth
+          # keeping because they are not obvious.
+          #   1. Excluding the notifier jobs by display-name prefix tied it to a `name:`
+          #      field anyone can edit.
+          #   2. Counting only failure/cancelled/timed_out failed OPEN: skipped,
+          #      action_required, stale and unfinished jobs all passed.
+          #   3. Requiring exactly one JSON-null conclusion was both too rigid and based on
+          #      a false premise — see 4.
+          #   4. `gh run view --json jobs` renders a RUNNING job's conclusion as the empty
+          #      STRING, not JSON null (it decodes into a non-pointer Go string). So any
+          #      test written against `null` treats this very job — necessarily unfinished
+          #      while it asks — as unacceptable, and the guard would refuse to close every
+          #      issue, forever. Verified against a live in-progress run, not assumed.
+          #
+          # The invariant, stated without reference to any implementation detail: this run
+          # is clean when the only job still going is this one, and among the finished jobs
+          # exactly one did not succeed — the sibling notifier, which is skipped on every
+          # run where this one fires. Every clause is load-bearing.
+          #
+          #   - "only one still going" catches a top-level job omitted from `needs:` that is
+          #     still queued or running, which would otherwise let this job close a genuine
+          #     outage before that job goes red (pass 3).
+          #   - "exactly ONE non-success", rather than allowing `skipped` freely, catches an
+          #     omitted job that was SKIPPED — by a false `if`, or a missing input. Allowing
+          #     every skip would close the outage while a scan that was supposed to run never
+          #     did, which in security.yaml means silently reporting a clean CVE sweep that
+          #     did not happen (pass 4).
+          #
+          # A skipped job reports status `completed` with conclusion `skipped`, so it is
+          # counted here rather than in the still-going clause — verified against real runs,
+          # not assumed. If a third notifier job is ever added, this count changes with it.
+          verdict=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '
+            (.jobs | length) > 0
+            and ([.jobs[] | select(.status != "completed")] | length) == 1
+            and ([.jobs[]
+                  | select(.status == "completed")
+                  | select(.conclusion != "success" and .conclusion != "neutral")
+                 ] | length) == 1')
+          if [ "$verdict" != "true" ]; then
+            gh issue comment "$existing" --body "A scheduled run reached the recovery step, but not every job in it finished cleanly (see the run for which), so this stays open. Run: $RUN_URL"
+            exit 0
+          fi
+          gh issue comment "$existing" --body "Recovered: $RUN_URL"
+          gh issue close "$existing" --reason completed
