@@ -55,6 +55,18 @@ trap cleanup EXIT
 #   - "did NO extra issue appear?" -> polling for it is meaningless: waiting to see a value
 #     you hope is absent just returns the moment it matches. Settle the index first, THEN
 #     read once.
+# EVERY assertion goes through this. `set -e` does NOT abort on a failing left-hand side
+# of an `&&` list, so `[ x = y ] && echo ok` is a check that cannot fail the script — it
+# just prints nothing and carries on to the success banner. That is not hypothetical: an
+# earlier version of this file printed ALL SELFTESTS PASSED while the issue body was
+# missing its link to the failed run, because that assertion was written in exactly that
+# shape (ai-review F3).
+ok () { printf '   ok: %s\n' "$1"; }
+die () { printf '   FAIL: %s\n' "$1" >&2; exit 1; }
+assert () {  # assert <condition-result> <description>
+  [ "$1" = 0 ] || die "$2"
+}
+
 settle () { sleep 6; }
 
 await_open () {   # await_open <expected>  — waits for the count to REACH expected
@@ -73,34 +85,71 @@ read_open () {    # read_open — one settled read, for asserting nothing EXTRA 
 }
 
 echo "### 1. label does not exist yet"
-gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")" | grep -qx false && echo "   ok: absent"
+[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = false ]
+assert $? "the throwaway label already exists; this run would not prove auto-creation"
+ok "absent"
 
 echo "### 2. first failure -> creates label + exactly one issue"
 bash "$T/fail.sh" >/dev/null
-[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = true ] && echo "   ok: label auto-created"
-[ "$(await_open 1)" = 1 ] && echo "   ok: 1 issue" || { echo "   FAIL: the first failure did not open an issue"; exit 1; }
+[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = true ]
+assert $? "the notifier did not create its label"
+ok "label auto-created"
+[ "$(await_open 1)" = 1 ]; assert $? "the first failure did not open an issue"
+ok "1 issue"
 NUM=$(gh issue list --state open --label "$LABEL" --limit 5 --json number --jq '.[0].number')
-gh issue view "$NUM" --json body --jq '.body' | grep -q "$MARKER" && echo "   ok: marker present"
-gh issue view "$NUM" --json body --jq '.body' | grep -q "$RUN_URL" && echo "   ok: run url present"
+BODY=$(gh issue view "$NUM" --json body --jq '.body')
+printf '%s' "$BODY" | grep -qF "$MARKER" && rc=0 || rc=$?
+assert "$rc" "the issue body carries no ownership marker, so dedupe cannot match it"
+ok "marker present"
+printf '%s' "$BODY" | grep -qF "$RUN_URL" && rc=0 || rc=$?
+assert "$rc" "the issue body does not link the failed run — the one thing a reader needs"
+ok "run url present"
 
 echo "### 3. second failure -> comments, does NOT open a second issue"
 bash "$T/fail.sh" >/dev/null
-n=$(read_open); [ "$n" = 1 ] && echo "   ok: still 1 issue (dedupe works)" || { echo "   FAIL: expected 1 issue after 2 failures, found $n"; exit 1; }
-[ "$(gh issue view "$NUM" --json comments --jq '.comments|length')" -ge 1 ] && echo "   ok: commented"
+n=$(read_open); [ "$n" = 1 ]; assert $? "expected 1 issue after 2 failures, found $n"
+ok "still 1 issue (dedupe works)"
+[ "$(gh issue view "$NUM" --json comments --jq '.comments|length')" -ge 1 ]
+assert $? "the repeat failure left no comment, so a continuing outage is invisible"
+ok "commented"
 
 echo "### 4. third failure -> still one issue"
 bash "$T/fail.sh" >/dev/null
-n=$(read_open); [ "$n" = 1 ] && echo "   ok: still 1 issue after 3 failures" || { echo "   FAIL: expected 1 issue after 3 failures, found $n"; exit 1; }
+n=$(read_open); [ "$n" = 1 ]; assert $? "expected 1 issue after 3 failures, found $n"
+ok "still 1 issue after 3 failures"
 
-echo "### 5. recovery -> comments and closes"
-GITHUB_RUN_ID=$(gh run list --workflow=hermetic.yaml --limit 1 --json databaseId --jq '.[0].databaseId') \
-  bash "$T/recover.sh" >/dev/null
-[ "$(await_open 0)" = 0 ] && echo "   ok: issue closed" || { echo "   FAIL: the recovery did not close the issue"; exit 1; }
-gh issue view "$NUM" --json comments --jq '.comments[-1].body' | grep -q Recovered && echo "   ok: recovery comment"
+echo "### 5. recovery REFUSES to close while a non-notifier job failed"
+# The guard's refusal path, exercised against a real run whose jobs did NOT all succeed.
+# Without this the `clean` check could be deleted entirely and every other assertion here
+# would still pass — the guard would be present but never observed doing its job.
+FAILED_RUN=$(gh run list --workflow=security.yaml --limit 20 --json databaseId,conclusion \
+  --jq 'map(select(.conclusion=="failure"))|.[0].databaseId')
+if [ -n "$FAILED_RUN" ]; then
+  GITHUB_RUN_ID="$FAILED_RUN" bash "$T/recover.sh" >/dev/null
+  n=$(read_open); [ "$n" = 1 ]; assert $? "recovery closed the issue despite a failed job in the run — the guard is inert"
+  ok "issue left open (guard refused)"
+  gh issue view "$NUM" --json comments --jq '.comments[-1].body' | grep -qE "failed, were cancelled or timed out" && rc=0 || rc=$?
+  assert "$rc" "the refusal left no explanation on the issue"
+  ok "refusal explained on the issue"
+else
+  echo "   SKIPPED: no failed run available to exercise the refusal path"
+fi
 
-echo "### 6. recovery with nothing open -> silent no-op, exit 0"
-GITHUB_RUN_ID=$(gh run list --workflow=hermetic.yaml --limit 1 --json databaseId --jq '.[0].databaseId') \
-  bash "$T/recover.sh" | grep -q "nothing to close" && echo "   ok: no-op path"
+echo "### 6. recovery on a clean run -> comments and closes"
+CLEAN_RUN=$(gh run list --workflow=hermetic.yaml --limit 20 --json databaseId,conclusion \
+  --jq 'map(select(.conclusion=="success"))|.[0].databaseId')
+[ -n "$CLEAN_RUN" ]; assert $? "no successful run available to exercise the close path"
+GITHUB_RUN_ID="$CLEAN_RUN" bash "$T/recover.sh" >/dev/null
+[ "$(await_open 0)" = 0 ]; assert $? "the recovery did not close the issue"
+ok "issue closed"
+gh issue view "$NUM" --json comments --jq '.comments[-1].body' | grep -q Recovered && rc=0 || rc=$?
+assert "$rc" "the close left no recovery comment"
+ok "recovery comment"
+
+echo "### 7. recovery with nothing open -> silent no-op, exit 0"
+GITHUB_RUN_ID="$CLEAN_RUN" bash "$T/recover.sh" | grep -q "nothing to close" && rc=0 || rc=$?
+assert "$rc" "the no-op path did not report cleanly"
+ok "no-op path"
 
 echo
 echo "ALL SELFTESTS PASSED"

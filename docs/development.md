@@ -1184,9 +1184,15 @@ later scheduled run that is genuinely green comments and closes it.
   mechanism exists to prevent. If you add a checkout step to a notifier job in `security.yaml`, add
   `contents: read` back too.
 - **Adding a top-level job? Add it to both notifier jobs' `needs:`.** The recovery job does not trust
-  `needs:` alone — it asks the run what every job actually concluded (`gh run view --json jobs`) and
-  refuses to close the issue if anything failed. That turns a forgotten `needs:` entry from a silent
-  false recovery into a visible no-close, but it is a backstop, not a substitute.
+  `needs:` alone — it asks the run how many jobs concluded `failure`, `cancelled` or `timed_out`
+  (`gh run view --json jobs`) and refuses to close the issue unless that count is zero. That turns a
+  forgotten `needs:` entry from a silent false recovery into a visible no-close, but it is a backstop,
+  not a substitute. It counts *bad* conclusions rather than requiring every job to be `success`, and
+  filters on no job names at all — an earlier version excluded the notifier jobs by display-name
+  prefix, which tied the guard to a `name:` field anyone can edit.
+- **Both notifier jobs carry `!cancelled()`.** GitHub re-evaluates a running job's `if` during
+  cancellation and keeps the job when it still holds, so without it a cancelled run could still write
+  to the issue — contradicting the rule that a cancelled run reports nothing.
 - **The notifier is inlined in each workflow rather than shared as a script**, deliberately. A shared
   script needs `actions/checkout`, which would run the notifier *from the commit under test* — so a
   bad `main` would break the alarm whose job is to report that `main` is bad. The cost is a

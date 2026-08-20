@@ -67,7 +67,7 @@ jobs:
   # ticket exists to close.
   scheduled-failure-notice:
     name: Notify - scheduled hermetic failure
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    if: ${{ failure() && !cancelled() && github.event_name == 'schedule' }}
     needs: [hermetic-smoke]
     permissions:
       issues: write
@@ -118,7 +118,7 @@ jobs:
   # and it exits immediately when there is nothing to close.
   scheduled-recovery-notice:
     name: Close - scheduled hermetic recovery (usually a no-op)
-    if: ${{ success() && github.event_name == 'schedule' }}
+    if: ${{ success() && !cancelled() && github.event_name == 'schedule' }}
     needs: [hermetic-smoke]
     permissions:
       issues: write
@@ -145,10 +145,18 @@ jobs:
           # to the needs: list above would let a real failure sit outside this job's view,
           # and this job would then CLOSE a genuine outage. Ask the run what every job
           # actually concluded — evidence, not inference.
-          clean=$(gh run view "$GITHUB_RUN_ID" --json jobs \
-            --jq "[.jobs[] | select((.name|startswith(\"Notify - \")) or (.name|startswith(\"Close - \"))|not) | .conclusion] | all(.==\"success\")")
-          if [ "$clean" != "true" ]; then
-            gh issue comment "$existing" --body "A scheduled run reached the recovery step, but not every job in it succeeded, so this stays open. Run: $RUN_URL"
+          # COUNT BAD CONCLUSIONS rather than requiring every job to be "success", and do
+          # not filter by job name at all (ai-review F2). Excluding the notifier jobs by
+          # display-name prefix tied this guard to a `name:` field a human can edit: a new
+          # real job called "Notify - ..." would have been filtered OUT and its failure
+          # ignored, while renaming THIS job would have put its own null conclusion into an
+          # all-success test that then never closes anything. Counting failures needs no
+          # exclusion list: this job is still running so its conclusion is null, a skipped
+          # job is not a failure, and neither is counted.
+          bad=$(gh run view "$GITHUB_RUN_ID" --json jobs \
+            --jq "[.jobs[] | select(.conclusion==\"failure\" or .conclusion==\"cancelled\" or .conclusion==\"timed_out\")] | length")
+          if [ "$bad" != "0" ]; then
+            gh issue comment "$existing" --body "A scheduled run reached the recovery step, but $bad job(s) in it failed, were cancelled or timed out, so this stays open. Run: $RUN_URL"
             exit 0
           fi
           gh issue comment "$existing" --body "Recovered: $RUN_URL"
