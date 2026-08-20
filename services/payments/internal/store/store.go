@@ -418,9 +418,16 @@ func (j *Journal) verify(ctx context.Context, probe *verifyProbe) error {
 	defer func() { _ = headRows.Close() }()
 	// Recorded for the probe only: the head loop consumes seqByOrg as it goes, so what
 	// the head scan READ has to be captured here or it is gone by the time the probe runs.
+	// Reported exactly once, on every exit path from the head scan below — including the
+	// mismatch return, which is precisely the run where the contract is broken and the
+	// test most needs to name the divergence rather than say "the seam did not run".
+	// A defer rather than a call at each return: two call sites and a `return` between
+	// them is correct here but has to be traced to be believed, and the next edit to add
+	// a return would silently skip the report.
 	var headByOrg map[uuid.UUID]int64
 	if probe != nil && probe.afterHeads != nil {
 		headByOrg = map[uuid.UUID]int64{}
+		defer func() { probe.afterHeads(headByOrg) }()
 	}
 	for headRows.Next() {
 		var org uuid.UUID
@@ -433,21 +440,12 @@ func (j *Journal) verify(ctx context.Context, probe *verifyProbe) error {
 			headByOrg[org] = seq
 		}
 		if seqByOrg[org] != seq || !hmac.Equal(prevByOrg[org], sum) {
-			// Report what the scans read BEFORE returning. Otherwise the probe never
-			// fires on exactly the runs where the contract is broken, and the test can
-			// only say "the seam did not run" instead of naming the divergence.
-			if probe != nil && probe.afterHeads != nil {
-				probe.afterHeads(headByOrg)
-			}
 			return fmt.Errorf("journal head mismatch organizer=%s", org)
 		}
 		delete(seqByOrg, org)
 	}
 	if err := headRows.Err(); err != nil {
 		return err
-	}
-	if probe != nil && probe.afterHeads != nil {
-		probe.afterHeads(headByOrg)
 	}
 	if len(seqByOrg) != 0 {
 		return errors.New("journal entries missing head")
