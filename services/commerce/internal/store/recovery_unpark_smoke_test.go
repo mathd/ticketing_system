@@ -221,15 +221,31 @@ func TestTheTwoStatusSetsAgreeOnEveryStatusTheSchemaPermits(t *testing.T) {
 	// Straight from the live constraint: whatever the schema permits today, including a value
 	// added after this test was written.
 	//
-	// Scoped to the `orders` relation, because constraint names are per-relation and not
-	// database-global — an unscoped lookup would silently read some other table's constraint
-	// the day one is named the same, and iterate its vocabulary instead (ai-review F7).
+	// Resolved through 'orders'::regclass, not a relname match.
+	//
+	// Constraint names are per-relation and not database-global, so an unscoped lookup would
+	// read some other table's constraint the day one is named the same. Joining on
+	// `relname='orders'` fixes only half of that: this package's migration tests run each case
+	// in its OWN schema on a shared database, so a relname match can find several `orders`
+	// tables and QueryRow would scan an arbitrary one — a stale schema's vocabulary, iterated
+	// green while the active schema gained a status (ai-review F9). `regclass` resolves the
+	// same `orders` this connection's search_path resolves, which is the one the rest of the
+	// test writes to, and contype='c' keeps it to CHECK constraints.
 	var checkClause string
-	if err := db.QueryRowContext(ctx, `
-		SELECT pg_get_constraintdef(c.oid)
-		FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
-		WHERE c.conname='orders_status_check' AND t.relname='orders'`).
-		Scan(&checkClause); err != nil {
+	err := db.QueryRowContext(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid='orders'::regclass AND conname='orders_status_check' AND contype='c'`).
+		Scan(&checkClause)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A bare ErrNoRows here says nothing about what was looked for, and this test is
+		// entirely built on the answer.
+		var searchPath string
+		_ = db.QueryRowContext(ctx, `SHOW search_path`).Scan(&searchPath)
+		t.Fatalf("no CHECK constraint named orders_status_check on the `orders` resolved by "+
+			"search_path %q; this test iterates that constraint's vocabulary and cannot run without it",
+			searchPath)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -247,16 +263,48 @@ func TestTheTwoStatusSetsAgreeOnEveryStatusTheSchemaPermits(t *testing.T) {
 	for _, m := range vocabulary {
 		statuses = append(statuses, strings.ReplaceAll(m[1], "''", "'"))
 	}
-	// Fail closed on a rendering this parse cannot account for. The literal count must match
-	// the clause's own comma count, so a value the regex failed to extract is caught rather
-	// than skipped, and the statuses the runner is documented to drive must all be present, so
-	// a wholesale change of shape is caught too.
-	if got, want := len(statuses), strings.Count(checkClause, ",")+1; got != want {
-		t.Fatalf("parsed %d statuses out of orders_status_check but the clause has %d comma-separated "+
-			"values (%q); the parse is dropping or inventing entries and this test would be vacuous",
-			got, want, checkClause)
+	// Fail closed on a rendering this parse cannot account for.
+	//
+	// The anchor is RECONSTRUCTION, not arithmetic. An earlier version compared the literal
+	// count to the clause's comma count, which holds for the rendering PostgreSQL produces
+	// today — `CHECK ((status = ANY (ARRAY['a'::text, 'b'::text])))`, one comma per boundary
+	// and none outside the array — but breaks on a status that legitimately CONTAINS a comma,
+	// failing a valid schema for a reason that has nothing to do with the code under test.
+	// Verified against the real rendering: 'a,b', 'c''d' and '' all parse correctly while the
+	// comma count says four literals where there are three.
+	//
+	// Instead, re-render what was parsed and require it to account for every quoted region of
+	// the original. If the two disagree the extraction missed or invented something, and this
+	// test — whose entire value is the COMPLETENESS of the list it iterates — says so instead
+	// of quietly iterating a short list.
+	var rebuilt strings.Builder
+	for i, status := range statuses {
+		if i > 0 {
+			rebuilt.WriteString(", ")
+		}
+		rebuilt.WriteString("'" + strings.ReplaceAll(status, "'", "''") + "'::text")
+	}
+	if !strings.Contains(checkClause, rebuilt.String()) {
+		t.Fatalf("the status vocabulary parsed out of orders_status_check does not reconstruct the "+
+			"constraint: parsed %q, which does not appear in %q. The extraction is dropping or "+
+			"mangling entries and this test would be iterating an incomplete list",
+			rebuilt.String(), checkClause)
+	}
+	if len(statuses) == 0 {
+		t.Fatalf("no statuses parsed out of orders_status_check (%q)", checkClause)
 	}
 	parsed := map[string]bool{}
+	for _, status := range statuses {
+		parsed[status] = true
+	}
+	for _, required := range []string{"created", "payment_unknown", "confirmation_pending",
+		"release_pending", "reconciliation_required", "completed"} {
+		if !parsed[required] {
+			t.Fatalf("the status vocabulary parsed out of orders_status_check is missing %q (%q); "+
+				"either the parse is broken or the constraint changed shape", required, checkClause)
+		}
+	}
+
 	for _, status := range statuses {
 		parsed[status] = true
 	}
