@@ -4,7 +4,7 @@
   "parent": null,
   "classification": "simple",
   "summary": "TestStatusReplayWindowExpiryAnswers409 fails in hermetic smoke, on main — the weekly workflow has been red",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
