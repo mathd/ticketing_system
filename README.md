@@ -10,14 +10,14 @@ built spec-first with AI-assisted development. See `docs/product/` for the brief
 make up      # first run generates a local credential (.env), then compose up --build --wait
 ```
 
-`make up` is needed once per clone: no service credential is checked in, so it generates two
-independent random credentials into a gitignored `.env` — `INTERNAL_SERVICE_TOKEN`
-(service-to-service) and `CATALOG_STAFF_WRITE_TOKEN` (catalog writes, TKT-191). After that, plain
-`docker compose up` works as usual.
+`make up` is needed once per clone. No working service credential, database password, HMAC key, or
+signing seed is checked in, so the command generates the required local values in a gitignored
+`.env`. After that, plain `docker compose up` works as usual.
 
 Then:
 
 - Storefront through the gateway: <http://localhost:8080/>
+- Back office: <http://localhost:8080/admin/>
 - Scanner shell: <http://localhost:8080/scanner/>
 - Aggregated health: <http://localhost:8080/healthz/all>
 - Grafana (traces/logs/metrics): <http://localhost:3000/>
@@ -41,6 +41,7 @@ Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.
 | `services/{catalog,inventory,commerce,payments,access}` | the five Go services (ADR-002) |
 | `gateway/` | public entry point, explicit route table |
 | `web/storefront` | Astro 7 SSR storefront with React components (ADR-006) |
+| `web/backoffice` | Astro 7 SSR staff back office with role-gated sessions (ADR-042) |
 | `web/scanner` | React/Vite gate scanner served under `/scanner/` |
 | `shared/go/` | shared kernel: healthz contract + observability (`httpx`, `obs`) |
 | `smoke/` | black-box integration suite through the gateway |

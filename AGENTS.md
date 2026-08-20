@@ -36,9 +36,11 @@ experiment stays valid.
   `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run
   (cost two gate runs on TKT-114).
 - **A web-UI ticket isn't verified until a browser has *submitted* its forms.** `make check`'s
-  smoke suite exercises the catalog API directly and only *renders* back-office pages — it never
-  submits an Astro form, so the whole class of "the SSR layer rejects/mangles the request before
-  the handler runs" (CSRF/`checkOrigin`, base-path rewrites, redirects, CSP) is invisible to it.
+  smoke suite does submit selected Astro forms through the real SSR layer, but it uses a Go client
+  that constructs its own target, headers, cookies, and redirect behavior. It does not read the
+  rendered form action, reproduce browser-generated `Origin`/`Referer` and SameSite behavior, or
+  execute JavaScript. A broken action, cookie path, CSP rule, or browser navigation can therefore
+  pass `make check`.
   For any back-office/storefront/scanner ticket that adds or changes a write form, run
   **`make browser`** and add a spec to `test/browser/` that submits the write path, not just the
   render. It is not part of `make check` — it needs the host's real Chrome, so CI cannot run it.
@@ -50,7 +52,8 @@ experiment stays valid.
   asserted non-null, so it stayed green through a truncation that moved a sales window.
   (Why: [browser-submit is the only checkOrigin catch](docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md), TKT-105;
   TKT-226 caught a `no-referrer` that 403'd every reset. Promoted from per-ticket throwaway
-  scripts in TKT-228.)
+  scripts in TKT-228. R6 of the 2026-08-19 review proved the distinction by misrouting three form
+  actions: `make check` passed while all three browser specs failed.)
 - **A hidden input is not a checkbox, and `git add -A <dir>` is not `git add <file>`.** Two small
   rules that each cost a real defect. *Absent means false* holds only for inputs that CAN be absent:
   a hidden field always submits, so `value=""` is present-and-empty and reads as true — which is how
@@ -184,7 +187,7 @@ experiment stays valid.
   no credential — executed, not argued — and the same ticket's whole point was a credential confining
   partners to their own channel. Two sibling paths (the persisted replay, the exchange target) were
   missed for the identical reason: every layer reasoned about the path being changed. The guard
-  belongs where the decision is (inventory, under the pool lock — ADR-055's `requires_code` shape),
+  belongs where the decision is (inventory, under the pool lock — ADR-064's `requires_code` shape),
   because a check in the calling service binds only callers who go through it. Cost: a full
   build-review-revert cycle, and the revert then exposed a second defect that only a second review
   pass caught. ([forwarding a value is an authorization change](docs/learnings/2026-08-11-forwarding-a-value-is-an-authorization-change.md))

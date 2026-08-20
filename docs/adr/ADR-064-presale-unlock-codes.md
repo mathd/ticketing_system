@@ -1,4 +1,4 @@
-# ADR-055 — Presale unlock codes
+# ADR-064 — Presale unlock codes
 
 - **Status:** Accepted
 - **Date:** 2026-08-10

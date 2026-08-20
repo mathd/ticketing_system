@@ -10,10 +10,11 @@ Ticket: TKT-240 (epic TKT-17, US-CH6). Extends ADR-043 (where a service auth gua
 ADR-051/ADR-055 (rate limiting) to a new surface; amends neither. Positions the new class against
 ADR-042 (staff), ADR-043 (internal service token) and ADR-049 (customer).
 
-**Number note:** this is 056 and not 055 because `ADR-055` is currently used *twice* —
-`ADR-055-on-sale-write-rate-limiting.md` and `ADR-055-presale-unlock-codes.md`, both Accepted on
-2026-08-10, from the security review and TKT-239 respectively, and both cited from code. That
-collision is a registry defect this ticket did not create and did not fix.
+**Number note:** this is 056 and not 055 because at the time `ADR-055` was used *twice* —
+the on-sale write rate limiting ADR from the security review and TKT-239's presale unlock codes,
+both Accepted on 2026-08-10 and both cited from code. The 2026-08-19 review resolved it: the
+presale ADR is now [ADR-064](ADR-064-presale-unlock-codes.md), and `scripts/check-adr-numbers.sh`
+fails the gate on a repeat. Bare `ADR-055` in this file means the rate limiting one.
 
 ## Context
 

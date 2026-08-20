@@ -10,7 +10,7 @@ the plan-review critique, the self-made decisions and the overridden objections 
 Amends [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) §7, which named this ticket and
 recorded the design below as *rejected for now*. Clarifies
 [ADR-040](./ADR-040-event-cancellation-bulk-refund-runs.md)'s "reported, not repaired" rule as
-bounded to cancellation runs. Inherits [ADR-010](./ADR-010-inventory-claim-transaction.md)'s lock
+bounded to cancellation runs. Inherits [ADR-010](./ADR-010-postgres-claim-transaction.md)'s lock
 discipline and [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s adversary language.
 
 ## Context

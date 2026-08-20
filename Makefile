@@ -12,9 +12,9 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-required-env up down clean
 
-check: deps check-generate check-dep-drift lint test build smoke
+check: deps check-generate check-dep-drift check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links lint test build smoke
 
 ## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
 deps:
@@ -46,6 +46,26 @@ check-generate: generate
 # so nothing else in the gate would ever notice.
 check-dep-drift:
 	@./scripts/check-go-dependency-drift.sh $(GO_MODULES)
+
+## ---- workflow triggers ----
+check-security-workflow-trigger:
+	@./scripts/check-security-workflow-trigger.sh
+
+check-hermetic-workflow-trigger:
+	@./scripts/check-hermetic-workflow-trigger.sh
+
+## ---- ADR registry (an ADR number is a reference target) ----
+# Two ADRs both numbered 055 made every bare `ADR-055` citation in code,
+# migrations, OpenAPI and AGENTS.md ambiguous, and nothing in the gate noticed.
+check-adr-numbers:
+	@./scripts/check-adr-numbers.sh
+
+## ---- documentation cross-references ----
+# ADR-062 pointed at a filename ADR-010 never had, so an inherited locking
+# decision was unreachable and nothing noticed. Local and network-free: external
+# URLs are never fetched.
+check-markdown-links:
+	@./scripts/check-markdown-links.sh
 
 ## ---- stack credential bootstrap (TKT-227) ----
 # Deliberately NOT in `make check`: it bootstraps into a sandbox, which mints two
@@ -136,10 +156,11 @@ smoke-hermetic:
 ## ---- browser-submit gate (AGENTS.md) ----
 # Deliberately NOT part of `make check`: it drives the host's real Chrome, so CI
 # cannot run it and a developer without one must still be able to pass the gate.
-# Run it for any ticket that adds or changes a storefront/back-office write form —
-# the smoke suite only RENDERS those pages, so everything between the browser and
-# the handler (checkOrigin, base-path rewrites, redirects, cookie paths, cache and
-# referrer headers) is invisible to it. See scripts/browser.sh (TKT-228).
+# Run it for any ticket that adds or changes a storefront/back-office write form.
+# Smoke submits selected forms with a Go client, but that client chooses the target,
+# headers, cookies, and redirects itself. It cannot prove the rendered action,
+# browser-generated Origin/Referer and SameSite behavior, JavaScript, or CSP.
+# See scripts/browser.sh (TKT-228; review R6, 2026-08-19).
 browser: build-gate-linux build-ts
 	./scripts/browser.sh
 

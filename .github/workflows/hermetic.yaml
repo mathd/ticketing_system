@@ -21,9 +21,8 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
-      - web/scanner/package.json
-      - web/scanner/Dockerfile
-      - web/storefront/Dockerfile
+      - "web/*/package.json"
+      - "web/*/Dockerfile"
       - .github/workflows/hermetic.yaml
 
 concurrency:

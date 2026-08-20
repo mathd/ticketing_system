@@ -344,9 +344,23 @@ func (s *Server) call(ctx context.Context, method, url, key string, in any, inte
 		return 0, nil, e
 	}
 	defer func() { _ = resp.Body.Close() }()
-	out, e := io.ReadAll(resp.Body)
+	out, e := httpx.ReadResponseBody(resp.Body, maxUpstreamResponseBytes)
 	return resp.StatusCode, out, e
 }
+
+// maxUpstreamResponseBytes bounds a sibling service's response body. The client's
+// timeout bounds how LONG a call may take, not how MANY bytes it returns, so a
+// sibling streaming steadily inside its deadline allocated without a ceiling —
+// on checkout and on recovery, in a process holding other orders' claims.
+//
+// 8 MiB is well above the largest real response here (a wallet or refund listing)
+// and well below what threatens the process. Refusing an oversize body returns an
+// error from call(), and every caller treats a call() error as ambiguous: the
+// charge path marks the payment unknown rather than declining it. That direction
+// is deliberate — a body we would not read is a body we cannot classify, and a
+// terminal outcome invented from one is how a captured payment is recorded as a
+// failure.
+const maxUpstreamResponseBytes int64 = 8 << 20
 
 type price struct {
 	Amount   int64  `json:"amount"`
@@ -388,7 +402,7 @@ type reserveRequest struct {
 	// the channel from the body: it lets any caller name a reseller's channel and
 	// consume its allocation with no credential -- executed and confirmed, not
 	// theorised. TKT-246 then closed the inventory half by making the allocation say
-	// who may sell it, judged under the pool row lock (ADR-055's requires_code
+	// who may sell it, judged under the pool row lock (ADR-064's requires_code
 	// shape), and left the PRICING half open because forwarding a body-supplied
 	// channel was still the same bypass.
 	//

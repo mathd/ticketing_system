@@ -80,6 +80,10 @@ function ageOf(entry: Entry, nowMs: number): number {
   return Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
 }
 
+// One cache load is shared by every request waiting for the same URL. Give that
+// shared operation its own deadline so no individual browser request controls it.
+const PAGE_DATA_LOAD_TIMEOUT_MS = 8_000;
+
 export class PageDataCache {
   #entries = new Map<string, Entry>();
   // Single-flight: concurrent misses for the same URL share one upstream
@@ -162,29 +166,40 @@ export class PageDataCache {
   }
 
   async #fetchThrough<T>(url: string, nowMs: number): Promise<CachedResult<T>> {
-    const response = await this.#fetch(url, { headers: { accept: 'application/json' } });
-    if (!response.ok) {
-      throw new UpstreamError(response.status, url);
-    }
-    const maxAgeSeconds = parseMaxAge(response.headers.get('cache-control'));
-    const upstreamAgeSeconds = parseAge(response.headers.get('age'));
-    const data = (await response.json()) as T;
-    // Retain only what still has life left. An answer delivered at or past its
-    // max-age is served to this caller and then dropped: keeping it would hand
-    // the next request a value that was already expired when it arrived.
-    if (maxAgeSeconds > upstreamAgeSeconds) {
-      // Swept with a FRESH reading, not the `nowMs` captured before the upstream call:
-      // that call is the slow part, and sweeping against a clock from before it would
-      // spare entries that expired while it was in flight.
-      this.#sweep(this.#now());
-      this.#entries.set(url, {
-        data,
-        fetchedAtMs: nowMs,
-        maxAgeSeconds,
-        upstreamAgeSeconds,
-        reportedAgeSeconds: upstreamAgeSeconds,
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), PAGE_DATA_LOAD_TIMEOUT_MS);
+    try {
+      const response = await this.#fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
       });
+      if (!response.ok) {
+        throw new UpstreamError(response.status, url);
+      }
+      const maxAgeSeconds = parseMaxAge(response.headers.get('cache-control'));
+      const upstreamAgeSeconds = parseAge(response.headers.get('age'));
+      // Keep body decoding inside the deadline. fetch resolves after headers, so
+      // clearing the timer before json() would leave a stalled body unbounded.
+      const data = (await response.json()) as T;
+      // Retain only what still has life left. An answer delivered at or past its
+      // max-age is served to this caller and then dropped: keeping it would hand
+      // the next request a value that was already expired when it arrived.
+      if (maxAgeSeconds > upstreamAgeSeconds) {
+        // Swept with a FRESH reading, not the `nowMs` captured before the upstream call:
+        // that call is the slow part, and sweeping against a clock from before it would
+        // spare entries that expired while it was in flight.
+        this.#sweep(this.#now());
+        this.#entries.set(url, {
+          data,
+          fetchedAtMs: nowMs,
+          maxAgeSeconds,
+          upstreamAgeSeconds,
+          reportedAgeSeconds: upstreamAgeSeconds,
+        });
+      }
+      return { data, ageSeconds: upstreamAgeSeconds, maxAgeSeconds };
+    } finally {
+      clearTimeout(deadline);
     }
-    return { data, ageSeconds: upstreamAgeSeconds, maxAgeSeconds };
   }
 }

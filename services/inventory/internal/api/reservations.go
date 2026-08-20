@@ -23,7 +23,7 @@ func (s *Server) grpPlace(w http.ResponseWriter, r *http.Request) {
 		Counterparty string    `json:"counterparty"`
 		ExpiresAt    time.Time `json:"expires_at"`
 		Channel      string    `json:"channel"`
-		// Exact, unnormalized, like the hold path's (ADR-055).
+		// Exact, unnormalized, like the hold path's (ADR-064).
 		PresaleCode string `json:"presale_code"`
 		Actor       string `json:"actor"`
 		Reason      string `json:"reason"`

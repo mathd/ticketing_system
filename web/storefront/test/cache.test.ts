@@ -80,6 +80,52 @@ describe('PageDataCache', () => {
     expect(results.every((r) => r.data.ok)).toBe(true);
   });
 
+  it('aborts a stalled shared load, removes it, and retries upstream', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const signals: AbortSignal[] = [];
+      const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        attempt += 1;
+        if (init?.signal) signals.push(init.signal);
+        if (attempt > 1) {
+          return Promise.resolve(jsonResponse({ ok: true }, 'public, max-age=300'));
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+        });
+      });
+      const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
+
+      const first = cache.get<{ ok: boolean }>('http://gw/hot');
+      const joined = cache.get<{ ok: boolean }>('http://gw/hot');
+      let settled = false;
+      const failures = Promise.allSettled([first, joined]).then((results) => {
+        settled = true;
+        return results;
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(settled).toBe(true);
+      expect(await failures).toEqual([
+        expect.objectContaining({ status: 'rejected' }),
+        expect.objectContaining({ status: 'rejected' }),
+      ]);
+      expect(signals[0]?.aborted).toBe(true);
+
+      await expect(cache.get<{ ok: boolean }>('http://gw/hot')).resolves.toMatchObject({
+        data: { ok: true },
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(signals[1]?.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shares a coalesced failure but retries upstream on the next call', async () => {
     const fetchSpy = vi
       .fn()

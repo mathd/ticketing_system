@@ -7,6 +7,27 @@
 
 export const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
+export const UPSTREAM_DEADLINE_MS = 5_000;
+
+/**
+ * Bound one complete service operation, including response-body decoding.
+ *
+ * A helper that stopped the timer when `fetch` returned would cover headers but
+ * leave a stalled JSON body unbounded. Callers therefore put the whole operation
+ * inside this function and pass its signal to `fetch`.
+ */
+export async function withUpstreamDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), UPSTREAM_DEADLINE_MS);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
 /** A read that can be absent or broken, and must never confuse the two. */
 export type Read<T> = { ok: true; value: T } | { ok: false; kind: 'not-found' | 'unavailable' };
 
@@ -21,16 +42,13 @@ export async function readJson<T>(
   url: string,
   project: (body: unknown) => T,
 ): Promise<Read<T>> {
-  let res: Response;
   try {
-    res = await fetch(url);
-  } catch {
-    return { ok: false, kind: 'unavailable' };
-  }
-  if (res.status === 404) return { ok: false, kind: 'not-found' };
-  if (!res.ok) return { ok: false, kind: 'unavailable' };
-  try {
-    return { ok: true, value: project(await res.json()) };
+    return await withUpstreamDeadline(async (signal) => {
+      const res = await fetch(url, { signal });
+      if (res.status === 404) return { ok: false, kind: 'not-found' };
+      if (!res.ok) return { ok: false, kind: 'unavailable' };
+      return { ok: true, value: project(await res.json()) };
+    });
   } catch {
     return { ok: false, kind: 'unavailable' };
   }

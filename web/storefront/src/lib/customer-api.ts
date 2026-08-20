@@ -13,6 +13,7 @@
 // `make generate`. The generated file is in check-generate's diff list, so a
 // contract change that is not regenerated fails the gate.
 import type { components } from './commerce-api-types.gen';
+import { withUpstreamDeadline } from './upstream';
 
 export type CustomerPrincipalResponse = components['schemas']['CustomerPrincipal'];
 
@@ -36,45 +37,55 @@ export type CustomerResult =
  */
 const THROTTLED = 429;
 
-async function post(path: string, body: unknown): Promise<Response> {
+async function post(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
   return fetch(`${GATEWAY_URL}/api/commerce${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
 export async function registerCustomer(email: string, password: string): Promise<CustomerResult> {
-  const response = await post('/customers', { email, password });
-  if (response.status === 201) {
-    return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+  try {
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await post('/customers', { email, password }, signal);
+      if (response.status === 201) {
+        return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+      }
+      if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
+      if (response.status === 409) return { ok: false, reason: 'taken' };
+      // 400 lands here too. The contract has already bounded the input, so a
+      // 400 means the form and the schema disagree.
+      if (response.status === 400) return { ok: false, reason: 'invalid' };
+      return { ok: false, reason: 'unavailable' };
+    });
+  } catch {
+    return { ok: false, reason: 'unavailable' };
   }
-  if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
-  if (response.status === 409) return { ok: false, reason: 'taken' };
-  // 400 lands here too. The contract has already bounded the input, so a 400
-  // means the form and the schema disagree — an outage-shaped answer is the
-  // honest one, and it is never a claim about the credential.
-  if (response.status === 400) return { ok: false, reason: 'invalid' };
-  return { ok: false, reason: 'unavailable' };
 }
 
 export async function authenticateCustomer(
   email: string,
   password: string,
 ): Promise<CustomerResult> {
-  const response = await post('/customers/authenticate', { email, password });
-  if (response.status === 200) {
-    return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+  try {
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await post('/customers/authenticate', { email, password }, signal);
+      if (response.status === 200) {
+        return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+      }
+      // 401 and 400 collapse to one answer on purpose. Commerce does not reveal
+      // whether the account or password was wrong, and this layer must not infer it.
+      if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
+      if (response.status === 401 || response.status === 400) {
+        return { ok: false, reason: 'invalid' };
+      }
+      return { ok: false, reason: 'unavailable' };
+    });
+  } catch {
+    return { ok: false, reason: 'unavailable' };
   }
-  // 401 and 400 collapse to ONE answer on purpose. A form that says "no such
-  // account" for one and "check your password" for the other reopens, in the UI,
-  // exactly the enumeration the store and the handler go to some trouble to
-  // close. Anything else is an outage, which is NOT a credential verdict: telling
-  // a buyer their correct password is wrong sends them to reset it — which this
-  // system cannot do — while the real fault goes unreported.
-  if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
-  if (response.status === 401 || response.status === 400) return { ok: false, reason: 'invalid' };
-  return { ok: false, reason: 'unavailable' };
 }
 
 // --- the wallet (TKT-222) ---
@@ -108,17 +119,17 @@ export async function listCustomerOrders(
   // "temporarily unavailable" state the page already knows how to render — and a
   // 500 is the one answer that tells them nothing and offers nothing.
   try {
-    const response = await fetch(
-      `${GATEWAY_URL}/api/commerce/customers/${encodeURIComponent(customerId)}/orders?${query}`,
-      {
-        headers: { Accept: 'application/json', 'X-Customer-Assertion': assertion },
-        // A wallet is a page render, not a background job: it must not hold the
-        // SSR request for the global client timeout while commerce is stuck.
-        signal: AbortSignal.timeout(5_000),
-      },
-    );
-    if (response.status !== 200) return undefined;
-    return (await response.json()) as CustomerOrderPage;
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await fetch(
+        `${GATEWAY_URL}/api/commerce/customers/${encodeURIComponent(customerId)}/orders?${query}`,
+        {
+          headers: { Accept: 'application/json', 'X-Customer-Assertion': assertion },
+          signal,
+        },
+      );
+      if (response.status !== 200) return undefined;
+      return (await response.json()) as CustomerOrderPage;
+    });
   } catch {
     return undefined;
   }
@@ -145,23 +156,27 @@ export async function claimGuestOrder(
   assertion: string,
 ): Promise<ClaimResult> {
   try {
-    const response = await fetch(`${GATEWAY_URL}/api/commerce/orders/claim`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'X-Customer-Assertion': assertion,
-      },
-      body: JSON.stringify({ guest_order_ref: guestOrderRef }),
-      signal: AbortSignal.timeout(5_000),
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await fetch(`${GATEWAY_URL}/api/commerce/orders/claim`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'X-Customer-Assertion': assertion,
+        },
+        body: JSON.stringify({ guest_order_ref: guestOrderRef }),
+        signal,
+      });
+      if (response.status === 200) {
+        const body = (await response.json()) as { order_id: string };
+        return { ok: true, orderId: body.order_id };
+      }
+      if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
+      if (response.status === 404 || response.status === 400) {
+        return { ok: false, reason: 'refused' };
+      }
+      return { ok: false, reason: 'unavailable' };
     });
-    if (response.status === 200) {
-      const body = (await response.json()) as { order_id: string };
-      return { ok: true, orderId: body.order_id };
-    }
-    if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
-    if (response.status === 404 || response.status === 400) return { ok: false, reason: 'refused' };
-    return { ok: false, reason: 'unavailable' };
   } catch {
     return { ok: false, reason: 'unavailable' };
   }
@@ -181,14 +196,13 @@ export async function requestPasswordReset(
   email: string,
 ): Promise<{ ok: boolean; throttled?: boolean }> {
   try {
-    const response = await post('/customers/password-reset', { email });
-    // `throttled` is the ONE branch added to this otherwise deliberately
-    // undiscriminated result, and it is safe for the reason the others are not:
-    // it is decided before commerce looks the address up, so it says nothing
-    // about whether an account exists. Without it a buyer who asked twice would
-    // be told the link is on its way when nothing was enqueued.
-    if (response.status === THROTTLED) return { ok: false, throttled: true };
-    return { ok: response.status === 202 };
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await post('/customers/password-reset', { email }, signal);
+      // This branch is safe because commerce decides it before looking up the
+      // address, so it says nothing about whether an account exists.
+      if (response.status === THROTTLED) return { ok: false, throttled: true };
+      return { ok: response.status === 202 };
+    });
   } catch {
     return { ok: false };
   }
@@ -214,20 +228,22 @@ export async function completePasswordReset(
   password: string,
 ): Promise<ResetCompletionResult> {
   try {
-    const response = await post('/customers/password-reset/complete', { token, password });
-    if (response.status === 200) {
-      const body = (await response.json()) as { customer_id: string };
-      return { ok: true, customerId: body.customer_id };
-    }
-    if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
-    if (response.status === 400) {
-      // Commerce distinguishes exactly two 400s and they must not be merged here: a
-      // dead link sends the buyer back to request another, a rejected password keeps
-      // them on this form with their still-valid token.
-      const body = (await response.json().catch(() => ({}))) as { error?: string };
-      return { ok: false, reason: body.error === 'invalid request' ? 'invalid' : 'refused' };
-    }
-    return { ok: false, reason: 'unavailable' };
+    return await withUpstreamDeadline(async (signal) => {
+      const response = await post('/customers/password-reset/complete', { token, password }, signal);
+      if (response.status === 200) {
+        const body = (await response.json()) as { customer_id: string };
+        return { ok: true, customerId: body.customer_id };
+      }
+      if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
+      if (response.status === 400) {
+        // Commerce distinguishes a dead link from a rejected password. A dead
+        // link sends the buyer back for another, while a rejected password keeps
+        // the still-valid token on this form.
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        return { ok: false, reason: body.error === 'invalid request' ? 'invalid' : 'refused' };
+      }
+      return { ok: false, reason: 'unavailable' };
+    });
   } catch {
     return { ok: false, reason: 'unavailable' };
   }

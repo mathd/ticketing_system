@@ -36,8 +36,8 @@ contract. Compose forwards these variables to every applicable process.
 
 The HTTP variables above, `PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, plus one URL per registered route:
 `CATALOG_URL`, `INVENTORY_URL`, `COMMERCE_URL`, `PAYMENTS_URL`, `ACCESS_URL`,
-`STOREFRONT_URL`, `SCANNER_URL`. The gateway refuses to start if a registered route's
-env var is missing — the route table is explicit by design.
+`STOREFRONT_URL`, `SCANNER_URL`, `BACKOFFICE_URL`. The gateway refuses to start if a registered
+route's env var is missing. The route table is explicit by design.
 
 ## Commerce: ACCESS_URL and the refund reversal runner
 
@@ -64,10 +64,10 @@ All published ports bind to `127.0.0.1`. `GATEWAY_PORT` 8080/18080 · `POSTGRES_
 
 ## Secrets
 
-Local stack uses throwaway credentials (per-service DB passwords equal to the role name,
-`postgres/postgres` superuser). Nothing here is production-grade; a real secrets story
-arrives with the first deployed environment. Never commit real credentials —
-see `conventions/security.md`.
+The local stack uses per-clone throwaway credentials generated into `.env` by `make up`; isolated
+smoke and browser stacks generate separate values for every run. None is production-grade. Never
+commit real credentials or reuse local values outside development. See
+[`conventions/security.md`](conventions/security.md).
 
 ## Back-office staff sign-in
 
@@ -98,8 +98,10 @@ surface. Commerce is payments' only caller and holds both; it refuses to start w
 two of its four credentials are equal, and payments refuses to start when its own equals
 the shared one.
 
-This is a reduction, not a solution — compromising commerce still reaches payments.
-Per-caller credentials or mTLS is the finish.
+This is a reduction, not a solution: compromising commerce still reaches payments. For the
+Payments boundary, per-caller credentials or mTLS is the remaining production control. The shared
+`INTERNAL_SERVICE_TOKEN` elsewhere also remains a testbed credential model, not a production
+service-identity design.
 
 ## Ticket bundle links
 
@@ -107,10 +109,10 @@ Per-caller credentials or mTLS is the finish.
 out (ai-review S2). Distinct from `ACCESS_QR_PRIVATE_KEY`: it proves a URL was minted
 recently, not that a credential admits at a gate.
 
-The order ref remains the bundle's bearer credential — forwarding "here are your
-tickets" is a feature. What expires is the image URL, which is what ends up in a
-screenshot, a referrer header or a proxy log. The bundle page mints fresh links on every
-load, so a buyer never meets the expiry.
+The order ref remains the bundle's bearer credential: forwarding "here are your tickets" is a
+feature. What expires is the image URL, which is what ends up in a screenshot, a referrer header,
+or a proxy log. The bundle page mints fresh links on every successful load, so a buyer with a valid
+order reference can replace an expired image URL by reloading the bundle.
 
 ## Scanner devices
 
@@ -149,12 +151,11 @@ their defaults, forever — the way `INTERNAL_SERVICE_TOKEN` refuses `local-serv
 not secrets. A forged QR signed with the old seed passed `ed25519.Verify` at the gate, and a
 forged checkpoint passed `access verify-lifecycle`.
 
-`make up` generates all five per clone into `.env` (`scripts/env-bootstrap.sh`); the
-isolated smoke and browser stacks generate their own per run (`scripts/stack-env.sh`).
-Each value gets its own draw, so one leaking never implies another, and the Ed25519 seed
-and its public keyring are always written together — a fresh seed beside an old public key
-breaks verification, and a fresh public key beside an old seed leaves the old seed a valid
-signer.
+`make up` generates each private secret independently per clone into `.env`
+(`scripts/env-bootstrap.sh`); the isolated smoke and browser stacks generate their own per run
+(`scripts/stack-env.sh`). Each Ed25519 public key is derived from its corresponding seed, and the
+pair is written together. A fresh seed beside an old public key breaks verification; a fresh
+public key beside an old seed leaves the old seed a valid signer.
 
 `access keygen` prints one fresh `<seed> <public key>` pair for either namespace; the KID
 decides which. Use it for a manual rotation.

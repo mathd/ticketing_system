@@ -1,6 +1,10 @@
 # PRD: Ticketing System v1
 
-Companion to [brief.md](./brief.md). This PRD covers v1 at two altitudes: a **capability map** (one epic each on the board, COS on the epic — decomposed into stories only when prioritized) and **Milestone 1 fully decomposed** (US-001…US-006, the walking skeleton).
+Companion to [brief.md](./brief.md). This PRD covers v1 at two altitudes: a **capability map**
+(one epic each on the board, COS on the epic, decomposed into stories only when prioritized) and
+**Milestone 1 fully decomposed** (US-001…US-006, the walking skeleton). Its checkboxes preserve the
+planning baseline rather than live delivery status; use the [git-derived board](../../.sdlc/) for
+ticket state and [the roadmap](../ROADMAP.md) for the current capability summary.
 
 The problem, personas, outcome, non-goals and success metric are in the brief. In two sentences: rebuild a full-breadth event ticketing platform (seated shows, festivals, outdoor parks with lodging, four sales channels, append-only money/ticket audit trails, split fees) as a Go-microservices + TypeScript system, single-organizer first but tenant-aware. Milestone 1 is the thinnest end-to-end slice across the real service boundaries: create an event → buy a GA ticket through the fake PSP → scan it at the gate.
 
@@ -218,9 +222,9 @@ shared festival capacity, so TKT-14 can layer multi-day passes and zones onto a 
 
 ## TKT-4 — Inventory & reservation core (user stories)
 
-Decomposed 2026-07-16, proposed as the next M2 epic (the owner confirms by prioritizing at
-Gate 1; the roadmap named TKT-4 first among the candidates by dependency weight). Scope per the
-epic COS + the backlog-grilling amendments: complete the reservation core every later vertical
+Decomposed 2026-07-16. This section preserves its planning baseline; the board records current
+delivery status. Scope per the epic COS + the backlog-grilling amendments: complete the
+reservation core every later vertical
 claims through — slot lifecycle reactions, capacity adjustment (the behaviour ADR-005's amendment
 decided and left to "the inventory-side capacity-adjustment ticket"), operational holds, channel
 allocations, group/agency reservations, seated claims with best-available, and the on-sale load
@@ -340,14 +344,16 @@ per seat. **Priority:** P2 **Depends on:** TKT-3 (a seat map to claim against �
 **As** a buyer, **I want** "best available N" to return contiguous seats honoring the map's
 adjacency, atomically claimed. **Priority:** P2 **Depends on:** US-017
 **Acceptance Criteria:**
-- [ ] A best-available request for N seats returns a contiguous run per the map's adjacency/rank
-      data (TKT-3 provides both), claimed atomically in the same transaction that selected them —
-      selection and claim never race.
-- [ ] Contiguity relaxation rules are explicit and deterministic (e.g. split parties only when no
-      contiguous run exists; never strand a single seat if the map forbids it — exact rules
-      confirmed with the owner at Planning).
-- [ ] Under the contention test, parallel best-available requests never double-assign and
-      degrade fairly (no oversell, no deadlock, bounded retries).
+- [ ] A best-available request for N seats returns the first legal contiguous run within the
+      pool's bounded ordering projection and claims it in the same transaction that selected it;
+      selection and claim never race (ADR-061).
+- [ ] Relaxation is explicit and deterministic: never split a party; when orphan prevention is
+      enabled, skip a run that would strand a seat and refuse only when no legal run is found in
+      the bounded window.
+- [ ] Under contention, parallel best-available requests never double-assign or deadlock. The
+      pool lock serializes selection and the ordered scan is bounded; there is no retry loop.
+- [ ] A pool without an ordering projection returns `best_available_unsupported`, not a sellout.
+      Today that means best-available is limited to pools provisioned with orphan prevention.
 
 ### US-019: On-sale load proof — the sustained no-oversell gate
 **As** the owner, **I want** a sustained adversarial load test proving no-oversell and acceptable

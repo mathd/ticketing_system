@@ -245,7 +245,7 @@ type ChannelAllocation struct {
 	// ReleaseAt When the unsold allocation returns to the public channel; omitted means never
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 
-	// RequiresCode Gate this allocation behind a presale unlock code (TKT-239 / ADR-055). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
+	// RequiresCode Gate this allocation behind a presale unlock code (TKT-239 / ADR-064). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
 	RequiresCode *bool `json:"requires_code,omitempty"`
 
 	// SoldBy Bind this allocation to ONE reseller (TKT-246, amending ADR-024). Only that reseller may consume it; omitted means unbound, which is public and is every allocation that predates this field.
@@ -286,7 +286,7 @@ type ChannelAvailability struct {
 	ReleaseAt *time.Time `json:"release_at,omitempty"`
 	Released  bool       `json:"released"`
 
-	// RequiresCode Whether this allocation is gated behind a presale unlock code (TKT-239 / ADR-055). Reported so an EDITOR can round-trip it (TKT-244): the allocation write is a full-set atomic replace, so a field the editor cannot read is one it clears on the next save.
+	// RequiresCode Whether this allocation is gated behind a presale unlock code (TKT-239 / ADR-064). Reported so an EDITOR can round-trip it (TKT-244): the allocation write is a full-set atomic replace, so a field the editor cannot read is one it clears on the next save.
 	RequiresCode *bool `json:"requires_code,omitempty"`
 
 	// SoldBy The reseller this allocation is bound to (TKT-246), absent when it is unbound and therefore public. Reported for the same round-trip reason as `requires_code`, but the stake is higher: `sold_by` is judged in the claim paths under the pool row lock, so an editor that dropped it would return a reseller's stock to the public pool — an authorization change, not a display bug.

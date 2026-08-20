@@ -2,7 +2,7 @@
 -- An allocation may bind to a SELLER (TKT-246, amending ADR-024).
 --
 -- Until now an allocation said WHEN a channel may sell (opens_at/closes_at, ADR-054)
--- and WHETHER a code is needed (requires_code, ADR-055). Neither says WHO may sell it,
+-- and WHETHER a code is needed (requires_code, ADR-064). Neither says WHO may sell it,
 -- and that gap is the channel seam: commerce resolved a channel's fees and inventory
 -- never saw the channel, so a reseller-channel sale took reseller fees while consuming
 -- public stock.

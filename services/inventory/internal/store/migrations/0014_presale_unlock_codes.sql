@@ -1,5 +1,5 @@
 -- +goose Up
--- Presale unlock codes (TKT-239 / ADR-055): WHO may sell on a channel, alongside
+-- Presale unlock codes (TKT-239 / ADR-064): WHO may sell on a channel, alongside
 -- ADR-024's HOW MUCH and ADR-054's WHEN. A window says the presale opens Tuesday;
 -- a code says only these buyers get in.
 --

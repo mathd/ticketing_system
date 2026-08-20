@@ -2,20 +2,15 @@
 import Layout from '../../../layouts/Layout.astro';
 import { isLocale, UI_STRINGS } from '../../../lib/locales';
 import { SESSION_COOKIE, lookupSession } from '../../../lib/session';
+import { getTicketBundle } from '../../../lib/ticket-api';
 
 const locale = Astro.params.locale;
 if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
 const orderRef = Astro.params.orderRef;
 if (!orderRef) return new Response('Not found', { status: 404 });
-const gateway = process.env.GATEWAY_URL ?? 'http://localhost:8080';
-let response: Response | undefined;
-for (let attempt = 0; attempt < 12; attempt += 1) {
-  response = await fetch(`${gateway}/api/access/orders/${encodeURIComponent(orderRef)}/tickets`, { headers: { Accept: 'application/json' } });
-  if (response.ok || response.status !== 404) break;
-  await new Promise((resolve) => setTimeout(resolve, 250));
-}
-if (!response?.ok) return new Response('Not found', { status: response?.status ?? 503 });
-const bundle = await response.json() as { tickets: Array<{ ticket_id: string; issued_at: string; history: Array<{ type: string; occurred_at: string }>; qr_url: string }> };
+const read = await getTicketBundle(orderRef);
+if (!read.ok) return new Response('Not found', { status: read.status });
+const bundle = read.value;
 const t = UI_STRINGS[locale];
 
 // A ticket the buyer no longer holds must not be handed to them as a scannable code

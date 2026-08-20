@@ -54,7 +54,7 @@ not it was touched by the change. So:
 2. **Ask which of them are authenticated.** An unauthenticated producer of an authority-bearing
    value is a bypass, no matter how well the authenticated one is written.
 3. **Put the guard where the decision is.** Inventory owns stock, so the rule "who may sell this
-   channel" belongs on the allocation row and must be judged under the pool lock — the shape ADR-055
+   channel" belongs on the allocation row and must be judged under the pool lock — the shape ADR-064
    already used for `requires_code`. A check in commerce would bind only callers who go through
    commerce.
 

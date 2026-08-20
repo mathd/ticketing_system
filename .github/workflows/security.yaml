@@ -1,26 +1,18 @@
 # Advisory and repository scanning complements, but does not replace, make check.
 name: security
 
-# The weekly scheduled run is the full safety net — it re-scans every dep
-# even when nothing changed, catching newly-disclosed CVEs. The per-PR run
-# is therefore scoped to PRs that actually change dependencies or build
-# inputs (go.mod/go.sum, lockfiles, Dockerfiles, workflow); code/doc-only
-# PRs skip all 10 jobs. Trigger security manually on any PR via the
-# workflow_dispatch button when a targeted scan is wanted.
+# Every pull request runs the repository scan so source-only changes cannot
+# introduce an unscanned secret or misconfiguration. The weekly run also
+# catches newly disclosed vulnerabilities when no dependency file changed.
+#
+# The event itself is deliberately UNFILTERED: a top-level `paths:` skipped the
+# whole workflow on code-only PRs, which is exactly where a committed credential
+# arrives (review R4, 2026-08-19). Scoping now happens per JOB instead, so the
+# secret scan cannot be filtered out while the advisory jobs stay proportionate
+# — govulncheck alone is an eight-leg matrix, and on a PR that touches no
+# manifest it re-reads the inputs Monday's cron already covered.
 on:
   pull_request:
-    paths:
-      - "**/go.mod"
-      - "**/go.sum"
-      - go.work
-      - go.work.sum
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - "web/*/package.json"
-      - "**/Dockerfile"
-      - build/**
-      - .github/workflows/security.yaml
   schedule:
     - cron: "0 7 * * 1" # Mondays 07:00 UTC
   workflow_dispatch:
@@ -34,7 +26,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which manifests changed on this PR. The repository scan never consults this:
+  # it must run whatever changed.
+  #
+  # Done with the REST API and the pinned checkout rather than a paths-filter
+  # action: this workflow is the security gate, so every third-party action in it
+  # is one more supply-chain edge to justify, and the question here is only "did
+  # any of these files change".
+  # Only pull_request runs are scoped. This job still runs on schedule and
+  # workflow_dispatch, where there is no base/head pair to diff, and answers
+  # "everything changed" — anything else would make a failure here silently skip
+  # the weekly re-scan that exists to catch newly disclosed vulnerabilities.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      node: ${{ steps.filter.outputs.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ] || [ -z "$BASE" ] || [ -z "$HEAD" ]; then
+            echo "not a pull request (or no base/head): scanning everything"
+            printf 'go=true\nnode=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "changed files:"; echo "$changed"
+          match() { echo "$changed" | grep -Eq "$1" && echo true || echo false; }
+          {
+            echo "go=$(match '(^|/)(go\.mod|go\.sum)$|^go\.work(\.sum)?$|^\.github/workflows/security\.yaml$')"
+            echo "node=$(match '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$|^web/[^/]+/package\.json$|^\.github/workflows/security\.yaml$')"
+          } >> "$GITHUB_OUTPUT"
+
   govulncheck:
+    needs: changes
+    # Scheduled and manual runs re-scan everything; a PR scans what it touched.
+    if: >-
+      github.event_name != 'pull_request' || needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,6 +103,9 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test -tags "${{ matrix.tags }}" -C "${{ matrix.module }}" ./...
 
   pnpm-audit:
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' || needs.changes.outputs.node == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

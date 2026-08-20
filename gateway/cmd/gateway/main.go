@@ -207,14 +207,7 @@ func run() error {
 	}()
 
 	mux := http.NewServeMux()
-
-	// /healthz = liveness (self only, no downstream circularity with compose
-	// healthchecks). /readyz and /healthz/all = readiness: the downstream
-	// fan-out, 200 iff every service is up.
-	all := healthzAll(log)
-	mux.Handle("GET /healthz", httpx.Healthz(serviceName))
-	mux.Handle("GET /healthz/all", all)
-	mux.Handle("GET /readyz", all)
+	registerHealthRoutes(mux, log)
 
 	// Longest-prefix registration; ServeMux ordering handles it.
 	for prefix, envVar := range routes {
@@ -297,32 +290,45 @@ func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool) *httputil.ReverseP
 	}
 }
 
-// backends returns the five service healthz URLs from the route table.
-func backends() map[string]string {
+// registerHealthRoutes keeps the three health questions separate. Gateway
+// liveness has no downstream dependency. The aggregate liveness endpoint is a
+// diagnostic view of running processes. Readiness asks whether those processes
+// can currently keep their operational promises.
+func registerHealthRoutes(mux *http.ServeMux, log interface {
+	InfoContext(context.Context, string, ...any)
+}) {
+	mux.Handle("GET /healthz", httpx.Healthz(serviceName))
+	mux.Handle("GET /healthz/all", aggregateServiceHealth(log, "/healthz"))
+	mux.Handle("GET /readyz", aggregateServiceHealth(log, "/readyz"))
+}
+
+// backends returns the five service probe URLs from the route table.
+func backends(checkPath string) map[string]string {
 	m := make(map[string]string)
 	for prefix, envVar := range routes {
 		if !strings.HasPrefix(prefix, "/api/") {
 			continue
 		}
 		name := strings.Trim(strings.TrimPrefix(prefix, "/api/"), "/")
-		m[name] = strings.TrimSuffix(os.Getenv(envVar), "/") + "/healthz"
+		m[name] = strings.TrimSuffix(os.Getenv(envVar), "/") + checkPath
 	}
 	return m
 }
 
-// healthzAll fans out to every service's /healthz concurrently with a 2s
-// per-downstream timeout: 200 iff all up, else 503. Response is
+// aggregateServiceHealth probes one health path on every service concurrently
+// with a 2s per-downstream timeout. It returns 200 iff all probes are up, else
+// 503. Response is
 // {"status":..., "services":{name: "up"|"down"|"timeout"}}. This call is
-// also the trace-propagation demo — one trace covers gateway + services.
-func healthzAll(log interface {
+// also the trace-propagation demo: one trace covers gateway and services.
+func aggregateServiceHealth(log interface {
 	InfoContext(context.Context, string, ...any)
-}) http.Handler {
+}, checkPath string) http.Handler {
 	client := obs.Client()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		results := make(map[string]string)
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-		for name, target := range backends() {
+		for name, target := range backends(checkPath) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -343,7 +349,7 @@ func healthzAll(log interface {
 				break
 			}
 		}
-		log.InfoContext(r.Context(), "healthz fan-out", "status", overall)
+		log.InfoContext(r.Context(), "service health fan-out", "probe_path", checkPath, "status", overall)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": overall, "services": results})

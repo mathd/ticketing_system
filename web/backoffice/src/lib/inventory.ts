@@ -19,6 +19,7 @@
 
 import type { components } from './inventory-api-types.gen';
 import type { ChannelAllocationSet } from './allocation-form';
+import { withUpstreamDeadline } from './upstream';
 
 export type StaffAvailability = components['schemas']['StaffAvailability'];
 export type ChannelAvailability = components['schemas']['ChannelAvailability'];
@@ -95,9 +96,11 @@ export async function getStaffAvailability(
   const url =
     `${INVENTORY_URL}/internal/slots/${encodeURIComponent(slotId)}/availability` +
     `?organizer_id=${encodeURIComponent(organizerId)}`;
-  const res = await fetch(url, { headers: { [headerName]: credential } });
-  if (!res.ok) return refuse(res);
-  return (await res.json()) as StaffAvailability;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(url, { headers: { [headerName]: credential }, signal });
+    if (!res.ok) return refuse(res);
+    return (await res.json()) as StaffAvailability;
+  });
 }
 
 /**
@@ -112,14 +115,17 @@ export async function replaceChannelAllocations(
   set: ChannelAllocationSet,
 ): Promise<ChannelAllocations> {
   const credential = inventoryStaffCredential();
-  const res = await fetch(
-    `${INVENTORY_URL}/internal/slots/${encodeURIComponent(slotId)}/channel-allocations`,
-    {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', [headerName]: credential },
-      body: JSON.stringify(set),
-    },
-  );
-  if (!res.ok) return refuse(res);
-  return (await res.json()) as ChannelAllocations;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(
+      `${INVENTORY_URL}/internal/slots/${encodeURIComponent(slotId)}/channel-allocations`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', [headerName]: credential },
+        body: JSON.stringify(set),
+        signal,
+      },
+    );
+    if (!res.ok) return refuse(res);
+    return (await res.json()) as ChannelAllocations;
+  });
 }

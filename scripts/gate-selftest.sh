@@ -146,6 +146,94 @@ sed -i '1i # a commented placeholder: ${SELFTEST_COMMENTED:?never a requirement}
 sed -i 's|^\( *\)INVENTORY_STAFF_WRITE_TOKEN: \${INVENTORY_STAFF_WRITE_TOKEN:?|\1SELFTEST_LITERAL: "$${SELFTEST_ESCAPED:?never a requirement}"\n\1INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?|' compose.yaml
 expect_pass "required stack env (comments and \$\$-escapes are not requirements)" check-required-env
 
+# 10. A repeated ADR number. Two Accepted ADRs both numbered 055 shipped and made
+#     every bare `ADR-055` citation in code, migrations, OpenAPI and AGENTS.md
+#     ambiguous; nothing in the gate noticed for nine days. The seed reproduces
+#     that exact state by copying an existing ADR onto a number already taken.
+#     Positive control first: this stage reads a directory rather than a seeded
+#     file, so a checker that always failed would satisfy its own expect_fail.
+expect_pass "ADR numbers (clean baseline)" check-adr-numbers
+cp docs/adr/ADR-064-presale-unlock-codes.md docs/adr/ADR-055-presale-unlock-codes.md
+expect_fail "ADR numbers (two ADRs claim 055)" check-adr-numbers
+
+# 10b. An ADR whose name carries no three-digit number is unreferenceable, and it
+#      cannot collide, so the duplicate seed above cannot expose it. Its own seed.
+cp docs/adr/ADR-064-presale-unlock-codes.md docs/adr/ADR-64-presale-unlock-codes.md
+expect_fail "ADR numbers (an ADR with no three-digit number)" check-adr-numbers
+
+# 11. A broken documentation cross-reference. ADR-062 linked to a filename ADR-010
+#     never had, so the inherited locking decision was unreachable; no gate stage
+#     resolved a link target, so it survived indefinitely. The seed reproduces that
+#     exact shape — a real ADR citing a nonexistent sibling.
+expect_pass "markdown links (clean baseline)" check-markdown-links
+sed -i 's|ADR-010-postgres-claim-transaction.md)|ADR-010-nonexistent-file.md)|' \
+  docs/adr/ADR-062-refund-reversal-reconciliation.md
+expect_fail "markdown links (an ADR cites a file that does not exist)" check-markdown-links
+
+# 11b. The angle-bracket spelling, which the review document uses for paths that
+#      contain brackets. It is matched by a separate branch of the extractor, so
+#      the plain-link seed above cannot show it works.
+printf '\nA broken angle link [x](<docs/adr/ADR-000-nonexistent [id].md>)\n' >> docs/README.md
+expect_fail "markdown links (broken angle-bracket target)" check-markdown-links
+
+# 11c. The OPPOSITE failure, and the one a gate is least forgiven for: refusing
+#      valid documentation. An external URL must never be fetched or resolved as a
+#      path, and a pure anchor has no path at all. A checker that treated either as
+#      a file would fail the gate on correct prose. expect_PASS: nothing changes.
+printf '\nAn external [x](https://example.invalid/nope) and an anchor [y](#context).\n' >> docs/README.md
+expect_pass "markdown links (external URLs and anchors are not paths)" check-markdown-links
+
+# 12. The security workflow skipping code-only pull requests. A top-level `paths:`
+#     filter meant the Trivy secret scanner never inspected the changes most likely
+#     to introduce a credential — a source-only PR scheduled none of the workflow.
+#     The seed restores that filter verbatim.
+expect_pass "security workflow trigger (clean baseline)" check-security-workflow-trigger
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('  pull_request:\n', '  pull_request:\n    paths:\n      - "**/go.mod"\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (a path filter skips code-only PRs)" check-security-workflow-trigger
+
+# 12b. The OTHER half, and one the filter seed cannot reach: an all-PR workflow
+#      whose repository-scan is itself conditional skips the only job that reads
+#      source files, while the event above it still looks unfiltered.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('  repository-scan:\n    runs-on: ubuntu-latest\n',
+              '  repository-scan:\n    runs-on: ubuntu-latest\n    if: false\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (repository-scan made conditional)" check-security-workflow-trigger
+
+# 12c. And the third way to lose the same guarantee without touching either: keep
+#      the job unconditional and drop the scanner that reads source files.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('scanners: vuln,misconfig,secret', 'scanners: vuln', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (secret scanning dropped)" check-security-workflow-trigger
+
+# 13. The hermetic workflow missing a production web image input. The enumerated
+#     path list covered the scanner and the storefront but not web/backoffice, so a
+#     broken back-office production image could merge with neither build path run —
+#     `make check` builds the SMOKE Dockerfiles, not these. The seed restores the
+#     enumeration that omitted it.
+expect_pass "hermetic workflow trigger (clean baseline)" check-hermetic-workflow-trigger
+python3 - <<'SEED'
+p = '.github/workflows/hermetic.yaml'
+s = open(p).read()
+s = s.replace('      - "web/*/package.json"\n      - "web/*/Dockerfile"\n',
+              '      - web/scanner/package.json\n      - web/scanner/Dockerfile\n'
+              '      - web/storefront/Dockerfile\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "hermetic workflow trigger (a production web image input is uncovered)" check-hermetic-workflow-trigger
+
 if [ "$fail_count" -gt 0 ]; then
   echo "gate-selftest: $fail_count seeded error(s) were NOT caught"
   exit 1

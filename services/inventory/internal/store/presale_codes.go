@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Presale unlock codes (TKT-239 / ADR-055): WHO may sell on a gated channel.
+// Presale unlock codes (TKT-239 / ADR-064): WHO may sell on a gated channel.
 //
 // A code grants ACCESS ONLY. It is not a discount and changes no price — that is
 // TKT-7's, and a code on the money path would be a different ticket with

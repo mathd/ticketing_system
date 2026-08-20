@@ -9,6 +9,7 @@ import {
   readJson,
   required,
   sameIdentity,
+  withUpstreamDeadline,
   wholeNumber,
 } from './upstream';
 
@@ -106,67 +107,74 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
   // reporting it as an ambiguous commerce outage would tell the operator to
   // retry a request that can never succeed (ai-review pass 1).
   const credential = commerceStaffCredential();
-  let res: Response;
   try {
-    res = await fetch(`${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}/refunds`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'Idempotency-Key': req.idempotencyKey,
-        'X-Commerce-Staff-Write-Token': credential,
-      },
-      body: JSON.stringify({
-        organizer_id: req.organizerId,
-        quantity: req.quantity,
-        actor: req.actor,
-        reason: req.reason,
-      }),
+    return await withUpstreamDeadline(async (signal) => {
+      const res = await fetch(
+        `${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}/refunds`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'Idempotency-Key': req.idempotencyKey,
+            'X-Commerce-Staff-Write-Token': credential,
+          },
+          body: JSON.stringify({
+            organizer_id: req.organizerId,
+            quantity: req.quantity,
+            actor: req.actor,
+            reason: req.reason,
+          }),
+          signal,
+        },
+      );
+
+      const message = await commerceMessage(res);
+      if (res.status === 404) return { ok: false, kind: 'not-found', message };
+      if (res.status === 400 || res.status === 409) {
+        return { ok: false, kind: 'refused', message };
+      }
+      if (!res.ok) return { ok: false, kind: 'ambiguous', message };
+
+      try {
+        const b = (await res.json()) as Record<string, unknown>;
+        const orderId = required(b.order_id, 'order_id');
+        sameIdentity(orderId, req.orderId, 'order_id');
+        const status = required(b.refund_status, 'refund_status');
+        if (status !== 'none' && status !== 'partial' && status !== 'full') {
+          throw new Error('refund_status is outside the contract enum');
+        }
+        return {
+          ok: true,
+          value: {
+            refundId: required(b.refund_id, 'refund_id'),
+            orderId,
+            // Integer minor units throughout (ADR-001). A fractional amount here
+            // means someone put a float on a money path.
+            quantity: wholeNumber(b.quantity, 'quantity'),
+            amount: wholeNumber(b.amount, 'amount'),
+            currency: required(b.currency, 'currency'),
+            refundStatus: status,
+            refundedQuantity: wholeNumber(b.refunded_quantity, 'refunded_quantity'),
+            refundedAmount: wholeNumber(b.refunded_amount, 'refunded_amount'),
+            replay: boolean(b.replay, 'replay'),
+            ticketsVoided: boolean(b.tickets_voided, 'tickets_voided'),
+            capacityReturned: boolean(b.capacity_returned, 'capacity_returned'),
+          },
+        };
+      } catch {
+        // A 200 we cannot verify is not a failure to refund. Commerce answered
+        // 200, but this console cannot describe the result, so it is ambiguous.
+        return {
+          ok: false,
+          kind: 'ambiguous',
+          message: 'Commerce accepted the refund but returned something this console cannot read.',
+        };
+      }
     });
   } catch {
     // The request may have reached commerce and been applied. Never "no refund
     // happened".
     return { ok: false, kind: 'ambiguous', message: 'Commerce could not be reached.' };
-  }
-
-  const message = await commerceMessage(res);
-  if (res.status === 404) return { ok: false, kind: 'not-found', message };
-  if (res.status === 400 || res.status === 409) return { ok: false, kind: 'refused', message };
-  if (!res.ok) return { ok: false, kind: 'ambiguous', message };
-
-  try {
-    const b = (await res.json()) as Record<string, unknown>;
-    const orderId = required(b.order_id, 'order_id');
-    sameIdentity(orderId, req.orderId, 'order_id');
-    const status = required(b.refund_status, 'refund_status');
-    if (status !== 'none' && status !== 'partial' && status !== 'full') {
-      throw new Error('refund_status is outside the contract enum');
-    }
-    return {
-      ok: true,
-      value: {
-        refundId: required(b.refund_id, 'refund_id'),
-        orderId,
-        // Integer minor units throughout (ADR-001). A fractional amount here
-        // means someone put a float on a money path.
-        quantity: wholeNumber(b.quantity, 'quantity'),
-        amount: wholeNumber(b.amount, 'amount'),
-        currency: required(b.currency, 'currency'),
-        refundStatus: status,
-        refundedQuantity: wholeNumber(b.refunded_quantity, 'refunded_quantity'),
-        refundedAmount: wholeNumber(b.refunded_amount, 'refunded_amount'),
-        replay: boolean(b.replay, 'replay'),
-        ticketsVoided: boolean(b.tickets_voided, 'tickets_voided'),
-        capacityReturned: boolean(b.capacity_returned, 'capacity_returned'),
-      },
-    };
-  } catch {
-    // A 200 we cannot verify is NOT a failure to refund — commerce answered 200.
-    // It is a refund we cannot describe, which is exactly the ambiguous case.
-    return {
-      ok: false,
-      kind: 'ambiguous',
-      message: 'Commerce accepted the refund but returned something this console cannot read.',
-    };
   }
 }
 

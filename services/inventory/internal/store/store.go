@@ -33,7 +33,7 @@ var (
 	// because ErrUnavailable is the natural thing to return.
 	ErrChannelWindowClosed = errors.New("channel sales window closed")
 	// ErrPresaleCodeInvalid: the allocation requires an unlock code and the one
-	// presented will not do (TKT-239 / ADR-055).
+	// presented will not do (TKT-239 / ADR-064).
 	//
 	// DELIBERATELY UNIFORM across five distinct causes — no code, unknown code, a
 	// code issued on another channel, an exhausted code, and a code outside its
@@ -544,7 +544,7 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 				return Claim{}, false, ErrUnavailable
 			}
 			// The unlock code is judged AFTER the channel's window and BEFORE any
-			// capacity arithmetic (TKT-239 / ADR-055).
+			// capacity arithmetic (TKT-239 / ADR-064).
 			//
 			// Window first: a closed channel is not selling to anyone, so "wrong
 			// code" would be a misleading answer to a request that a valid code

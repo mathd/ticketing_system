@@ -43,7 +43,7 @@ const activeAllocation = `(release_at IS NULL OR release_at > clock_timestamp())
 const windowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
 
-// codeWindowOpen is TKT-239's validity predicate for a presale code (ADR-055). Same
+// codeWindowOpen is TKT-239's validity predicate for a presale code (ADR-064). Same
 // half-open [opens_at, closes_at) convention and the same clock_timestamp() reasoning as
 // windowOpen above — it is a separate const only because it reads presale_codes columns
 // rather than channel_allocations ones, and inlining either into the other's query would
@@ -110,7 +110,7 @@ type ChannelAllocation struct {
 	OpensAt  *time.Time `json:"opens_at,omitempty"`
 	ClosesAt *time.Time `json:"closes_at,omitempty"`
 	// RequiresCode gates the channel behind a presale unlock code (TKT-239 /
-	// ADR-055). False by default, so an allocation that predates this field sells
+	// ADR-064). False by default, so an allocation that predates this field sells
 	// exactly as it did. Orthogonal to the window: a window says WHEN, this says
 	// WHO, and both must admit a claim.
 	RequiresCode bool `json:"requires_code,omitempty"`

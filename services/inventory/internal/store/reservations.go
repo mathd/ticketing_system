@@ -153,7 +153,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 				return GroupReservation{}, false, ErrUnavailable
 			}
 			// The unlock code, after the window and before capacity — the same
-			// precedence CreateHold documents (TKT-239 / ADR-055).
+			// precedence CreateHold documents (TKT-239 / ADR-064).
 			//
 			// Placement IS gated for the same reason it is window-gated: it creates
 			// NEW consumption. Draw-down is not, and must not be: a draw-down is
@@ -203,7 +203,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	}
 	h := GroupReservation{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Counterparty: counterparty, Channel: channel, Status: "held"}
 	// The SOURCE reservation cites the code; its draw-down children deliberately do
-	// NOT (ADR-055). consumingClaims counts a live source AND its live children, so
+	// NOT (ADR-064). consumingClaims counts a live source AND its live children, so
 	// a code cited on both would have the same units counted twice and a code capped
 	// at 10 would exhaust at 5. The redemption happened here, once.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code)

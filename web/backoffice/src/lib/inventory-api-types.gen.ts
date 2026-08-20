@@ -714,7 +714,7 @@ export interface components {
              */
             closes_at?: string;
             /**
-             * @description Gate this allocation behind a presale unlock code (TKT-239 / ADR-055). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
+             * @description Gate this allocation behind a presale unlock code (TKT-239 / ADR-064). Defaults false, so an allocation that omits it sells exactly as before. Orthogonal to the window: a window says WHEN the channel may sell, this says WHO may, and both must admit a claim.
              * @default false
              */
             requires_code: boolean;
@@ -764,7 +764,7 @@ export interface components {
              *     Separate from `released`: a released allocation is over, a closed window is not its turn yet, and only the second fixes itself.
              */
             window_open: boolean;
-            /** @description Whether this allocation is gated behind a presale unlock code (TKT-239 / ADR-055). Reported so an EDITOR can round-trip it (TKT-244): the allocation write is a full-set atomic replace, so a field the editor cannot read is one it clears on the next save. */
+            /** @description Whether this allocation is gated behind a presale unlock code (TKT-239 / ADR-064). Reported so an EDITOR can round-trip it (TKT-244): the allocation write is a full-set atomic replace, so a field the editor cannot read is one it clears on the next save. */
             requires_code?: boolean;
             /**
              * Format: uuid

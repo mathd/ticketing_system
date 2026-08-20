@@ -185,7 +185,7 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrChannelWindowClosed):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "channel_window_closed"})
 		return
-	// A missing or unusable presale code (TKT-239 / ADR-055). Coded, so a client
+	// A missing or unusable presale code (TKT-239 / ADR-064). Coded, so a client
 	// can prompt for a code instead of reporting a sellout — and UNIFORM, so the
 	// body cannot tell an attacker which of the five causes applied. The store
 	// already collapsed them into one sentinel with one message; this must not
@@ -296,7 +296,7 @@ func (s *Server) createHold(w http.ResponseWriter, r *http.Request, reseller uui
 		Currency     string    `json:"currency"`
 		Channel      string    `json:"channel"`
 		// Decoded as-is: no TrimSpace, no case folding. A presale code is an exact
-		// opaque string (ADR-024/ADR-055), and normalizing here would disagree with
+		// opaque string (ADR-024/ADR-064), and normalizing here would disagree with
 		// the exact-match lookup in the store — a code issuable but never
 		// redeemable.
 		PresaleCode string `json:"presale_code"`

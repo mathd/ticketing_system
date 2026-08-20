@@ -5,7 +5,7 @@
 // The other two service clients are commerce.ts and access.ts; the response
 // validators all three share are in upstream.ts.
 import type { components } from './api-types.gen';
-import { GATEWAY_URL } from './upstream';
+import { GATEWAY_URL, withUpstreamDeadline } from './upstream';
 import { isRecognisedRole, type StaffRole } from './authorization';
 
 export type Venue = components['schemas']['Venue'];
@@ -85,12 +85,14 @@ function writeHeaders(assertion?: string): Record<string, string> {
 // assertion instead.
 export async function getVenues(organizerId: string): Promise<Venue[]> {
   const url = `${GATEWAY_URL}/api/catalog/public/venues?organizer_id=${encodeURIComponent(organizerId)}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`catalog venue read failed: ${res.status}`);
-  }
-  const body = (await res.json()) as PublicVenueList;
-  return body.venues;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(url, { signal });
+    if (!res.ok) {
+      throw new Error(`catalog venue read failed: ${res.status}`);
+    }
+    const body = (await res.json()) as PublicVenueList;
+    return body.venues;
+  });
 }
 
 /** One venue by id (v1 has no single-venue read; filter the organizer list). */
@@ -121,15 +123,18 @@ async function parseError(res: Response): Promise<CatalogApiError> {
 }
 
 async function postCatalog<T>(path: string, assertion: string, body: unknown): Promise<T> {
-  const res = await fetch(catalog(path), {
-    method: 'POST',
-    headers: writeHeaders(assertion),
-    body: JSON.stringify(body),
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog(path), {
+      method: 'POST',
+      headers: writeHeaders(assertion),
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      throw await parseError(res);
+    }
+    return (await res.json()) as T;
   });
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  return (await res.json()) as T;
 }
 
 // --- Seat-map authoring (US-019). Writes go through the gateway server-side,
@@ -186,11 +191,15 @@ export function addSeatMapSeat(
  * read goes through plain uncached fetch, so the header is informational here.
  */
 export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
-  const res = await fetch(catalog(`/public/venues/${encodeURIComponent(venueId)}/seat-maps`));
-  if (!res.ok) {
-    throw new Error(`seat-map list failed: ${res.status}`);
-  }
-  return ((await res.json()) as SeatMapList).seat_maps;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog(`/public/venues/${encodeURIComponent(venueId)}/seat-maps`), {
+      signal,
+    });
+    if (!res.ok) {
+      throw new Error(`seat-map list failed: ${res.status}`);
+    }
+    return ((await res.json()) as SeatMapList).seat_maps;
+  });
 }
 
 /**
@@ -198,11 +207,13 @@ export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
  * published version is hours-tier, a draft is no-store.
  */
 export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeometry> {
-  const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}`));
-  if (!res.ok) {
-    throw new Error(`seat-map geometry read failed: ${res.status}`);
-  }
-  return (await res.json()) as SeatMapGeometry;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}`), { signal });
+    if (!res.ok) {
+      throw new Error(`seat-map geometry read failed: ${res.status}`);
+    }
+    return (await res.json()) as SeatMapGeometry;
+  });
 }
 
 // --- Publishing, safe-editing, versioning, GA config (US-020/021/022, TKT-105).
@@ -242,11 +253,15 @@ export function editSeatMap(
  * status-driven (TKT-107): hours only when every version listed is published.
  */
 export async function listSeatMapVersions(seatMapId: string): Promise<SeatMapVersionHistory> {
-  const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`));
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  return (await res.json()) as SeatMapVersionHistory;
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`), {
+      signal,
+    });
+    if (!res.ok) {
+      throw await parseError(res);
+    }
+    return (await res.json()) as SeatMapVersionHistory;
+  });
 }
 
 /** Set a venue's GA capacity (TKT-105 COS-5). */
@@ -289,50 +304,51 @@ export async function authenticateStaff(
   identifier: string,
   password: string,
 ): Promise<StaffPrincipalDto | null> {
-  const res = await fetch(catalog('/staff/authenticate'), {
-    method: 'POST',
-    // Guarded like every other unsafe operation (TKT-191). ADR-042 originally
-    // made this endpoint public to avoid putting the SHARED service token in
-    // this process; a catalog-only credential removes that objection, and
-    // leaving it unguarded would mean an exception list inside a fail-closed
-    // scheme.
-    headers: writeHeaders(),
-    // In the body, never the URL: a query string lands in access logs, proxy
-    // logs and browser history.
-    body: JSON.stringify({ identifier, password }),
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog('/staff/authenticate'), {
+      method: 'POST',
+      // Guarded like every other unsafe operation (TKT-191). ADR-042 originally
+      // made this endpoint public to avoid putting the SHARED service token in
+      // this process; a catalog-only credential removes that objection, and
+      // leaving it unguarded would mean an exception list inside a fail-closed
+      // scheme.
+      headers: writeHeaders(),
+      // In the body, never the URL: a query string lands in access logs, proxy
+      // logs and browser history.
+      body: JSON.stringify({ identifier, password }),
+      signal,
+    });
+    if (res.status === 401) {
+      return null;
+    }
+    if (!res.ok) {
+      throw await parseError(res);
+    }
+    const body = (await res.json()) as {
+      staff_id: string;
+      organizer_id: string;
+      role: string;
+      organizer_assertion: string;
+    };
+    if (!isRecognisedRole(body.role)) {
+      // Catalog validates the stored role too, so reaching this means the contract
+      // and this client disagree about the vocabulary, a deployment skew. Refuse
+      // rather than mint a session carrying a role the matrix cannot classify.
+      throw new Error(`catalog returned an unrecognised staff role`);
+    }
+    // An empty assertion means catalog has no signing key configured (TKT-245).
+    // Refuse the sign-in rather than mint a session that cannot write. Every
+    // subsequent write would 401 and leave the failure harder to diagnose.
+    if (!body.organizer_assertion) {
+      throw new Error('catalog returned no organizer assertion; it is running without a signing key');
+    }
+    return {
+      staffId: body.staff_id,
+      organizerId: body.organizer_id,
+      role: body.role,
+      organizerAssertion: body.organizer_assertion,
+    };
   });
-  if (res.status === 401) {
-    return null;
-  }
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  const body = (await res.json()) as {
-    staff_id: string;
-    organizer_id: string;
-    role: string;
-    organizer_assertion: string;
-  };
-  if (!isRecognisedRole(body.role)) {
-    // Catalog validates the stored role too, so reaching this means the contract
-    // and this client disagree about the vocabulary — a deployment skew. Refuse
-    // rather than mint a session carrying a role the matrix cannot classify:
-    // fail-closed at every layer that handles a role is the whole design.
-    throw new Error(`catalog returned an unrecognised staff role`);
-  }
-  // An empty assertion means catalog has no signing key configured (TKT-245).
-  // Refuse the sign-in rather than mint a session that cannot write: every
-  // subsequent write would 401, which reads to the staff member as "my password
-  // works but nothing I do saves" — the least diagnosable failure available.
-  if (!body.organizer_assertion) {
-    throw new Error('catalog returned no organizer assertion; it is running without a signing key');
-  }
-  return {
-    staffId: body.staff_id,
-    organizerId: body.organizer_id,
-    role: body.role,
-    organizerAssertion: body.organizer_assertion,
-  };
 }
 
 // --- Event authoring (TKT-192 / US-B3) ---
@@ -444,21 +460,24 @@ export async function listChannelsForOperator(assertion: string): Promise<Channe
   // naming the tenant in a query string is exactly the enumeration ADR-053
   // recorded. Catalog takes it from the assertion instead.
   const url = `${CATALOG_URL}/internal/channels`;
-  const res = await fetch(url, {
-    headers: {
-      'X-Catalog-Staff-Write-Token': staffWriteCredential(),
-      'X-Catalog-Organizer-Assertion': assertion,
-    },
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(url, {
+      headers: {
+        'X-Catalog-Staff-Write-Token': staffWriteCredential(),
+        'X-Catalog-Organizer-Assertion': assertion,
+      },
+      signal,
+    });
+    if (!res.ok) {
+      throw await parseError(res);
+    }
+    const body = (await res.json()) as { channels?: Channel[] };
+    // Defensive: a contract-shaped body with no array must not become `undefined`
+    // and crash the page's map. The operator read is hand-mounted and therefore
+    // outside catalog's response validation (ADR-009), so nothing upstream
+    // guarantees the key is present.
+    return body.channels ?? [];
   });
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  const body = (await res.json()) as { channels?: Channel[] };
-  // Defensive: a contract-shaped body with no array must not become `undefined`
-  // and crash the page's map. The operator read is hand-mounted and therefore
-  // outside catalog's response validation (ADR-009), so nothing upstream
-  // guarantees the key is present.
-  return body.channels ?? [];
 }
 
 export function createChannel(
@@ -488,22 +507,24 @@ export async function updateChannel(
   channelId: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
 ): Promise<Channel> {
-  const res = await fetch(catalog(`/channels/${encodeURIComponent(channelId)}`), {
-    method: 'PUT',
-    headers: writeHeaders(assertion),
-    body: JSON.stringify({
-      // The channel id still comes from a form field, and an id is still not an
-      // authorization boundary — but the tenant it is checked against now comes
-      // from the assertion rather than the body, so catalog refuses another
-      // organizer's channel with 404 whatever the caller claims (TKT-245).
-      code: input.code,
-      display_name: input.displayName,
-      kind: input.kind,
-      enabled: input.enabled,
-    }),
+  return withUpstreamDeadline(async (signal) => {
+    const res = await fetch(catalog(`/channels/${encodeURIComponent(channelId)}`), {
+      method: 'PUT',
+      headers: writeHeaders(assertion),
+      body: JSON.stringify({
+        // The channel id still comes from a form field, and an id is still not an
+        // authorization boundary. Catalog takes the tenant from the assertion
+        // and refuses another organizer's channel with 404 (TKT-245).
+        code: input.code,
+        display_name: input.displayName,
+        kind: input.kind,
+        enabled: input.enabled,
+      }),
+      signal,
+    });
+    if (!res.ok) {
+      throw await parseError(res);
+    }
+    return (await res.json()) as Channel;
   });
-  if (!res.ok) {
-    throw await parseError(res);
-  }
-  return (await res.json()) as Channel;
 }

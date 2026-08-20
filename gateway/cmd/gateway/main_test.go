@@ -1,12 +1,77 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 )
+
+type discardInfoLogger struct{}
+
+func (discardInfoLogger) InfoContext(context.Context, string, ...any) {}
+
+// Gateway liveness and readiness answer different questions. A running service
+// may still refuse traffic while it cannot keep an operational promise. The
+// gateway must preserve that distinction at the routes an operator probes.
+func TestGatewayReadinessProbesDownstreamReadiness(t *testing.T) {
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path]++
+		mu.Unlock()
+
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/readyz":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	serviceCount := 0
+	for prefix, envVar := range routes {
+		if !strings.HasPrefix(prefix, "/api/") {
+			continue
+		}
+		t.Setenv(envVar, upstream.URL)
+		serviceCount++
+	}
+
+	mux := http.NewServeMux()
+	registerHealthRoutes(mux, discardInfoLogger{})
+
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/healthz", want: http.StatusOK},
+		{path: "/healthz/all", want: http.StatusOK},
+		{path: "/readyz", want: http.StatusServiceUnavailable},
+	} {
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if res.Code != tc.want {
+			t.Errorf("GET %s status = %d, want %d", tc.path, res.Code, tc.want)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := seen["/healthz"]; got != serviceCount {
+		t.Errorf("downstream /healthz probes = %d, want %d", got, serviceCount)
+	}
+	if got := seen["/readyz"]; got != serviceCount {
+		t.Errorf("downstream /readyz probes = %d, want %d", got, serviceCount)
+	}
+}
 
 // An encoded separator must not be able to walk past the /internal/ boundary.
 //

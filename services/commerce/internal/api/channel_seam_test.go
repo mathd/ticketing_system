@@ -32,7 +32,7 @@ import (
 //
 // So closing the seam is an AUTHORIZATION change. The allocation must say who may
 // sell it and inventory must judge that under the pool row lock -- the shape
-// ADR-055 gave requires_code -- and every hold path (first attempt, persisted
+// ADR-064 gave requires_code -- and every hold path (first attempt, persisted
 // replay, exchange target) must carry the channel or be refused. TKT-246.
 //
 // THESE TESTS PIN THE PRESENT, NOT THE PAST. They assert the GA hold carries no

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ticketing/shared/httpx"
 )
 
 // Stripe is the test-mode Stripe adapter behind the psp.PSP port (ADR-032). It talks to the
@@ -30,6 +32,20 @@ type Stripe struct {
 // checkout and the recovery runner act on the same order (TKT-116). It nests inside the
 // 30s obs.Client() bound its callers sit behind, and outside recovery's stricter 10s.
 const stripeCallTimeout = 15 * time.Second
+
+// maxStripeResponseBytes bounds a provider response body. stripeCallTimeout bounds
+// how LONG a call may take; it says nothing about how MANY bytes arrive, so a
+// provider streaming steadily inside its deadline allocated without a ceiling on
+// the outermost leg of the money path.
+//
+// 4 MiB is far above any real Stripe payload — the largest thing this adapter reads
+// is a 100-item refund list page — and far below what threatens the process. An
+// oversize body is refused rather than truncated, and every do() error path already
+// maps to Unknown, so refusing one classifies the operation as ambiguous and leaves
+// it recoverable. That is the required direction: a body we would not read is a body
+// we cannot classify, and inventing a terminal outcome from one is how a captured
+// payment gets recorded as declined (ADR-016 §Dec3).
+const maxStripeResponseBytes int64 = 4 << 20
 
 // NewStripe builds the adapter. secretKey is the Basic-auth username (password empty).
 //
@@ -135,6 +151,17 @@ func unknown(err error) (Result, error) { return Result{Outcome: Unknown}, err }
 // do performs one Stripe HTTP call. A transport failure (no response) returns a non-nil
 // error AND leaves the caller to map it to Unknown. A non-2xx returns the decoded error
 // envelope. A 2xx returns the raw body for the caller to parse.
+//
+// There is a THIRD error mode, and it is the one that reads like the happy path: a
+// response whose body exceeded maxStripeResponseBytes returns the real status code
+// alongside a nil body and a non-nil error. Status is therefore NOT a safe thing to
+// branch on first — a 200 here is a request Stripe answered and this adapter refused
+// to read, which is Unknown, not success.
+//
+// So: check err BEFORE status or the *stripeError, on every path. Every current call
+// site does, which is what keeps an unread body ambiguous rather than terminal, and
+// inventing a terminal outcome from one is how a captured payment gets recorded as
+// declined (ADR-016 §Dec3).
 func (s *Stripe) do(ctx context.Context, method, path, idempotencyKey string, form url.Values) (int, []byte, *stripeError, error) {
 	var body io.Reader
 	if form != nil {
@@ -156,7 +183,7 @@ func (s *Stripe) do(ctx context.Context, method, path, idempotencyKey string, fo
 		return 0, nil, nil, err // transport failure -> Unknown at the call site
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := httpx.ReadResponseBody(resp.Body, maxStripeResponseBytes)
 	if err != nil {
 		return resp.StatusCode, nil, nil, err
 	}

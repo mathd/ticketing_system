@@ -31,7 +31,7 @@ package smoke_test
 // TWO TABLES, NOT ONE — the distinction these tests exist to pin. Inventory's claim
 // path DOES gate on a channel: four ordered predicates, `window -> seller -> code ->
 // capacity` (services/inventory/internal/store/store.go:500-600, ADR-054 / TKT-246 /
-// ADR-055 / ADR-024). Every one of them reads inventory's OWN `channel_allocations`
+// ADR-064 / ADR-024). Every one of them reads inventory's OWN `channel_allocations`
 // table. NONE reads catalog's `channels` registry. Conflating the two is how a test
 // like this ends up green and vacuous, so each fixture below is built to satisfy all
 // four predicates — a fixture refused by an earlier one never reaches the INSERT it
