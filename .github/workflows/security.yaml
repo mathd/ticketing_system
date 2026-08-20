@@ -142,9 +142,12 @@ jobs:
   #
   # TWO THINGS DIFFER HERE and both matter.
   #
-  # 1. `needs:` names the three TOP-LEVEL jobs, so this runs ONCE per run. govulncheck is
+  # 1. `needs:` names every TOP-LEVEL job, so this runs ONCE per run. govulncheck is
   #    an 8-leg matrix; depending on the legs individually would open eight issues for one
-  #    bad Monday, which trains people to ignore the channel.
+  #    bad Monday, which trains people to ignore the channel. `changes` is in the list
+  #    because it GATES the two advisory jobs: if it fails, they are skipped rather than
+  #    red, and a notifier that did not depend on it would stay silent about a Monday on
+  #    which no dependency scan ran at all.
   # 2. This workflow sets a workflow-level `permissions: contents: read`, and a job-level
   #    block REPLACES it rather than merging. These jobs need no repository contents (no
   #    checkout), so they declare only what they use — but anyone adding a checkout step
@@ -152,7 +155,7 @@ jobs:
   scheduled-failure-notice:
     name: Notify - scheduled security failure
     if: ${{ failure() && !cancelled() && github.event_name == 'schedule' }}
-    needs: [govulncheck, pnpm-audit, repository-scan]
+    needs: [changes, govulncheck, pnpm-audit, repository-scan]
     permissions:
       issues: write
     runs-on: ubuntu-latest
@@ -200,7 +203,7 @@ jobs:
   scheduled-recovery-notice:
     name: Close - scheduled security recovery (usually a no-op)
     if: ${{ success() && !cancelled() && github.event_name == 'schedule' }}
-    needs: [govulncheck, pnpm-audit, repository-scan]
+    needs: [changes, govulncheck, pnpm-audit, repository-scan]
     permissions:
       issues: write
       actions: read
