@@ -12,6 +12,89 @@
       "key": "TKT-116"
     }
   ],
-  "description": "Raised by TKT-116's adversarial ai-review (finding F2's second half). **Pre-existing** — TKT-116 did not create it, and closed only the buyer-facing half.\n\n`ReleaseStuckOrder` (`services/commerce/internal/store/recovery.go:122`) sets `recovery_parked_at=now()` once `recovery_attempts >= MaxRecoveryAttempts`, and deliberately leaves `status` alone. `ClaimStuckOrders` requires `recovery_parked_at IS NULL`, so a parked row is permanently excluded from the claimable set. `ParkForReconciliation` also parks, but that one at least moves the status to `reconciliation_required`.\n\nTKT-116 stopped a parked `release_pending` order from telling the buyer 202 forever (it now answers 409, the same as `reconciliation_required`). **The order still cannot be resolved by anything in this repo**: there is no unpark endpoint, no operator command, and no surface listing parked orders. A human is told to act and given nothing to act with.\n\nWanted:\n- a way to LIST parked orders with `recovery_last_error` and `recovery_parked_at` (an operator read, not a buyer one);\n- a guarded unpark/resolve action that clears `recovery_parked_at` and resets `recovery_attempts`, with an audit trail;\n- a decision on whether parked orders should alarm.\n\nCompare `inventory reconcile-pins` (TKT-112), which is the shape of an operator command that already exists in this repo.\n\n**Reviewer's words:** *\"the repository exposes no unpark/resolution path... Provide and test an operator-controlled resolution/unpark path before claiming convergence.\"* TKT-116 does not claim convergence for parked orders — it explicitly answers 409 instead.",
-  "comments": []
+  "description": "Raised by TKT-116's adversarial ai-review (finding F2's second half). **Pre-existing** — TKT-116 did not create it, and closed only the buyer-facing half.\n\n`ReleaseStuckOrder` (`services/commerce/internal/store/recovery.go:122`) sets `recovery_parked_at=now()` once `recovery_attempts >= MaxRecoveryAttempts`, and deliberately leaves `status` alone. `ClaimStuckOrders` requires `recovery_parked_at IS NULL`, so a parked row is permanently excluded from the claimable set. `ParkForReconciliation` also parks, but that one at least moves the status to `reconciliation_required`.\n\nTKT-116 stopped a parked `release_pending` order from telling the buyer 202 forever (it now answers 409, the same as `reconciliation_required`). **The order still cannot be resolved by anything in this repo**: there is no unpark endpoint, no operator command, and no surface listing parked orders. A human is told to act and given nothing to act with.\n\nWanted:\n- a way to LIST parked orders with `recovery_last_error` and `recovery_parked_at` (an operator read, not a buyer one);\n- a guarded unpark/resolve action that clears `recovery_parked_at` and resets `recovery_attempts`, with an audit trail;\n- a decision on whether parked orders should alarm.\n\nCompare `inventory reconcile-pins` (TKT-112), which is the shape of an operator command that already exists in this repo.\n\n**Reviewer's words:** *\"the repository exposes no unpark/resolution path... Provide and test an operator-controlled resolution/unpark path before claiming convergence.\"* TKT-116 does not claim convergence for parked orders — it explicitly answers 409 instead.\n\n---\n\n## Conditions of Success (COS)\n\n1. **An operator can list parked orders.** `commerce list-parked` prints every order with `recovery_parked_at IS NOT NULL`, one row each, carrying at minimum: order id, status, `recovery_attempts`, `recovery_parked_at`, `recovery_last_error`, `terminal_outcome`. Exit 0 with an explicit \"no parked orders\" line when the set is empty (nothing-to-do is not a failure), non-zero only on a store failure.\n2. **An operator can unpark one order, by id, with a stated reason.** `commerce unpark-order <order-id> <reason>` clears `recovery_parked_at`, resets `recovery_attempts` to 0, sets `recovery_next_attempt_at=now()`, and clears `recovery_claim_id`/`recovery_lease_until`. `recovery_last_error` is RETAINED as operator context.\n3. **The unparked order is actually re-driven.** After an unpark, the same order is returned by `ClaimStuckOrders` — asserted at the smoke tier against real Postgres, because the claimable set is decided in SQL.\n4. **The unpark refuses, distinguishably, on each of its three preconditions.** Unknown order id; an order that is not parked; an order whose status the runner cannot claim. Each refusal names which precondition failed, each is a separate test, and each test satisfies the preceding preconditions so no assertion passes by short-circuit.\n5. **The unpark leaves durable evidence.** An append-only row records order id, when, the operator's reason, and the pre-unpark `recovery_attempts` / `recovery_parked_at` / `recovery_last_error`. The claim made for it in code and docs is scoped to an honest operator (ADR-021) — never \"tamper-evident\".\n6. **Nothing else changes.** The order's `status`, `terminal_outcome`, and every money column are untouched by an unpark; the runner's claim predicate and `ParkForReconciliation` are unmodified. Asserted, not asserted-by-absence.\n7. **`docs/development.md` documents both commands** in the operator section, with the exact wording reusable for any claim about them.\n8. `make check` green.\n",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping verdict: READY** — 7 items `met`, 1 `deferred`, 0 `open`, no blockers.\n\n**The proposed remedy did not survive the read, and that is the most useful thing shaping found.**\nThe ticket cites `inventory reconcile-pins` as \"the shape of an operator command that already exists\nin this repo\". It does exist, but it is a *full-table drain with an injectable core* — the wrong\ntemplate for a targeted single-row action. The right in-repo template is commerce's **own**\n`enrol-reseller`/`revoke-reseller`: same binary, same one-shot arg-parsing, same `sql.Open` +\nstore-function split, already wired into `main.go`'s dispatch. Inheriting the ticket's suggestion\nwould have spent a drafting run designing a reconciler for a job that is one `UPDATE`.\n\n**Second read-derived finding.** `ReleaseStuckOrder` re-parks via `CASE WHEN recovery_attempts>=10`.\nAn unpark that cleared `recovery_parked_at` **without resetting `recovery_attempts`** would be a\nno-op: the order gets exactly one re-drive and re-parks. Migration `0005_psp_recovery.sql` already\nsolved this exact problem for a bulk population, with its reasoning written down — that UPDATE is\nthe thing to mirror, and the reset deserves its own test.\n\n**Third.** The audit row does **not** belong in `order_facts`: that table is money-typed\n(`amount`/`currency NOT NULL`) and an unpark moves no money. New append-only table.\n\n**`uncertainties: deferred`** — the ticket's third ask (\"a decision on whether parked orders should\nalarm\") is scoped OUT with a stated reason: commerce has no metrics/alerting surface to hang it on,\nand this operator read is the *prerequisite* for any alert. It becomes an incidental follow-up\nticket at closeout, not silent scope creep.\n\n**Money-path note for the plan gate.** `approach` is `met`, not `deferred` — correctly, because\nparked `reconciliation_required` orders can hold **captured** money. The approach is explicit that\nunpark decides nothing about money: it only returns the row to the claimable set so the *existing*\nrunner re-drives it under its *existing* rules.\n\n**Guard predicate count: 3** (order exists / is parked / status is claimable) → three tests, each\nsatisfying the earlier ones, each mutated separately.\n\n`risk:low` **not** claimed — money-adjacent rows and a data migration are both on the label's\ncarve-out list."
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A parked recovery order (recovery_parked_at set) is permanently excluded from ClaimStuckOrders and there is no way in this repo to list one or clear the park. A human is told to act and given no instrument. Pre-existing; TKT-116 closed only the buyer-facing 409 half."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: two commerce operator subcommands - `list-parked` (read: order id, status, recovery_attempts, recovery_parked_at, recovery_last_error, terminal_outcome, age) and `unpark-order <order-id> <reason>` (clears recovery_parked_at, resets recovery_attempts to 0, sets recovery_next_attempt_at=now(), clears claim/lease), each with a durable audit row. OUT: HTTP/back-office surface, alerting/metrics wiring (decision recorded as a follow-up, see uncertainties), auto-unpark policy, any change to the runner's claim predicate or to ParkForReconciliation semantics."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "(a) Should a parked order alarm? Decision: OUT of this ticket - commerce has no metrics/alerting surface to hang it on, and the operator read is the prerequisite for any alert anyway. Record it as an incidental follow-up ticket at closeout, not as scope creep here. (b) Whether unpark should refuse a status the runner cannot drive: resolvable at Planning by reading ClaimStuckOrders' status IN(...) list - it is a code read, not a product call."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. `relates TKT-116` only. Migration 0005 already precedent-sets a bulk unpark (same five columns, same reset shape) - it is the SQL to mirror, not a dependency."
+    },
+    "approach": {
+      "state": "met",
+      "note": "VERIFIED against code, not inherited. The ticket cites `inventory reconcile-pins` as the shape; that command exists (services/inventory/cmd/inventory/reconcile_pins.go) but it is a full-table drain with an injectable core - the wrong template for a targeted single-row action. The RIGHT in-repo template is commerce's own `enrol-reseller`/`revoke-reseller` (services/commerce/cmd/commerce/reseller_credentials.go): same binary, same one-shot arg-parsing shape, same `sql.Open` + store-function split, already registered in main.go's dispatch. Store functions go in services/commerce/internal/store/recovery.go beside ReleaseStuckOrder/ParkForReconciliation. The unpark UPDATE mirrors migration 0005's proven reset (recovery_parked_at=NULL, recovery_attempts=0, recovery_next_attempt_at=now(), recovery_claim_id=NULL, recovery_lease_until=NULL) and RETAINS recovery_last_error as operator context, exactly as 0005 argues. Audit trail: a new `order_recovery_unparks` table (append-only, order_id + unparked_at + reason + prior attempts/parked_at/last_error), NOT order_facts - order_facts is a money-typed row (amount/currency NOT NULL) and an unpark moves no money. NOTE (money-path adjacency): this touches orders in reconciliation_required, which can hold CAPTURED money; unpark must not itself decide anything about money - it only returns the row to the claimable set so the existing runner re-drives it under its existing rules. GUARD PREDICATE COUNT for unpark: 3 independent predicates - (1) the order exists, (2) recovery_parked_at IS NOT NULL (refuse unparking a row that is not parked), (3) status is one the runner can actually claim. Three predicates = three tests, each satisfying the earlier ones, each mutated separately (AGENTS.md TKT-251 rule)."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Both subcommands in one slice - a list with no action is the status quo the ticket complains about, and an unpark with no list is unusable (the operator has no way to find the order id). ~4 files: recovery.go (store fns), a new migration, a new cmd file, main.go dispatch + docs/development.md operator section."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS below."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked in `context` field below"
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-016-checkout-recovery-state-machine.md",
+        "constrains": "The recovery state machine itself. §Decision 2: every decision comes from durable columns, never from an inference about what a failed transport did - an unpark must therefore write its own durable evidence and must not infer or alter a terminal_outcome. §Consequences names the exact gap this ticket closes: 'confirmation_pending whose confirm is terminally impossible parks as reconciliation_required until compensation exists; those orders hold captured money with no automated resolution.' Line 25: 'Nothing revisits a parked order' - this ticket makes an OPERATOR the thing that revisits it, deliberately, not a scheduler."
+      },
+      {
+        "adr": "ADR-022-out-of-band-service-migrations.md",
+        "constrains": "The new migration ships as embedded SQL run by `commerce migrate` as a one-shot Compose job; the server path never migrates."
+      },
+      {
+        "adr": "ADR-020-catalog-index-build-concurrency.md",
+        "constrains": "Plain CREATE INDEX only - CONCURRENTLY is still not adopted. (Scoped to catalog by title, but the reasoning is the repo's migration convention.)"
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Naming the adversary. The unpark audit row is HONEST-OPERATOR evidence, not tamper-evidence: anyone with commerce DB access can insert or delete it. The claim in code comments and docs must say 'who unparked what and why, for an honest operator' - never 'tamper-evident' or 'auditable' unqualified."
+      },
+      {
+        "adr": "ADR-032-stripe-behind-the-psp-port.md",
+        "constrains": "reconciliation_required rows are the compensation population; unpark returns them to the runner which drives /internal/psp/refund. Unpark must not itself call the PSP."
+      },
+      {
+        "adr": "ADR-056-partner-credential-identity.md",
+        "constrains": "Only as the shape precedent for a commerce operator CLI subcommand (enrol-reseller). No credential is issued here."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/store/recovery_smoke_test.go",
+        "constrains": "The smoke tier (build tag `smoke`, real Postgres via outboxDB(t)) is where a claim-predicate assertion must live - an in-memory fake would scope in Go what the SQL must scope (AGENTS.md tier rule). `seedStuck` is the fixture to reuse; it back-dates updated_at past the 2-minute grace period, which any unpark test must also do or the row is unclaimable for a reason unrelated to parking."
+      },
+      {
+        "test": "services/commerce/internal/store/migration_smoke_test.go",
+        "constrains": "Migration up/down is asserted; a new migration needs a Down that does not silently falsify durable evidence (0005's Down RAISEs rather than translating). Check what this test enforces about version numbering before picking 0023."
+      },
+      {
+        "test": "services/commerce/cmd/commerce/*_test.go",
+        "constrains": "credentials_test.go / readiness_test.go are the cmd-tier precedent for testing a subcommand's arg parsing without a database."
+      }
+    ],
+    "notes": "Migration 0005_psp_recovery.sql lines 36-49 is a WORKED EXAMPLE of the exact UPDATE this ticket needs, with its reasoning already written down (retain recovery_last_error as operator context; reset attempts so newly-actionable rows get a full retry budget). Mirror it. Also: MaxRecoveryAttempts=10 and ReleaseStuckOrder parks via `CASE WHEN recovery_attempts>=$4` - so an unpark that did NOT reset recovery_attempts would re-park on the very next failed attempt, making the command a no-op. That is the defect the reset exists to prevent and it deserves its own test."
+  }
 }
