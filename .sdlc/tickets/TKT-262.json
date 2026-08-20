@@ -1,0 +1,21 @@
+{
+  "key": "TKT-262",
+  "type": "Task",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-146"
+    },
+    {
+      "type": "relates",
+      "key": "TKT-115"
+    }
+  ],
+  "summary": "Recovery refunds a captured payment before it learns the claim was confirmed (TKT-146 ai-review incidental)",
+  "comments": [],
+  "description": "Raised by TKT-146's adversarial ai-review (pass 1, finding F2). **Pre-existing** — TKT-146 did not create it and does not close it; it only gave the path a new operator-triggered entrance and documented the hazard.\n\n`resolveReconciliation` (`services/commerce/internal/recovery/runner.go:485-499`) decides on PSP status alone:\n\n```go\nif st.Outcome == \"captured\" {\n    if st.CapturedAmount <= 0 { /* park, no refund */ }\n    if _, err := r.payments.Refund(...); err != nil { ... }   // <- money leaves here\n    return r.finishRefunded(ctx, s)\n}\n```\n\n`finishRefunded` (`:522-530`) then calls `inventory.Release`, and **only there** discovers the claim may already be confirmed — at which point the money is already back with the buyer and the seat is already sold. Its own handling says so:\n\n```go\nif errors.Is(err, ErrClaimNotReleasable) {\n    // The claim is CONFIRMED — inventory sold the seat — while the money came back.\n    return r.store.ParkForReconciliation(ctx, ..., \"refunded money against a confirmed claim; manual reconciliation required\")\n}\n```\n\nSo the outcome is a refunded buyer holding a sold seat, parked for a human. The code is honest about it; the question is whether the ORDER of the two calls should be inverted, or whether inventory state should be established before the refund is issued.\n\n**Reachable today without TKT-146**: any *unparked* `reconciliation_required` row reaches this, and migration `0005_psp_recovery.sql`'s backfill re-opened a population of exactly those rows.\n\n**Why it is worth a ticket rather than a comment.** This is a money path, the failure is silent from the buyer's side until a human reconciles, and the remedy is a design decision (re-order the calls? take an inventory read first? make the refund conditional on a release having succeeded?) with a real trade-off — establishing inventory state first costs an extra call on every pass and can itself be stale by the time the refund lands.\n\n**Not obviously a defect.** Refund-then-release may be the deliberate choice: releasing first and failing to refund strands the buyer's money, which is the worse direction. That trade-off should be written down as an ADR amendment either way — ADR-016 §Consequences names the population but not this ordering.\n\nWanted: a decision (ADR-016 amendment or a new ADR), and if the ordering changes, a test where PSP reports `captured` and inventory reports a confirmed claim, asserting the system cannot produce both a refund and a sold seat."
+}
