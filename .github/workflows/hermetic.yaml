@@ -27,8 +27,14 @@ on:
       - .github/workflows/hermetic.yaml
 
 concurrency:
-  group: hermetic-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # github.event_name is part of the group so a manual dispatch or a build-file PR cannot
+  # cancel an in-flight scheduled run — the run whose failure is the only one anybody is
+  # told about.
+  group: hermetic-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # PR runs still cancel their own predecessors; scheduled runs never do. A cancelled run
+  # notifies nothing (correctly — it never finished), so letting one scheduled run cancel
+  # another would drop an outage silently, which is this ticket's whole subject.
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   hermetic-smoke:
@@ -40,3 +46,110 @@ jobs:
           go-version: "1.26.6"
           cache-dependency-path: "**/go.sum"
       - run: make smoke-hermetic
+
+  # --- Scheduled-failure notification (TKT-213) ----------------------------------
+  #
+  # A weekly workflow nobody watches reports nothing. This one was red on main for 9 days,
+  # and the only reason anyone found out was an unrelated PR tripping its path filter.
+  # These two jobs make a scheduled failure open a GitHub issue and a later scheduled
+  # success close it.
+  #
+  # DELIBERATELY inlined rather than a shared script under scripts/. The notifier is the
+  # thing that must not fail silently, and actions/checkout would run it FROM THE COMMIT
+  # UNDER TEST — so a bad main would break the alarm whose job is to report that main is
+  # bad. Inlined, it depends on nothing but `gh` and the API, and needs no checkout at all.
+  # The cost is a near-duplicate of this block in security.yaml: change one, change both.
+  #
+  # `permissions:` at job level REPLACES the workflow default rather than merging with it,
+  # and this repo's default_workflow_permissions is `read`
+  # (gh api repos/:owner/:repo/actions/permissions/workflow). Omitting issues:write here
+  # is a silent 403 — the notifier "runs" and tells nobody, which is the very failure this
+  # ticket exists to close.
+  scheduled-failure-notice:
+    name: Notify - scheduled hermetic failure
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs: [hermetic-smoke]
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update the outage issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Keyed on the workflow FILE, not github.workflow: the display name lives in a
+          # `name:` field a human can rename, and a rename would orphan every open issue
+          # and silently open a fresh one.
+          MARKER: "<!-- scheduled-workflow-failure: .github/workflows/hermetic.yaml -->"
+          LABEL: scheduled-workflow-failure
+        run: |
+          set -Eeuo pipefail
+          gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")" | grep -qx true ||
+            gh label create "$LABEL" --color D73A4A \
+              --description "A scheduled GitHub Actions workflow is failing"
+          existing=$(gh issue list --state open --label "$LABEL" --limit 100 --json number,body \
+            --jq "map(select(.body|contains(\"$MARKER\")))|.[0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+            exit 0
+          fi
+          body=$(cat <<EOF
+          $MARKER
+
+          The scheduled **hermetic-smoke** workflow failed.
+
+          Failed run: $RUN_URL
+          Commit: \`$GITHUB_SHA\`
+
+          This workflow runs the full in-Docker build path, which per-PR \`make check\` does
+          not exercise — it is what keeps the fast host-built path honest. A failure here
+          means the two paths have diverged.
+
+          This issue closes itself when a later scheduled run succeeds.
+          EOF
+          )
+          gh issue create --label "$LABEL" \
+            --title "Scheduled workflow failure: hermetic-smoke" \
+            --body "$(printf '%s' "$body" | sed 's/^          //')"
+
+  # A no-op on almost every run, by design: the workflow is usually green, and there is no
+  # way to know whether an outage issue is open without looking. Kept cheap — no checkout,
+  # and it exits immediately when there is nothing to close.
+  scheduled-recovery-notice:
+    name: Close - scheduled hermetic recovery (usually a no-op)
+    if: ${{ success() && github.event_name == 'schedule' }}
+    needs: [hermetic-smoke]
+    permissions:
+      issues: write
+      # actions:read is what lets `gh run view` read this run's own job conclusions below.
+      actions: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close the outage issue if this run really was clean
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MARKER: "<!-- scheduled-workflow-failure: .github/workflows/hermetic.yaml -->"
+          LABEL: scheduled-workflow-failure
+        run: |
+          set -Eeuo pipefail
+          existing=$(gh issue list --state open --label "$LABEL" --limit 100 --json number,body \
+            --jq "map(select(.body|contains(\"$MARKER\")))|.[0].number // empty")
+          if [ -z "$existing" ]; then
+            echo "no open outage issue for this workflow; nothing to close"
+            exit 0
+          fi
+          # Do not infer success from `needs:` alone. A job added to this workflow but not
+          # to the needs: list above would let a real failure sit outside this job's view,
+          # and this job would then CLOSE a genuine outage. Ask the run what every job
+          # actually concluded — evidence, not inference.
+          clean=$(gh run view "$GITHUB_RUN_ID" --json jobs \
+            --jq "[.jobs[] | select((.name|startswith(\"Notify - \")) or (.name|startswith(\"Close - \"))|not) | .conclusion] | all(.==\"success\")")
+          if [ "$clean" != "true" ]; then
+            gh issue comment "$existing" --body "A scheduled run reached the recovery step, but not every job in it succeeded, so this stays open. Run: $RUN_URL"
+            exit 0
+          fi
+          gh issue comment "$existing" --body "Recovered: $RUN_URL"
+          gh issue close "$existing" --reason completed
