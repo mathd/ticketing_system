@@ -220,27 +220,79 @@ func TestTheTwoStatusSetsAgreeOnEveryStatusTheSchemaPermits(t *testing.T) {
 
 	// Straight from the live constraint: whatever the schema permits today, including a value
 	// added after this test was written.
+	//
+	// Scoped to the `orders` relation, because constraint names are per-relation and not
+	// database-global — an unscoped lookup would silently read some other table's constraint
+	// the day one is named the same, and iterate its vocabulary instead (ai-review F7).
 	var checkClause string
 	if err := db.QueryRowContext(ctx, `
-		SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='orders_status_check'`).
+		SELECT pg_get_constraintdef(c.oid)
+		FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+		WHERE c.conname='orders_status_check' AND t.relname='orders'`).
 		Scan(&checkClause); err != nil {
 		t.Fatal(err)
 	}
-	vocabulary := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(checkClause, -1)
-	if len(vocabulary) < 5 {
-		t.Fatalf("read %d statuses out of orders_status_check (%q); the parse is broken, "+
-			"and a broken parse would make this test vacuous", len(vocabulary), checkClause)
+
+	// LOSSLESS extraction: every single-quoted literal, whatever it contains. The earlier
+	// version matched `[a-z_]+` and would have skipped a future value like '3ds_pending'
+	// entirely — creating no subtest for it, so drift on that status escaped both mechanisms
+	// while the test stayed green. A parse that silently omits is worse than one that fails,
+	// because this test's whole value is the COMPLETENESS of the list it iterates.
+	//
+	// PostgreSQL renders the clause as CHECK ((status = ANY (ARRAY['a'::text, ...]))) and
+	// doubles any embedded quote, so scanning quote-delimited runs is faithful to the
+	// rendering rather than to a guess about the character set.
+	vocabulary := regexp.MustCompile(`'((?:[^']|'')*)'`).FindAllStringSubmatch(checkClause, -1)
+	statuses := make([]string, 0, len(vocabulary))
+	for _, m := range vocabulary {
+		statuses = append(statuses, strings.ReplaceAll(m[1], "''", "'"))
+	}
+	// Fail closed on a rendering this parse cannot account for. The literal count must match
+	// the clause's own comma count, so a value the regex failed to extract is caught rather
+	// than skipped, and the statuses the runner is documented to drive must all be present, so
+	// a wholesale change of shape is caught too.
+	if got, want := len(statuses), strings.Count(checkClause, ",")+1; got != want {
+		t.Fatalf("parsed %d statuses out of orders_status_check but the clause has %d comma-separated "+
+			"values (%q); the parse is dropping or inventing entries and this test would be vacuous",
+			got, want, checkClause)
+	}
+	parsed := map[string]bool{}
+	for _, status := range statuses {
+		parsed[status] = true
+	}
+	for _, required := range []string{"created", "payment_unknown", "confirmation_pending",
+		"release_pending", "reconciliation_required", "completed"} {
+		if !parsed[required] {
+			t.Fatalf("the status vocabulary parsed out of orders_status_check is missing %q (%q); "+
+				"either the parse is broken or the constraint changed shape", required, checkClause)
+		}
 	}
 
-	for _, match := range vocabulary {
-		status := match[1]
+	for _, status := range statuses {
 		t.Run(status, func(t *testing.T) {
 			// The requirement, not the implementation: the recovery runner drives orders that
 			// have not reached a terminal state. Deliberately NOT read from
 			// claimableRecoveryStatuses — an expectation taken from the mechanism under test
 			// agrees with it by construction.
+			//
+			// Stated as an EXHAUSTIVE classification with no default, so that adding a status
+			// to orders_status_check fails this test loudly instead of being silently assumed
+			// claimable and then "confirmed" by whatever the code happens to do with it. A
+			// `!terminal[status]` default would turn the arrival of a new status into a test
+			// that blesses the implementation — the failure mode the whole test exists to
+			// close, one level up.
 			terminal := map[string]bool{"completed": true, "declined": true, "timeout": true, "refunded": true}
-			wantClaimable := !terminal[status]
+			nonTerminal := map[string]bool{
+				"created": true, "payment_unknown": true, "confirmation_pending": true,
+				"release_pending": true, "reconciliation_required": true,
+			}
+			if terminal[status] == nonTerminal[status] {
+				t.Fatalf("status %q is in the schema's vocabulary but this test does not classify it "+
+					"as terminal or non-terminal. Decide which the recovery runner should drive, add it "+
+					"to the right map here, and check claimableRecoveryStatuses and ClaimStuckOrders' "+
+					"SQL agree — do not let it default.", status)
+			}
+			wantClaimable := nonTerminal[status]
 
 			// Mechanism 1: the Go map, observed through UnparkOrder.
 			_, parked := seedParked(t, status, 10, "psp unreachable")
