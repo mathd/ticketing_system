@@ -61,6 +61,20 @@ func main() {
 		}
 		return
 	}
+	// Operator resolution for parked recovery orders (TKT-146). A parked order is
+	// excluded from ClaimStuckOrders forever, so without these there is no path in the
+	// service from "the runner gave up" to "a human resolved it".
+	if len(os.Args) > 1 && (os.Args[1] == "list-parked" || os.Args[1] == "unpark-order") {
+		run := listParked
+		if os.Args[1] == "unpark-order" {
+			run = unparkOrder
+		}
+		if err := run(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)

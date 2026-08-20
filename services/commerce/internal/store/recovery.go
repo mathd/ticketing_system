@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -356,4 +357,188 @@ func ClearRecoveryClaim(ctx context.Context, db OutboxDB, orderID, claimID uuid.
 		UPDATE orders SET recovery_lease_until=NULL,recovery_claim_id=NULL,recovery_last_error=NULL
 		WHERE id=$1 AND recovery_claim_id=$2`, orderID, claimID)
 	return err
+}
+
+// --- The operator path out of a parked order (TKT-146) ---------------------------
+//
+// ReleaseStuckOrder parks a row once its attempts are exhausted and ClaimStuckOrders
+// excludes parked rows, so nothing in this service revisited one: ADR-016 §Decision 1
+// says as much ("nothing revisits a parked order") and its §Consequences names the
+// population that hurts most — `confirmation_pending` whose confirm is terminally
+// impossible parks as `reconciliation_required` holding CAPTURED money. This makes an
+// operator the thing that revisits it. Deliberately an operator and not a scheduler:
+// ADR-016 refuses to re-drive on a timer something that already failed its budget.
+
+// ErrRecoveryOrderNotFound, ErrRecoveryOrderNotParked and ErrRecoveryOrderStatusNotClaimable
+// are the three preconditions of UnparkOrder, kept DISTINCT rather than collapsed into one
+// "cannot unpark". An operator acting during an incident needs to know which of "I typed the
+// wrong id", "someone already did this" and "this row is in a state the runner cannot drive"
+// they are looking at; the three call for three different next actions.
+var (
+	ErrRecoveryOrderNotFound           = errors.New("order not found")
+	ErrRecoveryOrderNotParked          = errors.New("order is not parked")
+	ErrRecoveryOrderStatusNotClaimable = errors.New("order status is not one the recovery runner can claim")
+)
+
+// claimableRecoveryStatuses is the status set ClaimStuckOrders selects on. Unparking a row
+// outside it would clear the marker and achieve nothing, because the runner would still not
+// select the row — a silent no-op wearing a success message.
+//
+// It duplicates the literal list in ClaimStuckOrders' SQL, which is a real cost. The
+// alternative — building that query's IN clause from this slice — was rejected: the claim
+// query is the hot path of the recovery runner and its SQL is meant to be read as one piece.
+// TestUnparkedOrderIsClaimedAgainByTheRunner is what keeps the two honest, because it drives
+// a real unpark through the real claim query.
+var claimableRecoveryStatuses = map[string]bool{
+	"created":                 true,
+	"payment_unknown":         true,
+	"confirmation_pending":    true,
+	"release_pending":         true,
+	"reconciliation_required": true,
+}
+
+// ParkedOrder is one row of the operator listing: everything needed to decide whether an
+// order should be unparked, and nothing that would make the listing a buyer-facing read.
+type ParkedOrder struct {
+	OrderID   uuid.UUID
+	Status    string
+	Attempts  int
+	ParkedAt  time.Time
+	LastError sql.NullString
+	// TerminalOutcome is the answer recorded before a release was attempted, empty when
+	// none ever was. It is reported because it is the single most useful thing for
+	// deciding what a parked order needs — never as an input to a decision this command
+	// makes (ADR-016 §Decision 2 keeps that reasoning in the runner).
+	TerminalOutcome sql.NullString
+}
+
+// ListParkedOrders reports every order excluded from recovery by a park marker.
+//
+// Takes OutboxDB rather than *sql.DB: it is a read and needs nothing wider. Unbounded and
+// unpaged on purpose — the parked population is bounded by attempt exhaustion, so a listing
+// long enough to need paging is itself the finding, and truncating it would hide exactly
+// that. Ordered oldest-first because the oldest park is the one that has been waiting.
+func ListParkedOrders(ctx context.Context, db OutboxDB) ([]ParkedOrder, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, status, recovery_attempts, recovery_parked_at, recovery_last_error, terminal_outcome
+		FROM orders
+		WHERE recovery_parked_at IS NOT NULL
+		ORDER BY recovery_parked_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list parked orders: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ParkedOrder
+	for rows.Next() {
+		var p ParkedOrder
+		if err := rows.Scan(&p.OrderID, &p.Status, &p.Attempts, &p.ParkedAt,
+			&p.LastError, &p.TerminalOutcome); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UnparkOrder returns one parked order to the claimable set and records why.
+//
+// It takes *sql.DB, not the OutboxDB every neighbour here takes, because it needs a
+// transaction: the reset and its evidence row must land together or not at all. Widening
+// OutboxDB to carry BeginTx was the alternative and was rejected — that interface is narrow
+// so the outbox drainer can be exercised without a live PostgreSQL, and handing it a
+// transaction surface for one caller's benefit gives that up. Do not "tidy" this signature
+// back to match its neighbours.
+//
+// What it does NOT do is the load-bearing half. It does not touch `status`, does not read or
+// write `terminal_outcome`, does not call the PSP, and moves no money. A parked
+// `reconciliation_required` order can hold captured funds, and the decision about those funds
+// stays where ADR-016 and ADR-032 put it: in the runner, on durable evidence. This only makes
+// the row visible to the runner again.
+//
+// It also leaves `updated_at` alone, which is not an omission. ClaimStuckOrders requires
+// `updated_at < now() - interval '2 minutes'` to keep recovery off orders belonging to a live
+// checkout; refreshing it here would exclude the order for two minutes for a reason unrelated
+// to parking — the trap RecordTerminalOutcome already sprang.
+//
+// Adversary (ADR-021): the evidence row is about an HONEST operator. Anyone with commerce's
+// database credentials can write, alter or delete these rows and nothing here would notice.
+func UnparkOrder(ctx context.Context, db *sql.DB, orderID uuid.UUID, reason string) error {
+	// Refused before the transaction opens: the reason is the only thing an unpark records
+	// that could not be derived from the row itself, and a blank one leaves evidence that
+	// looks complete and says nothing.
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return errors.New("a reason is required: it is the only part of the record a later reader cannot reconstruct")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("unpark order: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// FOR UPDATE, so a second operator racing this one blocks here and then observes the
+	// cleared marker rather than writing a second evidence row for one intervention.
+	var (
+		status   string
+		parkedAt sql.NullTime
+		attempts int
+		lastErr  sql.NullString
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, recovery_parked_at, recovery_attempts, recovery_last_error
+		FROM orders WHERE id=$1 FOR UPDATE`, orderID).
+		Scan(&status, &parkedAt, &attempts, &lastErr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrRecoveryOrderNotFound, orderID)
+	}
+	if err != nil {
+		return fmt.Errorf("read order %s: %w", orderID, err)
+	}
+	// The three predicates, in this order and each reported separately. Order matters:
+	// checking status first would report "not claimable" for an order that is simply not
+	// parked, which sends an operator looking for a state problem that does not exist.
+	if !parkedAt.Valid {
+		return fmt.Errorf("%w: %s", ErrRecoveryOrderNotParked, orderID)
+	}
+	if !claimableRecoveryStatuses[status] {
+		// No code path in this service produces a parked row with a status outside the
+		// claimable set — ReleaseStuckOrder parks without touching status, and
+		// ParkForReconciliation sets one that is in the set. This is a fail-closed guard
+		// against a row someone wrote by hand, and clearing its marker would look like a
+		// resolution while leaving the order just as unreachable.
+		return fmt.Errorf("%w: %s is %q", ErrRecoveryOrderStatusNotClaimable, orderID, status)
+	}
+
+	// The reset mirrors migration 0005_psp_recovery.sql, which re-opened a bulk population
+	// the same way and wrote down why: recovery_last_error is RETAINED as operator context,
+	// and attempts reset so a newly-actionable row gets a full retry budget. That reset is
+	// not cosmetic — ReleaseStuckOrder re-parks on `recovery_attempts>=MaxRecoveryAttempts`,
+	// so clearing the marker alone buys exactly one re-drive before the row parks again.
+	result, err := tx.ExecContext(ctx, `
+		UPDATE orders
+		SET recovery_parked_at=NULL,
+		    recovery_attempts=0,
+		    recovery_next_attempt_at=now(),
+		    recovery_claim_id=NULL,
+		    recovery_lease_until=NULL
+		WHERE id=$1 AND recovery_parked_at IS NOT NULL`, orderID)
+	if err != nil {
+		return fmt.Errorf("unpark order %s: %w", orderID, err)
+	}
+	// Belt and braces behind the row lock: a zero-row update after a locked read that saw a
+	// marker would mean the row changed under a lock that should have prevented it, and
+	// committing the evidence row anyway would record an intervention that did not happen.
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrRecoveryConflict
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO order_recovery_unparks
+		  (id, order_id, reason, pre_recovery_attempts, pre_recovery_parked_at, pre_recovery_last_error)
+		VALUES ($1,$2,$3,$4,$5,$6)`,
+		uuid.New(), orderID, reason, attempts, parkedAt.Time, lastErr); err != nil {
+		return fmt.Errorf("record unpark of %s: %w", orderID, err)
+	}
+	return tx.Commit()
 }

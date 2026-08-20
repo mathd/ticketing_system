@@ -145,6 +145,63 @@ uuid; identities are composed server-side from labels), and catalog enforces no 
 those columns, which is what TKT-143 is for. The failure is loud and names the cursor; no pin is
 wrongly removed.
 
+## Parked recovery orders (TKT-146)
+
+Commerce's recovery runner re-drives orders stranded in a non-terminal state. When an order
+exhausts its budget (`MaxRecoveryAttempts`, 10), `ReleaseStuckOrder` sets `recovery_parked_at` and
+stops: `ClaimStuckOrders` excludes parked rows, so **nothing in the service revisits a parked
+order** (ADR-016 §Decision 1, deliberately — an order that failed ten re-drives should not keep
+failing them on a timer). `ParkForReconciliation` parks the harder case, moving the order to
+`reconciliation_required`.
+
+Parking hands the problem to a human. These two commands are what the human uses.
+
+```bash
+docker compose exec commerce /app list-parked
+# order=0f9c… status=release_pending attempts=10 parked_at=2026-08-19T14:02:11Z \
+#   terminal_outcome=timeout last_error=psp unreachable
+# order=1a3e… status=reconciliation_required attempts=4 parked_at=2026-08-18T09:41:55Z \
+#   terminal_outcome=<none> last_error=captured payment whose claim is gone
+
+docker compose exec commerce /app unpark-order 0f9c…  "psp restored; re-driving (OPS-4412)"
+```
+
+Both need only the service's usual `DATABASE_URL`. `list-parked` exits **zero** when nothing is
+parked — "nothing to do" is not a failure, the same contract `reconcile-pins` states — and non-zero
+only on a store failure, so a wrapper can tell an empty queue from a broken one.
+
+**What `unpark-order` does, exactly.** It clears `recovery_parked_at`, resets `recovery_attempts`
+to 0, makes the order due immediately, and clears any stale claim and lease. `recovery_last_error`
+is **retained** as operator context. The attempts reset is not cosmetic: `ReleaseStuckOrder`
+re-parks on `recovery_attempts >= MaxRecoveryAttempts`, so clearing the marker alone would buy
+exactly one re-drive before the order parked again.
+
+**What it does not do — and this is the part to be careful about.** It does not resolve the order.
+It makes the order *drivable again* by the existing runner under the existing rules; whether the
+re-drive succeeds depends on whatever was failing. It never touches `status`, never reads or writes
+`terminal_outcome`, never calls the PSP, and moves no money. A parked `reconciliation_required`
+order may hold **captured** funds (ADR-016 §Consequences), and the decision about those funds stays
+in the runner, on durable evidence (ADR-016 §Decision 2, ADR-032). Read `last_error` before
+unparking: if the underlying condition has not actually been fixed, the order will burn a fresh
+budget of ten attempts and park again.
+
+**It refuses three ways, distinguishably**, because during an incident the three call for different
+next actions: the order does not exist (wrong id); the order is not parked (someone already did
+this, or it was never parked); the order's status is not one the runner can claim. The third is
+reachable only by a direct database write — no code path in the service produces a parked row with
+a non-claimable status — and it is a fail-closed guard, because clearing the marker there would
+look like a resolution while leaving the order just as unreachable.
+
+**Every unpark is recorded** in `order_recovery_unparks`: the order, when, the operator's stated
+reason, and the pre-unpark attempts, park timestamp and last error — the three values the unpark
+destroys on the order row. The reason is required and cannot be blank; it is the only part of the
+record a later reader cannot reconstruct.
+
+**Scope of that claim (ADR-021).** This is evidence about an **honest operator**. It is append-only
+by application behaviour, not tamper-evident: anyone holding commerce's database credentials can
+insert, alter or delete these rows and nothing here detects it. The migration's `Down` refuses while
+evidence exists, which protects against an accidental rollback — not against a writer.
+
 ## Access ticket lifecycle trail operations
 
 The trail is chained per ticket and checkpointed per organizer
