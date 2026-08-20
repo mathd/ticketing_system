@@ -156,6 +156,25 @@ experiment stays valid.
   second click applies the set the refusal just stopped), and a fixture that writes the guarded table
   **directly** does not move the counter, so the "stale" value still matches and the spec proves
   nothing. ([a precondition that cannot fail](docs/learnings/2026-08-15-a-precondition-that-cannot-fail.md))
+  **Same rule, in SQL: a guard's predicate must be NULL-safe, or it fails OPEN.** TKT-254's drain
+  barrier counted busy backends with `state <> 'idle'`, which reads as "anything not idle" and is
+  **NULL** for a backend whose state is unknown — and `WHERE` discards NULL, so an unknown backend was
+  counted as *drained* by a check whose entire job was to fail closed. Use `IS DISTINCT FROM`. Ask of
+  any guard predicate what its **unknown** case does: if unknown means *pass*, the guard is a
+  suggestion. And scope it to what can actually cause the thing you are guarding against — the same
+  barrier counted autovacuum workers, which carry `datname` and cannot append, so unrelated
+  maintenance could fail the whole gate (`backend_type='client backend'`). A guard that can fire on
+  something it does not guard is a red gate with no defect behind it, which is worse than the flake.
+- **A test can pin your HARNESS instead of the contract, and single-mutation testing will not show
+  it.** One level past the green-test rules above: the mechanism is present, the fixture *can* reach
+  the failing state, the test went red before the fix — and it is still about something else, because
+  every assertion is a fact about the *test* ("the callback ran", "the append landed") rather than
+  about what the code *read*. TKT-254's snapshot test survived every mutation of `store.go` and still
+  passed under a **coordinated reversion**: the transaction removed *and* the seam moved the way a
+  careless refactor would. The tell is that each assertion is satisfiable by editing the
+  instrumentation rather than the logic. Make the seam **report what the code observed** and assert
+  those values agree; report it by `defer`, or the probe never fires on the runs where the contract is
+  broken. ([a test that pins the harness](docs/learnings/2026-08-19-a-test-that-pins-the-harness-not-the-contract.md))
 - **Making a request field load-bearing is an AUTHORIZATION change, not plumbing.** Before something
   starts *deciding* on a value — capacity, permission, price, routing — enumerate **every producer of
   that value and ask which are authenticated**, not just the path you are editing. TKT-240 forwarded

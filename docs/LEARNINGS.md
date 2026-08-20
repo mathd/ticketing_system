@@ -418,3 +418,21 @@ precisely because nothing ever resolves them. If the processor does nothing with
 visibility is a gauge's job, not the work queue's. The tell for the meta-failure: pass 1's fix
 answered the question asked and made the better answer harder to see.
 [full note](learnings/2026-08-18-harmless-is-not-free-in-a-bounded-queue.md)
+
+## A test that pins the HARNESS, not the contract — and the coordinated reversion that exposes it
+
+TKT-254's snapshot test asserted that its interleaved append had *landed*, plus a guard that the race
+had actually been constructed. It was observed red before the fix, for the right reason, and every
+single mutation of the production code killed it. It still could not fail: a reviewer proposed
+reverting the transaction **and** moving the callback above the scan it was supposed to follow, and
+the test passed with the defect fully live. The assertions were facts about the **harness** ("the
+callback ran", "the append landed") and about the **verdict**, never about what the code **read** —
+so the seam let the test *place* an event and the test then asserted the event had been placed. The
+tell: every assertion was satisfiable by editing the instrumentation rather than the logic. The fix
+is to make the seam **report what the code observed** (each scan's highest sequence) and assert those
+**agree** — an invariant no callback placement can manufacture, because the divergence is created by
+the commit, not the call. Two corollaries: report such a probe by `defer`, or it never fires on
+exactly the runs where the contract is broken; and try the **coordinated** reversion (production
+change reverted *and* the seam adjusted as a careless refactor would), because a test surviving every
+single mutation can still be pinning its own instrumentation.
+[full note](learnings/2026-08-19-a-test-that-pins-the-harness-not-the-contract.md)
