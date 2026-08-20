@@ -64,8 +64,9 @@ func listParked(args []string) error {
 	fmt.Fprintf(os.Stderr, "\n%d parked order(s). Each one is excluded from recovery until an operator "+
 		"unparks it. Read last_error first, and establish what the order actually needs: a "+
 		"`reconciliation_required` order may hold CAPTURED money, and unparking it asks the runner to "+
-		"re-decide on PSP evidence — which refunds a captured payment before it learns whether the "+
-		"claim was already confirmed. See docs/development.md.\n",
+		"re-decide on PSP evidence alone. A capture with positive durable evidence is submitted for "+
+		"REFUND, and only then does the release discover whether the claim was already confirmed; a "+
+		"capture with no such evidence re-parks without refunding. See docs/development.md.\n",
 		len(parked))
 	return nil
 }

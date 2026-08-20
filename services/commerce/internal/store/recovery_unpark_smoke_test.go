@@ -3,8 +3,10 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -185,47 +187,86 @@ func TestUnparkedOrderIsClaimedAgainByTheRunnerForEveryClaimableStatus(t *testin
 			db, s := seedParked(t, status, 10, "psp unreachable")
 			_, ctx := outboxDB(t)
 
-			before, err := ClaimStuckOrders(ctx, db, 200, time.Minute)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if containsOrder(before, s.OrderID) {
+			if _, found := claimUntilFound(t, db, ctx, s.OrderID); found {
 				t.Fatal("fixture: the parked order was already claimable, so unparking it proves nothing")
 			}
 
 			if err := UnparkOrder(ctx, db, s.OrderID, "psp restored; re-driving"); err != nil {
 				t.Fatalf("unpark refused a status the runner can claim: %v", err)
 			}
-			after, err := ClaimStuckOrders(ctx, db, 200, time.Minute)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !containsOrder(after, s.OrderID) {
+			if _, found := claimUntilFound(t, db, ctx, s.OrderID); !found {
 				t.Fatal("an unparked order was not returned to the claimable set")
 			}
 		})
 	}
 }
 
-// The negative half of the set equivalence. Broadening `claimableRecoveryStatuses` to admit a
-// status the runner cannot drive would leave the test above green — every status it names
-// would still pass — so the guard needs statuses that must be REFUSED, or "the two sets
-// agree" is only ever asserted in one direction.
-func TestUnparkRefusesEveryStatusTheRunnerCannotClaim(t *testing.T) {
-	// The terminal statuses, from the orders_status_check vocabulary. None is drivable by
-	// the recovery runner, so unparking one would clear a marker and change nothing.
-	for _, status := range []string{"completed", "declined", "timeout", "refunded"} {
+// The negative half of the set equivalence, and the reason it reads the vocabulary out of
+// PostgreSQL instead of listing statuses by hand (ai-review F4).
+//
+// Two independent holes, both of which a hand-written table has by construction. First, a
+// negative case that only calls UnparkOrder observes `claimableRecoveryStatuses` and nothing
+// else: broaden the SQL to admit 'completed' while leaving the map alone and the refusal still
+// arrives, the positive test still passes, and the runner starts claiming terminal orders.
+// Each status is therefore checked against BOTH mechanisms separately — the map via
+// UnparkOrder, the SQL via a row placed directly in the unparked state and offered to
+// ClaimStuckOrders. Second, a hand-written list cannot cover a status that does not exist yet:
+// adding one to orders_status_check would leave both tables silently short. So the list comes
+// from the CHECK constraint itself, and the expectation for each status comes from the
+// requirement — the runner drives non-terminal orders, and the five in claimableRecoveryStatuses
+// are the non-terminal ones.
+func TestTheTwoStatusSetsAgreeOnEveryStatusTheSchemaPermits(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	// Straight from the live constraint: whatever the schema permits today, including a value
+	// added after this test was written.
+	var checkClause string
+	if err := db.QueryRowContext(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='orders_status_check'`).
+		Scan(&checkClause); err != nil {
+		t.Fatal(err)
+	}
+	vocabulary := regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(checkClause, -1)
+	if len(vocabulary) < 5 {
+		t.Fatalf("read %d statuses out of orders_status_check (%q); the parse is broken, "+
+			"and a broken parse would make this test vacuous", len(vocabulary), checkClause)
+	}
+
+	for _, match := range vocabulary {
+		status := match[1]
 		t.Run(status, func(t *testing.T) {
-			db, s := seedParked(t, "release_pending", 10, "psp unreachable")
-			_, ctx := outboxDB(t)
-			if _, err := db.ExecContext(ctx, `UPDATE orders SET status=$2 WHERE id=$1`, s.OrderID, status); err != nil {
+			// The requirement, not the implementation: the recovery runner drives orders that
+			// have not reached a terminal state. Deliberately NOT read from
+			// claimableRecoveryStatuses — an expectation taken from the mechanism under test
+			// agrees with it by construction.
+			terminal := map[string]bool{"completed": true, "declined": true, "timeout": true, "refunded": true}
+			wantClaimable := !terminal[status]
+
+			// Mechanism 1: the Go map, observed through UnparkOrder.
+			_, parked := seedParked(t, status, 10, "psp unreachable")
+			err := UnparkOrder(ctx, db, parked.OrderID, "operator investigated")
+			switch {
+			case wantClaimable && err != nil:
+				t.Fatalf("UnparkOrder refused %q, which the runner can drive: %v", status, err)
+			case !wantClaimable && !errors.Is(err, ErrRecoveryOrderStatusNotClaimable):
+				t.Fatalf("UnparkOrder answered %v for terminal status %q, want ErrRecoveryOrderStatusNotClaimable", err, status)
+			}
+
+			// Mechanism 2: the SQL, observed through ClaimStuckOrders on a row put into the
+			// unparked state DIRECTLY — so this half is independent of whether UnparkOrder
+			// would have agreed to produce it.
+			direct := seedStuck(t, status)
+			if _, err := db.ExecContext(ctx, `
+				UPDATE orders SET recovery_parked_at=NULL, recovery_attempts=0,
+				    recovery_next_attempt_at=now(), recovery_claim_id=NULL, recovery_lease_until=NULL,
+				    updated_at=now()-interval '10 minutes'
+				WHERE id=$1`, direct.OrderID); err != nil {
 				t.Fatal(err)
 			}
-			if at, _ := parkedMarker(t, db, s.OrderID); !at.Valid {
-				t.Fatal("fixture: the order is not parked, so predicate 2 would answer this test")
-			}
-			if err := UnparkOrder(ctx, db, s.OrderID, "operator investigated"); !errors.Is(err, ErrRecoveryOrderStatusNotClaimable) {
-				t.Fatalf("err = %v, want ErrRecoveryOrderStatusNotClaimable", err)
+			_, claimed := claimUntilFound(t, db, ctx, direct.OrderID)
+			if claimed != wantClaimable {
+				t.Fatalf("ClaimStuckOrders claimed=%v for status %q, want %v — the SQL status list "+
+					"and claimableRecoveryStatuses have drifted", claimed, status, wantClaimable)
 			}
 		})
 	}
@@ -259,11 +300,7 @@ func TestUnparkDoesNotRefreshTheInFlightGracePeriod(t *testing.T) {
 	if !after.Equal(before) {
 		t.Fatalf("unpark moved updated_at %s -> %s; the order is now inside the in-flight grace period", before, after)
 	}
-	claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !containsOrder(claimed, s.OrderID) {
+	if _, found := claimUntilFound(t, db, ctx, s.OrderID); !found {
 		t.Fatal("the unparked order was not claimable, which is what refreshing updated_at would cause")
 	}
 }
@@ -286,20 +323,11 @@ func TestUnparkRestoresAFullRetryBudgetNotOneAttempt(t *testing.T) {
 	}
 
 	// One failed re-drive, exactly as the runner would do it.
-	claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var claim uuid.UUID
-	for _, c := range claimed {
-		if c.OrderID == s.OrderID {
-			claim = c.ClaimID
-		}
-	}
-	if claim == uuid.Nil {
+	claimed, found := claimUntilFound(t, db, ctx, s.OrderID)
+	if !found {
 		t.Fatal("the unparked order was not claimed")
 	}
-	if err := ReleaseStuckOrder(ctx, db, s.OrderID, claim, errors.New("psp still flaky")); err != nil {
+	if err := ReleaseStuckOrder(ctx, db, s.OrderID, claimed.ClaimID, errors.New("psp still flaky")); err != nil {
 		t.Fatal(err)
 	}
 	if at, _ := parkedMarker(t, db, s.OrderID); at.Valid {
@@ -476,11 +504,32 @@ func assertNoUnparkEvidence(t *testing.T, db *sql.DB, orderID uuid.UUID) {
 	}
 }
 
-func containsOrder(orders []StuckOrder, id uuid.UUID) bool {
-	for _, o := range orders {
-		if o.OrderID == id {
-			return true
+// claimUntilFound drains the claimable set in pages until it finds the order, or a page comes
+// back empty.
+//
+// A plain `ClaimStuckOrders(ctx, db, N, ...)` would be an assertion about N, not about the
+// order. This suite shares one database with every other smoke test in the package, and the
+// claim is `ORDER BY recovery_next_attempt_at LIMIT N` — while an unpark sets
+// recovery_next_attempt_at to now(), which sorts LAST among rows whose backoff has already
+// elapsed. So the target is exactly the row a truncated page drops, and any fixed limit makes
+// these tests fail as the package grows, for a reason that has nothing to do with unparking.
+//
+// Claiming leases each row for the duration, so a page is never returned twice and the loop
+// terminates.
+func claimUntilFound(t *testing.T, db *sql.DB, ctx context.Context, id uuid.UUID) (StuckOrder, bool) {
+	t.Helper()
+	for {
+		page, err := ClaimStuckOrders(ctx, db, 100, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			return StuckOrder{}, false
+		}
+		for _, o := range page {
+			if o.OrderID == id {
+				return o, true
+			}
 		}
 	}
-	return false
 }

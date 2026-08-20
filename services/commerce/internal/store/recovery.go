@@ -457,14 +457,17 @@ func ListParkedOrders(ctx context.Context, db OutboxDB) ([]ParkedOrder, error) {
 //
 // But it is NOT true that an unpark "decides nothing about money" (ai-review F2). A parked
 // `reconciliation_required` order can hold captured funds, and clearing its marker is exactly
-// what re-admits it to `resolveReconciliation`, which refunds on a `captured` PSP status and
-// only afterwards discovers, via `inventory.Release`, whether the claim was already confirmed —
-// re-parking as "refunded money against a confirmed claim" when it was. That ordering is the
-// runner's, is reachable on `main` for any UNPARKED `reconciliation_required` row (migration
-// 0005's backfill created a population of them), and is not this function's to change. What is
-// this function's is to not pretend otherwise: an unpark is a decision to let the runner decide
-// again, and an operator who has not established what the order actually needs should not make
-// it. `list-parked` prints `recovery_last_error` first for that reason.
+// what re-admits it to `resolveReconciliation`. There, a `captured` PSP status carrying positive
+// durable captured-amount evidence is submitted for refund, and only AFTERWARDS does
+// `inventory.Release` discover whether the claim was already confirmed — re-parking as "refunded
+// money against a confirmed claim" when it was. (A `captured` status with no such evidence —
+// an operation predating payments migration 0002 — re-parks in one pass instead, without
+// refunding; ai-review F5 corrected an earlier version of this comment that omitted it.) That
+// ordering is the runner's, is reachable on `main` for any UNPARKED `reconciliation_required`
+// row (migration 0005's backfill created a population of them), and is not this function's to
+// change. What is this function's is to not pretend otherwise: an unpark is a decision to let
+// the runner decide again, and an operator who has not established what the order actually
+// needs should not make it. `list-parked` prints `recovery_last_error` first for that reason.
 //
 // It also leaves `updated_at` alone, which is not an omission. ClaimStuckOrders requires
 // `updated_at < now() - interval '2 minutes'` to keep recovery off orders belonging to a live

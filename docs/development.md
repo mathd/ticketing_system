@@ -183,11 +183,19 @@ re-drive succeeds depends on whatever was failing. It never touches `status`, ne
 
 **It is not, however, a decision with no bearing on money.** A parked `reconciliation_required`
 order may hold **captured** funds (ADR-016 §Consequences), and clearing its marker is what re-admits
-it to the runner's `resolveReconciliation` — which refunds on a `captured` PSP status and only
-afterwards discovers, via `inventory.Release`, whether the claim was already confirmed, re-parking as
-*"refunded money against a confirmed claim"* when it was. That ordering is the runner's and predates
-these commands (any unparked `reconciliation_required` row reaches it, and migration 0005's backfill
-created a population of them), but it is what an operator is switching on.
+it to the runner's `resolveReconciliation`. What happens there depends on the provider evidence:
+
+- `captured` **with positive durable captured-amount evidence** → submitted for refund, and only
+  *afterwards* does `inventory.Release` discover whether the claim was already confirmed, re-parking
+  as *"refunded money against a confirmed claim"* when it was.
+- `captured` **with no such evidence** (an operation predating payments migration 0002) → re-parks in
+  one pass as *"operation predates durable provider evidence"*, without refunding.
+- anything else → the shared provider-status decision table (voids release, refunded finishes,
+  unknown retries).
+
+That ordering is the runner's and predates these commands — any unparked `reconciliation_required`
+row reaches it, and migration 0005's backfill created a population of them — but it is what an
+operator is switching on.
 
 So: **read `last_error` and establish what the order actually needs before unparking one.** If the
 underlying condition has not been fixed, the order burns a fresh budget of ten attempts and parks
