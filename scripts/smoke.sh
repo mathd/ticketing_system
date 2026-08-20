@@ -361,20 +361,44 @@ compose stop -t 45 commerce
 # append that commits after the backup below is exactly the row the restore deletes and
 # never puts back. The barrier has to be on the PAYMENTS side, not the caller's.
 #
-# `state <> 'idle'` is the predicate that matters: a pooled connection sitting idle holds
-# no statement and cannot append, while any other state (active, idle in transaction) is
-# work that can still reach journal_entries. pid <> pg_backend_pid() excludes this very
-# query. datname='payments' scopes it to the live journal's database, not the isolated
-# *_smoke ones the store suites use.
+# `state IS DISTINCT FROM 'idle'`, NOT `state <> 'idle'` (ai-review pass 2). A pooled
+# connection sitting idle holds no statement and cannot append; anything else (active,
+# idle in transaction) is work that can still reach journal_entries. But `state` is
+# NULLABLE -- a backend whose state has not been published yet, or any backend at all if
+# track_activities is ever turned off -- and `NULL <> 'idle'` evaluates to NULL, which
+# WHERE discards. The plain inequality therefore counts an unknown backend as drained,
+# which is backwards for a guard that exists to fail closed. Verified rather than
+# reasoned: `SELECT (NULL <> 'idle') IS NULL` is true, `SELECT (NULL IS DISTINCT FROM
+# 'idle')` is true.
+#
+# pid <> pg_backend_pid() excludes this very query. datname='payments' scopes it to the
+# live journal's database, not the isolated *_smoke ones the store suites use --
+# pg_stat_activity is cluster-wide, so the filter is doing real work here.
 #
 # 30 × 1s, then fail loudly rather than proceeding: a barrier that gives up quietly and
 # lets the corruption block open anyway is worse than no barrier, because the gate then
 # reports the resulting sequence gap as an integrity failure. If this ever trips, the
 # thing to investigate is what is still writing, not this timeout.
+#
+# THE RESIDUAL, stated because it was argued and accepted rather than missed (ai-review
+# pass 2). A handler payments accepted but that has not yet reached BeginTx is invisible
+# to this poll -- it holds no backend, so a zero sample does not prove it is gone. Closing
+# that would mean quiescing payments itself, and payments cannot be stopped here: it is
+# the container the four verify-journal calls below `compose exec` into. Converting those
+# to one-off containers would change what they prove (a fresh container is not the running
+# service, which is the point of the ADR-016 §D8 multi-key check) and is a redesign, not a
+# fix.
+#
+# What bounds the residual instead: commerce is the ONLY caller of payments in this
+# repository (four call sites, all in services/commerce), and its shutdown drains HTTP for
+# up to 10s BEFORE cancelling workers -- so a worker's in-flight request completes or is
+# refused, rather than being abandoned mid-call. The stop and this poll are two conditions
+# stacked, not one. If a journal flake ever recurs here despite both, this comment is the
+# thing to disbelieve first, and TKT-261 is where the general shape of the problem lives.
 payments_drained=0
 for _ in $(seq 1 30); do
   busy=$(docker exec "$(compose ps -q postgres)" psql -U postgres -tAc \
-    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND state <> 'idle' AND pid <> pg_backend_pid()")
+    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND state IS DISTINCT FROM 'idle' AND pid <> pg_backend_pid()")
   case "$busy" in
     ''|*[!0-9]*) echo "smoke: could not count active payments backends (got: '$busy')" >&2; exit 1 ;;
   esac
