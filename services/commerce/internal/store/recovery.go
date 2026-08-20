@@ -449,11 +449,22 @@ func ListParkedOrders(ctx context.Context, db OutboxDB) ([]ParkedOrder, error) {
 // transaction surface for one caller's benefit gives that up. Do not "tidy" this signature
 // back to match its neighbours.
 //
-// What it does NOT do is the load-bearing half. It does not touch `status`, does not read or
-// write `terminal_outcome`, does not call the PSP, and moves no money. A parked
-// `reconciliation_required` order can hold captured funds, and the decision about those funds
-// stays where ADR-016 and ADR-032 put it: in the runner, on durable evidence. This only makes
-// the row visible to the runner again.
+// What it does NOT do is the load-bearing half — stated precisely, because the loose version
+// of this sentence is wrong. It does not touch `status`, does not read or write
+// `terminal_outcome`, does not call the PSP, and writes no money column. The decision about
+// captured funds stays where ADR-016 §Decision 2 and ADR-032 put it: in the runner, on durable
+// provider evidence.
+//
+// But it is NOT true that an unpark "decides nothing about money" (ai-review F2). A parked
+// `reconciliation_required` order can hold captured funds, and clearing its marker is exactly
+// what re-admits it to `resolveReconciliation`, which refunds on a `captured` PSP status and
+// only afterwards discovers, via `inventory.Release`, whether the claim was already confirmed —
+// re-parking as "refunded money against a confirmed claim" when it was. That ordering is the
+// runner's, is reachable on `main` for any UNPARKED `reconciliation_required` row (migration
+// 0005's backfill created a population of them), and is not this function's to change. What is
+// this function's is to not pretend otherwise: an unpark is a decision to let the runner decide
+// again, and an operator who has not established what the order actually needs should not make
+// it. `list-parked` prints `recovery_last_error` first for that reason.
 //
 // It also leaves `updated_at` alone, which is not an omission. ClaimStuckOrders requires
 // `updated_at < now() - interval '2 minutes'` to keep recovery off orders belonging to a live

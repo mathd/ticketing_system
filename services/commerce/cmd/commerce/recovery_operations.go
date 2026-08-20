@@ -62,8 +62,10 @@ func listParked(args []string) error {
 			nullableField(p.TerminalOutcome), nullableField(p.LastError))
 	}
 	fmt.Fprintf(os.Stderr, "\n%d parked order(s). Each one is excluded from recovery until an operator "+
-		"unparks it. Read last_error first: a `reconciliation_required` order may hold CAPTURED money, "+
-		"and unparking only returns it to the runner — it decides nothing about the money itself.\n",
+		"unparks it. Read last_error first, and establish what the order actually needs: a "+
+		"`reconciliation_required` order may hold CAPTURED money, and unparking it asks the runner to "+
+		"re-decide on PSP evidence — which refunds a captured payment before it learns whether the "+
+		"claim was already confirmed. See docs/development.md.\n",
 		len(parked))
 	return nil
 }
@@ -88,9 +90,10 @@ func nullableField(v sql.NullString) string {
 //
 // This does NOT resolve the order. It makes the order eligible to be driven again by the
 // existing runner under the existing rules; whether that succeeds depends on whatever was
-// failing. For a `reconciliation_required` order holding captured money, the operator's real
-// work (a refund, a manual reconciliation) happens outside this command — see
-// docs/development.md.
+// failing. For a `reconciliation_required` order holding captured money the operator's real
+// work — establishing whether the claim is confirmed, and whether a refund is the right
+// answer — happens BEFORE this command, not after it: unparking hands that decision back to
+// the runner, which decides on PSP evidence alone. See docs/development.md.
 func unparkOrder(args []string) error {
 	if len(args) != 2 {
 		return errors.New("usage: commerce unpark-order <order-id> <reason>")

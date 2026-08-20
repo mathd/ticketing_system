@@ -179,11 +179,20 @@ exactly one re-drive before the order parked again.
 **What it does not do — and this is the part to be careful about.** It does not resolve the order.
 It makes the order *drivable again* by the existing runner under the existing rules; whether the
 re-drive succeeds depends on whatever was failing. It never touches `status`, never reads or writes
-`terminal_outcome`, never calls the PSP, and moves no money. A parked `reconciliation_required`
-order may hold **captured** funds (ADR-016 §Consequences), and the decision about those funds stays
-in the runner, on durable evidence (ADR-016 §Decision 2, ADR-032). Read `last_error` before
-unparking: if the underlying condition has not actually been fixed, the order will burn a fresh
-budget of ten attempts and park again.
+`terminal_outcome`, never calls the PSP, and writes no money column.
+
+**It is not, however, a decision with no bearing on money.** A parked `reconciliation_required`
+order may hold **captured** funds (ADR-016 §Consequences), and clearing its marker is what re-admits
+it to the runner's `resolveReconciliation` — which refunds on a `captured` PSP status and only
+afterwards discovers, via `inventory.Release`, whether the claim was already confirmed, re-parking as
+*"refunded money against a confirmed claim"* when it was. That ordering is the runner's and predates
+these commands (any unparked `reconciliation_required` row reaches it, and migration 0005's backfill
+created a population of them), but it is what an operator is switching on.
+
+So: **read `last_error` and establish what the order actually needs before unparking one.** If the
+underlying condition has not been fixed, the order burns a fresh budget of ten attempts and parks
+again. If it is a `reconciliation_required` row whose claim may have been confirmed or manually
+repaired, resolve that first — unparking it asks the runner to re-decide on PSP evidence alone.
 
 **It refuses three ways, distinguishably**, because during an incident the three call for different
 next actions: the order does not exist (wrong id); the order is not parked (someone already did

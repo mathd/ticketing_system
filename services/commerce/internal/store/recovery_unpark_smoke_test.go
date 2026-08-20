@@ -168,29 +168,66 @@ func TestUnparkRefusesANonClaimableStatusDistinguishably(t *testing.T) {
 
 // COS 3. The whole point: after an unpark the runner picks the order up again.
 //
-// Decided in SQL, so asserted against real PostgreSQL. Nothing above this tier can
-// observe it.
-func TestUnparkedOrderIsClaimedAgainByTheRunner(t *testing.T) {
-	db, s := seedParked(t, "release_pending", 10, "psp unreachable")
-	_, ctx := outboxDB(t)
+// Table-driven over EVERY status in the claimable set, and that is the entire value of the
+// test. The single-status version this replaces seeded only `release_pending`, so removing
+// any of the other four from `claimableRecoveryStatuses` OR from ClaimStuckOrders' SQL left
+// it green — while its comment claimed it was what kept the two duplicated sets equivalent.
+// The comment was false, and the drift it would have missed includes
+// `reconciliation_required`, the money-sensitive one (ai-review F3).
+//
+// Decided in SQL, so asserted against real PostgreSQL. Nothing above this tier can observe it.
+func TestUnparkedOrderIsClaimedAgainByTheRunnerForEveryClaimableStatus(t *testing.T) {
+	// Derived from the requirement — the runner's claimable set — not from a run.
+	for _, status := range []string{
+		"created", "payment_unknown", "confirmation_pending", "release_pending", "reconciliation_required",
+	} {
+		t.Run(status, func(t *testing.T) {
+			db, s := seedParked(t, status, 10, "psp unreachable")
+			_, ctx := outboxDB(t)
 
-	before, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if containsOrder(before, s.OrderID) {
-		t.Fatal("fixture: the parked order was already claimable, so unparking it proves nothing")
-	}
+			before, err := ClaimStuckOrders(ctx, db, 200, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if containsOrder(before, s.OrderID) {
+				t.Fatal("fixture: the parked order was already claimable, so unparking it proves nothing")
+			}
 
-	if err := UnparkOrder(ctx, db, s.OrderID, "psp restored; re-driving"); err != nil {
-		t.Fatal(err)
+			if err := UnparkOrder(ctx, db, s.OrderID, "psp restored; re-driving"); err != nil {
+				t.Fatalf("unpark refused a status the runner can claim: %v", err)
+			}
+			after, err := ClaimStuckOrders(ctx, db, 200, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsOrder(after, s.OrderID) {
+				t.Fatal("an unparked order was not returned to the claimable set")
+			}
+		})
 	}
-	after, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !containsOrder(after, s.OrderID) {
-		t.Fatal("an unparked order was not returned to the claimable set")
+}
+
+// The negative half of the set equivalence. Broadening `claimableRecoveryStatuses` to admit a
+// status the runner cannot drive would leave the test above green — every status it names
+// would still pass — so the guard needs statuses that must be REFUSED, or "the two sets
+// agree" is only ever asserted in one direction.
+func TestUnparkRefusesEveryStatusTheRunnerCannotClaim(t *testing.T) {
+	// The terminal statuses, from the orders_status_check vocabulary. None is drivable by
+	// the recovery runner, so unparking one would clear a marker and change nothing.
+	for _, status := range []string{"completed", "declined", "timeout", "refunded"} {
+		t.Run(status, func(t *testing.T) {
+			db, s := seedParked(t, "release_pending", 10, "psp unreachable")
+			_, ctx := outboxDB(t)
+			if _, err := db.ExecContext(ctx, `UPDATE orders SET status=$2 WHERE id=$1`, s.OrderID, status); err != nil {
+				t.Fatal(err)
+			}
+			if at, _ := parkedMarker(t, db, s.OrderID); !at.Valid {
+				t.Fatal("fixture: the order is not parked, so predicate 2 would answer this test")
+			}
+			if err := UnparkOrder(ctx, db, s.OrderID, "operator investigated"); !errors.Is(err, ErrRecoveryOrderStatusNotClaimable) {
+				t.Fatalf("err = %v, want ErrRecoveryOrderStatusNotClaimable", err)
+			}
+		})
 	}
 }
 
