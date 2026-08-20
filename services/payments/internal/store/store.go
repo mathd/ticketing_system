@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"strings"
 	"time"
 
@@ -303,7 +304,57 @@ func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement [
 }
 
 func (j *Journal) Verify(ctx context.Context) error {
-	rows, err := j.db.QueryContext(ctx, `SELECT fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries ORDER BY organizer_id,sequence`)
+	return j.verify(ctx, nil)
+}
+
+// verifyProbe is the test seam for the read-snapshot contract (TKT-254). It is not a
+// hook for "run something in the middle": it reports what each of the two scans
+// ACTUALLY OBSERVED, which is the only thing that pins the contract.
+//
+// The distinction cost a review round. An earlier version was a single `afterEntries
+// func()` and a test asserting the interleaved append happened — and that test stayed
+// GREEN under a coordinated reversion (transaction removed AND the callback moved above
+// the entry scan), because it constrained where the callback ran rather than what the
+// verifier saw. A seam that only says "now" can be satisfied by moving "now".
+//
+// afterEntries runs once the entry scan is consumed and closed, and receives the highest
+// sequence that scan saw per organizer. afterHeads runs once the head scan is consumed
+// and receives the last_sequence it read. A shared snapshot means the two agree even
+// when a concurrent append commits between them; two snapshots means they diverge. The
+// test asserts the agreement, so no placement of the callback can fake it.
+type verifyProbe struct {
+	afterEntries func(seqByOrg map[uuid.UUID]int64)
+	afterHeads   func(headByOrg map[uuid.UUID]int64)
+}
+
+// verify is Verify with the probe seam above. Production passes nil and pays nothing;
+// only TestJournalVerifyReadsEntriesAndHeadsFromOneSnapshot passes a probe, because the
+// interleaving it needs cannot be constructed from outside this function.
+func (j *Journal) verify(ctx context.Context, probe *verifyProbe) error {
+	// Both scans read one snapshot (TKT-254). Without this they were two statements on a
+	// pooled *sql.DB -- two snapshots, possibly two connections -- so an append that
+	// committed between them made the head scan see a sequence the entry scan never had,
+	// and an intact journal was reported as `journal head mismatch`. ADR-003 puts this
+	// check in the gate and ADR-021 requires that an integrity claim not cry wolf; a
+	// verifier that raises a false alarm against a live database teaches operators to
+	// distrust the alarm.
+	//
+	// This is NOT the fix for TKT-254's smoke flake, and must not be read as one. That
+	// flake is a row the harness deleted and never restored -- durable corruption, which
+	// a consistent snapshot still reports, correctly. The flake's fix is the commerce
+	// quiesce in scripts/smoke.sh. Deleting either change because the other exists
+	// reopens a different defect.
+	//
+	// ReadOnly is enforcement, not decoration: it makes "this transaction exists to take
+	// a snapshot, not to write" a rule PostgreSQL applies rather than a comment a future
+	// edit can walk past. First REPEATABLE READ in this repo -- every other BeginTx here
+	// passes nil, which is READ COMMITTED and correct for the write paths that use it.
+	tx, err := j.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT fact_id,organizer_id,sequence,fact_type,occurred_at,buyer_id,amount,currency,payload,previous_hash,entry_hash,key_id,signature FROM journal_entries ORDER BY organizer_id,sequence`)
 	if err != nil {
 		return err
 	}
@@ -323,8 +374,18 @@ func (j *Journal) Verify(ctx context.Context) error {
 		if prev == nil {
 			prev = make([]byte, 32)
 		}
-		if e.Sequence != seqByOrg[e.OrganizerID]+1 || !hmac.Equal(prev, e.PreviousHash) {
-			return fmt.Errorf("broken chain organizer=%s sequence=%d", e.OrganizerID, e.Sequence)
+		// Two independent failures, two messages (TKT-254). These used to share one
+		// `broken chain` string behind a disjunction, and because `||` short-circuits,
+		// the log could not say which condition fired or what was expected — a missing
+		// row and an edited link are very different incidents, and telling them apart
+		// took a full investigation.
+		if want := seqByOrg[e.OrganizerID] + 1; e.Sequence != want {
+			return fmt.Errorf("journal sequence gap organizer=%s expected_sequence=%d observed_sequence=%d",
+				e.OrganizerID, want, e.Sequence)
+		}
+		if !hmac.Equal(prev, e.PreviousHash) {
+			return fmt.Errorf("journal previous hash mismatch organizer=%s sequence=%d expected_previous_hash=%s observed_previous_hash=%s",
+				e.OrganizerID, e.Sequence, Hex(prev), Hex(e.PreviousHash))
 		}
 		c, _ := canonical(e.Fact, e.Sequence)
 		sum := hash(prev, c)
@@ -344,17 +405,39 @@ func (j *Journal) Verify(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	headRows, err := j.db.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if probe != nil && probe.afterEntries != nil {
+		probe.afterEntries(maps.Clone(seqByOrg))
+	}
+	headRows, err := tx.QueryContext(ctx, `SELECT organizer_id,last_sequence,last_hash FROM journal_heads`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = headRows.Close() }()
+	// Recorded for the probe only: the head loop consumes seqByOrg as it goes, so what
+	// the head scan READ has to be captured here or it is gone by the time the probe runs.
+	// Reported exactly once, on every exit path from the head scan below — including the
+	// mismatch return, which is precisely the run where the contract is broken and the
+	// test most needs to name the divergence rather than say "the seam did not run".
+	// A defer rather than a call at each return: two call sites and a `return` between
+	// them is correct here but has to be traced to be believed, and the next edit to add
+	// a return would silently skip the report.
+	var headByOrg map[uuid.UUID]int64
+	if probe != nil && probe.afterHeads != nil {
+		headByOrg = map[uuid.UUID]int64{}
+		defer func() { probe.afterHeads(headByOrg) }()
+	}
 	for headRows.Next() {
 		var org uuid.UUID
 		var seq int64
 		var sum []byte
 		if err := headRows.Scan(&org, &seq, &sum); err != nil {
 			return err
+		}
+		if headByOrg != nil {
+			headByOrg[org] = seq
 		}
 		if seqByOrg[org] != seq || !hmac.Equal(prevByOrg[org], sum) {
 			return fmt.Errorf("journal head mismatch organizer=%s", org)

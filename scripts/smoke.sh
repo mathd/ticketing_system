@@ -316,6 +316,129 @@ SMOKE_ACCESS_URL=http://localhost:${ACCESS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 
+# QUIESCE THE ONLY LIVE WRITER BEFORE ANY JOURNAL VERIFICATION (TKT-254).
+#
+# Everything from here to the final verify-journal below reads, corrupts and RESTORES
+# the payments journal. All of it assumed nothing else was writing. Something was.
+#
+# commerce runs background tickers -- recovery (internal/recovery/runner.go), bulk
+# refunds, reversals, the exchange sweep -- and the recovery runner's OrderFailed POSTs
+# payments /internal/facts, which appends to this journal for the seeded organizer. It
+# ticks every RECOVERY_INTERVAL, which compose.smoke.yaml pins at 2s for this stack, and
+# it always has work: smoke/psp_recovery_test.go deliberately backdates orders past the
+# claim grace period so the runner picks them up.
+#
+# The failure that follows is not a race the verifier loses and re-wins on a retry -- it
+# is DURABLE CORRUPTION. The restores below snapshot journal_entries, then reinstate it
+# with DELETE + INSERT ... SELECT several statements later. An append that commits inside
+# that window is not in the snapshot, so the DELETE removes it and the INSERT does not
+# put it back -- while its journal_heads update survives. Every later append then chains
+# onto a row that no longer exists, and verify-journal reports a sequence gap about a
+# journal the writer never got wrong. That is TKT-254: `broken chain organizer=...0001
+# sequence=167` on a catalog-only change, green on the next run.
+#
+# `stop`, not `pause` or `scale 0`: only stop drains accepted HTTP requests before
+# cancelling the workers (services/commerce/cmd/commerce/main.go -- srv.Shutdown, then
+# stopWorkers). -t 45 covers the 10s HTTP drain plus each worker's 5s grace. The backup
+# below is taken only AFTER this returns, because a worker inside its grace window can
+# still append.
+#
+# It is never restarted. Nothing after this line uses commerce, and a restart would be
+# actively harmful: Runner.Run calls RunOnce BEFORE its first tick, so restarting near
+# the restore block appends immediately. If you add a commerce-dependent check below,
+# it goes ABOVE this line -- not after a restart.
+#
+# What this claims, precisely: the producer is stopped AND payments is observed to have no
+# busy client backend on the journal's database before the window opens. Two conditions,
+# neither sufficient alone -- and NOT a proof that no append can occur. The drain barrier
+# below states exactly what it does and does not cover; read it before trusting either.
+compose stop -t 45 commerce
+
+# ...and then WAIT FOR PAYMENTS TO DRAIN, which stopping commerce does not prove
+# (ai-review pass 1, [medium]). `compose stop` closes the door on NEW calls; it cannot
+# recall one payments has already accepted. A worker that sent /internal/facts and was
+# then cancelled leaves payments committing an append after `stop` has returned — and an
+# append that commits after the backup below is exactly the row the restore deletes and
+# never puts back. The barrier has to be on the PAYMENTS side, not the caller's.
+#
+# `state IS DISTINCT FROM 'idle'`, NOT `state <> 'idle'` (ai-review pass 2). A pooled
+# connection sitting idle holds no statement and cannot append; anything else (active,
+# idle in transaction) is work that can still reach journal_entries. But `state` is
+# NULLABLE -- a backend whose state has not been published yet, or any backend at all if
+# track_activities is ever turned off -- and `NULL <> 'idle'` evaluates to NULL, which
+# WHERE discards. The plain inequality therefore counts an unknown backend as drained,
+# which is backwards for a guard that exists to fail closed. Verified rather than
+# reasoned: `SELECT (NULL <> 'idle') IS NULL` is true, `SELECT (NULL IS DISTINCT FROM
+# 'idle')` is true.
+#
+# backend_type='client backend' is the other half, and it is about FALSE POSITIVES rather
+# than false negatives (ai-review pass 3). Most server processes carry datname NULL and are
+# already excluded -- verified: checkpointer, walwriter, background writer, io worker and
+# both launchers all report NULL. An AUTOVACUUM WORKER does not: it runs with datname set to
+# the database it is vacuuming and a non-idle state, so it would be counted as a journal
+# writer. It cannot append a fact, it has no completion bound, and a wraparound vacuum
+# resists interruption -- so counting it means unrelated maintenance can hold this loop past
+# its timeout and fail the whole smoke stage. A barrier that fails the gate for a reason
+# that has nothing to do with the journal is worse than the flake it replaces.
+#
+# pid <> pg_backend_pid() excludes this very query. datname='payments' scopes it to the
+# live journal's database, not the isolated *_smoke ones the store suites use --
+# pg_stat_activity is cluster-wide, so the filter is doing real work here.
+#
+# 30 × 1s, then fail loudly rather than proceeding: a barrier that gives up quietly and
+# lets the corruption block open anyway is worse than no barrier, because the gate then
+# reports the resulting sequence gap as an integrity failure. If this ever trips, the
+# thing to investigate is what is still writing, not this timeout.
+#
+# THE RESIDUAL, AND WHAT IS *NOT* BOUNDED. Stated plainly because an earlier version of this
+# comment claimed a bound that does not exist, and a false reassurance in a comment is worse
+# than an admitted gap (ai-review pass 3, [high]).
+#
+# A handler payments accepted but that has not yet reached BeginTx is invisible to this poll:
+# it holds no backend, so a zero sample does not prove it is gone.
+#
+# The retracted claim, so nobody re-derives it: commerce's shutdown does NOT bound this.
+# `srv.Shutdown` drains commerce's INBOUND handlers, and with no inbound traffic it returns
+# at once rather than after its 10s budget; the workers run on independent contexts and are
+# cancelled only afterwards by stopWorkers (services/commerce/cmd/commerce/main.go). Worse,
+# cancelling a worker aborts the CLIENT side of a request payments has already accepted --
+# it does not stop the server handler. So the ordering bounds inbound drain, not the
+# outbound call that appends to the journal.
+#
+# What IS true, and is the honest basis for shipping this:
+#   - commerce is the ONLY caller of payments in this repository -- four call sites, all
+#     under services/commerce (the one smoke test that POSTs /api/payments/internal/facts is
+#     refused at the gateway edge and never reaches payments). Stopping it removes every
+#     producer.
+#   - stopWorkers cancels each worker and BLOCKS up to 5s for it to exit, so a worker cannot
+#     still be starting new requests once `compose stop` has returned.
+#   - the poll then requires payments to show no busy client backend.
+# The uncovered case is narrow and specific: a request accepted by payments in the instant
+# before its producer was cancelled, still ahead of BeginTx when the poll samples zero.
+#
+# Closing even that means quiescing payments itself, and payments cannot be stopped here --
+# it is the container the four verify-journal calls below `compose exec` into. Converting
+# those to one-off containers would change what they prove (a fresh container is not the
+# running service, which is the point of the ADR-016 §D8 multi-key check). That is a
+# redesign, not a fix, and it is TKT-261's shape of problem rather than this ticket's.
+#
+# If a journal flake recurs here despite the stop and the poll, THIS is the gap to suspect
+# first.
+payments_drained=0
+for _ in $(seq 1 30); do
+  busy=$(docker exec "$(compose ps -q postgres)" psql -U postgres -tAc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname='payments' AND backend_type='client backend' AND state IS DISTINCT FROM 'idle' AND pid <> pg_backend_pid()")
+  case "$busy" in
+    ''|*[!0-9]*) echo "smoke: could not count active payments backends (got: '$busy')" >&2; exit 1 ;;
+  esac
+  if [ "$busy" -eq 0 ]; then payments_drained=1; break; fi
+  sleep 1
+done
+if [ "$payments_drained" -ne 1 ]; then
+  echo "smoke: payments still had active backends 30s after commerce stopped; refusing to open the journal corruption window" >&2
+  exit 1
+fi
+
 # ADR-003: verify the populated canonical journal before Compose teardown.
 compose exec -T payments /app verify-concurrent-append
 compose exec -T payments /app verify-journal
