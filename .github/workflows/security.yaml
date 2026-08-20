@@ -187,34 +187,35 @@ jobs:
           # outage. Ask the run what every job actually concluded. This matters more here
           # than in hermetic.yaml — security.yaml has three top-level jobs and a matrix,
           # so it is the one likely to grow a fourth.
-          # FAIL CLOSED on an ALLOWLIST, and filter on no job names at all.
+          # FAIL CLOSED, on STATUS as well as conclusion, and filtering on no job names.
           #
-          # Two earlier versions of this guard were wrong in opposite ways. Excluding the
-          # notifier jobs by display-name prefix tied it to a `name:` field anyone can edit
-          # (a new job called "Notify - ..." would have been filtered out and its failure
-          # ignored). Counting only failure/cancelled/timed_out then failed OPEN: `skipped`,
-          # `action_required`, `stale` and — worst — a `null` conclusion all passed, so a
-          # top-level job omitted from `needs:` that was still RUNNING would let this job
-          # close a genuine outage before that job went red (ai-review pass 2).
+          # Four earlier versions of this guard were each wrong, and the reasons are worth
+          # keeping because they are not obvious.
+          #   1. Excluding the notifier jobs by display-name prefix tied it to a `name:`
+          #      field anyone can edit.
+          #   2. Counting only failure/cancelled/timed_out failed OPEN: skipped,
+          #      action_required, stale and unfinished jobs all passed.
+          #   3. Requiring exactly one JSON-null conclusion was both too rigid and based on
+          #      a false premise — see 4.
+          #   4. `gh run view --json jobs` renders a RUNNING job's conclusion as the empty
+          #      STRING, not JSON null (it decodes into a non-pointer Go string). So any
+          #      test written against `null` treats this very job — necessarily unfinished
+          #      while it asks — as unacceptable, and the guard would refuse to close every
+          #      issue, forever. Verified against a live in-progress run, not assumed.
           #
-          # So: an ALLOWLIST of conclusions that are compatible with "this run was clean",
-          # and anything else — including a value GitHub adds after this was written —
-          # blocks the close.
-          #
-          # `null` and `skipped` are both on it, and both need justifying rather than
-          # waving through. `null` is this job itself: it is necessarily still running when
-          # it asks, so its own conclusion is not yet decided. `skipped` is the sibling
-          # notifier job, which is skipped on every run where the other one fires — and on
-          # a PR run both are. Neither can be tightened by counting: "exactly one null" is
-          # wrong the moment a second job is legitimately in flight.
-          #
-          # What this DOES catch, and the previous version did not: failure, cancelled,
-          # timed_out, action_required and stale, on ANY job — including a top-level job
-          # omitted from `needs:` above, which is the whole reason this guard exists.
+          # The invariant, stated without reference to any implementation detail: this run
+          # is clean when every job that has FINISHED finished acceptably, and the only job
+          # still going is this one. Both halves are load-bearing — the second is what
+          # catches a top-level job omitted from `needs:` that is still queued or running,
+          # which would otherwise let this job close a genuine outage before that job goes
+          # red (ai-review pass 3).
           verdict=$(gh run view "$GITHUB_RUN_ID" --json jobs --jq '
-            [.jobs[].conclusion]
-            | map(select(. != null and . != "success" and . != "neutral" and . != "skipped"))
-            | length == 0')
+            (.jobs | length) > 0
+            and ([.jobs[] | select(.status != "completed")] | length) == 1
+            and ([.jobs[]
+                  | select(.status == "completed")
+                  | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")
+                 ] | length) == 0')
           if [ "$verdict" != "true" ]; then
             gh issue comment "$existing" --body "A scheduled run reached the recovery step, but not every job in it finished cleanly (see the run for which), so this stays open. Run: $RUN_URL"
             exit 0

@@ -1185,13 +1185,17 @@ later scheduled run that is genuinely green comments and closes it.
   `contents: read` back too.
 - **Adding a top-level job? Add it to both notifier jobs' `needs:`.** The recovery job does not trust
   `needs:` alone — it asks the run how many jobs concluded `failure`, `cancelled` or `timed_out`
-  (`gh run view --json jobs`) and refuses to close the issue unless **every** job concluded
-  `success`, `neutral`, `skipped`, or is still running. Anything else — `failure`, `cancelled`,
-  `timed_out`, `action_required`, `stale`, or a conclusion GitHub adds later — blocks the close. That
-  turns a forgotten `needs:` entry from a silent false recovery into a visible no-close, but it is a
-  backstop, not a substitute. It is an **allowlist** deliberately: two earlier versions failed open,
-  one by excluding notifier jobs on a display-name prefix (a `name:` field anyone can edit), the next
-  by counting only failures, which let a still-running omitted job pass.
+  (`gh run view --json jobs`) and closes the issue only when **every finished job finished
+  acceptably** (`success`, `neutral`, `skipped`) **and exactly one job is still in flight** — itself.
+  Anything else — `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, a conclusion GitHub
+  adds later, or a *second* unfinished job — blocks the close. That second clause is what catches a
+  top-level job omitted from `needs:` while it is still queued.
+
+  It reads `status`, not just `conclusion`, and that is not cosmetic: **`gh run view --json jobs`
+  renders a running job's conclusion as the empty string, not JSON null**, so a guard written against
+  `null` treats its own still-running job as unacceptable and never closes anything. Four versions of
+  this guard were wrong before this one — by display-name prefix, by counting only failures, by
+  requiring exactly one JSON null, and by that empty-string confusion. Change it carefully.
 - **Both notifier jobs carry `!cancelled()`.** GitHub re-evaluates a running job's `if` during
   cancellation and keeps the job when it still holds, so without it a cancelled run could still write
   to the issue — contradicting the rule that a cancelled run reports nothing.
@@ -1211,7 +1215,14 @@ bash scripts/verify-scheduled-notifier.sh hermetic   # just one
 
 Extracts the `run:` blocks verbatim from the named workflow and drives them against the real GitHub
 API with a throwaway label — create, dedupe over three failures, the guard **refusing** to close
-while a job failed, recover, close, and the no-op path — cleaning up after itself.
+while a job failed, close, and the no-op path — cleaning up after itself.
+
+It also exercises the guard's predicate directly against **synthetic job payloads**, because the live
+state cannot be staged from real run data: a completed historical run has nothing in flight, while the
+guard always has exactly one job running when it asks. That gap hid a real defect for a review round.
+The synthetic cases cover each blocking conclusion, an unknown future conclusion, a second unfinished
+job, and an empty jobs array — and the suite fails if its copy of the predicate drifts from either
+workflow's.
 
 **Run `all`, not one.** The two workflows carry independent inlined copies, so a suite that reads
 only `hermetic.yaml` says nothing about `security.yaml` — which is exactly the coupling the

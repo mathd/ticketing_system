@@ -113,16 +113,16 @@ read_open () {    # read_open — one settled read, for asserting nothing EXTRA 
 }
 
 echo "### 1. label does not exist yet"
-[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = false ]
-assert $? "the throwaway label already exists; this run would not prove auto-creation"
+[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = false ] && rc=0 || rc=$?
+assert "$rc" "the throwaway label already exists; this run would not prove auto-creation"
 ok "absent"
 
 echo "### 2. first failure -> creates label + exactly one issue"
 bash "$T/fail.sh" >/dev/null
-[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = true ]
-assert $? "the notifier did not create its label"
+[ "$(gh label list --limit 200 --json name --jq "any(.[]; .name==\"$LABEL\")")" = true ] && rc=0 || rc=$?
+assert "$rc" "the notifier did not create its label"
 ok "label auto-created"
-[ "$(await_open 1)" = 1 ]; assert $? "the first failure did not open an issue"
+[ "$(await_open 1)" = 1 ] && rc=0 || rc=$?; assert "$rc" "the first failure did not open an issue"
 ok "1 issue"
 NUM=$(gh issue list --state open --label "$LABEL" --limit 5 --json number --jq '.[0].number')
 BODY=$(gh issue view "$NUM" --json body --jq '.body')
@@ -135,15 +135,15 @@ ok "run url present"
 
 echo "### 3. second failure -> comments, does NOT open a second issue"
 bash "$T/fail.sh" >/dev/null
-n=$(read_open); [ "$n" = 1 ]; assert $? "expected 1 issue after 2 failures, found $n"
+n=$(read_open); [ "$n" = 1 ] && rc=0 || rc=$?; assert "$rc" "expected 1 issue after 2 failures, found $n"
 ok "still 1 issue (dedupe works)"
-[ "$(gh issue view "$NUM" --json comments --jq '.comments|length')" -ge 1 ]
-assert $? "the repeat failure left no comment, so a continuing outage is invisible"
+[ "$(gh issue view "$NUM" --json comments --jq '.comments|length')" -ge 1 ] && rc=0 || rc=$?
+assert "$rc" "the repeat failure left no comment, so a continuing outage is invisible"
 ok "commented"
 
 echo "### 4. third failure -> still one issue"
 bash "$T/fail.sh" >/dev/null
-n=$(read_open); [ "$n" = 1 ]; assert $? "expected 1 issue after 3 failures, found $n"
+n=$(read_open); [ "$n" = 1 ] && rc=0 || rc=$?; assert "$rc" "expected 1 issue after 3 failures, found $n"
 ok "still 1 issue after 3 failures"
 
 echo "### 5. recovery REFUSES to close while a non-notifier job failed"
@@ -162,28 +162,114 @@ echo "### 5. recovery REFUSES to close while a non-notifier job failed"
 # fixture run, never to restore the skip.
 FAILED_RUN=$(gh run list --limit 100 --json databaseId,conclusion \
   --jq 'map(select(.conclusion=="failure"))|.[0].databaseId')
-[ -n "$FAILED_RUN" ]
-assert $? "no run with a failed job exists to exercise the guard's refusal path; without it the guard is untested and this suite would be blessing an unverified mechanism"
+[ -n "$FAILED_RUN" ] && rc=0 || rc=$?
+assert "$rc" "no run with a failed job exists to exercise the guard's refusal path; without it the guard is untested and this suite would be blessing an unverified mechanism"
 GITHUB_RUN_ID="$FAILED_RUN" bash "$T/recover.sh" >/dev/null
-n=$(read_open); [ "$n" = 1 ]; assert $? "recovery closed the issue despite a failed job in the run — the guard is inert"
+n=$(read_open); [ "$n" = 1 ] && rc=0 || rc=$?; assert "$rc" "recovery closed the issue despite a failed job in the run — the guard is inert"
 ok "issue left open (guard refused)"
 gh issue view "$NUM" --json comments --jq '.comments[-1].body' | grep -qF "not every job in it finished cleanly" && rc=0 || rc=$?
 assert "$rc" "the refusal left no explanation on the issue"
 ok "refusal explained on the issue"
 
-echo "### 6. recovery on a clean run -> comments and closes"
-CLEAN_RUN=$(gh run list --workflow=hermetic.yaml --limit 20 --json databaseId,conclusion \
-  --jq 'map(select(.conclusion=="success"))|.[0].databaseId')
-[ -n "$CLEAN_RUN" ]; assert $? "no successful run available to exercise the close path"
-GITHUB_RUN_ID="$CLEAN_RUN" bash "$T/recover.sh" >/dev/null
-[ "$(await_open 0)" = 0 ]; assert $? "the recovery did not close the issue"
+echo "### 6. recovery closes when the guard passes"
+# The guard's live invariant is "exactly one job still in flight — me", which a COMPLETED
+# historical run can never satisfy: nothing is running in it. So this case cannot be staged
+# from real run data, and pointing it at a finished run is what made an earlier version of
+# this script pass while the shipped guard could not close anything at all.
+#
+# The close path is therefore driven with the guard's own query stubbed to the verdict it
+# would return in the live state. What that verdict SHOULD be, for every job arrangement, is
+# what step 7 proves against the shipped predicate. Split deliberately: this case tests
+# "given a clean verdict, does it comment and close?", step 7 tests "which arrangements are
+# clean?" — and neither can quietly stand in for the other.
+sed 's|gh run view "\$GITHUB_RUN_ID" --json jobs --jq .*|echo true)|; s|^ *and .*||; s|^ *| |' "$T/recover.sh" > "$T/recover_clean.sh"
+python3 - "$T/recover.sh" "$T/recover_clean.sh" <<'PY'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+# Replace the whole verdict=$( ... ) command substitution with a literal true.
+i = s.index('verdict=$(gh run view')
+depth, j = 0, i + len('verdict=$(') - 1
+while True:
+    if s[j] == '(': depth += 1
+    elif s[j] == ')':
+        depth -= 1
+        if depth == 0: break
+    j += 1
+open(dst, 'w').write(s[:i] + 'verdict=true' + s[j+1:])
+PY
+bash -n "$T/recover_clean.sh"; assert $? "the stubbed recovery script does not parse"
+GITHUB_RUN_ID=0 bash "$T/recover_clean.sh" >/dev/null
+[ "$(await_open 0)" = 0 ] && rc=0 || rc=$?; assert "$rc" "a clean verdict did not close the issue"
 ok "issue closed"
 gh issue view "$NUM" --json comments --jq '.comments[-1].body' | grep -q Recovered && rc=0 || rc=$?
 assert "$rc" "the close left no recovery comment"
 ok "recovery comment"
 
-echo "### 7. recovery with nothing open -> silent no-op, exit 0"
-GITHUB_RUN_ID="$CLEAN_RUN" bash "$T/recover.sh" | grep -q "nothing to close" && rc=0 || rc=$?
+echo "### 7. the guard's predicate, against synthetic job states"
+# The real-API cases above cannot reach the state the guard actually runs in. A completed
+# historical run has NO job in flight, while the live guard always has exactly one — itself.
+# That gap hid a shipping defect for a whole review round: `gh run view --json jobs` renders
+# a RUNNING job's conclusion as the empty STRING, not JSON null, so a guard written against
+# null rejected its own run and would never have closed anything (ai-review pass 3).
+#
+# So the predicate is also exercised directly, against payloads shaped like the ones gh
+# emits, including states that cannot be staged on demand: two unfinished jobs, an empty
+# array, an unknown future conclusion.
+PRED='(.jobs | length) > 0
+      and ([.jobs[] | select(.status != "completed")] | length) == 1
+      and ([.jobs[]
+            | select(.status == "completed")
+            | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")
+           ] | length) == 0'
+
+# Guard against the predicate here drifting from the shipped one — the failure mode this
+# whole script exists to prevent. Compare token-by-token, ignoring whitespace.
+norm () { tr -d ' \n\\' ; }
+for w in hermetic security; do
+  shipped=$(python3 - "$w" <<'PY' || true
+import yaml, sys
+r = yaml.safe_load(open('.github/workflows/'+sys.argv[1]+'.yaml'))['jobs']['scheduled-recovery-notice']['steps'][0]['run']
+marker = '(.jobs | length) > 0'
+if marker not in r:
+    sys.exit(1)          # the shipped guard is not the one this script knows about
+i = r.index(marker)
+sys.stdout.write(r[i:r.index(chr(39)+')', i)])
+PY
+) || shipped=""
+  [ -n "$shipped" ] && rc=0 || rc=$?
+  assert "$rc" "could not find this script's predicate in $w.yaml — the shipped guard has been rewritten, and these synthetic cases would be testing a predicate nothing ships"
+  [ "$(printf '%s' "$shipped" | norm)" = "$(printf '%s' "$PRED" | norm)" ] && rc=0 || rc=$?
+  assert "$rc" "the predicate in this script has drifted from the one in $w.yaml; they must be identical or these cases prove nothing"
+done
+ok "predicate matches both workflows"
+
+check_pred () {  # check_pred <expected> <description> <json>
+  got=$(printf '%s' "$3" | jq "$PRED" 2>/dev/null || echo ERROR)
+  [ "$got" = "$1" ] && rc=0 || rc=$?; assert "$rc" "$2 (expected $1, got $got)"
+  ok "$2"
+}
+# The live shape: this job running, everything else finished cleanly.
+check_pred true  "live run with only this job in flight is clean" \
+  '{"jobs":[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"skipped"},{"status":"in_progress","conclusion":""}]}'
+# The omitted-job race: a second job still going.
+check_pred false "a second unfinished job blocks the close" \
+  '{"jobs":[{"status":"completed","conclusion":"success"},{"status":"queued","conclusion":""},{"status":"in_progress","conclusion":""}]}'
+# Each blocking conclusion, beside an otherwise clean run.
+for c in failure cancelled timed_out action_required stale; do
+  check_pred false "a $c job blocks the close" \
+    "{\"jobs\":[{\"status\":\"completed\",\"conclusion\":\"$c\"},{\"status\":\"in_progress\",\"conclusion\":\"\"}]}"
+done
+# An unknown future conclusion must fail closed, not sail through.
+check_pred false "an unrecognised conclusion blocks the close" \
+  '{"jobs":[{"status":"completed","conclusion":"something_github_added_later"},{"status":"in_progress","conclusion":""}]}'
+# Degenerate payloads.
+check_pred false "an empty jobs array is not clean" '{"jobs":[]}'
+check_pred false "a run with nothing in flight is not the live state" \
+  '{"jobs":[{"status":"completed","conclusion":"success"}]}'
+
+echo "### 8. recovery with nothing open -> silent no-op, exit 0"
+GITHUB_RUN_ID=0 bash "$T/recover_clean.sh" | grep -q "nothing to close" && rc=0 || rc=$?
 assert "$rc" "the no-op path did not report cleanly"
 ok "no-op path"
 
