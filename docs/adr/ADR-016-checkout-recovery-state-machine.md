@@ -7,7 +7,7 @@ Date: 2026-07-14
 Accepted (approved at the TKT-43 plan gate)
 
 Amended by **TKT-262** (2026-08-20, §Amendment below) — records the compensation's refund-before-release
-ordering, which this ADR had implemented and left unstated.
+ordering, which this ADR had implemented and left unstated, and bounds what a refused release guarantees.
 
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
@@ -279,7 +279,7 @@ precedent. This is production code, not test scaffolding.
     - The `finalizing`-from-`confirmed` exemption already in inventory (`store.go:187`) is the same
       crash-recovery reasoning applied at a different step; no change needed there.
 
-## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and the guarantee is about what commerce RECORDS
+## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and a refused release is recorded once
 
 §Consequences above names the `reconciliation_required` population but says nothing about the
 **order** in which a compensation moves money and discharges the inventory obligation. That silence
@@ -294,9 +294,19 @@ which is the first moment it can learn, from a 409, that the claim is **confirme
 sold the seat. The buyer's money is already back. The order is parked with
 `"refunded money against a confirmed claim; manual reconciliation required"`.
 
-This is reachable in production data today. Migration `0005_psp_recovery.sql` cleared
-`recovery_parked_at` for two named reason strings and rebuilt `orders_recovery_claimable_idx` to
-include unparked `reconciliation_required`, so exactly this population is claimable.
+This is reachable in production data today, and it is worth being exact about *which* population
+makes it so — the entry and the exit are different rows.
+
+**The entrance.** Migration `0005_psp_recovery.sql` cleared `recovery_parked_at` for two named
+reason strings — `payment result unknown; needs PSP status (TKT-56)` and `captured payment whose
+claim is gone; needs void/refund (TKT-56)` — and rebuilt `orders_recovery_claimable_idx` to include
+unparked `reconciliation_required`. Those re-opened rows are claimable, and driving one is how a
+pass reaches `resolveReconciliation` and then this branch.
+
+**The exit.** The row this branch *produces* is **not** claimable. `ParkForReconciliation` sets
+`recovery_parked_at=now()`, and the claimable index requires `recovery_parked_at IS NULL`, so a
+confirmed-claim park stays parked until an operator unparks it. It does not re-enter the runner on
+its own, and no backfill re-opens it.
 
 ### Decision: refund first, release second
 
@@ -341,18 +351,31 @@ chain on this path is shorter, so one more call would fit. The reasons above sta
 State this precisely, in the discipline [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
 applies to "tamper-evident" — name the claim before making it.
 
-**Guaranteed:** commerce never *records* both a refund and a discharged seat. On this branch the
-pass ends in exactly one state — parked — and the order is not marked refunded, not marked released,
-and no `order.failed` fact is journalled. Pinned by
+**Guaranteed, on this branch only:** when the release is *refused*, commerce records the
+contradiction **once** — the pass ends parked, and the order is not marked refunded, not marked
+released, and no `order.failed` fact is journalled. Pinned by
 `TestReconciliationRequiredRefundAgainstConfirmedClaimIsParkedOnly`.
+
+Scope this claim to the refusal branch and nowhere else. On the **ordinary** path the release
+*succeeds*, and `finishRefunded` then journals `order.failed` and calls `MarkRefunded` — so commerce
+routinely and correctly records a refund alongside a discharged seat. That is the success case, not a
+contradiction: the seat came back. The guarantee here is narrower and is about the one branch where
+the seat did **not** come back.
 
 **Not guaranteed:** the two *external* effects are not atomic and cannot be made so from here. A
 completed PSP refund and a confirmed inventory claim can and do coexist; no ordering of two calls to
 two services over a network prevents it. What the system provides is that the contradiction is
 **recorded once, honestly, with a reason an operator can act on** — not that it cannot occur.
 
-Reconciling such a row is a human's job today. An operator path to resolve or unpark is
-**TKT-146**'s, per ADR-062 §4 — this amendment does not invent a second one.
+Reconciling such a row is a human's job. The operator surface exists — **TKT-146** shipped
+`commerce unpark-order`, and `docs/development.md` §Parked recovery orders documents this ordering
+from the operator's side, including the warning that unparking a `reconciliation_required` row asks
+the runner to re-decide on PSP evidence alone. This amendment records the decision behind that
+behaviour; it does not add a second operator path (ADR-062 §4).
+
+Note what unparking such a row would do: the runner re-reads PSP status, now `refunded`, and reaches
+`finishRefunded` again — where the release is refused again and the row re-parks. Unparking does not
+resolve this state, which is why the operator guidance says to resolve the underlying claim first.
 
 ## References
 
