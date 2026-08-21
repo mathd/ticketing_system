@@ -16,6 +16,96 @@
     }
   ],
   "summary": "Recovery refunds a captured payment before it learns the claim was confirmed (TKT-146 ai-review incidental)",
-  "comments": [],
-  "description": "Raised by TKT-146's adversarial ai-review (pass 1, finding F2). **Pre-existing** — TKT-146 did not create it and does not close it; it only gave the path a new operator-triggered entrance and documented the hazard.\n\n`resolveReconciliation` (`services/commerce/internal/recovery/runner.go:485-499`) decides on PSP status alone:\n\n```go\nif st.Outcome == \"captured\" {\n    if st.CapturedAmount <= 0 { /* park, no refund */ }\n    if _, err := r.payments.Refund(...); err != nil { ... }   // <- money leaves here\n    return r.finishRefunded(ctx, s)\n}\n```\n\n`finishRefunded` (`:522-530`) then calls `inventory.Release`, and **only there** discovers the claim may already be confirmed — at which point the money is already back with the buyer and the seat is already sold. Its own handling says so:\n\n```go\nif errors.Is(err, ErrClaimNotReleasable) {\n    // The claim is CONFIRMED — inventory sold the seat — while the money came back.\n    return r.store.ParkForReconciliation(ctx, ..., \"refunded money against a confirmed claim; manual reconciliation required\")\n}\n```\n\nSo the outcome is a refunded buyer holding a sold seat, parked for a human. The code is honest about it; the question is whether the ORDER of the two calls should be inverted, or whether inventory state should be established before the refund is issued.\n\n**Reachable today without TKT-146**: any *unparked* `reconciliation_required` row reaches this, and migration `0005_psp_recovery.sql`'s backfill re-opened a population of exactly those rows.\n\n**Why it is worth a ticket rather than a comment.** This is a money path, the failure is silent from the buyer's side until a human reconciles, and the remedy is a design decision (re-order the calls? take an inventory read first? make the refund conditional on a release having succeeded?) with a real trade-off — establishing inventory state first costs an extra call on every pass and can itself be stale by the time the refund lands.\n\n**Not obviously a defect.** Refund-then-release may be the deliberate choice: releasing first and failing to refund strands the buyer's money, which is the worse direction. That trade-off should be written down as an ADR amendment either way — ADR-016 §Consequences names the population but not this ordering.\n\nWanted: a decision (ADR-016 amendment or a new ADR), and if the ordering changes, a test where PSP reports `captured` and inventory reports a confirmed claim, asserting the system cannot produce both a refund and a sold seat."
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping verdict: READY.** All 8 DoR items `met`, no `open`, no `deferred`, no open blockers. Context-mémo baked (`governingAdrs` + `governingTests` both populated; every cited ADR resolves to a real file at HEAD).\n\n**What the code read changed.** The ticket proposes two remedies. Per `shaping.md`, a remedy in the ticket text is a hypothesis, not a finding — both were checked before `approach` inherited anything, and **neither survived**:\n\n- *\"invert the calls\"* — release-then-refund strands the buyer's money when the refund then fails. The ticket itself names that as the worse direction, and it also inverts ADR-016's evidence-before-release ordering.\n- *\"establish inventory state before the refund\"* — **not implementable against inventory's current surface.** `services/inventory/internal/api/server.go:115-124` exposes `POST` confirm/finalize/release/refund-capacity and `GET .../seating`; there is **no read-only hold-status endpoint**. So this is a new-endpoint proposal, not a re-ordering. And even with one it would be TOCTOU-stale by the time the refund lands — which is precisely the shape **ADR-062 §2** already considered and rejected for its sibling runner: inventory's refusal is *\"observed, not predicted\"*, because a commerce-side predicate drifts from inventory's rule with every change to it. Adding a speculative read would also charge an extra external call against `MaxCallsPerOrder`, which `TestCapturedOrderWithGoneClaimIsRefundedSamePass` measures.\n\n**The real gap is not the ordering — it is that nothing asserts the outcome.** The *non-captured* half of this intersection is pinned (`TestFailedOrderWithConfirmedClaimIsParkedNotJournalled`, runner_test.go:953). The *captured* half — refund succeeds, then `inventory.Release` returns 409 — is asserted by **no test at all**. Delete the parking branch in `finishRefunded` today and the suite stays green. Per AGENTS.md's *\"pin it as a test that asserts it is present\"* rule (ADR-021's rollback-gap idiom), that is this ticket's load-bearing deliverable.\n\n**`approach` is `met`, not `deferred`, deliberately.** `shaping.md`'s exception forbids `approach: deferred` on a money path; this is one. The direction is settled here, at shaping, where there was time to read.\n\n**Risk verdict (restated at claim):** this is a **money path**, so `risk:low` is **not** claimed even though the expected diff is small. The plan gate applies.\n\nOpen blockers: **none**. TKT-146 is Done/merged (PR #241); TKT-115 shipped the same-pass refund. Both `relates`, neither blocks."
+    }
+  ],
+  "description": "Raised by TKT-146's adversarial ai-review (pass 1, finding F2). **Pre-existing** — TKT-146 did not create it and does not close it; it only gave the path a new operator-triggered entrance and documented the hazard.\n\n`resolveReconciliation` (`services/commerce/internal/recovery/runner.go:485-499`) decides on PSP status alone:\n\n```go\nif st.Outcome == \"captured\" {\n    if st.CapturedAmount <= 0 { /* park, no refund */ }\n    if _, err := r.payments.Refund(...); err != nil { ... }   // <- money leaves here\n    return r.finishRefunded(ctx, s)\n}\n```\n\n`finishRefunded` (`:522-530`) then calls `inventory.Release`, and **only there** discovers the claim may already be confirmed — at which point the money is already back with the buyer and the seat is already sold. Its own handling says so:\n\n```go\nif errors.Is(err, ErrClaimNotReleasable) {\n    // The claim is CONFIRMED — inventory sold the seat — while the money came back.\n    return r.store.ParkForReconciliation(ctx, ..., \"refunded money against a confirmed claim; manual reconciliation required\")\n}\n```\n\nSo the outcome is a refunded buyer holding a sold seat, parked for a human. The code is honest about it; the question is whether the ORDER of the two calls should be inverted, or whether inventory state should be established before the refund is issued.\n\n**Reachable today without TKT-146**: any *unparked* `reconciliation_required` row reaches this, and migration `0005_psp_recovery.sql`'s backfill re-opened a population of exactly those rows.\n\n**Why it is worth a ticket rather than a comment.** This is a money path, the failure is silent from the buyer's side until a human reconciles, and the remedy is a design decision (re-order the calls? take an inventory read first? make the refund conditional on a release having succeeded?) with a real trade-off — establishing inventory state first costs an extra call on every pass and can itself be stale by the time the refund lands.\n\n**Not obviously a defect.** Refund-then-release may be the deliberate choice: releasing first and failing to refund strands the buyer's money, which is the worse direction. That trade-off should be written down as an ADR amendment either way — ADR-016 §Consequences names the population but not this ordering.\n\nWanted: a decision (ADR-016 amendment or a new ADR), and if the ordering changes, a test where PSP reports `captured` and inventory reports a confirmed claim, asserting the system cannot produce both a refund and a sold seat.\n\n---\n\n## COS (added at shaping)\n\n1. **The ordering decision is recorded.** An ADR (an ADR-016 amendment or a new ADR) states, in the\n   registry, which of refund-then-release / release-then-refund / read-then-refund this system takes\n   and **why**, naming the trade-off explicitly: a refunded buyer holding a sold seat versus a buyer\n   whose money is stranded against a released seat. The rejected options are recorded as rejected,\n   with the reason each fails — including that \"establish inventory state first\" is not implementable\n   against inventory's current surface and is the shape ADR-062 §2 already rejected.\n2. **The intersection is pinned by a test.** A runner test in which PSP reports `captured` **and**\n   inventory refuses the release (`ErrClaimNotReleasable`) asserts the system's actual guarantee:\n   the order is **parked** with a reason a human can act on, it is **not** marked refunded,\n   **not** journalled `order.failed`, and **not** marked released — i.e. the pass ends in exactly one\n   terminal-ish state and never in two. The test must go **red** if the parking branch in\n   `finishRefunded` is deleted.\n3. **No silent behaviour change on the money path.** Whatever the decision, the existing ordering\n   guarantees stay green: `Status` → `Refund` → `MarkRefunded`, `OrderFailed` → `MarkRefunded`, and\n   the executed chain still fits `MaxCallsPerOrder`.\n",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "resolveReconciliation refunds captured money on PSP status alone; finishRefunded then discovers via inventory.Release 409 that the claim is CONFIRMED. Outcome: refunded buyer + sold seat, parked for a human. Decide whether that ordering is correct, record it, and pin it with a test."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: an ADR (amendment to ADR-016 or a new ADR) recording the refund-before-release ordering decision, and a runner test for the captured+confirmed intersection. OUT: any operator unpark/resolve path (TKT-146 owns it, and ADR-062 SS4 explicitly refuses to invent a second one); OUT: a new inventory read endpoint; OUT: any change to releaseAndFail's non-captured path (already covered by TestFailedOrderWithConfirmedClaimIsParkedNotJournalled)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The only real unknown was whether inventory offers a read-only hold-status surface that would make 'establish inventory state first' implementable. It does not: services/inventory/internal/api/server.go:115-124 exposes POST confirm/finalize/release/refund-capacity and GET .../seating only -- no status read. So the option would require a new endpoint AND would still be TOCTOU-stale. Resolved by reading, no spike needed."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. TKT-146 (relates) is Done/merged (PR #241) and owns unparking; TKT-115 (relates) shipped the same-pass refund this path uses. Neither blocks."
+    },
+    "approach": {
+      "state": "met",
+      "note": "The ticket's proposed remedies are HYPOTHESES and were checked against the code rather than inherited. (a) 'invert the calls' -- releasing first and then failing to refund strands the buyer's money, which the ticket itself names as the worse direction, and it also breaks ADR-016's evidence-before-release ordering. (b) 'take an inventory read first' -- unimplementable without a new endpoint (see uncertainties), and it is exactly the shape ADR-062 SS2 rejected: inventory's refusal is 'observed, not predicted', because a commerce-side predicate drifts from inventory's rule with every change to it. Therefore the expected approach is: KEEP the current ordering, record WHY as an ADR (money-back-to-buyer strictly dominates money-stranded; the intersection is rare, terminal, and already parked with an honest reason string), and close the real gap -- the intersection is asserted by NO test today. This ticket touches a money path, so 'approach: deferred' is not available (shaping.md exception); it is resolved here, at shaping."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: ADR + one runner test. The whole deliverable fits well inside a sprint; no slicing needed."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS 1-3 below."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked -- see the context field (governingAdrs + governingTests both populated, both resolved at HEAD)"
+    }
+  },
+  "context": {
+    "area": "services/commerce/internal/recovery -- the leased recovery runner's compensation path",
+    "entryPoints": [
+      "services/commerce/internal/recovery/runner.go:471 resolveReconciliation -- refunds on PSP status alone",
+      "services/commerce/internal/recovery/runner.go:522 finishRefunded -- calls inventory.Release, discovers ErrClaimNotReleasable AFTER the money moved",
+      "services/commerce/internal/recovery/runner.go:545 releaseAndFail -- the same intersection on the NON-captured path, already tested",
+      "services/commerce/internal/recovery/clients.go:266 HTTPClients.Release -- 409 => ErrClaimNotReleasable (confirmed, i.e. seat sold)"
+    ],
+    "governingAdrs": [
+      {
+        "adr": "ADR-016-checkout-recovery-state-machine.md",
+        "constrains": "Owns this state machine. SSDecision 3: an unknown provider answer proves nothing -- never release, never record, never park. Ordering rule: the outcome must be DURABLE before the release (recordAndRelease), or a crash between them leaves an unrestartable release. SSConsequences names the reconciliation_required population but is SILENT on this ordering -- that silence is what this ticket closes."
+      },
+      {
+        "adr": "ADR-062-refund-reversal-reconciliation.md",
+        "constrains": "THE decisive precedent. SS2 'Permanently undischargeable obligations are PARKED, never predicted': the obvious fix -- excluding rows with a commerce-side predicate that anticipates inventory's refusal -- cannot be written in commerce, because commerce does not read inventory's state and a predicate drifts from inventory's rule with every change to it. That is verbatim the 'take an inventory read first' option this ticket floats. SS4: parking is only honest if someone can see it. SS4 also puts UNPARKING out of scope here and assigns it to TKT-146 -- 'inventing a second one here would guarantee two'."
+      },
+      {
+        "adr": "ADR-032-stripe-behind-the-psp-port.md",
+        "constrains": "The PSP status/refund contract the runner reads. Its TKT-115 amendment: the provider's exact terminal answer records itself, never blurred into no_side_effect; and refunded money is NOT a no-side-effect outcome."
+      },
+      {
+        "adr": "ADR-011-checkout-journal-protocol.md",
+        "constrains": "authorize -> finalize claim -> capture -> confirm. ADR-016 amends its RECOVERY story only; the protocol itself is unchanged by this ticket."
+      },
+      {
+        "adr": "ADR-063-exchange-reversal-reconciliation.md",
+        "constrains": "Sibling reconciliation runner; same park-and-surface idiom. Also defers unparking to TKT-146. Read for consistency of wording, not as a constraint on the decision."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/recovery/runner_test.go:953 TestFailedOrderWithConfirmedClaimIsParkedNotJournalled",
+        "pins": "The NON-captured half of this exact intersection: a release_pending order whose claim is confirmed must be PARKED, must not journal order.failed, must not be marked released. The captured half -- this ticket's -- has no counterpart. Do not weaken or generalise this test; add the sibling."
+      },
+      {
+        "test": "services/commerce/internal/recovery/runner_test.go:409 TestCapturedOrderWithGoneClaimIsRefundedSamePass",
+        "pins": "The ordering the new test must NOT break: Status precedes Refund, Refund precedes MarkRefunded, OrderFailed precedes MarkRefunded. Also asserts the executed chain fits MaxCallsPerOrder -- any extra external call added to this path (e.g. a speculative inventory read) is measured against the lease budget here and will fail the gate."
+      },
+      {
+        "test": "services/commerce/internal/recovery/runner_test.go:524 TestReconciliationRequiredRefundsCapturedMoney",
+        "pins": "The happy path of resolveReconciliation for exactly the population this ticket concerns. The new test is its negative twin and must not be satisfiable by the same fixture."
+      },
+      {
+        "note": "The p.trace / mustPrecede harness in runner_test.go is the ordering seam. Per AGENTS.md's pin-the-harness rule, the new test must assert what the RUNNER observed (money moved AND the seat is sold in the same pass), not merely that a callback fired."
+      }
+    ],
+    "moneyPath": true,
+    "notes": "Reachable today without TKT-146: any unparked reconciliation_required row, and migration 0005_psp_recovery.sql's backfill re-opened exactly that population. Inventory has NO read-only hold-status endpoint (server.go:115-124), so 'read inventory first' is a new-endpoint proposal, not a re-ordering."
+  }
 }
