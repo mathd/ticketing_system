@@ -279,7 +279,7 @@ precedent. This is production code, not test scaffolding.
     - The `finalizing`-from-`confirmed` exemption already in inventory (`store.go:187`) is the same
       crash-recovery reasoning applied at a different step; no change needed there.
 
-## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and a refused release parks without a second record
+## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and a refused release parks without a contradictory terminal transition
 
 §Consequences above names the `reconciliation_required` population but says nothing about the
 **order** in which a compensation moves money and discharges the inventory obligation. That silence
@@ -351,15 +351,15 @@ chain on this path is shorter, so one more call would fit. The reasons above sta
 State this precisely, in the discipline [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
 applies to "tamper-evident" — name the claim before making it.
 
-**Guaranteed, on this branch, per recovery pass:** when the release is *refused*, the pass ends in
-**exactly one** recorded state — parked — and the order is not marked refunded, not marked released,
-and no `order.failed` fact is journalled. Pinned by
+**Guaranteed, on this branch, per recovery pass:** when the release is *refused*, the pass ends
+parked and takes **no contradictory terminal transition** — the order is not marked refunded, not
+marked released, and no `order.failed` fact is journalled. Pinned by
 `TestReconciliationRequiredRefundAgainstConfirmedClaimIsParkedOnly`.
 
 *Per pass*, not per lifetime. Nothing marks the row as having been refused before, so an operator
 who unparks a still-confirmed row gets a second refusal and a second park, writing the same reason
-again. That is the intended behaviour — the guarantee is that no single pass leaves two contradictory
-records, not that the refusal can only ever happen once.
+again. That is the intended behaviour — the guarantee is that no single pass takes two contradictory
+terminal transitions, not that the refusal can only ever happen once.
 
 Scope this claim to the refusal branch and nowhere else. On the **ordinary** path the release
 *succeeds*, and `finishRefunded` then journals `order.failed` and calls `MarkRefunded` — so commerce
@@ -369,8 +369,11 @@ the seat did **not** come back.
 
 **Not guaranteed:** the two *external* effects are not atomic and cannot be made so from here. A
 completed PSP refund and a confirmed inventory claim can and do coexist; no ordering of two calls to
-two services over a network prevents it. What the system provides is that the contradiction is
-**recorded once, honestly, with a reason an operator can act on** — not that it cannot occur.
+two services over a network prevents it. What the system provides is that each refusing pass
+**parks the row with a reason an operator can act on**, rather than resolving it one way and hiding
+the other — not that the contradiction cannot occur, and not that it is recorded only once. Repeated
+intervention appends: every unpark writes an `order_recovery_unparks` row, and each subsequent
+refusal rewrites `recovery_parked_at` and `recovery_last_error`.
 
 Reconciling such a row is a human's job. The operator surface exists — **TKT-146** shipped
 `commerce unpark-order`, and `docs/development.md` §Parked recovery orders documents this ordering
@@ -383,12 +386,20 @@ outcomes are worth stating because an operator needs to predict which one they a
 The runner re-reads PSP status — now `refunded` — and `actOnProviderStatus` routes back to
 `finishRefunded` (`runner.go`). From there:
 
-- **Claim still confirmed** → `inventory.Release` is refused again, and the row **re-parks** with the
-  same reason. The unpark accomplished nothing except resetting the retry budget.
-- **Claim resolved first** (released or otherwise repaired out of band, which is what
-  `docs/development.md` §Parked recovery orders tells the operator to do) → the release **succeeds**,
-  `order.failed` is journalled and `MarkRefunded` runs. The order reaches its correct terminal state
-  and the intervention worked.
+- **The release maps to `nil`** → `order.failed` is journalled, `MarkRefunded` runs, and the order
+  reaches its correct terminal state. `clients.Release` maps exactly two answers to `nil`: a **200**
+  (the claim is already `released`, or it is `expired` — expiry already freed the seats) and a
+  **404** (no such claim, so there is no obligation left to discharge).
+- **The release is refused again (409)** → the row **re-parks** with the same reason, having spent
+  only a fresh retry budget.
+- **Anything else** — a transport failure, a 5xx — is neither: `finishRefunded` returns an error, the
+  order stays claimable, and it retries until it succeeds, is refused, or exhausts its budget.
+
+Be precise about what counts as a repair, because the obvious one is not enough. Inventory's
+`Transition` refuses any claim that is not `held` or `finalizing`, so **`confirmed` cannot be
+released** — and returning capacity out of band does **not** move `claims.status` off `confirmed`.
+An operator who returns capacity and then unparks gets the 409 branch, not the success branch. The
+claim itself has to reach a state whose release maps to `nil`.
 
 So unparking is the *second* step, not the fix: it is how a repaired order is returned to the runner.
 Unparking alone, with the claim untouched, only buys another refusal.
