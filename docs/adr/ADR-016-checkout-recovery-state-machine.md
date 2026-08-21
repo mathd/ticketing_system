@@ -6,6 +6,9 @@ Date: 2026-07-14
 
 Accepted (approved at the TKT-43 plan gate)
 
+Amended by **TKT-262** (2026-08-20, §Amendment below) — records the compensation's refund-before-release
+ordering, which this ADR had implemented and left unstated.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -276,9 +279,86 @@ precedent. This is production code, not test scaffolding.
     - The `finalizing`-from-`confirmed` exemption already in inventory (`store.go:187`) is the same
       crash-recovery reasoning applied at a different step; no change needed there.
 
+## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and the guarantee is about what commerce RECORDS
+
+§Consequences above names the `reconciliation_required` population but says nothing about the
+**order** in which a compensation moves money and discharges the inventory obligation. That silence
+is what this amendment closes. Nothing in the code changes; the decision was already implemented and
+merely unrecorded — and, until this ticket, unasserted by any test.
+
+### The intersection
+
+`resolveReconciliation` decides from PSP status alone. Where the provider reports `captured` with a
+positive captured amount, it refunds, and only then does `finishRefunded` call `inventory.Release` —
+which is the first moment it can learn, from a 409, that the claim is **confirmed**: inventory has
+sold the seat. The buyer's money is already back. The order is parked with
+`"refunded money against a confirmed claim; manual reconciliation required"`.
+
+This is reachable in production data today. Migration `0005_psp_recovery.sql` cleared
+`recovery_parked_at` for two named reason strings and rebuilt `orders_recovery_claimable_idx` to
+include unparked `reconciliation_required`, so exactly this population is claimable.
+
+### Decision: refund first, release second
+
+The ordering stands. The trade-off is between two bad states, and they are not symmetric:
+
+| Ordering | Failure state | Who is harmed |
+|---|---|---|
+| **Refund, then release** *(chosen)* | Buyer refunded, seat sold | Nobody is out of pocket. An operator reconciles a seat. |
+| Release, then refund | Seat released, refund then fails | The **buyer's money is stranded** while the seat is resold. |
+
+Money returning to the buyer and staying there is recoverable by a human holding a seat inventory
+can re-sell. Money stranded against a released seat is a buyer harmed by our failure, discovered by
+them, not by us. A compensation path exists to make the buyer whole; it should not have a branch
+whose failure mode is the opposite.
+
+### Rejected: release before refund
+
+Inverts the harm as above, and inverts §Decision 2's evidence-before-action rule — the release would
+precede the durable evidence that justifies it.
+
+### Rejected: establish inventory state before refunding
+
+Rejected for two independent reasons, either sufficient.
+
+**It is not implementable against inventory's surface.** `services/inventory/internal/api/server.go`
+exposes `POST /internal/holds`, `POST /internal/holds/{id}/{confirm,finalize,release,refund-capacity}`
+and `GET /internal/holds/{id}/seating`. There is no read-only hold-status route. This is a proposal
+to add an endpoint, not to re-order two calls.
+
+**It would not work if it existed.** The read is stale the moment it returns; a confirm racing the
+refund lands in the same intersection with an extra call spent. This is the shape
+[ADR-062](./ADR-062-refund-reversal-reconciliation.md) §2 already rejected for the sibling runner:
+a downstream refusal is **observed, not predicted**, because a commerce-side predicate over
+inventory's state drifts from inventory's rule with every change to it. The runner learns the claim
+is confirmed by attempting the release. That is the design, not a shortcut.
+
+*This rejection does not rest on the external-call budget.* `MaxCallsPerOrder` is 6 and the executed
+chain on this path is shorter, so one more call would fit. The reasons above stand on their own.
+
+### What is guaranteed, and what is not
+
+State this precisely, in the discipline [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
+applies to "tamper-evident" — name the claim before making it.
+
+**Guaranteed:** commerce never *records* both a refund and a discharged seat. On this branch the
+pass ends in exactly one state — parked — and the order is not marked refunded, not marked released,
+and no `order.failed` fact is journalled. Pinned by
+`TestReconciliationRequiredRefundAgainstConfirmedClaimIsParkedOnly`.
+
+**Not guaranteed:** the two *external* effects are not atomic and cannot be made so from here. A
+completed PSP refund and a confirmed inventory claim can and do coexist; no ordering of two calls to
+two services over a network prevents it. What the system provides is that the contradiction is
+**recorded once, honestly, with a reason an operator can act on** — not that it cannot occur.
+
+Reconciling such a row is a human's job today. An operator path to resolve or unpark is
+**TKT-146**'s, per ADR-062 §4 — this amendment does not invent a second one.
+
 ## References
 
 - [ADR-011 — Checkout finalization and canonical money journal](./ADR-011-checkout-journal-protocol.md) (recovery story amended by this ADR)
 - [ADR-003 — Append-only audit trail](./ADR-003-append-only-audit-trail.md) ("inalterable history" scoped by §Decision 7; §1 compensating entries; §4 NF525-without-schema-changes, whose NF525 characterization ADR-003 itself marks as inferred pending TKT-11)
 - [ADR-012 — Ticket issuance](./ADR-012-ticket-issuance-and-qr-credentials.md) (names TKT-43 for outbox recovery) · [ADR-007 — PostgreSQL + NATS](./ADR-007-postgres-nats.md) · [ADR-010 — PostgreSQL claim transaction](./ADR-010-postgres-claim-transaction.md)
+- [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) (§2 *observed, not predicted* is the precedent the TKT-262 amendment applies; §4 assigns unparking to TKT-146)
+- [ADR-032 — Stripe behind the PSP port](./ADR-032-stripe-behind-the-psp-port.md) (the status/refund contract `resolveReconciliation` reads; its TKT-115 amendment shipped the same-pass refund)
 - TKT-43 · TKT-28 (the walking skeleton this hardens) · TKT-11 (fiscal archive; owns the anchor choice) · TKT-33 (PII erasure machinery)
