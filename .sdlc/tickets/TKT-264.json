@@ -12,6 +12,73 @@
     }
   ],
   "summary": "CVE-2026-56864 in golang.org/x/mod v0.37.0 — security workflow red on main for 3+ weeks",
-  "comments": [],
-  "description": "Found while verifying TKT-213, and it is that ticket's premise confirmed by accident.\n\n`repository-scan` (trivy, in `.github/workflows/security.yaml`) fails on:\n\n```\ngolang.org/x/mod  CVE-2026-56864  HIGH  fixed\n  installed: v0.37.0   fixed in: 0.40.0\n  \"A malicious GOSUMDB was capable of serving arbitrary module ...\"\n```\n\n**It has been failing on `main` for at least three consecutive weekly runs** — 2026-08-03, 08-10, 08-17 — and nobody knew, because until TKT-213 merged, a scheduled workflow failure notified no one. TKT-213 does not fix this; it is the reason anyone will be told about the next one.\n\n**Scope of the exposure, stated honestly rather than inflated.** `x/mod` is an **indirect** dependency (`// indirect` in the module graph), and the advisory is about a malicious `GOSUMDB` serving arbitrary module content — a supply-chain path that matters at build/dependency-resolution time, not a runtime path in any shipped service. It is a HIGH that should be closed promptly, not an incident.\n\n**Wanted:**\n- Bump `golang.org/x/mod` to >= 0.40.0 across the workspace. It is indirect, so the bump likely comes via whichever direct dependency pulls it — find that first rather than adding a bare `require`, and say which one it was.\n- `make check` green, and `repository-scan` green.\n- **Confirm the notifier does its job on the way out**: once this lands, the next scheduled `security` run should CLOSE the outage issue TKT-213's notifier will have opened. That is the first real end-to-end proof of the recovery path, which TKT-213 could only verify synthetically — worth capturing in the closeout rather than letting it pass unremarked.\n\n**Note for whoever picks this up:** check whether other advisories have accumulated behind this one. Three weeks of unread scans means the first green run may reveal a queue, and trivy stops at the first failure per target rather than reporting everything."
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness -- READY (8/8 met)\n\nShaped at HEAD `4855c56e`. Every claim below was executed against the tree or the Actions API, not read off the ticket.\n\n| Criterion | Status | Note |\n|---|---|---|\n| objective | OK | The security channel is red; restore its signal. |\n| scope | OK | One module, two manifest lines, plus go.sum. |\n| uncertainties | OK | Three named, all three probed and cleared. |\n| dependencies | OK | No blockers. |\n| approach | OK | Verified by probe; **two corrections to the ticket text below**. |\n| first_slice | OK | The whole ticket is one slice. |\n| success | OK | COS observable. |\n| context_memo | OK | Baked; 3 ADRs (all cat-file verified), 2 governing tests. |\n\n**Two corrections the drafter must not inherit from the ticket text.** Shaping's rule is that a remedy in the ticket is a hypothesis; both of these failed the read.\n\n1. **\"Bump across the workspace\" is wrong.** `golang.org/x/mod` is declared by **exactly one** of the eight modules -- `services/catalog` -- where it arrives indirectly through the `oapi-codegen` **tool directive** (ADR-009). No other `go.mod` or `go.sum` mentions it. The change is one module, not a workspace sweep.\n\n2. **\"`repository-scan` has been failing the scheduled run for three weeks\" is wrong, and the real history is more interesting.** On the 2026-08-17 scheduled run (`32007988670`), `repository-scan` **passed**; all **eight** `govulncheck` legs failed, on Go **stdlib** advisories at `go1.26.5` (GO-2026-6218, -6091, -6090, -6089, -6088, -5972, -5026). Those are already closed on main by the workflow's `go-version: \"1.26.6\"` pin. What is red *today*, on every PR run, is `repository-scan` -- and it is a different failure from the one the ticket reconstructed. Both point at the same fix, but the ticket's account of the outage is not what the run logs say.\n\n**The ticket's own instinct paid off.** It asked whether advisories had accumulated behind the first. They had: `repository-scan` reports **two** HIGHs, not one -- `CVE-2026-56864` (malicious GOSUMDB) and **`CVE-2026-56865`** (malicious GOPROXY forging), same module, same fix. The second is unnamed in the ticket.\n\n**Probe results (scratch copy of `HEAD`, discarded):**\n- `go get golang.org/x/mod@v0.40.0` → `go.mod` diff is **two lines**: `x/mod v0.37.0→v0.40.0` and, dragged with it, `x/tools v0.47.0→v0.49.0`.\n- `x/tools` is **also** catalog-only, so ADR-035's `check-dep-drift` ignores both. Ran the checker on the probe: `none across 8 module(s)`.\n- `make generate` on the probe left **all nine** generated artifacts byte-identical (5 × `openapi_gen.go`, 4 × `*.gen.ts`). The codegen-toolchain risk is retired.\n\n**No open blockers. No `owner: human` items.** `approach` is `met` rather than `deferred`, which matters here: this ticket touches CI/security config, one of the four surfaces where `deferred` is explicitly disallowed.\n\n**Verdict: READY** -- Gate 1 is the owner's call."
+    }
+  ],
+  "description": "Found while verifying TKT-213, and it is that ticket's premise confirmed by accident.\n\n`repository-scan` (trivy, in `.github/workflows/security.yaml`) fails on:\n\n```\ngolang.org/x/mod  CVE-2026-56864  HIGH  fixed\n  installed: v0.37.0   fixed in: 0.40.0\n  \"A malicious GOSUMDB was capable of serving arbitrary module ...\"\n```\n\n**It has been failing on `main` for at least three consecutive weekly runs** — 2026-08-03, 08-10, 08-17 — and nobody knew, because until TKT-213 merged, a scheduled workflow failure notified no one. TKT-213 does not fix this; it is the reason anyone will be told about the next one.\n\n**Scope of the exposure, stated honestly rather than inflated.** `x/mod` is an **indirect** dependency (`// indirect` in the module graph), and the advisory is about a malicious `GOSUMDB` serving arbitrary module content — a supply-chain path that matters at build/dependency-resolution time, not a runtime path in any shipped service. It is a HIGH that should be closed promptly, not an incident.\n\n**Wanted:**\n- Bump `golang.org/x/mod` to >= 0.40.0 across the workspace. It is indirect, so the bump likely comes via whichever direct dependency pulls it — find that first rather than adding a bare `require`, and say which one it was.\n- `make check` green, and `repository-scan` green.\n- **Confirm the notifier does its job on the way out**: once this lands, the next scheduled `security` run should CLOSE the outage issue TKT-213's notifier will have opened. That is the first real end-to-end proof of the recovery path, which TKT-213 could only verify synthetically — worth capturing in the closeout rather than letting it pass unremarked.\n\n**Note for whoever picks this up:** check whether other advisories have accumulated behind this one. Three weeks of unread scans means the first green run may reveal a queue, and trivy stops at the first failure per target rather than reporting everything.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "The security workflow is red and has been for weeks. Close the x/mod advisories so the channel carries signal again."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: bump golang.org/x/mod to >=0.40.0 in services/catalog (the only module declaring it) and commit the go.sum + the x/tools 0.47.0->0.49.0 that comes with it; verify repository-scan clean; confirm the TKT-213 notifier closes its issue on the next scheduled run. OUT: the govulncheck stdlib finding from the 2026-08-17 run (already fixed on main by the go-version 1.26.6 pin) and any oapi-codegen v2.8.0 major-tool bump."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Three checked and cleared by probe at 4855c56e. (1) The bump drags x/tools 0.47.0->0.49.0: both are declared by services/catalog ALONE, so ADR-035's check-dep-drift ignores them and stays green -- verified by running the checker on the probe tree ('none across 8 modules'). (2) x/mod arrives via the oapi-codegen tool directive, so a codegen change was the live risk: 'make generate' on the probe left all 9 generated artifacts BYTE-IDENTICAL. (3) No local trivy binary; verification runs the pinned aquasec/trivy image under Docker (available) or falls back to CI's own repository-scan."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-213 (notifier) is already merged and is the mechanism this ticket exercises on the way out, not a dependency."
+    },
+    "approach": {
+      "state": "met",
+      "note": "VERIFIED, not inherited -- and the ticket text is wrong in two ways worth correcting for the drafter. (a) The ticket says 'bump across the workspace'; x/mod is declared by exactly ONE module, services/catalog. (b) The ticket says repository-scan was the job failing the 2026-08-17 scheduled run; it was NOT -- repository-scan PASSED that run and all eight govulncheck legs failed, on Go stdlib 1.26.5 advisories that the go-version 1.26.6 pin has since closed. The trivy failure is what is red on PR runs TODAY. Actual approach: 'cd services/catalog && go get golang.org/x/mod@v0.40.0', commit go.mod+go.sum, run the gate. Probe diff is two lines."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice -- a two-line manifest change plus its go.sum."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS in the description; each is observable (trivy clean, gate green, notifier closes its issue)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below. governingAdrs re-resolved against docs/adr/ at HEAD 4855c56e -- all three cat-file verified. governingTests populated: scripts/gate-selftest.sh's dep-drift seeds and make check's check-generate are the two tripwires this change could plausibly hit, and the probe cleared both."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-035-go-module-dependency-declarations.md",
+        "constrains": "THE governing decision. Eight modules stay; check-dep-drift fails when two or more modules declare DIFFERENT versions of the same dependency. Critically, a dependency declared by exactly ONE module is ignored by design -- which is why bumping x/mod and x/tools (both catalog-only) does not trip it. ADR-035 also lists x/mod among the eight declarations its own realignment raised, so this file is the history of the line being edited."
+      },
+      {
+        "adr": "ADR-009-contract-first-apis.md",
+        "constrains": "Catalog owns the oapi-codegen tool directive, which is the ONLY reason x/mod is in the graph at all. It is a build-time codegen dependency, not shipped service code -- this is what bounds the exposure statement."
+      },
+      {
+        "adr": "ADR-030-catalog-coverage-gate-scope.md",
+        "constrains": "Catalog's generated-contract coverage gate; named because the bump moves the codegen toolchain and so could in principle move generated output. Probe says it does not."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "scripts/gate-selftest.sh (dep-drift seeds, lines ~103-112)",
+        "pins": "Asserts a clean baseline PASSES check-dep-drift and a seeded divergence FAILS it. A bump that accidentally created drift fails here, not in review."
+      },
+      {
+        "test": "make check :: check-generate",
+        "pins": "Diffs regenerated openapi_gen.go / api-types.gen.ts against HEAD. AGENTS.md's standing trap: regenerate and COMMIT before running the gate, or an uncommitted regen reads as drift. Probe confirms output is byte-identical, so there should be nothing to commit -- if there IS, that is a finding, not a formality."
+      }
+    ],
+    "notes": "Exposure, stated honestly: x/mod is an indirect, BUILD-TIME dependency reached through the oapi-codegen tool directive. CVE-2026-56864 (malicious GOSUMDB) and CVE-2026-56865 (malicious GOPROXY) are module-resolution attacks; neither is a runtime path in any of the five shipped services. HIGH to close promptly, not an incident. The ticket asked whether other advisories had accumulated behind the first -- they had: 56865 is a SECOND CVE the ticket did not name, in the same module, closed by the same bump."
+  }
 }
