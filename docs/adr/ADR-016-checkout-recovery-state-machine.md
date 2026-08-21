@@ -392,12 +392,22 @@ The runner re-reads PSP status — now `refunded` — and `actOnProviderStatus` 
   **404** (no such claim, so there is no obligation left to discharge).
 - **The release is refused again (409)** → the row **re-parks** with the same reason, having spent
   only a fresh retry budget.
-- **Anything else** — a transport failure, a 5xx — is neither: `finishRefunded` returns an error, the
-  order stays claimable, and it retries until it succeeds, is refused, or exhausts its budget.
+- **Anything else** — a transport failure, a 5xx — is neither: `finishRefunded` returns the error and
+  `RunOnce` hands it to `fail`, which re-drives the order with backoff. Say the ending precisely:
+  `ReleaseStuckOrder` returns it to the claimable set *only while attempts remain*, and sets
+  `recovery_parked_at` once `recovery_attempts >= MaxRecoveryAttempts`. A persistent dependency
+  failure therefore does not retry forever — it ends **parked**, by the ordinary exhaustion path
+  rather than by this branch, and with a different `recovery_last_error`.
 
 Be precise about what counts as a repair, because the obvious one is not enough. Inventory's
 `Transition` refuses any claim that is not `held` or `finalizing`, so **`confirmed` cannot be
-released** — and returning capacity out of band does **not** move `claims.status` off `confirmed`.
+released** — and returning capacity out of band does **not** move `claims.status` off `confirmed`
+(`ReturnRefundedCapacity` leaves the status alone).
+
+Nor is there a two-step way around it. `Transition` does accept `finalizing` *for* a `confirmed`
+claim, but that branch is an idempotency no-op for a crashed checkout replaying its finalize — it
+returns early and never writes `claims.status`, so the claim is still `confirmed` afterwards and a
+following release is refused exactly as before.
 An operator who returns capacity and then unparks gets the 409 branch, not the success branch. The
 claim itself has to reach a state whose release maps to `nil`.
 
