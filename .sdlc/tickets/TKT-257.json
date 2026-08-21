@@ -19,6 +19,117 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-168 ai-review triage — two [high] findings, CONFIRMED and DEFERRED\n\nThe reviewer said *\"do not ship\"* and recommended fixing inside TKT-168. **Overridden**, on the evidence quoted in the description: `origin/main` already publishes and already journals these same request-derived values through three existing surfaces. TKT-168 adds a read of them; it does not create the defect, and its own constraint forbids the change the fix needs (*\"no change to what the journal records\"*).\n\n**Not shaped.** No `readiness` object, so Gate 1 is blocked until someone fills the DoR.\n\n**The shaping question that decides its size:** whether provider-confirmed amounts get new columns beside the existing ones (additive, legacy rows keep answering `absent`) or replace them (a migration plus a back-fill policy for rows that can never be confirmed). The first is far more reversible and is the recommended starting point.\n\n**Do not let this sit.** It is a fail-open on an untested assumption about provider behaviour, on the money path, reaching the journal. It is bounded today only because the fake PSP ignores amounts and the Stripe adapter never requests a partial capture."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### DoR complete — 8/8 `met`, zero `open`, zero `deferred`. Gate 1 is unblocked.\n\nShaped by reading the code, not by inheriting the ticket text. Three things the read changed:\n\n**1. There is a THIRD sink, and the ticket text does not name it.** `/internal/psp/status`'s resolve\npath (`services/payments/internal/api/psp.go:154-158`) writes `authorized, captured = op.RequestAmount,\nop.RequestAmount` into `RecordProviderState` — the identical defect on a second write path. The ticket\nnames the charge path and the refund legs. A plan built from the description alone would have closed\nthis ticket with the defect still live on the path that exists *specifically* to learn what the\nprovider says. Found by enumerating every writer of the evidence columns rather than every writer the\nticket mentioned.\n\n**2. The shaping question the backlog comment posed is answered: ADDITIVE.** New nullable columns\nbeside `authorized_amount`/`captured_amount`, never a replace. Two reasons, one of them not in the\noriginal comment: `services/commerce/internal/recovery/runner.go:486` is a *live cross-service\nconsumer* that refuses to refund when `captured_amount <= 0`. Repurposing the column would change when\nrecovery refunds, in a different service, silently.\n\n**3. `payment_compensations.amount` inherits the fix and needs no separate change.** `compensationBasis`\n(`psp.go:235-255`) derives it from `op.CapturedAmount`, not from a stored request value. Verified by\nreading it; worth recording, because \"the whole-refund path needs the same treatment\" is the obvious\nassumption and it is wrong.\n\n**Two predicates per guard, so four disagreement tests.** Amount and currency are independent checks on\nboth the charge path and the leg path. A single \"it refused\" test proves one predicate and is silent\nabout the other — the earlier refusal short-circuits (TKT-251's shape). Each case passes the other\npredicate; each is mutated separately.\n\n**The one thing that makes this ticket testable at all:** the fake PSP ignores amounts and *cannot*\nproduce a divergence, which is precisely why every existing test is green against a live defect. Every\nfail-closed test must run through the Stripe adapter's `httptest` stub with a hand-written literal\nfixture whose `amount_received` disagrees with the request. The fixtures already model `amount_received`\nfaithfully (`0` for `requires_capture`, `1250` for `succeeded`) — the value arrives on the wire and is\ndropped by a struct that never declared the field.\n\n**Approach is `met`, not `deferred`.** This is a money path, where `shaping.md` explicitly withdraws the\n`deferred` escape hatch.\n\n`risk:low` **not** claimed — money path, a data migration, and ~8 files. The plan gate applies."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Payments records the REQUESTED amount as provider-confirmed evidence. `psp.Result` carries no monetary value, so `server.go:392` writes `in.Amount` into both `authorized_amount` and `captured_amount`, and a refund leg's amount is the one it BOUND before the provider call. A provider that moved a different amount is invisible: nothing fails closed, and the wrong figure reaches the journal via the compensating fact. ADR-032 §Provider-neutral evidence reads already names TKT-257 as the ticket that closes this and forbids citing those fields as proof the provider moved that money until it lands."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: (1) `psp.Result` gains an OPTIONAL provider-confirmed amount+currency (absent is a real state, never forged as zero); (2) the Stripe adapter parses `amount_received` on the PI paths and the refund object's `amount`/`currency`; (3) the charge path persists provider-confirmed amounts in NEW columns beside the requested ones and fails closed on disagreement; (4) the Status resolve path (`psp.go:154-158`) does the same -- IT IS A THIRD SINK THE TICKET TEXT DOES NOT NAME (see approach); (5) refund-leg completion validates provider amount/currency before the fact append and the completion; (6) the three evidence reads report the confirmed value and OMIT it for legacy rows; (7) ADR-032 amended. OUT: rewriting existing journal facts (ADR-003 forbids it -- the DB trigger raises on UPDATE/DELETE); back-filling legacy rows (they answer 'absent', permanently); requesting partial captures; the whole-refund compensation path's amount source (ADR-032's clause stands, and `payment_compensations.amount` is derived from `captured_amount`, so it inherits the fix rather than needing its own -- verified, see approach)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "(a) What 'disagreement' means for a partial capture we never request: today the charge path asks for a full capture, so confirmed != requested is ALWAYS an error. Decided: strict inequality fails closed; a future partial-capture feature would relax it deliberately. (b) Absent vs zero: Stripe returns `amount_received: 0` on `requires_capture`, which is a REAL zero, not absence -- the adapter must only populate the confirmed field on the outcomes that prove a capture, so absent means 'the adapter did not observe one'. (c) The fake PSP ignores amounts and CANNOT show a divergence -- that is exactly why every existing test is green, and why the write-path disagreement tests must go through the STRIPE adapter's stub, not the fake. Acknowledged, not open."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blocking tickets. `links` carries only `found-in: TKT-168`, which is merged. Downstream reader to keep honest: `services/commerce/internal/recovery/runner.go:65-66,486` decodes `authorized_amount`/`captured_amount` from `/internal/psp/status` and refuses to refund when `CapturedAmount <= 0` -- the status body's existing fields must keep their meaning or recovery changes behaviour. This constrains the shape: ADD, do not repurpose."
+    },
+    "approach": {
+      "state": "met",
+      "owner": null,
+      "note": "ADDITIVE COLUMNS, not a replace -- the reversible option the backlog comment recommended, and the only one that lets a legacy row answer 'absent' instead of being back-filled with a figure nobody confirmed. Migration 0006 on payments (highest existing is 0005; ADR-022: runs out-of-band via the `migrate` subcommand, never at server startup; ADR-020's CONCURRENTLY abstention is catalog-scoped and irrelevant here -- these are ALTER TABLE ADD COLUMN, no index).\n\nVERIFIED AGAINST THE CODE, not inherited from the ticket text:\n- `psp.Result` (port.go) has `Captured bool` and no amount. CONFIRMED.\n- `stripePI` (stripe.go:90-95) parses id/status/currency/latest_charge only -- `amount_received` is absent from the struct while the fixtures `piRequiresCapture`/`piSucceeded` already carry it (0 and 1250). The fixture mechanism is a hand-written-literal httptest stub, so a disagreement test costs one new literal, not new machinery. CONFIRMED.\n- `stripeRefund` (stripe.go:97-106) DOES parse Amount/Currency, and `classify` (stripe.go:460-470) already compares `rf.Amount != amount` for replay matching -- so the refund side needs plumbing into `Result`, not new parsing. CONFIRMED.\n- `server.go:392` writes `prov.State, prov.AuthorizedAmount, prov.CapturedAmount = \"captured\", in.Amount, in.Amount`. CONFIRMED, and it is the sink the ticket names.\n- THIRD SINK, NOT IN THE TICKET TEXT: `psp.go:154-158` (`/internal/psp/status`) writes `authorized, captured = op.RequestAmount, op.RequestAmount` into `RecordProviderState` when the provider resolves an operation. That is the same defect on a second write path, and a ticket planned only against `server.go` would close with it live. Enumerating the sinks (shaping.md 'stop emitting X') is what found it. `store.go:604` (`CompleteOperation`) and `store.go:621` (`RecordProviderState`) are the two SQL writers; both take `store.ProviderResult`, so the struct is the single seam that carries the new evidence to both.\n- The refund-leg path: `partial_refund.go:89` calls `s.psp.Refund(...)` with `leg.Amount`, and `partial_refund.go:104-117` appends the fact carrying `leg.Amount` BEFORE `CompleteRefundLeg` (refund_legs.go:170) records the ref. The validation must sit between the Refund return and the Append -- a disagreement must leave NO fact and NO completion, which the existing ordering makes natural (the leg simply stays bound and recoverable, the same shape as the 502 above it).\n- `payment_compensations.amount`: `compensationBasis` (psp.go:235-255) derives it from `op.CapturedAmount`/`op.AuthorizedAmount`, so it reads the columns this ticket fixes rather than a separate request value. It inherits the correction and needs no separate change. VERIFIED by reading, not assumed.\n\nGUARD PREDICATE COUNT (shaping.md): the charge-path fail-closed guard has TWO independent predicates -- amount disagreement AND currency disagreement -- so it needs TWO tests, each passing the other predicate, each mutated separately; a single case short-circuits and proves one. The refund-leg guard has the same two. FOUR disagreement tests minimum, plus the agreement/happy path.\n\nApproach is NOT deferred: this is a money path, where shaping.md forbids the escape hatch."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice. The port field, the adapter parse, both write sinks, the leg validation, the three reads, the migration and the ADR amendment are one coherent change -- splitting it would ship a `Result` field nobody populates or a column nobody reads, and either half is a worse intermediate state than the current one. Estimated ~8 files, well inside one sprint."
+    },
+    "success": {
+      "state": "met",
+      "note": "The COS in the description stand as written -- all eight, unchanged. The load-bearing one is the sixth: write-path tests where the Stripe response DISAGREES with the request, asserting fail-closed. A fake that echoes the request cannot show this."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked below; ADRs re-resolved against docs/adr/ at HEAD"
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-032-stripe-behind-the-psp-port.md",
+        "constrains": "THE governing decision. §Provider-neutral evidence reads names TKT-257 by key as the ticket that closes this gap, and states the bound the fix must lift: 'these reads answer what payments durably recorded ... and is NOT an independent check on the processor'. It also fixes what the evidence boundary MUST NOT publish (pi_/ch_/re_ refs, provider state strings, idempotency keys, payment-method refs) and the rule that handlers assemble responses FIELD BY FIELD and never marshal the store row -- so the new column reaches the wire only by a deliberate line. §Stripe mappings pins Authorize as manual-capture confirm + capture. THIS ADR IS AMENDED BY THIS TICKET (COS 7)."
+      },
+      {
+        "adr": "ADR-037-post-purchase-refund-money-protocol.md",
+        "constrains": "§3 is the reason a leg amount is caller-supplied at all, and states the safety argument: payments validates it against the operation's durable captured evidence under the operation row lock before any provider call. This ticket adds the SECOND half nobody wrote -- validating what came BACK. §5 pins the refund fact's OccurredAt to the leg's stored bound_at, never the clock, because a fresh timestamp fails 'fact id reused with different content' and WEDGES the leg permanently: a disagreement path must not touch that. §4's ceiling counts bound-but-unresolved legs, so a refused completion correctly keeps its allowance reserved."
+      },
+      {
+        "adr": "ADR-003-append-only-audit-trail.md",
+        "constrains": "§1: corrections are compensating entries. Combined with the DB trigger that raises on UPDATE/DELETE of journal rows, this makes 'fix the already-written facts' unavailable. Changing what a fact records GOING FORWARD is in scope; rewriting existing facts is not."
+      },
+      {
+        "adr": "ADR-011-checkout-journal-protocol.md",
+        "constrains": "The journal is the canonical money record: HMAC-SHA256 canonical v1, per-organizer hash chain, payments sole writer. The fact's Amount/Currency are INSIDE the canonical form, so changing which value a fact carries is a behaviour change on the signed record -- which is precisely why the fix is fail-closed-before-append rather than append-then-correct."
+      },
+      {
+        "adr": "ADR-022-out-of-band-service-migrations.md",
+        "constrains": "Migration 0006 runs via the payments binary's `migrate` subcommand as a one-shot Compose job the service waits on. The server path never migrates."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary before claiming anything. This fix is HONEST-PROVIDER-DETECTION: it catches a provider that moves a different amount than asked, and a caller-side defect. It is NOT tamper-evidence -- a writer with payments-DB access can set the confirmed column to whatever they like. The ADR amendment must say which, in those words."
+      },
+      {
+        "adr": "ADR-016-checkout-recovery-state-machine.md",
+        "constrains": "§Dec3 terminal-no-side-effect and §Dec4 compensation-as-facts. A fail-closed disagreement must leave the operation RECOVERABLE (the payment_unknown shape), never terminal."
+      },
+      {
+        "adr": "ADR-048-settlement-ledger.md",
+        "constrains": "Settlement rides the captured fact's transaction (server.go:412-420) and only a capture settles. A charge-path refusal must therefore also write no settlement -- which it does for free if the refusal precedes the append, and would NOT if it were bolted on after."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/payments/internal/psp/stripe_test.go:TestFixturesParse",
+        "pins": "Every hand-written fixture must parse. The fixtures ALREADY carry `amount_received` (0 on requires_capture, 1250 on succeeded) while the struct drops it -- so this test is green today and will stay green after the parse is added. It cannot detect this ticket's defect, which is worth knowing before anyone cites it as coverage."
+      },
+      {
+        "test": "services/payments/internal/psp/stripe_test.go (header comment)",
+        "pins": "'All Stripe fixtures below are HAND-WRITTEN literal JSON -- never marshalled from the adapter's own response structs. A fixture built from the type under test encodes the parser's own assumptions.' A disagreement fixture MUST follow this: writing it by marshalling stripePI would prove nothing."
+      },
+      {
+        "test": "services/payments/internal/psp/port.go:Result.Validate",
+        "pins": "Validate is the money-path boundary that rejects a self-contradictory Result before anything is written. A new optional amount field must be reasoned about here: a Captured outcome claiming a confirmed amount of zero, or a Declined outcome carrying one, are new self-contradictions the guard should refuse."
+      },
+      {
+        "test": "services/commerce/internal/recovery/runner.go:486 (st.CapturedAmount <= 0)",
+        "pins": "Recovery refuses to refund unless the status body reports captured money. Not a test, but a live cross-service consumer of the exact fields this ticket touches: repurposing `captured_amount` rather than adding beside it would silently change when recovery refunds."
+      },
+      {
+        "test": "services/payments/internal/api/server.go:154-160 (the TKT-257 comment)",
+        "pins": "The evidence read carries a written statement of this defect naming TKT-257. It must be rewritten by this ticket, not left contradicting the new behaviour."
+      }
+    ],
+    "keyFiles": [
+      "services/payments/internal/psp/port.go (Result, Validate, PSP interface)",
+      "services/payments/internal/psp/stripe.go (stripePI:90, stripeRefund:97, Authorize:263, Capture:290, Refund:342, classify:460)",
+      "services/payments/internal/psp/fake.go (must keep answering 'absent', never a forged echo)",
+      "services/payments/internal/api/server.go:392 (charge sink #1)",
+      "services/payments/internal/api/psp.go:154-158 (status-resolve sink #2), :123/:198 statusBody, :235-255 compensationBasis",
+      "services/payments/internal/api/partial_refund.go:89-121 (refund leg: Refund -> validate -> Append -> Complete)",
+      "services/payments/internal/store/store.go:554-621 (ProviderResult, CompleteOperation, RecordProviderState)",
+      "services/payments/internal/store/refund_legs.go:70,170 (BindRefundLeg, CompleteRefundLeg)",
+      "services/payments/internal/store/migrations/0006_*.sql (new; highest existing is 0005)",
+      "services/payments/internal/api/openapi_gen.go + the payments OpenAPI spec (regenerate and COMMIT before the gate -- check-generate diffs against HEAD)"
+    ],
+    "gateNotes": "`make check` is the gate; run `make deps` first on a clean clone. Commit regenerated openapi_gen.go BEFORE running the gate or check-generate reads the regen as drift. No web UI in this ticket, so `make browser` is not required."
+  }
 }
