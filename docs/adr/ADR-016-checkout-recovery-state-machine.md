@@ -279,7 +279,7 @@ precedent. This is production code, not test scaffolding.
     - The `finalizing`-from-`confirmed` exemption already in inventory (`store.go:187`) is the same
       crash-recovery reasoning applied at a different step; no change needed there.
 
-## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and a refused release is recorded once
+## Amendment (2026-08-20, TKT-262) — a compensation refunds before it releases, and a refused release parks without a second record
 
 §Consequences above names the `reconciliation_required` population but says nothing about the
 **order** in which a compensation moves money and discharges the inventory obligation. That silence
@@ -351,10 +351,15 @@ chain on this path is shorter, so one more call would fit. The reasons above sta
 State this precisely, in the discipline [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
 applies to "tamper-evident" — name the claim before making it.
 
-**Guaranteed, on this branch only:** when the release is *refused*, commerce records the
-contradiction **once** — the pass ends parked, and the order is not marked refunded, not marked
-released, and no `order.failed` fact is journalled. Pinned by
+**Guaranteed, on this branch, per recovery pass:** when the release is *refused*, the pass ends in
+**exactly one** recorded state — parked — and the order is not marked refunded, not marked released,
+and no `order.failed` fact is journalled. Pinned by
 `TestReconciliationRequiredRefundAgainstConfirmedClaimIsParkedOnly`.
+
+*Per pass*, not per lifetime. Nothing marks the row as having been refused before, so an operator
+who unparks a still-confirmed row gets a second refusal and a second park, writing the same reason
+again. That is the intended behaviour — the guarantee is that no single pass leaves two contradictory
+records, not that the refusal can only ever happen once.
 
 Scope this claim to the refusal branch and nowhere else. On the **ordinary** path the release
 *succeeds*, and `finishRefunded` then journals `order.failed` and calls `MarkRefunded` — so commerce
@@ -373,9 +378,20 @@ from the operator's side, including the warning that unparking a `reconciliation
 the runner to re-decide on PSP evidence alone. This amendment records the decision behind that
 behaviour; it does not add a second operator path (ADR-062 §4).
 
-Note what unparking such a row would do: the runner re-reads PSP status, now `refunded`, and reaches
-`finishRefunded` again — where the release is refused again and the row re-parks. Unparking does not
-resolve this state, which is why the operator guidance says to resolve the underlying claim first.
+What unparking such a row does depends entirely on whether the claim is still confirmed, and both
+outcomes are worth stating because an operator needs to predict which one they are about to get.
+The runner re-reads PSP status — now `refunded` — and `actOnProviderStatus` routes back to
+`finishRefunded` (`runner.go`). From there:
+
+- **Claim still confirmed** → `inventory.Release` is refused again, and the row **re-parks** with the
+  same reason. The unpark accomplished nothing except resetting the retry budget.
+- **Claim resolved first** (released or otherwise repaired out of band, which is what
+  `docs/development.md` §Parked recovery orders tells the operator to do) → the release **succeeds**,
+  `order.failed` is journalled and `MarkRefunded` runs. The order reaches its correct terminal state
+  and the intervention worked.
+
+So unparking is the *second* step, not the fix: it is how a repaired order is returned to the runner.
+Unparking alone, with the claim untouched, only buys another refusal.
 
 ## References
 
