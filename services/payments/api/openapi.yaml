@@ -378,6 +378,16 @@ components:
         authorized_amount: {type: integer, format: int64}
         captured_amount: {type: integer, format: int64}
         currency: {type: string}
+        # What the PROVIDER reported capturing, checked against the request before it was
+        # recorded (TKT-257). OPTIONAL and omitted when the operation carries no such
+        # evidence — a row written before payments migration 0006, or one no provider ever
+        # confirmed. An absent key means "never confirmed", never "confirmed zero".
+        #
+        # captured_amount above keeps exactly its existing meaning and stays required:
+        # commerce's recovery runner decides whether to refund from it, and redefining it
+        # would change when money moves in another service.
+        confirmed_captured_amount: {type: integer, format: int64}
+        confirmed_currency: {type: string, pattern: '^[A-Z]{3}$'}
     OperationState:
       type: object
       additionalProperties: false
@@ -410,6 +420,12 @@ components:
         # processor, the instrument, or the provider object that produced it.
         captured_amount: {type: integer, format: int64}
         currency: {type: string, pattern: '^[A-Z]{3}$'}
+        # The provider's own confirmation of what it captured, as distinct from
+        # captured_amount, which is what payments durably recorded (TKT-257). Omitted for a
+        # pre-0006 row, which has no confirmation and never can — its requested figure is
+        # NOT promoted to confirmed evidence.
+        confirmed_captured_amount: {type: integer, format: int64}
+        confirmed_currency: {type: string, pattern: '^[A-Z]{3}$'}
     RefundLegState:
       # One post-purchase refund leg's evidence (TKT-168). Never contains the provider
       # idempotency key, the provider reference, or any other provider identity — the leg
@@ -424,3 +440,9 @@ components:
         completed: {type: boolean}
         amount: {type: integer, format: int64}
         currency: {type: string, pattern: '^[A-Z]{3}$'}
+        # The provider's confirmation that this money actually came back, as distinct from
+        # `amount`, which is what the leg BOUND before the provider call (TKT-257).
+        # Completion now refuses without it, so a leg completed from here on always carries
+        # one; a leg completed before payments migration 0006 has none and answers absent.
+        confirmed_amount: {type: integer, format: int64}
+        confirmed_currency: {type: string, pattern: '^[A-Z]{3}$'}

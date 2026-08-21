@@ -134,3 +134,61 @@ func TestRefundLegEvidenceIsScopedByAllThreeKeys(t *testing.T) {
 		}
 	}
 }
+
+// TKT-257. `amount` is what the leg BOUND; `confirmed_amount` is what the provider said it
+// actually gave back. Two questions, two fields — and a leg completed before migration 0006
+// can only answer the first.
+//
+// seedRefundLeg writes no confirmation columns, so it produces exactly the pre-0006 shape:
+// completed, carrying its fact, with the provider's confirmation NULL. That is the row the
+// write path can no longer create, and the only way to construct it is to write it directly.
+func TestLegacyRefundLegEvidenceOmitsProviderConfirmation(t *testing.T) {
+	org, sourceKey := uuid.New(), "leg-legacy-evidence"
+	h, db := evidenceServer(t, evidenceOperation{org: org, key: sourceKey, request: 2000, captured: 2000,
+		currency: "EUR", state: "captured"})
+	seedRefundLeg(t, db, org, sourceKey, "legacy", 1250, "EUR", true)
+
+	body := decodeEvidence(t, getEvidence(t, h, refundLegPath(org, sourceKey, "legacy"), evidenceCredential))
+	if got := body["completed"]; got != true {
+		t.Fatalf("a legacy completed leg must still read as completed, got %v", got)
+	}
+	if got, ok := body["amount"]; !ok || got != float64(1250) {
+		t.Fatalf("amount = %v (present=%t), want the bound 1250", got, ok)
+	}
+	// The assertion is ABSENCE. An implementation that fell back to `amount` when the
+	// confirmation is NULL would report 1250 here and look entirely correct — while having
+	// promoted a figure the leg REQUESTED into a claim the provider CONFIRMED it.
+	if got, present := body["confirmed_amount"]; present {
+		t.Fatalf("a pre-0006 leg has no provider confirmation; the read must omit it, got %v", got)
+	}
+	if got, present := body["confirmed_currency"]; present {
+		t.Fatalf("confirmed_currency must be omitted for a legacy leg, got %v", got)
+	}
+}
+
+// A leg completed after 0006 publishes the provider's own figure. Seeded with a confirmation
+// that DIFFERS from the bound amount — a shape the write path's guard would refuse — solely
+// so the read cannot be satisfied by echoing `amount`. This is about the read's SOURCE; the
+// guard that makes the divergence impossible in practice is proven in
+// provider_confirmation_smoke_test.go.
+func TestConfirmedRefundLegEvidenceReportsTheProvidersOwnFigure(t *testing.T) {
+	org, sourceKey := uuid.New(), "leg-confirmed-evidence"
+	h, db := evidenceServer(t, evidenceOperation{org: org, key: sourceKey, request: 2000, captured: 2000,
+		currency: "EUR", state: "captured"})
+	seedRefundLeg(t, db, org, sourceKey, "settled", 1250, "EUR", true)
+	if _, err := db.Exec(`UPDATE payment_refund_legs SET confirmed_amount=1249,confirmed_currency='EUR'
+	                      WHERE organizer_id=$1 AND refund_idempotency_key='settled'`, org); err != nil {
+		t.Fatal(err)
+	}
+
+	body := decodeEvidence(t, getEvidence(t, h, refundLegPath(org, sourceKey, "settled"), evidenceCredential))
+	if got, ok := body["confirmed_amount"]; !ok || got != float64(1249) {
+		t.Fatalf("confirmed_amount = %v (present=%t), want the provider's 1249 and not the bound 1250", got, ok)
+	}
+	if got := body["confirmed_currency"]; got != "EUR" {
+		t.Fatalf("confirmed_currency = %v, want EUR", got)
+	}
+	if got, ok := body["amount"]; !ok || got != float64(1250) {
+		t.Fatalf("the bound amount keeps its own meaning: %v (present=%t), want 1250", got, ok)
+	}
+}

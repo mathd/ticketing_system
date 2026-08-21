@@ -553,6 +553,17 @@ type Operation struct {
 	ProviderState      string
 	AuthorizedAmount   int64
 	CapturedAmount     int64
+	// ConfirmedCapturedAmount is what the PROVIDER reported capturing, as distinct from
+	// CapturedAmount, which the charge and status paths write from the REQUEST (TKT-257).
+	// nil means no provider figure was ever recorded — a legacy row, an unresolved
+	// operation, or a provider that did not say. Never zero standing in for absent.
+	//
+	// A NEW field beside CapturedAmount rather than a repointing of it, deliberately:
+	// compensationAllowed, BindRefundLeg's ceiling and commerce's recovery runner all decide
+	// from CapturedAmount, and pointing it at a NULL-for-legacy column would make every
+	// pre-migration captured operation permanently un-refundable.
+	ConfirmedCapturedAmount *int64
+	ConfirmedCurrency       string
 }
 
 // ProviderResult is the provider evidence persisted onto an operation row: references,
@@ -563,6 +574,28 @@ type ProviderResult struct {
 	State            string
 	AuthorizedAmount int64
 	CapturedAmount   int64
+	// ConfirmedCapturedAmount/ConfirmedCurrency are the provider's own figure (TKT-257).
+	// nil leaves the stored confirmation untouched rather than clearing it: a status
+	// observation that learned nothing about money must not erase a capture's confirmation.
+	ConfirmedCapturedAmount *int64
+	ConfirmedCurrency       string
+}
+
+// ConfirmedCapture is an operation's provider-confirmed captured money: what the provider
+// said it moved, as opposed to what payments asked it to move (TKT-257).
+type ConfirmedCapture struct {
+	Amount   int64
+	Currency string
+}
+
+// confirmedAmountArg renders the optional confirmation for a SQL parameter: a NULL when the
+// provider gave no figure, so the column keeps meaning "never confirmed" rather than
+// "confirmed zero".
+func (p ProviderResult) confirmedAmountArg() any {
+	if p.ConfirmedCapturedAmount == nil {
+		return nil
+	}
+	return *p.ConfirmedCapturedAmount
 }
 
 // LookupOperation reads an operation's recorded outcome. Strictly read-only, unlike
@@ -577,11 +610,11 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	var status sql.NullString
 	var factID, orderID, buyerID uuid.NullUUID
 	var occurredAt time.Time
-	var reqAmount, authAmount, capAmount sql.NullInt64
-	var reqCurrency, pmRef, provPayRef, provChRef, provState sql.NullString
+	var reqAmount, authAmount, capAmount, confAmount sql.NullInt64
+	var reqCurrency, pmRef, provPayRef, provChRef, provState, confCurrency sql.NullString
 	var fingerprint string
-	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint)
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint,confirmed_captured_amount,confirmed_currency FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint, &confAmount, &confCurrency)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, nil
 	}
@@ -597,11 +630,18 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	op.RequestAmount, op.RequestCurrency, op.PaymentMethodRef = reqAmount.Int64, reqCurrency.String, pmRef.String
 	op.ProviderPaymentRef, op.ProviderChargeRef, op.ProviderState = provPayRef.String, provChRef.String, provState.String
 	op.AuthorizedAmount, op.CapturedAmount = authAmount.Int64, capAmount.Int64
+	// NULL stays nil. Reading it through .Int64 would turn "no provider confirmation" into
+	// "the provider confirmed zero" — the collapse this whole ticket exists to prevent.
+	if confAmount.Valid {
+		v := confAmount.Int64
+		op.ConfirmedCapturedAmount = &v
+	}
+	op.ConfirmedCurrency = confCurrency.String
 	return op, true, nil
 }
 
 func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID, prov ProviderResult) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,confirmed_captured_amount=$10,confirmed_currency=NULLIF($11,''),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
 	return err
 }
 
@@ -618,7 +658,7 @@ func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, sta
 // observation, and the caller must answer from the stored evidence instead of the
 // provider result it failed to record (second-pass P2-2).
 func (j *Journal) RecordProviderState(ctx context.Context, org uuid.UUID, key string, prov ProviderResult) (bool, error) {
-	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,confirmed_captured_amount=COALESCE($8,confirmed_captured_amount),confirmed_currency=COALESCE(NULLIF($9,''),confirmed_currency),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
 	if err != nil {
 		return false, err
 	}
