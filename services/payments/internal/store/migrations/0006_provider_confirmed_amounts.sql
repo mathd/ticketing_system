@@ -54,6 +54,18 @@ ALTER TABLE payment_refund_legs
     (confirmed_amount IS NOT NULL AND confirmed_currency IS NOT NULL)
   );
 
+ALTER TABLE payment_compensations
+  -- The whole-refund compensation path (recovery's) is the fourth money-moving write sink,
+  -- and it must record the provider's own figure for the same reason the other three do.
+  -- A void confirms nothing — nothing moved on the ledger — so this stays NULL for kind='void'.
+  ADD COLUMN confirmed_amount bigint CHECK (confirmed_amount > 0),
+  ADD COLUMN confirmed_currency varchar(3) CHECK (confirmed_currency ~ '^[A-Z]{3}$'),
+  ADD CONSTRAINT payment_compensations_confirmed_money_paired CHECK (
+    (confirmed_amount IS NULL AND confirmed_currency IS NULL)
+    OR
+    (confirmed_amount IS NOT NULL AND confirmed_currency IS NOT NULL)
+  );
+
 -- Deliberately NOT extended: the completion CHECK
 -- `(status='refunded' AND completed_at IS NOT NULL AND fact_id IS NOT NULL)`.
 --
@@ -73,11 +85,12 @@ ALTER TABLE payment_refund_legs
 -- Lock before the guard, as 0003 does: checking first leaves a window in which a completion
 -- lands between the check and the DROP, and silently destroying evidence of money that left
 -- the account is worse than refusing to roll back.
-LOCK TABLE payment_refund_legs, payment_operations IN ACCESS EXCLUSIVE MODE;
+LOCK TABLE payment_refund_legs, payment_compensations, payment_operations IN ACCESS EXCLUSIVE MODE;
 -- +goose StatementBegin
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM payment_refund_legs WHERE confirmed_amount IS NOT NULL)
+     OR EXISTS (SELECT 1 FROM payment_compensations WHERE confirmed_amount IS NOT NULL)
      OR EXISTS (SELECT 1 FROM payment_operations WHERE confirmed_captured_amount IS NOT NULL) THEN
     RAISE EXCEPTION 'cannot roll back 0006: provider-confirmed money evidence exists';
   END IF;
@@ -85,6 +98,10 @@ END $$;
 -- +goose StatementEnd
 ALTER TABLE payment_refund_legs
   DROP CONSTRAINT payment_refund_legs_confirmed_money_paired,
+  DROP COLUMN confirmed_currency,
+  DROP COLUMN confirmed_amount;
+ALTER TABLE payment_compensations
+  DROP CONSTRAINT payment_compensations_confirmed_money_paired,
   DROP COLUMN confirmed_currency,
   DROP COLUMN confirmed_amount;
 ALTER TABLE payment_operations

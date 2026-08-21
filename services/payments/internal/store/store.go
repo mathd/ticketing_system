@@ -23,15 +23,44 @@ import (
 var migrationsFS embed.FS
 
 func Migrate(ctx context.Context, db *sql.DB) error {
-	f, err := fs.Sub(migrationsFS, "migrations")
-	if err != nil {
-		return err
-	}
-	p, err := goose.NewProvider(goose.DialectPostgres, db, f)
+	p, err := migrationProvider(db)
 	if err != nil {
 		return err
 	}
 	_, err = p.Up(ctx)
+	return err
+}
+
+func migrationProvider(db *sql.DB) (*goose.Provider, error) {
+	f, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	return goose.NewProvider(goose.DialectPostgres, db, f)
+}
+
+// MigrateUpTo applies migrations up to and including version, and MigrateDownTo rolls back
+// to it. Both exist so a test can stand a database up at a PAST schema version, apply one
+// migration to it, and observe what that migration did to data written under the old shape —
+// which is the only way to test a migration rather than to test the schema it leaves behind.
+// Inserting an old-shaped row into an already-migrated database proves nothing about the
+// migration (TKT-257 ai-review).
+func MigrateUpTo(ctx context.Context, db *sql.DB, version int64) error {
+	p, err := migrationProvider(db)
+	if err != nil {
+		return err
+	}
+	_, err = p.UpTo(ctx, version)
+	return err
+}
+
+// MigrateDownTo rolls back to version, running each Down in turn — including its guards.
+func MigrateDownTo(ctx context.Context, db *sql.DB, version int64) error {
+	p, err := migrationProvider(db)
+	if err != nil {
+		return err
+	}
+	_, err = p.DownTo(ctx, version)
 	return err
 }
 
@@ -689,6 +718,12 @@ type Compensation struct {
 	Amount      int64
 	Currency    string
 	Completed   bool
+	// ConfirmedAmount/ConfirmedCurrency are what the PROVIDER reported returning, as opposed
+	// to Amount, which is the basis derived from the operation's durable evidence before the
+	// call (TKT-257). nil for a still-bound compensation, for a void (nothing moved on the
+	// ledger), and for any compensation completed before migration 0006.
+	ConfirmedAmount   *int64
+	ConfirmedCurrency string
 	// BoundAt is the row's stable creation time. The compensating fact's OccurredAt MUST
 	// come from here, not the clock: the fact ID is deterministic and the journal's replay
 	// dedupe compares the full canonical fact, so a retry across the append/complete crash
@@ -758,11 +793,11 @@ func lookupCompensationTx(ctx context.Context, q rowQuerier, org uuid.UUID, sour
 	var c Compensation
 	var status, providerRef sql.NullString
 	var factID uuid.NullUUID
-	var amt sql.NullInt64
-	var cur sql.NullString
+	var amt, confAmt sql.NullInt64
+	var cur, confCur sql.NullString
 	var boundAt time.Time
-	err := q.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
-		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt)
+	err := q.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at,confirmed_amount,confirmed_currency FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
+		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt, &confAmt, &confCur)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Compensation{}, false, nil
 	}
@@ -771,6 +806,12 @@ func lookupCompensationTx(ctx context.Context, q rowQuerier, org uuid.UUID, sour
 	}
 	c.Status, c.ProviderRef, c.FactID = status.String, providerRef.String, factID.UUID
 	c.Amount, c.Currency = amt.Int64, cur.String
+	// NULL stays nil — never zero standing in for "no provider confirmation".
+	if confAmt.Valid {
+		v := confAmt.Int64
+		c.ConfirmedAmount = &v
+	}
+	c.ConfirmedCurrency = confCur.String
 	c.Completed = status.Valid
 	c.BoundAt = boundAt.UTC().Truncate(time.Microsecond)
 	return c, true, nil
@@ -787,8 +828,14 @@ func (j *Journal) RecordCompensationProviderRef(ctx context.Context, org uuid.UU
 // CompleteCompensation records the durable provider result and the journalled fact for a
 // bound compensation. Only the first completion writes (status IS NULL guard) — a replay
 // keeps the original result.
-func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now() WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID)
+// confirmed carries the provider's own figure for a REFUND (TKT-257); a void moved nothing
+// on the ledger, so it has none and passes the zero value, which stores NULL.
+func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID, confirmed ConfirmedRefund) error {
+	var amount, currency any
+	if confirmed.Amount > 0 && confirmed.Currency != "" {
+		amount, currency = confirmed.Amount, confirmed.Currency
+	}
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now(),confirmed_amount=$7,confirmed_currency=$8 WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID, amount, currency)
 	return err
 }
 

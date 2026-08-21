@@ -456,7 +456,13 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return
 	}
-	if err := s.journal.CompleteCompensation(r.Context(), in.OrganizerID, key, kind, status, result.ProviderRef, factID); err != nil {
+	// A refund records the provider's own returned figure; a void records none, because
+	// nothing moved on the ledger for a provider to confirm (TKT-257).
+	var confirmed store.ConfirmedRefund
+	if result.Confirmed != nil {
+		confirmed = store.ConfirmedRefund{Amount: result.Confirmed.Amount, Currency: result.Confirmed.Currency}
+	}
+	if err := s.journal.CompleteCompensation(r.Context(), in.OrganizerID, key, kind, status, result.ProviderRef, factID, confirmed); err != nil {
 		write(w, 500, map[string]string{"error": "persist compensation result"})
 		return
 	}
