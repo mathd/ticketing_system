@@ -539,6 +539,66 @@ func TestReconciliationRequiredRefundsCapturedMoney(t *testing.T) {
 	p.trace.mustPrecede(t, "payments.Refund", "store.MarkRefunded")
 }
 
+// The negative twin of the test above, and the intersection ADR-016's TKT-262 amendment
+// records: the same reconciliation_required row, the same captured evidence, the same
+// successful refund — but inventory refuses the release because the claim is CONFIRMED.
+// The refund is already irreversible by then, which is the deliberate ordering (money
+// back to the buyer beats money stranded), so the guarantee is about what commerce
+// RECORDS, not about the two external effects: the pass must end in exactly one state,
+// parked for a human, and never in a second one that contradicts it.
+//
+// The exact reason string is load-bearing, not decoration. resolveReconciliation parks
+// this population twice for different causes — a pre-0002 operation parks with
+// "predates durable provider evidence" BEFORE any refund is attempted — so a fixture
+// that never reaches finishRefunded would still produce len(parked) == 1 and pass a
+// count-only assertion while proving nothing about this branch.
+func TestReconciliationRequiredRefundAgainstConfirmedClaimIsParkedOnly(t *testing.T) {
+	order := stuck("reconciliation_required")
+	p, resolved := run(t, []store.StuckOrder{order}, func(p *ports) {
+		p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+			AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+		p.payments.refundResult = CompensationResult{Status: "refunded"}
+		p.inventory.releaseErr = ErrClaimNotReleasable
+	})
+
+	// Parking is the resolution: `confirmed` is terminal, so no later pass can improve
+	// on it. Deleting the ErrClaimNotReleasable branch in finishRefunded turns this into
+	// a returned error, which RunOnce counts as a failure — resolved drops to 0.
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1 (parking is a terminal decision)", resolved)
+	}
+	// A resolution, not a retry: re-queueing this order would spend its recovery budget
+	// on a state that cannot change.
+	if len(p.store.failed) != 0 {
+		t.Errorf("re-queued the order %d times; a parked order must not stay claimable", len(p.store.failed))
+	}
+	if p.payments.refundCalls != 1 {
+		t.Fatalf("refund calls = %d, want 1: the fixture must actually reach the refund", p.payments.refundCalls)
+	}
+	if len(p.store.parked) != 1 ||
+		p.store.parked[0] != "refunded money against a confirmed claim; manual reconciliation required" {
+		t.Fatalf("parked = %v, want exactly the confirmed-claim reconciliation reason", p.store.parked)
+	}
+
+	// The three records that must NOT exist. Each is a state that would contradict the
+	// park: "refunded" and "released" are terminal transitions this order never earned,
+	// and an order.failed fact would attach a failed order to a seat inventory sold.
+	if len(p.store.refunded) != 0 {
+		t.Errorf("MarkRefunded = %v; an order parked for reconciliation is not refunded", p.store.refunded)
+	}
+	if len(p.store.released) != 0 {
+		t.Errorf("MarkReleased = %v; inventory refused the release", p.store.released)
+	}
+	if len(p.journal.facts) != 0 {
+		t.Error("must not journal order.failed against a confirmed claim")
+	}
+
+	// The refusal must be OBSERVED, not predicted (ADR-062 §2): the runner learns the
+	// claim is confirmed by attempting the release, which means the attempt happened.
+	p.trace.mustPrecede(t, "payments.Refund", "inventory.Release")
+	p.trace.mustPrecede(t, "inventory.Release", "store.ParkForReconciliation")
+}
+
 // Row: created + no operation — payments never bound a charge, so no side effect exists.
 func TestCreatedWithNoOperationIsNotAttemptedThenReleased(t *testing.T) {
 	order := stuck("created")
