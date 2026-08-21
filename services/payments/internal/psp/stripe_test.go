@@ -121,9 +121,21 @@ func TestStripeAuthorizeConfirmsThenCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)
 	}
+	// Confirmed is compared by VALUE below rather than folded into this struct equality:
+	// Result carries a *ConfirmedMoney (TKT-257), and `got != want` on a pointer field
+	// compares addresses, so a struct literal here would fail against an equal value.
 	want := Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: "pi_test_authonly", ProviderChargeRef: "ch_test_1"}
-	if got != want {
-		t.Fatalf("Authorize\n got=%+v\nwant=%+v", got, want)
+	gotSansMoney := got
+	gotSansMoney.Confirmed = nil
+	if gotSansMoney != want {
+		t.Fatalf("Authorize\n got=%+v\nwant=%+v", gotSansMoney, want)
+	}
+	// The capture response (piSucceeded) reports amount_received 1250 in eur, and the
+	// adapter must carry Stripe's OWN figure rather than the 1250 we asked for — the two
+	// agree here, which is why this assertion is regression cover and the divergence tests
+	// in stripe_confirmed_test.go are what prove the mechanism.
+	if got.Confirmed == nil || *got.Confirmed != (ConfirmedMoney{Amount: 1250, Currency: "EUR"}) {
+		t.Fatalf("want confirmed 1250 EUR from the PaymentIntent, got %+v", got.Confirmed)
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("result failed Validate: %v", err)
