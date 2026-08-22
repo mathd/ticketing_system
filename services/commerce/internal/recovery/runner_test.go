@@ -37,6 +37,13 @@ type fakeStore struct {
 	abandoned []uuid.UUID        // AbandonRecoveryClaim (shutdown hand-back)
 }
 
+// Backlog is observability-only and no recovery decision reads it, so the transition
+// tests leave it at the zero value. The gauges' behaviour is proven in metrics_test.go
+// against a real SDK meter, not here.
+func (f *fakeStore) Backlog(context.Context) (store.RecoveryBacklog, error) {
+	return store.RecoveryBacklog{}, nil
+}
+
 func (f *fakeStore) ClaimStuckOrders(context.Context, int, time.Duration) ([]store.StuckOrder, error) {
 	out := f.claim
 	f.claim = nil // one pass only: the runner leases rows, it does not re-read them

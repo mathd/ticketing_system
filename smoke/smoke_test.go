@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -914,6 +915,38 @@ func TestMetricsIngested(t *testing.T) {
 		}
 		if len(r.Data.Result) == 0 {
 			return fmt.Errorf("no http_server_* series yet")
+		}
+		return nil
+	})
+}
+
+// TestRecoveryParkedGaugesIngested is the WIRING proof for commerce's parked-order
+// gauges (TKT-263, ADR-065), and it is here rather than in a unit test because of what
+// it is able to catch.
+//
+// internal/recovery/metrics_test.go proves the callback works: break the mechanism and it
+// goes red. It cannot notice the registration call being deleted from cmd/commerce/main.go,
+// because it builds its own meter and never runs main. That is the distinction AGENTS.md
+// draws — "ask which edit your test catches: breaking the mechanism, or removing it from
+// the place that uses it" — and only an assertion at the boundary the value crosses on its
+// way out (here, the Prometheus the real binary exports to) closes it. Delete the
+// ObserveMetrics call and TestMetricsIngested stays green while this fails.
+//
+// Matched as a family rather than by exact series name. The OTLP-to-Prometheus name
+// translation is the exporter's rule, not this repo's: `access.event.failures` arrives as
+// `access_event_failures_total` (access_consumer_test.go), so dots become underscores and
+// counters gain a suffix gauges do not. Asserting a hand-derived exact name would risk a
+// red gate with no defect behind it; the family cannot be produced by anything but these
+// gauges being registered and exported.
+func TestRecoveryParkedGaugesIngested(t *testing.T) {
+	retry(t, 60*time.Second, func() error {
+		query := url.QueryEscape(`count({__name__=~"commerce_recovery_parked.*",service_name="commerce"})`)
+		code, body := get(t, promURL+"/api/v1/query?query="+query, nil)
+		if code != http.StatusOK {
+			return fmt.Errorf("prom query status %d", code)
+		}
+		if !strings.Contains(string(body), `"result":[{`) {
+			return fmt.Errorf("no commerce_recovery_parked* series yet; is ObserveMetrics wired in main.go? %s", body)
 		}
 		return nil
 	})

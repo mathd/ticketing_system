@@ -633,3 +633,82 @@ func claimUntilFound(t *testing.T, db *sql.DB, ctx context.Context, id uuid.UUID
 		}
 	}
 }
+
+// COS 1 + COS 2. The backlog read counts the parked population, splits parked
+// `reconciliation_required` out of it, and ages the oldest park.
+//
+// Three things this fixture is built to observe, each with a seed whose deletion makes
+// something go red:
+//
+//   - The UNPARKED control (`compensating`) is the ticket's central correctness risk, not
+//     decoration. `QueueForCompensation` moves an order to `reconciliation_required` while
+//     deliberately leaving it UNPARKED, and migration 0005 says why: "an UNPARKED
+//     reconciliation_required row is a queued compensation, not a human's inbox." A read
+//     that counted by status alone would report in-flight compensation work as an operator
+//     backlog. The assertion is phrased as the invariant — the delta is one while TWO
+//     rows of that status exist — which cannot pass if the park predicate is dropped.
+//   - The parked `release_pending` seed is what the ordinary-population count is about;
+//     delete it and the `Parked` delta fails.
+//   - The back-dated park on that seed is what separates age-from-park from
+//     age-from-creation. `seedParked` writes `recovery_parked_at=now()`, so this test
+//     back-dates it explicitly: a read that aged from `created_at` would report a few
+//     seconds where the requirement says an hour.
+//
+// Deltas rather than absolutes because the smoke database is shared, following
+// TestBacklogCountsOutstandingAndParkedSeparately.
+func TestRecoveryBacklogCountsParkedPopulationsAndAgesTheOldestPark(t *testing.T) {
+	db, ctx := outboxDB(t)
+	before, err := ReadRecoveryBacklog(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, ordinary := seedParked(t, "release_pending", 10, "psp unreachable")
+	// Back-dated so the age cannot be satisfied by `created_at`, which the fixture
+	// writes moments ago.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE orders SET recovery_parked_at=now()-interval '1 hour' WHERE id=$1`, ordinary.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	_, needsHuman := seedParked(t, "reconciliation_required", 4, "captured, claim gone")
+	if at, _ := parkedMarker(t, db, needsHuman.OrderID); !at.Valid {
+		t.Fatal("fixture: the reconciliation seed is not parked, so the split assertion would prove nothing")
+	}
+
+	// The control: `reconciliation_required` and NOT parked — a queued compensation.
+	compensating := seedStuck(t, "created")
+	if _, err := db.ExecContext(ctx,
+		`UPDATE orders SET status='reconciliation_required' WHERE id=$1`, compensating.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	if at, _ := parkedMarker(t, db, compensating.OrderID); at.Valid {
+		t.Fatal("fixture: the control order is parked, so its exclusion would prove nothing")
+	}
+
+	after, err := ReadRecoveryBacklog(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := after.Parked - before.Parked; got != 1 {
+		t.Fatalf("parked (non-reconciliation) grew by %d, want 1: the reconciliation row must not be counted here", got)
+	}
+	// The invariant, not the mechanism: one row entered the operator's inbox, though two
+	// rows of that status were created. Fails if the park predicate is dropped.
+	if got := after.ReconciliationRequired - before.ReconciliationRequired; got != 1 {
+		t.Fatalf("parked reconciliation_required grew by %d, want 1: an UNPARKED row of that status is queued compensation, not a human's inbox", got)
+	}
+	if got := after.Total - before.Total; got != 2 {
+		t.Fatalf("total parked grew by %d, want 2", got)
+	}
+	// The two splits must account for every parked row: a total that disagrees is a
+	// defect neither count alone can show.
+	if after.Parked+after.ReconciliationRequired != after.Total {
+		t.Fatalf("splits (%d + %d) do not sum to total (%d)", after.Parked, after.ReconciliationRequired, after.Total)
+	}
+	// Derived from the requirement: the oldest park is an hour old, so the answer is at
+	// least an hour. Aging from `created_at` yields seconds.
+	if after.OldestAgeSeconds < 3600 {
+		t.Fatalf("oldest age = %ds, want >= 3600: the age must be measured from recovery_parked_at, not created_at", after.OldestAgeSeconds)
+	}
+}

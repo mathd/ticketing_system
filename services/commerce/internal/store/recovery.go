@@ -556,3 +556,63 @@ func UnparkOrder(ctx context.Context, db *sql.DB, orderID uuid.UUID, reason stri
 	}
 	return tx.Commit()
 }
+
+// RecoveryBacklog is the parked population, as an operator needs to read it: how many
+// orders are waiting for a human, how many of those need the harder kind of attention,
+// and how long the oldest has been waiting.
+//
+// Only PARKED rows are counted, and that predicate is the whole point rather than a
+// detail. `QueueForCompensation` moves an order to `reconciliation_required` while
+// deliberately leaving it unparked — migration 0005 states it directly: "an UNPARKED
+// reconciliation_required row is a queued compensation, not a human's inbox." Counting by
+// status alone would report the runner's in-flight work as an operator backlog.
+type RecoveryBacklog struct {
+	// Parked counts parked orders OUTSIDE reconciliation_required — the ones that
+	// exhausted MaxRecoveryAttempts and are no longer retried (ADR-016 §Decision 1,
+	// deliberately). Nothing revisits them, so this number is the last notice anyone
+	// gets that they exist.
+	Parked int64
+	// ReconciliationRequired counts parked reconciliation_required orders. Separate
+	// because the resolution differs in kind, not degree: these may hold captured money
+	// (ADR-016 §Consequences), and what a re-drive would do to one depends on provider
+	// evidence (ADR-032). A count that merged them could not tell an operator which
+	// kind of problem they have.
+	ReconciliationRequired int64
+	// Total counts every parked order. Carried so the two splits can be asserted to sum
+	// to it — a total that disagrees is a defect neither split alone can show.
+	Total int64
+	// OldestAgeSeconds is the age of the oldest park, measured from recovery_parked_at.
+	// A count cannot distinguish a small, old backlog from a large, fresh one, and those
+	// are different incidents: the first is something stuck, the second something down.
+	OldestAgeSeconds int64
+}
+
+// ReadRecoveryBacklog reports the parked population for observability. It is not a gate:
+// nothing here can make commerce unready.
+//
+// Takes *sql.DB like its two siblings ReadReversalBacklog and ReadExchangeReversalBacklog,
+// not the OutboxDB that ListParkedOrders takes. That narrowing exists so the outbox drainer
+// can be exercised without a live PostgreSQL; a metrics read has no such need, and
+// OutboxDB does not carry QueryRowContext anyway.
+//
+// Unindexed on purpose, inheriting TKT-146's reasoning for `list-parked`: the parked
+// population is bounded by attempt exhaustion, so a scan long enough to matter is itself
+// the finding. An index here would mean a migration.
+func ReadRecoveryBacklog(ctx context.Context, db *sql.DB) (RecoveryBacklog, error) {
+	var b RecoveryBacklog
+	// IS DISTINCT FROM rather than <>: `status` is NOT NULL today, so the two agree, but
+	// a predicate whose unknown case silently drops the row from BOTH counts is a guard
+	// that fails open one schema change later.
+	err := db.QueryRowContext(ctx, `
+		SELECT count(*) FILTER (WHERE status IS DISTINCT FROM 'reconciliation_required'),
+		       count(*) FILTER (WHERE status = 'reconciliation_required'),
+		       count(*),
+		       coalesce(max(extract(epoch FROM now()-recovery_parked_at))::bigint, 0)
+		FROM orders
+		WHERE recovery_parked_at IS NOT NULL`).
+		Scan(&b.Parked, &b.ReconciliationRequired, &b.Total, &b.OldestAgeSeconds)
+	if err != nil {
+		return RecoveryBacklog{}, fmt.Errorf("read recovery backlog: %w", err)
+	}
+	return b, nil
+}

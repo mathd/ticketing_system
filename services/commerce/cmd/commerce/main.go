@@ -373,6 +373,13 @@ func run() error {
 	}
 	recoverer := recovery.New(recovery.DBStore{DB: db}, recoveryClients, recoveryClients, journal,
 		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), recoveryCallTimeout, log)
+	// Parking is terminal by design (ADR-016 §Decision 1) and the attempt-exhaustion log
+	// is, in its own words, "the last notice anyone gets". These gauges are what turn that
+	// into something an operator can see without thinking to run `list-parked` (ADR-065).
+	// Observability, not a gate — same rule as the two runners below.
+	if err := recoverer.ObserveMetrics(otel.Meter("ticketing/commerce/recovery")); err != nil {
+		log.WarnContext(ctx, "recovery metrics unavailable; the runner still runs", "err", err)
+	}
 	stopRecovery := start(log, "recovery runner", recoverer.Run)
 
 	// Event-cancellation bulk refunds (TKT-159). It refunds through the API server's own
