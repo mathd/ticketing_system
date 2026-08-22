@@ -932,24 +932,37 @@ func TestMetricsIngested(t *testing.T) {
 // way out (here, the Prometheus the real binary exports to) closes it. Delete the
 // ObserveMetrics call and TestMetricsIngested stays green while this fails.
 //
-// Matched as a family rather than by exact series name. The OTLP-to-Prometheus name
-// translation is the exporter's rule, not this repo's: `access.event.failures` arrives as
-// `access_event_failures_total` (access_consumer_test.go), so dots become underscores and
-// counters gain a suffix gauges do not. Asserting a hand-derived exact name would risk a
-// red gate with no defect behind it; the family cannot be produced by anything but these
-// gauges being registered and exported.
+// All FOUR series are required by exact name, not a name-family regex. A family match is
+// satisfied by any one member, so a registration that dropped three instruments would
+// still pass (ai-review F2). The OTLP-to-Prometheus translation is the exporter's rule
+// rather than this repo's — dots become underscores, and counters gain a `_total` suffix
+// that gauges do not (`access.event.failures` arrives as `access_event_failures_total`,
+// access_consumer_test.go) — so these four names were confirmed against a real run, not
+// derived on paper.
+//
+// Staleness is not a concern here and the reason is worth stating, because the assertion
+// would be worthless if it were: scripts/smoke.sh runs `compose down -v` from an EXIT trap
+// AND pre-cleans before `up`, both scoped to this worktree's project, so Prometheus starts
+// every run with no retained series. A match therefore comes from this run's binary.
 func TestRecoveryParkedGaugesIngested(t *testing.T) {
-	retry(t, 60*time.Second, func() error {
-		query := url.QueryEscape(`count({__name__=~"commerce_recovery_parked.*",service_name="commerce"})`)
-		code, body := get(t, promURL+"/api/v1/query?query="+query, nil)
-		if code != http.StatusOK {
-			return fmt.Errorf("prom query status %d", code)
-		}
-		if !strings.Contains(string(body), `"result":[{`) {
-			return fmt.Errorf("no commerce_recovery_parked* series yet; is ObserveMetrics wired in main.go? %s", body)
-		}
-		return nil
-	})
+	for _, name := range []string{
+		"commerce_recovery_parked",
+		"commerce_recovery_parked_reconciliation_required",
+		"commerce_recovery_parked_total",
+		"commerce_recovery_parked_oldest_age_seconds",
+	} {
+		retry(t, 60*time.Second, func() error {
+			query := url.QueryEscape(name + `{service_name="commerce"}`)
+			code, body := get(t, promURL+"/api/v1/query?query="+query, nil)
+			if code != http.StatusOK {
+				return fmt.Errorf("prom query status %d", code)
+			}
+			if !strings.Contains(string(body), `"result":[{`) {
+				return fmt.Errorf("%s not exported; is ObserveMetrics wired in main.go? %s", name, body)
+			}
+			return nil
+		})
+	}
 }
 
 // TestServerRefusesToStartWithoutARealCredential: every service image fails
