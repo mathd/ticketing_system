@@ -197,15 +197,44 @@ go work edit -replace=example.com/dep=./localdep
 expect_fail "go build-list lag (relative replace in go.work)" check-build-list-lag
 
 # 8g. A directive that is not `use` or `replace` must SURVIVE into the workspace
-#     copy. The copy exists to keep checksum writes off the real tree, but it must
-#     still describe the same build: `go work edit -json` exposes only Go, Use and
-#     Replace, so an earlier version that REGENERATED go.work from that JSON
-#     silently dropped `godebug` — and the fidelity guard, which compares module
-#     directories, passed over it. The copy is therefore the original file with
-#     only its paths redirected. Asserted through the stage's own verdict: a
-#     godebug-bearing workspace must still check clean.
+#     copy. `go work edit -json` exposes only Go, Use and Replace, so an earlier
+#     version that REGENERATED go.work from that JSON silently dropped `godebug`,
+#     and the fidelity guard — which compares module directories — passed over it.
+#
+#     This CANNOT be asserted through the stage's verdict. Dropping godebug does
+#     not stop the graph resolving, so the stage reports "none" either way and an
+#     expect_pass would be green under both implementations: a test naming the
+#     right case and incapable of failing. It was written that way first.
+#
+#     So inspect the copy itself. The script's own copy is discarded on exit, so
+#     the rewrite is reproduced here against the same go.work and the result is
+#     read — the assertion is about the file the stage builds, not about a verdict
+#     that is blind to it.
 go work edit -godebug=default=go1.25
-expect_pass "go build-list lag (godebug survives the workspace copy)" check-build-list-lag
+echo "=== selftest: go build-list lag (godebug survives the workspace copy) ==="
+gw_probe=$(mktemp -d)
+cp go.work "$gw_probe/go.work"
+go work edit -json > "$gw_probe/ws.json"
+python3 - "$gw_probe/ws.json" "$PWD" "$gw_probe/args" <<'PY'
+import json, os, sys
+doc = json.load(open(sys.argv[1])); root = sys.argv[2]; args = []
+ab = lambda p: p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
+for u in (doc.get("Use") or []):
+    args.append("-dropuse=" + u["DiskPath"])
+for u in (doc.get("Use") or []):
+    args.append("-use=" + ab(u["DiskPath"]))
+with open(sys.argv[3], "wb") as fh:
+    fh.write(b"\0".join(a.encode() for a in args))
+PY
+GOWORK="$gw_probe/go.work" xargs -0 go work edit < "$gw_probe/args"
+if grep -q '^godebug default=go1.25$' "$gw_probe/go.work"; then
+  echo "ok: godebug survived the path-only rewrite of the workspace copy"
+else
+  echo "FAIL: the workspace copy DROPPED godebug — it no longer describes the same build"
+  fail_count=$((fail_count + 1))
+fi
+rm -rf "$gw_probe"
+git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
 
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
