@@ -196,8 +196,12 @@ tuning knobs, not credentials.
   exchange interrupted after the money moved (ADR-039 §3c). This sweep never touches money and its
   port cannot express a settlement.
 - **`LoadExchangeSwitch`'s unscoped reservation join.** Found while shaping this ticket and filed
-  separately rather than widened into it. The new claim query is organizer-scoped on both joins and
-  does not inherit the shape. **Closed by TKT-260**, which gave the read the same
+  separately rather than widened into it. The claim query's own reservation join is organizer-scoped
+  and does not inherit the shape — though **only at the join**, which is a narrower statement than it
+  first reads: `claimable` selects and `claimed` leases before that join runs, so a row whose source
+  reservation belongs to another organizer takes a lease and a claim slot and is then dropped, never
+  returned and so never released. That is a liveness defect in this ADR's own claim query, not in the
+  read below; TKT-267 owns it. **Closed by TKT-260**, which gave the read the same
   `r.organizer_id = x.organizer_id` predicate. The join is FK-to-unique-key at both hops, so the
   predicate cannot select a different reservation — it reduces a mismatched pair to zero rows, and
   the read answers `ErrExchangeNotSettled`. Like everything else in this ADR that is
