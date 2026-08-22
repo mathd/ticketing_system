@@ -146,12 +146,34 @@ expect_fail "go build-list lag (unreadable module)" check-build-list-lag
 #     asserts the property in the state where it actually fails.
 (cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
 git checkout -- go.work.sum 2>/dev/null || true
-before_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
-make check-build-list-lag >/dev/null 2>&1 || true
-after_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
 echo "=== selftest: go build-list lag leaves go.work.sum unchanged ==="
-if [ "$before_sum" = "$after_sum" ]; then
-  echo "ok: check-build-list-lag did not modify go.work.sum"
+#     Both hashes would be EMPTY if go.work.sum were missing, and empty equals
+#     empty — the comparison below would then pass while observing nothing. Assert
+#     the file is there first, or this case joins the ones it exists to prevent.
+if [ ! -s go.work.sum ]; then
+  echo "FAIL: go.work.sum is missing or empty — the non-mutation check cannot observe anything"
+  fail_count=$((fail_count + 1))
+fi
+#     The run's OUTCOME is asserted too. Discarding the exit status would make any
+#     unrelated early failure — a broken workspace copy, a resolution error — look
+#     identical to a clean non-mutating run, so the case would go green over exactly
+#     the regression it exists to catch. The seeded tree must produce the LAG
+#     verdict (exit 1), which is only reachable if the graph actually resolved.
+before_sum=$(md5sum go.work.sum | cut -d' ' -f1)
+lag_status=0
+./scripts/check-go-build-list-lag.sh shared/go services/catalog services/inventory \
+  services/commerce services/payments services/access gateway smoke >/dev/null 2>&1 || lag_status=$?
+after_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
+#     Exit 1 EXACTLY: 0 is "no lag found" and 2 is "refused to report a verdict",
+#     and both are reachable without the graph ever resolving. Accepting any
+#     non-zero status would let a checker that refuses on every run satisfy this
+#     case while never observing the property. `make` maps the script's 1 to 2, so
+#     the script is invoked directly here.
+if [ "$lag_status" -ne 1 ]; then
+  echo "FAIL: the seeded lag was not reported (status $lag_status) — the non-mutation check never reached graph resolution"
+  fail_count=$((fail_count + 1))
+elif [ -n "$before_sum" ] && [ "$before_sum" = "$after_sum" ]; then
+  echo "ok: check-build-list-lag reported the seeded lag and did not modify go.work.sum"
 else
   echo "FAIL: check-build-list-lag MODIFIED go.work.sum — the stage mutates the tree"
   fail_count=$((fail_count + 1))
@@ -164,6 +186,15 @@ git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
 mkdir -p "$WORK/replacement" && printf 'module golang.org/x/net\n\ngo 1.26\n' > "$WORK/replacement/go.mod"
 (cd shared/go && go mod edit -replace=golang.org/x/net="$WORK/replacement")
 expect_fail "go build-list lag (replace directive in effect)" check-build-list-lag
+
+# 8f. The WORKSPACE form of the same thing, and a relative one. This is not a
+#     duplicate of 8e: `go list -m all` reports a replacement only for a module
+#     already in the build list, so a go.work replace naming a module nothing
+#     requires was invisible to the first implementation and the stage reported
+#     "none". Detection reads the declarations for that reason.
+mkdir -p localdep && printf 'module example.com/dep\n\ngo 1.26\n' > localdep/go.mod
+go work edit -replace=example.com/dep=./localdep
+expect_fail "go build-list lag (relative replace in go.work)" check-build-list-lag
 
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on

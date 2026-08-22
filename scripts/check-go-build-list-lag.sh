@@ -55,10 +55,84 @@ trap 'exit 143' TERM
 # Pointing GOWORK at a temporary copy sends any such write to the copy, discarded
 # with $work. The copy's `use` paths are relative to the original location, so they
 # are absolutized.
-cp "$PWD/go.work" "$work/go.work"
+# The copy is built from Go's OWN parse of go.work (`go work edit -json`), not by
+# rewriting its text. A `use` path may be written `./x`, bare `x`, `.`, or quoted
+# with spaces, and a text substitution that handles only the form this repo happens
+# to use today would leave the others relative to $work. That fails closed rather
+# than silently inspecting the wrong module set — $work contains no modules, so
+# resolution errors — but "fails closed on a valid workspace" is still a broken
+# check, and the ADR claims a general guarantee. Parsing removes the class.
+#
+# Workspace-level `replace` directives with relative targets need the same
+# treatment, for the same reason.
+if ! go work edit -json > "$work/workspace.json" 2>"$work/workspace.err"; then
+  echo "check-go-build-list-lag: cannot parse go.work — refusing to report a verdict" >&2
+  sed 's/^/  /' "$work/workspace.err" >&2
+  exit 2
+fi
+if ! python3 - "$work/workspace.json" "$PWD" "$work/go.work" <<'PY'
+import json, os, sys
+doc = json.load(open(sys.argv[1]))
+root, out = sys.argv[2], sys.argv[3]
+lines = []
+if doc.get("Go"):
+    lines.append("go %s" % doc["Go"])
+if doc.get("Toolchain"):
+    lines.append("toolchain %s" % doc["Toolchain"])
+def absolutize(p):
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
+for u in (doc.get("Use") or []):
+    lines.append('use "%s"' % absolutize(u["DiskPath"]))
+for r in (doc.get("Replace") or []):
+    old, new = r["Old"], r["New"]
+    o = old["Path"] + ("@" + old["Version"] if old.get("Version") else "")
+    # A replacement target with no version is a filesystem path; anything else is
+    # a module path and must NOT be touched.
+    n = new["Path"] + ("@" + new["Version"] if new.get("Version") else "")
+    if not new.get("Version") and (new["Path"].startswith(".") or new["Path"].startswith("/")):
+        n = '"%s"' % absolutize(new["Path"])
+    lines.append("replace %s => %s" % (o, n))
+open(out, "w").write("\n".join(lines) + "\n")
+PY
+then
+  echo "check-go-build-list-lag: cannot rewrite the workspace copy — refusing to report a verdict" >&2
+  exit 2
+fi
 [ -f "$PWD/go.work.sum" ] && cp "$PWD/go.work.sum" "$work/go.work.sum"
-sed -i "s#^\(\s*\)\./#\1$PWD/#" "$work/go.work"
 export GOWORK="$work/go.work"
+
+# The copy must place its `use` modules at the SAME directories as the real
+# workspace. If the rewrite were unfaithful, every verdict below would be about a
+# different module set — so prove it rather than assume it. Compared as sorted
+# absolute paths: the copy is generated from Go's own parse, so this asserts the
+# generation, not the parser.
+go work edit -json | python3 -c "
+import json,sys,os
+root=os.getcwd()
+d=json.load(sys.stdin)
+for u in (d.get('Use') or []):
+    p=u['DiskPath']
+    print(p if os.path.isabs(p) else os.path.normpath(os.path.join(root,p)))
+" 2>/dev/null | LC_ALL=C sort > "$work/want-dirs"
+GOWORK="$work/go.work" go work edit -json | python3 -c "
+import json,sys,os
+d=json.load(sys.stdin)
+for u in (d.get('Use') or []):
+    print(os.path.normpath(u['DiskPath']))
+" 2>/dev/null | LC_ALL=C sort > "$work/got-dirs"
+# Non-emptiness is checked FIRST. Both lists are produced with stderr discarded, so
+# a failure on either side yields an empty file — and empty compares equal to empty,
+# which would pass this guard while proving nothing. That is the same vacuity this
+# check exists to prevent, one level up.
+if [ ! -s "$work/want-dirs" ] || [ ! -s "$work/got-dirs" ]; then
+  echo "check-go-build-list-lag: cannot enumerate the workspace's module directories — refusing to report a verdict" >&2
+  exit 2
+fi
+if ! cmp -s "$work/want-dirs" "$work/got-dirs"; then
+  echo "check-go-build-list-lag: the workspace copy does not name the repo's module directories — refusing to report a verdict" >&2
+  diff "$work/want-dirs" "$work/got-dirs" | sed 's/^/  /' >&2 || true
+  exit 2
+fi
 
 # A `replace` directive makes the comparison below meaningless: the selected
 # VERSION can match the declared one while the build links entirely different
@@ -67,12 +141,32 @@ export GOWORK="$work/go.work"
 # describe what is built, which is the very property this check exists to defend.
 # Refuse rather than report. ADR-035's register scopes the guarantee to
 # unreplaced modules for the same reason.
-if [ -n "$(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all 2>/dev/null)" ]; then
-  echo "check-go-build-list-lag: the workspace contains 'replace' directives — refusing to report a verdict" >&2
+# Detected from the DECLARATIONS (go.work and every go.mod), not from
+# `go list -m all`. That command reports a replacement only for a module already in
+# the build list, so a replace naming a module nothing currently requires is
+# invisible to it — a false negative that would let the next requirement of that
+# module land silently replaced. Read the manifests instead.
+: > "$work/replaces"
+go work edit -json 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for r in (d.get('Replace') or []):
+    print('  go.work: %s => %s' % (r['Old']['Path'], r['New']['Path']))
+" >> "$work/replaces" 2>/dev/null || true
+for m in "$@"; do
+  go mod edit -json "$m/go.mod" 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for r in (d.get('Replace') or []):
+    print('  $m: %s => %s' % (r['Old']['Path'], r['New']['Path']))
+" >> "$work/replaces" 2>/dev/null || true
+done
+if [ -s "$work/replaces" ]; then
+  echo "check-go-build-list-lag: a 'replace' directive is in effect — refusing to report a verdict" >&2
   echo "  A replaced module can match on version while linking different source, so a version" >&2
   echo "  comparison cannot speak to what is built. Remove the replace, or extend this check to" >&2
   echo "  compare effective module identity (ADR-035 §Amendment)." >&2
-  go list -m -f '{{if .Replace}}  {{.Path}} => {{.Replace.Path}}{{end}}' all 2>/dev/null | grep . >&2 || true
+  cat "$work/replaces" >&2
   exit 2
 fi
 
