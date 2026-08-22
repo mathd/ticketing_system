@@ -37,6 +37,15 @@ SPIDR slicing (first sprint-sized slice).
 - `state`: `met | open | deferred`. Missing item = `open`.
 - `deferred` = the explicit escape hatch: acknowledged as safely resolvable during Planning
   (decision rule: Ready = "no *major* redesign mid-sprint", not "zero unknowns"). Say why in `note`.
+  **Before deferring a TECHNICAL unknown, ask whether a throwaway container or a ten-line script
+  settles it now — if so, run it and record the answer instead of the question.** `deferred` is for
+  unknowns that need a decision or real design time; it is not a way to pass a cheap experiment
+  downstream. TKT-267 deferred "does `FOR UPDATE SKIP LOCKED` tolerate a correlated `EXISTS` without
+  extending the lock?" as documented-semantics-not-verified, and answering it took four minutes with
+  a `docker run postgres` and two queries — less than writing the deferral did. The cost of getting
+  this wrong is not the minutes: a deferred technical unknown reaches the drafter as an open
+  question, and a drafter that cannot run the gate will design around the *possibility* it resolves
+  badly.
 - `owner: "human"` on an `open` item = a **decision** only a human can make — it shows up in the
   board's "your move" strip. No ticket for it; the answer lands in the thread, the agent records it.
 - `spike: "<KEY>"` links the item to the spike investigating it.
@@ -88,6 +97,20 @@ TKT-251 is the worked example: shaping correctly predicted the trap (an attach c
 each other, where merely adding a caller comparison beside it would look right), the implementation
 was correct, and the *test* still could not detect deleting one of the two predicates — the fixture
 was refused by the first lookup and never reached the second.
+
+**And say what the guard's failure looks like in the OUTPUT: a MISSING row, a DUPLICATED row, or a
+SUBSTITUTED value. The fixture and the assertion follow from that, and nothing else does.** The
+property's name never tells you — "the claim must not return another tenant's hold" sounds like a
+substitution and can be any of the three depending on the join's cardinality. TKT-266 cost three
+build cycles learning this one predicate at a time: a cross-tenant fixture proved nothing because the
+join was FK-to-PK, so deleting the predicate yielded **zero rows** rather than a foreign one; the
+corrected fixture *still* proved nothing because the multi-valued mutation returned the right row
+**alongside** the wrong one, and the helper stopped at the first match. The assertion that finally
+worked counted rows. Each rejection took a mutation run to discover; asking "what does the mutation
+do to the result set?" while already reading the code costs one sentence. Corollary for a guard whose
+condition is checked at **two stages**: "the bad row is absent from the output" is satisfied by
+either stage, so it cannot show which one refused — only an observation *between* them can, and if
+there is nothing observable between them the second guard is untestable and the ticket should say so.
 
 ## The shaping pass (agent, in Backlog)
 

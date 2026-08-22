@@ -98,6 +98,22 @@ that announces a foreign skill but returns concrete, code-cited findings is like
 rubric is irrelevant. A hang counts as a failure: kill it fast. Never substitute a self-review; a
 skipped review that looks done is worse than a stalled ticket.
 
+**FIRST, assert the artifact is non-empty and contains a verdict — before reading it for findings.**
+`wc -c` the output; if it is zero bytes, the review did not run, whatever the status command says.
+This is the most common failure and the most dangerous, because it is **indistinguishable from a
+clean review**: on TKT-267 the companion's `adversarial-review` reported `Phase: done, Duration:
+1m 45s` and produced a zero-byte file, and a triage that opened with "no findings — ship it" would
+have been the natural reading. `Phase: done` is not evidence; bytes are. The same check catches the
+truncation shape (a captured message cut mid-sentence, verdict present, findings gone): if the output
+ends without a conclusion, treat it as a rung failure and escalate, do not salvage half of it as
+though it were the whole.
+
+**And note which command produced the emptiness.** On TKT-267 `adversarial-review` returned zero
+bytes twice while `task` with a defect-hunting brief returned conclusive, code-cited findings on the
+same diff, three times running. If `adversarial-review` comes back empty, a `task`-framed retry is a
+legitimate rung-1 variant rather than a second attempt at the same rung — but say so in the stage
+comment, since the two commands prime the model differently and that is a fact about the review.
+
 ## Escalation ladder when a delegated stage fails — fixed, not improvised
 
 One attempt per rung, in order:
