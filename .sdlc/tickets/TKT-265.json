@@ -19,6 +19,11 @@
       "stage": "ready",
       "kind": "claim",
       "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — `TKT-265-go-build-list-lag` off `origin/main` @ `afa333f4`\n\n**Running gateless per `config.gates: \"autonomous\"`.** Gate 1 was taken by the owner in-session\n(explicit instruction to shape and promote); gates 2–4 are the agent's per § Autonomous mode.\n\n**Blockers:** none. The single link is `found-in: TKT-264`, which merged at `aaed8e95`.\n\n**Selection reason:** owner-directed. It was also the top unshaped item and its subject — a gap in\nthe gate itself — compounds while unaddressed: every dependency bump lands against manifests that\nalready misdescribe the build.\n\n**Risk verdict: `risk:low` NOT claimed.** Stated explicitly per the label's carve-outs rather than\nleft silent. Two independent reasons, either sufficient:\n\n1. The deliverable is an **architectural decision** amending an accepted ADR (ADR-035). SKILL.md\n   draws the line at *needs a decision* vs *needs writing down* — this is the former, and TKT-62 is\n   the precedent for why a wrong recommendation must meet the plan gate.\n2. It is likely to touch `Makefile` and `scripts/` — **CI/deploy config**, one of the four named\n   carve-outs.\n\nThe implementation will probably be small. The label gates the judgement, not the line count, so it\nstays off and Gate 2 runs.\n\n**Model routing** (`config.models`, declared not inferred):\n\n| stage | model |\n|---|---|\n| `plan` | `gpt-5.6-luna` (codex) |\n| `planReview` | `main-agent` |\n| `implement` | `main-agent` |\n| `aiReview` | `gpt-5.6-luna` (codex) |\n\nCross-model invariant checked both ways: `plan` (`gpt-5.6-luna`) ≠ `planReview` (`main-agent`) ✅,\nand `implement` (`main-agent`) ≠ `aiReview` (`gpt-5.6-luna`) ✅.\n"
+    },
+    {
+      "stage": "planning",
+      "kind": "blocker",
+      "body": "<!-- sdlc:stage=planning kind=blocker -->\n### Mémo correction — ADR-035 filename (self-caught, non-blocking)\n\nThe `kind=readiness` mémo cited **`ADR-035-eight-go-modules-stay.md`**. That file does not exist.\nThe real path is **`docs/adr/ADR-035-go-module-dependency-declarations.md`** (verified with\n`git cat-file -e HEAD:...`). Corrected in `context.governingAdrs`.\n\nThis is exactly the failure `shaping.md` warns about — a mémo naming an ADR that does not resolve\nsends the drafter looking for a spec that isn't there. It reached the plan brief once. Impact was\nnil in practice: the drafter located the ADR by grepping content rather than by path. Recording it\nrather than silently fixing it, because the near-miss is the point — I asserted a filename from the\nADR's *subject matter* instead of from `ls`, and the shaping rule that says to verify exists\nprecisely because that reads as correct.\n\n### Additional measurement taken during Planning\n\n`go work sync` run on a clean tree at `afa333f4`, then reverted (tree verified clean after):\n\n- **0.6s warm**, 14 files across 7 modules, +49/−51.\n- **Every version change is a RAISE** to what the workspace already selects. Nothing is lowered.\n- **The build list is BYTE-IDENTICAL before and after** (`go list -m all` diffed) — the sync has\n  **zero runtime effect**. It only makes the manifests describe what was already being built.\n- Non-version churn is confined to two modules: `access` gains 7 requires, `commerce` gains\n  `gorilla/mux` and drops `kr/pretty`.\n\nThis matters for COS #3: the pre-existing churn is not a pending upgrade with risk attached, it is\nbookkeeping. Whichever option Planning picks, that fact belongs in the amendment.\n"
     }
   ],
   "parent": "TKT-9",
@@ -73,7 +78,7 @@
     ],
     "governingAdrs": [
       {
-        "adr": "ADR-035-eight-go-modules-stay.md",
+        "adr": "ADR-035-go-module-dependency-declarations.md",
         "constrains": "THE ticket. Its Decision section rejects `go work sync && git diff --exit-code` on three MEASURED grounds: ~5min cold cache / may need network; mutates the tree during the gate; `git diff` cannot see untracked sum files. Any proposed gate must be measured against the same three, and the amendment lands in its 'What this guarantees' register. Note it also says to reconsider Option 1 (collapse) if the check's maintenance cost exceeds the 61-path move -- so 'the check is getting expensive' is an argument the ADR itself invites."
       },
       {
@@ -111,7 +116,8 @@
       "go_list_m_all_cold_with_network": "22s, 315MB fetched, 35 zips",
       "go_list_m_all_cold_offline": "FAILS -- 'module lookup disabled by GOPROXY=off'",
       "go_mod_edit_json_offline": "works (this is what the shipped checker uses, ~0.2s/8 modules)",
-      "narrow_query_offline": "also FAILS -- `go list -m <3 paths>` still walks the full graph"
+      "narrow_query_offline": "also FAILS -- `go list -m <3 paths>` still walks the full graph",
+      "go_work_sync_effect": "MEASURED on clean afa333f4 then reverted: 0.6s warm, 14 files / 7 modules (+49/-51). Every version change is a RAISE to what the workspace already selects; nothing is lowered. Build list BYTE-IDENTICAL before vs after (go list -m all diffed) -- so the sync has zero runtime effect and is purely a legibility fix. Non-version churn: access gains 7 requires (kin-openapi, jsonpointer, gorilla/mux, oasdiff/yaml, oasdiff/yaml3, go-internal, jsonschema/v6); commerce gains gorilla/mux and drops kr/pretty."
     }
   }
 }
