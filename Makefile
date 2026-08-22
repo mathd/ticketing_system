@@ -12,9 +12,9 @@ GOLANGCI := $(BIN)/golangci-lint
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-required-env up down clean
 
-check: deps check-generate check-dep-drift check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links lint test build smoke
+check: deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links lint test build smoke
 
 ## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
 deps:
@@ -46,6 +46,14 @@ check-generate: generate
 # so nothing else in the gate would ever notice.
 check-dep-drift:
 	@./scripts/check-go-dependency-drift.sh $(GO_MODULES)
+
+# The VERTICAL direction (TKT-265): a manifest declaring less than the workspace
+# selects. Separate script because this one resolves the module graph via
+# `go list -m` and so is NOT offline — check-dep-drift's contract above is, and
+# folding them together would falsify it. `deps` already needs the network on a
+# cold clone, so the gate loses nothing it had.
+check-build-list-lag:
+	@./scripts/check-go-build-list-lag.sh $(GO_MODULES)
 
 ## ---- workflow triggers ----
 check-security-workflow-trigger:
