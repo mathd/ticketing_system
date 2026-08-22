@@ -898,11 +898,25 @@ func TestTheClaimLocksTheQueueRowOnlyAndNeverTwice(t *testing.T) {
 		                        WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`},
 		{"SOURCE ORDER", `UPDATE orders SET status=status WHERE id=$1`},
 	} {
-		if _, err := conn.ExecContext(ctx, w.stmt, a.OrderID); err != nil {
+		res, err := conn.ExecContext(ctx, w.stmt, a.OrderID)
+		if err != nil {
 			t.Fatalf("a concurrent write to the claim's %s was blocked (%v). The claim must "+
 				"lock its own queue row and nothing else: locking the joined rows would make "+
 				"every sweep pass contend with checkout and refund writes on those tables",
 				w.what, err)
+		}
+		// COUNT THE ROW, or this whole assertion is decoration. An UPDATE whose WHERE matches
+		// nothing succeeds and returns no error, so a fixture that stopped producing the
+		// expected row — or a subselect that silently found none — would sail through the
+		// check above having taken no lock and contended with nothing.
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("the concurrent write to the claim's %s touched %d rows, want 1: it took "+
+				"no row lock, so passing the block check above proves nothing about what the "+
+				"claim locks", w.what, n)
 		}
 	}
 
