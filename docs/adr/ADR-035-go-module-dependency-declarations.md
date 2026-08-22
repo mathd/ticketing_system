@@ -145,9 +145,27 @@ script's offline capability, not the gate's. No CI job, Make target or developer
 repo sets `GOPROXY=off` or depends on an air-gapped run.
 
 Two of the three grounds on which `go work sync && git diff --exit-code` was rejected above do
-**not** apply to this check: it never mutates the working tree, and it never consults `git`, so
+**not** apply to this check: it does not mutate the working tree, and it never consults `git`, so
 untracked sum files cannot be invisible to it. The third ground — the untracked `gateway/go.sum` —
 is now **historical**: that file was committed by this ADR's original change and is tracked today.
+
+The non-mutation is **arranged, not inherent**, and this is worth stating because the first
+implementation did not have it. Resolving the module graph makes Go write any checksums it learns
+into `go.work.sum`; on a cold or incomplete cache that modifies a tracked file, which is exactly
+the property the naive approach was rejected for. **`-mod=readonly` does not prevent it** — the
+write targets the workspace sum file, which that flag does not govern. Both facts were established
+by execution during review, after the first version of the checker mutated `go.work.sum` on a seeded
+tree. The check therefore runs every `go list -m` against a **copy** of `go.work` (via `GOWORK`),
+so any such write lands in a temporary directory that is discarded. A regression case in
+`scripts/gate-selftest.sh` asserts the tree is unchanged after a run on a tree with an incomplete
+cache.
+
+**The guarantee is scoped to unreplaced modules.** A `replace` directive lets the selected *version*
+match the declared one while the build links entirely different source — another version, or a local
+directory — so a version comparison cannot speak to what is linked. Rather than report a guarantee
+it cannot support, the check **refuses to report a verdict** (exit 2) when any `replace` is in
+effect, naming the offending module. There are none in the workspace today. If one is ever needed,
+the check must be extended to compare effective module identity, not merely relaxed.
 
 `go work sync` remains the **repair** operation, not the enforcement one. The 14 lagging
 declarations were realigned with it before the check was added; that realignment raised every
@@ -173,7 +191,9 @@ that overreaches:
 - **Not closed, and not closeable here:** anyone editing a `go.mod` and the checker in the same
   commit. The check lives in the repo it checks; it constrains mistakes, not intent. The same
   applies to the workspace inputs — someone who edits `go.work` and the checker together can make
-  the repository accept its own chosen answer.
+  the repository accept its own chosen answer. **A `replace` directive is outside the guarantee
+  entirely**: it can make a declared version match the selected one while the build links different
+  source, so the check refuses to report a verdict rather than imply a guarantee it cannot support.
 - **Not claimed:** that either check fixed a runtime version split. There has never been one.
   Both the original realignment and TKT-265's left the workspace build list **byte-identical** —
   verified by comparing `go list -m` before and after. Nor is it claimed that every selected

@@ -42,11 +42,45 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# EVERY `go list -m` below runs against a COPY of go.work, never the real one.
+#
+# Resolving the module graph makes Go write any checksums it learns into
+# `go.work.sum`. On a cold or incomplete cache that MUTATES a tracked file, leaving
+# a gate-only diff and falsifying the "never mutates the tree" property this check
+# is supposed to have. `-mod=readonly` does NOT prevent it — the write is to the
+# workspace sum file, which that flag does not govern. Both facts verified by
+# execution; the first version of this script mutated `go.work.sum` on a seeded
+# tree, and so did its own replace-detection probe.
+#
+# Pointing GOWORK at a temporary copy sends any such write to the copy, discarded
+# with $work. The copy's `use` paths are relative to the original location, so they
+# are absolutized.
+cp "$PWD/go.work" "$work/go.work"
+[ -f "$PWD/go.work.sum" ] && cp "$PWD/go.work.sum" "$work/go.work.sum"
+sed -i "s#^\(\s*\)\./#\1$PWD/#" "$work/go.work"
+export GOWORK="$work/go.work"
+
+# A `replace` directive makes the comparison below meaningless: the selected
+# VERSION can match the declared one while the build links entirely different
+# source (another version, or a local directory). Comparing versions would then
+# report "none" and imply a guarantee that is false — the manifest would not
+# describe what is built, which is the very property this check exists to defend.
+# Refuse rather than report. ADR-035's register scopes the guarantee to
+# unreplaced modules for the same reason.
+if [ -n "$(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all 2>/dev/null)" ]; then
+  echo "check-go-build-list-lag: the workspace contains 'replace' directives — refusing to report a verdict" >&2
+  echo "  A replaced module can match on version while linking different source, so a version" >&2
+  echo "  comparison cannot speak to what is built. Remove the replace, or extend this check to" >&2
+  echo "  compare effective module identity (ADR-035 §Amendment)." >&2
+  go list -m -f '{{if .Replace}}  {{.Path}} => {{.Replace.Path}}{{end}}' all 2>/dev/null | grep . >&2 || true
+  exit 2
+fi
+
 # The selected build list, one "<path> <version>" per line. Failing to resolve it
 # is FAIL-CLOSED and distinct from finding lag: a proxy outage or a cold cache is
 # not a source defect, and reporting "no lag" because the graph never loaded is the
 # failure mode this whole ticket exists to close.
-if ! go list -m -f '{{.Path}} {{.Version}}' all > "$work/selected" 2>"$work/selected.err"; then
+if ! go list -mod=readonly -m -f '{{.Path}} {{.Version}}' all > "$work/selected" 2>"$work/selected.err"; then
   echo "check-go-build-list-lag: cannot resolve the workspace build list — refusing to report a verdict" >&2
   echo "  (this stage resolves the module graph and needs the module cache or network; see ADR-035)" >&2
   sed 's/^/  /' "$work/selected.err" >&2
@@ -54,6 +88,13 @@ if ! go list -m -f '{{.Path}} {{.Version}}' all > "$work/selected" 2>"$work/sele
 fi
 if [ ! -s "$work/selected" ]; then
   echo "check-go-build-list-lag: empty build list — refusing to report a verdict" >&2
+  exit 2
+fi
+# A path selected twice means the list is not what this check assumes it is, and
+# the first-match lookup below would silently pick one. Refuse instead.
+if dupes=$(cut -d' ' -f1 "$work/selected" | LC_ALL=C sort | LC_ALL=C uniq -d) && [ -n "$dupes" ]; then
+  echo "check-go-build-list-lag: the build list selects a path more than once — refusing to report a verdict" >&2
+  printf '%s\n' "$dupes" | sed 's/^/  /' >&2
   exit 2
 fi
 
@@ -99,14 +140,28 @@ fi
 # performed here on purpose: a hand-rolled semver comparison that is subtly
 # wrong in a guard fails OPEN, and this check does not need one.
 : > "$work/lagging"
+: > "$work/uncompared"
 while read -r path version mod; do
   selected=$(awk -v p="$path" '$1 == p { print $2; exit }' "$work/selected")
-  # Not in the build list at all: the module graph does not select this path (a
-  # pruned or test-only requirement). Nothing to compare against; not lag.
-  [ -n "$selected" ] || continue
+  if [ -z "$selected" ]; then
+    # A declared requirement absent from the build list is NOT evidence of safety.
+    # Today every declaration resolves, so this never fires; if it starts firing,
+    # something about graph resolution changed and a lagging declaration could
+    # vanish from comparison and produce a PASS. Silently continuing here is the
+    # same fail-open shape this whole check exists to close, so collect and refuse.
+    printf '%s %s %s\n' "$path" "$version" "$mod" >> "$work/uncompared"
+    continue
+  fi
   [ "$version" = "$selected" ] && continue
   printf '%s %s %s %s\n' "$path" "$version" "$selected" "$mod" >> "$work/lagging"
 done < "$work/records"
+
+if [ -s "$work/uncompared" ]; then
+  echo "check-go-build-list-lag: a declared requirement is absent from the build list — refusing to report a verdict" >&2
+  echo "  Every declaration must be comparable, or a lagging one could go unexamined:" >&2
+  awk '{ printf "    %-45s %-26s declares %s\n", $1, $3, $2 }' "$work/uncompared" >&2
+  exit 2
+fi
 
 if [ -s "$work/lagging" ]; then
   echo "go build-list lag: a module declares less than the workspace selects" >&2

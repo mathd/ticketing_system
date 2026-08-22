@@ -137,6 +137,34 @@ expect_fail "go build-list lag" check-build-list-lag
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go build-list lag (unreadable module)" check-build-list-lag
 
+# 8d. The stage must not MUTATE the tree. Resolving the module graph makes Go write
+#     newly-learned checksums into go.work.sum, and `-mod=readonly` does not prevent
+#     it — the write targets the workspace sum file, which that flag does not govern.
+#     The first implementation of this checker did exactly that, which is the whole
+#     reason `go work sync && git diff` was rejected as the gate in the first place.
+#     The seeded requirement forces a checksum the cache does not have, so this
+#     asserts the property in the state where it actually fails.
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+git checkout -- go.work.sum 2>/dev/null || true
+before_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
+make check-build-list-lag >/dev/null 2>&1 || true
+after_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
+echo "=== selftest: go build-list lag leaves go.work.sum unchanged ==="
+if [ "$before_sum" = "$after_sum" ]; then
+  echo "ok: check-build-list-lag did not modify go.work.sum"
+else
+  echo "FAIL: check-build-list-lag MODIFIED go.work.sum — the stage mutates the tree"
+  fail_count=$((fail_count + 1))
+fi
+git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
+
+# 8e. A `replace` directive puts the comparison outside what it can speak to: the
+#     selected version can match the declared one while the build links different
+#     source. The stage must REFUSE rather than report a false "none".
+mkdir -p "$WORK/replacement" && printf 'module golang.org/x/net\n\ngo 1.26\n' > "$WORK/replacement/go.mod"
+(cd shared/go && go mod edit -replace=golang.org/x/net="$WORK/replacement")
+expect_fail "go build-list lag (replace directive in effect)" check-build-list-lag
+
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
 #    interpolation while `make check` stayed green, because the smoke path takes
