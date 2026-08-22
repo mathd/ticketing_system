@@ -20,6 +20,100 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-260's ai-review — not yet shaped\n\nNeeds the 8-item DoR before Gate 1. Likely `risk:low` once shaped, but that call belongs to shaping.\n\n**The interesting half is the test, and it is NOT the same shape as TKT-260's.** TKT-260's property\nwas fail-closed on a single-valued join, so its test asserts an error. This one's property is that\na row **is not written to** — the assertion is on `reversal_lease_until`/`reversal_claim_id`\nremaining NULL after a claim that did not return it. A test that only asserts \"the valid row came\nback\" is the vacuous shape: with a `LIMIT` and an `ORDER BY`, it can pass by ordering luck while the\nmalformed row was leased anyway. Assert what the write left behind, not what the read returned.\n\n**Whoever shapes it should check whether the refund side has the same shape.**\n`ClaimOutstandingReversals` in `refund_reversal.go` carries the sibling predicate from ADR-062 F3 at\nits final join; if its CTE has the same stage ordering, this ticket is two queries, not one — and\nthat changes the risk call."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping verdict: READY for Gate 1 — 7 met, 1 deferred, 0 open, 0 blockers\n\nRan the shaping pass against the code at `308d2efe`. Verdict below; the `readiness` object and the\ncontext-mémo are on the ticket.\n\n**The defect is real and the ticket's proposed remedy survives the read.** Migration 0010 gives\n`order_exchanges` a `source_order_id uuid NOT NULL REFERENCES orders(id)` and nothing that ties its\n`organizer_id` to the source reservation's, so the malformed pair is constructible and the three-stage\nquery behaves exactly as filed. `approach` inherits the ticket's `EXISTS`-in-`claimable` shape as\nverified, not assumed.\n\n**The prior comment's suspicion is confirmed: this is two queries, not one.** `ClaimOutstandingReversals`\n(`refund_reversal.go:74`) has the identical `claimable` → `claimed` → scoped-final-join structure, with\nthe organizer predicate only on the last stage. Scope now covers both. One consequence the scope note\nrecords: ADR-062 contains **zero** occurrences of \"organizer\" — the refund side's fix is recorded\nnowhere unless this ticket adds the bullet ADR-063 already has.\n\n**The sixth conjunct is a comment liability, not just a test one.** The claim is documented as FIVE\nconjuncts in two places — the function doc (`exchange_reversal.go:56`) and the smoke file's header\n(\"the five claim conjuncts\"). Both become false the moment this merges. Recorded in `approach` beside\nthe per-predicate test rule, because a stale count in a comment that *exists to tell the next reader\nhow many tests to expect* is how the next ticket under-tests.\n\n**One item deferred, deliberately, and it is the only real unknown:** whether `FOR UPDATE SKIP LOCKED`\ntolerates a correlated `EXISTS` in the same `SELECT` without extending the lock to `orders` and\n`reservations`. Postgres documents `FOR UPDATE` as locking the tables named in the `FROM` list, and a\n`WHERE`-clause subquery is not in it — but that is **an inference from documented semantics, not a fact\nverified against this database**, and Planning must execute it rather than repeat it. The `note` carries\na fallback shape (`EXISTS` on the `claimed` UPDATE instead) and says plainly that the fallback is\nstrictly weaker — it stops the lease but not the slot consumption, which is half the AC.\n\n**Risk verdict: `risk:low` NOT claimed.** No auth, no money, no migration, no CI config — but two\nconcurrency-path queries under `FOR UPDATE SKIP LOCKED` where the open question is the SQL shape\nitself, and the wrong shape makes sweep replicas contend on `reservations` in a way no unit test\nwould surface. Reasoning in full on the mémo's `riskCall`.\n\n⛔ **Gate 1 is the human's in both modes.** The autonomous run stops here: this ticket was in `Backlog`\nwith `readiness: null`, so entering at `Ready` would have skipped exactly the shaping that found the\nsecond query and the stale conjunct count. Awaiting prioritization to `Ready`."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ClaimOutstandingExchangeReversals leases and slot-consumes a row whose source reservation belongs to another organizer, then drops it at the final join, so it is never released/abandoned and re-takes a claim slot on every lease expiry. Liveness, not leak."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the claimable CTE of ClaimOutstandingExchangeReversals (exchange_reversal.go) AND of ClaimOutstandingReversals (refund_reversal.go) -- verified at HEAD to have the identical three-stage shape, so this is two queries; the sixth-conjunct test for each; the exchange_reversal.go:117 comment and the ADR-063 bullet. OUT: any change to the final joins (both already correct), any change to LoadExchangeSwitch (TKT-260 closed it), unparking, and adding a DB-level constraint forbidding the malformed pair (a schema change is a bigger call than this ticket -- record as follow-up if the planner wants it)."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "One open technical detail, safely resolvable in Planning against real PostgreSQL: FOR UPDATE + a correlated EXISTS in the same SELECT. Postgres forbids FOR UPDATE on the nullable side of an outer join and locks every table named in the FROM list, but a subquery in WHERE is NOT part of the FROM list, so `SELECT organizer_id,id FROM order_exchanges WHERE ... AND EXISTS (SELECT 1 FROM orders o JOIN reservations r ON r.id=o.reservation_id AND r.organizer_id=order_exchanges.organizer_id WHERE o.id=order_exchanges.source_order_id) FOR UPDATE SKIP LOCKED` should lock only order_exchanges. This is a documented-semantics inference, NOT verified against this database -- Planning must run it. Fallback if it does not hold: keep claimable as-is and add the EXISTS to the `claimed` UPDATE's WHERE, which leases nothing it will not return, at the cost of the row still consuming a LIMIT slot in claimable. That fallback is strictly weaker (it fixes the write, not the head-of-line blocking) and would need the AC restated, so prefer the EXISTS-in-claimable shape."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-260 (found-in) is merged at 308d2efe; its comment at exchange_reversal.go:117 already names this ticket and is one of the deliverables."
+    },
+    "approach": {
+      "state": "met",
+      "note": "The ticket's proposed remedy (correlated EXISTS inside `claimable`) was VERIFIED against the code, not inherited: order_exchanges has no FK tying organizer_id to the source reservation's (migration 0010 lines 19-21 -- only source_order_id REFERENCES orders(id)), so the malformed pair is seedable and the defect is real. GUARD PREDICATE COUNT: the claim currently has FIVE conjuncts, each with its own smoke test (TestConjunct1..5 at exchange_reversal_smoke_test.go:149-233), and the function doc-comment says 'FIVE independent conjuncts'. This adds a SIXTH; per AGENTS.md the new test must satisfy the earlier five and be mutated separately, the five existing must stay green, and BOTH the doc-comment and the file header comment ('the five claim conjuncts') must be updated to six or they become false. Same for the refund side, which has its own conjunct set. Note the new predicate is not a plain conjunct on the row's own columns -- it is a join-existence check -- so a test that deletes it must go red on the LEASE assertion, not on 'the row came back'."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, both queries. Splitting exchange from refund would ship a ticket whose ADR bullet claims the class is closed while the sibling query still has it, and the second half is a copy of the first."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS restated in the description; the load-bearing one is the NULL-lease assertion, and the mutation proof is that deleting the predicate turns THAT assertion red (not the return assertion, which can pass by ordering luck)."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; governingAdrs and governingTests both populated and each cited file verified to exist at HEAD."
+    }
+  },
+  "context": {
+    "summary": "Close a liveness defect in the exchange (and sibling refund) reversal claim queries: organizer validation of the source reservation happens only at the final join, after the claimable CTE has selected and the claimed CTE has leased. A cross-tenant-malformed row therefore burns a LIMIT slot and takes a lease it never gives back.",
+    "touchedAreas": [
+      "services/commerce/internal/store/exchange_reversal.go (ClaimOutstandingExchangeReversals, the claimable CTE)",
+      "services/commerce/internal/store/refund_reversal.go (ClaimOutstandingReversals, same shape -- verified at HEAD)",
+      "services/commerce/internal/store/exchange_reversal_smoke_test.go (+ refund_reversal_smoke_test.go)",
+      "docs/adr/ADR-063-exchange-reversal-reconciliation.md (the 'what this does not cover' bullet at ~line 204)"
+    ],
+    "governingAdrs": [
+      {
+        "adr": "ADR-063-exchange-reversal-reconciliation.md",
+        "constrains": "This ADR OWNS the claim query. Its 'what this does not cover' bullet currently names TKT-267 as the owner of exactly this defect and must be rewritten to say it is closed -- leaving it is how an ADR ends up describing a gap that no longer exists. Also: the sweep NEVER writes tickets_exchanged_at (that is access's fact) and the claim deliberately excludes awaiting-switch rows; do not touch either conjunct."
+      },
+      {
+        "adr": "ADR-062-refund-reversal-reconciliation.md",
+        "constrains": "The refund lifecycle this one was copied from. Its ai-review F3 is why every statement keys on the FULL composite (organizer_id, id) -- the new predicate must not weaken that. ADR-062 says nothing about organizer-scoping the reservation join (checked: zero matches for 'organizer'), so if the refund side is fixed here, ADR-062 needs the bullet ADR-063 already has, or the refund fix is recorded nowhere."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary. This is honest-writer consistency, NOT tamper-evidence: a writer with commerce DB access creates the malformed row in the first place. Any comment or ADR text written for this ticket must say so, and must NOT claim the row can no longer exist -- only that the sweep no longer wedges on it."
+      },
+      {
+        "adr": "ADR-019-catalog-read-path-scoping.md",
+        "constrains": "Rule cited by migration 0022 itself: a scoped read is only scoped if an index backs the filter. The new EXISTS runs per candidate row inside a FOR UPDATE SKIP LOCKED scan already narrowed by the partial queue index; check that the EXISTS is index-backed at both hops (orders PK, reservations PK) and does not turn the claim into a seq scan on a hot path."
+      },
+      {
+        "adr": "ADR-038-refund-reversal-ticket-voiding.md",
+        "constrains": "Named by the file comment as the reason the sweep must not set the switch marker (the one write that can OVERSELL). Background, not a direct constraint on this diff."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go TestConjunct1..TestConjunct5",
+        "pins": "One case per claim conjunct, each satisfying the earlier ones. AGENTS.md's short-circuit rule: the new sixth guard needs its own case that PASSES all five, and each of the five must stay green. The file header comment says 'the five claim conjuncts' and the function doc says 'FIVE independent conjuncts' -- both become false on merge if not updated."
+      },
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go TestAnActionableRowIsClaimedDespiteAnOlderAwaitingSwitchBacklog",
+        "pins": "The head-of-line-blocking property this ticket's defect re-creates by a different route. It seeds 12 older ineligible rows against limit=5; the new test is its sibling and should be read before writing one, because it is the existing proof that 'the valid row came back' is only half an assertion."
+      },
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go TestTheClaimedHoldBelongsToTheClaimingTenant",
+        "pins": "The final join's correctness -- the half that is ALREADY right. A fix must not make this test's mechanism redundant-looking and must leave it green; it is the assertion that no foreign hold_id escapes."
+      },
+      {
+        "test": "services/commerce/internal/exchangesweep/runner_test.go TestTwoTenantsSharingAnExchangeIDAreBothDriven",
+        "pins": "Same-id-different-tenant rows are BOTH legitimate work. A predicate written as if id were globally unique breaks this at the decision tier."
+      },
+      {
+        "test": "services/commerce/internal/api/channel_seam_test.go",
+        "pins": "A live cross-cutting tripwire in the same service carrying a do-not-delete instruction. Not expected to be touched here, but named so the drafter knows commerce has one."
+      }
+    ],
+    "seedFixture": "settledExchange(t, db, ctx, key, mutate) at exchange_reversal_smoke_test.go:42 writes order_exchanges directly (so it can express states the happy path cannot) and calls seedCompleted (refunds_smoke_test.go:27) for the order+reservation. seedCompleted generates a fresh OrganizerID per call and writes reservations.organizer_id from it -- so the MALFORMED row is built by seeding a normal completed order, then inserting the order_exchanges row with a DIFFERENT organizer_id from the reservation's. Watch migration 0010's all-or-nothing basis/settlement CHECKs (they broke eleven fixtures at once on TKT-259's first gate run); settledExchange already satisfies them.",
+    "riskCall": "NOT risk:low. Four carve-outs checked: no auth, no money (the diff cannot touch an amount), no data migration (no schema change planned -- see scope OUT), no CI/deploy config. But it is a concurrency/liveness path under FOR UPDATE SKIP LOCKED in two queries, the correct SQL shape is the one genuinely open question, and a wrong shape (e.g. an EXISTS that makes FOR UPDATE lock orders/reservations too) would make sweep runners contend on the reservation table -- a production-visible regression that no unit test would show. That earns the plan gate."
+  }
 }
