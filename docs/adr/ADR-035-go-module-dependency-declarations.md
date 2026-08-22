@@ -112,19 +112,94 @@ working tree during the gate; and `git diff` cannot see the untracked `gateway/g
 Collapse is not rejected forever. Reconsider it if a module ever needs to be independently
 consumed or versioned, or if the check's maintenance cost exceeds the 61-path move.
 
+### Amendment (TKT-265, 2026-08-21): the vertical direction is now gated too
+
+The decision above closes **horizontal** drift — two modules declaring different versions of the
+same dependency. It is silent on the **vertical** direction, and that silence was a real gap:
+MVS can raise a *selected* version through a transitive requirement without any `go.mod` line
+changing, leaving every manifest internally consistent while describing a build that is not what
+happens. `go mod tidy` does not correct it, and the horizontal checker cannot see it — the
+versions agree with each other, they just all agree on the wrong number.
+
+Measured at `afa333f4`, on a tree where `make check` was green: **14 lagging declarations across
+seven modules** — `x/crypto` v0.54.0 (selected v0.55.0) in six, `x/text` v0.40.0 (selected v0.41.0)
+in seven, `x/net` v0.56.0 (selected v0.58.0) in `shared/go`.
+
+`scripts/check-go-build-list-lag.sh` now runs as a second `make check` prerequisite and fails when
+a module declares a version **below** the one the workspace selects. Absent is not lagging: a
+module that does not declare a dependency at all remains correct, for the same reason the
+horizontal check ignores single-module declarations.
+
+**It is a separate script, and it is NOT offline.** The horizontal checker's contract is
+manifest-only and offline (`go mod edit -json` never resolves the workspace); this one must
+resolve the build list, so it uses `go list -m`, which walks the module graph and **cannot run
+under `GOPROXY=off` on a cold cache** (measured: 0.18s warm; 22s and ~315MB on a cold cache with
+network; fails outright offline). Folding the two together would falsify the horizontal checker's
+stated contract, so they stay separate.
+
+That cost is smaller than it first appears, which is why the trade was taken: **`make check`
+already requires the network on a cold machine** — its first prerequisite is
+`deps: pnpm install --frozen-lockfile`, whose own comment reads *"clean clone needs nothing
+pre-installed"*, and `check-generate` then runs `go tool oapi-codegen`. What is spent here is one
+script's offline capability, not the gate's. No CI job, Make target or developer document in this
+repo sets `GOPROXY=off` or depends on an air-gapped run.
+
+Two of the three grounds on which `go work sync && git diff --exit-code` was rejected above do
+**not** apply to this check: it does not mutate the working tree, and it never consults `git`, so
+untracked sum files cannot be invisible to it. The third ground — the untracked `gateway/go.sum` —
+is now **historical**: that file was committed by this ADR's original change and is tracked today.
+
+The non-mutation is **arranged, not inherent**, and this is worth stating because the first
+implementation did not have it. Resolving the module graph makes Go write any checksums it learns
+into `go.work.sum`; on a cold or incomplete cache that modifies a tracked file, which is exactly
+the property the naive approach was rejected for. **`-mod=readonly` does not prevent it** — the
+write targets the workspace sum file, which that flag does not govern. Both facts were established
+by execution during review, after the first version of the checker mutated `go.work.sum` on a seeded
+tree. The check therefore runs every `go list -m` against a **copy** of `go.work` (via `GOWORK`),
+so any such write lands in a temporary directory that is discarded. A regression case in
+`scripts/gate-selftest.sh` asserts the tree is unchanged after a run on a tree with an incomplete
+cache.
+
+**The guarantee is scoped to unreplaced modules.** A `replace` directive lets the selected *version*
+match the declared one while the build links entirely different source — another version, or a local
+directory — so a version comparison cannot speak to what is linked. Rather than report a guarantee
+it cannot support, the check **refuses to report a verdict** (exit 2) when any `replace` is in
+effect, naming the offending module. There are none in the workspace today. If one is ever needed,
+the check must be extended to compare effective module identity, not merely relaxed.
+
+`go work sync` remains the **repair** operation, not the enforcement one. The 14 lagging
+declarations were realigned with it before the check was added; that realignment raised every
+affected version to what the workspace already selected, lowered nothing, moved no major version,
+and left the selected build list **byte-identical** (verified by diffing `go list -m all` across
+the change). It has zero runtime effect — it makes the manifests describe a build that was already
+happening. The indirect-requirement churn it also produced (`services/access` gaining seven
+requirements, `services/commerce` gaining `gorilla/mux` and dropping `kr/pretty`) was committed
+rather than left, so that a future `go work sync` does not regenerate an unexplained diff.
+
 ### What this guarantees — and against whom
 
 Stated in ADR-021's register, because "the gate enforces one version" is exactly the kind of claim
 that overreaches:
 
 - **Closed:** an *honest* maintainer — or Dependabot — can no longer leave two modules declaring
-  different versions of a shared dependency without the gate failing. Accidental drift is now
-  loud at the commit that introduces it.
+  different versions of a shared dependency without the gate failing, **nor leave a module
+  declaring a version below the one the workspace selects**. Both directions of accidental
+  declaration drift are now loud at the commit that introduces them. The vertical half is closed
+  only when the module graph can actually be resolved: an unresolvable graph, an unreadable
+  manifest or a truncated parse **refuses to report a verdict** (exit 2) rather than reporting no
+  lag.
 - **Not closed, and not closeable here:** anyone editing a `go.mod` and the checker in the same
-  commit. The check lives in the repo it checks; it constrains mistakes, not intent.
-- **Not claimed:** that this fixed a runtime version split. There was none. Realigning the
-  manifests left the workspace build list **byte-identical** — verified by comparing `go list -m`
-  before and after.
+  commit. The check lives in the repo it checks; it constrains mistakes, not intent. The same
+  applies to the workspace inputs — someone who edits `go.work` and the checker together can make
+  the repository accept its own chosen answer. **A `replace` directive is outside the guarantee
+  entirely**: it can make a declared version match the selected one while the build links different
+  source, so the check refuses to report a verdict rather than imply a guarantee it cannot support.
+- **Not claimed:** that either check fixed a runtime version split. There has never been one.
+  Both the original realignment and TKT-265's left the workspace build list **byte-identical** —
+  verified by comparing `go list -m` before and after. Nor is it claimed that every selected
+  dependency appears in every manifest: only a *declared* version below the selected one is
+  rejected, and an absent declaration stays valid. Nor that the gate is offline — the vertical
+  check needs the module cache or the network.
 
 ## Consequences
 

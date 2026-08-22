@@ -1,6 +1,6 @@
 # Testing
 
-The gate is `make check` = **dep-drift → lint → test → build → smoke**; CI runs exactly the same target
+The gate is `make check` = **dep-drift → build-list-lag → lint → test → build → smoke**; CI runs exactly the same target
 (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
 §Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
 browser evidence on UI stories).
@@ -10,7 +10,8 @@ browser evidence on UI stories).
 | Stage | Go | TS |
 |---|---|---|
 | deps | — | `pnpm install --frozen-lockfile` |
-| dep-drift | one version per dependency across the eight modules ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md)) | — |
+| dep-drift | one version per dependency across the eight modules — manifest-only and offline ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md)) | — |
+| build-list-lag | no module declares **below** the version the workspace selects ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md) §Amendment). Resolves the module graph via `go list -m`, so unlike dep-drift it **needs the module cache or network**; fails closed (exit 2) when the graph cannot be resolved | — |
 | lint | golangci-lint (pinned) per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
 | test | `go test` per module | `vitest run` (jsdom + testing-library) |
 | build | `go build` + `go vet` per module | `tsc -b && vite build` |

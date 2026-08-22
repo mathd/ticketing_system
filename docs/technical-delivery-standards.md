@@ -22,14 +22,15 @@ Run `make deps` on a clean clone, then `make check`. CI invokes the same gate.
 | Stage | Current tooling | Purpose |
 |---|---|---|
 | Generate | `oapi-codegen`, `openapi-typescript` | Detect committed contract/type drift |
-| Dependency declarations | `go mod edit -json` over every module | One version per shared Go dependency (ADR-035) |
+| Dependency declarations | `go mod edit -json` over every module | One version per shared Go dependency, horizontally (ADR-035) |
+| Build-list lag | `go list -m` against every module's declarations | No manifest declares below the workspace-selected version (ADR-035 §Amendment) |
 | Go lint | pinned `golangci-lint` | Static analysis for every Go module |
 | TypeScript lint | `oxlint` | Frontend static analysis |
 | Tests | `go test`, Vitest | Package and component behavior |
 | Build | Go toolchain, Astro, Vite | Compile every service and frontend |
 | Smoke | isolated Docker Compose project | Real gateway, PostgreSQL, NATS, web, and telemetry seams |
 
-`scripts/gate-selftest.sh` proves that seeded lint, test, build, and dependency-drift defects fail
+`scripts/gate-selftest.sh` proves that seeded lint, test, build, dependency-drift and build-list-lag defects fail
 the gate. The drift case is preceded by a positive control asserting the clean baseline passes —
 without it, a checker that always failed would satisfy its own seeded test.
 `make smoke-hermetic` exercises in-container builds on the scheduled/path-triggered CI workflow.

@@ -111,6 +111,131 @@ expect_fail "go dependency drift" check-dep-drift
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
+# 8b. Build-list LAG (TKT-265) — the vertical direction check-dep-drift is blind to.
+#     The seed MUST be a dependency declared by exactly ONE module, or it diverges
+#     horizontally and check-dep-drift — which runs earlier in `check` — fires first;
+#     the seeded case would then go red for the wrong reason and this stage would
+#     never execute. `golang.org/x/net` is declared only by shared/go, so lowering it
+#     produces lag with no horizontal divergence: a mutation only this checker catches.
+#     That isolation is asserted, not assumed — check-dep-drift must stay GREEN on the
+#     same seeded tree, which is the pairing that proves the two stages are distinct.
+expect_pass "go build-list lag (clean baseline)" check-build-list-lag
+#     The isolation assertion below would pass vacuously if the seed silently failed
+#     to apply — "check-dep-drift is green" is equally true of an unseeded tree. So
+#     confirm the seed is actually present before asserting anything about it.
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+grep -q 'golang.org/x/net v0.50.0' shared/go/go.mod || {
+  echo "FAIL: build-list-lag seed did not apply — the isolation assertion would be vacuous"
+  fail_count=$((fail_count + 1))
+}
+expect_pass "go build-list lag seed does not disturb check-dep-drift" check-dep-drift
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+expect_fail "go build-list lag" check-build-list-lag
+
+# 8c. An unreadable module must fail closed here too, for the same reason as case 8:
+#     a checker that cannot read a manifest must never report "no lag" and exit 0.
+printf 'this is not a go.mod\n' > shared/go/go.mod
+expect_fail "go build-list lag (unreadable module)" check-build-list-lag
+
+# 8d. The stage must not MUTATE the tree. Resolving the module graph makes Go write
+#     newly-learned checksums into go.work.sum, and `-mod=readonly` does not prevent
+#     it — the write targets the workspace sum file, which that flag does not govern.
+#     The first implementation of this checker did exactly that, which is the whole
+#     reason `go work sync && git diff` was rejected as the gate in the first place.
+#     The seeded requirement forces a checksum the cache does not have, so this
+#     asserts the property in the state where it actually fails.
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+git checkout -- go.work.sum 2>/dev/null || true
+echo "=== selftest: go build-list lag leaves go.work.sum unchanged ==="
+#     Both hashes would be EMPTY if go.work.sum were missing, and empty equals
+#     empty — the comparison below would then pass while observing nothing. Assert
+#     the file is there first, or this case joins the ones it exists to prevent.
+if [ ! -s go.work.sum ]; then
+  echo "FAIL: go.work.sum is missing or empty — the non-mutation check cannot observe anything"
+  fail_count=$((fail_count + 1))
+fi
+#     The run's OUTCOME is asserted too. Discarding the exit status would make any
+#     unrelated early failure — a broken workspace copy, a resolution error — look
+#     identical to a clean non-mutating run, so the case would go green over exactly
+#     the regression it exists to catch. The seeded tree must produce the LAG
+#     verdict (exit 1), which is only reachable if the graph actually resolved.
+before_sum=$(md5sum go.work.sum | cut -d' ' -f1)
+lag_status=0
+./scripts/check-go-build-list-lag.sh shared/go services/catalog services/inventory \
+  services/commerce services/payments services/access gateway smoke >/dev/null 2>&1 || lag_status=$?
+after_sum=$(md5sum go.work.sum 2>/dev/null | cut -d' ' -f1)
+#     Exit 1 EXACTLY: 0 is "no lag found" and 2 is "refused to report a verdict",
+#     and both are reachable without the graph ever resolving. Accepting any
+#     non-zero status would let a checker that refuses on every run satisfy this
+#     case while never observing the property. `make` maps the script's 1 to 2, so
+#     the script is invoked directly here.
+if [ "$lag_status" -ne 1 ]; then
+  echo "FAIL: the seeded lag was not reported (status $lag_status) — the non-mutation check never reached graph resolution"
+  fail_count=$((fail_count + 1))
+elif [ -n "$before_sum" ] && [ "$before_sum" = "$after_sum" ]; then
+  echo "ok: check-build-list-lag reported the seeded lag and did not modify go.work.sum"
+else
+  echo "FAIL: check-build-list-lag MODIFIED go.work.sum — the stage mutates the tree"
+  fail_count=$((fail_count + 1))
+fi
+git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
+
+# 8e. A `replace` directive puts the comparison outside what it can speak to: the
+#     selected version can match the declared one while the build links different
+#     source. The stage must REFUSE rather than report a false "none".
+mkdir -p "$WORK/replacement" && printf 'module golang.org/x/net\n\ngo 1.26\n' > "$WORK/replacement/go.mod"
+(cd shared/go && go mod edit -replace=golang.org/x/net="$WORK/replacement")
+expect_fail "go build-list lag (replace directive in effect)" check-build-list-lag
+
+# 8f. The WORKSPACE form of the same thing, and a relative one. This is not a
+#     duplicate of 8e: `go list -m all` reports a replacement only for a module
+#     already in the build list, so a go.work replace naming a module nothing
+#     requires was invisible to the first implementation and the stage reported
+#     "none". Detection reads the declarations for that reason.
+mkdir -p localdep && printf 'module example.com/dep\n\ngo 1.26\n' > localdep/go.mod
+go work edit -replace=example.com/dep=./localdep
+expect_fail "go build-list lag (relative replace in go.work)" check-build-list-lag
+
+# 8g. A directive that is not `use` or `replace` must SURVIVE into the workspace
+#     copy. `go work edit -json` exposes only Go, Use and Replace, so an earlier
+#     version that REGENERATED go.work from that JSON silently dropped `godebug`,
+#     and the fidelity guard — which compares module directories — passed over it.
+#
+#     This CANNOT be asserted through the stage's verdict. Dropping godebug does
+#     not stop the graph resolving, so the stage reports "none" either way and an
+#     expect_pass would be green under both implementations: a test naming the
+#     right case and incapable of failing. It was written that way first.
+#
+#     So inspect the copy itself. The script's own copy is discarded on exit, so
+#     the rewrite is reproduced here against the same go.work and the result is
+#     read — the assertion is about the file the stage builds, not about a verdict
+#     that is blind to it.
+go work edit -godebug=default=go1.25
+echo "=== selftest: go build-list lag (godebug survives the workspace copy) ==="
+gw_probe=$(mktemp -d)
+cp go.work "$gw_probe/go.work"
+go work edit -json > "$gw_probe/ws.json"
+python3 - "$gw_probe/ws.json" "$PWD" "$gw_probe/args" <<'PY'
+import json, os, sys
+doc = json.load(open(sys.argv[1])); root = sys.argv[2]; args = []
+ab = lambda p: p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
+for u in (doc.get("Use") or []):
+    args.append("-dropuse=" + u["DiskPath"])
+for u in (doc.get("Use") or []):
+    args.append("-use=" + ab(u["DiskPath"]))
+with open(sys.argv[3], "wb") as fh:
+    fh.write(b"\0".join(a.encode() for a in args))
+PY
+GOWORK="$gw_probe/go.work" xargs -0 go work edit < "$gw_probe/args"
+if grep -q '^godebug default=go1.25$' "$gw_probe/go.work"; then
+  echo "ok: godebug survived the path-only rewrite of the workspace copy"
+else
+  echo "FAIL: the workspace copy DROPPED godebug — it no longer describes the same build"
+  fail_count=$((fail_count + 1))
+fi
+rm -rf "$gw_probe"
+git checkout -- . && git clean -fdq --exclude=node_modules --exclude=bin
+
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
 #    interpolation while `make check` stayed green, because the smoke path takes
