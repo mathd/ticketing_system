@@ -4,7 +4,7 @@
   "parent": "TKT-9",
   "classification": "simple",
   "summary": "ClaimOutstandingExchangeReversals leases malformed cross-tenant rows before filtering them",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
