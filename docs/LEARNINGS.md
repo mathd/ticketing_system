@@ -436,3 +436,24 @@ exactly the runs where the contract is broken; and try the **coordinated** rever
 change reverted *and* the seam adjusted as a careless refactor would), because a test surviving every
 single mutation can still be pinning its own instrumentation.
 [full note](learnings/2026-08-19-a-test-that-pins-the-harness-not-the-contract.md)
+
+## A refusal for the WRONG reason is a green test that cannot fail (TKT-257)
+
+A fail-closed test asserts "the write was refused" — and cannot tell you **which** refusal it saw.
+On a path with input validation in front of the guard, the validator answers first, every time.
+TKT-257's three charge disagreement tests asserted 502 and got 400: the settlement plan in the
+request body was an array where the schema wants an object, so the request was rejected before the
+provider was ever called and never reached the guard the test existed to prove. They only failed
+because the assertion pinned the *specific* status; `!= 200` would have been green forever. This is
+[the fixture that cannot reach the failing state](learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md)
+with a new face — there the fixture was too *small*, here it was **invalid**, and the invalidity
+produced a refusal that looked exactly like the guard working. **Every fail-closed test needs an
+agreement twin over the same body**: the twin asks for a 200 and fails loudly on the 400. Assert the
+specific status and what the write left behind (journal rows, settlement rows, the operation's
+status), never merely that something was refused. Three sibling defects in the same ticket — an
+ambiguous SQL parameter reused across two differently-typed positions (twelve tests down, five of
+them pre-existing), a migration test creating databases a role has no `CREATEDB` for when the repo
+already had the provision-in-`smoke.sh` precedent, and a new 502 the OpenAPI contract never
+declared — were all likewise invisible to `lint`+`test`+`build`. The product change was correct on
+the first push; every CI failure was in the harness.
+[full note](learnings/2026-08-21-a-refusal-for-the-wrong-reason-is-a-green-test.md)
