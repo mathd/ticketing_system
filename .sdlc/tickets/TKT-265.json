@@ -7,5 +7,104 @@
   "assignee": null,
   "pr": null,
   "description": "Raised by TKT-264's adversarial ai-review (`gpt-5.6-luna`, finding 2, **medium**), verified by execution and carried out of that ticket as **pre-existing and wider than that ticket's diff**.\n\n## The gap\n\nADR-035's `scripts/check-go-dependency-drift.sh` compares **`require` declarations only**. That is its stated and deliberate scope -- the ADR is explicit that this is *declaration* drift, not runtime drift, and the checker reads manifests through `go mod edit -json` so it stays offline and fast.\n\nWhat nothing checks is the **other** direction: a manifest that lags the version the workspace actually **selects**. MVS can raise a selected version through a transitive requirement without any `go.mod` line changing, and when it does, every manifest in the repo still reads as internally consistent while describing a build that is not what happens.\n\n## Evidence it is real, and pre-existing\n\nRunning `go work sync` on **unmodified `origin/main`** (`4855c56e`) is **not** a no-op. It rewrites:\n\n- `services/access/go.mod` -- adds `kin-openapi`, `go-openapi/jsonpointer`, `gorilla/mux`, `oasdiff/yaml`, `oasdiff/yaml3`, `rogpeppe/go-internal`, `santhosh-tekuri/jsonschema/v6`\n- `services/commerce/go.mod` -- adds `cespare/xxhash/v2`, `go-logr/logr`, `go-logr/stdr`, `gorilla/mux`; removes `kr/pretty`\n\nNone of that is TKT-264's. It was already there and no gate noticed, which is precisely ADR-035's own framing of the original defect: *\"the repository was simultaneously fully tidy and fully drifted.\"* The ADR closed the horizontal case (two modules disagreeing with each other) and left the vertical case (manifests disagreeing with the build list) open.\n\n## What TKT-264 added to it\n\nThat ticket bumped `x/mod` and `x/tools` in `services/catalog` to close two HIGH CVEs. Resolution raised **three further dependencies in the selected build list that no `go.mod` line declares**:\n\n| dependency | before | after | declared? |\n|---|---|---|---|\n| `golang.org/x/net` | v0.56.0 | v0.58.0 | no (`shared/go` still declares v0.56.0) |\n| `golang.org/x/crypto` | v0.54.0 | v0.55.0 | no |\n| `golang.org/x/text` | v0.40.0 | v0.41.0 | no |\n\nAll three are **raises**, and `make check` is green -- the workspace is internally consistent and every checksum resolves (verified on a **cold module cache** with `-mod=readonly`: build and codegen both clean, generated output byte-identical). So this is a **legibility** defect, not a broken build: a reviewer reading `shared/go/go.mod` sees `x/net v0.56.0` and cannot see that the binary links v0.58.0.\n\n## Why it was not fixed in TKT-264\n\n`go work sync` there would have turned a 3-file security fix into a **14-file, 7-module** realignment that also sweeps in the unrelated pre-existing churn above -- scope creep on a CVE fix, and exactly the \"fixing incidental findings in the PR bloats the diff\" case. The CVE fix does not depend on it.\n\n## The open question this ticket must answer\n\nNot \"run `go work sync`\" -- that is one candidate answer. **Should the gate check the build list at all, and if so how, given ADR-035 explicitly rejected `go work sync && git diff --exit-code` as the implementation on three measured grounds** (~5 min cold, mutates the tree during the gate, and `git diff` cannot see untracked sum files)?\n\nOptions to weigh:\n1. Extend the gate with a read-only build-list comparison (`go list -m` per module vs declared) -- needs a cost measurement against TKT-42's gate budget.\n2. Adopt periodic `go work sync` as maintenance outside the gate, with an ADR amendment saying manifest lag is accepted between syncs.\n3. Accept it explicitly and document the limit in ADR-035's \"What this guarantees\" register, which already has the right shape for saying what is *not* claimed.\n4. Revisit ADR-035 Option 1 (collapse to one module), which makes both drift directions unrepresentable. The ADR says to reconsider if the check's maintenance cost exceeds the 61-path move.\n\n**Acceptance Criteria:**\n- [ ] A decision, recorded as an ADR amendment to ADR-035, on whether build-list lag is gated, maintained, or accepted.\n- [ ] If gated: the check runs inside TKT-42's budget, does not mutate the tree, and sees untracked sum files -- the three grounds ADR-035 rejected the naive version on.\n- [ ] The pre-existing `access`/`commerce` churn above is either committed or explicitly declared acceptable. It must stop being invisible either way.\n- [ ] Whatever is decided, ADR-035's guarantee register says which drift direction is closed and which is not, naming the adversary/case per ADR-021's house rule.\n\nQuality gates: `make check` green; if the gate changes, `scripts/gate-selftest.sh` gains a positive control **and** a seeded negative, per ADR-035's own precedent.",
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaped — DoR 8/8 `met`. The open question is costed; the decision itself is Planning's.\n\nThe ticket asks a genuine question rather than proposing a fix, so shaping's job here was to\n**measure the options**, not to pick one. All numbers below are from execution at `afa333f4` on a\nclean tree.\n\n**1. The defect reproduces.** A read-only probe (declared `require` vs `go list -m` selected)\nfinds **14 lagging pairs across 7 modules**, 3 distinct dependencies — exactly the ticket's table:\n\n| dependency | declared | selected | modules affected |\n|---|---|---|---|\n| `golang.org/x/crypto` | v0.54.0 | **v0.55.0** | 6 |\n| `golang.org/x/text` | v0.40.0 | **v0.41.0** | 7 |\n| `golang.org/x/net` | v0.56.0 | **v0.58.0** | `shared/go` |\n\n`make check` is green throughout. Legibility defect, as filed.\n\n**2. The cost question ADR-035 left open is now answered — and it does not go the way option 1 hopes.**\n\nADR-035 rejected `go work sync && git diff --exit-code` on three measured grounds. A read-only\n`go list -m` comparison clears two of them and **fails the third**:\n\n| ADR-035's ground | `go work sync && git diff` | read-only `go list -m` |\n|---|---|---|\n| ~5 min cold / may need network | ~5 min, may need network | **22s cold — but still needs the network** |\n| mutates the working tree | yes | **no — clears** |\n| `git diff` blind to untracked sum files | yes | **n/a — clears** |\n\nThe decisive measurement:\n\n```\nwarm:                     0.18s   ✅\ncold cache + network:     22s, 315MB, 35 zips\ncold cache + GOPROXY=off: FAILS — \"module lookup disabled by GOPROXY=off\"\n```\n\nThe shipped checker's `go mod edit -json` is **fully offline**; `go list -m all` is **not**, and\nnarrowing the query to the three paths does not help — it still walks the whole graph. So gating on\nthe build list would trade ADR-035's offline property for a check that closes a *legibility* defect.\nThat is the trade Planning has to rule on, and it is now a measured trade rather than a guess.\n\n**⚠️ Measurement trap, recorded because it cost a cycle.** Running `go list -m` under an isolated\n`GOMODCACHE` makes Go re-download the **toolchain** (`go.work` needs 1.26.6; local `go` is 1.26.0).\nTwo cold runs failed on `toolchain not available` and `requires go >= 1.26.6` — which reads exactly\nlike the module graph failing offline, and would have produced a confidently wrong conclusion in\neither direction. Seed the toolchain into the cold cache first. This is in the mémo's `gotchas`.\n\n**3. Recommendation carried into Planning — explicitly not a settled decision.**\n\nLean **Option 3-plus**: accept build-list lag, document it in ADR-035's guarantee register, and add\na **read-only reporting script that is not a gate**. Reasoning: the defect is that a reviewer\n*cannot see* what is linked; that is solved by something a reviewer can run, not by failing a build.\nMaking the gate network-dependent to fix a cosmetic problem spends a real property on a cosmetic\none.\n\nThe ticket's deliverable **is** the decision, so `plan-review` must be free to reject this and pick\n1, 2, or 4. `approach` is `met` because the option space is enumerated and costed — not because the\nanswer is pre-ordained. Recording it this way so the recommendation is visibly a hypothesis, per\nAGENTS.md's rule that a proposed remedy is a hypothesis until executed.\n\n**4. COS — filed set kept, third one sharpened.**\n\nThe pre-existing `access`/`commerce` churn (`go work sync` adding `kin-openapi`, `gorilla/mux`,\n`cespare/xxhash` etc.) must stop being invisible **either way**. Sharpened: if the decision is\n*accept*, that churn is declared acceptable **in the ADR amendment with the list named**, so a\nfuture reader sees it was seen — not merely left. Silence is what produced this ticket.\n\n**5. `risk:low` — NOT claimed.**\n\nThe deliverable is an architectural **decision** amending an accepted ADR, which is precisely the\ncase SKILL.md says must keep the plan gate (*\"if the change needs a decision or a plan, it's a\nticket\"*, and TKT-62's precedent: a wrong recommendation gets reversed at the plan gate). It may\nalso touch `Makefile`/`scripts/` — CI-adjacent surface, one of `risk:low`'s named carve-outs. The\nimplementation is small; the judgement is not, and the label gates the judgement.\n\n**Gate 1 taken by the human** (owner instruction, this session) → `Ready`.\n"
+    }
+  ],
+  "parent": "TKT-9",
+  "classification": "simple",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-264"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "ADR-035's checker gates HORIZONTAL drift (two modules declaring different versions) and is silent on VERTICAL lag (a manifest declaring less than the workspace selects). Verified by execution at afa333f4: three dependencies lag across seven modules. Legibility defect, not a broken build."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a decision recorded as an ADR-035 amendment; whatever check or maintenance that decision implies; the guarantee register updated to name both drift directions. OUT: collapsing to one module (ADR-035 Option 1) -- a 61-path move is not this ticket's to take. OUT: bumping any dependency; this ticket changes no version."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The cost question that ADR-035 left open is now MEASURED -- see the kind=readiness comment. Key result: `go list -m all` is 0.18s warm but CANNOT run offline (cold cache + GOPROXY=off fails with 'module lookup disabled'), so option 1 clears two of ADR-035's three rejection grounds and NOT the third. That is the decision's crux and it is settled by measurement, not left open."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-264 (found-in) is merged at aaed8e95."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Recommend Option 3-plus: ACCEPT build-list lag explicitly and document the limit in ADR-035's guarantee register, plus a read-only reporting script that is NOT a gate. Rationale from measurement: a gating check cannot be offline (0.18s warm, but fails closed on a cold/air-gapped cache), and ADR-035's offline property is load-bearing for the checker it already ships. Making the gate network-dependent to close a LEGIBILITY defect trades a real property for a cosmetic one. The reviewer-facing problem -- 'I cannot see what is actually linked' -- is solved by a script a reviewer runs, not by a gate that fails a build. NOTE this is a RECOMMENDATION carried into Planning, not a settled decision: the ticket's deliverable is the decision itself, so plan-review must be free to reject it. approach is `met` because the option space is enumerated and costed, not because the answer is pre-ordained."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: ADR-035 amendment + the reporting script + selftest coverage if the script becomes a make target. Fits a sprint comfortably."
+    },
+    "success": {
+      "state": "met",
+      "note": "The filed COS are already well-formed and are kept, with the third sharpened -- see the kind=readiness comment for the pre-existing-churn disposition."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked -- see `context` on the ticket"
+    }
+  },
+  "context": {
+    "area": "repo-level Go dependency hygiene: go.work, eight go.mod manifests, scripts/, docs/adr/",
+    "entryPoints": [
+      "scripts/check-go-dependency-drift.sh -- the shipped horizontal checker",
+      "Makefile: `check-dep-drift` target, a `check` prerequisite",
+      "scripts/gate-selftest.sh:103-113 -- the positive control + two seeded negatives",
+      "docs/adr/ADR-035-eight-go-modules-stay.md -- the decision being amended"
+    ],
+    "governingAdrs": [
+      {
+        "adr": "ADR-035-eight-go-modules-stay.md",
+        "constrains": "THE ticket. Its Decision section rejects `go work sync && git diff --exit-code` on three MEASURED grounds: ~5min cold cache / may need network; mutates the tree during the gate; `git diff` cannot see untracked sum files. Any proposed gate must be measured against the same three, and the amendment lands in its 'What this guarantees' register. Note it also says to reconsider Option 1 (collapse) if the check's maintenance cost exceeds the 61-path move -- so 'the check is getting expensive' is an argument the ADR itself invites."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "The house rule for guarantee registers: name the adversary/case. ADR-035 already follows it (closed / not closed / not claimed). The amendment must say which drift DIRECTION is closed against WHOM. 'The gate enforces one version' is the exact overreach shape."
+      },
+      {
+        "adr": "ADR-001-and-002 (architecture.md)",
+        "constrains": "One repo, one deploy unit, eight modules under one go.work. This is WHY declaration drift is not runtime drift -- every supported build resolves one MVS list. Do not re-argue it; ADR-035 settled it."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "scripts/gate-selftest.sh:103 expect_pass 'go dependency drift (clean baseline)'",
+        "pins": "The POSITIVE CONTROL. ADR-035 added it because this stage's seed mutates an existing file, so an always-failing checker would satisfy its own expect_fail. If this ticket adds a gated check, it needs the same pair."
+      },
+      {
+        "test": "scripts/gate-selftest.sh:112 expect_fail 'go dependency drift (unreadable non-final module)'",
+        "pins": "A checker that cannot READ a module must not report 'none' and exit 0. The shipped script's comments (lines 30-40) explain the piped-loop trap that caused it. Any new script must not reintroduce it."
+      },
+      {
+        "test": "make check-generate",
+        "pins": "AGENTS.md: commit regenerated code BEFORE running the gate -- check-generate diffs against HEAD, so an uncommitted regen reads as drift. Relevant here because any go.mod realignment must be committed before the gate runs."
+      }
+    ],
+    "gotchas": [
+      "MEASUREMENT TRAP, cost a real cycle here: running `go list -m` under an isolated GOMODCACHE makes Go re-download the TOOLCHAIN (go.work requires 1.26.6; local go is 1.26.0). The first two cold-cache runs failed on 'toolchain not available' / 'requires go >= 1.26.6', which looks exactly like the module graph failing. Seed the toolchain into the cold cache before concluding anything about module lookups.",
+      "`go work sync` MUTATES the tree. Never run it during a gate, and never leave it run in the working tree mid-ticket -- AGENTS.md forbids editing tracked files while the gate is running.",
+      "The Makefile's per-module `cd $$m && go test` does NOT leave the workspace, so a per-module command still resolves the workspace build list. This is why lag is invisible to every existing gate stage."
+    ],
+    "measurements": {
+      "at_commit": "afa333f4 (clean tree)",
+      "lag_present": "14 (module, dependency) pairs across 7 modules; 3 distinct deps: x/crypto declares v0.54.0 selects v0.55.0 (6 modules); x/text declares v0.40.0 selects v0.41.0 (7 modules); x/net declares v0.56.0 selects v0.58.0 (shared/go)",
+      "go_list_m_all_warm": "0.18s",
+      "go_list_m_all_cold_with_network": "22s, 315MB fetched, 35 zips",
+      "go_list_m_all_cold_offline": "FAILS -- 'module lookup disabled by GOPROXY=off'",
+      "go_mod_edit_json_offline": "works (this is what the shipped checker uses, ~0.2s/8 modules)",
+      "narrow_query_offline": "also FAILS -- `go list -m <3 paths>` still walks the full graph"
+    }
+  }
 }
