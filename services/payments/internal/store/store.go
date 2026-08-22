@@ -828,15 +828,66 @@ func (j *Journal) RecordCompensationProviderRef(ctx context.Context, org uuid.UU
 // CompleteCompensation records the durable provider result and the journalled fact for a
 // bound compensation. Only the first completion writes (status IS NULL guard) — a replay
 // keeps the original result.
-// confirmed carries the provider's own figure for a REFUND (TKT-257); a void moved nothing
-// on the ledger, so it has none and passes the zero value, which stores NULL.
+// confirmed carries the provider's own figure (TKT-257). A REFUND must supply it; a VOID
+// must not, because nothing moved on the ledger for a provider to confirm.
+//
+// The invariant lives HERE, not only in the handler that calls this. This method is exported
+// and is the persistence boundary for the rule, so a direct caller, a future recovery path,
+// or a refactor that reorders the handler could otherwise mark a compensation `refunded`
+// with no provider evidence at all — which is precisely the state this ticket exists to make
+// unreachable. A guard that only one caller happens to satisfy is a convention, not an
+// invariant (ai-review, second pass).
+//
+// A partial or negative confirmation is REJECTED rather than quietly stored as NULL: an
+// amount with no currency is not a money value, and silently discarding it would complete
+// the row while dropping the evidence the caller believed it was recording.
 func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID, confirmed ConfirmedRefund) error {
 	var amount, currency any
-	if confirmed.Amount > 0 && confirmed.Currency != "" {
+	switch kind {
+	case "refund":
+		if confirmed.Amount <= 0 || !isISOCurrency(confirmed.Currency) {
+			return fmt.Errorf("%w: completing a refund requires the provider-confirmed money it returned, got %+v", ErrCompensationNotCompleted, confirmed)
+		}
 		amount, currency = confirmed.Amount, confirmed.Currency
+	case "void":
+		if confirmed != (ConfirmedRefund{}) {
+			return fmt.Errorf("%w: a void moves no money and must carry no provider confirmation, got %+v", ErrCompensationNotCompleted, confirmed)
+		}
+	default:
+		return fmt.Errorf("%w: unknown compensation kind %q", ErrCompensationNotCompleted, kind)
 	}
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now(),confirmed_amount=$7,confirmed_currency=$8 WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID, amount, currency)
-	return err
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now(),confirmed_amount=$7,confirmed_currency=$8 WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID, amount, currency)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// Same reasoning as CompleteRefundLeg: a silent no-op means the caller has already
+		// appended a compensating fact to an append-only journal and believes it settled.
+		return ErrCompensationNotCompleted
+	}
+	return nil
+}
+
+// ErrCompensationNotCompleted reports a compensation completion that wrote no row — either
+// refused for missing/contradictory provider evidence, or matched nothing.
+var ErrCompensationNotCompleted = errors.New("payments: compensation completion wrote no row")
+
+// isISOCurrency matches the shape the schema enforces (`^[A-Z]{3}$`), so a currency the
+// database would reject is rejected before the UPDATE rather than by it.
+func isISOCurrency(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'A' || s[i] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func Hex(b []byte) string { return hex.EncodeToString(b) }

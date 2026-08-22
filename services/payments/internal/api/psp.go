@@ -458,8 +458,14 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 	}
 	// A refund records the provider's own returned figure; a void records none, because
 	// nothing moved on the ledger for a provider to confirm (TKT-257).
+	//
+	// Keyed on the OUTCOME rather than on `result.Confirmed != nil`. Validate already refuses
+	// a Voided result carrying money, so the two are equivalent today — but that makes this
+	// site depend on a guard three files away, and CompleteCompensation now refuses a void
+	// that arrives with a confirmation. Saying which kind carries money here keeps the two
+	// ends of the rule readable together.
 	var confirmed store.ConfirmedRefund
-	if result.Confirmed != nil {
+	if wantOutcome == psp.Refunded && result.Confirmed != nil {
 		confirmed = store.ConfirmedRefund{Amount: result.Confirmed.Amount, Currency: result.Confirmed.Currency}
 	}
 	if err := s.journal.CompleteCompensation(r.Context(), in.OrganizerID, key, kind, status, result.ProviderRef, factID, confirmed); err != nil {

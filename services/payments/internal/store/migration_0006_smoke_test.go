@@ -5,6 +5,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -53,9 +56,27 @@ func migrationDB(t *testing.T, name string) (*sql.DB, context.Context) {
 		t.Fatal(err)
 	}
 
-	db, err := sql.Open("pgx", replaceDBName(dsn, dbName))
+	target, err := withDBName(dsn, dbName)
+	if err != nil {
+		t.Fatalf("build a DSN for the throwaway database: %v", err)
+	}
+	db, err := sql.Open("pgx", target)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// ASSERT what we actually connected to, before running anything destructive. This test
+	// calls MigrateDownTo, which drops columns — so a DSN rewrite that silently returned the
+	// ORIGINAL database would roll 0006 out of the schema every other test in this package
+	// is running against, concurrently, and the migration coverage claimed here would be a
+	// claim about the shared database instead. The rewrite is derived from an environment
+	// variable whose shape this code does not control, so it is checked rather than trusted
+	// (TKT-257 ai-review, second pass).
+	var current string
+	if err := db.QueryRowContext(ctx, `SELECT current_database()`).Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != dbName {
+		t.Fatalf("refusing to run destructive migration tests against %q; the throwaway database %q was not reached", current, dbName)
 	}
 	t.Cleanup(func() {
 		_ = db.Close()
@@ -72,17 +93,82 @@ func migrationDB(t *testing.T, name string) (*sql.DB, context.Context) {
 
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// replaceDBName swaps the database out of a postgres DSN, keeping credentials and options.
-func replaceDBName(dsn, name string) string {
-	q := ""
-	if i := strings.Index(dsn, "?"); i >= 0 {
-		dsn, q = dsn[:i], dsn[i:]
+// withDBName points a PostgreSQL DSN at a different database, keeping everything else.
+//
+// Both DSN forms libpq accepts are handled, because getting this wrong is silent: a rewrite
+// that fails to change the database returns a perfectly valid connection to the WRONG one.
+//
+//   - URL form   — postgres://user:pw@host:port/dbname?opts
+//   - keyword form — host=... dbname=... user=...  (also accepted by pgx)
+//
+// An unrecognized shape is an ERROR rather than a pass-through. The caller is about to run
+// destructive migrations, so "I could not tell which database this is" must not resolve to
+// "use whatever it was" — and the caller additionally verifies current_database().
+func withDBName(dsn, name string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", err
+		}
+		u.Path = "/" + name
+		return u.String(), nil
 	}
-	i := strings.LastIndex(dsn, "/")
-	if i < 0 {
-		return dsn + q
+	if !strings.Contains(dsn, "=") {
+		return "", fmt.Errorf("unrecognized PostgreSQL DSN form: not a URL and not keyword=value")
 	}
-	return dsn[:i+1] + name + q
+	// Keyword form: replace dbname (and the `database` alias), preserving every other pair.
+	// Values may be single-quoted, so a naive split on '=' is not enough; fields are
+	// whitespace-separated outside quotes.
+	fields, replaced := strings.Fields(dsn), false
+	out := make([]string, 0, len(fields)+1)
+	for _, f := range fields {
+		k, _, ok := strings.Cut(f, "=")
+		if ok && (k == "dbname" || k == "database") {
+			if replaced {
+				return "", fmt.Errorf("ambiguous DSN: more than one dbname")
+			}
+			out, replaced = append(out, "dbname="+name), true
+			continue
+		}
+		out = append(out, f)
+	}
+	if !replaced {
+		out = append(out, "dbname="+name)
+	}
+	return strings.Join(out, " "), nil
+}
+
+// The rewrite is the thing that decides which database gets dropped, so it is tested on both
+// DSN forms rather than only the one this environment happens to use today. Before this,
+// a keyword DSN returned the input UNCHANGED — the shared test database, silently.
+func TestWithDBNameRewritesEveryDSNForm(t *testing.T) {
+	cases := []struct {
+		name, dsn, want string
+	}{
+		{"url", "postgres://payments:pw@localhost:15432/payments_store_smoke", "postgres://payments:pw@localhost:15432/scratch"},
+		{"url with options", "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable", "postgres://payments:pw@localhost:15432/scratch?sslmode=disable"},
+		{"postgresql scheme", "postgresql://u@h:5432/old", "postgresql://u@h:5432/scratch"},
+		{"keyword", "host=localhost port=5432 dbname=payments_store_smoke user=payments", "host=localhost port=5432 dbname=scratch user=payments"},
+		{"keyword alias", "host=localhost database=payments_store_smoke user=payments", "host=localhost dbname=scratch user=payments"},
+		{"keyword without a database", "host=localhost user=payments", "host=localhost user=payments dbname=scratch"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := withDBName(c.dsn, "scratch")
+			if err != nil {
+				t.Fatalf("withDBName(%q): %v", c.dsn, err)
+			}
+			if got != c.want {
+				t.Fatalf("withDBName(%q)\n got=%q\nwant=%q", c.dsn, got, c.want)
+			}
+			if strings.Contains(got, "payments_store_smoke") {
+				t.Fatalf("the shared database survived the rewrite: %q", got)
+			}
+		})
+	}
+	if _, err := withDBName("not-a-dsn", "scratch"); err == nil {
+		t.Fatal("an unrecognized DSN form must be an error, never a pass-through to the original database")
+	}
 }
 
 // seedPre0006 writes a captured operation, a COMPLETED refund leg and a COMPLETED whole
@@ -230,5 +316,93 @@ func TestMigration0006DownRefusesToDestroyConfirmedEvidence(t *testing.T) {
 	}
 	if !confirmed.Valid || confirmed.Int64 != 5000 {
 		t.Fatalf("a refused rollback must leave the evidence intact, got %v", confirmed)
+	}
+}
+
+// The refund-confirmation invariant is enforced in CompleteCompensation itself, not only in
+// the HTTP handler that calls it. This method is exported and is the persistence boundary
+// for the rule, so a direct caller or a future recovery path could otherwise mark a
+// compensation `refunded` with no provider evidence — the exact state this ticket makes
+// unreachable. A guard only one caller happens to satisfy is a convention, not an invariant.
+//
+// Each case is refused for its OWN reason and each is asserted separately: a single
+// "everything empty" case would be satisfied by a guard that checked only the amount.
+func TestCompleteCompensationEnforcesTheConfirmationRule(t *testing.T) {
+	db, ctx := migrationDB(t, "compensation")
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	org := uuid.New()
+	const key = "comp-invariant"
+	bind := func(t *testing.T, kind, sourceKey string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,amount,currency)
+			VALUES($1,$2,$3,'psp-comp-v1:'||$2,2500,'EUR')`, org, sourceKey, kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j := New(db, fullRing(t))
+
+	bind(t, "refund", key)
+	for _, c := range []struct {
+		name      string
+		confirmed ConfirmedRefund
+	}{
+		{"no confirmation at all", ConfirmedRefund{}},
+		{"amount without currency", ConfirmedRefund{Amount: 2500}},
+		{"currency without amount", ConfirmedRefund{Currency: "EUR"}},
+		{"negative amount", ConfirmedRefund{Amount: -2500, Currency: "EUR"}},
+		{"currency the schema would reject", ConfirmedRefund{Amount: 2500, Currency: "eur"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := j.CompleteCompensation(ctx, org, key, "refund", "refunded", "re_x", uuid.New(), c.confirmed); !errors.Is(err, ErrCompensationNotCompleted) {
+				t.Fatalf("a refund must not complete on %+v, got %v", c.confirmed, err)
+			}
+		})
+	}
+	// Still BOUND — refused, not half-completed.
+	comp, found, err := j.LookupCompensation(ctx, org, key, "refund")
+	if err != nil || !found {
+		t.Fatalf("lookup: %v found=%t", err, found)
+	}
+	if comp.Completed || comp.ConfirmedAmount != nil {
+		t.Fatalf("a refused completion must leave the compensation bound and unconfirmed: %+v", comp)
+	}
+	// And it completes once the evidence is supplied — proving the refusals were about the
+	// confirmation and not some other precondition this fixture failed.
+	if err := j.CompleteCompensation(ctx, org, key, "refund", "refunded", "re_ok", uuid.New(), ConfirmedRefund{Amount: 2500, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+	comp, _, err = j.LookupCompensation(ctx, org, key, "refund")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comp.ConfirmedAmount == nil || *comp.ConfirmedAmount != 2500 || comp.ConfirmedCurrency != "EUR" {
+		t.Fatalf("the provider's figure must be persisted: %+v", comp)
+	}
+
+	// The mirror rule: a VOID moved nothing on the ledger, so a confirmation arriving on that
+	// path is a contradiction and must be refused rather than stored.
+	const voidKey = "comp-invariant-void"
+	bind(t, "void", voidKey)
+	if err := j.CompleteCompensation(ctx, org, voidKey, "void", "voided", "pi_x", uuid.New(), ConfirmedRefund{Amount: 2500, Currency: "EUR"}); !errors.Is(err, ErrCompensationNotCompleted) {
+		t.Fatalf("a void carrying provider money must be refused, got %v", err)
+	}
+	if err := j.CompleteCompensation(ctx, org, voidKey, "void", "voided", "pi_x", uuid.New(), ConfirmedRefund{}); err != nil {
+		t.Fatalf("a void with no confirmation must complete: %v", err)
+	}
+	voided, _, err := j.LookupCompensation(ctx, org, voidKey, "void")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !voided.Completed || voided.ConfirmedAmount != nil {
+		t.Fatalf("a completed void must carry no confirmation: %+v", voided)
+	}
+
+	// A completion that matches no bound row reports it, rather than returning nil while the
+	// caller has already appended a compensating fact to an append-only journal.
+	if err := j.CompleteCompensation(ctx, org, "no-such-key", "refund", "refunded", "re_y", uuid.New(), ConfirmedRefund{Amount: 100, Currency: "EUR"}); !errors.Is(err, ErrCompensationNotCompleted) {
+		t.Fatalf("a completion matching no row must say so, got %v", err)
 	}
 }
