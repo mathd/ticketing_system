@@ -4,9 +4,11 @@
   "parent": "TKT-9",
   "classification": "simple",
   "summary": "ClaimOutstandingExchangeReversals leases malformed cross-tenant rows before filtering them",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [
     {
@@ -25,6 +27,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping verdict: READY for Gate 1 — 7 met, 1 deferred, 0 open, 0 blockers\n\nRan the shaping pass against the code at `308d2efe`. Verdict below; the `readiness` object and the\ncontext-mémo are on the ticket.\n\n**The defect is real and the ticket's proposed remedy survives the read.** Migration 0010 gives\n`order_exchanges` a `source_order_id uuid NOT NULL REFERENCES orders(id)` and nothing that ties its\n`organizer_id` to the source reservation's, so the malformed pair is constructible and the three-stage\nquery behaves exactly as filed. `approach` inherits the ticket's `EXISTS`-in-`claimable` shape as\nverified, not assumed.\n\n**The prior comment's suspicion is confirmed: this is two queries, not one.** `ClaimOutstandingReversals`\n(`refund_reversal.go:74`) has the identical `claimable` → `claimed` → scoped-final-join structure, with\nthe organizer predicate only on the last stage. Scope now covers both. One consequence the scope note\nrecords: ADR-062 contains **zero** occurrences of \"organizer\" — the refund side's fix is recorded\nnowhere unless this ticket adds the bullet ADR-063 already has.\n\n**The sixth conjunct is a comment liability, not just a test one.** The claim is documented as FIVE\nconjuncts in two places — the function doc (`exchange_reversal.go:56`) and the smoke file's header\n(\"the five claim conjuncts\"). Both become false the moment this merges. Recorded in `approach` beside\nthe per-predicate test rule, because a stale count in a comment that *exists to tell the next reader\nhow many tests to expect* is how the next ticket under-tests.\n\n**One item deferred, deliberately, and it is the only real unknown:** whether `FOR UPDATE SKIP LOCKED`\ntolerates a correlated `EXISTS` in the same `SELECT` without extending the lock to `orders` and\n`reservations`. Postgres documents `FOR UPDATE` as locking the tables named in the `FROM` list, and a\n`WHERE`-clause subquery is not in it — but that is **an inference from documented semantics, not a fact\nverified against this database**, and Planning must execute it rather than repeat it. The `note` carries\na fallback shape (`EXISTS` on the `claimed` UPDATE instead) and says plainly that the fallback is\nstrictly weaker — it stops the lease but not the slot consumption, which is half the AC.\n\n**Risk verdict: `risk:low` NOT claimed.** No auth, no money, no migration, no CI config — but two\nconcurrency-path queries under `FOR UPDATE SKIP LOCKED` where the open question is the SQL shape\nitself, and the wrong shape makes sweep replicas contend on `reservations` in a way no unit test\nwould surface. Reasoning in full on the mémo's `riskCall`.\n\n⛔ **Gate 1 is the human's in both modes.** The autonomous run stops here: this ticket was in `Backlog`\nwith `readiness: null`, so entering at `Ready` would have skipped exactly the shaping that found the\nsecond query and the stale conjunct count. Awaiting prioritization to `Ready`."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — running gateless per `config.gates: autonomous`\n\nGate 1 was taken by the owner explicitly (\"do it, move it and run it\") after the shaping verdict.\nGates 2–4 are agent judgement per § Autonomous mode; every other rule holds unchanged — cross-model\nreview on both the plan and the code, TDD with tests observed red first, the local gate green before\nevery push, and no AI attribution anywhere.\n\n**Blockers: zero.** The only link is `found-in → TKT-260`, which is merged at `308d2efe`; it is\nprovenance, not a dependency.\n\n**Branch:** `TKT-267-scope-reversal-claims-before-leasing`, off `origin/main` at `308d2efe`.\n\n**Selection reason:** taken by name. It is the highest-value item its parent epic (TKT-9) currently\nhas in flight — a `[high]` liveness defect filed by TKT-260's own ai-review, with the fix location\nalready identified and an ADR bullet that names this ticket as its owner and is false until it lands.\n\n**Risk verdict: `risk:low` NOT claimed — stated explicitly rather than left silent.** Checked all\nfour carve-outs: no auth surface, no money path (the diff cannot reach an amount), no data migration\n(no schema change — see the mémo's scope OUT), no CI/deploy config. Two files of production SQL, two\ntest files, one ADR. It nonetheless keeps the plan gate, because the one genuinely open item is the\n**SQL shape itself** on a `FOR UPDATE SKIP LOCKED` concurrency path in two queries, and the wrong\nshape — an `EXISTS` that extends the row lock to `orders`/`reservations` — makes sweep replicas\ncontend on the reservation table. That is a production-visible regression no unit test would show,\nwhich is exactly the class `risk:low` must not wave through."
     }
   ],
   "readiness": {
