@@ -120,7 +120,14 @@ expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 #     That isolation is asserted, not assumed — check-dep-drift must stay GREEN on the
 #     same seeded tree, which is the pairing that proves the two stages are distinct.
 expect_pass "go build-list lag (clean baseline)" check-build-list-lag
+#     The isolation assertion below would pass vacuously if the seed silently failed
+#     to apply — "check-dep-drift is green" is equally true of an unseeded tree. So
+#     confirm the seed is actually present before asserting anything about it.
 (cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+grep -q 'golang.org/x/net v0.50.0' shared/go/go.mod || {
+  echo "FAIL: build-list-lag seed did not apply — the isolation assertion would be vacuous"
+  fail_count=$((fail_count + 1))
+}
 expect_pass "go build-list lag seed does not disturb check-dep-drift" check-dep-drift
 (cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
 expect_fail "go build-list lag" check-build-list-lag

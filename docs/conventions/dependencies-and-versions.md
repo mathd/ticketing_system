@@ -31,6 +31,16 @@ declares **one** version. `make check` enforces it (`check-dep-drift`); a depend
 imports is exempt. Realign with `go work sync` and commit the resulting `go.mod`/`go.sum` changes —
 `go mod tidy` will not do it, having been measured as a no-op on a drifted tree.
 
+**A manifest must also not declare *below* what the workspace selects** (TKT-265, ADR-035
+§Amendment). MVS can raise a selected version through a transitive requirement without any `go.mod`
+line changing, which leaves every manifest internally consistent while describing a build that is
+not what happens — `check-dep-drift` cannot see it, because the versions all agree with each other
+and simply agree on the wrong number. `make check` enforces this second direction separately
+(`check-build-list-lag`). The repair is the same `go work sync`; what differs is that this check
+resolves the module graph, so it **needs the module cache or the network** and fails closed rather
+than reporting "no lag" when it cannot. An *absent* declaration is not lag — a module that does not
+import a dependency should not pin it.
+
 Dependabot opens one PR per module directory, so a bump to a shared dependency lands in one module
 at a time and **will fail the gate** until the siblings are raised. That is the check working: add
 a `go work sync` commit to the PR.
