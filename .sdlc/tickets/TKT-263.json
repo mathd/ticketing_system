@@ -14,6 +14,96 @@
     }
   ],
   "summary": "Decide whether parked recovery orders should alarm (TKT-146 deferred)",
-  "comments": [],
-  "description": "Deferred out of TKT-146 at shaping, with a stated reason rather than silently.\n\nTKT-146 asked for three things. Two shipped — `commerce list-parked` and `commerce unpark-order`, with an audit trail. The third was *\"a decision on whether parked orders should alarm\"*, and it was scoped out because:\n\n1. commerce has **no metrics or alerting surface** to hang it on — it would have meant designing one inside a ticket whose subject was an operator command; and\n2. the operator read is the **prerequisite** for any alert. There was nothing to alert *about* in a form anyone could act on until `list-parked` existed.\n\nBoth reasons are now half-spent: (2) is closed, (1) is not.\n\n**The actual question.** A parked order is, by construction, one the system has given up on and a human has not yet looked at. Nothing currently tells anyone it exists — an operator has to *think to run* `list-parked`. That is a discovery gap, not a mechanism gap.\n\nWorth deciding together:\n- Does commerce get a metric (a gauge of parked orders, split by status), an event, or a log line — and where does it go? This is the (1) that is still open.\n- Should `reconciliation_required` (which may hold **captured** money — ADR-016 §Consequences) alarm differently from attempt-exhausted parking? The two have very different urgency.\n- What is the threshold? One parked order is normal operational residue; a growing count is an incident. An alert on `> 0` will be muted within a week.\n- Age matters more than count: an order parked six hours ago and untouched is the signal, not the fact of parking.\n\n`risk:low` — the likely deliverable is a decision plus a small emitter, and the read surface it depends on already exists and is tested."
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping verdict -- PASS\n\n**The ticket's premise changed under it, and that is this pass's main finding.**\n\nThe description scopes the work around reason (1) still being open -- *\"commerce has no metrics or\nalerting surface to hang it on\"*. At HEAD that is false. Commerce registers observable gauges twice:\n\n- `services/commerce/internal/reversal/metrics.go` -- `commerce.refund.reversal.{outstanding,parked,oldest_age_seconds}`, wired at `services/commerce/cmd/commerce/main.go:405`\n- `services/commerce/internal/exchangesweep/metrics.go` -- the same shape plus `awaiting_switch`, wired at `main.go:424`\n\nagainst a `MeterProvider` live since `shared/go/obs/setup.go:50`. Both landed after TKT-146 was\nshaped. So the ticket's open design question -- *metric, event, or log line, and where does it go* --\nhas already been answered twice inside commerce, for the same reason this ticket exists:\n\n> *\"a mechanism that stops silently is worse than one that spins loudly, because the spinning at\n> least shows up somewhere\"* -- `reversal/metrics.go`\n\nRecovery parking is the one runner of the three with no such gauge. This ticket is not a green-field\ndesign; it is the third application of a settled pattern.\n\n### Decisions this pass takes (the ticket's four bullets)\n\n| Question | Answer | Why |\n|---|---|---|\n| Metric, event, or log line? | **Metric** (OTLP observable gauges) | Two in-service precedents. An event needs an ADR-017 schema for a fact with no consumer; a log line cannot answer \"how many, how old\". |\n| Does `reconciliation_required` alarm differently from attempt-exhausted parking? | **Yes -- as a separate series, not a separate alert** | It may hold **captured** money (ADR-016 §Consequences); attempt-exhausted parking need not. ADR-063 set the precedent for splitting a categorically different sub-population into its own series (`awaiting_switch`). |\n| What is the threshold? | **Not decided here, on purpose** | The ticket's own line -- *\"an alert on `> 0` will be muted within a week\"* -- is the argument against encoding one. This repo hosts no alert rules, no Prometheus, no Alertmanager. Shipping a gauge set makes any later threshold expressible; shipping a threshold guesses at data nobody has yet. |\n| Age vs count? | **Both, count split by urgency + oldest age** | Straight from `reversal/metrics.go`: *\"a count cannot distinguish a small, old backlog from a large, fresh one, and those are different incidents\"*. The ticket reached the same conclusion independently. |\n\n### COS\n\n1. `commerce.recovery.parked` reports the parked-order count, and it is **split so that\n   `reconciliation_required` is countable apart** from attempt-exhausted parking. Proven at the\n   store tier against real PostgreSQL with both populations **and an unparked control** seeded --\n   delete the control and a query that lost its `WHERE recovery_parked_at IS NOT NULL` stays green\n   (`recovery_unpark_smoke_test.go:63` makes exactly this point).\n2. `commerce.recovery.parked.oldest_age_seconds` reports the age of the oldest park, so a small-old\n   backlog is distinguishable from a large-fresh one.\n3. Registration is **observability, not a gate**: a failing gauge registration logs and the service\n   keeps taking traffic, exactly as `main.go:405` and `:424` do. Asserted, not assumed.\n4. An ADR records the decision -- metric over event/log, urgency split, and **the deliberate absence\n   of a threshold** -- so a future reader does not re-litigate it or read the gap as an oversight.\n5. `docs/development.md` §Parked recovery orders gains the operator read: what the gauges mean and\n   what they do **not** do (they do not unpark anything, and no alert fires).\n6. No change to parking, unparking, or the runner's decision table; no migration.\n\n### `risk:low` -- upheld, with the carve-outs stated\n\nTouches no auth. **Adjacent to a money path but does not touch one**: every write stays where it is;\nthis ticket adds one read-only aggregate query and gauge registration. No migration (`recovery_parked_at`\nand `status` both exist). Expected ~5 files (store read + test, dbstore, metrics.go, main.go, ADR, docs).\nIf implementation finds itself editing the runner's decision table or adding a migration, the label\ndrops and the plan gate returns.\n\n### Readiness\n\n| Item | State |\n|---|---|\n| objective / scope / uncertainties / dependencies | met |\n| approach | met -- **stale premise corrected against the code, not inherited** |\n| first_slice / success / context_memo | met |\n\n**Blockers:** none. `relates` TKT-146 is Done. **Verdict: PASS.**"
+    }
+  ],
+  "description": "Deferred out of TKT-146 at shaping, with a stated reason rather than silently.\n\nTKT-146 asked for three things. Two shipped — `commerce list-parked` and `commerce unpark-order`, with an audit trail. The third was *\"a decision on whether parked orders should alarm\"*, and it was scoped out because:\n\n1. commerce has **no metrics or alerting surface** to hang it on — it would have meant designing one inside a ticket whose subject was an operator command; and\n2. the operator read is the **prerequisite** for any alert. There was nothing to alert *about* in a form anyone could act on until `list-parked` existed.\n\nBoth reasons are now half-spent: (2) is closed, (1) is not.\n\n**The actual question.** A parked order is, by construction, one the system has given up on and a human has not yet looked at. Nothing currently tells anyone it exists — an operator has to *think to run* `list-parked`. That is a discovery gap, not a mechanism gap.\n\nWorth deciding together:\n- Does commerce get a metric (a gauge of parked orders, split by status), an event, or a log line — and where does it go? This is the (1) that is still open.\n- Should `reconciliation_required` (which may hold **captured** money — ADR-016 §Consequences) alarm differently from attempt-exhausted parking? The two have very different urgency.\n- What is the threshold? One parked order is normal operational residue; a growing count is an incident. An alert on `> 0` will be muted within a week.\n- Age matters more than count: an order parked six hours ago and untouched is the signal, not the fact of parking.\n\n`risk:low` — the likely deliverable is a decision plus a small emitter, and the read surface it depends on already exists and is tested.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Parked recovery orders are invisible until an operator thinks to run `list-parked`. Decide the discovery mechanism and ship it. The population can hold captured money (ADR-016 Consequences), so 'nobody noticed for a day' is a money-at-rest problem, not just an ops annoyance."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a store-level backlog read over the parked population, an ObservableGauge set on the recovery runner registered in main.go, an ADR recording the decision (metric-not-alert, split by urgency, age over count), and docs/development.md operator wording. OUT: any alert rule, threshold, dashboard, or Alertmanager/Prometheus config -- the repo has no alerting surface and this ticket does not invent one; OUT: an event or log-line emitter (rejected, see approach); OUT: any change to parking, unparking, or the runner's decision table."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The two the ticket named are resolved by precedent, not by guessing. (a) 'Where does it go' -- OTLP metrics already export from shared/go/obs/setup.go:50 via a live MeterProvider; nothing new to design. (b) 'What is the threshold / an alert on >0 will be muted' -- correct, and it is exactly why the deliverable is a METRIC, not an alert: thresholds are a deployment-time decision on data this repo does not host. Residual: no scrape/collector config lives in this repo, so the gauge is verifiable by unit/smoke test and by registration, not by an end-to-end scrape."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. `links` carries only a `relates` edge to TKT-146, which is Done -- `list-parked`/`unpark-order` and `ListParkedOrders` (services/commerce/internal/store/recovery.go:421) are on main today."
+    },
+    "approach": {
+      "state": "met",
+      "note": "THE TICKET'S STATED BLOCKER IS STALE AND WAS VERIFIED, NOT INHERITED. The description asserts reason (1) -- 'commerce has no metrics or alerting surface to hang it on' -- is 'still open'. It is not, at HEAD. Commerce registers observable gauges twice already: services/commerce/internal/reversal/metrics.go (commerce.refund.reversal.outstanding/parked/oldest_age_seconds) and services/commerce/internal/exchangesweep/metrics.go, both wired at services/commerce/cmd/commerce/main.go:405 and :424 against a MeterProvider live since obs.Setup. So the ticket's open design question is already answered by two in-service precedents that chose the same instrument for the same reason. Follow them exactly: store.ReadRecoveryParkedBacklog mirroring store.ReadReversalBacklog (services/commerce/internal/store/refund_reversal.go:296), a Backlog method on recovery.DBStore mirroring reversal/dbstore.go:35, recovery.(*Runner).ObserveMetrics mirroring reversal/metrics.go, registered in main.go with the same log-and-continue (observability, not a gate). ON THE TICKET'S THREE OPEN QUESTIONS: (i) metric vs event vs log -- metric, per precedent; an event would need a new schema under ADR-017 for a fact with no consumer, and a log line cannot be aggregated into 'how many, how old'. (ii) does reconciliation_required alarm differently -- yes, and the mechanism is a SEPARATE SERIES, not a separate alert: reconciliation_required may hold captured money and attempt-exhausted parking may not, so they must be countable apart. (iii) threshold -- not decided here, deliberately; the gauge set (count, count-by-urgency, oldest age) is what makes any later threshold expressible, and the ticket's own observation that '>0 will be muted within a week' is the argument against encoding one now."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, one PR: backlog read + gauges + registration + ADR + operator docs. Under the 5-file bar the risk:low carve-out watches."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS in the readiness comment."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; every ADR resolved to a real file at HEAD and every test to a real symbol."
+    }
+  },
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-016",
+        "why": "Owns the parked population itself: Decision 1 makes parking terminal (nothing revisits a parked order, deliberately), and Consequences states reconciliation_required rows 'hold captured money with no automated resolution' -- that sentence is why the two populations must be separately countable. Consequences also already names 'observability' as something recovery adds. Do not change parking behaviour to make it observable."
+      },
+      {
+        "id": "ADR-062",
+        "why": "The refund-reversal reconciler whose metrics.go is the shape being copied; its rule 'a mechanism that stops silently is worse than one that spins loudly' is the argument this ticket is executing for a third runner."
+      },
+      {
+        "id": "ADR-063",
+        "why": "The exchange sweep, the second application of the same shape -- and the precedent for adding a THIRD series (awaiting_switch) when one sub-population is categorically different from the rest. That is exactly the reconciliation_required-vs-attempt-exhausted split here."
+      },
+      {
+        "id": "ADR-017",
+        "why": "Constrains the rejected option: emitting a domain event for parking would be a payload/schema decision under this ADR, with no consumer. Cited to record why the metric was chosen over the event, not because an event is being added."
+      },
+      {
+        "id": "ADR-032",
+        "why": "Owns the provider-evidence reasoning behind which parked rows hold captured money; the gauge descriptions must not restate or contradict it."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/store/refund_reversal_smoke_test.go:TestBacklogCountsOutstandingAndParkedSeparately",
+        "rule": "The tier at which a backlog read is proven: against real PostgreSQL, with the parked and unparked populations both seeded, so a query that drops the FILTER goes red. A new backlog read must be tested here, not against a Go fake -- AGENTS.md's 'a test must live at the tier its mechanism does'."
+      },
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go:TestTheBacklogSeparatesAwaitingSwitchFromOutstanding",
+        "rule": "The precedent for proving a sub-population is counted apart: seed rows of BOTH kinds and assert the split, or the separation assertion cannot fail."
+      },
+      {
+        "test": "services/commerce/internal/store/recovery_unpark_smoke_test.go:TestListParkedOrdersReturnsTheParkedPopulation",
+        "rule": "Seeds an UNPARKED control row on purpose -- its comment says deleting the control would let a ListParkedOrders that dropped its WHERE stay green. The new backlog test must carry the same control."
+      },
+      {
+        "test": "services/commerce/internal/store/migration_smoke_test.go",
+        "rule": "Walks migration invariants for the orders/unpark tables; a new migration would land here. This ticket should need NO migration -- recovery_parked_at and status already exist -- and needing one is a signal the approach drifted."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Operator surface and the unpark warning this ticket's docs must stay consistent with",
+        "link": "docs/development.md#parked-recovery-orders-tkt-146"
+      }
+    ],
+    "capturedAt": "2026-08-21"
+  }
 }
