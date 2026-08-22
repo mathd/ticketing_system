@@ -168,6 +168,22 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE DATABASE payments_legacy_smoke OWNER payments" \
   -c "DROP DATABASE IF EXISTS payments_legacy_malformed_smoke" \
   -c "CREATE DATABASE payments_legacy_malformed_smoke OWNER payments" >/dev/null
+# Two MORE, for the same reason and by the same rule (TKT-257): the migration-0006 tests
+# stand the schema up at 0005, seed rows in the pre-0006 shape, then apply 0006 and check
+# what it did to them — and the down test rolls the schema BACK. Neither can share a
+# database with suites that expect a fully migrated one. They are provisioned here, as
+# superuser, rather than created by the tests: the `payments` role has no CREATEDB, which
+# is how the first attempt failed in CI while passing every local check.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS payments_migration_smoke" \
+  -c "CREATE DATABASE payments_migration_smoke OWNER payments" \
+  -c "DROP DATABASE IF EXISTS payments_migration_down_smoke" \
+  -c "CREATE DATABASE payments_migration_down_smoke OWNER payments" \
+  -c "DROP DATABASE IF EXISTS payments_compensation_smoke" \
+  -c "CREATE DATABASE payments_compensation_smoke OWNER payments" >/dev/null
+PAYMENTS_MIGRATION_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_migration_smoke" \
+PAYMENTS_MIGRATION_DOWN_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_migration_down_smoke" \
+PAYMENTS_COMPENSATION_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_compensation_smoke" \
 PAYMENTS_LEGACY_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_legacy_smoke" \
 PAYMENTS_LEGACY_MALFORMED_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_legacy_malformed_smoke" \
 PAYMENTS_TEST_DATABASE_URL="postgres://payments:${PAYMENTS_DB_PASSWORD}@localhost:${POSTGRES_PORT}/payments_store_smoke" \

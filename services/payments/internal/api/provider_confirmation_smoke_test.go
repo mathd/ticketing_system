@@ -119,11 +119,15 @@ func assertChargeWroteNothing(t *testing.T, db *sql.DB, ctx context.Context, org
 	}
 }
 
+// A charge that is valid in every respect EXCEPT what the provider answers, so the only
+// thing these tests can be refused for is the confirmation. It reuses feeFreePlan rather
+// than hand-writing a settlement object: the plan is validated against the OpenAPI schema
+// before the provider is called, so a hand-written one that drifts turns every assertion
+// below into a 400 that never reaches the guard under test.
 func chargeBody(org uuid.UUID) string {
 	return `{"organizer_id":"` + org.String() + `","order_id":"` + uuid.New().String() +
 		`","buyer_id":"` + uuid.New().String() +
-		`","amount":5600,"currency":"EUR","payment_token":"fake-ok",` +
-		`"settlement":[{"payee_id":"` + uuid.New().String() + `","role":"organizer","amount":5600,"currency":"EUR"}]}`
+		`","amount":5600,"currency":"EUR","payment_token":"fake-ok",` + feeFreePlan(5600) + `}`
 }
 
 // PREDICATE 1 of the charge guard: the provider captured a DIFFERENT AMOUNT. Currency

@@ -6,14 +6,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // TKT-257, migration 0006. These tests stand a database up at the PRE-0006 schema, write
@@ -29,189 +28,38 @@ import (
 // Each test gets its OWN database: DownTo rolls the schema back, so sharing the suite's
 // database would tear the schema out from under every other test in the package.
 
-// migrationDB creates a throwaway database and returns a connection to it. Named from the
-// test so a failure leaves an inspectable artifact under a predictable name.
-func migrationDB(t *testing.T, name string) (*sql.DB, context.Context) {
+// migrationDB opens one of the DEDICATED databases scripts/smoke.sh provisions for these
+// tests, and resets it so the test can migrate from any version.
+//
+// Provisioned by the smoke script as superuser rather than created here, following the
+// precedent settlement_legacy_smoke_test.go set for exactly this need (a database migrated
+// only part-way). The first version of this file created its own databases from the test and
+// passed every local check; in CI the `payments` role has no CREATEDB and all three tests
+// failed with "permission denied to create database". Creating them in the script also makes
+// the isolation visible to whoever reads the suite, instead of hiding it in a helper.
+//
+// Dedicated, because these tests roll the schema BACK. Sharing the store suite's database
+// would tear 0006 out from under every other test in this package while they run.
+func migrationDB(t *testing.T, env string) (*sql.DB, context.Context) {
 	t.Helper()
-	dsn := testDSN(t)
-	admin, err := sql.Open("pgx", dsn)
+	dsn := os.Getenv(env)
+	if dsn == "" {
+		t.Skipf("%s is not set", env)
+	}
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = admin.Close() }()
-
+	t.Cleanup(func() { _ = db.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	dbName := "payments_migration_" + name
-	// Terminate first: a leftover connection from a crashed run blocks DROP.
-	if _, err := admin.ExecContext(ctx,
-		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()`, dbName); err != nil {
-		t.Fatal(err)
+	// Start from nothing regardless of what a previous run left behind — including a
+	// half-rolled-back schema from a failed down test.
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		t.Fatalf("reset %s: %v", env, err)
 	}
-	if _, err := admin.ExecContext(ctx, `DROP DATABASE IF EXISTS `+quoteIdent(dbName)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+quoteIdent(dbName)); err != nil {
-		t.Fatal(err)
-	}
-
-	db, _, err := openWithDBName(dsn, dbName)
-	if err != nil {
-		t.Fatalf("open the throwaway database: %v", err)
-	}
-	// ASSERT what we actually connected to, before running anything destructive. This test
-	// calls MigrateDownTo, which drops columns — so a DSN rewrite that silently returned the
-	// ORIGINAL database would roll 0006 out of the schema every other test in this package
-	// is running against, concurrently, and the migration coverage claimed here would be a
-	// claim about the shared database instead. The rewrite is derived from an environment
-	// variable whose shape this code does not control, so it is checked rather than trusted
-	// (TKT-257 ai-review, second pass).
-	var current string
-	if err := db.QueryRowContext(ctx, `SELECT current_database()`).Scan(&current); err != nil {
-		t.Fatal(err)
-	}
-	if current != dbName {
-		t.Fatalf("refusing to run destructive migration tests against %q; the throwaway database %q was not reached", current, dbName)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-		a, err := sql.Open("pgx", dsn)
-		if err != nil {
-			return
-		}
-		defer func() { _ = a.Close() }()
-		_, _ = a.Exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()`, dbName)
-		_, _ = a.Exec(`DROP DATABASE IF EXISTS ` + quoteIdent(dbName))
-	})
 	return db, ctx
-}
-
-func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
-
-// openWithDBName opens a connection to the SAME server the DSN names, on a different
-// database.
-//
-// It mutates the PARSED config and hands that config to the driver, rather than rewriting
-// the DSN text and re-parsing it. Two earlier attempts did rewrite the text and both were
-// wrong in ways that are invisible until they matter (ai-review passes two through four):
-// a whitespace tokenizer mangled libpq's keyword quoting, and re-serializing a parsed config
-// silently dropped everything the serializer did not think to re-emit — sslmode and the
-// certificate material, every fallback host, target_session_attrs, connect_timeout,
-// application_name. A DSN that required certificate validation came back able to connect in
-// plaintext, and a multi-host CI DSN came back pointing at one node.
-//
-// Changing one field of the parsed config cannot lose a field it does not touch. That is the
-// whole argument, and it is why this no longer produces a DSN string at all.
-// It returns the config it HANDED THE DRIVER alongside the handle. That is what the test
-// asserts on, so the assertions are facts about what this function did rather than about a
-// config the test re-derived for itself — a test that re-parsed the DSN and applied the same
-// edit would pass no matter what this function actually passed to stdlib.OpenDB.
-func openWithDBName(dsn, name string) (*sql.DB, *pgx.ConnConfig, error) {
-	cfg, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse PostgreSQL DSN: %w", err)
-	}
-	// One field. pgconn.FallbackConfig carries only host/port/TLS — the database is a
-	// top-level setting shared by every candidate host — so a multi-host DSN follows this
-	// rename on all of them without further work.
-	cfg.Database = name
-	return stdlib.OpenDB(*cfg), cfg, nil
-}
-
-// The rewrite decides which database gets DROPPED and how the connection to it is secured,
-// so it is asserted on the config the driver will actually use — not on rendered text, which
-// would pin a serializer this code no longer has.
-func TestOpenWithDBNameKeepsEverythingButTheDatabase(t *testing.T) {
-	cases := []struct {
-		name, dsn string
-		check     func(t *testing.T, cfg *pgx.ConnConfig)
-	}{
-		{
-			name: "url form",
-			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if cfg.User != "payments" || cfg.Password != "pw" || cfg.Host != "localhost" || cfg.Port != 15432 {
-					t.Fatalf("connection identity not preserved: %+v", cfg.Config)
-				}
-			},
-		},
-		{
-			// The case a whitespace tokenizer destroyed: one field, not three.
-			name: "keyword form with a quoted password",
-			dsn:  "host=localhost port=5432 dbname=payments_store_smoke user=payments password='secret with spaces'",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if cfg.Password != "secret with spaces" {
-					t.Fatalf("password mangled: %q", cfg.Password)
-				}
-			},
-		},
-		{
-			// The case re-serialization destroyed: TLS silently downgraded to prefer, and
-			// the certificate material dropped, on a connection about to run migrations.
-			name: "sslmode=require survives",
-			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=require",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if cfg.TLSConfig == nil {
-					t.Fatal("sslmode=require was downgraded to a plaintext connection")
-				}
-			},
-		},
-		{
-			name: "sslmode=disable stays disabled",
-			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if cfg.TLSConfig != nil {
-					t.Fatal("sslmode=disable was upgraded")
-				}
-			},
-		},
-		{
-			name: "runtime parameters and timeout survive",
-			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable&connect_timeout=7&application_name=migrations",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if cfg.ConnectTimeout != 7*time.Second {
-					t.Fatalf("connect_timeout = %v, want 7s", cfg.ConnectTimeout)
-				}
-				if cfg.RuntimeParams["application_name"] != "migrations" {
-					t.Fatalf("application_name lost: %v", cfg.RuntimeParams)
-				}
-			},
-		},
-		{
-			// A multi-host DSN keeps every host. Re-serializing kept only the first, so a
-			// failover silently lost its other candidates.
-			name: "every fallback host survives",
-			dsn:  "postgres://payments:pw@localhost:15432,localhost:15433/payments_store_smoke?sslmode=disable&target_session_attrs=read-write",
-			check: func(t *testing.T, cfg *pgx.ConnConfig) {
-				if len(cfg.Fallbacks) == 0 {
-					t.Fatal("the second host was dropped; a multi-host DSN lost its failover")
-				}
-				if cfg.ValidateConnect == nil {
-					t.Fatal("target_session_attrs was dropped; the connection could land on a standby")
-				}
-			},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			db, cfg, err := openWithDBName(c.dsn, "scratch")
-			if err != nil {
-				t.Fatalf("openWithDBName(%q): %v", c.dsn, err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
-			// cfg is the config the DRIVER was handed, reported back by the function under
-			// test — not one this test rebuilt. Asserting on a re-derived config would be an
-			// assertion about the test.
-			if cfg.Database != "scratch" {
-				t.Fatalf("database = %q, want scratch", cfg.Database)
-			}
-			c.check(t, cfg)
-		})
-	}
-	if _, _, err := openWithDBName("::: not a dsn :::", "scratch"); err == nil {
-		t.Fatal("an unparseable DSN must be an error, never a pass-through to the original database")
-	}
 }
 
 // seedPre0006 writes a captured operation, a COMPLETED refund leg and a COMPLETED whole
@@ -249,7 +97,7 @@ func seedPre0006(t *testing.T, db *sql.DB, ctx context.Context, org uuid.UUID) {
 // the rows it preserves must read as ABSENT rather than having their request-derived figures
 // promoted to provider confirmations.
 func TestMigration0006PreservesPreMigrationRows(t *testing.T) {
-	db, ctx := migrationDB(t, "preserve")
+	db, ctx := migrationDB(t, "PAYMENTS_MIGRATION_TEST_DATABASE_URL")
 	// Stand the schema up at 0005 — the version before this ticket's migration.
 	if err := MigrateUpTo(ctx, db, 5); err != nil {
 		t.Fatalf("migrate to 0005: %v", err)
@@ -308,7 +156,7 @@ func TestMigration0006PreservesPreMigrationRows(t *testing.T) {
 // it succeeds when no confirmation exists, and refuses rather than silently destroying
 // evidence of money that left the account when any does.
 func TestMigration0006DownRefusesToDestroyConfirmedEvidence(t *testing.T) {
-	db, ctx := migrationDB(t, "down")
+	db, ctx := migrationDB(t, "PAYMENTS_MIGRATION_DOWN_TEST_DATABASE_URL")
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -371,7 +219,7 @@ func TestMigration0006DownRefusesToDestroyConfirmedEvidence(t *testing.T) {
 // Each case is refused for its OWN reason and each is asserted separately: a single
 // "everything empty" case would be satisfied by a guard that checked only the amount.
 func TestCompleteCompensationEnforcesTheConfirmationRule(t *testing.T) {
-	db, ctx := migrationDB(t, "compensation")
+	db, ctx := migrationDB(t, "PAYMENTS_COMPENSATION_TEST_DATABASE_URL")
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

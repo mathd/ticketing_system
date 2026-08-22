@@ -62,15 +62,25 @@ func evidenceServer(t *testing.T, ops ...evidenceOperation) (http.Handler, *sql.
 		if op.state != "" {
 			status = op.state
 		}
+		// The confirmation is resolved in Go and passed as two plain parameters, both NULL
+		// when the seed asks for a legacy row. It used to be derived in SQL from the
+		// amount parameter, which reused $7 (request_currency) in a second position and
+		// made PostgreSQL refuse the statement outright: "inconsistent types deduced for
+		// parameter $7". Deciding it here is also simply clearer about which shape is
+		// being seeded.
+		var confirmedAmount, confirmedCurrency any
+		if op.confirmed != 0 {
+			confirmedAmount, confirmedCurrency = op.confirmed, op.currency
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,status,order_id,buyer_id,
 			                               request_amount,request_currency,payment_method_ref,provider_payment_ref,
 			                               provider_charge_ref,provider_state,authorized_amount,captured_amount,provider_state_at,
 			                               confirmed_captured_amount,confirmed_currency)
-			VALUES($1,$2,'fingerprint',$3,$4,$5,$6,$7,$8,$9,$10,$3,$6,$11,now(),
-			       NULLIF($12,0)::bigint,CASE WHEN $12=0 THEN NULL ELSE $7 END)`,
+			VALUES($1,$2,'fingerprint',$3,$4,$5,$6,$7,$8,$9,$10,$3,$6,$11,now(),$12,$13)`,
 			op.org, op.key, status, uuid.New(), uuid.New(), op.request, op.currency,
-			op.methodRef, op.providerP, op.providerC, op.captured, op.confirmed); err != nil {
+			op.methodRef, op.providerP, op.providerC, op.captured,
+			confirmedAmount, confirmedCurrency); err != nil {
 			t.Fatal(err)
 		}
 		org := op.org
