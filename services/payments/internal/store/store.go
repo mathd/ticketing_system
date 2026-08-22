@@ -23,15 +23,44 @@ import (
 var migrationsFS embed.FS
 
 func Migrate(ctx context.Context, db *sql.DB) error {
-	f, err := fs.Sub(migrationsFS, "migrations")
-	if err != nil {
-		return err
-	}
-	p, err := goose.NewProvider(goose.DialectPostgres, db, f)
+	p, err := migrationProvider(db)
 	if err != nil {
 		return err
 	}
 	_, err = p.Up(ctx)
+	return err
+}
+
+func migrationProvider(db *sql.DB) (*goose.Provider, error) {
+	f, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	return goose.NewProvider(goose.DialectPostgres, db, f)
+}
+
+// MigrateUpTo applies migrations up to and including version, and MigrateDownTo rolls back
+// to it. Both exist so a test can stand a database up at a PAST schema version, apply one
+// migration to it, and observe what that migration did to data written under the old shape —
+// which is the only way to test a migration rather than to test the schema it leaves behind.
+// Inserting an old-shaped row into an already-migrated database proves nothing about the
+// migration (TKT-257 ai-review).
+func MigrateUpTo(ctx context.Context, db *sql.DB, version int64) error {
+	p, err := migrationProvider(db)
+	if err != nil {
+		return err
+	}
+	_, err = p.UpTo(ctx, version)
+	return err
+}
+
+// MigrateDownTo rolls back to version, running each Down in turn — including its guards.
+func MigrateDownTo(ctx context.Context, db *sql.DB, version int64) error {
+	p, err := migrationProvider(db)
+	if err != nil {
+		return err
+	}
+	_, err = p.DownTo(ctx, version)
 	return err
 }
 
@@ -553,6 +582,17 @@ type Operation struct {
 	ProviderState      string
 	AuthorizedAmount   int64
 	CapturedAmount     int64
+	// ConfirmedCapturedAmount is what the PROVIDER reported capturing, as distinct from
+	// CapturedAmount, which the charge and status paths write from the REQUEST (TKT-257).
+	// nil means no provider figure was ever recorded — a legacy row, an unresolved
+	// operation, or a provider that did not say. Never zero standing in for absent.
+	//
+	// A NEW field beside CapturedAmount rather than a repointing of it, deliberately:
+	// compensationAllowed, BindRefundLeg's ceiling and commerce's recovery runner all decide
+	// from CapturedAmount, and pointing it at a NULL-for-legacy column would make every
+	// pre-migration captured operation permanently un-refundable.
+	ConfirmedCapturedAmount *int64
+	ConfirmedCurrency       string
 }
 
 // ProviderResult is the provider evidence persisted onto an operation row: references,
@@ -563,6 +603,28 @@ type ProviderResult struct {
 	State            string
 	AuthorizedAmount int64
 	CapturedAmount   int64
+	// ConfirmedCapturedAmount/ConfirmedCurrency are the provider's own figure (TKT-257).
+	// nil leaves the stored confirmation untouched rather than clearing it: a status
+	// observation that learned nothing about money must not erase a capture's confirmation.
+	ConfirmedCapturedAmount *int64
+	ConfirmedCurrency       string
+}
+
+// ConfirmedCapture is an operation's provider-confirmed captured money: what the provider
+// said it moved, as opposed to what payments asked it to move (TKT-257).
+type ConfirmedCapture struct {
+	Amount   int64
+	Currency string
+}
+
+// confirmedAmountArg renders the optional confirmation for a SQL parameter: a NULL when the
+// provider gave no figure, so the column keeps meaning "never confirmed" rather than
+// "confirmed zero".
+func (p ProviderResult) confirmedAmountArg() any {
+	if p.ConfirmedCapturedAmount == nil {
+		return nil
+	}
+	return *p.ConfirmedCapturedAmount
 }
 
 // LookupOperation reads an operation's recorded outcome. Strictly read-only, unlike
@@ -577,11 +639,11 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	var status sql.NullString
 	var factID, orderID, buyerID uuid.NullUUID
 	var occurredAt time.Time
-	var reqAmount, authAmount, capAmount sql.NullInt64
-	var reqCurrency, pmRef, provPayRef, provChRef, provState sql.NullString
+	var reqAmount, authAmount, capAmount, confAmount sql.NullInt64
+	var reqCurrency, pmRef, provPayRef, provChRef, provState, confCurrency sql.NullString
 	var fingerprint string
-	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
-		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint)
+	err := j.db.QueryRowContext(ctx, `SELECT status,fact_id,occurred_at,order_id,buyer_id,request_amount,request_currency,payment_method_ref,provider_payment_ref,provider_charge_ref,provider_state,authorized_amount,captured_amount,request_fingerprint,confirmed_captured_amount,confirmed_currency FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).
+		Scan(&status, &factID, &occurredAt, &orderID, &buyerID, &reqAmount, &reqCurrency, &pmRef, &provPayRef, &provChRef, &provState, &authAmount, &capAmount, &fingerprint, &confAmount, &confCurrency)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, false, nil
 	}
@@ -597,11 +659,18 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	op.RequestAmount, op.RequestCurrency, op.PaymentMethodRef = reqAmount.Int64, reqCurrency.String, pmRef.String
 	op.ProviderPaymentRef, op.ProviderChargeRef, op.ProviderState = provPayRef.String, provChRef.String, provState.String
 	op.AuthorizedAmount, op.CapturedAmount = authAmount.Int64, capAmount.Int64
+	// NULL stays nil. Reading it through .Int64 would turn "no provider confirmation" into
+	// "the provider confirmed zero" — the collapse this whole ticket exists to prevent.
+	if confAmount.Valid {
+		v := confAmount.Int64
+		op.ConfirmedCapturedAmount = &v
+	}
+	op.ConfirmedCurrency = confCurrency.String
 	return op, true, nil
 }
 
 func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID, prov ProviderResult) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,confirmed_captured_amount=$10,confirmed_currency=NULLIF($11,''),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
 	return err
 }
 
@@ -618,7 +687,7 @@ func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, sta
 // observation, and the caller must answer from the stored evidence instead of the
 // provider result it failed to record (second-pass P2-2).
 func (j *Journal) RecordProviderState(ctx context.Context, org uuid.UUID, key string, prov ProviderResult) (bool, error) {
-	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount)
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET provider_payment_ref=COALESCE(NULLIF($3,''),provider_payment_ref),provider_charge_ref=COALESCE(NULLIF($4,''),provider_charge_ref),provider_state=NULLIF($5,''),authorized_amount=$6,captured_amount=$7,confirmed_captured_amount=COALESCE($8,confirmed_captured_amount),confirmed_currency=COALESCE(NULLIF($9,''),confirmed_currency),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND (provider_state IS NULL OR provider_state='authorized' OR provider_state=$5)`, org, key, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
 	if err != nil {
 		return false, err
 	}
@@ -649,6 +718,12 @@ type Compensation struct {
 	Amount      int64
 	Currency    string
 	Completed   bool
+	// ConfirmedAmount/ConfirmedCurrency are what the PROVIDER reported returning, as opposed
+	// to Amount, which is the basis derived from the operation's durable evidence before the
+	// call (TKT-257). nil for a still-bound compensation, for a void (nothing moved on the
+	// ledger), and for any compensation completed before migration 0006.
+	ConfirmedAmount   *int64
+	ConfirmedCurrency string
 	// BoundAt is the row's stable creation time. The compensating fact's OccurredAt MUST
 	// come from here, not the clock: the fact ID is deterministic and the journal's replay
 	// dedupe compares the full canonical fact, so a retry across the append/complete crash
@@ -718,11 +793,11 @@ func lookupCompensationTx(ctx context.Context, q rowQuerier, org uuid.UUID, sour
 	var c Compensation
 	var status, providerRef sql.NullString
 	var factID uuid.NullUUID
-	var amt sql.NullInt64
-	var cur sql.NullString
+	var amt, confAmt sql.NullInt64
+	var cur, confCur sql.NullString
 	var boundAt time.Time
-	err := q.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
-		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt)
+	err := q.QueryRowContext(ctx, `SELECT kind,provider_idempotency_key,status,provider_ref,fact_id,amount,currency,bound_at,confirmed_amount,confirmed_currency FROM payment_compensations WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3`, org, sourceKey, kind).
+		Scan(&c.Kind, &c.ProviderKey, &status, &providerRef, &factID, &amt, &cur, &boundAt, &confAmt, &confCur)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Compensation{}, false, nil
 	}
@@ -731,6 +806,12 @@ func lookupCompensationTx(ctx context.Context, q rowQuerier, org uuid.UUID, sour
 	}
 	c.Status, c.ProviderRef, c.FactID = status.String, providerRef.String, factID.UUID
 	c.Amount, c.Currency = amt.Int64, cur.String
+	// NULL stays nil — never zero standing in for "no provider confirmation".
+	if confAmt.Valid {
+		v := confAmt.Int64
+		c.ConfirmedAmount = &v
+	}
+	c.ConfirmedCurrency = confCur.String
 	c.Completed = status.Valid
 	c.BoundAt = boundAt.UTC().Truncate(time.Microsecond)
 	return c, true, nil
@@ -747,9 +828,89 @@ func (j *Journal) RecordCompensationProviderRef(ctx context.Context, org uuid.UU
 // CompleteCompensation records the durable provider result and the journalled fact for a
 // bound compensation. Only the first completion writes (status IS NULL guard) — a replay
 // keeps the original result.
-func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now() WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID)
-	return err
+// confirmed carries the provider's own figure (TKT-257). A REFUND must supply it; a VOID
+// must not, because nothing moved on the ledger for a provider to confirm.
+//
+// The invariant lives HERE, not only in the handler that calls this. This method is exported
+// and is the persistence boundary for the rule, so a direct caller, a future recovery path,
+// or a refactor that reorders the handler could otherwise mark a compensation `refunded`
+// with no provider evidence at all — which is precisely the state this ticket exists to make
+// unreachable. A guard that only one caller happens to satisfy is a convention, not an
+// invariant (ai-review, second pass).
+//
+// A partial or negative confirmation is REJECTED rather than quietly stored as NULL: an
+// amount with no currency is not a money value, and silently discarding it would complete
+// the row while dropping the evidence the caller believed it was recording.
+func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourceKey, kind, status, providerRef string, factID uuid.UUID, confirmed ConfirmedRefund) error {
+	var amount, currency any
+	switch kind {
+	case "refund":
+		if confirmed.Amount <= 0 || !isISOCurrency(confirmed.Currency) {
+			return fmt.Errorf("%w: completing a refund requires the provider-confirmed money it returned, got %+v", ErrCompensationNotCompleted, confirmed)
+		}
+		amount, currency = confirmed.Amount, confirmed.Currency
+	case "void":
+		if confirmed != (ConfirmedRefund{}) {
+			return fmt.Errorf("%w: a void moves no money and must carry no provider confirmation, got %+v", ErrCompensationNotCompleted, confirmed)
+		}
+	default:
+		return fmt.Errorf("%w: unknown compensation kind %q", ErrCompensationNotCompleted, kind)
+	}
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_compensations SET status=$4,provider_ref=NULLIF($5,''),fact_id=$6,completed_at=now(),confirmed_amount=$7,confirmed_currency=$8 WHERE organizer_id=$1 AND source_idempotency_key=$2 AND kind=$3 AND status IS NULL`, org, sourceKey, kind, status, providerRef, factID, amount, currency)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// Zero rows has TWO causes and they need opposite answers, which is why this re-reads
+		// rather than failing outright (ai-review, third pass).
+		//
+		// The benign one is a CONCURRENT duplicate. The handler short-circuits a completed
+		// compensation before calling this, but two requests can both pass that check, both
+		// append the deterministic fact (the journal dedupes them), and both arrive here. One
+		// UPDATE wins on `status IS NULL`. The loser's work is DONE — same deterministic fact
+		// id, same provider operation — so answering "not completed" would turn a successful
+		// duplicate into a 500 and a pointless recovery retry.
+		//
+		// The dangerous one is a row that is missing, or still bound: there the caller has
+		// appended a compensating fact to an append-only journal and believes money came back
+		// while nothing durable records it. That must stay an error.
+		existing, found, lookupErr := lookupCompensationTx(ctx, j.db, org, sourceKey, kind)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found || !existing.Completed {
+			return ErrCompensationNotCompleted
+		}
+		// Completed, but by a DIFFERENT completion. Converging on a fact id we did not write
+		// would report someone else's result as this call's, so it stays an error.
+		if existing.FactID != factID {
+			return fmt.Errorf("%w: already completed under fact %s", ErrCompensationNotCompleted, existing.FactID)
+		}
+		return nil
+	}
+	return nil
+}
+
+// ErrCompensationNotCompleted reports a compensation completion that wrote no row — either
+// refused for missing/contradictory provider evidence, or matched nothing.
+var ErrCompensationNotCompleted = errors.New("payments: compensation completion wrote no row")
+
+// isISOCurrency matches the shape the schema enforces (`^[A-Z]{3}$`), so a currency the
+// database would reject is rejected before the UPDATE rather than by it.
+func isISOCurrency(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'A' || s[i] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func Hex(b []byte) string { return hex.EncodeToString(b) }

@@ -98,6 +98,73 @@ type Result struct {
 	// ProviderChargeRef is the provider's charge identity (Stripe latest_charge ch_…) when
 	// one exists. Purely informational evidence for the operation row; Validate ignores it.
 	ProviderChargeRef string
+	// Confirmed is what the PROVIDER says it moved, as distinct from what we asked it to
+	// move — nil when the provider gave no such figure (TKT-257).
+	//
+	// A pointer, and never a zero value standing in for absence: Stripe reports
+	// `amount_received: 0` on a requires_capture PaymentIntent, a REAL zero, so a type that
+	// collapsed the two would make "the provider confirmed nothing" indistinguishable from
+	// "the provider confirmed zero" — and the whole point of this field is that payments
+	// stops treating its own request as the provider's answer.
+	//
+	// Optional rather than required on Captured/Refunded, deliberately: `resolvedResult` and
+	// `providerStateResult` (api/psp.go) legitimately reconstruct a Captured Result from
+	// STORED columns with no provider answer in hand, and forcing them to supply one would
+	// forge exactly the evidence this ticket exists to stop forging. The fail-closed
+	// comparison therefore lives at the four write sinks, where a live provider answer is
+	// genuinely present, not in the type.
+	Confirmed *ConfirmedMoney
+}
+
+// ConfirmedMoney is a provider-reported monetary figure: integer minor units + ISO currency,
+// like every other money value on these paths. Floats are banned on money paths.
+type ConfirmedMoney struct {
+	Amount   int64
+	Currency string
+}
+
+// Agrees reports whether this confirmation matches what was requested. It is the single
+// comparison every write sink shares (TKT-257).
+//
+// One function rather than a comparison hand-written at each sink, because the likeliest way
+// this ticket ships wrong is COVERAGE, not logic: four write paths in three files need the
+// same check, and three-of-four looks complete from inside each file. Shared, the missing
+// sink is a missing CALL — which a per-sink test names — rather than a missing comparison,
+// which nothing does.
+//
+// A nil receiver answers false. A provider that told us nothing has confirmed nothing, and
+// reading silence as assent is precisely the fail-open this closes.
+func (c *ConfirmedMoney) Agrees(amount int64, currency string) bool {
+	if c == nil {
+		return false
+	}
+	return c.Amount == amount && c.Currency == currency
+}
+
+// validate checks a confirmation is well-formed in itself, independent of any outcome.
+func (c *ConfirmedMoney) validate() error {
+	if c.Amount < 0 {
+		return fmt.Errorf("psp: confirmed amount must not be negative: %d", c.Amount)
+	}
+	if !isISOCurrency(c.Currency) {
+		return fmt.Errorf("psp: confirmed currency must be an uppercase ISO-4217 code: %q", c.Currency)
+	}
+	return nil
+}
+
+// isISOCurrency matches the same shape the payments schema enforces (`^[A-Z]{3}$`), so a
+// currency that would be rejected by the database is rejected at the money-path boundary
+// instead of at the INSERT.
+func isISOCurrency(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'A' || s[i] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate rejects a self-contradictory Result. The charge handler journals from a Result,
@@ -107,6 +174,9 @@ type Result struct {
 // the interface cannot assume every future adapter does. The handler calls this fail-closed
 // before it appends any fact.
 func (r Result) Validate() error {
+	if err := r.validateConfirmed(); err != nil {
+		return err
+	}
 	switch r.Outcome {
 	case Captured:
 		if !r.Captured || !r.Authorized || r.TerminalNoSideEffect {
@@ -140,6 +210,41 @@ func (r Result) Validate() error {
 		return fmt.Errorf("psp: unrecognized outcome %q", r.Outcome)
 	}
 	return nil
+}
+
+// validateConfirmed rejects a provider-confirmed figure that contradicts the outcome it
+// accompanies (TKT-257). Absence is always admissible — it is a real state, and the four
+// write sinks are what refuse to SETTLE on an absent confirmation.
+//
+// Presence is admissible on exactly the two outcomes that assert money moved. Everything
+// else carrying a figure is a contradiction:
+//   - Declined and Timeout are terminal-no-side-effect: no money moved, ever, for this
+//     attempt.
+//   - Voided released a hold that never captured, so nothing moved on the ledger.
+//   - Authorized established a hold; the money has not moved yet.
+//   - Unknown is genuinely undetermined — and it is what a PENDING refund returns
+//     (mapRefundStatus → Unknown + ErrRefundPending). Stripe's refund object carries an
+//     `amount` while pending, and attaching it would let money that has not come back be
+//     recorded as settled evidence. This case is the reason the rule is stated as an
+//     allowlist rather than a denylist.
+func (r Result) validateConfirmed() error {
+	if r.Confirmed == nil {
+		return nil
+	}
+	if err := r.Confirmed.validate(); err != nil {
+		return err
+	}
+	switch r.Outcome {
+	case Captured, Refunded:
+		// An outcome asserting money MOVED cannot be confirmed at zero: the two statements
+		// contradict, and recording the pair would settle a movement of nothing.
+		if r.Confirmed.Amount == 0 {
+			return fmt.Errorf("psp: %s outcome cannot carry a confirmed amount of zero: %+v", r.Outcome, r)
+		}
+		return nil
+	default:
+		return fmt.Errorf("psp: %s outcome must not carry provider-confirmed money (no money moved): %+v", r.Outcome, r)
+	}
 }
 
 // StatusRequest asks a provider for the current state of an operation. It carries both an

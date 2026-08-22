@@ -92,6 +92,33 @@ type stripePI struct {
 	Status       string `json:"status"`
 	Currency     string `json:"currency"`
 	LatestCharge string `json:"latest_charge"`
+	// AmountReceived is what Stripe says it actually captured, as opposed to the `amount`
+	// we asked for (TKT-257). A POINTER because absence and zero are different states and
+	// both occur: Stripe sends `amount_received: 0` on a requires_capture intent — a real
+	// zero — while an intent that omits the key entirely has told us nothing. Recording the
+	// second as zero would forge a confirmation; recording it as the request is the defect
+	// this field exists to end.
+	AmountReceived *int64 `json:"amount_received"`
+}
+
+// confirmedCapture builds the provider-confirmed money for a SETTLED capture, or nil when
+// the provider reported no figure. Only ever called on the succeeded path: an authorization
+// has moved no money, so its `amount_received: 0` must not become a confirmation of zero.
+func (pi stripePI) confirmedCapture() *ConfirmedMoney {
+	if pi.AmountReceived == nil {
+		return nil
+	}
+	return &ConfirmedMoney{Amount: *pi.AmountReceived, Currency: uc(pi.Currency)}
+}
+
+// confirmedRefund builds the provider-confirmed money for a SETTLED refund. Stripe always
+// sends `amount` on a refund object, so absence here means a malformed or foreign payload
+// rather than a provider that declined to say — either way, no confirmation.
+func (rf stripeRefund) confirmedRefund() *ConfirmedMoney {
+	if rf.Amount == 0 && rf.Currency == "" {
+		return nil
+	}
+	return &ConfirmedMoney{Amount: rf.Amount, Currency: uc(rf.Currency)}
 }
 
 type stripeRefund struct {
@@ -221,7 +248,7 @@ func mapPIStatus(pi stripePI) (Result, error) {
 	case "requires_capture":
 		return Result{Outcome: Authorized, Authorized: true, ProviderRef: pi.ID}, nil
 	case "succeeded":
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge, Confirmed: pi.confirmedCapture()}, nil
 	case "canceled":
 		return Result{Outcome: Voided, TerminalNoSideEffect: true, ProviderRef: pi.ID}, nil
 	case "processing", "requires_action", "requires_confirmation", "requires_payment_method":
@@ -233,6 +260,12 @@ func mapPIStatus(pi stripePI) (Result, error) {
 }
 
 func lc(currency string) string { return strings.ToLower(currency) }
+
+// uc normalizes a provider currency to the uppercase ISO-4217 form payments stores and
+// compares against (the schema pins `^[A-Z]{3}$`). Stripe speaks lowercase; every other
+// money value in this service is uppercase, and comparing across the two would make a
+// currency guard fail on every well-behaved response.
+func uc(currency string) string { return strings.ToUpper(currency) }
 
 // createIntent creates+confirms a manual-capture PaymentIntent under idempotencyKey.
 func (s *Stripe) createIntent(ctx context.Context, req AuthorizeRequest) (stripePI, *stripeError, int, error) {
@@ -275,7 +308,7 @@ func (s *Stripe) Authorize(ctx context.Context, req AuthorizeRequest) (Result, e
 		return s.Capture(ctx, pi.ID, req.Amount, req.Currency)
 	case "succeeded":
 		// Already captured (some flows capture on confirm) — done.
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge, Confirmed: pi.confirmedCapture()}, nil
 	default:
 		// requires_action / processing / etc. on the charge path: not settled, not terminal.
 		return mapPIStatus(pi)
@@ -312,7 +345,7 @@ func (s *Stripe) Capture(ctx context.Context, providerRef string, amount int64, 
 		return Result{Outcome: Unknown, ProviderRef: providerRef}, err
 	}
 	if pi.Status == "succeeded" {
-		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true, ProviderRef: pi.ID, ProviderChargeRef: pi.LatestCharge, Confirmed: pi.confirmedCapture()}, nil
 	}
 	return mapPIStatus(pi)
 }
@@ -478,7 +511,12 @@ func (rf stripeRefund) classify(providerRef, idempotencyKey string, amount int64
 func mapRefundStatus(rf stripeRefund) (Result, error) {
 	switch rf.Status {
 	case "succeeded":
-		return Result{Outcome: Refunded, ProviderRef: rf.ID}, nil
+		// Attached HERE, inside the shared mapper, and not at the callers: this function
+		// has three (the Refund POST, resolveRefund's adoption of a lost refund, and
+		// Status's re_ retrieve). Confirming at the callers would leave the two
+		// crash-recovery paths — the ones that exist precisely because a response was
+		// lost — carrying no confirmation (TKT-257).
+		return Result{Outcome: Refunded, ProviderRef: rf.ID, Confirmed: rf.confirmedRefund()}, nil
 	case "pending":
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, ErrRefundPending
 	default: // "failed" or unexpected

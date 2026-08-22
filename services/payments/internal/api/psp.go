@@ -36,8 +36,13 @@ func operationParams(w http.ResponseWriter, r *http.Request) (uuid.UUID, string,
 
 // statusBody is the provider-neutral status answer: the normalized outcome plus the
 // amounts that evidence proves. It never contains provider references.
-func statusBody(result psp.Result, authorized, captured int64, currency string) map[string]any {
-	return map[string]any{
+//
+// authorized_amount/captured_amount/currency keep exactly the meaning they have had since
+// TKT-114/S2 and stay unconditional. They are in this schema's `required` list and commerce's
+// recovery runner decides whether to refund from captured_amount, so redefining or omitting
+// them would change when money moves in another service (TKT-257 deliberately does not).
+func statusBody(result psp.Result, authorized, captured int64, currency string, confirmed *store.ConfirmedCapture) map[string]any {
+	body := map[string]any{
 		"outcome":                 string(result.Outcome),
 		"terminal_no_side_effect": result.TerminalNoSideEffect,
 		"captured":                result.Captured,
@@ -46,6 +51,23 @@ func statusBody(result psp.Result, authorized, captured int64, currency string) 
 		"captured_amount":         captured,
 		"currency":                currency,
 	}
+	// The provider's own figure, ADDITIVE and optional (TKT-257). Omitted when the
+	// operation carries no confirmation — a pre-0006 row, or one no provider ever
+	// confirmed — so an absent key means "never confirmed", never "confirmed zero".
+	if confirmed != nil {
+		body["confirmed_captured_amount"] = confirmed.Amount
+		body["confirmed_currency"] = confirmed.Currency
+	}
+	return body
+}
+
+// confirmedCapture renders an operation's stored provider confirmation for a status body,
+// or nil when it holds none.
+func confirmedCapture(op store.Operation) *store.ConfirmedCapture {
+	if op.ConfirmedCapturedAmount == nil {
+		return nil
+	}
+	return &store.ConfirmedCapture{Amount: *op.ConfirmedCapturedAmount, Currency: op.ConfirmedCurrency}
 }
 
 // resolvedResult reconstructs the normalized result from a locally-resolved operation's
@@ -106,21 +128,21 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 	// after a refund/void, reporting "captured"/"authorized" with live amounts would tell
 	// the caller money is still held that has already been returned or released.
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "refund"); err == nil && found && comp.Completed {
-		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency))
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency, nil))
 		return
 	} else if err != nil {
 		write(w, 500, map[string]string{"error": "lookup compensation"})
 		return
 	}
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "void"); err == nil && found && comp.Completed {
-		write(w, 200, statusBody(psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, 0, 0, op.RequestCurrency))
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, 0, 0, op.RequestCurrency, nil))
 		return
 	} else if err != nil {
 		write(w, 500, map[string]string{"error": "lookup compensation"})
 		return
 	}
 	if result, ok := resolvedResult(op); ok {
-		write(w, 200, statusBody(result, op.AuthorizedAmount, op.CapturedAmount, op.RequestCurrency))
+		write(w, 200, statusBody(result, op.AuthorizedAmount, op.CapturedAmount, op.RequestCurrency, confirmedCapture(op)))
 		return
 	}
 	// Deadline guard — deliberately AFTER the completed-compensation and resolved-
@@ -151,6 +173,15 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 	// the learned evidence (refs + state + amounts) without touching the terminal status.
 	var authorized, captured int64
 	var state string
+	// A resolution that PROVES a capture must agree with the operation's own durable
+	// request before it is recorded as evidence (TKT-257). This is the second write sink,
+	// and it is the worse of the two: it has a live provider answer in hand and used to
+	// write op.RequestAmount over it. A disagreement leaves the operation exactly as
+	// unresolved as it was — recoverable, never terminal (ADR-016 §Dec3).
+	if result.Outcome == psp.Captured && !result.Confirmed.Agrees(op.RequestAmount, op.RequestCurrency) {
+		write(w, 502, map[string]string{"error": "provider confirmed a different amount than requested"})
+		return
+	}
 	switch result.Outcome {
 	case psp.Authorized:
 		state, authorized = "authorized", op.RequestAmount
@@ -166,13 +197,21 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 		// Unknown, Refunded (only reachable through a re_ ref this endpoint never holds),
 		// or any future outcome: nothing this operation's evidence columns can safely
 		// record — answer honestly, persist nothing (fail-safe, ai-review A3).
-		write(w, 200, statusBody(result, 0, 0, op.RequestCurrency))
+		write(w, 200, statusBody(result, 0, 0, op.RequestCurrency, nil))
 		return
 	}
-	recorded, err := s.journal.RecordProviderState(r.Context(), org, key, store.ProviderResult{
+	learned := store.ProviderResult{
 		PaymentRef: result.ProviderRef, ChargeRef: result.ProviderChargeRef,
 		State: state, AuthorizedAmount: authorized, CapturedAmount: captured,
-	})
+	}
+	// Only a proven capture carries a confirmation. Every other resolved state moved no
+	// money, and RecordProviderState COALESCEs a nil through, so a later authorized/voided
+	// observation cannot erase a capture's confirmation (TKT-257).
+	if result.Outcome == psp.Captured && result.Confirmed != nil {
+		learned.ConfirmedCapturedAmount = &result.Confirmed.Amount
+		learned.ConfirmedCurrency = result.Confirmed.Currency
+	}
+	recorded, err := s.journal.RecordProviderState(r.Context(), org, key, learned)
 	if err != nil {
 		write(w, 500, map[string]string{"error": "persist provider state"})
 		return
@@ -195,10 +234,16 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 			write(w, 500, map[string]string{"error": "provider evidence inconsistent"})
 			return
 		}
-		write(w, 200, statusBody(storedResult, fresh.AuthorizedAmount, fresh.CapturedAmount, fresh.RequestCurrency))
+		write(w, 200, statusBody(storedResult, fresh.AuthorizedAmount, fresh.CapturedAmount, fresh.RequestCurrency, confirmedCapture(fresh)))
 		return
 	}
-	write(w, 200, statusBody(result, authorized, captured, op.RequestCurrency))
+	// The freshly-learned confirmation, when this resolution proved a capture. Built from
+	// `learned` rather than re-reading, so the body reports exactly what was persisted.
+	var freshConfirmed *store.ConfirmedCapture
+	if learned.ConfirmedCapturedAmount != nil {
+		freshConfirmed = &store.ConfirmedCapture{Amount: *learned.ConfirmedCapturedAmount, Currency: learned.ConfirmedCurrency}
+	}
+	write(w, 200, statusBody(result, authorized, captured, op.RequestCurrency, freshConfirmed))
 }
 
 // providerStateResult reconstructs the normalized result from the operation's recorded
@@ -386,6 +431,17 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		write(w, 502, map[string]string{"error": "provider compensation unresolved"})
 		return
 	}
+	// The fourth write sink (TKT-257), and the one with no human in the loop: this path is
+	// RECOVERY's, driven by commerce's runner. A refund must return what the durable
+	// evidence says was captured, and the fact appended below carries `amount` — so an
+	// unchecked disagreement journals a returned figure the provider never returned.
+	//
+	// Voids are exempt by construction: nothing moved on the ledger, so there is no money
+	// for a provider to confirm and Validate refuses a Voided result that carries any.
+	if wantOutcome == psp.Refunded && !result.Confirmed.Agrees(amount, currency) {
+		write(w, 502, map[string]string{"error": "provider confirmed a different refund amount than requested"})
+		return
+	}
 	factID := compensationFactID(in.OrganizerID, key, factType)
 	// OccurredAt is the compensation row's stable bound_at, NEVER the clock: the fact ID is
 	// deterministic and the journal's replay dedupe compares the full canonical fact, so a
@@ -400,7 +456,19 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return
 	}
-	if err := s.journal.CompleteCompensation(r.Context(), in.OrganizerID, key, kind, status, result.ProviderRef, factID); err != nil {
+	// A refund records the provider's own returned figure; a void records none, because
+	// nothing moved on the ledger for a provider to confirm (TKT-257).
+	//
+	// Keyed on the OUTCOME rather than on `result.Confirmed != nil`. Validate already refuses
+	// a Voided result carrying money, so the two are equivalent today — but that makes this
+	// site depend on a guard three files away, and CompleteCompensation now refuses a void
+	// that arrives with a confirmation. Saying which kind carries money here keeps the two
+	// ends of the rule readable together.
+	var confirmed store.ConfirmedRefund
+	if wantOutcome == psp.Refunded && result.Confirmed != nil {
+		confirmed = store.ConfirmedRefund{Amount: result.Confirmed.Amount, Currency: result.Confirmed.Currency}
+	}
+	if err := s.journal.CompleteCompensation(r.Context(), in.OrganizerID, key, kind, status, result.ProviderRef, factID, confirmed); err != nil {
 		write(w, 500, map[string]string{"error": "persist compensation result"})
 		return
 	}

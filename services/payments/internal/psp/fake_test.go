@@ -16,11 +16,16 @@ func TestFakeAuthorizeNormalizesEachToken(t *testing.T) {
 		name  string
 		token string
 		want  Result
+		// nil = the fake must confirm NO money for this token.
+		wantConfirmed *ConfirmedMoney
 	}{
 		{
 			name:  "success authorizes and captures, no terminal-no-side-effect",
 			token: fakepsp.TokenSuccess,
 			want:  Result{Outcome: Captured, Captured: true, Authorized: true, TerminalNoSideEffect: false},
+			// The fake echoes the request as its confirmation (TKT-257). Echoed, so this
+			// pins the plumbing, never the guard — the fake cannot disagree with itself.
+			wantConfirmed: &ConfirmedMoney{Amount: 1250, Currency: "EUR"},
 		},
 		{
 			name:  "decline is terminal-no-side-effect, no capture",
@@ -47,8 +52,20 @@ func TestFakeAuthorizeNormalizesEachToken(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Authorize(%s) unexpected error: %v", tc.token, err)
 			}
-			if got != tc.want {
-				t.Fatalf("Authorize(%s)\n got=%+v\nwant=%+v", tc.token, got, tc.want)
+			// Compared with Confirmed cleared, then by VALUE: Result carries a pointer
+			// (TKT-257), and struct equality on it compares addresses.
+			gotSansMoney := got
+			gotSansMoney.Confirmed = nil
+			if gotSansMoney != tc.want {
+				t.Fatalf("Authorize(%s)\n got=%+v\nwant=%+v", tc.token, gotSansMoney, tc.want)
+			}
+			switch {
+			case tc.wantConfirmed == nil && got.Confirmed != nil:
+				t.Fatalf("Authorize(%s) must confirm no money, got %+v", tc.token, got.Confirmed)
+			case tc.wantConfirmed != nil && got.Confirmed == nil:
+				t.Fatalf("Authorize(%s) must confirm %+v, got none", tc.token, tc.wantConfirmed)
+			case tc.wantConfirmed != nil && *got.Confirmed != *tc.wantConfirmed:
+				t.Fatalf("Authorize(%s) confirmed %+v, want %+v", tc.token, *got.Confirmed, *tc.wantConfirmed)
 			}
 		})
 	}

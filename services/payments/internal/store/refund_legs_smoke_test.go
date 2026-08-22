@@ -303,11 +303,23 @@ func TestCompleteRefundLegIsOnceOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := uuid.New(), uuid.New()
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first); err != nil {
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_second", second); err != nil {
-		t.Fatal(err)
+	// A second completion under a DIFFERENT fact writes nothing, and now says so (TKT-257).
+	// A silent no-op here means the caller appended a compensating fact to an append-only
+	// journal and believes the leg settled under ITS fact, when the row records another.
+	// The once-only property below is unchanged; what changed is that the caller can tell.
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_second", second, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
+		t.Fatalf("a second completion under a different fact must report that it wrote no row, got %v", err)
+	}
+	// But a retry of the SAME completion is idempotent success, not an error. Two concurrent
+	// requests both pass the handler's completed-leg short-circuit, both append the
+	// deterministic fact (the journal dedupes them), and both reach here; one UPDATE wins on
+	// `status='bound'` and the loser's work is genuinely done. Failing it would turn a
+	// successful duplicate into a 500 and a pointless recovery retry (ai-review, third pass).
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+		t.Fatalf("re-completing under the SAME fact is the concurrent-duplicate case and must succeed, got %v", err)
 	}
 	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-1")
 	if err != nil || !found {
@@ -329,7 +341,7 @@ func TestCompletedRefundLegsCountAgainstTheCeiling(t *testing.T) {
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-1", 900, "EUR"); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_1", uuid.New()); err != nil {
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_1", uuid.New(), ConfirmedRefund{Amount: 900, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-2", 200, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
@@ -366,5 +378,97 @@ func TestRefundLegFactsKeepTheJournalVerifiable(t *testing.T) {
 	}
 	if err := j.Verify(ctx); err != nil {
 		t.Fatalf("journal must still verify after two refund legs: %v", err)
+	}
+}
+
+// TKT-257. "A leg completed from now on carries provider confirmation" is enforced HERE, in
+// CompleteRefundLeg, and deliberately NOT in the table's completion CHECK.
+//
+// The two rules the ticket needs — a new completion must carry confirmation, and a
+// pre-migration completed leg answers absent — are contradictory statements about rows that
+// were already completed when 0006 ran. A CHECK strong enough for the first rejects the
+// second, and the escapes are a discriminator column or a constraint that special-cases
+// history, which is a constraint that will be wrong again at the next migration. Enforced on
+// the write path, the two cases are distinguished by construction: a new completion must
+// supply it, and a historical row is simply never rewritten.
+func TestCompleteRefundLegRequiresProviderConfirmation(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-complete-needs-confirmation"
+	seedCaptured(t, db, ctx, org, key, 2500)
+
+	if _, err := j.BindRefundLeg(ctx, org, key, "refund-1", 1250, "EUR"); err != nil {
+		t.Fatal(err)
+	}
+	// Two independent halves, each refused on its own: an amount with no currency is not a
+	// money value, and a currency with no amount confirms nothing. Separate cases because a
+	// single "both missing" case would be satisfied by a guard checking only one.
+	for _, c := range []struct {
+		name      string
+		confirmed ConfirmedRefund
+	}{
+		{"no amount", ConfirmedRefund{Currency: "EUR"}},
+		{"no currency", ConfirmedRefund{Amount: 1250}},
+		{"nothing at all", ConfirmedRefund{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_x", uuid.New(), c.confirmed); !errors.Is(err, ErrRefundLegNotCompleted) {
+				t.Fatalf("completion without confirmation must be refused, got %v", err)
+			}
+		})
+	}
+	// And the leg is still BOUND — refused, not half-completed.
+	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-1")
+	if err != nil || !found {
+		t.Fatalf("lookup: %v found=%t", err, found)
+	}
+	if leg.Completed || leg.ConfirmedAmount != nil {
+		t.Fatalf("a refused completion must leave the leg bound and unconfirmed: %+v", leg)
+	}
+	// The same leg completes once the confirmation is supplied — proving the refusals above
+	// were about the confirmation and not about some other precondition this fixture failed.
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_ok", uuid.New(), ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A leg completed BEFORE migration 0006 keeps working and answers absent. The seed writes
+// the pre-0006 shape directly — completed, with both confirmation columns NULL — because
+// that is the only way to construct a row the current write path can no longer produce.
+//
+// What this catches: a migration that enforced confirmation in a CHECK would reject this
+// row, and a read that fell back to `amount` when the confirmation is NULL would promote a
+// requested figure to provider evidence, silently and permanently.
+func TestLegacyCompletedRefundLegSurvivesMigration(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-legacy-leg"
+	seedCaptured(t, db, ctx, org, key, 2500)
+
+	factID := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO payment_refund_legs(organizer_id,source_idempotency_key,refund_idempotency_key,
+		                                provider_idempotency_key,amount,currency,status,provider_ref,
+		                                fact_id,completed_at)
+		VALUES($1,$2,'refund-legacy','psp-leg-v1:legacy',1250,'EUR','refunded','re_legacy',$3,now())`,
+		org, key, factID); err != nil {
+		t.Fatalf("a pre-0006 completed leg must remain insertable: %v", err)
+	}
+
+	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-legacy")
+	if err != nil || !found {
+		t.Fatalf("lookup: %v found=%t", err, found)
+	}
+	if !leg.Completed || leg.Amount != 1250 {
+		t.Fatalf("a legacy completed leg must keep reading as completed for its bound amount: %+v", leg)
+	}
+	if leg.ConfirmedAmount != nil || leg.ConfirmedCurrency != "" {
+		t.Fatalf("a legacy leg has no provider confirmation and must answer absent, got amount=%v currency=%q",
+			leg.ConfirmedAmount, leg.ConfirmedCurrency)
+	}
+	// It still counts against the ceiling: the money is gone regardless of whether anyone
+	// confirmed it. 1250 of 2500 spent leaves 1250.
+	if _, err := j.BindRefundLeg(ctx, org, key, "refund-new", 1251, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
+		t.Fatalf("a legacy completed leg must still hold its allowance, got %v", err)
 	}
 }

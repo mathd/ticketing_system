@@ -152,14 +152,26 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 	// money, and answering 0 for it would be indistinguishable from a genuine zero capture.
 	//
 	// CapturedAmount, never RequestAmount: they are distinct columns and reading the wrong
-	// one is a real defect. Be precise about what this proves, though — today the charge
-	// path POPULATES captured_amount from the request, because psp.Result carries no
-	// monetary value (TKT-257). So this is payments' durable record of the movement, which
-	// is what catches a caller-side defect — a wrong delta, a skipped call, a no-op'd
-	// refund — and is not an independent check on the processor.
+	// one is a real defect.
 	if op.ProviderState == "captured" {
 		out["captured_amount"] = op.CapturedAmount
 		out["currency"] = op.RequestCurrency
+	}
+	// The PROVIDER's own figure, published separately and omitted when there is none
+	// (TKT-257). The distinction the two fields draw is the point:
+	//
+	//   captured_amount            — what payments durably recorded for this operation.
+	//   confirmed_captured_amount  — what the provider said it moved, checked against the
+	//                                request before it was recorded.
+	//
+	// A row written before migration 0006 has no confirmation and never can, so it is
+	// OMITTED rather than answered from captured_amount. Promoting the requested figure to
+	// confirmed evidence for those rows would erase the very distinction being added, and
+	// would do it silently and permanently. Omission is also why a caller can tell the two
+	// classes apart at all — an absent key means "never confirmed", not "confirmed zero".
+	if op.ConfirmedCapturedAmount != nil {
+		out["confirmed_captured_amount"] = *op.ConfirmedCapturedAmount
+		out["confirmed_currency"] = op.ConfirmedCurrency
 	}
 	if deadline, bounded := statusReplayDeadline(op, s.statusReplayRetention); bounded {
 		out["status_replay_deadline_at"] = deadline
@@ -368,6 +380,20 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "invalid payment outcome"})
 		return
 	}
+	// Fail closed when the provider says it moved something other than what we asked for
+	// (TKT-257). BEFORE the outcome switch, not inside its Captured case: that case appends
+	// payment.authorized as its first statement, and the journal's trigger forbids UPDATE
+	// and DELETE — one premature append is unrecoverable. Placing the refusal here also
+	// means no settlement is written, because settlement rides the captured fact's
+	// transaction further down (ADR-048).
+	//
+	// The operation stays BOUND and unresolved, which is exactly the payment_unknown shape:
+	// recoverable via /internal/psp/status, never terminal (ADR-016 §Dec3). A provider that
+	// captured the wrong amount did move money, so claiming no side effect would be a lie.
+	if result.Outcome == psp.Captured && !result.Confirmed.Agrees(in.Amount, in.Currency) {
+		write(w, 502, map[string]string{"error": "provider confirmed a different amount than requested"})
+		return
+	}
 	// Derive the journalled fact type, the operation status string and the HTTP code from
 	// the normalized PSP outcome ALONE — a single dispatch point, so the authorize append
 	// and the terminal fact can never be decided from divergent fields. This preserves the
@@ -390,6 +416,14 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		}
 		status, factType, code = "captured", "payment.captured", 200
 		prov.State, prov.AuthorizedAmount, prov.CapturedAmount = "captured", in.Amount, in.Amount
+		// The provider's OWN figure, recorded beside the request-derived columns rather
+		// than replacing them (TKT-257). The guard above has already proven the two agree,
+		// so this is not a second source of truth — it is the evidence that the agreement
+		// was checked at all, and it is what lets a read say "the provider confirmed this"
+		// instead of "we asked for this". A pre-migration row has no such evidence and
+		// answers absent, permanently.
+		prov.ConfirmedCapturedAmount = &result.Confirmed.Amount
+		prov.ConfirmedCurrency = result.Confirmed.Currency
 	case psp.Declined:
 		status, factType, code = "declined", "payment.declined", 402
 		prov.State = "declined"

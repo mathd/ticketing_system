@@ -43,6 +43,10 @@ type evidenceOperation struct {
 	providerP string
 	providerC string
 	methodRef string
+	// confirmed is the PROVIDER's own figure (TKT-257). 0 leaves both confirmation columns
+	// NULL, which is the shape of every row written before migration 0006 — so the default
+	// seed is a legacy row, and a test wanting confirmed evidence has to say so.
+	confirmed int64
 }
 
 // evidenceServer wires the real store and router, then seeds the given operations.
@@ -58,13 +62,25 @@ func evidenceServer(t *testing.T, ops ...evidenceOperation) (http.Handler, *sql.
 		if op.state != "" {
 			status = op.state
 		}
+		// The confirmation is resolved in Go and passed as two plain parameters, both NULL
+		// when the seed asks for a legacy row. It used to be derived in SQL from the
+		// amount parameter, which reused $7 (request_currency) in a second position and
+		// made PostgreSQL refuse the statement outright: "inconsistent types deduced for
+		// parameter $7". Deciding it here is also simply clearer about which shape is
+		// being seeded.
+		var confirmedAmount, confirmedCurrency any
+		if op.confirmed != 0 {
+			confirmedAmount, confirmedCurrency = op.confirmed, op.currency
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,status,order_id,buyer_id,
 			                               request_amount,request_currency,payment_method_ref,provider_payment_ref,
-			                               provider_charge_ref,provider_state,authorized_amount,captured_amount,provider_state_at)
-			VALUES($1,$2,'fingerprint',$3,$4,$5,$6,$7,$8,$9,$10,$3,$6,$11,now())`,
+			                               provider_charge_ref,provider_state,authorized_amount,captured_amount,provider_state_at,
+			                               confirmed_captured_amount,confirmed_currency)
+			VALUES($1,$2,'fingerprint',$3,$4,$5,$6,$7,$8,$9,$10,$3,$6,$11,now(),$12,$13)`,
 			op.org, op.key, status, uuid.New(), uuid.New(), op.request, op.currency,
-			op.methodRef, op.providerP, op.providerC, op.captured); err != nil {
+			op.methodRef, op.providerP, op.providerC, op.captured,
+			confirmedAmount, confirmedCurrency); err != nil {
 			t.Fatal(err)
 		}
 		org := op.org
@@ -234,5 +250,62 @@ func TestOperationEvidenceIsScopedByOrganizerAndKey(t *testing.T) {
 		if res.Code != http.StatusNotFound {
 			t.Fatalf("%s: status=%d body=%s, want 404", tc.name, res.Code, res.Body.String())
 		}
+	}
+}
+
+// TKT-257. The two amount fields answer different questions, and the read must keep them
+// distinguishable:
+//
+//	captured_amount            — what payments durably RECORDED for this operation.
+//	confirmed_captured_amount  — what the PROVIDER said it moved, checked against the
+//	                             request before it was recorded.
+//
+// Written against the requirement rather than against a run: the seed captures 1250 and has
+// the provider confirm 1250, while the REQUEST was 2000. So an implementation that answered
+// the confirmed field from request_amount reports 2000, and one that answered it from
+// captured_amount happens to be right here — which is why the legacy test below, where the
+// two must diverge, is the one that proves the source.
+func TestCapturedOperationEvidenceReportsTheProvidersOwnFigure(t *testing.T) {
+	org, key := uuid.New(), "evidence-confirmed"
+	h, _ := evidenceServer(t, evidenceOperation{org: org, key: key, request: 2000, captured: 1250,
+		confirmed: 1250, currency: "EUR", state: "captured", providerP: "pi_x", providerC: "ch_x"})
+
+	body := decodeEvidence(t, getEvidence(t, h, operationPath(org, key), evidenceCredential))
+	if got, ok := body["confirmed_captured_amount"]; !ok || got != float64(1250) {
+		t.Fatalf("confirmed_captured_amount = %v (present=%t), want 1250", got, ok)
+	}
+	if got := body["confirmed_currency"]; got != "EUR" {
+		t.Fatalf("confirmed_currency = %v, want EUR", got)
+	}
+	// The recorded figure keeps its own meaning and stays present. Commerce's recovery
+	// runner decides whether to refund from captured_amount, so this field must not be
+	// redefined or dropped by the addition of the confirmed one.
+	if got, ok := body["captured_amount"]; !ok || got != float64(1250) {
+		t.Fatalf("captured_amount = %v (present=%t), want it unchanged at 1250", got, ok)
+	}
+}
+
+// A row written before migration 0006 has no provider confirmation and never can. It must
+// answer ABSENT rather than having its requested or recorded figure promoted to confirmed
+// evidence — the promotion would erase the distinction being added, silently and forever.
+//
+// The seed makes captured (1250) and request (2000) differ AND leaves the confirmation NULL,
+// so the two plausible wrong implementations — falling back to captured_amount, or to
+// request_amount — each produce a present key and fail here. Absence is the assertion.
+func TestLegacyOperationEvidenceOmitsProviderConfirmation(t *testing.T) {
+	org, key := uuid.New(), "evidence-legacy"
+	h, _ := evidenceServer(t, evidenceOperation{org: org, key: key, request: 2000, captured: 1250,
+		currency: "EUR", state: "captured", providerP: "pi_legacy"})
+
+	body := decodeEvidence(t, getEvidence(t, h, operationPath(org, key), evidenceCredential))
+	if got, present := body["confirmed_captured_amount"]; present {
+		t.Fatalf("a pre-0006 row has no provider confirmation; the read must omit it, got %v", got)
+	}
+	if got, present := body["confirmed_currency"]; present {
+		t.Fatalf("confirmed_currency must be omitted for a legacy row, got %v", got)
+	}
+	// The row is still perfectly readable for what it DOES record.
+	if got, ok := body["captured_amount"]; !ok || got != float64(1250) {
+		t.Fatalf("a legacy row must keep reporting what payments recorded: %v (present=%t)", got, ok)
 	}
 }

@@ -101,6 +101,20 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "provider refund unresolved"})
 		return
 	}
+	// Fail closed when the provider returned something other than what this leg bound
+	// (TKT-257). ADR-037 §3 admits a caller-supplied refund amount because payments
+	// validates it against durable captured evidence BEFORE the call; this is the half
+	// nobody wrote — validating what came BACK.
+	//
+	// Before the append, deliberately: a disagreement must leave no fact and no completion.
+	// The leg stays bound, its allowance stays reserved against both ceilings (ADR-037 §4),
+	// and the whole thing is recoverable — the same shape as the 502 above it. Appending
+	// first and refusing after would put an unretractable claim into an append-only journal
+	// that money came back when it did not.
+	if !result.Confirmed.Agrees(leg.Amount, leg.Currency) {
+		write(w, 502, map[string]string{"error": "provider confirmed a different refund amount than requested"})
+		return
+	}
 	factID := refundLegFactID(in.OrganizerID, key, refundKey)
 	// OccurredAt is the leg's stable bound_at, never the clock: the fact id is
 	// deterministic and the journal compares the full canonical fact on replay, so a fresh
@@ -115,7 +129,8 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 500, map[string]string{"error": "journal append failed"})
 		return
 	}
-	if err := s.journal.CompleteRefundLeg(r.Context(), in.OrganizerID, key, refundKey, result.ProviderRef, factID); err != nil {
+	confirmed := store.ConfirmedRefund{Amount: result.Confirmed.Amount, Currency: result.Confirmed.Currency}
+	if err := s.journal.CompleteRefundLeg(r.Context(), in.OrganizerID, key, refundKey, result.ProviderRef, factID, confirmed); err != nil {
 		write(w, 500, map[string]string{"error": "persist refund leg result"})
 		return
 	}

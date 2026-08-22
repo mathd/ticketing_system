@@ -198,13 +198,15 @@ type FactResult struct {
 
 // OperationState defines model for OperationState.
 type OperationState struct {
-	CapturedAmount         *int64              `json:"captured_amount,omitempty"`
-	Currency               *string             `json:"currency,omitempty"`
-	FactId                 *openapi_types.UUID `json:"fact_id,omitempty"`
-	OccurredAt             *time.Time          `json:"occurred_at,omitempty"`
-	Resolved               bool                `json:"resolved"`
-	Status                 *string             `json:"status,omitempty"`
-	StatusReplayDeadlineAt *time.Time          `json:"status_replay_deadline_at,omitempty"`
+	CapturedAmount          *int64              `json:"captured_amount,omitempty"`
+	ConfirmedCapturedAmount *int64              `json:"confirmed_captured_amount,omitempty"`
+	ConfirmedCurrency       *string             `json:"confirmed_currency,omitempty"`
+	Currency                *string             `json:"currency,omitempty"`
+	FactId                  *openapi_types.UUID `json:"fact_id,omitempty"`
+	OccurredAt              *time.Time          `json:"occurred_at,omitempty"`
+	Resolved                bool                `json:"resolved"`
+	Status                  *string             `json:"status,omitempty"`
+	StatusReplayDeadlineAt  *time.Time          `json:"status_replay_deadline_at,omitempty"`
 }
 
 // OrderSettlement defines model for OrderSettlement.
@@ -256,13 +258,15 @@ type PSPPartialRefundResultStatus string
 
 // PSPStatus defines model for PSPStatus.
 type PSPStatus struct {
-	Authorized           bool             `json:"authorized"`
-	AuthorizedAmount     int64            `json:"authorized_amount"`
-	Captured             bool             `json:"captured"`
-	CapturedAmount       int64            `json:"captured_amount"`
-	Currency             string           `json:"currency"`
-	Outcome              PSPStatusOutcome `json:"outcome"`
-	TerminalNoSideEffect bool             `json:"terminal_no_side_effect"`
+	Authorized              bool             `json:"authorized"`
+	AuthorizedAmount        int64            `json:"authorized_amount"`
+	Captured                bool             `json:"captured"`
+	CapturedAmount          int64            `json:"captured_amount"`
+	ConfirmedCapturedAmount *int64           `json:"confirmed_captured_amount,omitempty"`
+	ConfirmedCurrency       *string          `json:"confirmed_currency,omitempty"`
+	Currency                string           `json:"currency"`
+	Outcome                 PSPStatusOutcome `json:"outcome"`
+	TerminalNoSideEffect    bool             `json:"terminal_no_side_effect"`
 }
 
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
@@ -270,9 +274,11 @@ type PSPStatusOutcome string
 
 // RefundLegState defines model for RefundLegState.
 type RefundLegState struct {
-	Amount    int64  `json:"amount"`
-	Completed bool   `json:"completed"`
-	Currency  string `json:"currency"`
+	Amount            int64   `json:"amount"`
+	Completed         bool    `json:"completed"`
+	ConfirmedAmount   *int64  `json:"confirmed_amount,omitempty"`
+	ConfirmedCurrency *string `json:"confirmed_currency,omitempty"`
+	Currency          string  `json:"currency"`
 }
 
 // SettlementFee One fee and the payees it resolved to.

@@ -56,13 +56,21 @@ func (s *Server) refundLeg(w http.ResponseWriter, r *http.Request) {
 	// replayable at the provider. Completed is the row's settled state, not merely
 	// "a leg exists" — a bound leg is money the buyer has not received back.
 	//
-	// Amount is the amount the leg BOUND, which completion does not currently revise
-	// against the provider's answer (TKT-257) — the same figure the write response and the
-	// compensating fact already carry. It proves the leg was created for this amount and
-	// settled; it is not the provider's confirmation that this amount came back.
-	write(w, 200, map[string]any{
+	// Amount is the amount the leg BOUND — the same figure the write response and the
+	// compensating fact carry. It proves the leg was created for this amount and settled.
+	body := map[string]any{
 		"completed": leg.Completed,
 		"amount":    leg.Amount,
 		"currency":  leg.Currency,
-	})
+	}
+	// The provider's confirmation that this money actually came back, published separately
+	// and omitted when there is none (TKT-257). Completion now refuses without it, so a leg
+	// completed from here on always carries one — but a leg completed BEFORE migration 0006
+	// has none and never can. It answers absent rather than having its bound amount promoted
+	// to a provider confirmation it never received.
+	if leg.ConfirmedAmount != nil {
+		body["confirmed_amount"] = *leg.ConfirmedAmount
+		body["confirmed_currency"] = leg.ConfirmedCurrency
+	}
+	write(w, 200, body)
 }

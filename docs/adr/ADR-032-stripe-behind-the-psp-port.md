@@ -14,6 +14,11 @@ ADR-016 or ADR-011 — it satisfies preconditions they left open.
 Amended by **TKT-168** (§Provider-neutral evidence reads): what a read-only evidence surface may and
 may not publish, written down explicitly rather than left to be re-derived per endpoint.
 
+Amended by **TKT-257** (§Provider-neutral evidence reads, the bounding paragraph): payments records
+provider-confirmed amounts distinctly from requested ones and fails closed on a disagreement. This
+lifts the bound TKT-168 wrote into this ADR — the one saying these fields must not be cited as proof
+the *provider* moved that money.
+
 ## Context
 
 TKT-43 shipped the checkout recovery state machine (ADR-016) against a **fake PSP** whose
@@ -120,18 +125,41 @@ therefore prove *that* a charge ran but never *what it moved*, and had no read a
 leg, so a refund call replaced by a successful no-op was indistinguishable from one that moved
 money.
 
-**Bounded precisely: this is payments' RECORD of the movement, not the provider's confirmation of
-it.** Say which, the way ADR-021 insists on naming the adversary before writing "tamper-evident".
-`psp.Result` carries no monetary value; the charge path persists the **requested** amount as the
-captured amount, and a refund leg's amount is the one it BOUND, fixed before the provider call. The
-Stripe adapter parses neither `amount_received` nor the refund object's returned `amount` into that
-evidence. So these reads answer *"what payments durably recorded for this operation"* — which is
-exactly what a caller needs to detect a caller-side defect (a wrong delta, a skipped call, a
-no-op'd refund), and is **not** an independent check on the processor. A provider that captured or
-refunded a different amount would not be caught here. Closing that gap means recording
-provider-confirmed amounts distinctly and failing closed on disagreement: **TKT-257**, raised by
-TKT-168's adversarial review. Until it lands, do not cite these fields as proof the *provider*
-moved that money.
+**Bounded precisely: payments now records BOTH what it asked for and what the provider says it
+moved, and refuses to settle when they disagree.** Say which you mean, the way ADR-021 insists on
+naming the adversary before writing "tamper-evident". The two are separate fields with separate
+meanings, and conflating them is the defect TKT-257 closed:
+
+- **`captured_amount` / a refund leg's `amount`** — *payments' durable record of the movement*: what
+  it asked the provider to move. Unchanged in meaning, and unchanged in its readers. This is what
+  catches a **caller-side** defect — a wrong delta, a skipped call, a no-op'd refund.
+- **`confirmed_captured_amount` / `confirmed_amount`** *(payments migration 0006)* — *the provider's
+  own figure*, parsed from the response (`amount_received` on a PaymentIntent, `amount`/`currency` on
+  a refund object) and compared against the request **before anything is written**. This is what
+  catches a **provider-side** divergence.
+
+**The comparison fails closed at all four money-moving write paths** — the charge handler, the
+`/internal/psp/status` resolve path, a post-purchase refund leg, and the whole-refund compensation.
+A disagreement writes no journal fact, no settlement and no completion; the operation or leg stays
+bound and recoverable, never terminal, because a provider that moved the *wrong* amount still moved
+money (ADR-016 §Dec3). Both predicates are checked — amount **and** currency — and **absence is not
+agreement**: a provider that reports no figure has confirmed nothing, and settling on silence is the
+same fail-open in a quieter form.
+
+**The legacy-row rule.** A row written before migration 0006 has no provider confirmation and never
+can. It answers **absent** — the evidence reads OMIT the field rather than falling back to the
+recorded or requested figure. Promoting either would erase the distinction this amendment draws,
+silently and permanently, and nothing downstream could afterwards tell a back-filled row from a
+confirmed one. An absent key means *never confirmed*; it never means *confirmed zero*. (Zero is a
+real value a provider can report — Stripe sends `amount_received: 0` on an uncaptured intent — which
+is why the confirmation is nullable rather than defaulted.)
+
+**Name the adversary.** This is **honest-provider detection**, not tamper-evidence. It catches a
+processor that moves an amount other than the one requested, and a caller-side defect that asks for
+the wrong one. It does **not** constrain a writer with access to the payments database, who can set
+the confirmed column to whatever they like — that is the same bound ADR-021 draws, and it is
+unchanged. What is now true, and was not before, is that these reads may be cited as evidence the
+*provider* confirmed the movement, for any row that carries a confirmation.
 
 **These are evidence reads, not ledger reads, and they change nothing about what is recorded.** They
 bind no operation and no leg, call no provider, and append no fact. The journal payload stays
@@ -323,7 +351,7 @@ This ADR governs the whole ticket; the code lands in dependency-ordered slices:
 
 ## References
 
-- TKT-56, TKT-168 (§Provider-neutral evidence reads)
+- TKT-56, TKT-168, TKT-257 (§Provider-neutral evidence reads)
 - [ADR-016: Checkout recovery state machine](ADR-016-checkout-recovery-state-machine.md) — §Decision
   3 (normalized terminal-no-side-effect, lookup-vs-status split), §Decision 4 (compensation as facts),
   §Decision 8 (keyring)

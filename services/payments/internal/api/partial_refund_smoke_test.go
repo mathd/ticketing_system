@@ -36,14 +36,30 @@ type countingPSP struct {
 	authorizes int
 	amount     int64
 	key        string
+	// confirmAmount/confirmCurrency override what this stub reports having returned. Zero
+	// values mean "echo the request", which is the agreement path (TKT-257).
+	//
+	// State the limit plainly: an echoing stub CAN NEVER DISAGREE, so nothing in this file
+	// proves the fail-closed guard — these are regression cover for the paths around it.
+	// The divergence proofs are in provider_confirmation_smoke_test.go, where the override
+	// makes the stub answer with money the caller did not ask for.
+	confirmAmount   int64
+	confirmCurrency string
 }
 
-func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount int64, _ string) (psp.Result, error) {
+func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount int64, currency string) (psp.Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
 	c.amount, c.key = amount, idempotencyKey
-	return psp.Result{Outcome: psp.Refunded, ProviderRef: "re_" + idempotencyKey}, nil
+	confirmed := psp.ConfirmedMoney{Amount: amount, Currency: currency}
+	if c.confirmAmount != 0 {
+		confirmed.Amount = c.confirmAmount
+	}
+	if c.confirmCurrency != "" {
+		confirmed.Currency = c.confirmCurrency
+	}
+	return psp.Result{Outcome: psp.Refunded, ProviderRef: "re_" + idempotencyKey, Confirmed: &confirmed}, nil
 }
 
 func (c *countingPSP) count() int {
