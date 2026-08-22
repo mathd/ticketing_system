@@ -1,0 +1,25 @@
+{
+  "key": "TKT-268",
+  "type": "Task",
+  "parent": "TKT-9",
+  "classification": "simple",
+  "summary": "The reversal claims' organizer EXISTS scans the whole rejected prefix, so cost is unbounded in malformed rows (TKT-267 follow-up)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-267"
+    }
+  ],
+  "description": "Found by the adversarial ai-review of TKT-267 (`gpt-5.6-luna`), rated **[medium]**. Recorded rather\nthan absorbed: TKT-267's subject is closing a liveness defect, and this is the cost of the shape it\nused, not a defect in it.\n\nTKT-267 put a correlated `EXISTS` over `orders`/`reservations` inside the `claimable` CTE of both\nreversal claim queries, so a row whose source reservation belongs to another organizer is filtered\nBEFORE it can be leased. That is correct and it closed a real defect. But the `EXISTS` **cannot be\npart of the partial queue index**, so PostgreSQL evaluates it per candidate row and the `LIMIT`\ncannot stop early on rows it rejects. The work is therefore **linear in the size of the rejected\nprefix**, not bounded by the batch.\n\n**Measured on PostgreSQL 18.4 during TKT-267's review** (`order_exchanges`, batch 16):\n\n| malformed rows ahead of the queue | execution time | buffers |\n|---|---|---|\n| 0 (today's population) | ~0.1ms of subplan work, 16 probes | 112 |\n| 500 | ~4ms | — |\n| 50,000 | **263ms** | 350,585 |\n| 50,000, *without* the predicate (old query) | 0.34ms | 35 |\n\nA 775x regression at the extreme. Note the baseline comparison is not \"the old query was better\":\nwithout the predicate those 50,000 rows are **leased and dropped**, which wedges the sweep outright.\nSlow is better than stuck. But both are bad, and the reason both are bad is the same — the\nrelationship is not expressible as an index.\n\n**Why this was accepted in TKT-267 rather than fixed there.** The population that triggers it is the\none no code path creates, which is the same fact that bounds the original defect's severity. Fixing\nit properly means making claimability indexable again, which is a **schema** change, and TKT-267's\nscope explicitly excluded migrations.\n\n**Acceptance Criteria:**\n- [ ] Decide the shape. At least these three, with a stated reason for the choice:\n      (a) a `CHECK`/trigger or FK arrangement making the mismatched pair unwritable, so the `EXISTS`\n          can be dropped entirely and the queue index alone decides claimability;\n      (b) a denormalized `source_organizer_id` on `order_exchanges`/`order_refunds`, maintained at\n          write time, folded into the partial queue index predicate;\n      (c) accept and bound it — e.g. cap the rejected-prefix scan, or park a row the claim rejects\n          so it leaves the queue permanently.\n- [ ] Whichever is chosen, `EXPLAIN ANALYZE` against a large mismatched prefix must show work\n      bounded by the batch, not by the prefix. Reuse TKT-267's fixture shape (50k malformed rows,\n      oldest-first) — it is the one that exposes it.\n- [ ] Per ADR-021, say which adversary the chosen shape constrains. A `CHECK` constrains honest\n      writers only; it is not tamper-evidence, and the ticket must not claim it is.\n- [ ] If (a) or (b) removes the need for the `EXISTS`, TKT-267's predicate and its comments come out\n      with it, and its two conjunct tests are re-pointed at whatever enforces the rule instead.\n      **Do not delete them** — they pin a real property.\n\nQuality gates: `make check` green; money untouched. A migration here needs ADR-022's out-of-band\nplacement and a Down that fails closed if it cannot be reversed safely.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-267's ai-review — not yet shaped\n\nNeeds the 8-item DoR before Gate 1. **Not** `risk:low` on current evidence: every candidate remedy\nis a schema change on a money-adjacent table, which is one of the four carve-outs.\n\n**The measurements are already done** — they are in the description and in the comment at\n`exchange_reversal.go`'s conjunct 6. Shaping should not re-derive them; it should decide between the\nthree shapes, and the interesting question is whether (a) is reachable at all: `order_exchanges` and\n`order_refunds` reference `orders(id)`, but the organizer lives on `reservations`, two hops away, so\na plain FK cannot express the constraint. That is likely what pushes toward (b).\n\n**Check whether anything else in commerce has this shape** before sizing it. The pattern is \"a\npredicate over a joined table inside a `LIMIT`ed, `FOR UPDATE SKIP LOCKED` claim CTE\" —\n`ClaimStuckOrders` and the cancellation runner are worth a read."
+    }
+  ]
+}
