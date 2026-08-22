@@ -196,6 +196,17 @@ mkdir -p localdep && printf 'module example.com/dep\n\ngo 1.26\n' > localdep/go.
 go work edit -replace=example.com/dep=./localdep
 expect_fail "go build-list lag (relative replace in go.work)" check-build-list-lag
 
+# 8g. A directive that is not `use` or `replace` must SURVIVE into the workspace
+#     copy. The copy exists to keep checksum writes off the real tree, but it must
+#     still describe the same build: `go work edit -json` exposes only Go, Use and
+#     Replace, so an earlier version that REGENERATED go.work from that JSON
+#     silently dropped `godebug` — and the fidelity guard, which compares module
+#     directories, passed over it. The copy is therefore the original file with
+#     only its paths redirected. Asserted through the stage's own verdict: a
+#     godebug-bearing workspace must still check clean.
+go work edit -godebug=default=go1.25
+expect_pass "go build-list lag (godebug survives the workspace copy)" check-build-list-lag
+
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
 #    interpolation while `make check` stayed green, because the smoke path takes

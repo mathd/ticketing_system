@@ -70,33 +70,66 @@ if ! go work edit -json > "$work/workspace.json" 2>"$work/workspace.err"; then
   sed 's/^/  /' "$work/workspace.err" >&2
   exit 2
 fi
-if ! python3 - "$work/workspace.json" "$PWD" "$work/go.work" <<'PY'
+# The copy is the ORIGINAL FILE, with only its filesystem paths redirected by
+# `go work edit` — Go's own editor, operating on Go's own syntax. Regenerating the
+# file from the JSON was the previous approach and was wrong in a way the fidelity
+# guard could not see: `go work edit -json` exposes only Go, Use and Replace, so a
+# `godebug` line (and anything a future release adds) was silently dropped from the
+# copy while the module directories still matched. Directives that change build
+# semantics must survive, and the only way not to enumerate them is not to rewrite
+# them.
+cp "$PWD/go.work" "$work/go.work"
+# The edit arguments go through a NUL-delimited FILE, not a shell variable: bash
+# command substitution silently strips null bytes, and a path containing whitespace
+# would then be re-split into two arguments.
+if ! python3 - "$work/workspace.json" "$PWD" "$work/editargs" <<'PY'
 import json, os, sys
 doc = json.load(open(sys.argv[1]))
-root, out = sys.argv[2], sys.argv[3]
-lines = []
-if doc.get("Go"):
-    lines.append("go %s" % doc["Go"])
-if doc.get("Toolchain"):
-    lines.append("toolchain %s" % doc["Toolchain"])
+root = sys.argv[2]
+args = []
 def absolutize(p):
     return p if os.path.isabs(p) else os.path.normpath(os.path.join(root, p))
+# Drops name the path EXACTLY as `go work edit -json` reported it, which is exactly
+# as the file spells it; adds name the absolutised form. Every entry is dropped
+# before any is added, so the two sets cannot interleave.
+#
+# Do not "normalise" the drop spelling. `-dropuse` matches the literal written
+# path: `-dropuse=./gateway` does NOT remove a bare `use gateway`, and
+# `-dropuse=<abs>` removes neither. Both were tried; each left the entry in place
+# and the copy then held it twice, once absolute and once still relative. The
+# fidelity guard below is what caught it, which is the reason it compares
+# directories rather than trusting the rewrite.
+#
+# KNOWN LIMIT, deliberately not closed: a hand-written bare `use gateway` (no
+# "./") cannot be dropped by any spelling `go work edit` accepts, so this stage
+# REFUSES on such a workspace instead of checking it. That is fail-closed and
+# loud, not a wrong verdict. It is left open because Go's own tooling never
+# writes that form — `go work use m` emits `use ./m` — so reaching it requires
+# hand-editing go.work into a spelling the toolchain does not produce.
 for u in (doc.get("Use") or []):
-    lines.append('use "%s"' % absolutize(u["DiskPath"]))
+    args.append("-dropuse=" + u["DiskPath"])
+for u in (doc.get("Use") or []):
+    args.append("-use=" + absolutize(u["DiskPath"]))
 for r in (doc.get("Replace") or []):
     old, new = r["Old"], r["New"]
     o = old["Path"] + ("@" + old["Version"] if old.get("Version") else "")
-    # A replacement target with no version is a filesystem path; anything else is
-    # a module path and must NOT be touched.
-    n = new["Path"] + ("@" + new["Version"] if new.get("Version") else "")
-    if not new.get("Version") and (new["Path"].startswith(".") or new["Path"].startswith("/")):
-        n = '"%s"' % absolutize(new["Path"])
-    lines.append("replace %s => %s" % (o, n))
-open(out, "w").write("\n".join(lines) + "\n")
+    # Only a target with NO version is a filesystem path; anything else names a
+    # module and must not be touched.
+    if not new.get("Version") and not os.path.isabs(new["Path"]) \
+            and (new["Path"].startswith("./") or new["Path"].startswith("../")):
+        args += ["-dropreplace=" + o, "-replace=" + o + "=" + absolutize(new["Path"])]
+with open(sys.argv[3], "wb") as fh:
+    fh.write(b"\0".join(a.encode() for a in args))
 PY
 then
-  echo "check-go-build-list-lag: cannot rewrite the workspace copy — refusing to report a verdict" >&2
+  echo "check-go-build-list-lag: cannot plan the workspace copy rewrite — refusing to report a verdict" >&2
   exit 2
+fi
+if [ -s "$work/editargs" ]; then
+  if ! GOWORK="$work/go.work" xargs -0 go work edit < "$work/editargs"; then
+    echo "check-go-build-list-lag: cannot rewrite the workspace copy — refusing to report a verdict" >&2
+    exit 2
+  fi
 fi
 [ -f "$PWD/go.work.sum" ] && cp "$PWD/go.work.sum" "$work/go.work.sum"
 export GOWORK="$work/go.work"
