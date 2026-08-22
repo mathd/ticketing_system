@@ -140,12 +140,26 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 			  -- of the queue costs ~4ms; 50,000 costs ~263ms against ~0.34ms for the
 			  -- unfiltered query, a 775x regression on 350k buffer hits.
 			  --
-			  -- Accepted here because the population that triggers it is the one no code path
-			  -- creates — the same fact that bounds the defect's own severity — and because
-			  -- the alternative is worse: without the predicate those rows are LEASED and
-			  -- dropped, which wedges the sweep outright rather than slowing it. A durable
-			  -- fix belongs in the schema, so that claimability stays indexable; filed as
-			  -- TKT-268 rather than widened into this ticket.
+			  -- Accepted here because the alternative is worse, NOT because the bad population
+			  -- is impossible. Without the predicate those rows are LEASED and dropped, which
+			  -- wedges the sweep outright; with it the sweep slows in proportion to how many
+			  -- there are. Slow beats stuck.
+			  --
+			  -- Be precise about how bad that population can get, because it is tempting to
+			  -- write "no code path creates it" and stop there. No code path does — but the
+			  -- ADR-021 note below says plainly that a writer with commerce database access
+			  -- CAN, and a botched repair script is the realistic author of a large one. So
+			  -- the reassuring version of this sentence would contradict the paragraph under
+			  -- it. Nothing here bounds the size of a malformed backlog; only the absence of
+			  -- one does (ai-review pass 2, F5).
+			  --
+			  -- The measurements above are from one run on one machine (PostgreSQL 18.4,
+			  -- warm cache, the fixture described in TKT-268). They are orders of magnitude,
+			  -- not thresholds to tune against, and nothing in this repository reproduces
+			  -- them — TKT-268 owns turning them into something checkable (pass 2, F6).
+			  --
+			  -- A durable fix belongs in the schema, so that claimability stays indexable;
+			  -- filed as TKT-268 rather than widened into this ticket.
 			  --
 			  -- ADR-021, name the adversary: honest-writer consistency, not
 			  -- tamper-evidence. No code path writes a mismatched pair; a writer with

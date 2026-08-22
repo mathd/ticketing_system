@@ -871,22 +871,45 @@ func TestTheClaimLocksTheQueueRowOnlyAndNeverTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = other.Close() }()
-	if _, err := other.ExecContext(ctx, `SET lock_timeout='2s'`); err != nil {
+
+	// A PINNED connection, not the pool. `SET lock_timeout` is session state on one physical
+	// connection, and *sql.DB is a pool that may run the next statement on a different one —
+	// so setting it on the pool and writing through the pool can leave the write with no
+	// timeout at all. It would then block on the 30s context deadline instead of failing in
+	// two seconds: the test still goes red on a widened lock, but slowly, and a reader would
+	// credit the timeout that never applied. This is the harness-pinning shape, so bind both
+	// statements to one connection (ai-review pass 2, F3).
+	conn, err := other.Conn(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.ExecContext(ctx, `
-		UPDATE reservations SET hold_id=hold_id
-		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, a.OrderID); err != nil {
-		t.Fatalf("a concurrent write to the claim's SOURCE RESERVATION was blocked (%v). The "+
-			"claim must lock its own queue row and nothing else: locking the joined rows "+
-			"would make every sweep pass contend with checkout and refund writes on the "+
-			"reservation table", err)
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout='2s'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both joined tables, not just the reservation. The property is "the queue row ONLY", and
+	// a regression that took row locks on `orders` while leaving `reservations` writable would
+	// pass a reservation-only assertion (pass 2, F4). `SET hold_id=hold_id` and
+	// `SET status=status` are real UPDATEs and take real row locks — PostgreSQL writes a new
+	// tuple version rather than optimising a self-assignment away.
+	for _, w := range []struct{ what, stmt string }{
+		{"SOURCE RESERVATION", `UPDATE reservations SET hold_id=hold_id
+		                        WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`},
+		{"SOURCE ORDER", `UPDATE orders SET status=status WHERE id=$1`},
+	} {
+		if _, err := conn.ExecContext(ctx, w.stmt, a.OrderID); err != nil {
+			t.Fatalf("a concurrent write to the claim's %s was blocked (%v). The claim must "+
+				"lock its own queue row and nothing else: locking the joined rows would make "+
+				"every sweep pass contend with checkout and refund writes on those tables",
+				w.what, err)
+		}
 	}
 
 	// (2) SKIP LOCKED still fences: a second claimant must not re-lease the row this
 	// transaction holds. Without this half, a query that locked nothing at all would satisfy
 	// the assertion above and let two replicas drive one obligation.
-	second, err := ClaimOutstandingExchangeReversals(ctx, other, 50, time.Minute)
+	second, err := ClaimOutstandingExchangeReversals(ctx, conn, 50, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
