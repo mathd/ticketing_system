@@ -16,7 +16,7 @@ import (
 // Exchange reversal reconciliation, SQL half (TKT-259, ADR-063).
 //
 // Everything here is a claim about a PREDICATE, which is why it lives against real
-// PostgreSQL rather than against the runner's fakes: the five claim conjuncts, the
+// PostgreSQL rather than against the runner's fakes: the six claim conjuncts, the
 // organizer-scoped hold join, the lease, the claim fence, the backoff, parking and the
 // progress computation are all enforced by the shipped SQL, and a fake enforcing the same
 // rules in Go would prove only that the fake and the runner agree. The runner's DECISIONS
@@ -139,9 +139,9 @@ func readExchange(t *testing.T, db *sql.DB, ctx context.Context, org, id uuid.UU
 	return s
 }
 
-// ONE CASE PER CONJUNCT. The claim predicate has five independent conjuncts and an earlier
+// ONE CASE PER CONJUNCT. The claim predicate has six independent conjuncts and an earlier
 // refusal short-circuits the rest, so a single "the wrong row was not claimed" case proves
-// one predicate and is silent about the other four (AGENTS.md). Each case below satisfies
+// one predicate and is silent about the other five (AGENTS.md). Each case below satisfies
 // every earlier conjunct and violates exactly one.
 
 // Conjunct 1: settled_at IS NOT NULL. An unsettled exchange owes nothing yet — the money has
@@ -750,5 +750,74 @@ func TestAnActionableRowIsClaimedDespiteAnOlderAwaitingSwitchBacklog(t *testing.
 		t.Fatal("a switched, capacity-outstanding exchange was crowded out of the claim by " +
 			"older rows awaiting their switch — head-of-line blocking that delays exactly the " +
 			"work the sweep exists to do, while the capacity under-sells")
+	}
+}
+
+// Conjunct 6 (TKT-267): the source reservation must belong to the exchange's own organizer,
+// and the check must happen BEFORE the lease — which is why this is a claim-query test and
+// not another assertion on the final join.
+//
+// The final join has always been organizer-scoped, so no foreign hold_id ever escaped. The
+// defect was one stage earlier: `claimable` selected and `claimed` LEASED before that join
+// ran, so a malformed row — settled, switched, capacity outstanding, but whose source
+// reservation belongs to another organizer — took a lease and a claim slot and then vanished
+// at the join. Never returned means never released and never abandoned: nothing charged an
+// attempt, nothing parked it, nothing cleared the lease. It re-took a slot on every lease
+// expiry while the function reported no error.
+//
+// WHY THE LEASE ASSERTION COMES FIRST, and why the malformed row is the OLDEST. Under
+// `ORDER BY reversal_next_attempt_at LIMIT 1` a test that only asserted "the valid row came
+// back" could pass by ordering luck with the predicate deleted. Making the malformed row
+// older removes the luck — an unfiltered query takes it first by construction — and asserting
+// the untouched lease BEFORE the return means a deleted predicate goes red on the write,
+// which is the thing this conjunct is about (AGENTS.md: assert what the write left behind).
+//
+// This is honest-writer consistency, not tamper-evidence (ADR-021). No code path writes a
+// mismatched pair today; a writer with commerce database access still can, and this predicate
+// constrains that writer not at all. What it removes is the sweep's inability to make progress
+// once such a row exists.
+func TestConjunct6AnExchangeWhoseSourceReservationIsAnotherTenantsIsNotLeased(t *testing.T) {
+	db, ctx := outboxDB(t)
+	now := time.Now()
+	older, newer := now.Add(-time.Hour), now
+
+	// Malformed AND oldest: an unfiltered claim orders it first and spends the only slot on it.
+	malformed := settledExchange(t, db, ctx, "cross-tenant-source", func(s *exchangeSeed) {
+		s.SwitchedAt = &newer
+		s.NextAttemptAt = &older
+		s.OrganizerID = uuid.New() // diverges from the source reservation's organizer
+	})
+	valid := settledExchange(t, db, ctx, "same-tenant-source", func(s *exchangeSeed) {
+		s.SwitchedAt = &newer
+		s.NextAttemptAt = &newer
+	})
+
+	// limit=1 is the point: one slot, and the malformed row is first in the ordering.
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, db, 1, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// FIRST, and deliberately: the write is what this conjunct guards.
+	got := readExchange(t, db, ctx, malformed.OrganizerID, malformed.ID)
+	if got.LeaseUntil != nil || got.ClaimID != nil {
+		t.Fatalf("the malformed row was LEASED (lease_until=%v claim_id=%v). It is dropped by "+
+			"the final join, so it is never returned, never released and never abandoned: "+
+			"nothing charges an attempt, nothing parks it, nothing clears the lease. It "+
+			"re-takes a claim slot on every lease expiry, forever, and the function reports "+
+			"no error", got.LeaseUntil, got.ClaimID)
+	}
+
+	// The mirror. Without it, a claim query that returned nothing at all would satisfy the
+	// assertion above and starve the sweep completely.
+	var found bool
+	for _, c := range claimed {
+		if c.Exchange.ID == valid.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the valid exchange was not claimed: the only slot went to a row the query " +
+			"can never drive, which is the head-of-line blocking this predicate exists to stop")
 	}
 }

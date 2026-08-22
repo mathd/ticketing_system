@@ -66,6 +66,9 @@ func (c ClaimedReversal) Outstanding() bool {
 //   - `reversal_next_attempt_at<=now()` — the backoff. Written on release; this is what
 //     reads it.
 //   - lease absent or expired — the fence against a concurrent runner or a second replica.
+//   - the source reservation belongs to this refund's organizer — checked here rather than
+//     only at the join below, because this CTE selects and the next one leases before that
+//     join runs (TKT-267).
 //
 // The claimable set is chosen in a CTE under FOR UPDATE SKIP LOCKED, then joined to
 // orders/reservations for the identifiers the drive needs — the row lock has to sit on the
@@ -84,14 +87,39 @@ func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, leas
 	// scoping is still correct rather than lucky, and costs nothing.
 	rows, err := db.QueryContext(ctx, `
 		WITH claimable AS (
-			SELECT organizer_id, id FROM order_refunds
-			WHERE status='completed'
-			  AND (tickets_voided_at IS NULL OR capacity_returned_at IS NULL)
-			  AND reversal_parked_at IS NULL
-			  AND reversal_next_attempt_at<=now()
-			  AND (reversal_lease_until IS NULL OR reversal_lease_until<=now())
-			ORDER BY reversal_next_attempt_at
-			FOR UPDATE SKIP LOCKED
+			SELECT rf.organizer_id, rf.id FROM order_refunds AS rf
+			WHERE rf.status='completed'
+			  AND (rf.tickets_voided_at IS NULL OR rf.capacity_returned_at IS NULL)
+			  AND rf.reversal_parked_at IS NULL
+			  AND rf.reversal_next_attempt_at<=now()
+			  AND (rf.reversal_lease_until IS NULL OR rf.reversal_lease_until<=now())
+			  -- The source reservation is this organizer's, checked BEFORE the lease
+			  -- (TKT-267). The sibling of the exchange claim's conjunct 6; both queries have
+			  -- the same three-stage shape and had the same defect. This CTE selects and the
+			  -- next one LEASES before the final join runs, so a malformed row — completed,
+			  -- obligations outstanding, but whose source reservation belongs to another
+			  -- organizer — used to take a lease and a claim slot and then vanish at the
+			  -- join: never returned, so never released and never abandoned, so nothing
+			  -- charged an attempt, nothing parked it and nothing cleared the lease.
+			  --
+			  -- Worse than one slot: a leased-then-dropped row makes the store return FEWER
+			  -- rows than it leased, and RunOnce reads a short batch as a drained queue
+			  -- (len(claimed) < r.batch) and ends the pass.
+			  --
+			  -- FOR UPDATE OF rf, not a bare FOR UPDATE: the lock target is explicit and a
+			  -- mistyped alias is a parse error rather than a silently wider lock. The
+			  -- EXISTS leaves orders and reservations at AccessShareLock, so sweep replicas
+			  -- do not contend on them.
+			  --
+			  -- ADR-021: honest-writer consistency, not tamper-evidence. No code path writes
+			  -- a mismatched pair; a writer with commerce database access still can.
+			  AND EXISTS (
+			      SELECT 1 FROM orders o
+			      JOIN reservations r ON r.id = o.reservation_id
+			                         AND r.organizer_id = rf.organizer_id
+			      WHERE o.id = rf.order_id)
+			ORDER BY rf.reversal_next_attempt_at
+			FOR UPDATE OF rf SKIP LOCKED
 			LIMIT $1
 		), claimed AS (
 			-- The claim takes the lease and does NOT charge an attempt (ai-review F4).

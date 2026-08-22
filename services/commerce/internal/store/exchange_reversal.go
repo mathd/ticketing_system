@@ -53,7 +53,7 @@ func (c ClaimedExchangeReversal) Outstanding() bool {
 // ClaimOutstandingExchangeReversals leases settled exchanges still owing an obligation,
 // oldest due first.
 //
-// FIVE independent conjuncts guard this claim, and an earlier refusal short-circuits the
+// SIX independent conjuncts guard this claim, and an earlier refusal short-circuits the
 // rest, so each needs its own test with the earlier ones satisfied (AGENTS.md; the store
 // smoke file has one case per conjunct).
 func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]ClaimedExchangeReversal, error) {
@@ -66,8 +66,8 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 	// at write time rather than re-learned.
 	rows, err := db.QueryContext(ctx, `
 		WITH claimable AS (
-			SELECT organizer_id, id FROM order_exchanges
-			WHERE settled_at IS NOT NULL
+			SELECT oe.organizer_id, oe.id FROM order_exchanges AS oe
+			WHERE oe.settled_at IS NOT NULL
 			  -- ACTIONABLE only: switched, capacity outstanding. A row awaiting its switch
 			  -- is deliberately NOT claimed (ai-review pass 2, F4).
 			  --
@@ -86,13 +86,44 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 			  -- how they are observed, the gauge is. When access confirms the switch the row
 			  -- becomes claimable immediately, with its next-attempt time still at its
 			  -- default of the row's creation time and its budget untouched.
-			  AND tickets_exchanged_at IS NOT NULL
-			  AND capacity_returned_at IS NULL
-			  AND reversal_parked_at IS NULL
-			  AND reversal_next_attempt_at<=now()
-			  AND (reversal_lease_until IS NULL OR reversal_lease_until<=now())
-			ORDER BY reversal_next_attempt_at
-			FOR UPDATE SKIP LOCKED
+			  AND oe.tickets_exchanged_at IS NOT NULL
+			  AND oe.capacity_returned_at IS NULL
+			  AND oe.reversal_parked_at IS NULL
+			  AND oe.reversal_next_attempt_at<=now()
+			  AND (oe.reversal_lease_until IS NULL OR oe.reversal_lease_until<=now())
+			  -- CONJUNCT 6 (TKT-267): the source reservation is this organizer's. Scoped
+			  -- HERE and not only at the final join, because this CTE selects and the next
+			  -- one LEASES before that join runs. A malformed row — settled, switched,
+			  -- capacity outstanding, but whose source reservation belongs to another
+			  -- organizer — used to take a lease and a claim slot and then vanish at the
+			  -- join: never returned, so never released and never abandoned, so nothing
+			  -- charged an attempt, nothing parked it and nothing cleared the lease. It
+			  -- re-took a slot on every lease expiry while the function reported no error.
+			  --
+			  -- The cost was worse than one slot. A leased-then-dropped row makes the
+			  -- store return FEWER rows than it leased, and RunOnce reads a short batch as
+			  -- a drained queue (len(claimed) < r.batch) and ends the pass — so a single
+			  -- such row cut a drain from its per-pass bound to one batch per tick, and a
+			  -- batch of only such rows ended the pass having driven nothing. Same
+			  -- head-of-line blocking the awaiting-switch conjunct above exists to prevent,
+			  -- reached by a different route.
+			  --
+			  -- FOR UPDATE OF oe, not a bare FOR UPDATE: the lock target is then explicit
+			  -- in the SQL, and a mistyped alias is a parse error rather than a silently
+			  -- wider lock. Measured, not assumed — this EXISTS leaves orders and
+			  -- reservations at AccessShareLock, so sweep replicas do not contend on them.
+			  --
+			  -- ADR-021, name the adversary: honest-writer consistency, not
+			  -- tamper-evidence. No code path writes a mismatched pair; a writer with
+			  -- commerce database access still can, and this constrains that writer not at
+			  -- all. What it removes is the sweep's inability to progress once one exists.
+			  AND EXISTS (
+			      SELECT 1 FROM orders o
+			      JOIN reservations r ON r.id = o.reservation_id
+			                         AND r.organizer_id = oe.organizer_id
+			      WHERE o.id = oe.source_order_id)
+			ORDER BY oe.reversal_next_attempt_at
+			FOR UPDATE OF oe SKIP LOCKED
 			LIMIT $1
 		), claimed AS (
 			-- The claim takes the lease and does NOT charge an attempt. Charging here means
@@ -120,13 +151,11 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 		-- LoadExchangeSwitch carries the same predicate since TKT-260 — the read path this
 		-- comment used to record as an outstanding gap.
 		--
-		-- Scoped HERE is not scoped THROUGHOUT, and the difference is this query's, not that
-		-- one's: the claimable CTE selects and the claimed CTE leases before this join runs. A
-		-- malformed row — settled, switched, capacity outstanding, but whose source reservation
-		-- belongs to another organizer — therefore takes a lease and a claim slot, then vanishes
-		-- at this join. It is never returned, so it is never released or abandoned, and it
-		-- re-takes a slot every lease expiry while the function reports no error. Filed as
-		-- TKT-267 (ai-review of TKT-260); the fix belongs in the CTE, not here.
+		-- This join is now defence in depth rather than the only scoping: TKT-267 moved the
+		-- check into claimable, so a malformed row is filtered BEFORE the limit and the
+		-- lease and can no longer reach this join at all. It is kept because a claim that
+		-- silently returned another tenant's hold would be the worse failure, and the
+		-- predicate costs nothing.
 		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`,
 		limit, lease.Seconds(), claim)
 	if err != nil {
