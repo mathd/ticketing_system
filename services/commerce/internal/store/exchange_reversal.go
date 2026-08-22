@@ -117,8 +117,8 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 		JOIN orders o ON o.id = c.source_order_id
 		-- The reservation is joined on ORGANIZER too: it is where hold_id and the tenant
 		-- identity live, and an unscoped join is how a row acquires another tenant's hold.
-		-- LoadExchangeSwitch omits this scoping today (filed separately); it is not
-		-- inherited here.
+		-- LoadExchangeSwitch carries the same predicate since TKT-260 — the read path this
+		-- comment used to record as an outstanding gap. Both queries are now scoped.
 		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`,
 		limit, lease.Seconds(), claim)
 	if err != nil {

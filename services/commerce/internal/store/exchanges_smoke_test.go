@@ -1174,3 +1174,78 @@ func TestBindOrderExchangeReturnsConflictForAnIdentityCollision(t *testing.T) {
 			"INSERT error, or dropping the mapBindInsertError call, both land here.", err)
 	}
 }
+
+// TKT-260. LoadExchangeSwitch's reservation join is organizer-scoped, so an exchange row
+// whose organizer disagrees with its source reservation's is UNREACHABLE rather than served
+// with a stranger's hold.
+//
+// What the assertion has to be careful about. The join is FK-to-unique-key at both hops
+// (orders.reservation_id is UNIQUE REFERENCES reservations(id); order_exchanges.source_order_id
+// REFERENCES orders(id) under a UNIQUE index), so the predicate can never select a DIFFERENT
+// reservation — there is no second row for it to exclude. Its only possible effect is to reduce
+// a mismatched pair to zero rows. The property is therefore FAIL-CLOSED, not right-row, and a
+// test shaped as "the correct hold came back" would be vacuous: with one tenant seeded there is
+// no wrong row to return, and deleting the predicate leaves it green. That is the exact shape of
+// TestTheClaimedHoldBelongsToTheClaimingTenant and its refund-side twin, which is why this test
+// is not modelled on them.
+//
+// And ErrExchangeNotSettled is returned for TWO reasons — no row, and a row that is not settled
+// — so asserting the sentinel alone would also pass on a fixture that merely seeded an unsettled
+// row, for a reason having nothing to do with scoping. The settled_at read below forecloses that
+// reading: the row IS settled, so "not settled" can only mean "not found".
+//
+// Severity, stated plainly: defence in depth, not a live leak. No code path writes a mismatched
+// pair, which is why the fixture has to insert one directly. Per ADR-021, the adversary this does
+// NOT stop is a writer with commerce database access — this is honest-writer consistency, not
+// tamper-evidence.
+func TestLoadExchangeSwitchRefusesAnExchangeWhoseReservationIsAnotherTenants(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	// settledExchange derives the exchange's organizer from the reservation it seeds. The
+	// closure captures that value before overriding it, so the failure messages below can name
+	// both sides of the boundary rather than just reporting "err was nil".
+	var reservationOrg uuid.UUID
+	now := time.Now()
+	s := settledExchange(t, db, ctx, "switch-cross-tenant", func(s *exchangeSeed) {
+		reservationOrg = s.OrganizerID
+		s.OrganizerID = uuid.New()
+		s.SettledAt = &now
+	})
+	if s.OrganizerID == reservationOrg {
+		t.Fatal("fixture did not construct a mismatch: the exchange and its reservation share an organizer")
+	}
+
+	// Nothing in migration 0010 constrains order_exchanges.organizer_id against the source
+	// reservation's — it appears only in the composite primary key and the idempotency unique
+	// index, in no foreign key and no cross-table CHECK. That absence is what makes the row
+	// above insertable, and it is what makes this test possible at all.
+	var settledAt sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT settled_at FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		s.OrganizerID, s.ID).Scan(&settledAt); err != nil {
+		t.Fatalf("reading back the seeded exchange: %v", err)
+	}
+	if !settledAt.Valid {
+		t.Fatal("fixture seeded an UNSETTLED exchange: ErrExchangeNotSettled below would then be " +
+			"the unsettled branch rather than the not-found one, and this test would pass without " +
+			"observing the organizer predicate at all")
+	}
+
+	sw, err := LoadExchangeSwitch(ctx, db, s.OrganizerID, s.ID)
+	if !errors.Is(err, ErrExchangeNotSettled) {
+		t.Fatalf("LoadExchangeSwitch(org=%v, exchange=%v) = (%+v, %v), want ErrExchangeNotSettled.\n\n"+
+			"The exchange is settled and owned by %v, but its source reservation is owned by %v. "+
+			"Without `AND r.organizer_id = x.organizer_id` on the reservation join the read serves "+
+			"the row and hands back that reservation's hold_id — the hold the capacity leg returns "+
+			"seats to, so a wrong one returns capacity to a stranger's inventory pool.",
+			s.OrganizerID, s.ID, sw, err, s.OrganizerID, reservationOrg)
+	}
+
+	// The error code is not the property; the hold is. This is the assertion that names the
+	// actual harm, and the one a refactor returning a populated struct alongside the error
+	// would break.
+	if sw.SourceHoldID != uuid.Nil {
+		t.Fatalf("a refused cross-tenant read still returned SourceHoldID=%v (reservation owned by %v); "+
+			"no stranger's hold may leave this function", sw.SourceHoldID, reservationOrg)
+	}
+}

@@ -197,7 +197,12 @@ tuning knobs, not credentials.
   port cannot express a settlement.
 - **`LoadExchangeSwitch`'s unscoped reservation join.** Found while shaping this ticket and filed
   separately rather than widened into it. The new claim query is organizer-scoped on both joins and
-  does not inherit the shape.
+  does not inherit the shape. **Closed by TKT-260**, which gave the read the same
+  `r.organizer_id = x.organizer_id` predicate. The join is FK-to-unique-key at both hops, so the
+  predicate cannot select a different reservation — it reduces a mismatched pair to zero rows, and
+  the read answers `ErrExchangeNotSettled`. Like everything else in this ADR that is
+  honest-writer consistency, not tamper-evidence: it removes a way the code could reach another
+  tenant's hold by accident, and constrains no one who can write to the database directly.
 
 ### Integrity language — name the adversary (ADR-021)
 
