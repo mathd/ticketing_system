@@ -117,8 +117,16 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 		JOIN orders o ON o.id = c.source_order_id
 		-- The reservation is joined on ORGANIZER too: it is where hold_id and the tenant
 		-- identity live, and an unscoped join is how a row acquires another tenant's hold.
-		-- LoadExchangeSwitch omits this scoping today (filed separately); it is not
-		-- inherited here.
+		-- LoadExchangeSwitch carries the same predicate since TKT-260 — the read path this
+		-- comment used to record as an outstanding gap.
+		--
+		-- Scoped HERE is not scoped THROUGHOUT, and the difference is this query's, not that
+		-- one's: the claimable CTE selects and the claimed CTE leases before this join runs. A
+		-- malformed row — settled, switched, capacity outstanding, but whose source reservation
+		-- belongs to another organizer — therefore takes a lease and a claim slot, then vanishes
+		-- at this join. It is never returned, so it is never released or abandoned, and it
+		-- re-takes a slot every lease expiry while the function reports no error. Filed as
+		-- TKT-267 (ai-review of TKT-260); the fix belongs in the CTE, not here.
 		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`,
 		limit, lease.Seconds(), claim)
 	if err != nil {

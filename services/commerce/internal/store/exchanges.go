@@ -635,7 +635,25 @@ func LoadExchangeSwitch(ctx context.Context, db *sql.DB, org, exchangeID uuid.UU
 		SELECT x.settled_at, x.tickets_exchanged_at, x.capacity_returned_at, x.quantity, r.hold_id
 		FROM order_exchanges x
 		JOIN orders o ON o.id = x.source_order_id
-		JOIN reservations r ON r.id = o.reservation_id
+		-- The reservation is joined on ORGANIZER too, matching the claim query in
+		-- exchange_reversal.go: this is where hold_id and the tenant identity live, and an
+		-- unscoped join is how a row acquires another tenant's hold. Compared against
+		-- x.organizer_id rather than $1 deliberately — the invariant holds between the two
+		-- PERSISTED rows, not between a row and the caller's argument, and the two are equal
+		-- today only because the WHERE below makes them so.
+		--
+		-- Both hops are FK-to-unique-key (orders.reservation_id is UNIQUE REFERENCES
+		-- reservations(id); source_order_id REFERENCES orders(id) under a UNIQUE index), so
+		-- this cannot select a DIFFERENT reservation — there is no second row to exclude. Its
+		-- only effect is to reduce a mismatched pair to zero rows, which surfaces below as
+		-- ErrExchangeNotSettled. The property is fail-closed, not right-row.
+		--
+		-- Nothing writes a mismatched pair today, and migration 0010 does not forbid one:
+		-- organizer_id appears there in the composite primary key and the idempotency unique
+		-- index only, in no foreign key and no cross-table CHECK. So this is defence in depth,
+		-- and per ADR-021 it is honest-writer consistency, NOT tamper-evidence — a writer with
+		-- commerce database access can insert the mismatch regardless (TKT-260).
+		JOIN reservations r ON r.id = o.reservation_id AND r.organizer_id = x.organizer_id
 		WHERE x.organizer_id=$1 AND x.id=$2`, org, exchangeID).
 		Scan(&settled, &switched, &returned, &out.Quantity, &out.SourceHoldID)
 	if err != nil {
