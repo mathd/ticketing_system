@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -819,5 +820,80 @@ func TestConjunct6AnExchangeWhoseSourceReservationIsAnotherTenantsIsNotLeased(t 
 	if !found {
 		t.Fatal("the valid exchange was not claimed: the only slot went to a row the query " +
 			"can never drive, which is the head-of-line blocking this predicate exists to stop")
+	}
+}
+
+// The claim locks the QUEUE ROW ONLY, and two claimants never lease the same row
+// (ai-review of TKT-267, F1).
+//
+// Conjunct 6 put a correlated EXISTS over orders and reservations inside the locking CTE, and
+// the tests above cannot tell a narrow lock from a wide one: they run one claim and inspect
+// the result, so a regression to a clause that also locked the joined rows would keep every
+// one of them green while making this hot sweep contend with checkout, refund and exchange
+// writes on the reservation table.
+//
+// So assert the two things only a second connection can see. `FOR UPDATE OF oe` names its
+// target, and a mistyped alias is a parse error rather than a silently wider lock — but that
+// is an argument, and this is the test.
+func TestTheClaimLocksTheQueueRowOnlyAndNeverTwice(t *testing.T) {
+	db, ctx := outboxDB(t)
+	now := time.Now()
+	a := settledExchange(t, db, ctx, "lockscope-a", func(s *exchangeSeed) { s.SwitchedAt = &now })
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// The shipped function, inside a transaction, so its row locks are still held below.
+	// *sql.Tx satisfies OutboxDB, so this is the production query and not a copy of it.
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, tx, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bool
+	for _, c := range claimed {
+		if c.Exchange.ID == a.ID {
+			got = true
+		}
+	}
+	if !got {
+		t.Fatal("the fixture row was not claimed; this test cannot show what it is about")
+	}
+
+	// (1) The source reservation the EXISTS traversed must NOT be locked. A separate
+	// connection writes it under a short timeout: if the claim widened its lock, this blocks
+	// and fails, which is precisely the production symptom — sweep replicas serialising
+	// against ordinary checkout traffic.
+	other, err := sql.Open("pgx", os.Getenv("COMMERCE_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close() }()
+	if _, err := other.ExecContext(ctx, `SET lock_timeout='2s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ExecContext(ctx, `
+		UPDATE reservations SET hold_id=hold_id
+		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, a.OrderID); err != nil {
+		t.Fatalf("a concurrent write to the claim's SOURCE RESERVATION was blocked (%v). The "+
+			"claim must lock its own queue row and nothing else: locking the joined rows "+
+			"would make every sweep pass contend with checkout and refund writes on the "+
+			"reservation table", err)
+	}
+
+	// (2) SKIP LOCKED still fences: a second claimant must not re-lease the row this
+	// transaction holds. Without this half, a query that locked nothing at all would satisfy
+	// the assertion above and let two replicas drive one obligation.
+	second, err := ClaimOutstandingExchangeReversals(ctx, other, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range second {
+		if c.Exchange.ID == a.ID {
+			t.Fatal("a second claimant re-leased a row already locked by an open claim: " +
+				"SKIP LOCKED is not fencing, and two replicas would drive one obligation")
+		}
 	}
 }

@@ -108,10 +108,44 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 			  -- head-of-line blocking the awaiting-switch conjunct above exists to prevent,
 			  -- reached by a different route.
 			  --
-			  -- FOR UPDATE OF oe, not a bare FOR UPDATE: the lock target is then explicit
-			  -- in the SQL, and a mistyped alias is a parse error rather than a silently
-			  -- wider lock. Measured, not assumed — this EXISTS leaves orders and
-			  -- reservations at AccessShareLock, so sweep replicas do not contend on them.
+			  -- The lock stays on the queue row: orders and reservations are only ever read
+			  -- here, at AccessShareLock, so sweep replicas do not contend with checkout on
+			  -- them. Measured, not assumed, and the four cases are worth stating precisely
+			  -- because it is easy to credit the wrong thing:
+			  --
+			  --   EXISTS + bare FOR UPDATE  -> orders/reservations AccessShareLock
+			  --   EXISTS + FOR UPDATE OF oe -> orders/reservations AccessShareLock
+			  --   JOIN   + bare FOR UPDATE  -> orders/reservations ROWSHARELOCK  <- regression
+			  --   JOIN   + FOR UPDATE OF oe -> orders/reservations AccessShareLock
+			  --
+			  -- So the narrow lock is bought by the EXISTS being a WHERE-clause subquery
+			  -- rather than a FROM-list entry — NOT by OF oe, which changes nothing while
+			  -- the query has this shape. OF oe is kept for the row above it: it is what
+			  -- makes the obvious refactor (rewriting the EXISTS as a join) keep the narrow
+			  -- lock instead of silently taking row locks on two hot tables. It is insurance
+			  -- against a future edit, not the reason today's lock is narrow.
+			  --
+			  -- TestTheClaimLocksTheQueueRowOnlyAndNeverTwice guards the property that
+			  -- matters — a concurrent write to the traversed reservation is not blocked, and
+			  -- SKIP LOCKED still fences a second claimant. It does NOT go red on swapping
+			  -- OF oe for a bare FOR UPDATE, because that swap is genuinely a no-op here;
+			  -- it goes red on the join rewrite, which is the edit that can actually hurt.
+			  --
+			  -- WHAT THIS COSTS, stated honestly (ai-review F2). The EXISTS cannot be part
+			  -- of the partial queue index, so PostgreSQL evaluates it per candidate row and
+			  -- the LIMIT cannot stop early on rows it rejects. The work is therefore linear
+			  -- in the size of the REJECTED PREFIX, not bounded by the batch. Measured on
+			  -- PostgreSQL 18.4: 0 malformed rows costs 16 probes and ~0.1ms of subplan work
+			  -- (the LIMIT bounds it, which is today's population); 500 malformed rows ahead
+			  -- of the queue costs ~4ms; 50,000 costs ~263ms against ~0.34ms for the
+			  -- unfiltered query, a 775x regression on 350k buffer hits.
+			  --
+			  -- Accepted here because the population that triggers it is the one no code path
+			  -- creates — the same fact that bounds the defect's own severity — and because
+			  -- the alternative is worse: without the predicate those rows are LEASED and
+			  -- dropped, which wedges the sweep outright rather than slowing it. A durable
+			  -- fix belongs in the schema, so that claimability stays indexable; filed as
+			  -- TKT-268 rather than widened into this ticket.
 			  --
 			  -- ADR-021, name the adversary: honest-writer consistency, not
 			  -- tamper-evidence. No code path writes a mismatched pair; a writer with

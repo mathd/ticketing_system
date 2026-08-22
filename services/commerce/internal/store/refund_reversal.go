@@ -111,6 +111,13 @@ func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, leas
 			  -- EXISTS leaves orders and reservations at AccessShareLock, so sweep replicas
 			  -- do not contend on them.
 			  --
+			  -- The cost is linear in the REJECTED PREFIX, not bounded by the batch: the
+			  -- EXISTS cannot be part of the partial queue index, so it is evaluated per
+			  -- candidate and the LIMIT cannot stop early on rows it rejects. Negligible at
+			  -- today's population (zero malformed rows means one probe per RETURNED row);
+			  -- severe only on a large malformed backlog, which no code path creates. The
+			  -- exchange-side comment carries the measurements and the follow-up.
+			  --
 			  -- ADR-021: honest-writer consistency, not tamper-evidence. No code path writes
 			  -- a mismatched pair; a writer with commerce database access still can.
 			  AND EXISTS (
