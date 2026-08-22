@@ -20,6 +20,89 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-259 shaping — not yet shaped\n\nNeeds the 8-item DoR before Gate 1. Likely `risk:low` once shaped (three SQL predicates and one store-tier test), but that call belongs to shaping, not to filing.\n\nNote for whoever shapes it: the test is the interesting half. Asserting 'the right row comes back' stays green with the predicate deleted unless the fixture actually seeds a **foreign-tenant reservation whose id collides with the one being read** — otherwise there is no wrong row to return and the fixture cannot reach the failing state (AGENTS.md)."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaped — DoR complete, 8/8 `met`. Ready for Gate 1.\n\nTwo corrections to the filed ticket, both from reading the code. Neither changes whether the\nticket is worth doing; both change what it should deliver.\n\n**1. The two sibling queries are already scoped — the filed claim does not survive the read.**\n\n`exchanges.go:210` (`LoadExchangeSource`) and `exchanges.go:245` (`BindOrderExchange`) both carry\n`WHERE o.id=$1 AND r.organizer_id=$2`. They scope on the **reservation**, not the order, which is\nthe correct place — `orders` carries no `organizer_id` of its own. They need no edit.\n\nI swept every `JOIN reservations` in `commerce/internal/store` (11 production sites) rather than\njust the three named. The only genuinely unscoped join reachable from a tenant-scoped anchor row\nis `LoadExchangeSwitch`. Cleared, with the reason:\n\n| site | verdict |\n|---|---|\n| `exchanges.go:210`, `:245` | already scoped on `r.organizer_id` |\n| `exchanges.go:554` | scoped — `WHERE x.organizer_id=$1` and the reservation is the *replacement*'s |\n| `refunds.go:122`, `:294` | already scoped on `r.organizer_id` |\n| `refunds.go:353` | scoped by the enclosing tx's `WHERE organizer_id=$1` on `order_refunds` |\n| `exchange_reversal.go:122`, `refund_reversal.go:120` | the precedent — already carry the predicate |\n| `store.go:198`, `recovery.go:101` | unscoped **by design** — operator-wide sweeps with no organizer anchor; they *read* `organizer_id` off the reservation rather than comparing it. Adding a predicate here would be wrong. |\n| `customer.go:354` | anchors on `customer_id`; organizer is not the tenant axis for a wallet read |\n| **`exchanges.go:638`** | **the defect** |\n\n**2. The COS as filed is not achievable, because the join is single-valued.**\n\n> *\"A store-tier test that a foreign-tenant reservation is not reachable. Delete the predicate and watch it go red.\"*\n\nBoth hops are FK-to-primary-key:\n\n- `order_exchanges.source_order_id` → `orders(id)` **PK** (`0010`, and `order_exchanges_one_per_source` is UNIQUE)\n- `orders.reservation_id` → `reservations(id)` **PK**, itself `UNIQUE` (`0001`)\n\nSo given one organizer-scoped `order_exchanges` row, the chain reaches **exactly one** reservation,\nalways. There is no second row for the predicate to exclude, and no fixture — however it collides\nids — can construct one. `hold_id` cannot be *swapped* for a stranger's; the filing note's proposed\nfixture (\"a foreign-tenant reservation whose id collides\") cannot exist, since a colliding id is the\nsame PK row.\n\nThat does **not** make the predicate pointless. It changes what it does, from *excluding a wrong row*\nto *refusing to answer at all*. Nothing in the schema constrains `order_exchanges.organizer_id` to\nequal `reservations.organizer_id` — there is no cross-table CHECK and no composite FK — so a\nmismatched pair **is** constructible by direct insert. Today the read serves such a row and hands\nback a foreign hold; with the predicate it matches zero rows and returns `ErrExchangeNotSettled`.\n\n**Rewritten COS:**\n\n- [ ] `LoadExchangeSwitch`'s reservations join carries `AND r.organizer_id = x.organizer_id`.\n- [ ] The two sibling queries are **documented as already-scoped** (the sweep above is the record); no code change.\n- [ ] A store-tier smoke test (real PostgreSQL — the predicate lives in SQL) seeds an exchange whose\n      `organizer_id` disagrees with its reservation's, and asserts `LoadExchangeSwitch` returns\n      `ErrExchangeNotSettled` rather than a foreign `hold_id`. **Delete the predicate and it must go\n      red** — with the mismatch seeded it will, because the unscoped join happily serves the row.\n- [ ] The test asserts the **error**, not just \"the right hold came back\" — the latter is the vacuous\n      shape below and stays green either way.\n\n**Guard predicate count: 1.** One predicate added, so one test case; there is no short-circuit\nordering to enumerate.\n\n**A finding worth its own ticket.** The two precedent tests this ticket would naturally be modelled\non — `TestTheClaimedHoldBelongsToTheClaimingTenant` (`exchange_reversal_smoke_test.go:485`) and\n`TestClaimedReversalCarriesTheReservationsOrganizerAndHold` (`refund_reversal_smoke_test.go:99`) —\nare **both vacuous in exactly the way AGENTS.md describes**. Each seeds a single tenant and asserts\nthe returned hold equals the hold it just seeded. Delete `AND res.organizer_id = c.organizer_id`\nfrom `exchange_reversal.go:122` or `refund_reversal.go:120` and both stay green: with one tenant\nthere is no wrong row to return. ADR-062's F3 fix is code-correct and test-unproven. Retrofitting\nthem is **out of scope here** (this ticket's subject is `LoadExchangeSwitch`) and should be filed —\nbut the pattern must not be copied into this ticket's new test.\n\n**Severity, stated plainly:** defence-in-depth, not a live leak — as the ticket says. Reaching a\nforeign hold requires a mismatched row that no code path writes today. Per ADR-021, name the\nadversary: this is **honest-writer consistency, not tamper-evidence**. A writer with commerce DB\naccess can insert the mismatch regardless. The argument for fixing it is ADR-062's: the scoping\nshould be correct rather than lucky, and it costs one predicate.\n\n**`risk:low` — recommended.** One SQL predicate and one test, in one file, touching no money column,\nno migration, no auth surface, no CI config. The `approach`-deferred carve-out does not apply:\n`approach` is `met`, not `deferred`.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "LoadExchangeSwitch (exchanges.go:635-641) joins orders then reservations with no organizer predicate, and takes hold_id -- the hold capacity is returned to -- from that unscoped row. Defence-in-depth: make the scoping correct rather than lucky, matching the precedent exchange_reversal.go:118-122 already documents."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the one join chain in LoadExchangeSwitch (exchanges.go:637-638), plus a store-tier smoke test. OUT: the two siblings the ticket text names -- see `approach`, they are already scoped and the claim does not survive the read. OUT: retrofitting the two vacuous precedent tests (filed separately)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading the schema. The join chain is FK-to-PK at both hops (order_exchanges.source_order_id -> orders.id PK; orders.reservation_id -> reservations.id PK, UNIQUE), so it is functionally single-valued: the predicate cannot EXCLUDE a wrong row, it can only turn a mismatched row into zero rows. Nothing in the schema constrains order_exchanges.organizer_id to equal reservations.organizer_id, so the mismatch IS constructible by direct insert -- which is what makes a non-vacuous test possible at all."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-259 (found-in) is Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Add `AND r.organizer_id = x.organizer_id` to the reservations join. REMEDY CORRECTION -- the ticket's claim that exchanges.go:210 and :245 carry the same unscoped join does NOT survive the read: both already scope, via `WHERE o.id=$1 AND r.organizer_id=$2` on the reservation rather than the order. They are correct as they stand and need no edit -- documenting that is the deliverable for them. Full sink sweep of `JOIN reservations` in commerce/store found 11 production sites; the only genuinely unscoped one reachable from a tenant-scoped anchor row is LoadExchangeSwitch. store.go:198 (BackfillCompletionOutbox) and recovery.go:101 are unscoped BY DESIGN -- they are operator-wide sweeps with no organizer anchor, and they READ organizer_id off the reservation rather than comparing it. customer.go:354 anchors on customer_id, not organizer. GUARD PREDICATE COUNT: one predicate added, so one test case."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: one SQL predicate + one smoke test. Fits well inside a sprint."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS rewritten -- see the kind=readiness comment. The filed COS ('a foreign-tenant reservation is not reachable') is not achievable as stated, because the join is single-valued and there is no wrong row to return. The achievable and correct property is a FAIL-CLOSED one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked -- see `context` on the ticket"
+    }
+  },
+  "context": {
+    "area": "services/commerce/internal/store -- exchange reversal read path",
+    "entryPoints": [
+      "services/commerce/internal/store/exchanges.go:631 LoadExchangeSwitch",
+      "services/commerce/internal/store/exchange_reversal.go:100 ClaimOutstandingExchangeReversals (the precedent)"
+    ],
+    "governingAdrs": [
+      {
+        "adr": "ADR-063-exchange-reversal-reconciliation.md",
+        "constrains": "Owns the exchange reversal path this read serves. The switch is driven off a settled exchange; SourceHoldID is what the capacity leg returns seats to, so a wrong hold returns capacity to a stranger's pool."
+      },
+      {
+        "adr": "ADR-062-refund-reversal-reconciliation.md",
+        "constrains": "Source of the precedent. Its ai-review finding F3 is why refund_reversal.go:120 and exchange_reversal.go:122 carry `res.organizer_id = c.organizer_id`. NOTE: the organizer-scoping rule lives in the CODE COMMENT at exchange_reversal.go:118-121, not in the ADR prose -- do not go looking for it in the ADR."
+      },
+      {
+        "adr": "ADR-039-exchange-settles-the-difference.md",
+        "constrains": "Money semantics of an exchange. This ticket touches no money column and must not: the read selects quantity and hold_id only."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary. This is honest-writer consistency, NOT tamper-evidence -- a writer with commerce DB access can insert a mismatched row at will. Say 'defence-in-depth', never 'prevents'."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go:485 TestTheClaimedHoldBelongsToTheClaimingTenant",
+        "pins": "The precedent's own tenant assertion. It is VACUOUS -- it seeds one tenant and asserts the returned hold equals the hold it just seeded, so deleting the organizer predicate from exchange_reversal.go leaves it green. Do not copy this shape; it is the shape AGENTS.md warns about."
+      },
+      {
+        "test": "services/commerce/internal/store/refund_reversal_smoke_test.go:99 TestClaimedReversalCarriesTheReservationsOrganizerAndHold",
+        "pins": "Same vacuous shape on the refund side. Same warning."
+      },
+      {
+        "test": "services/commerce/internal/store/exchanges_smoke_test.go:258 TestBindOrderExchangeIsOrganizerScoped",
+        "pins": "The write path's organizer scoping. Must stay green; this ticket does not touch BindOrderExchange."
+      }
+    ],
+    "gotchas": [
+      "Smoke tests are build-tagged `//go:build smoke` and skip unless COMMERCE_TEST_DATABASE_URL is set. `make check` runs them via scripts/smoke.sh.",
+      "The settledExchange seed helper satisfies 0010's all-or-nothing CHECK constraints; a convenient subset fails eleven tests at once. Reuse the helper, do not hand-roll the insert.",
+      "reservations.hold_id is UNIQUE -- a second reservation needs its own hold uuid."
+    ]
+  }
 }
