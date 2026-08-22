@@ -172,6 +172,19 @@ Safe to add: `capacity_returned_at` has exactly one writer in commerce, downstre
   which found the eligibility difference to be sharper than "different": an exchange's switch marker
   is *access's* fact, so a sweep can drive the capacity half and must never assert the other —
   §2 there, and the reason §2 of THIS ADR does not transfer wholesale.
+- **The claim query's organizer scoping, before TKT-267.** The final join has always compared the
+  source reservation's organizer to the refund's, so no foreign `hold_id` ever escaped. But
+  `claimable` selected and `claimed` **leased** before that join ran, so a malformed row — completed,
+  obligations outstanding, whose source reservation belongs to another organizer — took a lease and a
+  claim slot and then vanished at the join. Never returned means never released and never abandoned:
+  nothing charged an attempt, nothing parked it, nothing cleared the lease, and it re-took a slot on
+  every lease expiry while the function reported no error. Worse than one slot, because a
+  leased-then-dropped row makes the store return fewer rows than it leased and `RunOnce` reads a short
+  batch as a drained queue (`len(claimed) < r.batch`) and ends the pass. **Closed by TKT-267**, which
+  moved the check into `claimable` for this query and ADR-063's alike; the final join stays as defence
+  in depth. This was a **liveness** defect, not a leak, and per ADR-021 it is honest-writer
+  consistency: no code path writes a mismatched pair, a writer with commerce database access still
+  can, and the predicate constrains that writer not at all.
 - **Unparking.** TKT-146, above.
 - **Seated partial returns.** TKT-164 owns the repair. Here they are parked and counted.
 - **Whether inventory should demand proof of prior voiding.** TKT-165, unchanged.

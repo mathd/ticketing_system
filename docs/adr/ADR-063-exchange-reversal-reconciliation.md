@@ -197,11 +197,16 @@ tuning knobs, not credentials.
   port cannot express a settlement.
 - **`LoadExchangeSwitch`'s unscoped reservation join.** Found while shaping this ticket and filed
   separately rather than widened into it. The claim query's own reservation join is organizer-scoped
-  and does not inherit the shape — though **only at the join**, which is a narrower statement than it
-  first reads: `claimable` selects and `claimed` leases before that join runs, so a row whose source
-  reservation belongs to another organizer takes a lease and a claim slot and is then dropped, never
-  returned and so never released. That is a liveness defect in this ADR's own claim query, not in the
-  read below; TKT-267 owns it. **Closed by TKT-260**, which gave the read the same
+  and did not inherit the shape — though for a while **only at the join**, which was a narrower
+  statement than it read: `claimable` selected and `claimed` leased before that join ran, so a row
+  whose source reservation belonged to another organizer took a lease and a claim slot and was then
+  dropped, never returned and so never released. **Closed by TKT-267**, which moved the organizer
+  check into `claimable` as a sixth conjunct (and did the same for ADR-062's refund claim, which had
+  the identical three-stage shape). The cost had been worse than one claim slot: a leased-then-dropped
+  row makes the store return fewer rows than it leased, and `RunOnce` reads a short batch as a drained
+  queue (`len(claimed) < r.batch`) and ends the pass — so one such row cut a drain from its per-pass
+  bound to a single batch per tick. The final join is kept as defence in depth. **Closed by TKT-260**,
+  which gave the read the same
   `r.organizer_id = x.organizer_id` predicate. The join is FK-to-unique-key at both hops, so the
   predicate cannot select a different reservation — it reduces a mismatched pair to zero rows, and
   the read answers `ErrExchangeNotSettled`. Like everything else in this ADR that is

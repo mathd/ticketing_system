@@ -627,3 +627,65 @@ func TestBacklogCountsOutstandingAndParkedSeparately(t *testing.T) {
 		t.Fatalf("parked grew by %d, want 1: a stopped reconciler would read as a busy one", got)
 	}
 }
+
+// The source reservation must belong to the refund's own organizer, checked BEFORE the lease
+// (TKT-267). The sibling of the exchange side's conjunct 6; the two claim queries have the
+// same three-stage shape and had the same defect.
+//
+// The final join has always been organizer-scoped, so no foreign hold_id escaped. The defect
+// was one stage earlier: `claimable` selected and `claimed` LEASED before that join ran, so a
+// malformed row — completed, obligations outstanding, but whose source reservation belongs to
+// another organizer — took a lease and a claim slot and then vanished at the join. Never
+// returned means never released and never abandoned: nothing charges an attempt, nothing parks
+// it, nothing clears the lease.
+//
+// The malformed row is the OLDEST and the lease assertion comes FIRST, for the reasons spelled
+// out on the exchange-side test: `ORDER BY reversal_next_attempt_at LIMIT 1` makes "the valid
+// row came back" passable by ordering luck, so the fixture removes the luck and the assertion
+// order puts the red on the write.
+//
+// Honest-writer consistency, not tamper-evidence (ADR-021): no code path writes a mismatched
+// pair today, a writer with commerce database access still can, and this constrains that
+// writer not at all.
+func TestARefundWhoseSourceReservationIsAnotherTenantsIsNotLeased(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	// Malformed AND oldest: an unfiltered claim orders it first and spends the only slot.
+	malformed := completedRefund(t, db, ctx, "cross-tenant-source", func(s *refundSeed) {
+		s.NextAttemptAt = reversalAgo(time.Hour)
+		s.OrganizerID = uuid.New() // diverges from the source reservation's organizer
+	})
+	valid := completedRefund(t, db, ctx, "same-tenant-source", nil)
+
+	claimed, err := ClaimOutstandingReversals(ctx, db, 1, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// FIRST: the write is what this predicate guards.
+	var lease sql.NullTime
+	var claim uuid.NullUUID
+	if err := db.QueryRowContext(ctx, `
+		SELECT reversal_lease_until, reversal_claim_id FROM order_refunds
+		WHERE organizer_id=$1 AND id=$2`, malformed.OrganizerID, malformed.ID).
+		Scan(&lease, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if lease.Valid || claim.Valid {
+		t.Fatalf("the malformed refund was LEASED (lease_until=%v claim_id=%v). It is dropped "+
+			"by the final join, so it is never returned, never released and never abandoned: "+
+			"nothing charges an attempt, nothing parks it, nothing clears the lease. It "+
+			"re-takes a claim slot on every lease expiry, forever", lease.Time, claim.UUID)
+	}
+
+	var found bool
+	for _, c := range claimed {
+		if c.Refund.ID == valid.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the valid refund was not claimed: the only slot went to a row the query can " +
+			"never drive, which is the head-of-line blocking this predicate exists to stop")
+	}
+}

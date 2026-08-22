@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 // Exchange reversal reconciliation, SQL half (TKT-259, ADR-063).
 //
 // Everything here is a claim about a PREDICATE, which is why it lives against real
-// PostgreSQL rather than against the runner's fakes: the five claim conjuncts, the
+// PostgreSQL rather than against the runner's fakes: the six claim conjuncts, the
 // organizer-scoped hold join, the lease, the claim fence, the backoff, parking and the
 // progress computation are all enforced by the shipped SQL, and a fake enforcing the same
 // rules in Go would prove only that the fake and the runner agree. The runner's DECISIONS
@@ -139,9 +140,9 @@ func readExchange(t *testing.T, db *sql.DB, ctx context.Context, org, id uuid.UU
 	return s
 }
 
-// ONE CASE PER CONJUNCT. The claim predicate has five independent conjuncts and an earlier
+// ONE CASE PER CONJUNCT. The claim predicate has six independent conjuncts and an earlier
 // refusal short-circuits the rest, so a single "the wrong row was not claimed" case proves
-// one predicate and is silent about the other four (AGENTS.md). Each case below satisfies
+// one predicate and is silent about the other five (AGENTS.md). Each case below satisfies
 // every earlier conjunct and violates exactly one.
 
 // Conjunct 1: settled_at IS NOT NULL. An unsettled exchange owes nothing yet — the money has
@@ -750,5 +751,186 @@ func TestAnActionableRowIsClaimedDespiteAnOlderAwaitingSwitchBacklog(t *testing.
 		t.Fatal("a switched, capacity-outstanding exchange was crowded out of the claim by " +
 			"older rows awaiting their switch — head-of-line blocking that delays exactly the " +
 			"work the sweep exists to do, while the capacity under-sells")
+	}
+}
+
+// Conjunct 6 (TKT-267): the source reservation must belong to the exchange's own organizer,
+// and the check must happen BEFORE the lease — which is why this is a claim-query test and
+// not another assertion on the final join.
+//
+// The final join has always been organizer-scoped, so no foreign hold_id ever escaped. The
+// defect was one stage earlier: `claimable` selected and `claimed` LEASED before that join
+// ran, so a malformed row — settled, switched, capacity outstanding, but whose source
+// reservation belongs to another organizer — took a lease and a claim slot and then vanished
+// at the join. Never returned means never released and never abandoned: nothing charged an
+// attempt, nothing parked it, nothing cleared the lease. It re-took a slot on every lease
+// expiry while the function reported no error.
+//
+// WHY THE LEASE ASSERTION COMES FIRST, and why the malformed row is the OLDEST. Under
+// `ORDER BY reversal_next_attempt_at LIMIT 1` a test that only asserted "the valid row came
+// back" could pass by ordering luck with the predicate deleted. Making the malformed row
+// older removes the luck — an unfiltered query takes it first by construction — and asserting
+// the untouched lease BEFORE the return means a deleted predicate goes red on the write,
+// which is the thing this conjunct is about (AGENTS.md: assert what the write left behind).
+//
+// This is honest-writer consistency, not tamper-evidence (ADR-021). No code path writes a
+// mismatched pair today; a writer with commerce database access still can, and this predicate
+// constrains that writer not at all. What it removes is the sweep's inability to make progress
+// once such a row exists.
+func TestConjunct6AnExchangeWhoseSourceReservationIsAnotherTenantsIsNotLeased(t *testing.T) {
+	db, ctx := outboxDB(t)
+	now := time.Now()
+	older, newer := now.Add(-time.Hour), now
+
+	// Malformed AND oldest: an unfiltered claim orders it first and spends the only slot on it.
+	malformed := settledExchange(t, db, ctx, "cross-tenant-source", func(s *exchangeSeed) {
+		s.SwitchedAt = &newer
+		s.NextAttemptAt = &older
+		s.OrganizerID = uuid.New() // diverges from the source reservation's organizer
+	})
+	valid := settledExchange(t, db, ctx, "same-tenant-source", func(s *exchangeSeed) {
+		s.SwitchedAt = &newer
+		s.NextAttemptAt = &newer
+	})
+
+	// limit=1 is the point: one slot, and the malformed row is first in the ordering.
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, db, 1, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// FIRST, and deliberately: the write is what this conjunct guards.
+	got := readExchange(t, db, ctx, malformed.OrganizerID, malformed.ID)
+	if got.LeaseUntil != nil || got.ClaimID != nil {
+		t.Fatalf("the malformed row was LEASED (lease_until=%v claim_id=%v). It is dropped by "+
+			"the final join, so it is never returned, never released and never abandoned: "+
+			"nothing charges an attempt, nothing parks it, nothing clears the lease. It "+
+			"re-takes a claim slot on every lease expiry, forever, and the function reports "+
+			"no error", got.LeaseUntil, got.ClaimID)
+	}
+
+	// The mirror. Without it, a claim query that returned nothing at all would satisfy the
+	// assertion above and starve the sweep completely.
+	var found bool
+	for _, c := range claimed {
+		if c.Exchange.ID == valid.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the valid exchange was not claimed: the only slot went to a row the query " +
+			"can never drive, which is the head-of-line blocking this predicate exists to stop")
+	}
+}
+
+// The claim locks the QUEUE ROW ONLY, and two claimants never lease the same row
+// (ai-review of TKT-267, F1).
+//
+// Conjunct 6 put a correlated EXISTS over orders and reservations inside the locking CTE, and
+// the tests above cannot tell a narrow lock from a wide one: they run one claim and inspect
+// the result, so a regression to a clause that also locked the joined rows would keep every
+// one of them green while making this hot sweep contend with checkout, refund and exchange
+// writes on the reservation table.
+//
+// So assert the two things only a second connection can see. `FOR UPDATE OF oe` names its
+// target, and a mistyped alias is a parse error rather than a silently wider lock — but that
+// is an argument, and this is the test.
+func TestTheClaimLocksTheQueueRowOnlyAndNeverTwice(t *testing.T) {
+	db, ctx := outboxDB(t)
+	now := time.Now()
+	a := settledExchange(t, db, ctx, "lockscope-a", func(s *exchangeSeed) { s.SwitchedAt = &now })
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// The shipped function, inside a transaction, so its row locks are still held below.
+	// *sql.Tx satisfies OutboxDB, so this is the production query and not a copy of it.
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, tx, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bool
+	for _, c := range claimed {
+		if c.Exchange.ID == a.ID {
+			got = true
+		}
+	}
+	if !got {
+		t.Fatal("the fixture row was not claimed; this test cannot show what it is about")
+	}
+
+	// (1) The source reservation the EXISTS traversed must NOT be locked. A separate
+	// connection writes it under a short timeout: if the claim widened its lock, this blocks
+	// and fails, which is precisely the production symptom — sweep replicas serialising
+	// against ordinary checkout traffic.
+	other, err := sql.Open("pgx", os.Getenv("COMMERCE_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close() }()
+
+	// A PINNED connection, not the pool. `SET lock_timeout` is session state on one physical
+	// connection, and *sql.DB is a pool that may run the next statement on a different one —
+	// so setting it on the pool and writing through the pool can leave the write with no
+	// timeout at all. It would then block on the 30s context deadline instead of failing in
+	// two seconds: the test still goes red on a widened lock, but slowly, and a reader would
+	// credit the timeout that never applied. This is the harness-pinning shape, so bind both
+	// statements to one connection (ai-review pass 2, F3).
+	conn, err := other.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout='2s'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both joined tables, not just the reservation. The property is "the queue row ONLY", and
+	// a regression that took row locks on `orders` while leaving `reservations` writable would
+	// pass a reservation-only assertion (pass 2, F4). `SET hold_id=hold_id` and
+	// `SET status=status` are real UPDATEs and take real row locks — PostgreSQL writes a new
+	// tuple version rather than optimising a self-assignment away.
+	for _, w := range []struct{ what, stmt string }{
+		{"SOURCE RESERVATION", `UPDATE reservations SET hold_id=hold_id
+		                        WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`},
+		{"SOURCE ORDER", `UPDATE orders SET status=status WHERE id=$1`},
+	} {
+		res, err := conn.ExecContext(ctx, w.stmt, a.OrderID)
+		if err != nil {
+			t.Fatalf("a concurrent write to the claim's %s was blocked (%v). The claim must "+
+				"lock its own queue row and nothing else: locking the joined rows would make "+
+				"every sweep pass contend with checkout and refund writes on those tables",
+				w.what, err)
+		}
+		// COUNT THE ROW, or this whole assertion is decoration. An UPDATE whose WHERE matches
+		// nothing succeeds and returns no error, so a fixture that stopped producing the
+		// expected row — or a subselect that silently found none — would sail through the
+		// check above having taken no lock and contended with nothing.
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("the concurrent write to the claim's %s touched %d rows, want 1: it took "+
+				"no row lock, so passing the block check above proves nothing about what the "+
+				"claim locks", w.what, n)
+		}
+	}
+
+	// (2) SKIP LOCKED still fences: a second claimant must not re-lease the row this
+	// transaction holds. Without this half, a query that locked nothing at all would satisfy
+	// the assertion above and let two replicas drive one obligation.
+	second, err := ClaimOutstandingExchangeReversals(ctx, conn, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range second {
+		if c.Exchange.ID == a.ID {
+			t.Fatal("a second claimant re-leased a row already locked by an open claim: " +
+				"SKIP LOCKED is not fencing, and two replicas would drive one obligation")
+		}
 	}
 }
