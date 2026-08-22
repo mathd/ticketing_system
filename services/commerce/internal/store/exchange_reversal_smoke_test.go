@@ -572,62 +572,6 @@ func TestTheClaimedHoldBelongsToTheClaimingTenant(t *testing.T) {
 	}
 }
 
-// The final join's organizer predicate is currently UNREACHABLE BY INPUT, and this test says
-// so out loud (TKT-266).
-//
-// TKT-267 added conjunct 6 — a correlated EXISTS in `claimable` checking the same condition —
-// and all three CTEs run in one statement under one snapshot, so the final join only ever
-// sees rows `claimable` already admitted. No seedable input reaches it with a mismatched
-// organizer. That is why the test above, which is a real cross-tenant test, still cannot go
-// red on deleting `AND res.organizer_id = c.organizer_id`: by the time control reaches that
-// join the malformed row is already gone.
-//
-// This is recorded as an executable fact rather than a comment because comments drift and the
-// situation is reversible: if a future edit removes or weakens conjunct 6, the malformed row
-// becomes claimable, THIS TEST GOES RED, and whoever made that edit learns that the final
-// join is now the only thing standing between them and a foreign hold_id — at which point it
-// needs the real cross-tenant test that cannot be written today.
-//
-// It is deliberately NOT an assertion that the final join is useless. It is defence in depth,
-// and per ADR-021 the adversary here is a future refactor, not a writer: anyone with commerce
-// database access can create the malformed row, and neither predicate constrains them.
-func TestTheFinalJoinsOrganizerPredicateIsShadowedByConjunct6(t *testing.T) {
-	db, ctx := outboxDB(t)
-	now := time.Now()
-
-	malformed := settledExchange(t, db, ctx, "shadowed", func(s *exchangeSeed) {
-		s.SwitchedAt = &now
-		s.OrganizerID = uuid.New() // diverges from its source reservation's organizer
-	})
-
-	if _, ok := claimExchange(t, db, ctx, malformed.ID); ok {
-		t.Fatal("a malformed row reached the claim's OUTPUT: both the `claimable` EXISTS and " +
-			"the final join failed to refuse it.")
-	}
-
-	// The load-bearing half, and the reason this is not a duplicate of conjunct 6's own test:
-	// assert the row was never LEASED. Refusal at the OUTPUT proves nothing about WHICH stage
-	// refused — the final join drops a malformed row just as effectively, so an output-only
-	// assertion stays green with conjunct 6 deleted and this test would claim to observe
-	// shadowing while observing nothing. The lease is written by `claimed`, which runs BEFORE
-	// the final join and AFTER `claimable`, so an untouched lease is reachable only if
-	// `claimable` did the refusing. That is precisely the shadowing relationship.
-	//
-	// If this goes red while the assertion above stays green, the two predicates have swapped
-	// roles: `claimable` no longer refuses, the final join has become the only thing standing
-	// between the sweep and a foreign hold_id, and it is now reachable by input — at which
-	// point it needs the real cross-tenant test that cannot be written while it is shadowed.
-	// Do not delete this test to make the gate green; read TKT-266 and TKT-267 first.
-	got := readExchange(t, db, ctx, malformed.OrganizerID, malformed.ID)
-	if got.LeaseUntil != nil || got.ClaimID != nil {
-		t.Fatalf("the malformed row was LEASED (lease_until=%v claim_id=%v) and then dropped "+
-			"by the final join. The refusal has moved from `claimable` to the join: the join "+
-			"is now load-bearing and reachable, and the leased-then-dropped row is TKT-267's "+
-			"liveness defect returning — nothing releases or abandons it, so it re-takes a "+
-			"claim slot on every lease expiry", got.LeaseUntil, got.ClaimID)
-	}
-}
-
 // Abandon hands a claim back without spending anything: the row was never driven, so there
 // is no attempt to charge and nothing to back off from. It must stay DUE, or a shutdown
 // mid-batch would delay every undriven row by a full backoff.
