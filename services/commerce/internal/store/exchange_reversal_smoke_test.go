@@ -483,24 +483,92 @@ func TestAbandonIsFencedByTheFullCompositeKey(t *testing.T) {
 // The claim's hold comes from the claimant's OWN reservation. An unscoped join is how a row
 // acquires another tenant's hold — and the hold is what capacity is returned to, so a wrong
 // one returns capacity to a stranger's inventory pool.
+// TKT-266 retarget. The expectation is derived WITHOUT re-running the predicate under test,
+// and a SECOND reservation on the SAME organizer makes the wrong answer constructible.
+//
+// The previous version derived its expected hold with
+// `SELECT r.hold_id ... WHERE o.id=$1 AND r.organizer_id=$2` — the claim's own join predicate
+// spelled out again. It compared the query's answer against a value obtained by asking the
+// same question, so it would have stayed green against a claim that sourced its hold from
+// anywhere. That is the precondition-that-cannot-fail shape (AGENTS.md), and it is a worse
+// defect than the thin fixture the ticket was filed about: seeding a second TENANT does not
+// fix it, and — see below — would not have been the right fixture anyway.
+//
+// WHAT THIS CAN AND CANNOT CATCH, stated precisely, because the obvious version of this test
+// is unfalsifiable. `orders.reservation_id` is `UNIQUE REFERENCES reservations(id)` and
+// `reservations.id` is the primary key (migration 0001), so `res.id = o.reservation_id` is
+// FK-to-PK and SINGLE-VALUED. Deleting `AND res.organizer_id = c.organizer_id` therefore
+// cannot make the join select a DIFFERENT reservation — it can only turn a mismatched row
+// into zero rows. An assertion of the form "the returned hold is not the other tenant's" can
+// never fire, whatever fixture backs it, and asserting it would be decoration.
+//
+// What CAN go wrong is the join losing its `id` correlation — `JOIN reservations res ON
+// res.organizer_id = c.organizer_id`, the plausible fat-finger of the very predicate this
+// test is about. That IS multi-valued, and it hands back an arbitrary reservation of the
+// right organizer. Catching it needs one organizer owning TWO reservations, which is what
+// this fixture builds and what the single-tenant original could not express.
 func TestTheClaimedHoldBelongsToTheClaimingTenant(t *testing.T) {
 	db, ctx := outboxDB(t)
 	now := time.Now()
-	s := settledExchange(t, db, ctx, "hold-scope", func(s *exchangeSeed) { s.SwitchedAt = &now })
 
-	c, ok := claimExchange(t, db, ctx, s.ID)
-	if !ok {
-		t.Fatal("not claimed")
-	}
-	var want uuid.UUID
-	if err := db.QueryRowContext(ctx, `
-		SELECT r.hold_id FROM orders o JOIN reservations r ON r.id=o.reservation_id
-		WHERE o.id=$1 AND r.organizer_id=$2`, s.OrderID, s.OrganizerID).Scan(&want); err != nil {
+	mine := settledExchange(t, db, ctx, "hold-scope", func(s *exchangeSeed) { s.SwitchedAt = &now })
+
+	// A SECOND reservation owned by the SAME organizer, with its own hold — the decoy. It is
+	// a legitimate row (organizers own many reservations); it is simply not this exchange's.
+	decoyHold := uuid.New()
+	decoyReservation := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,2,1250,2500,2500,'EUR','completed')`,
+		decoyReservation, mine.OrganizerID, decoyHold, uuid.New(), uuid.New(), uuid.New()); err != nil {
 		t.Fatal(err)
 	}
-	if c.Exchange.SourceHoldID != want {
-		t.Fatalf("hold = %v, want %v: the source hold must come from the claimant's own "+
-			"organizer-scoped reservation", c.Exchange.SourceHoldID, want)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, decoyReservation) })
+
+	// The expected hold comes from the reservation THIS ORDER points at, read by reservation
+	// id alone — no organizer predicate, so the lookup cannot launder the property under test.
+	var wantHold uuid.UUID
+	if err := db.QueryRowContext(ctx, `
+		SELECT r.hold_id FROM orders o JOIN reservations r ON r.id=o.reservation_id
+		WHERE o.id=$1`, mine.OrderID).Scan(&wantHold); err != nil {
+		t.Fatal(err)
+	}
+	if wantHold == decoyHold {
+		t.Fatal("fixture is broken: the decoy reservation shares a hold_id with the real one, " +
+			"so a join that picked the wrong row would be indistinguishable from one that " +
+			"picked the right row")
+	}
+
+	// Scan EVERY returned row, not the first match. A multi-valued join does not replace the
+	// right answer with the wrong one — it returns BOTH, and a helper that stops at the first
+	// hit finds the correct row and reports success while the claim has silently emitted the
+	// same obligation twice. The duplication is the defect: two rows means the sweep drives one
+	// exchange twice in a pass and returns its capacity twice.
+	claimed, err := ClaimOutstandingExchangeReversals(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, c := range claimed {
+		if c.Exchange.ID == mine.ID {
+			got = append(got, c.Exchange.SourceHoldID)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("the claim returned %d rows for one exchange (holds %v). The join lost its "+
+			"`res.id = o.reservation_id` correlation and is matching on organizer alone, so "+
+			"every reservation that organizer owns produces a row: the sweep would drive one "+
+			"obligation once per row and return its capacity that many times", len(got), got)
+	}
+	if got[0] == decoyHold {
+		t.Fatalf("the claim returned a DIFFERENT reservation's hold (%v) belonging to the same "+
+			"organizer. The capacity leg returns seats to this hold, so it would give capacity "+
+			"back against a reservation the buyer never held", decoyHold)
+	}
+	if got[0] != wantHold {
+		t.Fatalf("hold = %v, want %v: the source hold must come from the reservation this "+
+			"order actually points at", got[0], wantHold)
 	}
 }
 

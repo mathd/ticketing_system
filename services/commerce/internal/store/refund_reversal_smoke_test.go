@@ -96,20 +96,74 @@ func reversalAhead(d time.Duration) *time.Time { t := time.Now().Add(d); return 
 // reason the query cannot reuse LookupRefundByID, which documents that it does not populate
 // HoldID — and without the hold, DriveReversal's capacity leg short-circuits on
 // `refund.HoldID == uuid.Nil` and the obligation is never discharged, silently, forever.
+//
+// TKT-266 retarget: a SECOND reservation on the SAME organizer, so the wrong answer is
+// constructible. The exchange-side sibling carries the full reasoning; the short version is
+// that `res.id = o.reservation_id` is FK-to-PK and single-valued, so deleting the organizer
+// predicate can only produce ZERO rows, never a foreign hold — an assertion that the returned
+// hold is not some other tenant's could never fire. What can actually go wrong is the join
+// losing its `id` correlation and matching on organizer alone, which is multi-valued; that
+// needs one organizer with two reservations to detect, which the single-tenant original could
+// not express.
+//
+// This test already derived `wantHold` without the organizer predicate, so unlike its sibling
+// the derivation was sound; only the fixture was too small.
+//
+// The other assertions below (organizer, quantity, claim token) are the original ones and are
+// kept: they pin that the claim carries what `DriveReversal` needs, which is a different
+// property and still worth failing on.
 func TestClaimedReversalCarriesTheReservationsOrganizerAndHold(t *testing.T) {
 	db, ctx := outboxDB(t)
 	s := completedRefund(t, db, ctx, "reversal-join", nil)
 
+	// The decoy: another reservation of the SAME organizer, with its own hold. Legitimate —
+	// organizers own many reservations — but not this refund's.
+	decoyHold, decoyReservation := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
+		                         quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,2,1250,2500,2500,'EUR','completed')`,
+		decoyReservation, s.OrganizerID, decoyHold, uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, decoyReservation) })
+
+	// Read by reservation id alone — no organizer predicate, so this lookup cannot launder the
+	// property under test by re-asking the question the claim is being tested on.
 	var wantHold uuid.UUID
 	if err := db.QueryRowContext(ctx, `
 		SELECT r.hold_id FROM orders o JOIN reservations r ON r.id=o.reservation_id WHERE o.id=$1`,
 		s.OrderID).Scan(&wantHold); err != nil {
 		t.Fatal(err)
 	}
+	if wantHold == decoyHold {
+		t.Fatal("fixture is broken: the decoy reservation shares a hold_id with the real one, " +
+			"so a join picking the wrong row would look exactly like one picking the right row")
+	}
 
-	c, ok := claimReversal(t, db, ctx, s.ID)
-	if !ok {
-		t.Fatal("an outstanding reversal was not claimable")
+	// EVERY returned row, not the first match: a multi-valued join returns the right row
+	// alongside the wrong one, so a helper that stops at the first hit reports success while
+	// the claim has emitted the same obligation twice. The duplication is the defect.
+	all, err := ClaimOutstandingReversals(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []ClaimedReversal
+	for _, r := range all {
+		if r.Refund.ID == s.ID {
+			got = append(got, r)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("the claim returned %d rows for one refund. The join lost its "+
+			"`res.id = o.reservation_id` correlation and is matching on organizer alone, so "+
+			"every reservation that organizer owns produces a row and the sweep would return "+
+			"the same capacity once per row", len(got))
+	}
+	c := got[0]
+	if c.Refund.HoldID == decoyHold {
+		t.Fatalf("the claim returned a DIFFERENT reservation's hold (%v) belonging to the same "+
+			"organizer", decoyHold)
 	}
 	if c.Refund.HoldID != wantHold {
 		t.Fatalf("hold = %v, want %v: without the reservation join the capacity leg "+
