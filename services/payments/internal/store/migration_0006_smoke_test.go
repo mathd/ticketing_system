@@ -7,14 +7,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // TKT-257, migration 0006. These tests stand a database up at the PRE-0006 schema, write
@@ -57,13 +56,9 @@ func migrationDB(t *testing.T, name string) (*sql.DB, context.Context) {
 		t.Fatal(err)
 	}
 
-	target, err := withDBName(dsn, dbName)
+	db, _, err := openWithDBName(dsn, dbName)
 	if err != nil {
-		t.Fatalf("build a DSN for the throwaway database: %v", err)
-	}
-	db, err := sql.Open("pgx", target)
-	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open the throwaway database: %v", err)
 	}
 	// ASSERT what we actually connected to, before running anything destructive. This test
 	// calls MigrateDownTo, which drops columns — so a DSN rewrite that silently returned the
@@ -94,103 +89,127 @@ func migrationDB(t *testing.T, name string) (*sql.DB, context.Context) {
 
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// withDBName points a PostgreSQL DSN at a different database, keeping everything else.
+// openWithDBName opens a connection to the SAME server the DSN names, on a different
+// database.
 //
-// Delegated to pgx's own connection-string parser rather than rewritten by hand. Both forms
-// libpq accepts have to work — the URL form and the keyword form (host=... dbname=...) — and
-// the keyword form carries quoting and backslash-escaping rules that a whitespace tokenizer
-// silently mangles: `password='secret with spaces'` is ONE field, not three. Getting this
-// wrong is invisible in the worst way, because a rewrite that fails to change the database
-// still returns a perfectly valid connection to the WRONG one, and this caller is about to
-// run destructive migrations (ai-review, second and third passes).
+// It mutates the PARSED config and hands that config to the driver, rather than rewriting
+// the DSN text and re-parsing it. Two earlier attempts did rewrite the text and both were
+// wrong in ways that are invisible until they matter (ai-review passes two through four):
+// a whitespace tokenizer mangled libpq's keyword quoting, and re-serializing a parsed config
+// silently dropped everything the serializer did not think to re-emit — sslmode and the
+// certificate material, every fallback host, target_session_attrs, connect_timeout,
+// application_name. A DSN that required certificate validation came back able to connect in
+// plaintext, and a multi-host CI DSN came back pointing at one node.
 //
-// The rebuilt DSN is emitted in keyword form regardless of the input's shape: pgconn has
-// already resolved defaults and environment variables into the config, so re-serializing is
-// about connecting to the right place, not about round-tripping the operator's text.
-func withDBName(dsn, name string) (string, error) {
-	cfg, err := pgconn.ParseConfig(dsn)
+// Changing one field of the parsed config cannot lose a field it does not touch. That is the
+// whole argument, and it is why this no longer produces a DSN string at all.
+// It returns the config it HANDED THE DRIVER alongside the handle. That is what the test
+// asserts on, so the assertions are facts about what this function did rather than about a
+// config the test re-derived for itself — a test that re-parsed the DSN and applied the same
+// edit would pass no matter what this function actually passed to stdlib.OpenDB.
+func openWithDBName(dsn, name string) (*sql.DB, *pgx.ConnConfig, error) {
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return "", fmt.Errorf("parse PostgreSQL DSN: %w", err)
+		return nil, nil, fmt.Errorf("parse PostgreSQL DSN: %w", err)
 	}
-	if cfg.Host == "" {
-		return "", fmt.Errorf("DSN names no host")
-	}
-	parts := []string{
-		"host=" + quoteDSNValue(cfg.Host),
-		"port=" + strconv.Itoa(int(cfg.Port)),
-		"dbname=" + quoteDSNValue(name),
-		"user=" + quoteDSNValue(cfg.User),
-	}
-	if cfg.Password != "" {
-		parts = append(parts, "password="+quoteDSNValue(cfg.Password))
-	}
-	// TLSConfig nil means pgconn resolved sslmode to disable; anything else negotiates TLS.
-	if cfg.TLSConfig == nil {
-		parts = append(parts, "sslmode=disable")
-	}
-	return strings.Join(parts, " "), nil
+	// One field. pgconn.FallbackConfig carries only host/port/TLS — the database is a
+	// top-level setting shared by every candidate host — so a multi-host DSN follows this
+	// rename on all of them without further work.
+	cfg.Database = name
+	return stdlib.OpenDB(*cfg), cfg, nil
 }
 
-// quoteDSNValue renders a value for a keyword DSN, quoting and escaping per libpq's rules so
-// a password with spaces or a quote survives the round trip.
-func quoteDSNValue(v string) string {
-	if v == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(v, " '\\") {
-		return v
-	}
-	r := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
-	return "'" + r.Replace(v) + "'"
-}
-
-// The rewrite decides which database gets DROPPED, so it is tested on every DSN shape this
-// suite could legally be handed rather than only the URL form this environment uses today.
-// Before it used a real parser, a keyword DSN came back UNCHANGED — pointing at the shared
-// store-test database — and a quoted password containing spaces came back mangled.
-//
-// Asserted by parsing the RESULT: comparing rendered text would pin the serializer's
-// formatting rather than the property that matters, which is where the connection lands.
-func TestWithDBNameRewritesEveryDSNForm(t *testing.T) {
+// The rewrite decides which database gets DROPPED and how the connection to it is secured,
+// so it is asserted on the config the driver will actually use — not on rendered text, which
+// would pin a serializer this code no longer has.
+func TestOpenWithDBNameKeepsEverythingButTheDatabase(t *testing.T) {
 	cases := []struct {
-		name, dsn    string
-		wantUser     string
-		wantPassword string
+		name, dsn string
+		check     func(t *testing.T, cfg *pgx.ConnConfig)
 	}{
-		{"url", "postgres://payments:pw@localhost:15432/payments_store_smoke", "payments", "pw"},
-		{"url with options", "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable", "payments", "pw"},
-		{"postgresql scheme", "postgresql://u:pw@localhost:5432/old", "u", "pw"},
-		{"keyword", "host=localhost port=5432 dbname=payments_store_smoke user=payments password=pw", "payments", "pw"},
-		{"keyword without a database", "host=localhost port=5432 user=payments password=pw", "payments", "pw"},
-		// The case a whitespace tokenizer silently destroys.
-		{"keyword with a quoted password", "host=localhost port=5432 dbname=payments_store_smoke user=payments password='secret with spaces'", "payments", "secret with spaces"},
-		{"keyword with an escaped quote", `host=localhost port=5432 user=payments password='it\'s'`, "payments", "it's"},
+		{
+			name: "url form",
+			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if cfg.User != "payments" || cfg.Password != "pw" || cfg.Host != "localhost" || cfg.Port != 15432 {
+					t.Fatalf("connection identity not preserved: %+v", cfg.Config)
+				}
+			},
+		},
+		{
+			// The case a whitespace tokenizer destroyed: one field, not three.
+			name: "keyword form with a quoted password",
+			dsn:  "host=localhost port=5432 dbname=payments_store_smoke user=payments password='secret with spaces'",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if cfg.Password != "secret with spaces" {
+					t.Fatalf("password mangled: %q", cfg.Password)
+				}
+			},
+		},
+		{
+			// The case re-serialization destroyed: TLS silently downgraded to prefer, and
+			// the certificate material dropped, on a connection about to run migrations.
+			name: "sslmode=require survives",
+			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=require",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if cfg.TLSConfig == nil {
+					t.Fatal("sslmode=require was downgraded to a plaintext connection")
+				}
+			},
+		},
+		{
+			name: "sslmode=disable stays disabled",
+			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if cfg.TLSConfig != nil {
+					t.Fatal("sslmode=disable was upgraded")
+				}
+			},
+		},
+		{
+			name: "runtime parameters and timeout survive",
+			dsn:  "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable&connect_timeout=7&application_name=migrations",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if cfg.ConnectTimeout != 7*time.Second {
+					t.Fatalf("connect_timeout = %v, want 7s", cfg.ConnectTimeout)
+				}
+				if cfg.RuntimeParams["application_name"] != "migrations" {
+					t.Fatalf("application_name lost: %v", cfg.RuntimeParams)
+				}
+			},
+		},
+		{
+			// A multi-host DSN keeps every host. Re-serializing kept only the first, so a
+			// failover silently lost its other candidates.
+			name: "every fallback host survives",
+			dsn:  "postgres://payments:pw@localhost:15432,localhost:15433/payments_store_smoke?sslmode=disable&target_session_attrs=read-write",
+			check: func(t *testing.T, cfg *pgx.ConnConfig) {
+				if len(cfg.Fallbacks) == 0 {
+					t.Fatal("the second host was dropped; a multi-host DSN lost its failover")
+				}
+				if cfg.ValidateConnect == nil {
+					t.Fatal("target_session_attrs was dropped; the connection could land on a standby")
+				}
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := withDBName(c.dsn, "scratch")
+			db, cfg, err := openWithDBName(c.dsn, "scratch")
 			if err != nil {
-				t.Fatalf("withDBName(%q): %v", c.dsn, err)
+				t.Fatalf("openWithDBName(%q): %v", c.dsn, err)
 			}
-			cfg, err := pgconn.ParseConfig(got)
-			if err != nil {
-				t.Fatalf("withDBName produced an unparseable DSN %q: %v", got, err)
-			}
+			t.Cleanup(func() { _ = db.Close() })
+			// cfg is the config the DRIVER was handed, reported back by the function under
+			// test — not one this test rebuilt. Asserting on a re-derived config would be an
+			// assertion about the test.
 			if cfg.Database != "scratch" {
-				t.Fatalf("database = %q, want scratch — the rewrite did not move the connection", cfg.Database)
+				t.Fatalf("database = %q, want scratch", cfg.Database)
 			}
-			if cfg.Host != "localhost" {
-				t.Fatalf("host = %q, want localhost preserved", cfg.Host)
-			}
-			if cfg.User != c.wantUser {
-				t.Fatalf("user = %q, want %q preserved", cfg.User, c.wantUser)
-			}
-			if cfg.Password != c.wantPassword {
-				t.Fatalf("password = %q, want %q preserved — a mangled credential fails to connect", cfg.Password, c.wantPassword)
-			}
+			c.check(t, cfg)
 		})
 	}
-	if _, err := withDBName("::: not a dsn :::", "scratch"); err == nil {
+	if _, _, err := openWithDBName("::: not a dsn :::", "scratch"); err == nil {
 		t.Fatal("an unparseable DSN must be an error, never a pass-through to the original database")
 	}
 }
