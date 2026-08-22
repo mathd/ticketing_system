@@ -21,6 +21,13 @@ paths:
         '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
         '408': {description: Timeout, content: {application/json: {schema: {$ref: '#/components/schemas/ChargeResult'}}}}
         '409': {$ref: '#/components/responses/Error'}
+        # The provider answered, but with money that does not match the request — a
+        # different captured amount or a different currency (TKT-257). The charge is
+        # REFUSED before anything is journalled or settled, and the operation stays bound
+        # and unresolved: recoverable via /internal/psp/status, never terminal. A provider
+        # that captured the wrong amount still moved money, so this is not a decline (402)
+        # and not a no-side-effect timeout (408).
+        '502': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
   /internal/orders/{orderId}/settlement:
     get:
