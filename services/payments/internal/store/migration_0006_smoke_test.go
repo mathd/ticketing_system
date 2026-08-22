@@ -7,12 +7,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -95,62 +96,75 @@ func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`)
 
 // withDBName points a PostgreSQL DSN at a different database, keeping everything else.
 //
-// Both DSN forms libpq accepts are handled, because getting this wrong is silent: a rewrite
-// that fails to change the database returns a perfectly valid connection to the WRONG one.
+// Delegated to pgx's own connection-string parser rather than rewritten by hand. Both forms
+// libpq accepts have to work — the URL form and the keyword form (host=... dbname=...) — and
+// the keyword form carries quoting and backslash-escaping rules that a whitespace tokenizer
+// silently mangles: `password='secret with spaces'` is ONE field, not three. Getting this
+// wrong is invisible in the worst way, because a rewrite that fails to change the database
+// still returns a perfectly valid connection to the WRONG one, and this caller is about to
+// run destructive migrations (ai-review, second and third passes).
 //
-//   - URL form   — postgres://user:pw@host:port/dbname?opts
-//   - keyword form — host=... dbname=... user=...  (also accepted by pgx)
-//
-// An unrecognized shape is an ERROR rather than a pass-through. The caller is about to run
-// destructive migrations, so "I could not tell which database this is" must not resolve to
-// "use whatever it was" — and the caller additionally verifies current_database().
+// The rebuilt DSN is emitted in keyword form regardless of the input's shape: pgconn has
+// already resolved defaults and environment variables into the config, so re-serializing is
+// about connecting to the right place, not about round-tripping the operator's text.
 func withDBName(dsn, name string) (string, error) {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		u, err := url.Parse(dsn)
-		if err != nil {
-			return "", err
-		}
-		u.Path = "/" + name
-		return u.String(), nil
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "", fmt.Errorf("parse PostgreSQL DSN: %w", err)
 	}
-	if !strings.Contains(dsn, "=") {
-		return "", fmt.Errorf("unrecognized PostgreSQL DSN form: not a URL and not keyword=value")
+	if cfg.Host == "" {
+		return "", fmt.Errorf("DSN names no host")
 	}
-	// Keyword form: replace dbname (and the `database` alias), preserving every other pair.
-	// Values may be single-quoted, so a naive split on '=' is not enough; fields are
-	// whitespace-separated outside quotes.
-	fields, replaced := strings.Fields(dsn), false
-	out := make([]string, 0, len(fields)+1)
-	for _, f := range fields {
-		k, _, ok := strings.Cut(f, "=")
-		if ok && (k == "dbname" || k == "database") {
-			if replaced {
-				return "", fmt.Errorf("ambiguous DSN: more than one dbname")
-			}
-			out, replaced = append(out, "dbname="+name), true
-			continue
-		}
-		out = append(out, f)
+	parts := []string{
+		"host=" + quoteDSNValue(cfg.Host),
+		"port=" + strconv.Itoa(int(cfg.Port)),
+		"dbname=" + quoteDSNValue(name),
+		"user=" + quoteDSNValue(cfg.User),
 	}
-	if !replaced {
-		out = append(out, "dbname="+name)
+	if cfg.Password != "" {
+		parts = append(parts, "password="+quoteDSNValue(cfg.Password))
 	}
-	return strings.Join(out, " "), nil
+	// TLSConfig nil means pgconn resolved sslmode to disable; anything else negotiates TLS.
+	if cfg.TLSConfig == nil {
+		parts = append(parts, "sslmode=disable")
+	}
+	return strings.Join(parts, " "), nil
 }
 
-// The rewrite is the thing that decides which database gets dropped, so it is tested on both
-// DSN forms rather than only the one this environment happens to use today. Before this,
-// a keyword DSN returned the input UNCHANGED — the shared test database, silently.
+// quoteDSNValue renders a value for a keyword DSN, quoting and escaping per libpq's rules so
+// a password with spaces or a quote survives the round trip.
+func quoteDSNValue(v string) string {
+	if v == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(v, " '\\") {
+		return v
+	}
+	r := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	return "'" + r.Replace(v) + "'"
+}
+
+// The rewrite decides which database gets DROPPED, so it is tested on every DSN shape this
+// suite could legally be handed rather than only the URL form this environment uses today.
+// Before it used a real parser, a keyword DSN came back UNCHANGED — pointing at the shared
+// store-test database — and a quoted password containing spaces came back mangled.
+//
+// Asserted by parsing the RESULT: comparing rendered text would pin the serializer's
+// formatting rather than the property that matters, which is where the connection lands.
 func TestWithDBNameRewritesEveryDSNForm(t *testing.T) {
 	cases := []struct {
-		name, dsn, want string
+		name, dsn    string
+		wantUser     string
+		wantPassword string
 	}{
-		{"url", "postgres://payments:pw@localhost:15432/payments_store_smoke", "postgres://payments:pw@localhost:15432/scratch"},
-		{"url with options", "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable", "postgres://payments:pw@localhost:15432/scratch?sslmode=disable"},
-		{"postgresql scheme", "postgresql://u@h:5432/old", "postgresql://u@h:5432/scratch"},
-		{"keyword", "host=localhost port=5432 dbname=payments_store_smoke user=payments", "host=localhost port=5432 dbname=scratch user=payments"},
-		{"keyword alias", "host=localhost database=payments_store_smoke user=payments", "host=localhost dbname=scratch user=payments"},
-		{"keyword without a database", "host=localhost user=payments", "host=localhost user=payments dbname=scratch"},
+		{"url", "postgres://payments:pw@localhost:15432/payments_store_smoke", "payments", "pw"},
+		{"url with options", "postgres://payments:pw@localhost:15432/payments_store_smoke?sslmode=disable", "payments", "pw"},
+		{"postgresql scheme", "postgresql://u:pw@localhost:5432/old", "u", "pw"},
+		{"keyword", "host=localhost port=5432 dbname=payments_store_smoke user=payments password=pw", "payments", "pw"},
+		{"keyword without a database", "host=localhost port=5432 user=payments password=pw", "payments", "pw"},
+		// The case a whitespace tokenizer silently destroys.
+		{"keyword with a quoted password", "host=localhost port=5432 dbname=payments_store_smoke user=payments password='secret with spaces'", "payments", "secret with spaces"},
+		{"keyword with an escaped quote", `host=localhost port=5432 user=payments password='it\'s'`, "payments", "it's"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -158,16 +172,26 @@ func TestWithDBNameRewritesEveryDSNForm(t *testing.T) {
 			if err != nil {
 				t.Fatalf("withDBName(%q): %v", c.dsn, err)
 			}
-			if got != c.want {
-				t.Fatalf("withDBName(%q)\n got=%q\nwant=%q", c.dsn, got, c.want)
+			cfg, err := pgconn.ParseConfig(got)
+			if err != nil {
+				t.Fatalf("withDBName produced an unparseable DSN %q: %v", got, err)
 			}
-			if strings.Contains(got, "payments_store_smoke") {
-				t.Fatalf("the shared database survived the rewrite: %q", got)
+			if cfg.Database != "scratch" {
+				t.Fatalf("database = %q, want scratch — the rewrite did not move the connection", cfg.Database)
+			}
+			if cfg.Host != "localhost" {
+				t.Fatalf("host = %q, want localhost preserved", cfg.Host)
+			}
+			if cfg.User != c.wantUser {
+				t.Fatalf("user = %q, want %q preserved", cfg.User, c.wantUser)
+			}
+			if cfg.Password != c.wantPassword {
+				t.Fatalf("password = %q, want %q preserved — a mangled credential fails to connect", cfg.Password, c.wantPassword)
 			}
 		})
 	}
-	if _, err := withDBName("not-a-dsn", "scratch"); err == nil {
-		t.Fatal("an unrecognized DSN form must be an error, never a pass-through to the original database")
+	if _, err := withDBName("::: not a dsn :::", "scratch"); err == nil {
+		t.Fatal("an unparseable DSN must be an error, never a pass-through to the original database")
 	}
 }
 
@@ -400,6 +424,17 @@ func TestCompleteCompensationEnforcesTheConfirmationRule(t *testing.T) {
 		t.Fatalf("a completed void must carry no confirmation: %+v", voided)
 	}
 
+	// Re-completing under the SAME fact is the concurrent-duplicate case: both requests pass
+	// the handler short-circuit, both append the deterministic fact, one UPDATE wins. The
+	// loser must see success, not a 500 (ai-review, third pass).
+	if err := j.CompleteCompensation(ctx, org, key, "refund", "refunded", "re_ok", comp.FactID, ConfirmedRefund{Amount: 2500, Currency: "EUR"}); err != nil {
+		t.Fatalf("re-completing under the same fact must be idempotent success, got %v", err)
+	}
+	// A DIFFERENT fact is not a duplicate — it would report someone else's result as this
+	// call's.
+	if err := j.CompleteCompensation(ctx, org, key, "refund", "refunded", "re_ok", uuid.New(), ConfirmedRefund{Amount: 2500, Currency: "EUR"}); !errors.Is(err, ErrCompensationNotCompleted) {
+		t.Fatalf("completing under a different fact must be refused, got %v", err)
+	}
 	// A completion that matches no bound row reports it, rather than returning nil while the
 	// caller has already appended a compensating fact to an append-only journal.
 	if err := j.CompleteCompensation(ctx, org, "no-such-key", "refund", "refunded", "re_y", uuid.New(), ConfirmedRefund{Amount: 100, Currency: "EUR"}); !errors.Is(err, ErrCompensationNotCompleted) {

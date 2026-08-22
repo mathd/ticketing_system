@@ -865,9 +865,32 @@ func (j *Journal) CompleteCompensation(ctx context.Context, org uuid.UUID, sourc
 		return err
 	}
 	if n == 0 {
-		// Same reasoning as CompleteRefundLeg: a silent no-op means the caller has already
-		// appended a compensating fact to an append-only journal and believes it settled.
-		return ErrCompensationNotCompleted
+		// Zero rows has TWO causes and they need opposite answers, which is why this re-reads
+		// rather than failing outright (ai-review, third pass).
+		//
+		// The benign one is a CONCURRENT duplicate. The handler short-circuits a completed
+		// compensation before calling this, but two requests can both pass that check, both
+		// append the deterministic fact (the journal dedupes them), and both arrive here. One
+		// UPDATE wins on `status IS NULL`. The loser's work is DONE — same deterministic fact
+		// id, same provider operation — so answering "not completed" would turn a successful
+		// duplicate into a 500 and a pointless recovery retry.
+		//
+		// The dangerous one is a row that is missing, or still bound: there the caller has
+		// appended a compensating fact to an append-only journal and believes money came back
+		// while nothing durable records it. That must stay an error.
+		existing, found, lookupErr := lookupCompensationTx(ctx, j.db, org, sourceKey, kind)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found || !existing.Completed {
+			return ErrCompensationNotCompleted
+		}
+		// Completed, but by a DIFFERENT completion. Converging on a fact id we did not write
+		// would report someone else's result as this call's, so it stays an error.
+		if existing.FactID != factID {
+			return fmt.Errorf("%w: already completed under fact %s", ErrCompensationNotCompleted, existing.FactID)
+		}
+		return nil
 	}
 	return nil
 }

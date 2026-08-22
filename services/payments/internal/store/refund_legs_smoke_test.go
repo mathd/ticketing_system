@@ -306,13 +306,20 @@ func TestCompleteRefundLegIsOnceOnly(t *testing.T) {
 	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
-	// The second completion writes NOTHING — the status guard has already moved the row out
-	// of 'bound'. It now SAYS so rather than returning nil (TKT-257): a silent no-op here
-	// means the caller has already appended a compensating fact to an append-only journal
-	// and believes the leg settled. The once-only property below is unchanged; what changed
-	// is that the caller can tell.
+	// A second completion under a DIFFERENT fact writes nothing, and now says so (TKT-257).
+	// A silent no-op here means the caller appended a compensating fact to an append-only
+	// journal and believes the leg settled under ITS fact, when the row records another.
+	// The once-only property below is unchanged; what changed is that the caller can tell.
 	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_second", second, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
-		t.Fatalf("a second completion must report that it wrote no row, got %v", err)
+		t.Fatalf("a second completion under a different fact must report that it wrote no row, got %v", err)
+	}
+	// But a retry of the SAME completion is idempotent success, not an error. Two concurrent
+	// requests both pass the handler's completed-leg short-circuit, both append the
+	// deterministic fact (the journal dedupes them), and both reach here; one UPDATE wins on
+	// `status='bound'` and the loser's work is genuinely done. Failing it would turn a
+	// successful duplicate into a 500 and a pointless recovery retry (ai-review, third pass).
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+		t.Fatalf("re-completing under the SAME fact is the concurrent-duplicate case and must succeed, got %v", err)
 	}
 	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-1")
 	if err != nil || !found {

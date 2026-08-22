@@ -213,7 +213,29 @@ func (j *Journal) CompleteRefundLeg(ctx context.Context, org uuid.UUID, sourceKe
 		return err
 	}
 	if n == 0 {
-		return ErrRefundLegNotCompleted
+		// Zero rows has two causes needing opposite answers — the same split
+		// CompleteCompensation documents (ai-review, third pass).
+		//
+		// Benign: a CONCURRENT duplicate. The handler short-circuits a completed leg before
+		// calling this, but two requests can both pass that check, both append the
+		// deterministic fact (the journal dedupes), and both arrive here. One UPDATE wins on
+		// `status='bound'`; the loser's work is done under the same fact id, so failing it
+		// would turn a successful duplicate into a 500.
+		//
+		// Dangerous: the leg is missing, or still bound. Then the caller has appended a
+		// compensating fact to an append-only journal and believes the money came back while
+		// nothing durable records it.
+		existing, found, lookupErr := lookupRefundLegTx(ctx, j.db, org, sourceKey, refundKey)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found || !existing.Completed {
+			return ErrRefundLegNotCompleted
+		}
+		if existing.FactID != factID {
+			return fmt.Errorf("%w: already completed under fact %s", ErrRefundLegNotCompleted, existing.FactID)
+		}
+		return nil
 	}
 	return nil
 }
