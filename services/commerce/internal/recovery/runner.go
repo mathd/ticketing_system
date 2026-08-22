@@ -113,6 +113,11 @@ type Store interface {
 	AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
 	MarkReleased(ctx context.Context, s store.StuckOrder) error
 	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error
+	// Backlog reports the parked population for observability only. It is never read
+	// by a recovery decision — a runner that steered on its own queue depth would be
+	// deciding from an aggregate instead of from durable per-order evidence, which is
+	// exactly what ADR-016 §Decision 2 forbids.
+	Backlog(ctx context.Context) (store.RecoveryBacklog, error)
 }
 
 // DBStore binds Store to the commerce store package.
@@ -122,6 +127,10 @@ type DBStore struct {
 
 func (d DBStore) ClaimStuckOrders(ctx context.Context, limit int, lease time.Duration) ([]store.StuckOrder, error) {
 	return store.ClaimStuckOrders(ctx, d.DB, limit, lease)
+}
+
+func (d DBStore) Backlog(ctx context.Context) (store.RecoveryBacklog, error) {
+	return store.ReadRecoveryBacklog(ctx, d.DB)
 }
 
 func (d DBStore) RecordTerminalOutcome(ctx context.Context, orderID, claimID uuid.UUID, outcome string) error {

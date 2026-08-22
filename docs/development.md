@@ -219,6 +219,36 @@ by application behaviour, not tamper-evident: anyone holding commerce's database
 insert, alter or delete these rows and nothing here detects it. The migration's `Down` refuses while
 evidence exists, which protects against an accidental rollback — not against a writer.
 
+### Knowing a parked order exists (TKT-263)
+
+`list-parked` answers *which*, but only when someone runs it. Four gauges answer *how many* and
+*how old* without being asked ([ADR-065](adr/ADR-065-parked-recovery-order-observability.md)):
+
+| Gauge | Reports |
+|---|---|
+| `commerce.recovery.parked` | Parked orders **excluding** `reconciliation_required` — attempt budget spent, no longer retried. |
+| `commerce.recovery.parked.reconciliation_required` | Parked orders in `reconciliation_required`. Separate because these **may** hold captured money and what a re-drive does to one depends on provider evidence. |
+| `commerce.recovery.parked.total` | Every parked order. The two above must sum to it. |
+| `commerce.recovery.parked.oldest_age_seconds` | Age of the oldest park, measured from `recovery_parked_at`. |
+
+They exported to the OTLP collector like every other metric; in the compose stack they land in the
+`lgtm` Prometheus with dots rewritten as underscores (`commerce_recovery_parked`).
+
+**Only parked rows are counted, and the distinction is load-bearing.** An **unparked**
+`reconciliation_required` order is a queued compensation the runner is still driving — not a human's
+inbox — so it is excluded. If it were counted, these numbers would rise exactly when recovery was
+working.
+
+**Reading them.** A steady small count is ordinary residue. A rising count means something upstream
+stopped recovering. A flat count with a growing `oldest_age_seconds` means a specific order is stuck
+and nobody has looked — which is the case this whole surface exists for, because nothing revisits a
+parked order on its own.
+
+**What they do not do.** Nothing fires: there is deliberately **no alert rule and no threshold**
+(ADR-065 §4 gives the reasoning — a threshold chosen without production volumes would be muted
+within a week). They never unpark anything, and they cannot tell you *which* order — that is still
+`list-parked`, and unparking still calls for reading `last_error` first.
+
 ## Access ticket lifecycle trail operations
 
 The trail is chained per ticket and checkpointed per organizer
