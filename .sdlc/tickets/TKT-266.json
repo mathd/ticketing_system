@@ -4,9 +4,12 @@
   "parent": "TKT-9",
   "classification": "simple",
   "summary": "ADR-062's organizer-scoped join is code-correct but test-unproven (two vacuous tenant tests)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Building",
+  "labels": [
+    "risk:low",
+    "agent:coding"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [
     {
@@ -34,6 +37,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 taken by the owner — option 1 (retarget + record). READY.\n\nAll eight DoR items now `met`. The three that were `owner: human` are resolved by the owner's choice\nand recorded above; the AC has been **rewritten**, because the original was unsatisfiable and a\nticket that cannot meet its own acceptance must not reach Planning.\n\n**What the owner accepted, stated plainly:** the final join's predicate ends up with no test that can\nfail on its deletion. That is the cost of option 1 and it is being taken deliberately, not papered\nover — the ticket's deliverable includes a test that *records* the unreachability, so the next reader\nfinds a stated fact rather than an untested predicate.\n\n**One thing shaping found on re-reading that the original ticket did not have.** It is not just that\n`TestTheClaimedHoldBelongsToTheClaimingTenant` seeds one tenant. It derives its expected hold by\nrunning `SELECT r.hold_id ... WHERE o.id=$1 AND r.organizer_id=$2` against the same seed — so the\nassertion compares a value **with itself**. That is a strictly worse failure than \"one tenant\": even\nwith a second tenant seeded, the test would stay green as long as the expectation is computed that\nway. The retarget must fix the *derivation*, not only the fixture. (AGENTS.md — a precondition that\ncannot fail.)\n\n**risk:low — claimed.** Tests only, two files, no production code, no auth, no money, no migration,\nno CI config. The one carve-out worth naming is that this touches tests guarding a tenancy boundary,\nso the work is *about* correctness even though it cannot change behaviour; the plan gate is skipped\nbut the ai-review pass is not."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — running gateless per `config.gates: autonomous`\n\n**Blockers: zero.** `blocked-by TKT-267` is satisfied — TKT-267 is Done, merged as `bb7cdf35`.\nBranch `TKT-266-retarget-vacuous-tenant-tests` off `origin/main` at that commit, so conjunct 6 is\npresent in the tree this work is written against. That matters: the whole point of the re-scope is\nthat conjunct 6 exists.\n\n**Selection reason:** taken by name, and it is the natural successor — TKT-267 is what invalidated\nthis ticket's original plan, so closing it now keeps the two consistent while the context is fresh.\n\n**Risk verdict: `risk:low` CLAIMED — stated explicitly rather than left silent.** All four carve-outs\nchecked: no auth surface, no money path, no data migration, no CI/deploy config. Two test files, no\nproduction code at all. Under five files.\n\nThe one thing that gives me pause, named here so it is in the thread rather than only in my head:\nthese tests guard a **tenancy boundary**, so the work is *about* a security-adjacent property even\nthough it cannot change behaviour. I am claiming `risk:low` anyway because the label governs whether\na human approves the *plan*, and there is no design decision left to approve — the owner already\nmade the only real one at Gate 1 (option 1 over options 2 and 3), and the approach is recorded in the\nDoR. The adversarial ai-review pass still runs; `risk:low` skips the plan gate, not the review.\n\n**If the work turns out to need a production change, the label comes off and I say so** — per the\ninvariant, and per this ticket's own AC 5, which says a test surfacing a production defect gets\n*reported*, not fixed here.\n\nPlan gate skipped (`risk:low`) → straight to Building."
     }
   ],
   "readiness": {
