@@ -12,6 +12,10 @@
     {
       "type": "found-in",
       "key": "TKT-260"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-267"
     }
   ],
   "description": "Found while shaping TKT-260; recorded rather than absorbed, since TKT-260's subject is\n`LoadExchangeSwitch` and this is about two tests that already exist elsewhere.\n\nADR-062's ai-review finding F3 added `AND res.organizer_id = c.organizer_id` to the reservations\njoin in both reversal claim queries:\n\n- `services/commerce/internal/store/refund_reversal.go:120`\n- `services/commerce/internal/store/exchange_reversal.go:122`\n\nThe fix is correct. **The tests that appear to cover it cannot fail**, in exactly the shape\nAGENTS.md describes:\n\n- `exchange_reversal_smoke_test.go:485` `TestTheClaimedHoldBelongsToTheClaimingTenant`\n- `refund_reversal_smoke_test.go:99` `TestClaimedReversalCarriesTheReservationsOrganizerAndHold`\n\nEach seeds **one** tenant, then asserts the returned `hold_id` equals the hold it just seeded. With\na single tenant there is no wrong row to return, so **deleting the organizer predicate from either\nproduction query leaves both tests green.** They name the right case, they are well-commented, and\nthey observe nothing. `TestTheClaimedHoldBelongsToTheClaimingTenant`'s own comment states the rule\nit fails to test: *\"an unscoped join is how a row acquires another tenant's hold\"*.\n\n**The reachable failing state.** Both joins are FK-to-PK and therefore single-valued, so the\npredicate cannot exclude a wrong row — it can only turn a mismatched row into zero rows. Nothing in\nthe schema constrains `order_refunds.organizer_id` / `order_exchanges.organizer_id` to equal\n`reservations.organizer_id` (no cross-table CHECK, no composite FK), so the mismatch is\nconstructible by direct insert. That is the fixture: seed a claimable row whose `organizer_id`\ndisagrees with its reservation's, and assert it is **not claimed**.\n\n**Acceptance Criteria:**\n- [ ] Each of the two tests either gains a mismatched-tenant case or is joined by one that asserts\n      the row is not claimed.\n- [ ] Demonstrate the gap: one run where the new assertions go red with the predicate deleted, and\n      the pre-existing assertions stay green. Without that run, \"we covered the gap\" is\n      unfalsifiable (AGENTS.md).\n- [ ] The mutation that counts is one **only** the new case can catch — deleting\n      `AND res.organizer_id = c.organizer_id`, nothing lower.\n\nSeverity: defence-in-depth, same as TKT-260 — no live leak, and per ADR-021 this is honest-writer\nconsistency, not tamper-evidence. The value is that the predicate stops being unprotected against\na future refactor that \"simplifies\" the join.\n\nQuality gates: `make check` green; no production code change expected (tests only) — if a test\nsurfaces a production defect, report it rather than fixing it here.\n",
@@ -20,6 +24,86 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-260 shaping — not yet shaped\n\nNeeds the 8-item DoR before Gate 1. Likely `risk:low` once shaped (tests only, two files), but that\ncall belongs to shaping.\n\nThe analysis above is done and verified against the schema at `afa333f4` — the shaper should confirm\nit still holds rather than re-derive it. The one thing worth re-checking: whether the seed helpers\n(`completedRefund`, `settledExchange`) can express a tenant mismatch without tripping `0010`'s\nall-or-nothing CHECK constraints, or whether the fixture needs its own insert.\n"
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaping verdict: **NOT READY** — 5 met, 3 open (all `owner: human`), and the premise moved\n\nThe defect is real and still open. **But TKT-267 changed what a fix can look like, and the ticket's\nacceptance criteria are now provably unsatisfiable.** That is a scope decision, not something\nshaping should quietly resolve.\n\n#### What I verified by execution, not reading\n\nDeleting `AND res.organizer_id = c.organizer_id` from the final join of **both** claim queries and\nrunning the suite: **all five relevant tests stay green** — the two the ticket names as vacuous, and\nTKT-267's two new cross-tenant tests, and the lock-scope test. So the ticket's core claim holds at\nHEAD, and TKT-267 did **not** accidentally close it.\n\n#### Why the prescribed fixture can no longer work\n\nTKT-267 added **conjunct 6**: a correlated `EXISTS` in the `claimable` CTE that checks *the same\ncondition* as the final join, one stage earlier. All three CTEs run in **one statement under one\nsnapshot**, so the final join only ever sees rows `claimable` already admitted. A mismatched row is\nfiltered before it gets there.\n\nThe ticket says: *\"seed a claimable row whose `organizer_id` disagrees with its reservation's, and\nassert it is not claimed.\"* That fixture now goes red for the **wrong reason** — conjunct 6 refuses\nit — and would stay green with the final-join predicate deleted. It is the vacuous shape the ticket\nwas written to eliminate, reintroduced one layer up. **No black-box test can reach that join.**\n\nI also checked the ticket's implicit suggestion of copying TKT-260's\n`TestLoadExchangeSwitchRefusesAnExchangeWhoseReservationIsAnotherTenants`. It does **not** transfer:\nthat test works precisely because `LoadExchangeSwitch` is a single-stage read with nothing upstream\nof its join.\n\n#### ⛔ The decision — three options, none obviously right\n\n**Option 1 — retarget, and say so honestly.** Accept that the final join is now unreachable-by-input\nand that this is *good*: the property \"a mismatched row is never claimed\" is fully covered by\nconjunct 6's tests. Rewrite the two vacuous tests to assert what they can actually observe, and\nreplace the deleted-predicate mutation with a comment recording that the final join is defence in\ndepth whose only remaining value is surviving a refactor that removes conjunct 6. **Cheapest, honest,\nand leaves a predicate no test protects.**\n\n**Option 2 — test the fragment, not the query.** Extract the final `SELECT` and exercise it directly\nagainst seeded `claimed`-shaped input. This *can* reach the join. But it tests a string this codebase\notherwise only runs as part of a whole statement — and TKT-267's plan-review explicitly **rejected**\nSQL-constant extraction as \"how a test starts pinning the harness instead of the contract\". Choosing\nit now means overruling that, deliberately.\n\n**Option 3 — make the two predicates non-redundant.** If TKT-268 lands option (b) (a denormalized\n`source_organizer_id`), conjunct 6 could key on the denormalized column while the final join keeps\nchecking the real one — they would then disagree on a corrupt row, and the join becomes reachable and\nmeaningfully testable. **Best outcome, most work, and depends on TKT-268's shape.** This is why\nTKT-268 should be planned first.\n\n**My recommendation: option 1, unless TKT-268 chooses (b), in which case option 3.** Option 2 buys\ncoverage by breaking a rule this codebase adopted for good reasons.\n\n#### Also worth the owner's attention\n\nThe ticket's severity line (\"no live leak, defence-in-depth\") is **still accurate**, and after TKT-267\nit is *more* so — the live liveness defect that shared this root cause is now closed. The honest\nframing is that this ticket protects a **redundant** predicate against a future refactor. That is a\nreal but modest value, and it is worth deciding whether it justifies more than option 1.\n\n⛔ **Held at Gate 1** with `scope`, `approach` and `success` open and owned by the human. This is the\nDoR working as intended: a ticket whose stated AC cannot be met should not reach Planning, because an\nLLM planner will produce a confident plan for an impossible test."
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Two well-named tests (TestTheClaimedHoldBelongsToTheClaimingTenant, TestClaimedReversalCarriesTheReservationsOrganizerAndHold) seed ONE tenant and so cannot fail when the organizer predicate is deleted from the reversal claim queries' final joins. Confirmed still true at HEAD by executing the mutation."
+    },
+    "scope": {
+      "state": "open",
+      "owner": "human",
+      "note": "THE TICKET'S PREMISE CHANGED UNDER IT — this is a human decision, see the readiness comment. TKT-267 (merged/merging) added conjunct 6, a correlated EXISTS in the `claimable` CTE checking the SAME condition as the final join. Executed at HEAD: deleting the final-join predicate from BOTH queries leaves ALL FIVE relevant tests green — the two vacuous ones AND TKT-267's two new cross-tenant ones. So the gap is real and still open. But the fixture the ticket prescribes (seed a mismatched row, assert it is not claimed) can no longer reach the final join at all: conjunct 6 filters that row out one stage earlier, in the same statement and the same snapshot. The AC as written is UNSATISFIABLE by any black-box test. Three options in the comment; the choice is a judgement call about how much is worth spending to protect a defence-in-depth predicate."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The reachability question is settled, not open: all three CTEs execute in one statement under one snapshot, so the final join sees exactly the rows `claimable` admitted, and no input or race can present it a mismatched organizer. Verified by mutation, not by reading. The remaining unknown is a product/effort call, which is why it sits under `scope` with owner:human rather than here."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Depends on TKT-267 having landed (it is what changes the premise). Link added. No other blockers. TKT-268 is a sibling from the same review but touches the same predicate — whoever plans this should check TKT-268's chosen shape first, because option (b) there (a denormalized source_organizer_id) would make option 3 here nearly free."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "Blocked on the scope decision above. All three candidate approaches were verified against the code; none is a guess. Note the ticket's own suggestion — copy TKT-260's TestLoadExchangeSwitchRefusesAnExchangeWhoseReservationIsAnotherTenants shape — was checked and does NOT transfer: that test works because LoadExchangeSwitch is a single-stage read with nothing upstream of its join, which is exactly what the claim queries no longer are."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "Whichever option is chosen is one slice, both queries, tests only (option 3 would touch production SQL and is therefore NOT tests-only — that is part of what makes it a human call)."
+    },
+    "success": {
+      "state": "open",
+      "owner": "human",
+      "note": "The COS depend on the scope decision. The ticket's current AC ('assert the row is not claimed', 'deleting the final-join predicate turns the new assertion red') is provably unsatisfiable and must be rewritten before Gate 1, or the ticket will fail its own acceptance."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below; every cited file, symbol and line verified at HEAD."
+    }
+  },
+  "context": {
+    "summary": "Two tests that appear to cover the reversal claims' organizer-scoped reservation join cannot fail. Still true — but TKT-267 put an equivalent check one stage upstream, so the prescribed fixture can no longer reach the join, and the ticket needs re-scoping before it can be planned.",
+    "touchedAreas": [
+      "services/commerce/internal/store/exchange_reversal.go:193 (the final join predicate)",
+      "services/commerce/internal/store/refund_reversal.go:155 (same)",
+      "services/commerce/internal/store/exchange_reversal_smoke_test.go:485 TestTheClaimedHoldBelongsToTheClaimingTenant",
+      "services/commerce/internal/store/refund_reversal_smoke_test.go:99 TestClaimedReversalCarriesTheReservationsOrganizerAndHold"
+    ],
+    "governingAdrs": [
+      {
+        "adr": "ADR-062-refund-reversal-reconciliation.md",
+        "constrains": "Its ai-review F3 is what ADDED the predicate under test. Also now carries TKT-267's bullet describing the claim-side gap as closed — if this ticket changes the production SQL (option 3), that bullet needs revisiting."
+      },
+      {
+        "adr": "ADR-063-exchange-reversal-reconciliation.md",
+        "constrains": "Owns the exchange claim query and its conjunct list. Its 'what this does not cover' bullet was rewritten by TKT-267; a change here touches the same text."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "Name the adversary. Defence-in-depth against a REFACTOR, not against a writer — the mismatched row is created by someone with database access, and nothing here constrains them. The ticket must not claim tamper-evidence."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/store/exchanges_smoke_test.go:1201 TestLoadExchangeSwitchRefusesAnExchangeWhoseReservationIsAnotherTenants",
+        "pins": "TKT-260's equivalent for the READ path, and the shape this ticket was expected to copy. Read it — and note WHY it transfers there and not here: LoadExchangeSwitch is single-stage, so its fixture reaches the join directly. Its fixture-integrity guards (assert the mismatch was actually constructed; assert the row is settled so the error is the right branch) are worth copying regardless of which option is chosen."
+      },
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go TestConjunct6AnExchangeWhoseSourceReservationIsAnotherTenantsIsNotLeased",
+        "pins": "TKT-267's conjunct 6. This is the test whose mechanism now shadows the final join. Do NOT weaken or delete it to make this ticket's fixture reachable — that would trade a live guard for a defence-in-depth one."
+      },
+      {
+        "test": "services/commerce/internal/store/exchange_reversal_smoke_test.go TestTheClaimLocksTheQueueRowOnlyAndNeverTwice",
+        "pins": "TKT-267's lock-scope guard. Any option that rewrites the claim SQL must keep this green; it goes red if the EXISTS becomes a FROM-list join."
+      }
+    ],
+    "riskCall": "Cannot be settled until scope is. Option 1 (delete/retarget the tests) and option 2 (unit-test the SQL fragment) are tests-only and would be risk:low. Option 3 changes production SQL in two concurrency-path queries and would NOT be — same reasoning that kept TKT-267 off risk:low."
+  }
 }
