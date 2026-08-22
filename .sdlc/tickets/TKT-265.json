@@ -2,7 +2,7 @@
   "key": "TKT-265",
   "type": "Task",
   "summary": "Nothing checks whether a go.mod LAGS the version the workspace selects (TKT-264 ai-review)",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
