@@ -111,6 +111,25 @@ expect_fail "go dependency drift" check-dep-drift
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
+# 8b. Build-list LAG (TKT-265) — the vertical direction check-dep-drift is blind to.
+#     The seed MUST be a dependency declared by exactly ONE module, or it diverges
+#     horizontally and check-dep-drift — which runs earlier in `check` — fires first;
+#     the seeded case would then go red for the wrong reason and this stage would
+#     never execute. `golang.org/x/net` is declared only by shared/go, so lowering it
+#     produces lag with no horizontal divergence: a mutation only this checker catches.
+#     That isolation is asserted, not assumed — check-dep-drift must stay GREEN on the
+#     same seeded tree, which is the pairing that proves the two stages are distinct.
+expect_pass "go build-list lag (clean baseline)" check-build-list-lag
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+expect_pass "go build-list lag seed does not disturb check-dep-drift" check-dep-drift
+(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+expect_fail "go build-list lag" check-build-list-lag
+
+# 8c. An unreadable module must fail closed here too, for the same reason as case 8:
+#     a checker that cannot read a manifest must never report "no lag" and exit 0.
+printf 'this is not a go.mod\n' > shared/go/go.mod
+expect_fail "go build-list lag (unreadable module)" check-build-list-lag
+
 # 9. A credential compose.yaml refuses to start without, that env-bootstrap.sh
 #    never generates (TKT-227). TKT-244 shipped exactly this: `make up` died on
 #    interpolation while `make check` stayed green, because the smoke path takes
