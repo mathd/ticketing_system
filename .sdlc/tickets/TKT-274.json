@@ -1,0 +1,19 @@
+{
+  "key": "TKT-274",
+  "type": "Task",
+  "summary": "Wrong evidence in a clock comment: clock_timestamp() does NOT advance between adjacent calls in one expression",
+  "status": "Backlog",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-148"
+    }
+  ],
+  "comments": [],
+  "description": "Incidental, found while verifying TKT-148's mechanism against a real database rather than inheriting the repo's stated facts.\n\n`services/inventory/internal/store/channel_allocations_smoke_test.go` (comment block ~line 593) says:\n\n> `clock_timestamp()` ADVANCES WITHIN A STATEMENT — verified against this database: `SELECT clock_timestamp() = clock_timestamp()` is false.\n\nOn PostgreSQL 18 that query returns **true**. Two adjacent calls in one expression are evaluated to the same value; `clock_timestamp()` advances across **rows** and across **statements**, not between adjacent calls in a single expression.\n\n```\nSELECT clock_timestamp() = clock_timestamp();          -> t\nSELECT clock_timestamp() FROM generate_series(1,3);    -> three distinct values\n```\n\nMeasured over 2000 rows of `INSERT ... SELECT clock_timestamp()+interval '500 ms', clock_timestamp()`, the separation between the two evaluations was **~1 microsecond** (186µs on a single-row `INSERT ... RETURNING`).\n\n## Why it is worth fixing rather than ignoring\n\nThe comment's **conclusion is correct** — a bound written as bare `clock_timestamp()` is already in the past by the time it is compared, and the test's design around it is right. Only the stated evidence is wrong.\n\nThat is precisely what makes it worth correcting: the sentence reads as a *verified fact about this database*, so a future ticket will reasonably build on it. TKT-148 nearly did — the claim implied the two `clock_timestamp()` evaluations in `clock_timestamp()+ttl … RETURNING clock_timestamp()` could drift materially, which an ai-review pass then argued would make an assertion band flaky. Measuring settled it in one command; inheriting it would have widened a tolerance for no reason.\n\n## Scope\n\n- [ ] Correct the evidence sentence, keep the conclusion and the design it justifies\n- [ ] State the real rule: same value within one expression evaluation, advances across rows and statements\n- [ ] Check for the same claim elsewhere (`git grep -n \"clock_timestamp() = clock_timestamp()\"`)\n\nComment-only; no behaviour change. `risk:low`."
+}
