@@ -707,3 +707,46 @@ func TestScanCountsDuplicateAdmitTowardAllowance(t *testing.T) {
 		t.Fatalf("entry after redeemed+duplicate_admit = %+v, want entry_limit_reached — both physical admissions count", result)
 	}
 }
+
+// C (TKT-269) — branch (c): a REFUNDED pass ticket. Pass reconciliation records
+// factual entry/exit only and never mints conflict events (ADR-025 §D2), and
+// that holds whether or not the ticket is refunded.
+//
+// The refund seed is load-bearing, not decoration — the question the plan
+// critique forced (A4). Without it these assertions are satisfied by any pass
+// reconcile and the test duplicates TestPassReconcileRecordsFactualEntryExitOnly.
+// With it, the test is red against a refunded guard placed above the pass split,
+// which is the mutation it exists to catch: policy conflicts on a pass are
+// DERIVED and revisable projections, so a refunded pass admission must not mint
+// an immutable conflict alarm that no later event could retract.
+func TestPassReconcileRefundedTicketRecordsFactWithoutConflictAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi"})
+	if _, err := st.RefundOrderTickets(ctx, s.id.OrganizerID, s.id.OrderID, uuid.New(), 1); err != nil {
+		t.Fatal(err)
+	}
+
+	in := s.reconcileInput(uuid.New(), deviceTime())
+	in.Type = AdmissionEntry
+	result, err := st.ReconcileAdmission(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("refunded pass reconcile outcome = %s, want recorded — recording is not deciding (ADR-025 §D2)", result.Outcome)
+	}
+	if got := countEvents(t, ctx, db, s.ticketID, "entry"); got != 1 {
+		t.Fatalf("entry events = %d, want 1 — the factual admission is recorded", got)
+	}
+	for _, banned := range []string{"redeemed", "duplicate_admit"} {
+		if got := countEvents(t, ctx, db, s.ticketID, banned); got != 0 {
+			t.Fatalf("%s events = %d, want 0 — pass reconciliation never mints them (§D2)", banned, got)
+		}
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm); n != 0 {
+		t.Fatalf("%d admission-conflict alarms on a refunded PASS admission, want 0 — pass conflicts are derived and revisable (§D2); an alarm minted above the pass split would be neither", n)
+	}
+}

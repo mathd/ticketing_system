@@ -200,6 +200,36 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 			}
 			return ReconcileResult{}, appendErr
 		}
+		// A refunded ticket that got in offline (TKT-269). TKT-157 refuses one at
+		// a LIVE gate; an offline scanner cannot know about the refund, so it
+		// admits the holder and this is where we learn of it. The occurrence is
+		// still recorded exactly as an unrefunded one would be — reconciliation
+		// is recording, not deciding, and the person is already inside, so
+		// dropping it would falsify the trail rather than protect a gate
+		// (ADR-038 §4). What is owed is VISIBILITY: an alarm on the
+		// admission-conflict class, which means "the chain is valid and the world
+		// disagreed with it" — never the integrity class, which means "the chain
+		// is suspect" and which ADR-038 §4 rejected for exactly this case.
+		//
+		// The check sits HERE, inside the no-prior-redemption branch and below
+		// the redeemed lookup, and the placement is load-bearing in three
+		// directions: above the redeemed lookup it would owe a second alarm for
+		// an occurrence the conflict path already alarms; above the pass split it
+		// would mint an immutable conflict on a pass, whose conflicts are derived
+		// and revisable (ADR-025 §D2); above verifyTicketChain it would alarm on
+		// a broken chain, which the integrity class already owns.
+		refunded, refundErr := ticketRefunded(ctx, tx, in.TicketID)
+		if refundErr != nil {
+			return ReconcileResult{}, refundErr
+		}
+		if refunded {
+			// Owed in the SAME transaction as the append: the recorded fact and
+			// the alarm are inseparable, so no crash can leave an admission
+			// nobody was told about.
+			if err = p.oweConflictAlarm(ctx, tx, id.OrganizerID, in.TicketID, in.OccurrenceID, in.OccurredAt, skewFlagged); err != nil {
+				return ReconcileResult{}, err
+			}
+		}
 		if err = tx.Commit(); err != nil {
 			return ReconcileResult{}, err
 		}
@@ -304,8 +334,15 @@ type conflictAlarmData struct {
 }
 
 // oweConflictAlarm commits an admission-conflict alarm into the shared alarm
-// outbox — same durable-owing shape as the integrity class (0003): the
-// duplicate_admit append and the owed alarm land in one transaction.
+// outbox — same durable-owing shape as the integrity class (0003): the append
+// and the owed alarm land in one transaction.
+//
+// Two callers, both meaning "the chain is valid and the world disagreed with
+// it": a duplicate_admit on a single-entry ticket (ADR-025 §D6), and an offline
+// admission of a refunded ticket (TKT-269). The payload is the same schema-1
+// contract for both — it names the ticket and the occurrence, and a consumer
+// that needs to tell the two causes apart is a payload change under ADR-017,
+// not a field to add here.
 func (p *Postgres) oweConflictAlarm(ctx context.Context, tx *sql.Tx, organizerID, ticketID, occurrenceID uuid.UUID, deviceOccurredAt time.Time, skewFlagged bool) error {
 	id := uuid.New()
 	envelope, err := admissionConflictAlarmEnvelope(id, p.now(), conflictAlarmData{
