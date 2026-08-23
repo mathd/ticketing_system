@@ -1,11 +1,14 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,19 +35,48 @@ type wireCursor struct {
 	OccurredAt  time.Time `json:"occurred_at"`
 	EventID     uuid.UUID `json:"event_id"`
 	OrganizerID uuid.UUID `json:"organizer_id"`
+	// Ceiling is the snapshot boundary of the page walk this cursor belongs to.
+	// It travels with the cursor because the walk is stateless on the server, and
+	// dropping it would let a later page see voids the walk had already passed —
+	// the incomplete-view gap (ai-review [high]).
+	Ceiling time.Time `json:"ceiling"`
 }
 
 var errBadCursor = errors.New("invalid cursor")
 
-func encodeCursor(c store.VoidedCursor) (string, error) {
+// feedCursorSigner authenticates a cursor.
+//
+// Base64 is an encoding, not a protection: without a MAC an enrolled device can
+// hand-craft a cursor for its OWN organizer — an old position, or one past the
+// end — and receive an empty page with next_cursor: null (ai-review [high]). It
+// cannot reach another organizer's rows, since the query filters on the token's
+// organizer regardless, so the forger and the victim are the same party. That
+// still matters here and nowhere else: for a revocation feed the damaging state
+// is a device that believes its view is complete when it is not, and this is a
+// way for a device to put ITSELF in that state and never learn.
+//
+// Its own key, like every other signing key in this service. This proves "this
+// position was issued by us", which is not the claim the QR credential, the
+// image link or the lifecycle trail makes, and one key making four claims is how
+// a leak of the cheapest costs the most expensive (see qrlink.go).
+type feedCursorSigner struct{ key []byte }
+
+func (s feedCursorSigner) sign(payload []byte) []byte {
+	mac := hmac.New(sha256.New, s.key)
+	_, _ = mac.Write(payload)
+	return mac.Sum(nil)
+}
+
+func (s *Server) encodeCursor(c store.VoidedCursor) (string, error) {
 	raw, err := json.Marshal(wireCursor{
 		Version: feedCursorVersion, OccurredAt: c.OccurredAt.UTC(),
-		EventID: c.EventID, OrganizerID: c.OrganizerID,
+		EventID: c.EventID, OrganizerID: c.OrganizerID, Ceiling: c.Ceiling.UTC(),
 	})
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+	body := base64.RawURLEncoding.EncodeToString(raw)
+	return body + "." + base64.RawURLEncoding.EncodeToString(s.cursors.sign([]byte(body))), nil
 }
 
 // decodeCursor parses a cursor and refuses one that does not belong to the
@@ -58,8 +90,24 @@ func encodeCursor(c store.VoidedCursor) (string, error) {
 // revocation feed that is the dangerous direction, because silently missing a
 // revocation is exactly the state this ticket exists to prevent. Refusing is
 // loud; a short page is not.
-func decodeCursor(encoded string, organizer uuid.UUID) (store.VoidedCursor, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+func (s *Server) decodeCursor(encoded string, organizer uuid.UUID) (store.VoidedCursor, error) {
+	body, signature, ok := strings.Cut(encoded, ".")
+	if !ok {
+		return store.VoidedCursor{}, errBadCursor
+	}
+	presented, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
+		return store.VoidedCursor{}, errBadCursor
+	}
+	// Constant-time, and checked BEFORE the payload is parsed: comparing with ==
+	// returns on the first wrong byte, which answers how much of a guess was
+	// right, and parsing an unauthenticated payload first would let a forger
+	// distinguish "bad signature" from "bad contents" (same ordering as
+	// qrlink.go's verify).
+	if !hmac.Equal(presented, s.cursors.sign([]byte(body))) {
+		return store.VoidedCursor{}, errBadCursor
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(body)
 	if err != nil {
 		return store.VoidedCursor{}, errBadCursor
 	}
@@ -70,13 +118,16 @@ func decodeCursor(encoded string, organizer uuid.UUID) (store.VoidedCursor, erro
 	if c.Version != feedCursorVersion {
 		return store.VoidedCursor{}, errBadCursor
 	}
-	if c.EventID == uuid.Nil || c.OrganizerID == uuid.Nil || c.OccurredAt.IsZero() {
+	if c.EventID == uuid.Nil || c.OrganizerID == uuid.Nil || c.OccurredAt.IsZero() || c.Ceiling.IsZero() {
 		return store.VoidedCursor{}, errBadCursor
 	}
 	if c.OrganizerID != organizer {
 		return store.VoidedCursor{}, errBadCursor
 	}
-	return store.VoidedCursor{OccurredAt: c.OccurredAt, EventID: c.EventID, OrganizerID: c.OrganizerID}, nil
+	return store.VoidedCursor{
+		OccurredAt: c.OccurredAt, EventID: c.EventID,
+		OrganizerID: c.OrganizerID, Ceiling: c.Ceiling,
+	}, nil
 }
 
 func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +156,7 @@ func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
 
 	var after store.VoidedCursor
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		c, err := decodeCursor(raw, organizer)
+		c, err := s.decodeCursor(raw, organizer)
 		if err != nil {
 			write(w, http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
 			return
@@ -129,7 +180,7 @@ func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
 	// point of the field for a scanner deciding whether its view is complete.
 	body := map[string]any{"ticket_ids": ids, "next_cursor": nil}
 	if !next.IsZero() {
-		encoded, err := encodeCursor(next)
+		encoded, err := s.encodeCursor(next)
 		if err != nil {
 			write(w, http.StatusInternalServerError, map[string]string{"error": "encode cursor"})
 			return

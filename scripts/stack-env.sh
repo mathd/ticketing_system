@@ -111,6 +111,7 @@ export PAYMENTS_INTERNAL_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN"
 # which is a different claim from the QR credential's, and one key making both
 # claims spends a cheap leak at an expensive price.
 export ACCESS_TICKET_LINK_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+export ACCESS_FEED_CURSOR_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 # ai-review S5: the three signing keys. They used to arrive as compose defaults —
 # a readable journal key and two Ed25519 seeds committed to this repository — and
 # the stack now refuses to start without them, so the isolated stacks mint their

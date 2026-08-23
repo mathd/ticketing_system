@@ -50,6 +50,9 @@ type Server struct {
 	// surface before TKT-157 — it only ever used this token outbound, from its
 	// consumer — so the whole auth path here is new.
 	token string
+	// cursors authenticates voided-feed pagination positions (ai-review [high]).
+	// Its own key: see feedCursorSigner for why this claim is not the QR link's.
+	cursors feedCursorSigner
 	// qrLinks signs the short-lived image URLs the bundle hands out (ai-review
 	// S2). See qrlink.go for what that bounds and what it deliberately does not.
 	qrLinks qrLinkSigner
@@ -64,6 +67,15 @@ type Server struct {
 // of call site that gets the two the wrong way round.
 func (s *Server) WithQRLinkKey(key string) *Server {
 	s.qrLinks = qrLinkSigner{key: []byte(key)}
+	return s
+}
+
+// WithFeedCursorKey supplies the HMAC key that authenticates voided-feed
+// cursors. Same shape and same reasoning as WithQRLinkKey, and a DIFFERENT key:
+// one key making both claims spends a leak of the cheaper one at the price of
+// the dearer.
+func (s *Server) WithFeedCursorKey(key string) *Server {
+	s.cursors = feedCursorSigner{key: []byte(key)}
 	return s
 }
 

@@ -365,6 +365,7 @@ services:
       # (ai-review S2). Distinct from the QR seed on purpose — it proves a URL is
       # fresh, not that a credential admits at a gate.
       ACCESS_TICKET_LINK_KEY: ${ACCESS_TICKET_LINK_KEY:?no default is shipped - run 'make up' once to generate a local credential}
+      ACCESS_FEED_CURSOR_KEY: ${ACCESS_FEED_CURSOR_KEY:?no default is shipped - run 'make up' once to generate a local credential}
       # Comma-separated access-qr/<kid>=raw-base64-public-key entries.
       ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
       # Lifecycle trail signing (ADR-021 §D4). Distinct key MATERIAL from the QR

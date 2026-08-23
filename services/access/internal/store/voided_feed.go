@@ -41,6 +41,22 @@ type VoidedTicket struct {
 type VoidedCursor struct {
 	OccurredAt time.Time
 	EventID    uuid.UUID
+	// Ceiling is the high-water mark: the newest instant the FIRST page was
+	// allowed to see, carried unchanged through every later page.
+	//
+	// Without it a walk down a newest-first feed can never observe a void that
+	// happens during the walk — the new event is newer than the cursor, and the
+	// cursor only moves backwards, so every remaining page excludes it and the
+	// scanner reaches next_cursor: null holding an incomplete list it believes is
+	// complete (ai-review [high]). That is the precise failure this feed exists to
+	// prevent, so it cannot be left to "the next sync will pick it up": the
+	// scanner has no way to know it needs one.
+	//
+	// With the ceiling, a page walk is a consistent snapshot as of its first page.
+	// Voids after that are simply not in this walk, and the scanner learns about
+	// them on its next pull — which it knows to make, because freshness is a
+	// clock, not a cursor.
+	Ceiling time.Time
 	// OrganizerID is the organizer the cursor was ISSUED for.
 	//
 	// A cursor is only a position, so it cannot read another organizer's rows —
@@ -85,9 +101,10 @@ const voidedFeedQuery = `
 	  JOIN lifecycle_events AS e ON e.ticket_id = t.id
 	 WHERE t.organizer_id = $1
 	   AND e.event_type IN ('refunded', 'exchanged')
+	   AND e.occurred_at <= $4
 	   AND (e.occurred_at, e.id) < ($2, $3)
 	 ORDER BY e.occurred_at DESC, e.id DESC
-	 LIMIT $4`
+	 LIMIT $5`
 
 // feedOrganizerIndex is the index the scan-scope proof asserts the plan uses.
 // Named here rather than spelled in the test so the migration, the query and the
@@ -134,13 +151,33 @@ func (p *Postgres) VoidedTickets(ctx context.Context, organizer uuid.UUID, after
 		return nil, VoidedCursor{}, fmt.Errorf("voided feed cursor belongs to another organizer")
 	}
 	if after.IsZero() {
-		// A timestamp no lifecycle event can carry. Not time.Now(), which would
-		// race a ticket voided during the request and silently drop it from the
-		// first page a scanner ever pulls — the one page that must be complete.
-		after = VoidedCursor{OccurredAt: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), EventID: uuid.Max}
+		// The first page starts above every possible event and sets the ceiling
+		// for the whole walk.
+		//
+		// The keyset sentinel is a timestamp no lifecycle event can carry, not
+		// time.Now(): a clock read here would race a ticket voided during this
+		// very request and drop it from the first page a scanner ever pulls — the
+		// one page that must be complete.
+		//
+		// The CEILING is p.now(), and that is a different decision from the
+		// sentinel above rather than an inconsistency. It is the snapshot boundary:
+		// everything at or before it belongs to this walk, everything after it
+		// belongs to the next pull. Reading it here — once, on the first page — is
+		// what makes the walk consistent.
+		after = VoidedCursor{
+			OccurredAt: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+			EventID:    uuid.Max,
+			Ceiling:    p.now(),
+		}
+	}
+	if after.Ceiling.IsZero() {
+		// A cursor with no ceiling cannot be honoured as a snapshot, and silently
+		// treating it as unbounded is how the gap this closes would come back. The
+		// caller is a page walk that lost its boundary; make it start over.
+		return nil, VoidedCursor{}, fmt.Errorf("voided feed cursor carries no ceiling")
 	}
 
-	rows, err := p.db.QueryContext(ctx, voidedFeedQuery, organizer, after.OccurredAt, after.EventID, limit+1)
+	rows, err := p.db.QueryContext(ctx, voidedFeedQuery, organizer, after.OccurredAt, after.EventID, after.Ceiling, limit+1)
 	if err != nil {
 		return nil, VoidedCursor{}, fmt.Errorf("read voided tickets: %w", err)
 	}
@@ -160,7 +197,14 @@ func (p *Postgres) VoidedTickets(ctx context.Context, organizer uuid.UUID, after
 			// skip a ticket, and a skipped ticket in a revocation feed is a
 			// refunded holder walking through a gate.
 			last := page[limit-1]
-			next = VoidedCursor{OccurredAt: last.OccurredAt, EventID: last.EventID, OrganizerID: organizer}
+			next = VoidedCursor{
+				OccurredAt: last.OccurredAt, EventID: last.EventID,
+				OrganizerID: organizer,
+				// Carried unchanged: the ceiling belongs to the WALK, not to the
+				// page. Recomputing it here would reintroduce the gap one page at
+				// a time.
+				Ceiling: after.Ceiling,
+			}
 			break
 		}
 		page = append(page, v)

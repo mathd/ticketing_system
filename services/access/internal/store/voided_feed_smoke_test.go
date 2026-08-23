@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -309,12 +310,60 @@ func TestVoidedFeedScanIsOrganizerScoped(t *testing.T) {
 	seedFeedVolume(t, ctx, db, org, 4000)
 
 	plan := explainVoidedFeedGenericPlan(t, ctx, db, org)
+
+	// Naming the index is NOT enough, and this is the ai-review [medium] finding.
+	// A full index scan or a bitmap path can MENTION tickets_organizer_feed_idx
+	// while reading every organizer's rows and filtering afterwards — which
+	// satisfies both "the index appears" and "no Seq Scan on tickets" while being
+	// exactly the unscoped read ADR-019 is about. What proves the scan is narrowed
+	// is the index CONDITION carrying the tenant parameter.
 	if !strings.Contains(plan, feedOrganizerIndex) {
 		t.Fatalf("the voided feed does not reach rows through %s, so the read is scoped in its RESULT but not in its SCAN (ADR-019):\n%s", feedOrganizerIndex, plan)
 	}
 	if strings.Contains(plan, "Seq Scan on tickets") {
 		t.Fatalf("the plan sequentially scans tickets — every organizer's rows are read and discarded:\n%s", plan)
 	}
+	cond := indexCondFor(t, plan, feedOrganizerIndex)
+	if !strings.Contains(cond, "organizer_id") || !strings.Contains(cond, "$1") {
+		t.Fatalf("%s is used, but its Index Cond is %q — it does not constrain organizer_id to $1, so the scan reads rows this organizer may not see and discards them afterwards (ADR-019):\n%s",
+			feedOrganizerIndex, cond, plan)
+	}
+}
+
+// indexCondFor pulls the Index Cond of the plan node that uses the named index.
+//
+// Reads the JSON plan rather than grepping the text form: in text output the
+// condition is a sibling LINE of the node, so a naive "does the plan contain
+// organizer_id" check passes when the condition belongs to a different node
+// entirely — including a post-scan Filter, which is precisely the unscoped case.
+func indexCondFor(t *testing.T, planJSON, index string) string {
+	t.Helper()
+	var doc []struct {
+		Plan map[string]any `json:"Plan"`
+	}
+	if err := json.Unmarshal([]byte(planJSON), &doc); err != nil {
+		t.Fatalf("plan is not JSON: %v\n%s", err, planJSON)
+	}
+	if len(doc) == 0 {
+		t.Fatalf("empty plan document:\n%s", planJSON)
+	}
+	var found string
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		if name, _ := node["Index Name"].(string); name == index {
+			cond, _ := node["Index Cond"].(string)
+			found = cond
+			return
+		}
+		children, _ := node["Plans"].([]any)
+		for _, c := range children {
+			if child, ok := c.(map[string]any); ok {
+				walk(child)
+			}
+		}
+	}
+	walk(doc[0].Plan)
+	return found
 }
 
 // seedFeedVolume writes one voided lifecycle row per ticket directly. The chain
@@ -361,7 +410,7 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(
-		`PREPARE %s(uuid, timestamptz, uuid, int) AS %s`, stmt, voidedFeedQuery)); err != nil {
+		`PREPARE %s(uuid, timestamptz, uuid, timestamptz, int) AS %s`, stmt, voidedFeedQuery)); err != nil {
 		t.Fatal(err)
 	}
 	// Set before the first EXECUTE: the cached plan is built then.
@@ -369,7 +418,7 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 		t.Fatal(err)
 	}
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-		`EXPLAIN EXECUTE %s('%s'::uuid, '9999-12-31 23:59:59Z'::timestamptz, '%s'::uuid, 100)`,
+		`EXPLAIN (FORMAT JSON) EXECUTE %s('%s'::uuid, '9999-12-31 23:59:59Z'::timestamptz, '%s'::uuid, now()::timestamptz, 100)`,
 		stmt, org, uuid.Max))
 	if err != nil {
 		t.Fatal(err)
@@ -389,13 +438,13 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 	}
 
 	got := plan.String()
-	// $1..$3 must survive. $4 is deliberately NOT checked: it is the LIMIT, and
+	// $1..$4 must survive. $5 is deliberately NOT checked: it is the LIMIT, and
 	// Postgres folds a LIMIT parameter into the plan's cost estimate even under
 	// force_generic_plan, so requiring it would fail against a perfectly generic
 	// plan. The parameters that matter are the ones inside the predicates — those
 	// are what a widened filter would let the planner see through, and $1 is the
 	// tenant scope this whole assertion is about.
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 4; i++ {
 		marker := "$" + strconv.Itoa(i)
 		if !strings.Contains(got, marker) {
 			t.Fatalf("not a generic plan — %s was substituted, so plan_cache_mode did not apply and every index assertion here proves nothing.\nplan:\n%s", marker, got)
@@ -525,5 +574,112 @@ func TestVoidedFeedMigrationIsIrreversible(t *testing.T) {
 	if err := db.QueryRowContext(ctx,
 		`SELECT count(*) FROM pg_class WHERE relname = $1`, feedOrganizerIndex).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("a failed down attempt altered the schema (n=%d err=%v)", n, err)
+	}
+}
+
+// A page walk is a consistent snapshot as of its first page (ai-review [high]).
+//
+// The defect this pins: the feed is newest-first and the cursor only moves
+// backwards, so a ticket voided DURING a walk is newer than every remaining
+// cursor and is excluded from every remaining page. The scanner reaches
+// next_cursor: null and publishes a view it believes is complete, missing a
+// revocation from seconds earlier. For a revocation feed that is the whole
+// failure mode — and the scanner cannot detect it, because "complete" is exactly
+// what a null cursor means.
+//
+// The high-water mark makes the omission DEFINED rather than silent: voids after
+// the ceiling belong to the next pull, which the scanner knows to make because
+// freshness is a clock, not a cursor. What must never happen is a void inside the
+// walk's own window going missing.
+func TestVoidedFeedWalkIsASnapshotAndDoesNotLoseMidWalkVoids(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+
+	before := make(map[uuid.UUID]bool, 4)
+	for i := 0; i < 4; i++ {
+		s := issueTicket(t, ctx, st, org)
+		voidOneTicketOfItsOwnOrder(t, ctx, st, s)
+		before[s.ticketID] = false
+	}
+
+	page1, cursor, err := st.VoidedTickets(ctx, org, VoidedCursor{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.IsZero() {
+		t.Fatal("fixture cannot exercise a mid-walk void: the first page already finished the walk")
+	}
+	if cursor.Ceiling.IsZero() {
+		t.Fatal("the first page issued a cursor with no ceiling, so the walk has no snapshot boundary")
+	}
+
+	// The event this test is about: a void that lands after the walk started.
+	late := issueTicket(t, ctx, st, org)
+	voidOneTicketOfItsOwnOrder(t, ctx, st, late)
+
+	seen := make(map[uuid.UUID]bool, 5)
+	for _, v := range page1 {
+		seen[v.TicketID] = true
+	}
+	for page := 0; page < 6; page++ {
+		got, next, err := st.VoidedTickets(ctx, org, cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range got {
+			seen[v.TicketID] = true
+		}
+		if next.IsZero() {
+			break
+		}
+		if next.Ceiling != cursor.Ceiling {
+			t.Fatalf("the ceiling moved mid-walk (%v -> %v); it belongs to the walk, not the page, and recomputing it reopens the gap one page at a time", cursor.Ceiling, next.Ceiling)
+		}
+		cursor = next
+	}
+
+	// EVERY ticket voided before the walk began is in the walk. This is the
+	// assertion that goes red without the ceiling — not because the late void
+	// appears, but because losing the ceiling means later pages are unbounded and
+	// the walk's own rows shift under it.
+	for id := range before {
+		if !seen[id] {
+			t.Fatalf("ticket %s was voided BEFORE the walk started and never appeared in it — the walk is not a snapshot", id)
+		}
+	}
+	// The late void is legitimately outside this walk's window. What matters is
+	// that it is not lost: the next walk must carry it, because a scanner that
+	// polls again is the mechanism by which it is never missed.
+	nextWalk, _, err := st.VoidedTickets(ctx, org, VoidedCursor{}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsID(feedIDs(t, nextWalk), late.ticketID) {
+		t.Fatalf("a ticket voided during the previous walk is absent from the NEXT walk too — it is lost, not deferred: %v", feedIDs(t, nextWalk))
+	}
+}
+
+// A cursor with no ceiling is refused rather than treated as unbounded.
+//
+// Silently defaulting would be the gap coming back through the back door: an
+// unbounded later page sees rows the walk had already passed, and the caller
+// never learns its snapshot was abandoned.
+func TestVoidedFeedRefusesACursorWithNoCeiling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	s := issueTicket(t, ctx, st, org)
+	voidOneTicketOfItsOwnOrder(t, ctx, st, s)
+
+	_, _, err := st.VoidedTickets(ctx, org, VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: org,
+	}, 10)
+	if err == nil {
+		t.Fatal("a cursor with no ceiling was honoured as an unbounded page — the walk lost its snapshot boundary silently")
 	}
 }

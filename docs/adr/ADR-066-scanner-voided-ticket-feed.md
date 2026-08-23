@@ -89,6 +89,34 @@ rows and come back short, with no error anywhere. For a revocation feed that is 
 direction, because a silently incomplete view is exactly the state this whole line of work exists to
 prevent. Refusing is loud; a short page is not.
 
+### 4b. A page walk is a snapshot, and the cursor is authenticated
+
+Both of these came from the adversarial review, and both are the same class of
+defect: a way for a scanner to end up believing its revocation view is complete
+when it is not. That belief is the only thing this feed exists to prevent, so
+neither could be deferred.
+
+**A high-water mark bounds the walk.** The feed is newest-first and the cursor
+only moves backwards, so a ticket voided *during* a page walk is newer than every
+remaining cursor and is excluded from every remaining page — the scanner reaches
+`next_cursor: null` holding a list that is missing a revocation from seconds
+earlier. Confirmed by execution before it was fixed. The first page now captures a
+ceiling and every later page carries it unchanged, which makes the walk a
+consistent snapshot: voids after the ceiling belong to the *next* pull, which the
+scanner knows to make because freshness is a clock, not a cursor. A cursor with no
+ceiling is refused rather than treated as unbounded — silently defaulting would
+reintroduce the gap through the back door.
+
+**The cursor is MAC-signed** (`ACCESS_FEED_CURSOR_KEY`, its own key, per the
+one-key-one-claim rule in `qrlink.go`). Base64 is an encoding, not a protection:
+without a MAC an enrolled device can hand-craft a position — an old one, or one
+past the end — and receive an empty page with `next_cursor: null`. It cannot reach
+another organizer's rows, since the query filters on the token's organizer
+regardless, so **the forger and the victim are the same party**. That is a weaker
+threat than it first sounds and is recorded as such; it still matters here,
+because a device putting *itself* into a falsely-complete state and never learning
+is precisely this feed's failure mode.
+
 ### 5. Fail closed past a generous staleness ceiling — enforced by the SCANNER
 
 **Owner decision.** A scanner whose revocation view is older than the ceiling refuses to admit,

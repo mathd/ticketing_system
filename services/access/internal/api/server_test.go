@@ -576,26 +576,29 @@ func TestVoidedFeedRefusesAnUnenrolledDevice(t *testing.T) {
 func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
 	mine, theirs := uuid.New(), uuid.New()
 
-	foreign, err := encodeCursor(store.VoidedCursor{
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	foreign, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: theirs,
+		Ceiling: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeCursor(foreign, mine); err == nil {
+	if _, err := signer.decodeCursor(foreign, mine); err == nil {
 		t.Fatal("a cursor issued for another organizer was accepted — it would silently shorten this organizer's page")
 	}
 
 	// The same cursor, presented by the organizer it belongs to, must work: a
 	// test that only proves refusal is satisfied by a decoder that refuses
 	// everything.
-	own, err := encodeCursor(store.VoidedCursor{
+	own, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: mine,
+		Ceiling: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeCursor(own, mine); err != nil {
+	if _, err := signer.decodeCursor(own, mine); err != nil {
 		t.Fatalf("a cursor presented by its own organizer was refused: %v", err)
 	}
 }
@@ -605,11 +608,13 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	at := time.Date(2026, 8, 22, 14, 30, 0, 123456789, time.UTC)
 	id := uuid.New()
 
-	encoded, err := encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org})
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	ceiling := at.Add(time.Minute)
+	encoded, err := signer.encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org, Ceiling: ceiling})
 	if err != nil {
 		t.Fatal(err)
 	}
-	back, err := decodeCursor(encoded, org)
+	back, err := signer.decodeCursor(encoded, org)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,18 +623,84 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	if !back.OccurredAt.Equal(at) || back.EventID != id || back.OrganizerID != org {
 		t.Fatalf("round trip = %+v, want %v/%s/%s", back, at, id, org)
 	}
+	// The ceiling survives too: it is the walk's snapshot boundary, and a cursor
+	// that loses it on the wire is a walk that silently becomes unbounded.
+	if !back.Ceiling.Equal(ceiling) {
+		t.Fatalf("round trip lost the ceiling: %v, want %v", back.Ceiling, ceiling)
+	}
 
+	// Each of these must be refused for the reason its NAME says, which means each
+	// must carry a VALID signature — otherwise every case fails at the MAC and the
+	// whole table degenerates into one signature test wearing six labels. `sign`
+	// is what keeps them about their subjects.
+	sign := func(payload string) string {
+		body := base64.RawURLEncoding.EncodeToString([]byte(payload))
+		return body + "." + base64.RawURLEncoding.EncodeToString(signer.cursors.sign([]byte(body)))
+	}
 	for name, bad := range map[string]string{
 		"not base64":    "!!!not-base64!!!",
-		"not json":      base64.RawURLEncoding.EncodeToString([]byte("nonsense")),
-		"wrong version": base64.RawURLEncoding.EncodeToString([]byte(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`)),
-		"zero event":    base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `"}`)),
-		"zero time":     base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`)),
+		"not json":      sign("nonsense"),
+		"wrong version": sign(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
+		"zero event":    sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
+		"zero time":     sign(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
+		// A cursor with no ceiling is a walk that lost its snapshot boundary. It
+		// must be refused rather than defaulted, or the mid-walk gap comes back
+		// through the back door with the caller none the wiser (ai-review [high]).
+		"no ceiling": sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := decodeCursor(bad, org); err == nil {
+			if _, err := signer.decodeCursor(bad, org); err == nil {
 				t.Fatalf("%s was accepted as a cursor", name)
 			}
 		})
+	}
+}
+
+// A cursor a device made up is refused, even for its own organizer.
+//
+// Base64 is an encoding, not a protection (ai-review [high]). Without a MAC an
+// enrolled device can hand-craft a position — an old one, or one past the end —
+// and receive an empty page with next_cursor: null. It cannot reach another
+// organizer's rows, so the forger and the victim are the same party; that still
+// matters here, because for a revocation feed the damaging state is a device
+// that believes its view is complete when it is not, and this is a way to enter
+// that state and never learn.
+func TestVoidedFeedRefusesAnUnsignedOrTamperedCursor(t *testing.T) {
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	org := uuid.New()
+
+	valid, err := signer.encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: org,
+		Ceiling: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, _ := strings.Cut(valid, ".")
+
+	// Hand-rolled: exactly what a device can construct on its own.
+	forged := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":1,"occurred_at":"2020-01-01T00:00:00Z","event_id":"` + uuid.New().String() +
+			`","organizer_id":"` + org.String() + `","ceiling":"2020-01-01T00:00:00Z"}`))
+
+	for name, cursor := range map[string]string{
+		"unsigned":           body,
+		"no signature":       forged,
+		"empty signature":    forged + ".",
+		"wrong signature":    forged + "." + base64.RawURLEncoding.EncodeToString([]byte("not-the-mac")),
+		"signature reused":   forged + "." + strings.SplitN(valid, ".", 2)[1],
+		"body swapped under": forged + "." + strings.SplitN(valid, ".", 2)[1],
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := signer.decodeCursor(cursor, org); err == nil {
+				t.Fatalf("a %s cursor was accepted — a device can forge its own position and skip its own revocations", name)
+			}
+		})
+	}
+
+	// And the honest one still works: a test that only proves refusal is
+	// satisfied by a decoder that refuses everything.
+	if _, err := signer.decodeCursor(valid, org); err != nil {
+		t.Fatalf("a legitimately issued cursor was refused: %v", err)
 	}
 }

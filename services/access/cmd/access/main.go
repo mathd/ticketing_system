@@ -223,6 +223,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The voided-feed cursor key (TKT-162, ai-review [high]). Required for the
+	// same reason the link key is: a deployment that silently fell back to
+	// unsigned cursors would let an enrolled device forge its own pagination
+	// position and skip its own revocations without ever learning it had.
+	feedCursorKey, err := runtimecfg.RequiredCredential("ACCESS_FEED_CURSOR_KEY", "", runtimecfg.CredentialMinBytes)
+	if err != nil {
+		return err
+	}
 	verifier, err := ticket.NewVerifier(os.Getenv("ACCESS_QR_PUBLIC_KEYS"), os.Getenv("ACCESS_QR_KID"))
 	if err != nil {
 		return err
@@ -363,7 +371,7 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier, token).WithQRLinkKey(qrLinkKey).Router(log, validateResponses))
+	r.Mount("/", accessapi.New(st, verifier, token).WithQRLinkKey(qrLinkKey).WithFeedCursorKey(feedCursorKey).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),
