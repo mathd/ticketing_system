@@ -75,6 +75,21 @@ func main() {
 		}
 		return
 	}
+	// Operator resolution for wedged exchanges (TKT-255). A wedged exchange answers 409
+	// forever and leaves its source order neither exchangeable nor refundable, and
+	// migration 0010 records that an exchange has no cancelled state — so without these
+	// there is no path in the service from "this order is stuck" to "a human resolved it".
+	if len(os.Args) > 1 && (os.Args[1] == "list-wedged-exchanges" || os.Args[1] == "unwind-exchange") {
+		run := listWedgedExchanges
+		if os.Args[1] == "unwind-exchange" {
+			run = unwindExchange
+		}
+		if err := run(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
 		os.Exit(1)

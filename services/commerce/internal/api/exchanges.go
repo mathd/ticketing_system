@@ -332,6 +332,41 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
 	}
+	// The target is secured and the provider is next, which is the exact moment this
+	// exchange stops being unwindable (TKT-255, ADR-067 §5). An operator's unwind takes the
+	// SOURCE ORDER's lock, but this request released that lock when its bind committed — so
+	// without a durable marker the unwind cannot see that money is about to move here, and
+	// could delete the binding out from under the charge below.
+	//
+	// TWO OUTCOMES, and only one of them is best-effort (ai-review pass 3 [high]).
+	//
+	// An ordinary failure to mark — the UPDATE erroring — must not fail an exchange that is
+	// otherwise fine. The marker protects against a concurrent operator command, not against
+	// losing money, and refusing the buyer to protect a race that needs a human on a CLI at
+	// this instant is the wrong trade. Logged, because a persistent failure means the
+	// protection is off.
+	//
+	// ErrExchangeUnwound is NOT that. It means the row is already GONE — an operator unwound
+	// this exchange while this request sat between finalize and the provider — and
+	// continuing would charge the buyer against a binding that no longer exists, with no
+	// exchange row, no replacement order and no `order.exchanged` event to record what the
+	// money was for. That is the precise outcome this whole mechanism exists to prevent, so
+	// it is a HARD STOP before the provider rather than a log line.
+	//
+	// 409, and the target claim is deliberately left finalized: the operator has already
+	// decided this exchange is abandoned, and releasing the claim here would hand back
+	// capacity on their behalf from a request that lost a race. The unwind evidence records
+	// what happened; TKT-146's shape applies if that capacity needs returning.
+	if err := commercestore.MarkExchangeSettling(r.Context(), s.db, ex.OrganizerID, ex.ID); err != nil {
+		if errors.Is(err, commercestore.ErrExchangeUnwound) {
+			slog.Default().WarnContext(r.Context(), "exchange unwound while settling",
+				"exchange_id", ex.ID)
+			write(w, http.StatusConflict, map[string]string{"error": "exchange was unwound"})
+			return
+		}
+		slog.Default().ErrorContext(r.Context(), "mark exchange settling",
+			"exchange_id", ex.ID, "err", err)
+	}
 	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
