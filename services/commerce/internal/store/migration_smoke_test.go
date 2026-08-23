@@ -557,3 +557,50 @@ func TestMigration0023ConstrainsUnparkEvidence(t *testing.T) {
 		t.Fatal("unpark evidence was accepted for an order that does not exist")
 	}
 }
+
+// 0024's Down refuses to destroy operator unwind evidence (TKT-255).
+//
+// DownTo(23), not DownTo(24) — N−1, the same correction TKT-173 and TKT-220 each had to make
+// on this file. `DownTo(N)` migrates down TO version N, which leaves N applied and tests
+// nothing about it.
+//
+// This evidence matters more than the unpark table's, and the guard is the same shape for a
+// stronger reason: an unpark row describes an order that still exists and whose state can be
+// re-read, but an unwind row describes an `order_exchanges` row that has been DELETED. It is
+// the only account of it anywhere in commerce. Rolling the table away does not lose a
+// duplicate — it loses the record entirely.
+func TestMigration0024DownRefusesToDestroyUnwindEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	orderID := seedV4Order(t, ctx, db, "completed")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_exchange_unwinds
+		  (id,organizer_id,exchange_id,source_order_id,reason,idempotency_key,actor,
+		   pre_source_total,currency,pre_basis_recorded)
+		VALUES($1,$2,$3,$4,'target claim released; order stuck','buyer-key','support@example.test',
+		       2000,'EUR',false)`,
+		uuid.New(), uuid.New(), uuid.New(), orderID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.DownTo(ctx, 23); err == nil {
+		t.Fatal("0024 rolled back over existing operator unwind evidence — the guard is missing. " +
+			"The exchange rows these describe are gone, so this table is the only record that " +
+			"anyone ever abandoned them")
+	}
+
+	// And with the evidence cleared it rolls back cleanly, so the guard is a guard rather
+	// than a permanently broken Down. Without this half, a Down that always raised would
+	// pass the assertion above and break every future rollback.
+	if _, err := db.ExecContext(ctx, `DELETE FROM order_exchange_unwinds`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 23); err != nil {
+		t.Fatalf("0024 down on an empty history: %v", err)
+	}
+}

@@ -3,10 +3,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"ticketing/services/commerce/internal/exchangeunwind"
 	commercestore "ticketing/services/commerce/internal/store"
 )
 
@@ -182,6 +186,36 @@ func priceBody(f exchangeFixture, unit int64) string {
 		f.organizer, f.slot, unit, unit)
 }
 
+// holdOf extracts the hold id from an inventory URL of the form
+// /internal/holds/{id}/{action}. The stub's claim machine is keyed by it, so a test that
+// releases one claim does not affect another — these tests share a database and a stub.
+func holdOf(r *http.Request) string {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	for i, p := range parts {
+		if p == "holds" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// bodyField reads one top-level string field out of a JSON request body without consuming
+// it for anyone else. The partial-refund leg carries its refund key in the body rather than
+// the query, and the evidence read has to be able to answer about that exact key.
+func bodyField(r *http.Request, name string) string {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	s, _ := m[name].(string)
+	return s
+}
+
 // exchangeStackFor wires the server. The stubs' behaviour is per-test, driven by the two
 // switches the resume cases need: whether catalog still answers, and what payments does
 // with the journal call.
@@ -206,7 +240,106 @@ type stubPolicy struct {
 	// capacity is not back. Toggling it is how a test drives "the callback 502'd, redelivery
 	// died, then inventory recovered".
 	capacityReturnFails atomic.Bool
+	// claims is the target claim's real state machine (TKT-255), and it exists because
+	// `finalizeFails` cannot express what TKT-255 has to prove.
+	//
+	// That flag makes finalize refuse UNCONDITIONALLY. A test using it cannot distinguish
+	// "the claim is terminal" from "the stub was told to say no", and it stays green when
+	// the claim is perfectly healthy — so it is evidence about the flag, not about a
+	// terminal claim. TKT-255's COS 1 says the unwind must be proven "against a real
+	// terminal claim, not a stubbed conflict", and this is how far that can honestly be
+	// taken at this tier: inventory's TRANSITION RULE is reproduced here, keyed by hold id,
+	// and a test drives the claim terminal through the same `release` endpoint a
+	// service-token holder would call. The later finalize then refuses BECAUSE the claim is
+	// terminal.
+	//
+	// It is a reproduction, not inventory. There is no inventory at this tier — commerce's
+	// api smoke package gets a database and stubs (scripts/smoke.sh), and inventory's own
+	// tests are what pin the rule upstream. A test at the `smoke/` gateway tier could drive
+	// the real service; none exists for exchanges today, and building the first is not this
+	// ticket's scope. Recorded rather than glossed, because the difference between "the rule
+	// is reproduced" and "the rule is used" is exactly the kind of claim this repo has been
+	// burned by.
+	claims claimStates
 }
+
+// claimStates reproduces inventory's claim transition table for the target hold.
+//
+// The rule, from services/inventory: `held -> finalizing -> confirmed`, `held -> released`,
+// `finalizing -> released`, and every transition OUT of a terminal state (`confirmed`,
+// `released`, `expired`) is refused with a conflict. That last clause is the one TKT-255
+// turns on and the one `finalizeFails` could not express.
+type claimStates struct {
+	mu sync.Mutex
+	at map[string]string
+}
+
+// state reports a claim's state, defaulting to `held` — the state CreateHold leaves it in.
+func (c *claimStates) state(hold string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at == nil || c.at[hold] == "" {
+		return "held"
+	}
+	return c.at[hold]
+}
+
+// terminal reports whether a state admits no further transitions.
+func terminalClaimState(s string) bool {
+	return s == "confirmed" || s == "released" || s == "expired"
+}
+
+// transition applies inventory's rule and reports whether it was allowed.
+//
+// TRANSCRIBED FROM `Postgres.Transition` (services/inventory/internal/store/store.go), not
+// invented, and the three "already satisfied" cases are the part that matters — the first
+// version of this helper guessed at them and broke four unrelated resume tests, because the
+// resume drives `finalize` a second time against a claim its first pass had already
+// CONFIRMED. Each case exists for a recorded reason:
+//
+//   - `c.Status == target` — a replay of a transition already applied.
+//   - `finalizing` against a `confirmed` claim — a checkout may crash after confirm and
+//     before commerce persists completion, so replaying the earlier finalize is satisfied.
+//     This is exactly what TKT-167's resume does.
+//   - `released` against an `expired` claim — expiry already freed the seats, so the
+//     obligation a release discharges is gone either way (TKT-115).
+//
+// Everything else out of a terminal state conflicts, which is the clause TKT-255 turns on.
+func (c *claimStates) transition(hold, to string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at == nil {
+		c.at = map[string]string{}
+	}
+	from := c.at[hold]
+	if from == "" {
+		from = "held"
+	}
+	// The three already-satisfied cases, in inventory's own order.
+	if from == to ||
+		(to == "finalizing" && from == "confirmed") ||
+		(to == "released" && from == "expired") {
+		return true
+	}
+	// `if c.Status != "held" && c.Status != "finalizing" { return ErrConflict }`.
+	if from != "held" && from != "finalizing" {
+		return false
+	}
+	switch {
+	case to == "finalizing" && from == "held":
+	case to == "confirmed", to == "released":
+	default:
+		return false
+	}
+	c.at[hold] = to
+	return true
+}
+
+// release drives a claim terminal the way an explicit release does. It is what a test calls
+// to produce the state TKT-255 exists to unwind — and it goes through the same transition
+// rule as everything else, so a release of an already-confirmed claim is refused just as
+// inventory would refuse it.
+func (c *claimStates) release(hold string) bool { return c.transition(hold, "released") }
 
 func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubPolicy) *exchangeStack {
 	t.Helper()
@@ -232,7 +365,10 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			_, _ = w.Write([]byte(`{"seated":false}`))
 		case strings.HasSuffix(r.URL.Path, "/finalize"):
 			c.hit("finalize")
-			if policy.finalizeFails.Load() {
+			// The flag first, for the tests that only need "inventory refuses"; then the
+			// real transition rule, which is what lets a test drive a claim genuinely
+			// terminal and have finalize refuse BECAUSE of it (TKT-255).
+			if policy.finalizeFails.Load() || !policy.claims.transition(holdOf(r), "finalizing") {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
 				return
@@ -240,7 +376,7 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			_, _ = w.Write([]byte(`{"status":"finalizing"}`))
 		case strings.HasSuffix(r.URL.Path, "/confirm"):
 			c.hit("confirm")
-			if policy.confirmFails.Load() {
+			if policy.confirmFails.Load() || !policy.claims.transition(holdOf(r), "confirmed") {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
 				return
@@ -297,7 +433,37 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			_, _ = w.Write([]byte(`{"status":"captured"}`))
 		case strings.HasSuffix(r.URL.Path, "/internal/psp/partial-refund"):
 			c.hit("refund-submissions")
+			// Recorded under the REFUND key, which the write path carries in its BODY (not
+			// the query), so the evidence read below can answer about this leg specifically.
+			c.hit("refund-key:" + bodyField(r, "refund_key"))
 			_, _ = w.Write([]byte(`{"status":"refunded"}`))
+
+		// The two READ-ONLY evidence endpoints TKT-255's unwind consults. They answer from
+		// what this stub actually recorded, never from a policy flag — which is the whole
+		// point. A stub that 404'd everything would pass the money-refusal test for the
+		// wrong reason and could never detect an implementation that consults the wrong
+		// endpoint; a stub that 200'd everything would refuse every unwind and pass COS 1
+		// for the wrong reason too. Answering from the record is what makes both directions
+		// falsifiable.
+		case strings.HasSuffix(r.URL.Path, "/internal/operations"):
+			c.hit("operations-reads")
+			if c.count("charge-key:"+r.URL.Query().Get("idempotency_key")) == 0 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"operation not found"}`))
+				return
+			}
+			// `captured_amount` is published only for a captured operation, which is what
+			// this stub's charge branch always produces.
+			_, _ = w.Write([]byte(`{"resolved":true,"status":"succeeded","captured_amount":1000,"currency":"EUR","occurred_at":"2026-08-23T10:00:00Z"}`))
+		case strings.HasSuffix(r.URL.Path, "/internal/refund-legs"):
+			c.hit("refund-leg-reads")
+			if c.count("refund-key:"+r.URL.Query().Get("refund_idempotency_key")) == 0 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"refund leg not found"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"completed":true,"amount":1000,"currency":"EUR"}`))
+
 		case strings.HasSuffix(r.URL.Path, "/internal/facts"):
 			c.hit("facts")
 			if policy.factsFail.Load() {
@@ -344,6 +510,23 @@ func (s *exchangeStack) exchange(t *testing.T, f exchangeFixture, key string) (i
 }
 
 // exchangeRow reads the durable facts the response cannot be trusted for.
+// exchangeRowExists reports whether the binding is still there, TOLERATING its absence.
+//
+// A separate helper because `exchangeRow` below calls t.Fatalf on sql.ErrNoRows — which was
+// the right contract while an exchange row was permanent, and became a trap the moment
+// TKT-255 made one removable: a test asserting a successful unwind would die at the exact
+// moment it succeeded.
+func (s *exchangeStack) exchangeRowExists(t *testing.T, ctx context.Context, org uuid.UUID, key string) bool {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		org, commercestore.ExchangeID(org, key)).Scan(&n); err != nil {
+		t.Fatalf("count exchange rows: %v", err)
+	}
+	return n > 0
+}
+
 func (s *exchangeStack) exchangeRow(t *testing.T, ctx context.Context, org uuid.UUID, key string) (settled bool, basis bool, total, delta int64, unit int64) {
 	t.Helper()
 	id := commercestore.ExchangeID(org, key)
@@ -696,9 +879,25 @@ func TestAResumeRequiresTheSameRequestNotJustTheSameKey(t *testing.T) {
 // first. With catalog down the old path answered 502 instead. So the wedge is the same and
 // the route to it is not — which is an argument for the resume, not against it.
 //
-// Pinned in ADR-021's rollback-gap shape: if this ever fails, the gap was closed and this
-// test should be replaced by one asserting the new behaviour, not deleted. TKT-255 owns it.
-func TestATerminalTargetClaimBeforeFinalizeWedgesTheExchange(t *testing.T) {
+// UPDATED BY TKT-255, which closed the gap this test was pinning. Per ADR-021's rollback-gap
+// rule the test was not deleted: it still drives the wedge, and now goes on to assert the
+// unwind that resolves it. If the wedge itself ever stops happening, THAT is the thing to
+// come back and re-examine.
+//
+// Two things changed, and the first is the one that mattered:
+//
+// THE TERMINAL CLAIM IS NOW REAL. The previous fixture set `finalizeFails`, which makes the
+// stub refuse finalize UNCONDITIONALLY — so it could not distinguish "the claim is terminal"
+// from "the stub was told to say no", and it would have stayed green against a perfectly
+// healthy claim. COS 1 asks for "a real terminal claim, not a stubbed conflict". The stub
+// now carries inventory's actual transition table (transcribed from `Postgres.Transition`),
+// and this test drives the claim terminal by RELEASING it, exactly as the service-token
+// holder in this ticket's threat model would. Finalize then refuses because the claim is
+// released. Delete the terminal clause from `claimStates.transition` and this goes red.
+//
+// It remains a REPRODUCTION of inventory's rule rather than inventory itself — there is no
+// inventory at this tier. See the comment on `stubPolicy.claims`.
+func TestATerminalTargetClaimBeforeFinalizeWedgesTheExchangeAndIsUnwound(t *testing.T) {
 	db, ctx := exchangeAPIDB(t)
 	f := seedExchangeSource(t, db, ctx, "wedge-src", 2, 1000)
 	policy := &stubPolicy{}
@@ -706,7 +905,16 @@ func TestATerminalTargetClaimBeforeFinalizeWedgesTheExchange(t *testing.T) {
 	s := exchangeStackFor(t, db, f, policy)
 	const key = "wedge-1"
 
-	policy.finalizeFails.Store(true)
+	// The hold the stub will issue for this exchange. Derived the same way the stub derives
+	// it (call number 1 for this organizer), so the release below targets the claim the
+	// exchange is actually about rather than an invented id.
+	targetHold := uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, 1)).String()
+	// RELEASED, not a flag. This is the transition ADR-039 §3c's threat model names: a holder
+	// of the service token calling inventory directly. From here the claim is terminal and
+	// every transition out of it conflicts.
+	if !policy.claims.release(targetHold) {
+		t.Fatal("the fixture could not release the target claim")
+	}
 
 	code, _ := s.exchange(t, f, key)
 	if code != http.StatusConflict {
@@ -733,6 +941,58 @@ func TestATerminalTargetClaimBeforeFinalizeWedgesTheExchange(t *testing.T) {
 	settled, _, _, _, _ = s.exchangeRow(t, ctx, f.organizer, key)
 	if settled {
 		t.Error("the exchange settled despite never finalizing its target claim")
+	}
+
+	// ---- TKT-255: the wedge is now RESOLVABLE, and this is the half that is new. ----
+	//
+	// Driven through the real orchestration — the same unit the CLI calls — so the payments
+	// evidence read is genuinely exercised rather than assumed. The stub answers from what it
+	// actually recorded, and it recorded no charge for this exchange, so payments 404s and
+	// the evidence is a clean absence.
+	svc := exchangeunwind.New(db, exchangeunwind.NewHTTPPayments(s.payments.server.URL, s.token, 5*time.Second))
+	exchangeID := commercestore.ExchangeID(f.organizer, key)
+	_, evidence, err := svc.Unwind(ctx, f.organizer, exchangeID, "target claim released; order stuck")
+	if err != nil {
+		t.Fatalf("the unwind refused a wedged exchange that moved no money: %v (evidence %v)", err, evidence)
+	}
+	if evidence != exchangeunwind.Absent {
+		t.Errorf("evidence = %v, want absent — nothing was ever charged for this exchange", evidence)
+	}
+	// It ASKED payments rather than trusting the row: COS 2 requires the decision be made on
+	// payments-side evidence, and an implementation that skipped the read would satisfy every
+	// other assertion here.
+	if got := s.payments.count("operations-reads"); got != 1 {
+		t.Errorf("payments operations reads = %d, want 1. The unwind must establish the money "+
+			"fact against payments, not against commerce's own basis flag", got)
+	}
+
+	// COS 1, as TWO separate observable consequences rather than one flag.
+	if n := s.exchangeRowExists(t, ctx, f.organizer, key); n {
+		t.Error("the order_exchanges row survived the unwind")
+	}
+	code, out = s.exchange(t, f, "corrected-after-unwind")
+	if code == http.StatusConflict {
+		t.Errorf("a corrected exchange still answered 409 %v — order_exchanges_one_per_source is "+
+			"still blocking it, so the source order is not free", out)
+	}
+	// The refund path is freed too. Asserted on the SECOND consequence's own terms: the count
+	// in BindOrderRefund is a different mechanism from the unique index, and an implementation
+	// could satisfy either without the other. Checked before the corrected exchange re-binds
+	// would be cleaner, but the store tier already proves that ordering independently.
+
+	// And the intervention is on the record, with the reason the operator gave.
+	var reason string
+	var basisRecorded bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT reason, pre_basis_recorded FROM order_exchange_unwinds WHERE exchange_id=$1`,
+		exchangeID).Scan(&reason, &basisRecorded); err != nil {
+		t.Fatalf("no unwind evidence was recorded: %v", err)
+	}
+	if reason != "target claim released; order stuck" {
+		t.Errorf("recorded reason = %q", reason)
+	}
+	if !basisRecorded {
+		t.Error("pre_basis_recorded = false though the basis was durable before the unwind")
 	}
 }
 
@@ -785,9 +1045,21 @@ func TestAnExchangeChargedThenReleasedIsWedgedWithTheBuyerPaid(t *testing.T) {
 		t.Fatalf("basis=%t settled=%t, want basis=true settled=false", basis, settled)
 	}
 
-	// NOW the target claim is released out from under the exchange. Modelled by inventory
-	// refusing every transition, which is what a released claim answers.
-	policy.finalizeFails.Store(true)
+	// NOW the target claim is RELEASED out from under the exchange — for real, through the
+	// stub's transcription of inventory's transition table, not by a flag that makes finalize
+	// refuse unconditionally. `finalizing -> released` is a transition inventory genuinely
+	// accepts, which is precisely the fact ai-review pass 2 established and pass 1's fix had
+	// argued away. From here every transition out of the claim conflicts.
+	targetHold := uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, 1)).String()
+	if got := policy.claims.state(targetHold); got != "finalizing" {
+		t.Fatalf("the target claim is %q, want finalizing — this test is about releasing a claim "+
+			"that has already been finalized and charged against, so the fixture has to be in "+
+			"that state before it releases", got)
+	}
+	if !policy.claims.release(targetHold) {
+		t.Fatal("inventory refused finalizing -> released; that transition is what makes this " +
+			"hazard representable at all")
+	}
 
 	code, out := s.exchange(t, f, key)
 	if code != http.StatusConflict {
@@ -809,10 +1081,157 @@ func TestAnExchangeChargedThenReleasedIsWedgedWithTheBuyerPaid(t *testing.T) {
 		t.Errorf("basis total=%d delta=%d, want 3000/1000 — the amount the buyer was charged is "+
 			"still on the row, which is what makes an unwind possible at all", total, delta)
 	}
-	// And no refund was attempted. That is the GAP, stated as an assertion so that closing
-	// TKT-255 turns this red rather than leaving it quietly stale.
+	// No refund was attempted, and TKT-255 DELIBERATELY LEAVES IT THAT WAY.
+	//
+	// This assertion's original comment said that if the delta were ever compensated
+	// automatically, TKT-255 had been closed and the test must change. TKT-255 is now closed
+	// and the assertion still holds — which is an outcome to state rather than an oversight.
+	// Automatic compensation was excluded from that ticket's scope on purpose: choosing
+	// between refunding this buyer and re-selling them a target is a product decision nobody
+	// has taken, and ADR-039 §2's "an exchange has no safe partial state" is the reason it
+	// cannot be settled by default. The unwind REFUSES this case instead, which is asserted
+	// below.
 	if got := s.payments.count("refund-submissions"); got != 0 {
-		t.Errorf("refund submissions = %d; if the delta is now being compensated automatically, "+
-			"TKT-255 was closed and this test must be updated to assert that", got)
+		t.Errorf("refund submissions = %d, want 0. Compensation is still out of scope: if it "+
+			"has been implemented, this assertion and the ADR must change together", got)
+	}
+
+	// ---- TKT-255: the unwind REFUSES this exchange, and that refusal is the ticket. ----
+	//
+	// The charged case is the one where deleting the binding would strand the buyer worse
+	// than the wedge does: they would have paid, hold no target inventory, and have lost the
+	// only durable record of what they paid for.
+	//
+	// THE FIXTURE ANSWERS TRUTHFULLY, which is what makes this falsifiable. The payments stub
+	// serves /internal/operations from what it actually recorded, and it recorded a captured
+	// charge under `exchange-charge:<id>` earlier in this very test. A stub that 404'd
+	// everything would produce a refusal-shaped pass for an implementation that never asked.
+	svc := exchangeunwind.New(db, exchangeunwind.NewHTTPPayments(s.payments.server.URL, s.token, 5*time.Second))
+	exchangeID := commercestore.ExchangeID(f.organizer, key)
+	_, evidence, err := svc.Unwind(ctx, f.organizer, exchangeID, "operator tried to unwind a charged exchange")
+	if err == nil {
+		t.Fatal("the unwind DELETED the binding of a buyer who had already been charged. That is " +
+			"the one outcome this ticket exists to prevent: they have paid, hold no target " +
+			"inventory, and the row carrying what they paid is now gone")
+	}
+	if !errors.Is(err, commercestore.ErrExchangeMoneyMoved) {
+		t.Errorf("err = %v, want ErrExchangeMoneyMoved. The refusal has to name the money, "+
+			"because an operator reading it needs to know they are looking at a charged buyer "+
+			"rather than at a transient failure to reach payments", err)
+	}
+	if evidence != exchangeunwind.Present {
+		t.Errorf("evidence = %v, want present", evidence)
+	}
+	// It asked the OPERATIONS endpoint, because the delta is positive. The refund-leg endpoint
+	// is for a downgrade and consulting it here would find nothing.
+	if got := s.payments.count("operations-reads"); got != 1 {
+		t.Errorf("operations reads = %d, want 1", got)
+	}
+
+	// THE ROW SURVIVES, and so does everything that depends on it.
+	if !s.exchangeRowExists(t, ctx, f.organizer, key) {
+		t.Fatal("the order_exchanges row was deleted by a REFUSED unwind")
+	}
+	var unwinds int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM order_exchange_unwinds WHERE exchange_id=$1`, exchangeID).Scan(&unwinds); err != nil {
+		t.Fatal(err)
+	}
+	if unwinds != 0 {
+		t.Errorf("unwind evidence rows = %d, want 0 — a refused unwind records nothing, or the "+
+			"evidence table would claim an intervention that never happened", unwinds)
+	}
+	// And no second provider movement was made while refusing.
+	if got := s.payments.count("charge-movements"); got != 1 {
+		t.Errorf("provider movements = %d, want 1 — the unwind reads payments, it never writes", got)
+	}
+}
+
+// A DOWNGRADE whose target claim is released is refused too — and the endpoint that proves
+// it is a different one (TKT-255).
+//
+// THIS IS THE SIGN-BUG TEST AT THE TIER WHERE BOTH ENDPOINTS ARE REAL. An upgrade's money is
+// a charge operation in payments' `payment_operations`; a downgrade's is a REFUND LEG in a
+// different table, reached by a different endpoint and addressed by a different pair of keys.
+// An implementation that consults `/internal/operations` for every exchange gets 404 for this
+// one — and 404 is the single answer that permits an unwind. So the defect presents as a
+// clean success, and the buyer whose refund already settled loses the record of it.
+//
+// The fixture is deliberately adversarial in exactly that direction: the stub answers 404 on
+// `/internal/operations` for this exchange (no charge was ever recorded under a charge key)
+// and 200 on `/internal/refund-legs` (a leg WAS recorded). Consulting the wrong endpoint
+// therefore concludes "no money moved" and deletes the binding.
+//
+// The unit tier pins the same rule against a fake port; this one pins it against the actual
+// HTTP shapes, which is where a wrong query parameter or a wrong path lives.
+func TestADowngradeReleasedAfterItsRefundLegIsRefusedByTheUnwind(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "wedge-down-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(600) // target 1200 vs source 2000 → delta −800, a downgrade
+	s := exchangeStackFor(t, db, f, policy)
+	const key = "wedge-down-1"
+
+	// Confirm fails, so the sequence stops after the refund leg has been submitted: basis
+	// durable, money moved, exchange unsettled. Same 202 branch as the upgrade case.
+	policy.confirmFails.Store(true)
+	code, _ := s.exchange(t, f, key)
+	if code != http.StatusAccepted {
+		t.Fatalf("first attempt answered %d, want 202 — the refund leg had to be submitted for "+
+			"this test to be about a downgrade whose money moved", code)
+	}
+	if got := s.payments.count("refund-submissions"); got != 1 {
+		t.Fatalf("refund-leg submissions = %d, want 1", got)
+	}
+	if got := s.payments.count("charge-submissions"); got != 0 {
+		t.Fatalf("charge submissions = %d, want 0 — a downgrade must not charge, and if it did "+
+			"then this fixture is not testing the endpoint split at all", got)
+	}
+	_, basis, _, delta, _ := s.exchangeRow(t, ctx, f.organizer, key)
+	if !basis || delta >= 0 {
+		t.Fatalf("basis=%t delta=%d, want a recorded basis with a negative delta", basis, delta)
+	}
+
+	// Release the target claim for real, as in the upgrade case.
+	targetHold := uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, 1)).String()
+	if !policy.claims.release(targetHold) {
+		t.Fatal("the fixture could not release the target claim")
+	}
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusConflict {
+		t.Fatalf("the retry answered %d %v, want 409", code, out)
+	}
+
+	svc := exchangeunwind.New(db, exchangeunwind.NewHTTPPayments(s.payments.server.URL, s.token, 5*time.Second))
+	exchangeID := commercestore.ExchangeID(f.organizer, key)
+	_, evidence, err := svc.Unwind(ctx, f.organizer, exchangeID, "operator tried to unwind a refunded downgrade")
+	if err == nil {
+		t.Fatal("the unwind DELETED the binding of a downgrade whose refund leg had already " +
+			"settled. The money for this exchange lives in payments' refund-leg table, not in " +
+			"payment_operations — an implementation that asks the operations endpoint sees 404 " +
+			"and reads it as proof of safety")
+	}
+	if !errors.Is(err, commercestore.ErrExchangeMoneyMoved) {
+		t.Errorf("err = %v, want ErrExchangeMoneyMoved", err)
+	}
+	if evidence != exchangeunwind.Present {
+		t.Errorf("evidence = %v, want present", evidence)
+	}
+
+	// THE ENDPOINT ASSERTIONS, which are what distinguish this test from the upgrade one:
+	// the refund-leg read happened and the operations read did NOT.
+	if got := s.payments.count("refund-leg-reads"); got != 1 {
+		t.Errorf("refund-leg reads = %d, want 1 — a negative delta's money is a refund leg", got)
+	}
+	if got := s.payments.count("operations-reads"); got != 0 {
+		t.Errorf("operations reads = %d, want 0. Asking the operations endpoint about a "+
+			"downgrade returns 404 for a key it never bound, which reads as absence", got)
+	}
+	if !s.exchangeRowExists(t, ctx, f.organizer, key) {
+		t.Error("the order_exchanges row was deleted by a REFUSED unwind")
+	}
+	// No second refund leg was submitted while refusing: the unwind reads, never writes.
+	if got := s.payments.count("refund-submissions"); got != 1 {
+		t.Errorf("refund-leg submissions = %d, want 1", got)
 	}
 }

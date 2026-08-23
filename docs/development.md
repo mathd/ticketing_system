@@ -580,6 +580,67 @@ restart drains immediately, so the interval bounds the steady state, not recover
 
 Unparking has no operator command yet (TKT-146, which owns the same gap for parked recovery orders).
 
+## Wedged exchange operator unwind
+
+An exchange whose inventory **target claim went terminal** before settlement — `expired`, or an
+explicit `finalizing -> released` — answers **409 "exchange target is unavailable"** on every retry,
+forever. Its durable `order_exchanges` row then leaves the source order stuck in *both* directions:
+`order_exchanges_one_per_source` blocks a corrected exchange, and `BindOrderRefund` counts any
+exchange row for the source with no state predicate and refuses the refund. Nothing in the service
+resolves it (TKT-255, [ADR-067](adr/ADR-067-wedged-exchange-operator-unwind.md)).
+
+**Two commands, and the second refuses more often than it acts:**
+
+```
+commerce list-wedged-exchanges
+commerce unwind-exchange <organizer-id> <exchange-id> "<reason>"
+```
+
+`unwind-exchange` needs `DATABASE_URL`, `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back
+to `INTERNAL_SERVICE_TOKEN`). It refuses immediately if payments is not configured — it cannot do
+its job without asking payments, and finding that out after reading a row helps nobody.
+
+**The listing reports CANDIDATES, not confirmed wedges.** Commerce holds no copy of inventory's
+claim state, so it cannot tell a genuinely terminal target claim from an exchange that is in flight
+right now — one is unsettled for a few hundred milliseconds and looks identical. Read the `age`
+column, and **confirm in inventory that the target claim is terminal before unwinding**. The command
+cannot check this for you, and it will happily unwind a healthy exchange.
+
+**What `money=` in the listing means.** `impossible` means no provider call can have been made — the
+basis is persisted *before* the provider is called, so an exchange with no basis never reached
+payments, and an even exchange calls nobody. `possible` means only that a call could have been made;
+`unwind-exchange` then asks payments and refuses if it was.
+
+**The refusals, and where each one sends you:**
+
+| Refusal | Meaning | What to do |
+|---|---|---|
+| `money moved` | payments records a provider movement for this exchange | **Stop.** The buyer paid. Compensating them is a product decision, not an unwind — see below. |
+| `indeterminate` | payments could not be asked, or gave no clean answer | Fix why payments could not answer, then re-run. **Do not** treat an unanswered question as a no. |
+| `settled` | the exchange settled; it is not wedged | You are reading the listing wrong — a settled exchange's remaining obligations belong to the sweep above. |
+| `not found` | no such organizer/exchange pair | Check the ids against the listing. |
+
+**Only a 404 from payments permits an unwind.** Everything else refuses: a bound-but-unresolved
+operation, a resolved-but-declined one, an uncompleted refund leg, a 5xx, a timeout. That is
+deliberate under-approximation — a wedge that stays wedged is visible and reversible, and deleting a
+charged buyer's binding is neither.
+
+**A charged buyer is NOT compensated by this command, by design.** It refuses and leaves everything
+intact. Choosing between refunding them and re-selling them a target has not been decided
+(ADR-039 §2: an exchange has no safe partial state). If you hit this, the exchange row still carries
+what the buyer was charged, which is what makes a manual resolution possible at all.
+
+**After a successful unwind** the binding is gone: the source order can be exchanged again **with a
+new idempotency key** (the old one derives the same exchange id) and can be refunded. Inventory is
+untouched — the old target claim stays terminal and the source line's capacity was never released,
+so nothing is oversold.
+
+Every unwind writes a row to `order_exchange_unwinds` carrying the reason you gave and the state of
+the exchange at the moment it was removed. That table is the only record the exchange ever existed;
+migration 0024's Down refuses to roll back over it. Like everything else here it is
+**honest-operator evidence, not tamper-evidence** (ADR-021): anyone with commerce's database
+credentials can forge it, or delete an exchange row directly without leaving any.
+
 ## Journal signing key rotation
 
 The payments money journal is signed with HMAC-SHA256 under a **keyring**: one active key that new
