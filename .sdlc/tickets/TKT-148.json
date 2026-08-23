@@ -13,5 +13,92 @@
     }
   ],
   "description": "Found while root-causing TKT-134's flake. **Not** what that flake hit — TKT-134 needed a whole minute to elapse and this mechanism cannot supply that on its own — and deliberately filed separately rather than claimed as its cause.\n\nEvery buyer-claim creation path sets the hold's expiry as `now() + ttl`:\n\n- `services/inventory/internal/store/store.go:286` (GA `CreateHold`)\n- `services/inventory/internal/store/operational.go:309` (operational conversion)\n- `services/inventory/internal/store/reservations.go:218` (reservation draw-down)\n- `services/inventory/internal/store/seat_claims.go:228` (seated claims)\n\nIn PostgreSQL `now()` is **transaction start** time, not insert time. These inserts happen inside a transaction that first takes the pool row lock (ADR-010). Under contention — an on-sale, a long sweep, a slow catalog call inside the same transaction — that lock wait sits **between** the transaction's start and the insert.\n\nSo the TTL is consumed by the wait. A hold created after a wait longer than the TTL is returned to the buyer **already expired**: `liveClaims` (`store.go:62`) evaluates `expires_at > now()` and will not count it, the buyer holds nothing, and the seat they think they have is available to someone else. The window is real on the exact path that matters most — high contention is when holds matter.\n\n`clock_timestamp()` (real time, advancing within the transaction) is the correct anchor for a *duration granted to a buyer*. Note the codebase already uses it where decision time is meant: `activeAllocation` (`channel_allocations.go:24`).\n\n**Scope:**\n- [ ] Anchor new buyer TTLs to insert time (`clock_timestamp() + ttl`) on all four creation paths\n- [ ] Deterministic proof: force a pool-lock wait longer than a short TTL using the existing lock-wait handshake in `channel_allocations_smoke_test.go`, then assert the returned hold still carries a full TTL post-commit\n- [ ] Re-check ADR-024's mixed-clock independence argument before changing semantics — the two clocks are used deliberately in places and this must not flatten that\n- [ ] Consider whether `liveClaims`' own `now()` should stay transaction-start (it probably should: a *read* wants a consistent snapshot; a *grant* wants real time)\n\n**Severity:** availability-path, contention-triggered. A buyer can be issued a dead hold and the seat resold under them.\n\n**Source:** TKT-134's plan draft (`gpt-5.6-sol`), confirmed at plan review. Not fixed in TKT-134 because that ticket's fix is test-only and folding a four-path production change into it would have hidden a real defect inside a flake repair.",
-  "comments": []
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Verdict: READY.** All eight DoR items `met`, no `open`, no `deferred`, no open blockers (TKT-134 is `relates` and is Done). No spike needed -- every unknown resolved by reading the code.\n\n**What the shaping read changed about the ticket.** Two corrections, both from the code rather than the ticket text:\n\n1. **Five grant sites, not four.** `seat_claims.go` has two `now()+$N::interval` buyer inserts -- explicit-seat selection (805) and best-available (1708). The ticket lists one seated path. Its line numbers are also stale across the board; the mechanism is exactly as described.\n\n2. **The `RETURNING` clause is in scope and the ticket does not mention it.** Every grant site returns `now()` into `Claim.ServerTime`, and that value is load-bearing: the storefront's buyer countdown is `expires_at - server_time` (pinned by `web/storefront/test/hold-picker.test.ts`), commerce's conversion gate is `!ExpiresAt.After(ServerTime)` (`server.go:1821`), and `Claim.expired()` is the same comparison. Moving `expires_at` to `clock_timestamp()` while leaving `RETURNING now()` would convert a hold that is born dead into a hold that **lies about how much time it has** -- over-reporting by exactly the lock wait. The anchor and its returned reference move together, or the fix trades one defect for a quieter one.\n\n**Scope boundary that is easy to get wrong.** `reservations.go:210` also writes an expiry but is **out**: it stores a staff-supplied *absolute* timestamp and already validates it against `clock_timestamp()` at line 99. Only durations granted to a buyer are in scope. Likewise the `lease_until=now()+...` sites in commerce/payments/access are worker retry fences, not buyer grants.\n\n**ADR-024 re-check (a ticket scope item), answered now:** the mixed-clock independence argument holds. `clock_timestamp() >= now()` within a transaction, so this change can only move an expiry *later*; capacity is never derived from the release predicate; and `liveClaims` stays on `now()` deliberately -- a *read* wants one consistent snapshot, a *grant* wants real time. That is the same split the ticket proposes and the code already applies it at `channel_allocations.go:24`.\n\n**COS**\n\n1. All five buyer-grant inserts anchor `expires_at` to `clock_timestamp()+$ttl` and return `clock_timestamp()` as `server_time`, so the returned pair describes the same instant.\n2. A deterministic test proves it: with a TTL shorter than an enforced pool-lock wait, the hold returned after the wait still carries a full TTL and is live. **The test must be able to fail** -- reverting either the anchor or the `RETURNING` change makes it red, demonstrated by mutation, not asserted.\n3. `liveClaims`, `sweepExpired` and every capacity read still use `now()`; the change does not flatten the deliberate two-clock split.\n4. No behaviour change on the uncontended path: an ordinary hold still gets its full TTL and every existing inventory/commerce test stays green.\n5. The decision is recorded as an ADR amendment naming which clock anchors a grant, which anchors a read, and why.\n\n**risk verdict (restated at claim):** NOT `risk:low`. Five production call sites on the availability path, a change to a value returned to buyers, and a concurrency-timing semantic. The plan gate stays."
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A buyer TTL anchored to now() (transaction start) is consumed by the pool-lock wait that precedes the INSERT, so under contention a hold can be returned already expired and the seat resold under the buyer. Verified in code, not inherited from the ticket text."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the buyer-TTL grant sites in inventory that write `now()+$N::interval` -- there are FIVE, not the four the ticket lists (seat_claims.go has two: explicit-seat and best-available). OUT: worker/outbox leases in commerce, payments and access (`lease_until=now()+...`) -- those are internal retry fences, not durations granted to a buyer, and moving them changes lease semantics for no user-visible benefit. OUT: liveClaims, sweepExpired and every capacity read -- see the `approach` note."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Settled by reading, no spike needed. (1) Does the fix widen an oversell window? No: clock_timestamp() >= now() inside a transaction, so an expiry can only move LATER, and ADR-024's independence argument (global capacity never depends on the release predicate) is untouched. (2) Is any current caller relying on hold expiry being frozen at transaction start? offering_smoke_test.go:154 asserts a closure does not REWRITE a TTL -- it compares two reads of the same row and is indifferent to the anchor."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. TKT-134 is `relates` only and is Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Anchor the five buyer-grant INSERTs to `clock_timestamp()+$N::interval`. THE TICKET'S SCOPE IS INCOMPLETE ON ONE POINT, found by reading: every one of these sites also does `RETURNING expires_at, now()` into `Claim.ServerTime`, and ServerTime is not decoration -- the storefront computes the buyer's countdown as `expires_at - server_time` (web/storefront/src/components/HoldPicker.tsx:21, pinned by hold-picker.test.ts) and commerce gates on `!Hold.ExpiresAt.After(Hold.ServerTime)` (server.go:1821) and Claim.expired() does the same (store.go:152). Moving expires_at to clock_timestamp() while leaving RETURNING now() would make the returned pair inconsistent: server_time would be transaction-start, so the countdown would over-report the buyer's remaining time by exactly the lock wait -- turning a born-dead hold into a hold that lies about how long it has. The anchor and its returned reference must move TOGETHER: `RETURNING expires_at, clock_timestamp()`. GUARD PREDICATE COUNT: none added -- this is an anchor change, not a new guard, so the N-tests-per-predicate rule has nothing to bind. Reservation PLACEMENT (reservations.go:210) is deliberately excluded: it stores a staff-supplied ABSOLUTE expires_at and already validates it against clock_timestamp() at line 99; only the DRAW-DOWN (line 317) grants a duration."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: five call sites plus their RETURNING clause, one deterministic contention test, one ADR amendment. No migration, no API shape change."
+    },
+    "success": {
+      "state": "met",
+      "note": "COS below."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked -- see the `context` object on this ticket. governingAdrs and governingTests both populated and each ADR verified to resolve at HEAD."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "adr": "ADR-010-postgres-claim-transaction.md",
+        "constrains": "The pool row FOR UPDATE is the serialization point and expiry is a lazy predicate, never an event. This ADR is WHY the defect exists: the lock wait it mandates sits between transaction start and the INSERT. The fix must not add a sweeper or an event -- expiry stays lazy."
+      },
+      {
+        "adr": "ADR-024-channel-allocations.md",
+        "constrains": "Carries the repo's mixed-clock argument: allocation release uses clock_timestamp() precisely because now() freezes at transaction start, while liveClaims deliberately stays on now(). The ticket asks to re-check this independence before changing semantics -- it holds, because a grant moving to clock_timestamp() can only lengthen an expiry relative to now(), and the global capacity check never depends on the release predicate."
+      },
+      {
+        "adr": "ADR-027-group-agency-reservations.md",
+        "constrains": "Reservation placement takes an absolute staff-chosen expiry; only the draw-down grants a buyer duration. Keeps placement out of scope."
+      },
+      {
+        "adr": "ADR-054-per-channel-sales-windows.md",
+        "constrains": "Extends ADR-024's clock discipline to sales windows; same reasoning, already on clock_timestamp(). Nothing to change, cited so the drafter does not 'fix' it."
+      },
+      {
+        "adr": "ADR-064",
+        "constrains": "Presale-code redemption accounting on the reservation draw-down path -- the draw-down INSERT being edited is the one whose children deliberately omit the code. Do not touch its columns."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go:TestReleaseCutoffHoldsUnderPoolLockContention",
+        "note": "The lock-wait handshake this ticket must reuse: blocker transaction takes the pool FOR UPDATE, a goroutine calls the store, then pg_stat_activity is polled until the waiter is OBSERVED blocked while DB time is still before the boundary. It is a handshake, not a sleep, and all bounds are DATABASE time -- copy that discipline exactly."
+      },
+      {
+        "test": "services/inventory/internal/store/channel_allocations_smoke_test.go (comment block ~line 593)",
+        "note": "Pins a verified fact about this database: clock_timestamp() ADVANCES WITHIN A STATEMENT (`SELECT clock_timestamp() = clock_timestamp()` is false), and after a 50ms sleep inside a transaction `now() < clock_timestamp()` is true. That second fact is the mechanism this ticket exploits -- and the first is why a bound written as bare clock_timestamp() is already in the past by the time it is compared."
+      },
+      {
+        "test": "web/storefront/test/hold-picker.test.ts",
+        "note": "Pins `remainingMilliseconds = expires_at - server_time`. This is the tripwire that makes ServerTime load-bearing: it is why the RETURNING clause must move with the anchor, and it is discoverable only by reading, since no inventory test asserts on ServerTime at all."
+      },
+      {
+        "test": "services/inventory/internal/store/offering_smoke_test.go:154",
+        "note": "Asserts an offering closure does not rewrite a live hold's TTL. Compares two reads of one row, so it is anchor-agnostic -- named so the drafter does not mistake it for a constraint on the anchor."
+      },
+      {
+        "test": "services/commerce/internal/api/server_test.go:235-237,320-326",
+        "note": "Table tests feeding literal expires_at/server_time pairs to commerce's hold gate. They pin the PAIR's semantics (held-past-deadline is a 409); they use fixed literals so the anchor change cannot move them, but a change to the pair's meaning would."
+      }
+    ],
+    "notes": "Five grant sites, not four: store.go:614 (GA CreateHold), operational.go:334 (operational conversion), reservations.go:317 (reservation draw-down), seat_claims.go:805 (explicit seats) and seat_claims.go:1708 (best-available). The ticket's line numbers are stale; its file list omits the second seated site."
+  }
 }
