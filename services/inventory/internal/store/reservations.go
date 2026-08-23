@@ -250,8 +250,8 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	}
 	if found && prior.relatedID != nil {
 		var child Claim
-		err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),ticket_type_id,unit_amount,currency FROM claims WHERE id=$1`, *prior.relatedID).
-			Scan(&child.ID, &child.OrganizerID, &child.PoolID, &child.Quantity, &child.Status, &child.ExpiresAt, &child.ServerTime, &child.TicketTypeID, &child.UnitAmount, &child.Currency)
+		err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,clock_timestamp(),now(),ticket_type_id,unit_amount,currency FROM claims WHERE id=$1`, *prior.relatedID).
+			Scan(&child.ID, &child.OrganizerID, &child.PoolID, &child.Quantity, &child.Status, &child.ExpiresAt, &child.ServerTime, &child.snapshotTime, &child.TicketTypeID, &child.UnitAmount, &child.Currency)
 		if err != nil {
 			return ConvertResult{}, false, err
 		}

@@ -425,3 +425,84 @@ func TestBuyerHoldReplayReportsAdvancingServerTime(t *testing.T) {
 		t.Fatalf("replay server_time %v did not advance past the original grant's %v", r.c.ServerTime, first.ServerTime)
 	}
 }
+
+// TKT-148 ai-review pass 2, finding 2: the test above proves the client-facing REFERENCE
+// advances, and is structurally incapable of proving the LIVENESS DECISION did not. It runs a
+// one-hour TTL, so it stays green even if snapshotTime received clock_timestamp(), if the two
+// scan targets were swapped, or if expired() judged on the advancing clock -- none of those can
+// expire an hour-long hold inside a two-second test. A green test that cannot reach the failing
+// state is the failure mode this repo distrusts most, so the invariant needs its own fixture.
+//
+// This is that fixture. It puts the hold's expiry INSIDE the lock wait: the replay transaction
+// begins while the hold is still live, queues on the pool lock, and by the time it is granted
+// the hold has lapsed in real time. The two clocks now disagree about a decision that writes,
+// which is the only arrangement that can tell them apart:
+//
+//   - transaction-start time (snapshotTime, the pre-branch behaviour this fix promises to
+//     preserve) still sees a LIVE hold, so the replay returns it;
+//   - advancing time would see an EXPIRED hold, flip the row, append history and return
+//     ErrConflict.
+//
+// So this test fails if anyone moves the liveness decision to clock_timestamp(), swaps the scan
+// targets, or deletes snapshotTime and lets expired() fall back to the now-advancing ServerTime.
+// It is deliberately an assertion about PRE-EXISTING behaviour: the money-path semantics
+// TKT-148 promised not to touch. If a later ticket decides expiry SHOULD be judged at decision
+// time, this test is the thing that must be consciously updated -- which is the point.
+func TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime(t *testing.T) {
+	// TTL shorter than the wait, so the hold lapses in real time while the replay queues.
+	ctx, st, db := storeForTest(t, grantTTL)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	first, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "liveness-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExpiresAt == nil {
+		t.Fatal("grant returned no expiry")
+	}
+
+	mark := dbNow(t, ctx, db)
+	blocker := blockPool(t, ctx, db, slot)
+
+	type res struct {
+		c        Claim
+		replayed bool
+		err      error
+	}
+	done := make(chan res, 1)
+	go func() {
+		c, r, err := st.CreateHold(ctx, org, slot, first.TicketTypeID, 1, 1000, "EUR", "", "liveness-key")
+		done <- res{c, r, err}
+	}()
+	// The replay's transaction must be queued BEFORE the hold lapses -- otherwise it would
+	// begin with a transaction timestamp already past the expiry and both clocks would agree,
+	// making the test vacuous. This is the same reason the grant tests handshake.
+	awaitLockWaiter(t, ctx, db, gaPoolLock, first.ExpiresAt.Add(-50*time.Millisecond))
+	// Cross the hold's expiry in real time while the replay stays queued.
+	holdUntil(t, ctx, db, blocker, mark, waitPast)
+
+	// Confirm the premise rather than assuming it: by now the hold really is past its expiry
+	// in database time, so a decision-time judgement WOULD have refused.
+	var lapsed bool
+	if err := db.QueryRowContext(ctx, `SELECT $1::timestamptz <= clock_timestamp()`, *first.ExpiresAt).Scan(&lapsed); err != nil {
+		t.Fatal(err)
+	}
+	if !lapsed {
+		t.Fatal("setup: the hold had not lapsed by the time the lock was released; the two clocks cannot disagree and this test proves nothing")
+	}
+
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("replay judged liveness on advancing time and refused a hold that was live at transaction start: %v (pre-TKT-148 behaviour returns the hold)", r.err)
+	}
+	if !r.replayed {
+		t.Fatal("second call with the same idempotency key was not a replay")
+	}
+	if r.c.ID != first.ID {
+		t.Fatalf("replay returned a different claim: %v want %v", r.c.ID, first.ID)
+	}
+	// The reference still advances -- the two properties are independent and both hold.
+	if !r.c.ServerTime.After(mark.Add(waitPast)) {
+		t.Fatalf("replay server_time %v is not after the wait boundary %v", r.c.ServerTime, mark.Add(waitPast))
+	}
+}
