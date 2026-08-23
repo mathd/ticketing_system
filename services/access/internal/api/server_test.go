@@ -528,3 +528,108 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 		t.Error("a device enrolled for the ticket's own organizer was refused before the store")
 	}
 }
+
+// The voided feed's authorization surface (TKT-162).
+//
+// These live at the API tier because that is where the mechanism lives: the
+// organizer comes from the device token via the validator's AuthenticationFunc,
+// and the handler reads it out of the context slot. The database-tier question —
+// does the SQL actually scope? — is asserted in the store's smoke tests against
+// real PostgreSQL, because a fake that scopes in Go would prove only that the
+// fake and the handler agree.
+
+func TestVoidedFeedRefusesAnUnenrolledDevice(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := enrolled(New(nil, verifier)).Router(nil, true)
+
+	for name, token := range map[string]string{
+		"absent":     "",
+		"wrong":      "not-the-enrolled-token",
+		"near-miss":  testDeviceToken + "x",
+		"whitespace": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/scans/voided-tickets", nil)
+			if token != "" {
+				request.Header.Set(scannerDeviceHeader, token)
+			}
+			router.ServeHTTP(recorder, request)
+			// 401, not an empty page. A feed that answers "nothing is revoked" to
+			// an unpaired device is the most dangerous possible response: the
+			// scanner would cache it as a complete view and admit voided holders.
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("unenrolled %s = %d, want 401 (never an empty feed, which reads as 'nothing is revoked')", name, recorder.Code)
+			}
+		})
+	}
+}
+
+// The cursor is bound to the organizer it was issued for. An unbound cursor
+// cannot read another organizer's rows — the query filters regardless — but it
+// CAN suppress: copied or forged, it makes the holder's own next page skip rows
+// and come back short, silently. For a revocation feed that is the direction
+// that matters, so it must be a refusal rather than a quiet gap.
+func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
+	mine, theirs := uuid.New(), uuid.New()
+
+	foreign, err := encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: theirs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeCursor(foreign, mine); err == nil {
+		t.Fatal("a cursor issued for another organizer was accepted — it would silently shorten this organizer's page")
+	}
+
+	// The same cursor, presented by the organizer it belongs to, must work: a
+	// test that only proves refusal is satisfied by a decoder that refuses
+	// everything.
+	own, err := encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: mine,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeCursor(own, mine); err != nil {
+		t.Fatalf("a cursor presented by its own organizer was refused: %v", err)
+	}
+}
+
+func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
+	org := uuid.New()
+	at := time.Date(2026, 8, 22, 14, 30, 0, 123456789, time.UTC)
+	id := uuid.New()
+
+	encoded, err := encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org})
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := decodeCursor(encoded, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nanoseconds survive: the keyset compares on this value, so a cursor that
+	// loses precision resumes at the wrong place and skips or repeats a row.
+	if !back.OccurredAt.Equal(at) || back.EventID != id || back.OrganizerID != org {
+		t.Fatalf("round trip = %+v, want %v/%s/%s", back, at, id, org)
+	}
+
+	for name, bad := range map[string]string{
+		"not base64":    "!!!not-base64!!!",
+		"not json":      base64.RawURLEncoding.EncodeToString([]byte("nonsense")),
+		"wrong version": base64.RawURLEncoding.EncodeToString([]byte(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`)),
+		"zero event":    base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `"}`)),
+		"zero time":     base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeCursor(bad, org); err == nil {
+				t.Fatalf("%s was accepted as a cursor", name)
+			}
+		})
+	}
+}

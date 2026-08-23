@@ -112,6 +112,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Get("/orders/{ref}/tickets/{ticket}/qr.png", s.qr)
 	r.Post("/scans", s.scan)
 	r.Post("/scans/reconciliations", s.reconcile)
+	r.Get("/scans/voided-tickets", s.voidedTickets)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
 	validated, err := contract.RequestValidatorWithSecurity(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
 		// A refused scanner device (ai-review S1). It arrives here rather than from
@@ -133,6 +134,16 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		// to turn into a 500, and here it slipped past because the REQUEST validator
 		// answers before the response validator can see it. Internal routes get the
 		// Error shape they declare.
+		// The voided feed declares the Error shape, not the scan shape, and the
+		// difference is not cosmetic: the scan-shaped 422 below says "turn this
+		// person away", which is a wrong and alarming answer to a malformed query
+		// parameter on a background sync. This is the same drift F4 found on the
+		// internal route — a new operation inheriting a representation that was
+		// only ever the gate's — caught here before it shipped rather than after.
+		if strings.HasPrefix(req.URL.Path, "/scans/voided-tickets") {
+			write(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+			return
+		}
 		if strings.HasPrefix(req.URL.Path, "/internal/") {
 			// 404 covers BOTH an unknown path and a wrong method: the middleware
 			// reports every route-lookup failure as 404, and it is not worth
@@ -341,11 +352,31 @@ type scannerOrganizerKey struct{}
 // its `security:` declaration, and the safe reading of "no device" is "not this
 // organizer's device", not "everyone's".
 func scannerScopeAllows(ctx context.Context, organizer uuid.UUID) bool {
-	slot, ok := ctx.Value(scannerOrganizerKey{}).(*uuid.UUID)
-	if !ok || slot == nil || *slot == uuid.Nil {
+	slot, ok := scannerOrganizer(ctx)
+	if !ok {
 		return false
 	}
-	return *slot == organizer
+	return slot == organizer
+}
+
+// scannerOrganizer returns the authenticated device's organizer.
+//
+// scannerScopeAllows answers "may this device act on THAT organizer's ticket?",
+// which is the question every scan path asks because the organizer arrives on the
+// credential being scanned. The voided feed has no such input — it is a read OF
+// the device's own organizer — so it needs the identity itself.
+//
+// Same fail-closed rule, one implementation: absent, nil or zero means no
+// authenticated device, and for a read whose entire scope is that identity the
+// only safe answer is to refuse. Returning uuid.Nil with no `ok` would invite a
+// caller to pass it straight to a query, which is a whole-table read of every
+// organizer's revocations.
+func scannerOrganizer(ctx context.Context) (uuid.UUID, bool) {
+	slot, ok := ctx.Value(scannerOrganizerKey{}).(*uuid.UUID)
+	if !ok || slot == nil || *slot == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return *slot, true
 }
 
 func (s *Server) scan(w http.ResponseWriter, r *http.Request) {

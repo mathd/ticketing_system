@@ -118,8 +118,15 @@ cd "$ROOT/services/access"
 # means a newly added test silently never runs while the gate still passes green.
 # This block carried one until TKT-67, and it was the last one left — lines 48
 # and 59 above had already recorded the defect twice.
+#
+# ./internal/... rather than ./internal/store (TKT-162). The narrower path was the
+# SAME defect wearing a different shape: an allowlist by package instead of by
+# test name. services/access/internal/api has carried smoke tests since TKT-105
+# and not one of them has ever run here — three were failing on main when this was
+# found, invisibly, because the gate never executed the package. TKT-162 added
+# more api-tier tests, which would have been dark on arrival.
 ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 ./internal/store
+go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/catalog"
 # No -run filter, for the same reason as commerce above: an allowlist means a newly
