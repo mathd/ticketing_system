@@ -3,125 +3,133 @@
   "type": "Story",
   "parent": "TKT-19",
   "classification": "complex",
-  "summary": "Refunded tickets still admit at an OFFLINE gate — revocation does not reach scanners",
-  "description": "Found by the TKT-157 adversarial review (finding F1, accepted as a real gap and rejected as a change to that ticket).\n\nTKT-157 refuses a refunded ticket at a **live** gate. An **offline** scanner has no way to learn a ticket was refunded, so it admits the holder, and `ReconcileAdmission` then faithfully records that admission — `entry`/`redeemed`/`duplicate_admit` appended after the refund, with a chain that verifies clean and proves a refunded ticket was used.\n\n**Blocking reconciliation is the wrong fix and was rejected on those grounds.** The person is already inside; refusing to record it would falsify the trail rather than protect a gate (ADR-038 §4). The missing capability is **revocation propagation to scanners** — a scanner/offline-distribution feature in ADR-025's territory.\n\nAlso considered and rejected for TKT-157: raising an integrity alarm on reconciling a refunded ticket. `oweAlarm` writes to the **integrity** alarm channel, which means *the chain is suspect*; a refunded-but-admitted ticket is not an integrity event, and TKT-147 is already open to replace that channel's free-text reason with fixed reason codes. Overloading it now would make TKT-147 worse.\n\n**Acceptance Criteria:**\n- [ ] A scanner that went offline before a refund, and syncs after it, does not admit the refunded holder — or, if it already did, the operator is told through a channel that means *this* rather than *the chain is suspect*.\n- [ ] Whatever the mechanism, reconciliation still records what physically happened. An occurrence is never dropped to make the trail look better.\n- [ ] The revocation feed is bounded and testable offline (no live-network assumption at a gate).\n\nQuality gates: `make check` green; `access verify-lifecycle` green; contract tests.",
+  "summary": "Revocation feed: scanners can pull the refunded tickets for their organizer",
+  "description": "**Re-scoped 2026-08-22 after the owner took the staleness decision.** This ticket is now the **server half only** — the feed endpoint. The scanner half (pull, store, enforce the ceiling, operator override) is **TKT-271**. The alarm half already shipped as **TKT-269**.\n\nTKT-157 refuses a refunded ticket at a **live** gate. An offline scanner cannot know about a refund, so it admits the holder; TKT-269 now makes that admission visible via an admission-conflict alarm, but nothing **stops** it. Stopping it needs the revocation state to reach the scanner before the scan, which is what this feed is for.\n\n**Owner decisions taken at shaping (2026-08-22), binding on the design:**\n1. **Fail closed past the staleness ceiling** — a scanner whose revocation view is too old refuses, rather than admitting on a stale list.\n2. **Generous ceiling** — refunds cluster days ahead of the performance, so a pull at start-of-shift closes most of the gap. The ceiling is a backstop, not a hot path.\n3. **Operator override past the ceiling, recorded** — a genuine outage must not close the door with no local mitigation, and the override lands in the audit trail.\n4. **Split** — this ticket is the feed; TKT-271 consumes it.\n\nDecisions 1–3 are **enforced in TKT-271**, not here — the ceiling is client-side by necessity (see below). They are recorded here because they constrain what the feed must make possible, and because the ADR this ticket authors must state them.\n\n**Why the ceiling cannot be server-side.** `scanner_devices.last_seen_at` is written best-effort by the scan path and its own migration comment says *\"Advisory only… Never read by any decision\"* (`0009_scanner_devices.sql`). It records when the server last **heard from** a device — not when the device last **successfully pulled**. Only the scanner holds the second fact, so only the scanner can enforce a staleness bound on its own view.\n\n**Acceptance Criteria:**\n- [ ] A new operation on `services/access/api/openapi.yaml`, authenticated by `ScannerDeviceToken`, returns the refunded ticket ids **for the calling device's organizer and no other**.\n- [ ] The feed is **incremental and bounded**: a keyset cursor and a page limit, following the wallet precedent (`services/commerce/internal/store/customer.go`) — row-value comparison, `limit+1` to detect more, `next_cursor` required-and-nullable, and the cursor **bound to the organizer it was issued for** so a foreign cursor is refused rather than silently returning another organizer's page.\n- [ ] **ADR-019 proof, both halves.** (a) a poison row: a refunded ticket belonging to a *different* organizer is absent from the result; (b) an EXPLAIN assertion under `force_generic_plan` showing the scan reaches rows via the named index — asserted against the shipped statement as a referenceable `const`, not a hand-reduced copy.\n- [ ] A **migration 0010** adding the index that makes (b) true, irreversible per this service's convention, with the four-test set the service enforces (statement-order, schema, representative-volume, irreversibility).\n- [ ] The operation is exercised through the running stack so the **ADR-030 coverage gate** passes — a 2xx recorded via the smoke harness, with a real `X-Scanner-Token`.\n- [ ] **An ADR** (next free number) recording: the feed's existence and shape, the fail-closed-with-generous-ceiling posture and *that it is enforced client-side*, the operator override, and the named adversary.\n\n**Out of scope:** anything the scanner does — TKT-271. Exchanged tickets — TKT-270 closed the alarm half; whether the feed should also carry exchanged ids is a question for TKT-271's shaping, deliberately not pre-decided here.\n\nQuality gates: `make check` green; `access verify-lifecycle` green; contract tests.",
   "context": {
-    "capturedAt": "2026-07-31",
+    "capturedAt": "2026-08-22",
     "binding": [
       {
-        "id": "AGENTS.md",
-        "date": "2026-07-31",
-        "rule": "Money is integer minor units + ISO currency code — floats are banned on money paths."
+        "id": "PRD-v1",
+        "date": "2026-08-22",
+        "rule": "Every ticket/entitlement state change is an append-only lifecycle event linked to its order."
       },
       {
-        "id": "PRD-v1",
-        "date": "2026-07-31",
-        "rule": "Traceability is a must, for money and tickets: money-relevant records land as immutable, hash-chained, signed journal entries from the first order (corrections = compensating entries; read models = projections), and every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+        "id": "owner-decision",
+        "date": "2026-08-22",
+        "rule": "Fail closed past a generous staleness ceiling, with a recorded operator override. Refunds cluster days ahead of the performance, so a start-of-shift pull closes most of the gap."
       }
     ],
     "reference": [
       {
-        "summary": "Epic lineage and capability map",
-        "link": "docs/product/prd-v1.md"
+        "summary": "Alarm half, already shipped — the template for mutation discipline",
+        "link": "TKT-269"
       },
       {
-        "summary": "Service layout and ownership",
-        "link": "docs/architecture.md"
+        "summary": "Scanner half, consumes this feed",
+        "link": "TKT-271"
+      },
+      {
+        "summary": "Keyset pagination precedent (wallet)",
+        "link": "services/commerce/internal/store/customer.go:309-406"
+      },
+      {
+        "summary": "Index justification precedent",
+        "link": "services/commerce/internal/store/migrations/0017_customer_order_index.sql"
       }
     ],
     "governingAdrs": [
       {
-        "id": "ADR-021",
-        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+        "id": "ADR-019",
+        "why": "THE governing decision for this ticket. A scoped read is only scoped if an index BACKS the filter — copying a query shape that scales ships a no-op. Proving it takes two tests: the result is scoped (poison row) AND the scan is (EXPLAIN under force_generic_plan, against the shipped statement as a const). Already cited outside catalog, including in access's own 0004."
       },
       {
-        "id": "ADR-010",
-        "why": "Inventory's claim transaction is the contention path. Giving capacity back must go through the same row-locked transaction discipline; a plain UPDATE outside it can drive confirmed_quantity negative or double-return under concurrency."
+        "id": "ADR-025",
+        "why": "Owns the offline/scanner territory. NOTE it has NO provision for distributing ticket state toward a gate — its offline contract is entirely about RECORDING AFTER THE FACT. This ticket is therefore new decision territory and must author its own ADR rather than claim ADR-025 covers it."
       },
       {
-        "id": "ADR-026",
-        "why": "Capacity adjustments clamp rather than reject. Returning capacity must not let availability exceed the pool's capacity, and the clamp reasoning is the precedent for what to do when it would."
-      },
-      {
-        "id": "ADR-003",
-        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
-      },
-      {
-        "id": "ADR-017",
-        "why": "If any domain event payload changes or a new one is published: bump on CONSUMER SEMANTICS, not parse compatibility, and consumers dispatch on `schema` BEFORE decoding `data`. A fixture built from the type under test cannot fail."
-      },
-      {
-        "id": "ADR-028",
-        "why": "Fail closed. Responses are validated against the spec; an undeclared status code becomes a 500. Every new endpoint must declare every status it can answer, and a downstream answer commerce cannot validate aborts rather than degrades."
+        "id": "ADR-038",
+        "why": "§4 states the gap this closes and bounds the claim: a refunded ticket is refused by a LIVE gate; an offline scanner will still admit it. It names TKT-162 as the missing capability. Also the precedent for the fail-open-vs-closed reasoning the owner's decision inverts for this case."
       },
       {
         "id": "ADR-009",
-        "why": "Contract-first. A new operation is written in the service's openapi.yaml first, then `openapi_gen.go` / `api-types.gen.ts` are regenerated and COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift."
+        "why": "Contract-first. The operation goes in openapi.yaml FIRST, then openapi_gen.go is regenerated AND COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift and fails."
       },
       {
         "id": "ADR-030",
-        "why": "Commerce and inventory ARE inside the smoke happy-path coverage gate. A new documented 2xx operation must be exercised through the running stack or the suite fails."
+        "why": "Access IS in the smoke coverage gate's service list (smoke/coverage_test.go:89), and the allowlist is EMPTY. A new documented 2xx operation must be exercised through the running stack in the same PR or the suite fails. The driver needs a real X-Scanner-Token — precedent in smoke/checkout_test.go:56."
       },
       {
         "id": "ADR-022",
-        "why": "Migrations run out-of-band via each binary's `migrate` subcommand as a one-shot Compose job. Add the SQL under the service's internal/store/migrations/ with the next number; the server path never migrates."
+        "why": "Migrations run out-of-band via the binary's migrate subcommand as a one-shot Compose job under a 30s fail-fast bound. Migration 0010 goes under services/access/internal/store/migrations/; the server path never migrates."
+      },
+      {
+        "id": "ADR-020",
+        "why": "Plain CREATE INDEX, never CONCURRENTLY — still not adopted. The preconditions are conjunctive and two remain false."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed: responses are validated against the spec and an undeclared status code becomes a 500. The new operation must declare EVERY status it can answer — including whatever a foreign or malformed cursor returns."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Name the adversary before making a claim. This feed constrains a caller who does not hold an enrolled device token; it constrains nobody with write access to the access database. Say so in the ADR."
       }
     ],
     "governingTests": [
       {
-        "id": "services/access/internal/store/migration_smoke_test.go",
-        "why": "EVERY migration in this service carries a FOUR-TEST SET, enforced by convention and by a live tripwire: statement-order, schema, representative-volume, and irreversibility (TestRepeatableAdmissionMigrationIsIrreversible and siblings). 0009's own Down block RAISEs deliberately and its comment names those tests as the reason. A new migration that ships a working rollback is caught here, not in review — and this is discoverable only by failing the gate, which is exactly the class shaping.md says to surface now."
+        "id": "smoke/coverage_test.go:89",
+        "why": "smokeCoverageGatedServices includes `access` and coverageAllowlist is EMPTY. A documented 2xx operation with no smoke exercise fails the build. TestCatalogCoverageGateIsDeliberatelyUnitScoped (:54) pins the service list exactly and in order."
       },
       {
-        "id": "services/access/internal/store/refunds_smoke_test.go",
-        "why": "TestRefundedRefusalPrecedesIntegrityFailOpen pins ADR-038 §4's ORDERING — the refunded check runs before verifyTicketChain. Any change to the admission decision path that reorders those two goes red here. TestScanOfRefundedTicketIsRefused pins the live half this ticket must not regress."
+        "id": "services/access/internal/store/migration_smoke_test.go",
+        "why": "Every migration in this service carries a FOUR-TEST SET: statement-order, schema, representative-volume, and irreversibility. Migration 0010 must add its own, and it will also change which migration is 'head' for the existing irreversibility tests — check those rather than assuming they still pass."
+      },
+      {
+        "id": "services/commerce/internal/store/wallet_smoke_test.go + catalog season_smoke_test.go",
+        "why": "The two existing ADR-019 EXPLAIN proofs and the explainGenericPlan helper. Access has NEITHER today. ADR-019 explicitly warns that forking the helper per read is how one copy stops asserting anything — decide where the shared copy lives before writing a third."
+      },
+      {
+        "id": "services/access/internal/api/server_test.go + server.go:26-34",
+        "why": "The scannerDeviceStore fake enforces revocation IN GO while production enforces it in SQL. A cross-organizer or revoked-device assertion at the API tier proves the fake and the handler agree and nothing else — it must live in a smoke test against the real database (the tier rule, AGENTS.md)."
       },
       {
         "id": "scripts/smoke.sh:502,549",
-        "why": "`access verify-lifecycle` runs inside the gate's smoke suite AND the suite deliberately CORRUPTS the trail to assert the verifier REFUSES (502-507). A new lifecycle event type or any direct INSERT into lifecycle_events reads as tampering and fails here — which is the enforcement behind ADR-021's appendLifecycle rule."
-      },
-      {
-        "id": "services/access/api/openapi.yaml + ADR-030 coverage gate",
-        "why": "A new documented 2xx operation MUST be exercised through the running stack or the smoke coverage gate fails. A revocation-feed endpoint therefore needs a smoke exercise in the same PR, not a follow-up — and openapi_gen.go must be regenerated AND COMMITTED before the gate runs, since check-generate diffs against HEAD."
+        "why": "`access verify-lifecycle` runs inside the gate and the suite deliberately corrupts the trail to assert the verifier refuses. A read-only feed should not touch this, which is itself worth asserting rather than assuming."
       }
     ]
   },
   "readiness": {
     "objective": {
       "state": "met",
-      "note": "A refunded ticket that still opens an offline gate is a real revenue and access-control hole; TKT-157 closed only the live half and ADR-038 §4 says so explicitly."
+      "note": "A refunded ticket still opens an offline gate. TKT-269 made it visible; only a revocation feed can stop it. The owner's staleness decision (2026-08-22) removed the blocker that held this at Gate 1 for three weeks."
     },
     "scope": {
-      "state": "open",
-      "owner": "human",
-      "note": "MECHANISM IS NO LONGER OPEN — the code narrowed it to one option since this note was written (2026-07-31). Verified at HEAD: (a) short-TTL credentials are DEAD — the QR credential carries no expiry at all, only `iat` (services/access/internal/ticket/token.go:14-21), so a TTL means rolling reissue of every ticket QR plus a redelivery path to every buyer — a different epic, not this ticket; (b) an online check with offline grace contradicts this ticket's own AC3 and ADR-025's offline posture; (c) a REVOCATION FEED pulled by the scanner is viable and cheap today, because the substrate already exists — enrolled per-device tokens with an authenticated, organizer-scoped channel (0009_scanner_devices.sql), a durable IndexedDB occurrence store and an `online` handler with a sync moment (web/scanner/src/App.tsx:106-200), and a QR carrying `tid` so a revoked-ticket match is a local set lookup with no extra decode. WHAT REMAINS FOR THE HUMAN IS NOT THE MECHANISM BUT THE STALENESS POLICY — see `uncertainties`. Scope OUT for this ticket regardless: seat/pass revocation semantics beyond refunded, hardware gates, and binding occurrence identity to a device (ADR-025 §D3 defers that separately)."
+      "state": "met",
+      "note": "Server half only: one endpoint + one migration + one ADR. The scanner half is TKT-271, split on the owner's instruction. Sharp boundary: this ticket changes nothing a scanner does and closes no gate behaviour on its own — it makes the state available, TKT-271 acts on it."
     },
     "uncertainties": {
-      "state": "open",
-      "owner": "human",
-      "note": "THE ONE REAL DECISION, and it is a product call: how stale may a scanner's revocation view be, and what may a scanner do once it exceeds that? Three sub-questions, each with a different failure mode. (1) FEED FRESHNESS — how often does a connected scanner re-pull? (2) STALENESS CEILING — after how long without a successful pull is the view untrusted? (3) BEHAVIOUR AT THE CEILING — keep admitting on a stale list (fail OPEN: a refunded holder walks in, which is today's behaviour and the hole this ticket exists to close), or refuse (fail CLOSED: a connectivity outage turns away paying customers at a live turnstile). ADR-038 §4 already took the analogous call for a BROKEN CHAIN and chose fail-open-once, reasoning that denying a real customer at a turnstile is the worse failure — but it chose the opposite for a REFUNDED holder, on the grounds that they are not a real customer. That precedent points at fail-closed-on-stale, but it is the owner's to take because it trades revenue-at-the-gate against a customer-facing outage, and the acceptable ceiling depends on the venue's real connectivity, which engineering cannot read out of the code. NOTE the ticket's AC1 already offers a documented escape hatch — 'or, if it already did, the operator is told through a channel that means THIS' — and that channel already EXISTS: SubjectAdmissionConflictAlarm, `platform.access.admission-conflict.alarm` (services/access/internal/store/reconcile.go:18), a class deliberately separate from the integrity alarms. So a minimum-viable slice that alarms on reconciling a refunded ticket is available even if the ceiling decision is deferred — see `first_slice`."
+      "state": "met",
+      "note": "Resolved by reading, except one deliberately left to the plan. RESOLVED: the ceiling is client-side (last_seen_at is advisory and server-side, 0009); the gateway passes X-Scanner-Token through unchanged (no allowlist or Header.Del in gateway/cmd/gateway/main.go:275-291); the keyset pattern has a direct precedent in commerce's wallet. LEFT TO THE PLAN: whether the feed keys on `refunded` lifecycle rows joined to tickets, or on ticket_refund_batches (which already carries organizer_id). Both are defensible and the index design differs; the plan picks one with a stated reason."
     },
     "dependencies": {
       "state": "met",
-      "note": "No OPEN blockers. TKT-157 (live refusal) is Done; TKT-19 is the parent epic and TKT-162 is currently its ONLY child, so no sibling scanner work is in flight to collide with. ADR-025 §D6 explicitly hands the scanner-side durability contract to TKT-19's design, which is this ticket's lineage — a licence, not a blocker."
+      "note": "No blockers. TKT-269 (alarm) is Done and independent. TKT-271 depends on THIS, not the reverse. ADR-062/063 govern server-side reversal delivery, not scanner distribution — adjacent, not governing."
     },
     "approach": {
-      "state": "open",
-      "owner": "human",
-      "note": "Blocked ONLY on the staleness decision in `uncertainties` — the mechanism itself is settled (see `scope`). Held at `owner: human` rather than `deferred` on purpose: shaping.md forbids `approach: deferred` when a ticket touches an AUTH surface, and a revocation feed is exactly that — it decides who gets through a door, it adds an organizer-scoped authenticated read, and the ceiling behaviour IS the trust boundary. TWO STRUCTURAL FACTS the drafter must not rediscover. (i) THERE IS NO REFUND EVENT TO TAP: the refund fact is written by a SYNCHRONOUS commerce -> access internal HTTP call (services/commerce/internal/refunds/service.go:105 -> services/access/internal/api/refunds.go:28 -> RefundOrderTickets), landing only as a `refunded` row in access's own lifecycle_events. No NATS subject carries a refund and no consumer subscribes to one, so the feed reads lifecycle_events directly — do NOT design around a refund event stream, it does not exist. (ii) ADR-025 HAS NO PROVISION FOR DISTRIBUTING TICKET STATE TO SCANNERS — its offline contract is entirely about RECORDING AFTER THE FACT. So this ticket is not merely implementing a decided ADR: pushing revocation state toward a gate is NEW decision territory and almost certainly needs its own ADR (staleness ceiling, fail-open-vs-closed, feed bounding, and the named adversary per ADR-021). Budget for authoring it. Direction once the call is made, verified against HEAD: a new organizer-scoped operation on services/access/api/openapi.yaml under ScannerDeviceToken (contract first per ADR-009, regenerate AND COMMIT openapi_gen.go before the gate — check-generate diffs against HEAD); serve refunded ticket ids for the device's organizer with a monotonic cursor so the feed is bounded and incremental; the scanner pulls on the same `online` edge that already drives sync and stores the set beside the occurrence queue; the offline admit decision consults it before opening. RECONCILIATION IS NOT TOUCHED — ADR-038 §4 and this ticket's AC2 both forbid dropping an occurrence to make the trail look better; if a stale scanner did admit, the fact is recorded and the operator learns it through the admission-conflict alarm, never by falsifying the trail."
+      "state": "met",
+      "note": "Verified at HEAD. Auth: an openapi3filter AuthenticationFunc (server.go:295) resolves X-Scanner-Token to a device and puts ONLY the organizer_id in a context slot (server.go:326); scannerScopeAllows (server.go:343) fails closed. Routing is chi (server.go:100). CRITICAL FINDING: lifecycle_events has NO organizer_id column and no index on event_type or occurred_at — the only indexes are the PK, a (ticket_id) index, and a partial unique on (ticket_id, event_type). `tickets` has no organizer_id index either. So a scoped feed MUST join to tickets AND ship a new index; ADR-019 makes that mandatory rather than an optimization. Migration 0010, irreversible like every migration 0004-0009. Not `deferred`: this is an access-control surface and shaping.md forbids deferring the approach there."
     },
     "first_slice": {
       "state": "met",
-      "note": "DECIDED 2026-08-22 (owner chose option B): Slice B was split out as TKT-269 (alarm on reconciling a refunded ticket — closes AC1's second branch, needs no product decision). TKT-162 RETAINS the feed: AC1's first branch (a scanner that synced after a refund does not admit the holder) and AC3 (a bounded, offline-testable revocation feed). That is this ticket's slice and it is well-defined; it is simply still gated on the staleness decision in `uncertainties`, which is why scope/approach/success stay open."
+      "note": "This ticket is the slice — the split already happened. No further cutting: an endpoint without its index is an ADR-019 violation, and without its ADR it is an undocumented trust decision."
     },
     "success": {
-      "state": "open",
-      "owner": "human",
-      "note": "The three ACs on the ticket are sound and were re-read against HEAD — AC2 in particular is already protected by ADR-038 §4 and by TestRefundedEventsKeepTheLifecycleChainVerifiable. What cannot be written yet is the MEASURABLE form of AC1 and AC3, because both need a number the staleness decision supplies: AC1's 'does not admit' needs the ceiling behaviour to say what happens past it, and AC3's 'bounded' needs the freshness interval to be a testable bound rather than a word. Everything else is ready to write the moment that call lands."
+      "state": "met",
+      "note": "Six ACs, each testable. The load-bearing one is the ADR-019 EXPLAIN proof, and the trap is documented in the ADR: you CANNOT get a generic plan by sending EXPLAIN through the driver — the driver's prepared statement IS the EXPLAIN, so the inner query is planned with the value bound and will use the index whether or not the predicate is sound. It needs a server-side PREPARE / EXPLAIN EXECUTE, and the tell is `$1` surviving in the output. Access has NO explainGenericPlan helper today (it lives in catalog, with a second copy in commerce); ADR-019 warns against forking it, so the plan must decide where a shared copy lives. Also: seed enough rows that a seq scan is genuinely the cheaper option, or the test fails for an unrelated reason."
     },
     "context_memo": {
       "state": "met",
-      "note": "Baked and RE-VERIFIED at HEAD on 2026-08-22, not inherited on trust. All nine cited governingAdrs resolve to real files in docs/adr/. governingTests added — it was absent from the 2026-07-31 bake, and shaping.md requires it non-empty or explicitly none."
+      "note": "Re-baked and verified at HEAD on 2026-08-22 (not the 2026-07-31 snapshot). All governingAdrs resolve to real files; governingTests populated from the actual suite."
     }
   },
   "links": [
@@ -132,6 +140,10 @@
     {
       "type": "split-to",
       "key": "TKT-269"
+    },
+    {
+      "type": "split-to",
+      "key": "TKT-271"
     }
   ],
   "status": "Backlog",
@@ -153,6 +165,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Slice B split out as TKT-269 — TKT-162 keeps the feed\n\nOwner took **option B** from the previous readiness pass. Recording the decision and what moved.\n\n**Split out → [TKT-269]** — *An offline admit of a refunded ticket raises an admission-conflict alarm instead of passing silently.* Shaped to a full 8/8 DoR at creation and sitting in Backlog awaiting Gate 1. It closes **AC1's second branch** (*\"or, if it already did, the operator is told through a channel that means this\"*) using the alarm class that already exists, `platform.access.admission-conflict.alarm`. It needs no product decision, touches no auth or money surface, and changes nothing a scanner does.\n\n**Retained here** — AC1's **first** branch (a scanner that went offline before a refund and synced after it does not admit the holder) and **AC3** (a bounded, offline-testable revocation feed). Plus, per the previous pass, the new ADR that pushing revocation state toward a gate will need: ADR-025 covers recording after the fact, not distribution.\n\n**Readiness delta:** `first_slice` → **met**. TKT-162's slice is now unambiguous — it is the feed. The remaining `open` items (`scope`, `uncertainties`, `approach`, `success`) are all still gated on the **same single decision**: how stale a scanner's revocation view may be, and whether it fails open or closed past that ceiling.\n\n**Why this ticket does not simply become blocked-by TKT-269.** The two are independent by construction. TKT-269 records that a refunded holder got in; TKT-162 stops it happening. Neither needs the other to ship, and nothing TKT-269 does constrains what the staleness decision can later be — which is exactly why it was safe to split.\n\n### ⛔ Gate 1 — still held, unchanged\n\nThe board will keep refusing the drag while four items are `open`, correctly. The question waiting on you is narrower than it was two passes ago but has not been answered: **feed freshness, staleness ceiling, and behaviour at the ceiling** (fail open — today's hole — versus fail closed, which refuses *everyone* on a stale list, not only refunded holders).\n\nOne input that would sharpen it, and that isn't in the repo: **how often refunds land during an event, after doors open.** If they cluster days ahead, a once-per-shift pull closes most of the gap and the ceiling barely matters. If same-day refunds are common, the ceiling is the whole design."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS (8/8), re-shaped after the owner's decision\n\nThe three-week blocker is answered. On 2026-08-22 the owner took the staleness call, and the ticket was re-scoped around it.\n\n#### Owner decisions (binding)\n\n1. **Fail closed** past the staleness ceiling — a scanner with too old a view refuses rather than admitting on a stale list.\n2. **Generous ceiling** — refunds cluster days ahead of the performance, so a start-of-shift pull closes most of the gap. The ceiling is a backstop, not a hot path.\n3. **Operator override past the ceiling, recorded** — an outage must not close the door with no local mitigation, and the override is auditable.\n4. **Split** — this ticket is the **feed** (server); **TKT-271** is the scanner.\n\nDecisions 1–3 are enforced in TKT-271. They are recorded here because they constrain what the feed must make possible and because **this ticket authors the ADR** that states them.\n\n#### Why the ceiling cannot be server-side — the finding that forced the split\n\n`scanner_devices.last_seen_at` is best-effort, server-side, and its own migration comment says *\"Advisory only… Never read by any decision.\"* It records when the server last **heard from** a device, not when the device last **successfully pulled**. Only the scanner holds that second fact. So the ceiling is client-side by necessity, TKT-162 cannot enforce it, and a single ticket would have straddled Go and TypeScript with `make browser` in the middle.\n\n#### The finding that changes the build\n\n**`lifecycle_events` has no `organizer_id` column**, and its only indexes are the primary key, `(ticket_id)`, and a partial unique on `(ticket_id, event_type)`. **`tickets` has no `organizer_id` index either.**\n\nExisting refunded queries are all `ticket_id`-keyed point lookups, which is why nothing has noticed. A feed scoped by organizer must **join to `tickets`** and **ship a new index** — under ADR-019 that index is mandatory, not an optimization. So this ticket carries a **migration 0010**, with the four-test set this service enforces, and 0010 becomes the new \"head\" for the existing irreversibility tests.\n\n#### What the read verified so it need not be rediscovered\n\n- **Auth**: an `openapi3filter` AuthenticationFunc (`server.go:295`) resolves the token and puts **only** `organizer_id` into a context slot (`server.go:326`); the device id and label are discarded. `scannerScopeAllows` (`server.go:343`) fails closed. Routing is chi.\n- **The gateway passes `X-Scanner-Token` through unchanged** — no allowlist, no `Header.Del` (`gateway/cmd/gateway/main.go:275-291`). Checked because the ticket would otherwise assume it.\n- **Keyset precedent exists** in commerce's wallet: row-value comparison, `limit+1`, `next_cursor` required-and-nullable, and the cursor **bound to the scope it was issued for** so a foreign cursor is refused rather than quietly serving another organizer's page. Copy the shape.\n- **This is the first scanner-authenticated GET in access.** The two existing GETs are guest-reference bearer reads.\n\n#### The trap, named now\n\nAC3's EXPLAIN proof is the load-bearing test and the easiest to fake. ADR-019 documents why: **you cannot get a generic plan by sending EXPLAIN through the driver** — the driver's prepared statement *is* the EXPLAIN, so the inner query is planned with the value bound and will happily use the index whether or not the predicate is sound. A deliberately widened predicate still passed that way. It needs a server-side `PREPARE`/`EXPLAIN EXECUTE`, and the tell is `$1` surviving in the output.\n\nAccess has **no** `explainGenericPlan` helper — it lives in catalog with a second copy in commerce, and ADR-019 warns that forking it per read is how one copy stops asserting anything. **The plan must decide where a shared copy lives.**\n\n#### Risk verdict\n\n**`risk:low` NOT claimed.** New authenticated endpoint, a migration, and an ADR recording a trust decision — three of the label's carve-outs. Not close.\n\n### ⛔ Gate 1 — ready for your call\n\n8/8, no blockers, decisions recorded. Priority is yours."
     }
   ]
 }
