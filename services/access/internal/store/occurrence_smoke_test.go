@@ -905,3 +905,243 @@ func TestPerOccurrenceQuarantineMigrationRepresentativeVolume(t *testing.T) {
 		t.Logf("WARNING: above the 15s engineering target — ship only with the reduced margin explicitly accepted")
 	}
 }
+
+// TKT-269 — an offline admit of a REFUNDED ticket must not be silent.
+//
+// TKT-157 refuses a refunded ticket at a LIVE gate (postgres.go, scan.go). An
+// offline scanner cannot know about the refund, admits the holder, and
+// reconciliation then records that admission faithfully — chain verifying
+// clean, nobody informed. ADR-038 §4 states the gap and hands it here.
+//
+// The invariant, said without naming the implementation: AN OFFLINE ADMIT OF A
+// VOIDED TICKET IS NEVER SILENT. It is still recorded — reconciliation is
+// recording, not deciding (ADR-025 §D2/§D6), and the person is already inside —
+// but it owes an operational alarm on the admission-conflict class, which means
+// "the chain is valid and the world disagreed with it", NOT the integrity class,
+// which means "the chain is suspect" (ADR-038 §4 rejected that explicitly).
+
+// refundOwnTicket voids the single-ticket order issueTicket minted. issueTicket
+// gives each ticket its own order id, so quantity 1 selects exactly this ticket
+// (plan A3). The refund goes through the real path, never a hand-written insert,
+// so the `refunded` event participates in the signed chain.
+func refundOwnTicket(t *testing.T, ctx context.Context, st *Postgres, s seeded) {
+	t.Helper()
+	if _, err := st.RefundOrderTickets(ctx, s.id.OrganizerID, s.id.OrderID, uuid.New(), 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func conflictAlarmCount(t *testing.T, ctx context.Context, db *sql.DB) int {
+	t.Helper()
+	return countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm)
+}
+
+// A — branch (a): single-entry, refunded, no prior redemption. The occurrence is
+// recorded exactly as an unrefunded one would be, AND owes one conflict alarm.
+func TestReconcileRefundedTicketRecordsRedemptionAndOwesAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	refundOwnTicket(t, ctx, st, s)
+
+	// The refunded row as it stands BEFORE reconciliation. AC2/AC3: the alarm is
+	// additive — reconciliation must not touch the fact that preceded it.
+	var refundedIDBefore uuid.UUID
+	if err := db.QueryRowContext(ctx, `SELECT id FROM lifecycle_events WHERE ticket_id=$1 AND event_type='refunded'`, s.ticketID).Scan(&refundedIDBefore); err != nil {
+		t.Fatalf("refunded row before reconcile: %v", err)
+	}
+
+	occ := uuid.New()
+	offlineAt := deviceTime().Add(3 * time.Minute)
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, offlineAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recorded, not refused and not downgraded: the person is already inside and
+	// dropping the occurrence would falsify the trail (ADR-038 §4, AC2).
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("refunded offline admit outcome = %s, want recorded — reconciliation records, it does not decide", result.Outcome)
+	}
+	var occurredAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT occurred_at FROM lifecycle_events WHERE id=$1 AND ticket_id=$2 AND event_type='redeemed'`, occ, s.ticketID).Scan(&occurredAt); err != nil {
+		t.Fatalf("redeemed row keyed on the occurrence: %v", err)
+	}
+	if !occurredAt.Equal(offlineAt) {
+		t.Fatalf("redeemed at %v, want the device-claimed %v", occurredAt, offlineAt)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "duplicate_admit"); n != 0 {
+		t.Fatalf("%d duplicate_admit rows; a first admission is a redemption, refunded or not", n)
+	}
+
+	// The alarm: exactly one, on the admission-conflict class.
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d admission-conflict alarms, want exactly 1 — an offline admit of a voided ticket is never silent", n)
+	}
+	var envelope []byte
+	if err := db.QueryRowContext(ctx, `SELECT envelope FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm).Scan(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	var alarm struct {
+		Schema int `json:"schema"`
+		Data   struct {
+			TicketID     uuid.UUID `json:"ticket_id"`
+			OccurrenceID uuid.UUID `json:"occurrence_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(envelope, &alarm); err != nil {
+		t.Fatal(err)
+	}
+	if alarm.Schema != 1 || alarm.Data.TicketID != s.ticketID || alarm.Data.OccurrenceID != occ {
+		t.Fatalf("alarm envelope = %+v, want schema-1 naming this ticket and occurrence", alarm)
+	}
+	// The payload is frozen by a byte-exact golden and this key-set floor: the
+	// refunded case reuses the contract, it does not extend it (ADR-017/§D9).
+	assertConflictAlarmPIIFloor(t, envelope)
+
+	// AC2/AC3 — additive: the earlier refunded fact is untouched.
+	var refundedIDAfter uuid.UUID
+	if err := db.QueryRowContext(ctx, `SELECT id FROM lifecycle_events WHERE ticket_id=$1 AND event_type='refunded'`, s.ticketID).Scan(&refundedIDAfter); err != nil {
+		t.Fatalf("refunded row after reconcile: %v", err)
+	}
+	if refundedIDAfter != refundedIDBefore {
+		t.Fatalf("refunded event id changed %s -> %s; the alarm is additive, it never rewrites the fact", refundedIDBefore, refundedIDAfter)
+	}
+	if err := st.VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("verify-lifecycle after a refunded reconcile: %v", err)
+	}
+
+	// AC4 — replay: synced, no second event, no second alarm.
+	again, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, offlineAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Outcome != ReconcileSynced {
+		t.Fatalf("replay outcome = %s, want synced", again.Outcome)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "redeemed"); n != 1 {
+		t.Fatalf("%d redeemed rows after replay, want 1", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d alarms after replay, want 1 — a retry is the same admission", n)
+	}
+}
+
+// B — branch (b): single-entry, refunded, WITH a prior redemption. This branch
+// already owed a conflict alarm before TKT-269, so "an alarm exists" proves
+// nothing here. What this test constrains is the new guard's PLACEMENT: hoisting
+// the refunded check above the prior-redeemed lookup would owe a SECOND alarm for
+// one occurrence (plan A1). The count is the assertion that bites.
+func TestReconcileRefundedDuplicateOwesExactlyOneAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	occA, occB := uuid.New(), uuid.New()
+
+	// Redeem live FIRST, then refund: RefundOrderTickets selects on
+	// not-yet-refunded and never excludes a redeemed ticket, so this state is
+	// reachable in production.
+	if _, err := st.Redeem(ctx, occurrenceRedeemInput(s, occA)); err != nil {
+		t.Fatal(err)
+	}
+	refundOwnTicket(t, ctx, st, s)
+
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occB, deviceTime().Add(5*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileConflict {
+		t.Fatalf("outcome = %s, want conflict — the trace already held an admission", result.Outcome)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "duplicate_admit"); n != 1 {
+		t.Fatalf("%d duplicate_admit rows, want 1", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d admission-conflict alarms, want exactly 1 — one occurrence owes one alarm, and a refunded check placed above the prior-redeemed lookup would owe a second", n)
+	}
+
+	again, err := st.ReconcileAdmission(ctx, s.reconcileInput(occB, deviceTime().Add(5*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Outcome != ReconcileSynced {
+		t.Fatalf("replay outcome = %s, want synced", again.Outcome)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d alarms after replay, want 1", n)
+	}
+}
+
+// D — branch (d): refunded AND a broken chain. The quarantine path deliberately
+// owes NO conflict alarm: the integrity class owns broken chains and every live
+// scan of this ticket already raises it. A refunded guard that fires before
+// verifyTicketChain would mint one here, which is why the ticket being refunded
+// is load-bearing in this fixture rather than decoration.
+func TestReconcileRefundedBrokenChainRecordsQuarantineWithoutConflictAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	refundOwnTicket(t, ctx, st, s)
+	corruptChain(t, ctx, db, s.ticketID)
+
+	occ := uuid.New()
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("outcome = %s, want recorded", result.Outcome)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ); n != 1 {
+		t.Fatalf("%d quarantine-side records, want 1 — the occurrence lands somewhere", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','duplicate_admit')`, s.ticketID); n != 0 {
+		t.Fatal("reconciliation appended onto an unverified chain")
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 0 {
+		t.Fatalf("%d admission-conflict alarms on a broken chain, want 0 — the integrity class owns a suspect chain (ADR-021 §D6), and a refunded guard firing before verifyTicketChain would mint one here", n)
+	}
+}
+
+// E — atomicity. On the success path both artifacts exist whether or not they
+// share a transaction, so no happy-path test can tell one transaction from two.
+// Reject the outbox insert and assert NEITHER artifact committed.
+func TestReconcileRefundedAlarmAndAppendCommitTogether(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	refundOwnTicket(t, ctx, st, s)
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE FUNCTION reject_alarm() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'alarm outbox rejected (TKT-269 atomicity probe)'; END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER reject_alarm_trigger BEFORE INSERT ON lifecycle_integrity_alarm_outbox
+		FOR EACH ROW EXECUTE FUNCTION reject_alarm();`); err != nil {
+		t.Fatal(err)
+	}
+
+	occ := uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime())); err == nil {
+		t.Fatal("reconcile succeeded while the alarm insert was rejected; the alarm is owed, not best-effort")
+	}
+
+	if n := countEvents(t, ctx, db, s.ticketID, "redeemed"); n != 0 {
+		t.Fatalf("%d redeemed rows committed while its owed alarm failed — the append and the alarm are one transaction", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 0 {
+		t.Fatalf("%d alarms committed, want 0", n)
+	}
+	// The fact that preceded the failed reconcile is untouched.
+	if n := countEvents(t, ctx, db, s.ticketID, "refunded"); n != 1 {
+		t.Fatalf("%d refunded rows, want 1 — a rolled-back reconcile must not disturb it", n)
+	}
+}
