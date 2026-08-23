@@ -79,6 +79,54 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /scans/voided-tickets:
+    get:
+      # The revocation feed an offline scanner pulls so it can refuse a voided
+      # ticket without a network round-trip (ADR-066). TKT-157 refuses one at a
+      # LIVE gate and TKT-269 makes an offline admit visible after the fact;
+      # neither stops it, because the scanner has no way to learn the ticket was
+      # voided. This is distribution only — the scanner owns local storage,
+      # freshness and the admission decision (TKT-271).
+      operationId: listVoidedTickets
+      description: >
+        Voided ticket ids — refunded AND exchanged — for the authenticated
+        device's organizer. Both are refused at a live gate for the same class of
+        reason, and an exchanged ticket is the sharper offline case: its
+        replacement is live elsewhere, so admitting the original admits the
+        exchange twice.
+
+        The organizer is taken from the enrolled device token and NEVER from the
+        request. There is no organizer parameter, which is what stops a caller
+        choosing whose revocations to read.
+      security: [{ScannerDeviceToken: []}]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            The opaque cursor from the previous page. Absent means the first
+            page. A cursor is bound to the organizer it was issued for: one
+            presented by a different organizer is a 400, never a silently
+            shifted or empty page.
+          schema: {type: string, minLength: 1, maxLength: 400}
+        - name: limit
+          in: query
+          required: false
+          # 100 matches this service's existing batch bound (ReconcileRequest
+          # maxItems), rather than inventing a second number for one API.
+          schema: {type: integer, minimum: 1, maximum: 100, default: 100}
+      responses:
+        '200': {description: One page of voided ticket ids, content: {application/json: {schema: {$ref: '#/components/schemas/VoidedTicketFeed'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401':
+          description: >
+            The scanner device is not enrolled, or its enrolment was revoked —
+            the same answer, and the same reasoning, as the scan routes.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+        '500': {$ref: '#/components/responses/Error'}
+        # Deliberately no 503: this handler has no service-unavailable branch,
+        # and declaring a status it cannot answer is drift in the other
+        # direction (ADR-028).
   /orders/{ref}/tickets:
     get:
       operationId: getTickets
@@ -235,6 +283,18 @@ components:
         result: {type: string, enum: [recorded, conflict, synced, rejected]}
         occurred_at: {type: string, format: date-time}
         skew_flagged: {type: boolean}
+    VoidedTicketFeed:
+      type: object
+      additionalProperties: false
+      # next_cursor is required AND nullable on purpose: an absent field and an
+      # explicit null read the same to a careless client, and the difference
+      # between "more pages" and "you are done" is the whole point of the field.
+      required: [ticket_ids, next_cursor]
+      properties:
+        ticket_ids:
+          type: array
+          items: {type: string, format: uuid}
+        next_cursor: {type: string, nullable: true}
     ScanRejected:
       type: object
       additionalProperties: false

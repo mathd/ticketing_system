@@ -23,7 +23,8 @@
 #      COMMERCE_CUSTOMER_ASSERTION_KEY signs proofs that a checkout belongs to a
 #      customer; PAYMENTS_INTERNAL_TOKEN opens payments' money surface, split off
 #      the shared token by ai-review S8; JOURNAL_SIGNING_KEY signs the payments
-#      journal; ACCESS_TICKET_LINK_KEY signs the short-lived QR image links
+#      journal; ACCESS_TICKET_LINK_KEY signs the short-lived QR image links;
+#      ACCESS_FEED_CURSOR_KEY authenticates voided-feed pagination cursors
 #      (ai-review S2).
 #
 #   2. Ed25519 signing PAIRS — minted by `access keygen`, because a shell cannot
@@ -78,7 +79,7 @@ needs_generation() {
 # compose.yaml marks mandatory: TKT-244 added INVENTORY_STAFF_WRITE_TOKEN to
 # compose and not here, and `make up` failed on interpolation — telling the
 # developer to run `make up` to generate it (TKT-227).
-for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN CATALOG_ORGANIZER_ASSERTION_KEY COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY INVENTORY_STAFF_WRITE_TOKEN PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY; do
+for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN CATALOG_ORGANIZER_ASSERTION_KEY COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY INVENTORY_STAFF_WRITE_TOKEN PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY ACCESS_FEED_CURSOR_KEY; do
 	if needs_generation "$var" "$RETIRED_TOKEN"; then
 		env_set "$var" "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 	fi

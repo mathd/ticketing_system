@@ -528,3 +528,166 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 		t.Error("a device enrolled for the ticket's own organizer was refused before the store")
 	}
 }
+
+// The voided feed's authorization surface (TKT-162).
+//
+// These live at the API tier because that is where the mechanism lives: the
+// organizer comes from the device token via the validator's AuthenticationFunc,
+// and the handler reads it out of the context slot. The database-tier question —
+// does the SQL actually scope? — is asserted in the store's smoke tests against
+// real PostgreSQL, because a fake that scopes in Go would prove only that the
+// fake and the handler agree.
+
+func TestVoidedFeedRefusesAnUnenrolledDevice(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := enrolled(New(nil, verifier)).Router(nil, true)
+
+	for name, token := range map[string]string{
+		"absent":     "",
+		"wrong":      "not-the-enrolled-token",
+		"near-miss":  testDeviceToken + "x",
+		"whitespace": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/scans/voided-tickets", nil)
+			if token != "" {
+				request.Header.Set(scannerDeviceHeader, token)
+			}
+			router.ServeHTTP(recorder, request)
+			// 401, not an empty page. A feed that answers "nothing is revoked" to
+			// an unpaired device is the most dangerous possible response: the
+			// scanner would cache it as a complete view and admit voided holders.
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("unenrolled %s = %d, want 401 (never an empty feed, which reads as 'nothing is revoked')", name, recorder.Code)
+			}
+		})
+	}
+}
+
+// The cursor is bound to the organizer it was issued for. An unbound cursor
+// cannot read another organizer's rows — the query filters regardless — but it
+// CAN suppress: copied or forged, it makes the holder's own next page skip rows
+// and come back short, silently. For a revocation feed that is the direction
+// that matters, so it must be a refusal rather than a quiet gap.
+func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
+	mine, theirs := uuid.New(), uuid.New()
+
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	foreign, err := signer.encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: theirs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signer.decodeCursor(foreign, mine); err == nil {
+		t.Fatal("a cursor issued for another organizer was accepted — it would silently shorten this organizer's page")
+	}
+
+	// The same cursor, presented by the organizer it belongs to, must work: a
+	// test that only proves refusal is satisfied by a decoder that refuses
+	// everything.
+	own, err := signer.encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: mine,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signer.decodeCursor(own, mine); err != nil {
+		t.Fatalf("a cursor presented by its own organizer was refused: %v", err)
+	}
+}
+
+func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
+	org := uuid.New()
+	at := time.Date(2026, 8, 22, 14, 30, 0, 123456789, time.UTC)
+	id := uuid.New()
+
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	encoded, err := signer.encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org})
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := signer.decodeCursor(encoded, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nanoseconds survive: the keyset compares on this value, so a cursor that
+	// loses precision resumes at the wrong place and skips or repeats a row.
+	if !back.OccurredAt.Equal(at) || back.EventID != id || back.OrganizerID != org {
+		t.Fatalf("round trip = %+v, want %v/%s/%s", back, at, id, org)
+	}
+
+	// Each of these must be refused for the reason its NAME says, which means each
+	// must carry a VALID signature — otherwise every case fails at the MAC and the
+	// whole table degenerates into one signature test wearing six labels. `sign`
+	// is what keeps them about their subjects.
+	sign := func(payload string) string {
+		body := base64.RawURLEncoding.EncodeToString([]byte(payload))
+		return body + "." + base64.RawURLEncoding.EncodeToString(signer.cursors.sign([]byte(body)))
+	}
+	for name, bad := range map[string]string{
+		"not base64":    "!!!not-base64!!!",
+		"not json":      sign("nonsense"),
+		"wrong version": sign(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
+		"zero event":    sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `"}`),
+		"zero time":     sign(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := signer.decodeCursor(bad, org); err == nil {
+				t.Fatalf("%s was accepted as a cursor", name)
+			}
+		})
+	}
+}
+
+// A cursor a device made up is refused, even for its own organizer.
+//
+// Base64 is an encoding, not a protection (ai-review [high]). Without a MAC an
+// enrolled device can hand-craft a position — an old one, or one past the end —
+// and receive an empty page with next_cursor: null. It cannot reach another
+// organizer's rows, so the forger and the victim are the same party; that still
+// matters here, because for a revocation feed the damaging state is a device
+// that believes its view is complete when it is not, and this is a way to enter
+// that state and never learn.
+func TestVoidedFeedRefusesAnUnsignedOrTamperedCursor(t *testing.T) {
+	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	org := uuid.New()
+
+	valid, err := signer.encodeCursor(store.VoidedCursor{
+		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: org,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, _ := strings.Cut(valid, ".")
+
+	// Hand-rolled: exactly what a device can construct on its own.
+	forged := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":1,"occurred_at":"2020-01-01T00:00:00Z","event_id":"` + uuid.New().String() +
+			`","organizer_id":"` + org.String() + `"}`))
+
+	for name, cursor := range map[string]string{
+		"unsigned":           body,
+		"no signature":       forged,
+		"empty signature":    forged + ".",
+		"wrong signature":    forged + "." + base64.RawURLEncoding.EncodeToString([]byte("not-the-mac")),
+		"signature reused":   forged + "." + strings.SplitN(valid, ".", 2)[1],
+		"body swapped under": forged + "." + strings.SplitN(valid, ".", 2)[1],
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := signer.decodeCursor(cursor, org); err == nil {
+				t.Fatalf("a %s cursor was accepted — a device can forge its own position and skip its own revocations", name)
+			}
+		})
+	}
+
+	// And the honest one still works: a test that only proves refusal is
+	// satisfied by a decoder that refuses everything.
+	if _, err := signer.decodeCursor(valid, org); err != nil {
+		t.Fatalf("a legitimately issued cursor was refused: %v", err)
+	}
+}

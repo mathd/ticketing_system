@@ -186,6 +186,12 @@ type TicketRefundCreate struct {
 	RefundId    openapi_types.UUID `json:"refund_id"`
 }
 
+// VoidedTicketFeed defines model for VoidedTicketFeed.
+type VoidedTicketFeed struct {
+	NextCursor *string              `json:"next_cursor"`
+	TicketIds  []openapi_types.UUID `json:"ticket_ids"`
+}
+
 // Ref defines model for Ref.
 type Ref = openapi_types.UUID
 
@@ -199,6 +205,13 @@ type GetTicketQRParams struct {
 
 	// Sig base64url HMAC over the order ref, the ticket id and the expiry.
 	Sig string `form:"sig" json:"sig"`
+}
+
+// ListVoidedTicketsParams defines parameters for ListVoidedTickets.
+type ListVoidedTicketsParams struct {
+	// Cursor The opaque cursor from the previous page. Absent means the first page. A cursor is bound to the organizer it was issued for: one presented by a different organizer is a 400, never a silently shifted or empty page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // RefundTicketsJSONRequestBody defines body for RefundTickets for application/json ContentType.

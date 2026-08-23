@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -80,7 +81,13 @@ func newSmokeServer(t *testing.T, ctx context.Context) (*Server, *store.Postgres
 	return New(st, verifier), st, qrSigner
 }
 
-func issueSmokeTicket(t *testing.T, ctx context.Context, st *store.Postgres, qr *ticket.Signer) (payload string) {
+// issueSmokeTicket issues one ticket and returns its credential AND the
+// organizer it belongs to. The organizer is returned because these routes are
+// device-authenticated (ai-review S1): a caller has to enrol a device for the
+// SAME organizer or the scope check refuses, and a helper that hid the organizer
+// made that impossible to do — which is how three tests in this file came to be
+// asserting 401 responses (TKT-162).
+func issueSmokeTicket(t *testing.T, ctx context.Context, st *store.Postgres, qr *ticket.Signer) (payload string, organizer uuid.UUID) {
 	t.Helper()
 	ticketID, orderID := uuid.New(), uuid.New()
 	organizerID, slotID := uuid.New(), uuid.New()
@@ -95,14 +102,18 @@ func issueSmokeTicket(t *testing.T, ctx context.Context, st *store.Postgres, qr 
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	return payload
+	return payload, organizerID
 }
 
+// postJSON carries the device credential, for the same reason scanRequest does in
+// server_test.go: a test that means to exercise a scan must not silently exercise
+// the enrolment guard instead. Pair the router with `enrolled(srv, organizer)`.
 func postJSON(t *testing.T, router http.Handler, path, body string) (int, map[string]any) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(scannerDeviceHeader, testDeviceToken)
 	router.ServeHTTP(recorder, request)
 	var response map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -115,8 +126,8 @@ func TestScanReplayMarkerOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil, true)
-	payload := issueSmokeTicket(t, ctx, st, qr)
+	payload, organizer := issueSmokeTicket(t, ctx, st, qr)
+	router := enrolled(srv, organizer).Router(nil, true)
 	occ := uuid.NewString()
 	body := `{"qr_payload":` + mustJSON(t, payload) + `,"occurrence_id":"` + occ + `","occurred_at":"2026-07-17T09:00:00Z"}`
 
@@ -137,8 +148,8 @@ func TestReconcileResultsOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil, true)
-	payload := issueSmokeTicket(t, ctx, st, qr)
+	payload, organizer := issueSmokeTicket(t, ctx, st, qr)
+	router := enrolled(srv, organizer).Router(nil, true)
 	occA, occB := uuid.NewString(), uuid.NewString()
 
 	// Live redemption first, then an offline occurrence syncs: conflict.
@@ -189,10 +200,11 @@ func TestPassScanFlowOnTheWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	srv, st, qr := newSmokeServer(t, ctx)
-	router := srv.Router(nil, true)
-
 	ticketID, orderID := uuid.New(), uuid.New()
 	organizerID, slotID := uuid.New(), uuid.New()
+	// Enrolled for THIS ticket's organizer: the scope check compares the device's
+	// organizer to the credential's, so a device paired to anyone else is refused.
+	router := enrolled(srv, organizerID).Router(nil, true)
 	issuedAt := time.Now().UTC()
 	payload, err := qr.Payload(ticketID, orderID, organizerID, slotID, issuedAt)
 	if err != nil {
@@ -249,4 +261,83 @@ func TestPassScanFlowOnTheWire(t *testing.T) {
 	if entry["result"] != "recorded" {
 		t.Fatalf("pass reconcile entry = %v, want recorded", entry)
 	}
+}
+
+// The organizer must be UNSUBMITTABLE, not merely validated.
+//
+// Caught by a mutation rather than by review: teaching the handler to read an
+// `organizer_id` query parameter left every other test in this file green. A
+// device could then read any organizer's revocations — a map of which of a
+// competitor's tickets have been refunded — on a route any enrolled device can
+// reach.
+//
+// And the obvious defence is NOT there: OpenAPI query validation ignores
+// undeclared parameters, so `?organizer_id=…` reaches the handler as ordinary
+// noise. Nothing refuses it. What makes the value unsubmittable is that the
+// handler never looks for it — the organizer has exactly one source, the context
+// slot the authentication func filled.
+//
+// So this test asserts the source rather than the refusal: the same request with
+// and without a foreign `organizer_id` must produce the SAME feed. If a future
+// edit gives that parameter meaning, these two answers diverge and this goes red.
+func TestVoidedFeedIgnoresACallerSuppliedOrganizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	srv, st, qr := newSmokeServer(t, ctx)
+
+	mine := uuid.New()
+	theirs := uuid.New()
+	// A voided ticket for each organizer. The device below is enrolled for
+	// `mine`, so a handler that honoured the parameter would return theirs.
+	seedVoidedSmokeTicket(t, ctx, st, qr, mine)
+	seedVoidedSmokeTicket(t, ctx, st, qr, theirs)
+
+	router := enrolled(srv, mine).Router(nil, true)
+
+	plain := getFeed(t, router, "/scans/voided-tickets")
+	spoofed := getFeed(t, router, "/scans/voided-tickets?organizer_id="+theirs.String())
+
+	if len(plain) != 1 {
+		t.Fatalf("the device's own feed = %v, want exactly its one voided ticket", plain)
+	}
+	if !reflect.DeepEqual(plain, spoofed) {
+		t.Fatalf("a caller-supplied organizer_id changed the feed:\n plain    = %v\n spoofed  = %v\nthe organizer has one source, the device token", plain, spoofed)
+	}
+}
+
+func getFeed(t *testing.T, router http.Handler, target string) []any {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, scanRequest(http.MethodGet, target, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d %s", target, recorder.Code, recorder.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := body["ticket_ids"].([]any)
+	return ids
+}
+
+// seedVoidedSmokeTicket issues a ticket for the organizer and refunds it, so the
+// `refunded` event is written by the real path.
+func seedVoidedSmokeTicket(t *testing.T, ctx context.Context, st *store.Postgres, qr *ticket.Signer, organizer uuid.UUID) uuid.UUID {
+	t.Helper()
+	ticketID, orderID, slotID := uuid.New(), uuid.New(), uuid.New()
+	issuedAt := time.Now().UTC()
+	payload, err := qr.Payload(ticketID, orderID, organizer, slotID, issuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Issue(ctx, store.IssueInput{EventID: uuid.New(), Tickets: []store.Ticket{{
+		ID: ticketID, OrderID: orderID, GuestOrderRef: uuid.New(), OrganizerID: organizer,
+		BuyerID: uuid.New(), SlotID: slotID, TicketTypeID: uuid.New(), Payload: payload, IssuedAt: issuedAt,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RefundOrderTickets(ctx, organizer, orderID, uuid.New(), 1); err != nil {
+		t.Fatal(err)
+	}
+	return ticketID
 }

@@ -296,10 +296,13 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	// 0009 added scanner device enrolment (ai-review S1). Pinned rather than
+	// 0010 added the voided-ticket feed index (TKT-162). Pinned rather than
 	// derived: this assertion exists so that adding a migration is a decision
-	// someone states here, not a number that drifts.
-	if err != nil || current != 9 || target != 9 {
+	// someone states here, not a number that drifts. Stating it — 0010 creates
+	// tickets_organizer_feed_idx so the feed's tenant filter is index-backed
+	// (ADR-019); it adds no column, no constraint and no data, so nothing above
+	// this line changes meaning.
+	if err != nil || current != 10 || target != 10 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 
@@ -542,7 +545,13 @@ func TestRepeatableAdmissionMigrationIsIrreversible(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	db, provider := schemaDB(t, ctx)
-	if _, err := provider.Up(ctx); err != nil {
+	// UpTo(4), not Up(): goose's Down rolls back exactly one migration — the
+	// current head — so Up-to-head made this test assert that whatever migration
+	// happened to be newest refused, never 0004. Three tests in this service were
+	// written that way and all three were really exercising the same migration
+	// (TKT-162 plan-review A1). Pinning the version is what makes this test about
+	// the migration its name claims.
+	if _, err := provider.UpTo(ctx, 4); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Down(ctx); err == nil {
