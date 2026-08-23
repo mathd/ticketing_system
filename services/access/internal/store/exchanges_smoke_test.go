@@ -294,7 +294,9 @@ func TestExchangedLifecycleMigrationIsIrreversible(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	db, provider := schemaDB(t, ctx)
-	if _, err := provider.Up(ctx); err != nil {
+	// UpTo(8), not Up() — see TestRepeatableAdmissionMigrationIsIrreversible:
+	// Down rolls back only the head, so Up-to-head never tested 0008 (A1).
+	if _, err := provider.UpTo(ctx, 8); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Down(ctx); err == nil {
