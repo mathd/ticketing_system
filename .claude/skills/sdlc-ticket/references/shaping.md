@@ -89,6 +89,19 @@ missed the ticket would have closed with the ADR's "not logged" claim still fals
 requests — and name the ones you checked and cleared, so "only these two" is a finding rather than an
 omission.
 
+**And when the approach relies on a LOCK, say where it is RELEASED relative to the external calls it
+is meant to order.** A lock released before the work it protects is a lock that protects nothing, and
+that is invisible when you reason about which lock to take rather than how long it is held. TKT-255's
+shaping named the right lock — the source order's, the one both binding paths already take, per
+ADR-029's lock-the-identity rule — and the implementation took it correctly. It still shipped a
+[critical] race, because the *other* caller releases that lock when its bind transaction commits and
+only then finalizes, charges and settles: everything worth ordering happens after the lock is gone.
+One sentence at shaping — *"caller X holds it from here to here; the risky work is outside that"* —
+surfaces this before a plan is written, and it costs a single read of the calling path. The
+cross-service version is the same question: a lock cannot be held across a network round trip without
+blocking every other writer for that latency, so if the ordering needs one, the design is wrong and
+the honest answer is a durable marker plus a stated residual.
+
 **When the approach lands on a guard, COUNT ITS PREDICATES in the `note`.** A guard with several
 independent checks needs one test per check — an earlier refusal short-circuits the rest, so a
 single case proves one predicate and is silent about the others. That count is what the test plan

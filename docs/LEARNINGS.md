@@ -471,3 +471,28 @@ and being unable to state in one sentence an input for which the mechanism chang
 dead mechanism with a green test beside it is worse than none — it reads as a guarantee while the
 race it was meant to close stays open.
 [full note](learnings/2026-08-23-the-mechanism-was-inert-not-the-test.md)
+
+**2026-08-23 — TKT-255.** A test that asserts the **effect** cannot tell you which **layer** produced
+it, and two tests in one ticket passed their first mutation because of it. A blank-reason guard test
+stayed green with the Go check deleted — a database CHECK produced an identical observable — and was
+fixed by calling the function with a closed connection pool, so a guard that runs first reports the
+reason and one that runs later reports the connection. A CLI test claimed validation happens "before
+`sql.Open`", which **no error can carry**: with pgx `sql.Open` never errors and never connects, so
+both orderings return the same thing. It now counts TCP connections to a listener the test owns. Ask
+not "does this fail when the feature breaks?" but "if I delete this mechanism and something else
+produces the same observable, does the test notice?" — and remember that ordering claims live in side
+effects, never in return values.
+[full note](learnings/2026-08-23-a-test-that-asserts-the-effect-not-the-layer.md)
+
+**2026-08-23 — TKT-255.** A guard added to close a race **recreated the bug it was added to
+prevent**. The ticket fixed a wedge — an exchange that could never settle, leaving its order neither
+exchangeable nor refundable. A review pass found that an operator's unwind could race an in-flight
+settlement, so a durable `settling_at` marker was added; being write-once with nothing to clear it, a
+settlement that failed definitively left the order **permanently un-unwindable** — the same wedge,
+and worse, because it now blocked the command that was the way out. Every test around it passed
+honestly; mutation testing cannot find this, because the tests share the model of correctness that
+produced the gap. The question is *"this new state waits for something — what happens when that thing
+never arrives?"* A guard with no exit is a lease with no expiry: something must clear it, or it must
+time out, or it must degrade to a weaker check, and past its bound it should **stop deciding** rather
+than start permitting.
+[full note](learnings/2026-08-23-the-guard-recreated-the-bug-it-prevented.md)
