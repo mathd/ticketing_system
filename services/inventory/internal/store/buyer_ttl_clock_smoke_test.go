@@ -204,6 +204,7 @@ const (
 	convertLock   = "SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
 	drawDownLock  = "SELECT 1 /* grp-draw pool lock */ FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
 	seatedPoolLck = "orphan_prevention_enabled,closure_status"
+
 )
 
 // waitPast is how long the blocker keeps the lock beyond the mark: 4x the TTL, so that under
@@ -449,8 +450,16 @@ func TestBuyerHoldReplayReportsAdvancingServerTime(t *testing.T) {
 // TKT-148 promised not to touch. If a later ticket decides expiry SHOULD be judged at decision
 // time, this test is the thing that must be consciously updated -- which is the point.
 func TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime(t *testing.T) {
-	// TTL shorter than the wait, so the hold lapses in real time while the replay queues.
-	ctx, st, db := storeForTest(t, grantTTL)
+	// A MULTI-SECOND TTL, deliberately not grantTTL (ai-review pass 3 finding 1). The
+	// invariant here needs the replay's transaction to begin before the hold's expiry and
+	// the lock to be released after it -- two boundaries that must be independently
+	// controllable. Deriving the handshake deadline from a 500ms TTL left ~450ms for the
+	// grant, the blocker, goroutine scheduling, a connection checkout and the first
+	// pg_stat_activity poll; that failed loudly rather than silently, but a proof that can
+	// fail for reasons unrelated to the property is weak evidence. With a 3s TTL the
+	// handshake has seconds of margin and the release still lands comfortably past expiry.
+	const livenessTTL = 3 * time.Second
+	ctx, st, db := storeForTest(t, livenessTTL)
 	org, slot := provisioned(t, ctx, st, 10)
 
 	first, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "liveness-key")
@@ -461,7 +470,6 @@ func TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime(t *testing.T) {
 		t.Fatal("grant returned no expiry")
 	}
 
-	mark := dbNow(t, ctx, db)
 	blocker := blockPool(t, ctx, db, slot)
 
 	type res struct {
@@ -477,9 +485,10 @@ func TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime(t *testing.T) {
 	// The replay's transaction must be queued BEFORE the hold lapses -- otherwise it would
 	// begin with a transaction timestamp already past the expiry and both clocks would agree,
 	// making the test vacuous. This is the same reason the grant tests handshake.
-	awaitLockWaiter(t, ctx, db, gaPoolLock, first.ExpiresAt.Add(-50*time.Millisecond))
-	// Cross the hold's expiry in real time while the replay stays queued.
-	holdUntil(t, ctx, db, blocker, mark, waitPast)
+	awaitLockWaiter(t, ctx, db, gaPoolLock, *first.ExpiresAt)
+	// Cross the hold's expiry in real time while the replay stays queued, with margin on
+	// the far side too: release a full second after the hold lapsed.
+	holdUntil(t, ctx, db, blocker, *first.ExpiresAt, time.Second)
 
 	// Confirm the premise rather than assuming it: by now the hold really is past its expiry
 	// in database time, so a decision-time judgement WOULD have refused.
@@ -502,7 +511,99 @@ func TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime(t *testing.T) {
 		t.Fatalf("replay returned a different claim: %v want %v", r.c.ID, first.ID)
 	}
 	// The reference still advances -- the two properties are independent and both hold.
-	if !r.c.ServerTime.After(mark.Add(waitPast)) {
-		t.Fatalf("replay server_time %v is not after the wait boundary %v", r.c.ServerTime, mark.Add(waitPast))
+	// Asserted against the hold's own expiry, which is the boundary the blocker was held
+	// past, rather than a constant unrelated to this test's TTL.
+	if !r.c.ServerTime.After(*first.ExpiresAt) {
+		t.Fatalf("replay server_time %v is not after the hold's expiry %v: the replay reference is still transaction-start time", r.c.ServerTime, *first.ExpiresAt)
+	}
+}
+
+// TKT-148 ai-review pass 3, finding 2: Transition (confirm/finalize/release) still returns a
+// claim whose ServerTime is transaction-start time, while every grant and replay path now
+// returns advancing time. That asymmetry is deliberate, and this test pins the reason so the
+// claim cannot quietly stop being true.
+//
+// The reason is that a transition response is NOT a buyer-facing countdown. The routes are
+// `/internal/holds/{id}/{confirm,finalize,release}`, service-to-service only, refused at the
+// gateway edge by explicit prefix registration (TKT-124), and commerce discards the body --
+// it reads the status code and nothing else (server.go:1622, 1654, 1683). No buyer ever sees
+// that server_time, so it carries no countdown contract to be inconsistent with.
+//
+// Transition's clock is ALSO the liveness decision for the checkout finalize path: expired()
+// there flips the row, appends history, releases seats and refuses. Moving it to advancing
+// time would kill more in-flight purchases under contention, which is the money-path semantics
+// change TKT-148 declined to make three times.
+//
+// So this test asserts the pre-existing behaviour, in the manner ADR-021's rollback-gap test
+// does: if a later ticket decides transition responses should carry the buyer reference, or
+// that expiry should be judged at decision time, THIS TEST IS THE THING THAT MUST BE
+// CONSCIOUSLY UPDATED -- do not delete it to make a change pass.
+func TestTransitionKeepsTransactionStartClockDeliberately(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Hour)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	held, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "transition-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh grant's reference is insert time: that is this ticket's whole change.
+	var afterGrant bool
+	if err := db.QueryRowContext(ctx, `SELECT $1::timestamptz <= clock_timestamp()`, held.ServerTime).Scan(&afterGrant); err != nil {
+		t.Fatal(err)
+	}
+	if !afterGrant {
+		t.Fatal("grant server_time is in the future")
+	}
+
+	c, err := st.Transition(ctx, org, held.ID, "finalizing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != "finalizing" {
+		t.Fatalf("transition produced status %q, want finalizing", c.Status)
+	}
+	// The claim survived: transition did not judge it expired. With an hour-long TTL this
+	// holds under either clock, and that is the point -- the assertion below is about WHICH
+	// clock the response carries, not about liveness.
+	if c.ExpiresAt == nil {
+		t.Fatal("transition dropped the expiry")
+	}
+	// The invariant, pinned so it cannot drift: Transition's server_time is TRANSACTION-START
+	// time. An uncontended transition cannot show that -- the two clocks are microseconds
+	// apart -- so contend it. Hold the pool lock, let the transition queue, release, and the
+	// two clocks disagree by the whole wait:
+	//
+	//   - transaction-start (today, and what this test asserts) predates the release;
+	//   - advancing time would postdate it.
+	//
+	// If someone converts Transition to clock_timestamp(), this goes red and they must decide
+	// consciously rather than by sweep.
+	held2, _, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "transition-key-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := dbNow(t, ctx, db)
+	blocker := blockPool(t, ctx, db, slot)
+	type tres struct {
+		c   Claim
+		err error
+	}
+	done := make(chan tres, 1)
+	go func() {
+		tc, terr := st.Transition(ctx, org, held2.ID, "finalizing")
+		done <- tres{tc, terr}
+	}()
+	// Transition takes the pool lock by slot only -- the same statement text as
+	// ConvertOperational. Distinguished, as everywhere here, by this subtest owning its
+	// own schema and slot with a single operation in flight.
+	awaitLockWaiter(t, ctx, db, convertLock, mark.Add(waitPast))
+	holdUntil(t, ctx, db, blocker, mark, waitPast)
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.c.ServerTime.After(mark.Add(waitPast)) {
+		t.Fatalf("transition server_time %v is AFTER the lock release boundary %v: this path was converted to advancing time. That is a deliberate money-path semantics change (expired() here refuses in-flight checkouts) -- see this test's comment before updating it", r.c.ServerTime, mark.Add(waitPast))
 	}
 }
