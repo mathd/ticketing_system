@@ -30,6 +30,138 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n<!-- sdlc:stage=backlog kind=readiness -->\n### The IN-SYSTEM producer was found and CLOSED in TKT-167 — this ticket narrows again\n\nTKT-167's ai-review pass 3 refuted the adversary argument that kept this off that ticket's\ncritical path. There **was** an in-system producer, reachable by two ordinary commerce callers:\n\nTwo exchange requests with the same organizer and idempotency key but **different source\norders** derive the same `ExchangeID`, hence the same `exchange-target:<id>` inventory key, hence\n**one shared claim**. The bind transaction's only row lock is `FOR UPDATE OF o` on the source\norder, so the two lock different rows, both pass the lookup, and both reach the INSERT. The loser\nhit `order_exchanges_pkey` — which `isUniqueViolation` collapsed into `ErrOrderNotExchangeable`,\nand the handler releases the target hold on every bind error except `ErrExchangeConflict`. So the\nloser released the winner's finalized, possibly already-charged claim.\n\n**Fixed in TKT-167** (`mapBindInsertError`): a pkey collision is now `ErrExchangeConflict` (the\nhold is shared and not ours), while `order_exchanges_one_per_source` stays\n`ErrOrderNotExchangeable` (a different exchange owns the order, so the hold is ours to release).\nBoth directions asserted; mutating the mapping back reproduces the defect.\n\n**What remains for this ticket** is the state itself, not a route to it. A target claim that goes\nterminal after a capture still leaves a paid buyer with no recovery, and\n`TestAnExchangeChargedThenReleasedIsWedgedWithTheBuyerPaid` still pins that. With the bind race\nclosed, the only remaining producers are outside this system's callers — a service-token holder\ncalling inventory directly, or a future caller that has not been written yet. That is the\nadversary ADR-021 puts out of scope, and it is why this stays a follow-up rather than a blocker.\n\n**The lesson worth carrying**, and the reason this note exists: the first two attempts to bound\nthis hazard were both argued rather than executed, and both were wrong — pass 2 refuted \"expiry\ncannot strand money\" and pass 3 refuted \"no in-system caller can\". The third bound is executed,\nand it should still be treated as a bound that could fall."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Shaped for Gate 1 — all 8 DoR items `met`\n\nThree prior `readiness` notes on this ticket recorded that it was **unshaped** and that its central\ndesign question (staff operation vs sweep vs resume-integrated) was open and a human's call. This\npass closes it, from reading the code rather than from precedent.\n\n**The design question, answered: a CLI operator command pair.** Not a sweep and not part of the\nresume, and the reasons come from this repo's own decisions rather than from taste:\n\n- **Not a sweep.** ADR-063 §2's load-bearing lesson is that a background runner must never assert a\n  fact it cannot establish. \"This exchange should be abandoned\" is a judgement, not an observation —\n  and the wedge is not self-healing, so there is nothing for a runner to wait for.\n- **Not the resume.** ADR-039 §3c makes the resume's contract \"drive the *same* persisted basis to\n  completion\". Abandoning is the opposite of that contract, not an extension of it.\n- **CLI, not HTTP.** `recovery_operations.go` states the rule this repo already follows: a command\n  that must work during an incident should not depend on the service being up. `list-parked` /\n  `unpark-order` (TKT-146) is the precedent, down to the durable-evidence table in migration 0023.\n\n**Three findings that change the work, all from reading:**\n\n1. **The money check needs TWO payments reads, not one — because the delta's sign selects a\n   different provider leg *and* a different payments table.** An upgrade binds a payment operation\n   under `exchange-charge:<id>` (`GET /internal/operations`); a downgrade binds a *refund leg* under\n   `exchange-refund:<id>` (`GET /internal/refund-legs`); an even exchange calls nobody\n   (`api/exchanges.go:528-531`). A check querying only `/internal/operations` would clear **every\n   downgrade** as no-money-moved and delete the binding of a buyer who had already been refunded —\n   COS 2 failing in the one direction it exists to prevent. Both endpoints already exist, both are\n   documented as safe for a reconciliation sweep (they bind nothing and call no provider), and\n   commerce already calls the first (`recovery/clients.go:216`).\n\n2. **The wedged population is two shapes, not one, and they wedge at different call sites.** The\n   resume branch (`api/exchanges.go:142`) fires only on `found && BasisRecorded && !Settled`. A row\n   **bound with no basis** never reaches it — it falls through to the *full forward path* and\n   re-runs the seated check, the catalog reprice and `holdExchangeTarget`, wedging at a **different**\n   409 (`:225`). No money can have moved in that shape, because the basis is persisted before any\n   provider call. Both 409s carry the byte-identical message *\"exchange target is unavailable\"*, so\n   they are indistinguishable to a caller — which is itself part of the argument for an operator\n   read. The unwind must handle both, and the listing must show which is which.\n\n3. **COS 3 is genuinely unmet today, and the ADR-063 gauges do not cover it.** Every gauge and the\n   claim predicate in the exchange sweep filter `settled_at IS NOT NULL`\n   (`store/exchange_reversal.go:70,416`), and a wedged exchange is by definition *unsettled*. So the\n   wedged population is invisible to all four gauges. The listing is new work, not a reuse.\n\n**Scope kept narrow, each exclusion with a reason** — automatic compensation of a charged delta is\n*out*: it is a money-moving product decision, and the unwind **refuses** that case instead of\nguessing. Note the consequence for COS 4: `TestAnExchangeChargedThenReleasedIsWedgedWithTheBuyerPaid`\nasserts `refund-submissions == 0` and its comment says that if compensation becomes automatic, this\nticket was closed and the assertion must change. It does not become automatic here, so that\nassertion should still hold — a deliberate outcome to state rather than an oversight.\n\n**A test-design note carried into the plan brief:** the money-refusal test's fixture must make\npayments genuinely answer 200 for the *right key*. A fixture where payments 404s everything would\npass the refusal test for the wrong reason and could never detect the sign bug in finding 1. Assert\nthe refusal for **both** signs, and assert the row **survives** the refusal.\n\n**A third finding, from enumerating the gate rather than the feature — the CLI shape is not just a\npreference, it is the cheap path through three separate audits.** Any new commerce `/internal/`\nroute must satisfy `staff_credential_test.go:120` (a `chi.Walk` of the real router demanding a\nbidirectional exact match against a hand-written table), `smoke/coverage_test.go:90` (every\ndocumented 2xx commerce operation must be driven by a smoke test — the allowlist is **empty**), and\n`shared/go/cachetier/spec_audit_test.go:95` (a closed `Cache-Control` declaration list living in\n*another module*). A CLI subcommand adds no route and trips none of them.\n\n**And one tripwire that turns an existing test red without anyone editing it:**\n`migration_smoke_test.go:478` calls `provider.DownTo(ctx, 22)`, which unwinds *every* migration above\n22 — after this ticket, that includes 0024. A missing or unconditionally-guarding `Down` on the new\nmigration fails a test nobody touched. The file's own comments record this exact drift happening\ntwice before (TKT-173, TKT-220). The corollary the plan must carry: 0024's own Down test uses\n`DownTo(23)` — N−1, never N.\n\n**Context-mémo baked** — 7 `governingAdrs` (every one verified to resolve at HEAD; note\n`ADR-032-stripe-behind-**the**-psp-port.md`, whose obvious spelling resolves to nothing) and 10\n`governingTests`, including the two this ticket must update rather than delete and the gate-level\naudits above, which are discoverable only by failing the gate.\n\n**Risk: not `risk:low`.** It touches a money path and adds a data migration — two of the label's\nexplicit carve-outs — and its central question is a design question. The plan gate stays.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "An exchange whose target claim goes terminal after the basis is recorded is wedged forever: completeExchangeFromBasis calls transitionExchangeHold(\"finalize\") first (api/exchanges.go:328) and answers 409 \"exchange target is unavailable\" on refusal. The durable order_exchanges row then blocks a corrected attempt via order_exchanges_one_per_source (migrations/0010:91) and makes the source order unrefundable (store/refunds.go:158 counts ANY order_exchanges row for the source and returns ErrOrderNotRefundable). When the terminal transition follows a successful capture the buyer is charged with no target inventory and no recovery path. Both states are executed and pinned in api/exchange_resume_smoke_test.go."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: (a) a durable, evidence-recorded operator unwind of a wedged UNSETTLED exchange, refusing when payments says money moved; (b) discoverability of the wedged population; (c) updating the two pinning tests to assert the new behaviour. OUT, deliberately and each for a stated reason: automatic compensation/refund of a charged delta (that is a money-moving decision, not an unwind, and ADR-039 s2's 'no safe partial state' argument means choosing it needs a product call - the unwind REFUSES that case rather than guessing); resurrecting the exchange onto a fresh target claim (a new sale at a price the buyer never agreed to); anything touching the SETTLED-exchange sweep of ADR-063 (a disjoint population - every claim and gauge there filters settled_at IS NOT NULL); and unparking (TKT-146 owns it)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Three, all resolved by reading rather than deferred. (1) Can commerce get payments-side money evidence, as COS 2 demands? YES, and both halves are needed because the delta's SIGN selects a different provider leg AND a different payments table: an upgrade (delta>0) binds a payment operation under \"exchange-charge:<id>\" readable at GET /internal/operations (payments/internal/api/server.go:63,110-180), a downgrade (delta<0) binds a refund leg under \"exchange-refund:<id>\" readable at GET /internal/refund-legs (payments/internal/api/refund_leg.go:25), and delta==0 calls nobody at all (commerce/internal/api/exchanges.go:528-531). A check that queried only /internal/operations would clear EVERY downgrade as no-money-moved and delete the binding of a buyer who was already refunded. Both reads are explicitly documented as safe for a reconciliation sweep: they bind nothing and call no provider. (2) Is the wedged population observable today? NO - every exchangesweep gauge and its claim predicate filter settled_at IS NOT NULL (store/exchange_reversal.go:70,416), and a wedged row is by definition unsettled. So COS 3 is genuinely unmet and needs new work; it is not satisfied by the ADR-063 gauges. (3) Is a 404 from payments proof of no-money? Only combined with the deterministic key: ExchangeID is a SHA1 UUID of organizer+idempotency key (store/exchanges.go:128), so the charge key is derivable from the row with no extra state, and recovery/clients.go:216-240 already treats 404 as 'payments never bound a charge for this key'. A transport error must NOT be read as 404 - it fails closed."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blocking tickets. Related but not blocking: TKT-146 owns operator unparking (a different population, and this ticket must not build a second bespoke unpark surface); TKT-163 owns refund reversal retries. Cross-service: this reads payments' two evidence endpoints, both of which already exist and are already reached from commerce (recovery/clients.go:216 already calls /internal/operations)."
+    },
+    "approach": {
+      "state": "met",
+      "owner": null,
+      "note": "VERIFIED AGAINST THE CODE, not inherited - the ticket text proposes no remedy, it states the design question is open. The answer taken: a CLI operator command pair, following commerce's OWN list-parked/unpark-order precedent (cmd/commerce/recovery_operations.go, dispatched at cmd/commerce/main.go:66-77) with its durable-evidence table precedent (migrations/0023_order_recovery_unparks.sql). Chosen over the alternatives for reasons that come from this codebase: an automatic sweep is wrong because the wedge is not self-healing - ADR-063 s2's whole lesson is that a sweep must never assert a fact it cannot establish, and 'this exchange should be abandoned' is a judgement, not an observation; folding it into the resume is wrong because the resume's contract (ADR-039 s3c) is to drive the SAME numbers to completion, and abandoning is the opposite; and an HTTP surface is wrong because, as recovery_operations.go states, a command that must work during an incident should not depend on the service being up. SHAPE: (i) migration 0024 adds an operator-evidence table for exchange unwinds, capturing pre-state and the reason, with a fail-closed Down guard, mirroring 0023 clause for clause; (ii) a store function that, under the source ORDER's row lock (the same lock BindOrderExchange and CreateRefund both take, which is what makes the check non-advisory), re-reads the exchange, refuses a settled one, and deletes the order_exchanges row while inserting the evidence row in ONE transaction; (iii) a list command surfacing the wedged population (COS 3); (iv) the money check runs BEFORE the transaction and its refusal is the point of the ticket. MONEY-EVIDENCE IS NOT NEGOTIABLE INTO A FLAG: COS 2 says 'proven against payments-side evidence, not commerce's flags', and commerce's own row cannot answer it - the wedge exists precisely because the charge succeeded and the row was never updated to say so."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, and it is already the minimum that is safe: the unwind is useless without the money refusal (deleting a charged buyer's binding is worse than the wedge) and undiscoverable without the list (COS 3 states this explicitly). Splitting the refusal out would ship a command whose single most important behaviour is absent. Estimated ~6 files: one migration, one store file + its smoke test, one cmd file + its test, main.go dispatch, plus the two pinned tests updated and docs/development.md."
+    },
+    "success": {
+      "state": "met",
+      "note": "The ticket's four COS, made checkable. (1) unwind of a no-money wedge against a REAL terminal claim - the existing exchangeStackFor/policy.finalizeFails fixture drives a real refusal, and the assertions are that the order_exchanges row is gone, a corrected exchange now binds (proving one_per_source is free), and CreateRefund no longer returns ErrOrderNotRefundable (proving refunds.go:158's count is satisfied) - three separate observable consequences, not one flag. (2) the unwind REFUSES a charged exchange, proven with payments answering 200 for the charge key, and separately for a downgrade's refund key. (3) the wedged population is listed. (4) both pinned tests updated, not deleted. TEST-DESIGN NOTE the plan must carry: the money-refusal test's fixture must make payments actually ANSWER 200 for the right key - a fixture where payments 404s everything would pass the refusal test for the wrong reason and could never detect the sign bug in uncertainty (1). Assert the refusal for BOTH signs, and assert the row SURVIVES the refusal."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "baked below; governingAdrs and governingTests both populated and file-verified at HEAD"
+    }
+  },
+  "context": {
+    "summary": "Close the wedged-exchange gap: give an operator a durable, evidenced way to unwind an exchange whose target claim went terminal before settlement, refusing whenever payments' own records say money moved, and make the wedged population visible.",
+    "wedgeShapes": "THE WEDGED POPULATION IS TWO SHAPES, NOT ONE, and they wedge at different call sites. (a) BASIS RECORDED, unsettled: the resume branch (api/exchanges.go:142) fires only on found && BasisRecorded && !Settled, and wedges at transitionExchangeHold(\"finalize\") (api/exchanges.go:331). This is the charged-buyer case - money MAY have moved. (b) BOUND, NO BASIS: never reaches the resume branch at all; it falls through to the FULL forward path and re-runs the seated check, the catalog reprice and holdExchangeTarget, wedging at a DIFFERENT 409 (api/exchanges.go:225). No money can have moved in this shape, because the basis is persisted before any provider call. Both 409s carry the byte-identical message \"exchange target is unavailable\", so they are indistinguishable to a caller - itself part of the argument for an operator read. The unwind must handle both; the listing must show which is which; and the MONEY CHECK, not the basis flag, is what separates them safely - a flag is commerce's word, and COS 2 demands payments'.",
+    "governingAdrs": [
+      {
+        "adr": "ADR-039-exchange-settles-the-difference.md",
+        "constrains": "The exchange lifecycle itself. s2: every enumerated refusal happens BEFORE money moves, because an exchange has no safe partial state - which is exactly why a post-charge wedge has no in-design remedy and needs this operator path. s3c: the resume drives the SAME persisted basis to completion, so abandoning an exchange must NOT be folded into the resume. s6: one exchange per source order, enforced by an unconditional unique index - that index is what the unwind frees."
+      },
+      {
+        "adr": "ADR-063-exchange-reversal-reconciliation.md",
+        "constrains": "The neighbouring sweep, and it is the most dangerous document here because it is the one a drafter will pattern-match onto. Its population is DISJOINT from this ticket's: every claim and gauge filters settled_at IS NOT NULL, a wedged exchange is unsettled. Its s2 lesson transfers even though its machinery does not: a background runner must never assert a fact it cannot establish. Do NOT extend exchangesweep; do NOT add a fifth gauge to its set without saying why it belongs there."
+      },
+      {
+        "adr": "ADR-021-ticket-lifecycle-trail-integrity.md",
+        "constrains": "The language any integrity claim must use. The evidence table is honest-OPERATOR evidence, not tamper-evidence: anyone with commerce's DB credentials can forge or delete it. Say so, in the migration and in the docs, exactly as 0023 does. Also the source of the pin-the-gap-as-a-test rule the two existing tests follow."
+      },
+      {
+        "adr": "ADR-022-out-of-band-service-migrations.md",
+        "constrains": "Migration 0024 runs via commerce's `migrate` subcommand as a one-shot Compose job; the server path never migrates."
+      },
+      {
+        "adr": "ADR-032-stripe-behind-the-psp-port.md",
+        "constrains": "The provider-neutral evidence reads this ticket depends on. NOTE THE FILENAME: it is ADR-032-stripe-behind-the-psp-port.md, with 'the' - the obvious guess resolves to nothing."
+      },
+      {
+        "adr": "ADR-038-refund-reversal-ticket-voiding.md",
+        "constrains": "s1's ordering rule (capacity is never freed while a ticket still admits) and s6's nullable-timestamp progress shape, which order_exchanges follows."
+      },
+      {
+        "adr": "ADR-062-refund-reversal-reconciliation.md",
+        "constrains": "The parking/leasing vocabulary and the precedent that a distinct lifecycle gets its own mechanism rather than an extension of a neighbouring one."
+      }
+    ],
+    "governingTests": [
+      {
+        "test": "services/commerce/internal/api/exchange_resume_smoke_test.go :: TestATerminalTargetClaimBeforeFinalizeWedgesTheExchange",
+        "enforces": "Pins the no-money wedge in ADR-021's rollback-gap shape. COS 4 requires it be UPDATED to assert the unwind, never deleted. Its header comment names TKT-255 as its owner."
+      },
+      {
+        "test": "services/commerce/internal/api/exchange_resume_smoke_test.go :: TestAnExchangeChargedThenReleasedIsWedgedWithTheBuyerPaid",
+        "enforces": "Pins the charged wedge, including an assertion that refund-submissions == 0 whose comment says explicitly that if compensation becomes automatic, TKT-255 was closed and the test must be updated. Since this ticket does NOT automate compensation, that assertion should still hold - and that is a deliberate outcome to state, not an oversight."
+      },
+      {
+        "test": "services/commerce/internal/store/exchanges_smoke_test.go (constraint-name cases ~:1047-1085)",
+        "enforces": "That order_exchanges_pkey and order_exchanges_one_per_source are the exact constraint names, and that they mean opposite things about who owns the target hold (mapBindInsertError). A migration touching either index breaks these by name."
+      },
+      {
+        "test": "services/commerce/internal/api/channel_seam_test.go",
+        "enforces": "A live tripwire on the public reserve route's channel-free seam, carrying an explicit 'do not delete them' instruction (:42). Not expected to be touched here - listed so it is recognised rather than edited."
+      },
+      {
+        "test": "services/commerce/internal/store/migration_smoke_test.go:478 :: TestMigration0023DownRefusesToDestroyUnparkEvidence",
+        "enforces": "THE SHARPEST ONE, and it is an EXISTING test that a new migration turns red without ever being edited. It calls provider.DownTo(ctx, 22), which unwinds every migration above 22 - and after this ticket that includes 0024. If 0024's Down is missing, broken, or guards unconditionally, this pre-existing test fails. The file's own comments record this exact drift happening twice before (TKT-173, TKT-220). Corollary the plan must state: 0024's own Down test uses DownTo(23), i.e. N-1, never DownTo(24)."
+      },
+      {
+        "test": "smoke/smoke_test.go:265-291 latestMigrationVersion + :304 TestMigrationsAppliedOutOfBand",
+        "enforces": "The filename must parse as NNNN_ with a numeric prefix, and max(version_id) in the LIVE commerce database must equal the highest checked-in file number. A 0024 the migrate job does not apply fails here. Also :567 pins the compose depends_on edge and :622 pins that the server path never migrates (ADR-022)."
+      },
+      {
+        "test": "services/commerce/internal/api/staff_credential_test.go:120 :: TestTheEnumerationCoversEveryInternalRouteCommerceServes",
+        "enforces": "chi.Walks the REAL commerce router and demands a bidirectional exact match against a hand-written table. Any new /internal/... route on commerce fails until it is added there with a validator-passing fixture. This is a strong argument FOR the CLI shape and against an HTTP surface - the CLI adds no route and trips none of this. If the plan proposes an endpoint anyway, this test plus smoke/coverage_test.go:90 (every documented 2xx commerce operation must be driven by a smoke test, allowlist currently EMPTY) plus shared/go/cachetier/spec_audit_test.go:95 (a closed Cache-Control declaration list, in ANOTHER module) are three separate gates it must satisfy."
+      },
+      {
+        "test": "services/commerce/internal/store/attribution_invariant_test.go",
+        "enforces": "An AST/source audit over EVERY production Go file in services/commerce: no UPDATE orders SET may mention customer_id, and every INSERT INTO orders(...) must name customer_id. A new store function touching orders trips it. The unwind should not need to write orders at all - if a plan reaches for one, that is a signal to re-examine the design."
+      },
+      {
+        "test": "services/commerce/cmd/commerce/recovery_operations_test.go:9-14",
+        "enforces": "The house contract for an operator subcommand: EVERY argument case must be refused before sql.Open is reached, so the arg-validation test needs no database. A new subcommand that connects first cannot have the same-shaped test written for it."
+      },
+      {
+        "test": "services/commerce/cmd/commerce/credentials_test.go:19 + readiness_test.go:80",
+        "enforces": "credentialsAreDistinct is pinned by an EXHAUSTIVE all-pairs enumeration - adding a 5th credential breaks compilation and the table must grow by 4 pairs. And adding a readiness check turns TestAConfiguredAccessURLIsReady red unless it passes with only ACCESS_URL set. Neither should be needed here (the payments URL and token already exist), but a plan that reaches for either must know the cost."
+      },
+      {
+        "test": "shared/go/obs/capability_audit_test.go:44 :: TestNoEmitterWritesARawRequestPath",
+        "enforces": "Repo-wide AST walk: r.URL.Path must never reach a slog call unwrapped by SanitizedPath. Relevant because new CLI and store code will be logging."
+      }
+    ],
+    "keyFiles": [
+      "services/commerce/internal/api/exchanges.go (the 409 at :328-331; completeExchangeFromBasis)",
+      "services/commerce/internal/store/exchanges.go (BindOrderExchange :229, RecordExchangeBasis :362, CompleteExchangeSettlement :501, ExchangeID :128)",
+      "services/commerce/internal/store/refunds.go:158 (the count that makes a wedged order unrefundable)",
+      "services/commerce/internal/store/migrations/0010_order_exchanges.sql (schema + one_per_source)",
+      "services/commerce/internal/store/migrations/0023_order_recovery_unparks.sql (the evidence-table template)",
+      "services/commerce/cmd/commerce/recovery_operations.go + main.go:66-77 (the CLI precedent)",
+      "services/commerce/internal/store/recovery.go:479 UnparkOrder (the locked-transaction + evidence template)",
+      "services/commerce/internal/recovery/clients.go:216 LookupOperation (payments evidence read, already in commerce)",
+      "services/payments/internal/api/refund_leg.go (the second evidence read, for downgrades)"
+    ],
+    "adversary": "Per ADR-021, state it once and keep it: this ticket delivers honest-operator consistency. It constrains accidents, races and crashes. It does not constrain anyone holding commerce's database credentials, who can delete an order_exchanges row or forge an evidence row directly. The signed payments journal remains the evidence that money moved - which is precisely why the money refusal reads PAYMENTS rather than a commerce flag."
+  }
 }
