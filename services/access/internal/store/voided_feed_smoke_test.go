@@ -410,7 +410,7 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(
-		`PREPARE %s(uuid, timestamptz, uuid, timestamptz, int) AS %s`, stmt, voidedFeedQuery)); err != nil {
+		`PREPARE %s(uuid, timestamptz, uuid, int) AS %s`, stmt, voidedFeedQuery)); err != nil {
 		t.Fatal(err)
 	}
 	// Set before the first EXECUTE: the cached plan is built then.
@@ -418,7 +418,7 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 		t.Fatal(err)
 	}
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-		`EXPLAIN (FORMAT JSON) EXECUTE %s('%s'::uuid, '9999-12-31 23:59:59Z'::timestamptz, '%s'::uuid, now()::timestamptz, 100)`,
+		`EXPLAIN (FORMAT JSON) EXECUTE %s('%s'::uuid, '9999-12-31 23:59:59Z'::timestamptz, '%s'::uuid, 100)`,
 		stmt, org, uuid.Max))
 	if err != nil {
 		t.Fatal(err)
@@ -438,13 +438,13 @@ func explainVoidedFeedGenericPlan(t *testing.T, ctx context.Context, db *sql.DB,
 	}
 
 	got := plan.String()
-	// $1..$4 must survive. $5 is deliberately NOT checked: it is the LIMIT, and
+	// $1..$3 must survive. $4 is deliberately NOT checked: it is the LIMIT, and
 	// Postgres folds a LIMIT parameter into the plan's cost estimate even under
 	// force_generic_plan, so requiring it would fail against a perfectly generic
 	// plan. The parameters that matter are the ones inside the predicates — those
 	// are what a widened filter would let the planner see through, and $1 is the
 	// tenant scope this whole assertion is about.
-	for i := 1; i <= 4; i++ {
+	for i := 1; i <= 3; i++ {
 		marker := "$" + strconv.Itoa(i)
 		if !strings.Contains(got, marker) {
 			t.Fatalf("not a generic plan — %s was substituted, so plan_cache_mode did not apply and every index assertion here proves nothing.\nplan:\n%s", marker, got)
@@ -577,21 +577,30 @@ func TestVoidedFeedMigrationIsIrreversible(t *testing.T) {
 	}
 }
 
-// A page walk is a consistent snapshot as of its first page (ai-review [high]).
+// A walk down the feed terminates and does not lose rows that existed when it
+// began — and a void created DURING the walk is deferred to the next pull.
 //
-// The defect this pins: the feed is newest-first and the cursor only moves
-// backwards, so a ticket voided DURING a walk is newer than every remaining
-// cursor and is excluded from every remaining page. The scanner reaches
-// next_cursor: null and publishes a view it believes is complete, missing a
-// revocation from seconds earlier. For a revocation feed that is the whole
-// failure mode — and the scanner cannot detect it, because "complete" is exactly
-// what a null cursor means.
+// This test replaced one that claimed a snapshot and could not fail, and the
+// history is worth keeping because it is the ticket's main lesson. Two review
+// passes and three fixture attempts established what is actually true:
 //
-// The high-water mark makes the omission DEFINED rather than silent: voids after
-// the ceiling belong to the next pull, which the scanner knows to make because
-// freshness is a clock, not a cursor. What must never happen is a void inside the
-// walk's own window going missing.
-func TestVoidedFeedWalkIsASnapshotAndDoesNotLoseMidWalkVoids(t *testing.T) {
+//   - The walk is strictly descending, so its cursor only moves backwards. A void
+//     created during the walk is NEWER than the cursor and is excluded by the
+//     keyset predicate alone.
+//   - An explicit "ceiling" bound was added to make that guarantee look
+//     deliberate. It was DEAD CODE: on a descending walk the cursor is always at
+//     or below any ceiling taken from page one, so the keyset predicate is
+//     strictly stronger and the ceiling can never change a result. No test could
+//     make it fail, which is exactly how it was found — the test written to prove
+//     it stayed green with the predicate deleted. It was removed rather than kept
+//     with an unfalsifiable test beside it.
+//   - What remains uncovered, and is ACCEPTED in ADR-066 §4b: `occurred_at`
+//     defaults to Postgres `now()`, which is transaction start time, so a voiding
+//     transaction that began before page one and commits after it can land at a
+//     position the walk has already passed. No timestamp bound fixes that; it
+//     needs commit ordering the table does not carry. The scanner's next pull is
+//     the completeness mechanism.
+func TestVoidedFeedWalkTerminatesAndDefersLateVoids(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	db := migratedDB(t, ctx)
@@ -610,76 +619,62 @@ func TestVoidedFeedWalkIsASnapshotAndDoesNotLoseMidWalkVoids(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cursor.IsZero() {
-		t.Fatal("fixture cannot exercise a mid-walk void: the first page already finished the walk")
-	}
-	if cursor.Ceiling.IsZero() {
-		t.Fatal("the first page issued a cursor with no ceiling, so the walk has no snapshot boundary")
+		t.Fatal("fixture cannot exercise a multi-page walk: the first page already finished it")
 	}
 
-	// The event this test is about: a void that lands after the walk started.
-	late := issueTicket(t, ctx, st, org)
-	voidOneTicketOfItsOwnOrder(t, ctx, st, late)
+	// Voided after the walk began. The keyset excludes these from THIS walk.
+	late := make(map[uuid.UUID]bool, 2)
+	for i := 0; i < 2; i++ {
+		s := issueTicket(t, ctx, st, org)
+		voidOneTicketOfItsOwnOrder(t, ctx, st, s)
+		late[s.ticketID] = false
+	}
 
-	seen := make(map[uuid.UUID]bool, 5)
+	seen := make(map[uuid.UUID]bool, 6)
 	for _, v := range page1 {
 		seen[v.TicketID] = true
 	}
-	for page := 0; page < 6; page++ {
+	pages := 1
+	for page := 0; page < 8; page++ {
 		got, next, err := st.VoidedTickets(ctx, org, cursor, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
+		pages++
 		for _, v := range got {
 			seen[v.TicketID] = true
 		}
 		if next.IsZero() {
 			break
 		}
-		if next.Ceiling != cursor.Ceiling {
-			t.Fatalf("the ceiling moved mid-walk (%v -> %v); it belongs to the walk, not the page, and recomputing it reopens the gap one page at a time", cursor.Ceiling, next.Ceiling)
-		}
 		cursor = next
 	}
 
-	// EVERY ticket voided before the walk began is in the walk. This is the
-	// assertion that goes red without the ceiling — not because the late void
-	// appears, but because losing the ceiling means later pages are unbounded and
-	// the walk's own rows shift under it.
 	for id := range before {
 		if !seen[id] {
-			t.Fatalf("ticket %s was voided BEFORE the walk started and never appeared in it — the walk is not a snapshot", id)
+			t.Fatalf("ticket %s was voided BEFORE the walk started and never appeared in it", id)
 		}
 	}
-	// The late void is legitimately outside this walk's window. What matters is
-	// that it is not lost: the next walk must carry it, because a scanner that
-	// polls again is the mechanism by which it is never missed.
+	for id := range late {
+		if seen[id] {
+			t.Fatalf("ticket %s was voided AFTER the walk began but appeared in it — a descending walk must not chase rows added beneath it", id)
+		}
+	}
+	// The walk TERMINATED in the pages its row count implies. Under continuous
+	// voiding an unbounded walk would keep finding work; this is what says it does
+	// not.
+	if pages > 4 {
+		t.Fatalf("the walk took %d pages for 4 rows — it is chasing rows added during the walk", pages)
+	}
+	// Deferred, not lost. This is the mechanism ADR-066 §4b relies on in place of
+	// a snapshot, and it is the assertion that makes the accepted race tolerable.
 	nextWalk, _, err := st.VoidedTickets(ctx, org, VoidedCursor{}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsID(feedIDs(t, nextWalk), late.ticketID) {
-		t.Fatalf("a ticket voided during the previous walk is absent from the NEXT walk too — it is lost, not deferred: %v", feedIDs(t, nextWalk))
-	}
-}
-
-// A cursor with no ceiling is refused rather than treated as unbounded.
-//
-// Silently defaulting would be the gap coming back through the back door: an
-// unbounded later page sees rows the walk had already passed, and the caller
-// never learns its snapshot was abandoned.
-func TestVoidedFeedRefusesACursorWithNoCeiling(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	db := migratedDB(t, ctx)
-	st := New(db, testConfig(t))
-	org := uuid.New()
-	s := issueTicket(t, ctx, st, org)
-	voidOneTicketOfItsOwnOrder(t, ctx, st, s)
-
-	_, _, err := st.VoidedTickets(ctx, org, VoidedCursor{
-		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: org,
-	}, 10)
-	if err == nil {
-		t.Fatal("a cursor with no ceiling was honoured as an unbounded page — the walk lost its snapshot boundary silently")
+	for id := range late {
+		if !containsID(feedIDs(t, nextWalk), id) {
+			t.Fatalf("ticket %s was excluded from the walk running when it was voided AND is absent from the next walk — it is lost, not deferred", id)
+		}
 	}
 }

@@ -89,33 +89,51 @@ rows and come back short, with no error anywhere. For a revocation feed that is 
 direction, because a silently incomplete view is exactly the state this whole line of work exists to
 prevent. Refusing is loud; a short page is not.
 
-### 4b. A page walk is a snapshot, and the cursor is authenticated
+### 4b. A page walk is NOT a snapshot, and that limit is accepted
 
-Both of these came from the adversarial review, and both are the same class of
-defect: a way for a scanner to end up believing its revocation view is complete
-when it is not. That belief is the only thing this feed exists to prevent, so
-neither could be deferred.
+Two adversarial passes went into this clause and it ended up weaker than the first
+two versions claimed. Recording the path, because the wrong versions were
+plausible and the right one is a limitation rather than a mechanism.
 
-**A high-water mark bounds the walk.** The feed is newest-first and the cursor
-only moves backwards, so a ticket voided *during* a page walk is newer than every
-remaining cursor and is excluded from every remaining page — the scanner reaches
-`next_cursor: null` holding a list that is missing a revocation from seconds
-earlier. Confirmed by execution before it was fixed. The first page now captures a
-ceiling and every later page carries it unchanged, which makes the walk a
-consistent snapshot: voids after the ceiling belong to the *next* pull, which the
-scanner knows to make because freshness is a clock, not a cursor. A cursor with no
-ceiling is refused rather than treated as unbounded — silently defaulting would
-reintroduce the gap through the back door.
+**The claim.** A walk down the feed terminates, and does not lose rows that
+existed when it began. A void created *during* a walk is excluded from that walk
+and appears in the next one. That is all.
+
+**What is NOT claimed: consistency.** `occurred_at` defaults to Postgres `now()`,
+which is **transaction start time**. A voiding transaction that began before the
+first page and commits after it can therefore carry a timestamp *below* the
+walk's current position — a place the descending walk has already passed and will
+never revisit. That row is absent from the walk while `next_cursor: null` still
+reports it finished. Confirmed by executing it, not by reading the code.
+
+**A timestamp bound cannot fix this, and one was tried.** An explicit ceiling —
+the newest event the first page saw, carried through the walk — was added in
+response to the first review pass, and it was **dead code**: on a strictly
+descending keyset walk the cursor is always at or below any such ceiling, so the
+keyset predicate is strictly stronger and the ceiling can never change a result.
+The test written to prove it stayed green with the predicate deleted, which is how
+it was caught. It was removed rather than kept beside an unfalsifiable test. A
+real fix needs **commit ordering**, not a timestamp: a sequence or transaction-id
+column on `lifecycle_events`, which is an append-only, hash-chained, signed table
+(ADR-021), so that is a schema decision of its own and not this ticket's.
+
+**The accepted mitigation** is the scanner's next pull. The window is bounded by
+how long a voiding transaction stays open — short, and unrelated to how long a
+scanner is offline — and the scanner polls on a **clock**, not on a cursor, so
+anything missed by one walk is picked up by the next. Combined with §5's staleness
+ceiling, a device that cannot pull at all fails closed rather than trusting a list
+it knows is old. The guarantee is therefore *eventually complete across pulls*,
+never *complete within one walk*, and §1's "incremental" should be read that way.
 
 **The cursor is MAC-signed** (`ACCESS_FEED_CURSOR_KEY`, its own key, per the
 one-key-one-claim rule in `qrlink.go`). Base64 is an encoding, not a protection:
 without a MAC an enrolled device can hand-craft a position — an old one, or one
 past the end — and receive an empty page with `next_cursor: null`. It cannot reach
 another organizer's rows, since the query filters on the token's organizer
-regardless, so **the forger and the victim are the same party**. That is a weaker
-threat than it first sounds and is recorded as such; it still matters here,
-because a device putting *itself* into a falsely-complete state and never learning
-is precisely this feed's failure mode.
+regardless, so **the forger and the victim are the same party**. That is weaker
+than it first sounds and is recorded as such; it still matters, because a device
+putting *itself* into a falsely-complete state and never learning is precisely
+this feed's failure mode.
 
 ### 5. Fail closed past a generous staleness ceiling — enforced by the SCANNER
 
@@ -164,6 +182,9 @@ wrong scan.
 
 ## Consequences
 
+- **A walk is not a consistent read, and the feed's completeness is across pulls
+  rather than within one** — see §4b. The `next_cursor: null` that ends a walk
+  means "this walk is done", not "you now hold every revocation".
 - **"Bounded" is bounded two different ways, and only one is a guarantee.** The *response* is bounded
   by the page limit. The *scan* is bounded by the authenticated organizer's voided set, not by the
   page size — an organizer with a very large voided history pays a sort proportional to it. Closing

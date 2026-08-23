@@ -579,7 +579,6 @@ func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
 	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
 	foreign, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: theirs,
-		Ceiling: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -593,7 +592,6 @@ func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
 	// everything.
 	own, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: mine,
-		Ceiling: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -609,8 +607,7 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	id := uuid.New()
 
 	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
-	ceiling := at.Add(time.Minute)
-	encoded, err := signer.encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org, Ceiling: ceiling})
+	encoded, err := signer.encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,11 +619,6 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	// loses precision resumes at the wrong place and skips or repeats a row.
 	if !back.OccurredAt.Equal(at) || back.EventID != id || back.OrganizerID != org {
 		t.Fatalf("round trip = %+v, want %v/%s/%s", back, at, id, org)
-	}
-	// The ceiling survives too: it is the walk's snapshot boundary, and a cursor
-	// that loses it on the wire is a walk that silently becomes unbounded.
-	if !back.Ceiling.Equal(ceiling) {
-		t.Fatalf("round trip lost the ceiling: %v, want %v", back.Ceiling, ceiling)
 	}
 
 	// Each of these must be refused for the reason its NAME says, which means each
@@ -640,13 +632,9 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	for name, bad := range map[string]string{
 		"not base64":    "!!!not-base64!!!",
 		"not json":      sign("nonsense"),
-		"wrong version": sign(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
-		"zero event":    sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
-		"zero time":     sign(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `","ceiling":"2026-08-22T15:00:00Z"}`),
-		// A cursor with no ceiling is a walk that lost its snapshot boundary. It
-		// must be refused rather than defaulted, or the mid-walk gap comes back
-		// through the back door with the caller none the wiser (ai-review [high]).
-		"no ceiling": sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
+		"wrong version": sign(`{"v":99,"occurred_at":"2026-08-22T14:30:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
+		"zero event":    sign(`{"v":1,"occurred_at":"2026-08-22T14:30:00Z","event_id":"00000000-0000-0000-0000-000000000000","organizer_id":"` + org.String() + `"}`),
+		"zero time":     sign(`{"v":1,"occurred_at":"0001-01-01T00:00:00Z","event_id":"` + id.String() + `","organizer_id":"` + org.String() + `"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := signer.decodeCursor(bad, org); err == nil {
@@ -671,7 +659,6 @@ func TestVoidedFeedRefusesAnUnsignedOrTamperedCursor(t *testing.T) {
 
 	valid, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: org,
-		Ceiling: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -681,7 +668,7 @@ func TestVoidedFeedRefusesAnUnsignedOrTamperedCursor(t *testing.T) {
 	// Hand-rolled: exactly what a device can construct on its own.
 	forged := base64.RawURLEncoding.EncodeToString([]byte(
 		`{"v":1,"occurred_at":"2020-01-01T00:00:00Z","event_id":"` + uuid.New().String() +
-			`","organizer_id":"` + org.String() + `","ceiling":"2020-01-01T00:00:00Z"}`))
+			`","organizer_id":"` + org.String() + `"}`))
 
 	for name, cursor := range map[string]string{
 		"unsigned":           body,

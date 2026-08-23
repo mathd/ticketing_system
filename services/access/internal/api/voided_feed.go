@@ -35,11 +35,6 @@ type wireCursor struct {
 	OccurredAt  time.Time `json:"occurred_at"`
 	EventID     uuid.UUID `json:"event_id"`
 	OrganizerID uuid.UUID `json:"organizer_id"`
-	// Ceiling is the snapshot boundary of the page walk this cursor belongs to.
-	// It travels with the cursor because the walk is stateless on the server, and
-	// dropping it would let a later page see voids the walk had already passed —
-	// the incomplete-view gap (ai-review [high]).
-	Ceiling time.Time `json:"ceiling"`
 }
 
 var errBadCursor = errors.New("invalid cursor")
@@ -70,7 +65,7 @@ func (s feedCursorSigner) sign(payload []byte) []byte {
 func (s *Server) encodeCursor(c store.VoidedCursor) (string, error) {
 	raw, err := json.Marshal(wireCursor{
 		Version: feedCursorVersion, OccurredAt: c.OccurredAt.UTC(),
-		EventID: c.EventID, OrganizerID: c.OrganizerID, Ceiling: c.Ceiling.UTC(),
+		EventID: c.EventID, OrganizerID: c.OrganizerID,
 	})
 	if err != nil {
 		return "", err
@@ -118,15 +113,14 @@ func (s *Server) decodeCursor(encoded string, organizer uuid.UUID) (store.Voided
 	if c.Version != feedCursorVersion {
 		return store.VoidedCursor{}, errBadCursor
 	}
-	if c.EventID == uuid.Nil || c.OrganizerID == uuid.Nil || c.OccurredAt.IsZero() || c.Ceiling.IsZero() {
+	if c.EventID == uuid.Nil || c.OrganizerID == uuid.Nil || c.OccurredAt.IsZero() {
 		return store.VoidedCursor{}, errBadCursor
 	}
 	if c.OrganizerID != organizer {
 		return store.VoidedCursor{}, errBadCursor
 	}
 	return store.VoidedCursor{
-		OccurredAt: c.OccurredAt, EventID: c.EventID,
-		OrganizerID: c.OrganizerID, Ceiling: c.Ceiling,
+		OccurredAt: c.OccurredAt, EventID: c.EventID, OrganizerID: c.OrganizerID,
 	}, nil
 }
 
