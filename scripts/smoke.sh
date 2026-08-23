@@ -134,8 +134,16 @@ cd "$ROOT/services/catalog"
 # carry one, and it had already stranded two tests that never ran once merged —
 # TestDirectArchiveRacingFestivalPublishCannotDesync and
 # TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically (TKT-53's scoped-read test).
+#
+# ./internal/... rather than ./internal/store, and this one closes the hole BEFORE it
+# is dug rather than after. Catalog's smoke tests all live under ./internal/store
+# today, so this widening changes nothing right now — which is the point. Access
+# carried the narrow path while its ./internal/api tests accumulated, and three of
+# them were failing on main for weeks because the gate never executed the package
+# (TKT-162). A package allowlist is the same defect as a test-name allowlist, and it
+# is invisible in exactly the same way: the gate stays green because it never looked.
 CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 ./internal/store
+go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/inventory"
 # No -run filter, for the same reason as commerce, catalog and access above: an allowlist
