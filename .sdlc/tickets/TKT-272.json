@@ -1,0 +1,54 @@
+{
+  "key": "TKT-272",
+  "type": "Story",
+  "parent": "TKT-19",
+  "classification": "simple",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Rate-limit the scanner polling surface — access has no limiter at all",
+  "description": "Raised by TKT-162 and recorded in ADR-066's consequences as an **accepted risk**, so that it is stated rather than unnoticed.\n\n**Access has no rate limiting on any route.** `shared/go/ratelimit` exists and is used by catalog (staff auth) and commerce (ADR-051 customer surface); grep for it under `services/access/` returns nothing, and `main.go` has no `r.Use(...)` chain — the wrapping is `obs.Middleware` → `obs.RequestLogger` → chi.\n\nThat was defensible while every scanner route was **one request per physical admission**. TKT-162 added `GET /scans/voided-tickets`, which a scanner **polls** on an interval — a qualitatively different traffic profile on a route any enrolled device can reach.\n\n**Two things make this less alarming than it sounds, and they belong in the ticket so nobody over-builds:**\n- The route is device-authenticated, so this is not an open surface; the exposure is an enrolled device (or a leaked device token) polling hard.\n- `shared/go/ratelimit` is explicitly **in-process and per-replica** — its own package doc says it bounds a single scripted client against one replica and nothing more. Reaching for it may buy less than it appears to.\n\n**Acceptance Criteria:**\n- [ ] Decide whether the limit belongs in-process, at the gateway, or nowhere — and record the reason either way. \"Nowhere, deliberately\" is an acceptable outcome if argued.\n- [ ] If a limit is added, it is keyed per **device**, not per organizer or per IP: a busy venue is many devices behind one NAT, and per-IP would throttle a real gate.\n- [ ] Whatever is decided, ADR-066's \"accepted for now\" consequence is updated to say what happened.\n\nQuality gates: `make check` green.",
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-162"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A polling route with no limiter, on a service that has none at all. Stated as an accepted risk in ADR-066 rather than discovered later."
+    },
+    "scope": {
+      "state": "open",
+      "note": "Genuinely open: the honest answer may be 'no limiter, the gateway is the right place' or 'none needed, it is device-authenticated'. The ticket is the DECISION, not necessarily a limiter."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "Is a per-replica in-process limiter worth anything here? Its own doc says it bounds one scripted client against one replica. If the real answer is edge-level, this ticket is a gateway change or a no-op with a recorded reason."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-162 is the origin, not a dependency."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "Blocked on the scope question. Not deferred: this touches an auth-adjacent surface and shaping.md forbids the escape hatch there."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is small — a decision plus at most a middleware."
+    },
+    "success": {
+      "state": "met",
+      "note": "Three ACs, each testable; 'decide and record' is the deliverable even if the code change is nothing."
+    },
+    "context_memo": {
+      "state": "open",
+      "note": "Bake at shaping: ADR-051 and ADR-055 (the two existing rate-limit decisions), ADR-066 (the accepted risk), and shared/go/ratelimit's package doc."
+    }
+  }
+}
