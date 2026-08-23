@@ -1,6 +1,6 @@
 //go:build smoke
 
-package smoke
+package smoke_test
 
 import (
 	"encoding/json"
