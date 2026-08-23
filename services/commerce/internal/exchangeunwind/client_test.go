@@ -19,16 +19,22 @@ import (
 
 const testOrg = "33333333-3333-3333-3333-333333333333"
 
-// requestOf runs one lookup and returns the request payments actually received.
-func requestOf(t *testing.T, status, body string, call func(HTTPPayments) (MoneyEvidence, error)) (MoneyEvidence, error, *http.Request) {
+// evidenceResult is one lookup's outcome plus the request payments actually received.
+//
+// A struct rather than three return values: staticcheck requires an error to be returned last,
+// and the request is what most of these tests assert on, so threading it past the error read
+// worse than naming the three things.
+type evidenceResult struct {
+	evidence MoneyEvidence
+	req      *http.Request
+	err      error
+}
+
+// requestOf runs one lookup against a payments that answers with the given status and body.
+func requestOf(t *testing.T, status int, body string, call func(HTTPPayments) (MoneyEvidence, error)) evidenceResult {
 	t.Helper()
 	var got *http.Request
-	code := http.StatusOK
-	if status == "404" {
-		code = http.StatusNotFound
-	} else if status == "500" {
-		code = http.StatusInternalServerError
-	}
+	code := status
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Clone(context.Background())
 		w.Header().Set("Content-Type", "application/json")
@@ -40,29 +46,29 @@ func requestOf(t *testing.T, status, body string, call func(HTTPPayments) (Money
 	t.Cleanup(srv.Close)
 	p := NewHTTPPayments(srv.URL, "test-token", 5*time.Second)
 	ev, err := call(p)
-	return ev, err, got
+	return evidenceResult{evidence: ev, req: got, err: err}
 }
 
 // A 404 is the ONLY proof of absence, and payments documents it as exactly that.
 func TestA404IsTheProofOfAbsenceForACharge(t *testing.T) {
-	ev, err, req := requestOf(t, "404", `{"error":"operation not found"}`,
+	r := requestOf(t, http.StatusNotFound, `{"error":"operation not found"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupChargeOperation(context.Background(), uuid.MustParse(testOrg), "exchange-charge:x")
 		})
-	if err != nil {
-		t.Fatalf("LookupChargeOperation: %v", err)
+	if r.err != nil {
+		t.Fatalf("LookupChargeOperation: %v", r.err)
 	}
-	if ev != Absent {
+	if r.evidence != Absent {
 		t.Errorf("evidence = %v, want absent — payments answering 404 IS the evidence the charge "+
-			"was never submitted", ev)
+			"was never submitted", r.evidence)
 	}
-	if got := req.URL.Path; got != "/internal/operations" {
+	if got := r.req.URL.Path; got != "/internal/operations" {
 		t.Errorf("path = %q, want /internal/operations", got)
 	}
-	if got := req.URL.Query().Get("idempotency_key"); got != "exchange-charge:x" {
+	if got := r.req.URL.Query().Get("idempotency_key"); got != "exchange-charge:x" {
 		t.Errorf("idempotency_key = %q, want exchange-charge:x", got)
 	}
-	if got := req.Header.Get("X-Internal-Token"); got != "test-token" {
+	if got := r.req.Header.Get("X-Internal-Token"); got != "test-token" {
 		t.Errorf("credential = %q; payments fails closed on a missing one and it would read as an outage", got)
 	}
 }
@@ -70,15 +76,15 @@ func TestA404IsTheProofOfAbsenceForACharge(t *testing.T) {
 // A captured operation is presence. `captured_amount` is published ONLY when the provider
 // state is `captured`, which makes its presence the least interpretive signal available.
 func TestACapturedOperationIsPresence(t *testing.T) {
-	ev, err, _ := requestOf(t, "200", `{"resolved":true,"status":"succeeded","captured_amount":1000,"currency":"EUR"}`,
+	r := requestOf(t, http.StatusOK, `{"resolved":true,"status":"succeeded","captured_amount":1000,"currency":"EUR"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupChargeOperation(context.Background(), uuid.MustParse(testOrg), "k")
 		})
-	if err != nil {
-		t.Fatalf("LookupChargeOperation: %v", err)
+	if r.err != nil {
+		t.Fatalf("LookupChargeOperation: %v", r.err)
 	}
-	if ev != Present {
-		t.Errorf("evidence = %v, want present — the buyer was charged", ev)
+	if r.evidence != Present {
+		t.Errorf("evidence = %v, want present — the buyer was charged", r.evidence)
 	}
 }
 
@@ -95,19 +101,19 @@ func TestA200WithoutCaptureEvidenceIsIndeterminate(t *testing.T) {
 		{"resolved and declined", `{"resolved":true,"status":"declined","fact_id":"f"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ev, err, _ := requestOf(t, "200", tc.body,
+			r := requestOf(t, http.StatusOK, tc.body,
 				func(p HTTPPayments) (MoneyEvidence, error) {
 					return p.LookupChargeOperation(context.Background(), uuid.MustParse(testOrg), "k")
 				})
-			if ev == Absent {
+			if r.evidence == Absent {
 				t.Fatalf("evidence = absent for %q. A 200 means an operation EXISTS; only a 404 "+
 					"proves one does not. Reading this as absence permits deleting the binding of "+
 					"a buyer whose charge may have moved", tc.name)
 			}
-			if ev != Indeterminate {
-				t.Errorf("evidence = %v, want indeterminate", ev)
+			if r.evidence != Indeterminate {
+				t.Errorf("evidence = %v, want indeterminate", r.evidence)
 			}
-			if err == nil {
+			if r.err == nil {
 				t.Error("no error returned; the operator needs to be told WHY this refused")
 			}
 		})
@@ -116,15 +122,15 @@ func TestA200WithoutCaptureEvidenceIsIndeterminate(t *testing.T) {
 
 // A 5xx is indeterminate. An outage must never read as permission.
 func TestAServerErrorIsIndeterminate(t *testing.T) {
-	ev, err, _ := requestOf(t, "500", `{"error":"lookup operation"}`,
+	r := requestOf(t, http.StatusInternalServerError, `{"error":"lookup operation"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupChargeOperation(context.Background(), uuid.MustParse(testOrg), "k")
 		})
-	if ev == Absent {
+	if r.evidence == Absent {
 		t.Fatal("a 500 read as ABSENT — an outage would permit unwinding a charged exchange")
 	}
-	if ev != Indeterminate || err == nil {
-		t.Errorf("evidence = %v err = %v, want indeterminate with an error", ev, err)
+	if r.evidence != Indeterminate || r.err == nil {
+		t.Errorf("evidence = %v r.err = %v, want indeterminate with an error", r.evidence, r.err)
 	}
 }
 
@@ -149,36 +155,36 @@ func TestATransportFailureIsIndeterminate(t *testing.T) {
 // were accepted as evidence by the recovery client until three review passes closed it; the
 // same check lives here for the same reason.
 func TestATrailingContentBodyIsNotProof(t *testing.T) {
-	ev, err, _ := requestOf(t, "200", `{"resolved":true,"captured_amount":1000}} {"resolved":false}`,
+	r := requestOf(t, http.StatusOK, `{"resolved":true,"captured_amount":1000}} {"resolved":false}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupChargeOperation(context.Background(), uuid.MustParse(testOrg), "k")
 		})
-	if err == nil {
+	if r.err == nil {
 		t.Fatal("a body with trailing content was accepted; a body that cannot be read in full is not evidence")
 	}
-	if ev != Indeterminate {
-		t.Errorf("evidence = %v, want indeterminate", ev)
+	if r.evidence != Indeterminate {
+		t.Errorf("evidence = %v, want indeterminate", r.evidence)
 	}
 }
 
 // The refund-leg read sends ALL THREE parameters payments requires, to the refund-leg path.
 func TestTheRefundLegReadSendsBothKeysToTheRefundLegEndpoint(t *testing.T) {
-	ev, err, req := requestOf(t, "404", `{"error":"refund leg not found"}`,
+	r := requestOf(t, http.StatusNotFound, `{"error":"refund leg not found"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupRefundLeg(context.Background(), uuid.MustParse(testOrg), "src-key", "exchange-refund:x")
 		})
-	if err != nil {
-		t.Fatalf("LookupRefundLeg: %v", err)
+	if r.err != nil {
+		t.Fatalf("LookupRefundLeg: %v", r.err)
 	}
-	if ev != Absent {
-		t.Errorf("evidence = %v, want absent", ev)
+	if r.evidence != Absent {
+		t.Errorf("evidence = %v, want absent", r.evidence)
 	}
-	if got := req.URL.Path; got != "/internal/refund-legs" {
+	if got := r.req.URL.Path; got != "/internal/refund-legs" {
 		t.Fatalf("path = %q, want /internal/refund-legs. A downgrade's money is NOT in "+
 			"payment_operations, and asking that endpoint returns 404 — which looks exactly like "+
 			"proof of safety and is not", got)
 	}
-	q := req.URL.Query()
+	q := r.req.URL.Query()
 	if q.Get("organizer_id") != testOrg || q.Get("source_idempotency_key") != "src-key" ||
 		q.Get("refund_idempotency_key") != "exchange-refund:x" {
 		t.Errorf("query = %v; payments requires all three — (organizer, source key) identifies a "+
@@ -188,30 +194,30 @@ func TestTheRefundLegReadSendsBothKeysToTheRefundLegEndpoint(t *testing.T) {
 
 // A completed refund leg is presence: the buyer got their money back.
 func TestACompletedRefundLegIsPresence(t *testing.T) {
-	ev, err, _ := requestOf(t, "200", `{"completed":true,"amount":1000,"currency":"EUR"}`,
+	r := requestOf(t, http.StatusOK, `{"completed":true,"amount":1000,"currency":"EUR"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupRefundLeg(context.Background(), uuid.MustParse(testOrg), "s", "r")
 		})
-	if err != nil {
-		t.Fatalf("LookupRefundLeg: %v", err)
+	if r.err != nil {
+		t.Fatalf("LookupRefundLeg: %v", r.err)
 	}
-	if ev != Present {
-		t.Errorf("evidence = %v, want present", ev)
+	if r.evidence != Present {
+		t.Errorf("evidence = %v, want present", r.evidence)
 	}
 }
 
 // A BOUND but uncompleted leg is indeterminate, not absent. Payments' own words: "a bound
 // leg is money the buyer has not received back" — money is in flight either way.
 func TestAnUncompletedRefundLegIsIndeterminateNotAbsent(t *testing.T) {
-	ev, err, _ := requestOf(t, "200", `{"completed":false,"amount":1000,"currency":"EUR"}`,
+	r := requestOf(t, http.StatusOK, `{"completed":false,"amount":1000,"currency":"EUR"}`,
 		func(p HTTPPayments) (MoneyEvidence, error) {
 			return p.LookupRefundLeg(context.Background(), uuid.MustParse(testOrg), "s", "r")
 		})
-	if ev == Absent {
+	if r.evidence == Absent {
 		t.Fatal("a bound-but-uncompleted refund leg read as ABSENT. A leg exists, so money is " +
 			"bound against this exchange; only a 404 means none ever was")
 	}
-	if ev != Indeterminate || err == nil {
-		t.Errorf("evidence = %v err = %v, want indeterminate with an error", ev, err)
+	if r.evidence != Indeterminate || r.err == nil {
+		t.Errorf("evidence = %v r.err = %v, want indeterminate with an error", r.evidence, r.err)
 	}
 }

@@ -284,11 +284,6 @@ func (c *claimStates) state(hold string) string {
 	return c.at[hold]
 }
 
-// terminal reports whether a state admits no further transitions.
-func terminalClaimState(s string) bool {
-	return s == "confirmed" || s == "released" || s == "expired"
-}
-
 // transition applies inventory's rule and reports whether it was allowed.
 //
 // TRANSCRIBED FROM `Postgres.Transition` (services/inventory/internal/store/store.go), not
@@ -321,7 +316,10 @@ func (c *claimStates) transition(hold, to string) bool {
 		(to == "released" && from == "expired") {
 		return true
 	}
-	// `if c.Status != "held" && c.Status != "finalizing" { return ErrConflict }`.
+	// `if c.Status != "held" && c.Status != "finalizing" { return ErrConflict }` — i.e. every
+	// terminal state (`confirmed`, `released`, `expired`) conflicts, which is the clause
+	// TKT-255 turns on. Written in inventory's own negative form rather than as a
+	// terminal-set predicate so the transcription stays line-for-line checkable against it.
 	if from != "held" && from != "finalizing" {
 		return false
 	}
