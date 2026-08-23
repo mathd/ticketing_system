@@ -261,10 +261,27 @@ func MarkExchangeSettling(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 // that really did move money is refused by that check anyway; one that failed before moving
 // any is unwound, which is the outcome an operator needs.
 //
-// Five minutes because it is comfortably longer than any settlement round trip this system
-// makes and short enough that an operator working an incident is not blocked by it. It is not
-// a lease: nothing reclaims the marker, and its AGE stays visible in the listing so a
-// long-stale one is still a state a human should look at.
+// FIVE MINUTES IS DERIVED, NOT CHOSEN, and the derivation is what makes the window safe
+// rather than a lease in disguise (ai-review pass 3 raised exactly that objection).
+//
+// Every cross-service call commerce makes is bounded at `obs.ClientTimeout` = 30 seconds,
+// and the exchange handler uses that client (`obs.Client()` in cmd/commerce/main.go). So a
+// settlement cannot still be at the provider five minutes after it marked: it has either
+// returned or been cut off by the transport bound, ten times over. The window is not a bet
+// on how long a provider takes — it is an order of magnitude above a hard limit the process
+// enforces on itself.
+//
+// What remains after the window is not permission. The marker merely stops being the thing
+// that decides, and PAYMENTS decides instead — an exchange that moved money is refused by
+// the money guard whatever its marker says, which has its own test. The alternative, a
+// permanent veto, was the first version and was itself a [high] defect: a settlement that
+// failed definitively left the source order un-unwindable forever, which is the wedge this
+// ticket exists to remove.
+//
+// If `obs.ClientTimeout` ever grows past a minute or two, revisit this constant with it.
+//
+// It is still not a lease: nothing reclaims the marker, and its AGE stays visible in the
+// listing so a long-stale one remains a state a human should look at.
 const SettlingGraceWindow = 5 * time.Minute
 
 // UnwindWedgedExchange removes a wedged exchange's binding and records why, atomically.
@@ -332,12 +349,22 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 	var delta, target sql.NullInt64
 	var idempotencyKey, actor, currency string
 	var sourceTotal int64
+	// `settling_fresh` is computed BY THE DATABASE, in the same read, and that is not a
+	// stylistic choice (ai-review pass 3). The DELETE below tests the same window with
+	// `now()`, so deciding it here with the APPLICATION's clock puts two clocks on one
+	// predicate: a machine running even slightly ahead of the database would pass this check
+	// and then match no rows in the DELETE, and the operator would be told
+	// `ErrExchangeUnwindConflict` — "the row changed under a lock" — for a row that never
+	// changed. One clock, and it is the one the write uses.
+	var settlingFresh bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT settled_at, basis_at, settling_at, target_hold_id, delta_amount, target_total,
-		       idempotency_key, actor, currency, source_total
-		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, exchangeID).
+		       idempotency_key, actor, currency, source_total,
+		       settling_at IS NOT NULL AND settling_at > now() - $3::interval
+		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		org, exchangeID, SettlingGraceWindow.String()).
 		Scan(&settledAt, &basisAt, &settlingAt, &hold, &delta, &target,
-			&idempotencyKey, &actor, &currency, &sourceTotal); err != nil {
+			&idempotencyKey, &actor, &currency, &sourceTotal, &settlingFresh); err != nil {
 		return fmt.Errorf("read exchange %s: %w", exchangeID, err)
 	}
 	if settledAt.Valid {
@@ -353,7 +380,7 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 	// operator told "a settlement is in flight" should wait and re-run, while "money moved"
 	// means stop and compensate. Reporting the second for the first would send them to the
 	// wrong place.
-	if settlingAt.Valid && time.Since(settlingAt.Time) < SettlingGraceWindow {
+	if settlingFresh {
 		return fmt.Errorf("%w: %s (since %s)", ErrExchangeSettling, exchangeID,
 			settlingAt.Time.UTC().Format(time.RFC3339))
 	}

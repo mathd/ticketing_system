@@ -1328,3 +1328,79 @@ func settlingMarkerAt(t *testing.T, db *sql.DB, ctx context.Context, org uuid.UU
 	}
 	return at
 }
+
+// After an unwind, a retry under the SAME key binds a NEW exchange rather than resuming the
+// deleted one — and that is the correct outcome, not a gap (TKT-255, ai-review pass 3).
+//
+// This test exists because a first version of it asserted the opposite and was wrong. It
+// expected the retry to hit `MarkExchangeSettling`'s ErrExchangeUnwound hard stop. It does
+// not: the resume branch is gated on `found && BasisRecorded && !Settled`
+// (api/exchanges.go:142), and once the row is deleted `found` is FALSE. So the request falls
+// through to the forward path and binds a fresh exchange, which is exactly what COS 1
+// promises — the source order is free for a corrected attempt. The buyer ends up charged for
+// a real, recorded exchange with its own row, replacement order and `order.exchanged` event.
+//
+// Worth pinning precisely because the shape looks alarming: a 200 and a charge after an
+// unwind reads like the money-after-deletion defect until you check WHICH exchange was
+// charged. The assertion is that a durable row exists for it.
+//
+// The narrow window `ErrExchangeUnwound` still guards is a single in-flight request whose row
+// is deleted between its own read and its mark — reachable, not constructible through this
+// HTTP surface, and covered at the store tier by
+// TestMarkingSettlingReportsAnExchangeThatWasUnwound.
+func TestAfterAnUnwindTheSameKeyBindsANewExchange(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "unwound-midflight-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1500) // delta +1000
+	s := exchangeStackFor(t, db, f, policy)
+	const key = "unwound-midflight"
+
+	interruptAfterTheMoneyMoved(t, s, ctx, f, policy, key)
+	exchangeID := commercestore.ExchangeID(f.organizer, key)
+
+	// The interrupted attempt got past finalize, so it marked itself settling and the unwind
+	// is refused until that marker ages out. Aged here rather than shortening the window,
+	// which is derived from obs.ClientTimeout and must not be tuned for a test.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_exchanges SET settling_at=now()-$2::interval WHERE organizer_id=$1 AND id=$3`,
+		f.organizer, (commercestore.SettlingGraceWindow + time.Minute).String(), exchangeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := commercestore.UnwindWedgedExchange(ctx, db, f.organizer, exchangeID,
+		"operator abandoned it", false); err != nil {
+		t.Fatalf("unwind: %v", err)
+	}
+	if s.exchangeRowExists(t, ctx, f.organizer, key) {
+		t.Fatal("the unwind did not delete the row, so the rest of this test proves nothing")
+	}
+
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusOK {
+		t.Fatalf("the retry answered %d %v, want 200 — after an unwind the source order is free "+
+			"and a fresh exchange under the same key is a NEW exchange, not a resume", code, out)
+	}
+
+	// THE POINT: whatever money moved, a durable row records what it was for. The failure
+	// this guards against is a charge against a binding that no longer exists.
+	settled, basis, _, _, _ := s.exchangeRow(t, ctx, f.organizer, key)
+	if !settled || !basis {
+		t.Errorf("settled=%t basis=%t, want both true — the retry charged the buyer, so there "+
+			"must be a settled exchange row saying what that charge bought", settled, basis)
+	}
+	if replay, _ := out["replay"].(bool); replay {
+		t.Error("the response reported replay=true for an exchange that was bound fresh; an " +
+			"operator reconciling this would be told they are looking at a resume of the " +
+			"exchange that was unwound")
+	}
+	// And the unwind evidence still stands beside it, so the history is legible: one exchange
+	// abandoned, one bound afterwards under the same buyer-facing key.
+	var unwinds int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM order_exchange_unwinds WHERE exchange_id=$1`, exchangeID).Scan(&unwinds); err != nil {
+		t.Fatal(err)
+	}
+	if unwinds != 1 {
+		t.Errorf("unwind evidence rows = %d, want 1", unwinds)
+	}
+}

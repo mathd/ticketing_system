@@ -915,3 +915,48 @@ func TestMarkingSettlingReportsAnExchangeThatWasUnwound(t *testing.T) {
 			"every retry and must not be told anything is wrong", err)
 	}
 }
+
+// The freshness check and the DELETE predicate agree, because ONE clock decides both
+// (ai-review pass 3).
+//
+// The guard reads `settling_at > now() - window` computed by the database in the same
+// statement that reads the row, and the DELETE tests the same expression. An earlier version
+// decided the guard in Go with `time.Since` while the DELETE used `now()`, which puts two
+// clocks on one predicate: an application host running even slightly ahead of the database
+// would pass the guard and then match zero rows in the DELETE, and the operator would be told
+// `ErrExchangeUnwindConflict` — "the row changed under a lock" — about a row that never
+// changed.
+//
+// The boundary is where that disagreement shows, so the fixture sits a marker exactly there:
+// a hair OLDER than the window, which both clocks must agree is stale. If the two ever
+// diverge again this is the test that goes red, and it fails with the confusing conflict
+// error rather than a refusal — which is the symptom an operator would have reported.
+func TestTheFreshnessCheckAndTheDeleteUseTheSameClock(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-boundary")
+	withBasis(t, db, ctx, c, ex, +1000)
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+	// One second past the window: unambiguously stale to the database, and close enough to
+	// the boundary that a second clock would have to agree to within a second.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_exchanges SET settling_at=now()-$2::interval WHERE id=$1`,
+		ex.ID, (SettlingGraceWindow + time.Second).String()); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "settlement failed", false)
+	if errors.Is(err, ErrExchangeUnwindConflict) {
+		t.Fatal("the unwind answered ErrExchangeUnwindConflict at the window boundary. The guard " +
+			"judged the marker stale and the DELETE judged it fresh, so the two are deciding on " +
+			"different clocks — an operator would be told the row changed under a lock when " +
+			"nothing changed at all")
+	}
+	if err != nil {
+		t.Fatalf("unwind at the boundary: %v", err)
+	}
+	if n := exchangeRowCount(t, db, ctx, c.OrderID); n != 0 {
+		t.Errorf("order_exchanges rows = %d, want 0", n)
+	}
+}
