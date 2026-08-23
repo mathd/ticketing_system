@@ -1,0 +1,127 @@
+{
+  "key": "TKT-269",
+  "type": "Story",
+  "parent": "TKT-19",
+  "classification": "complex",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "An offline admit of a refunded ticket raises an admission-conflict alarm instead of passing silently",
+  "description": "Split out of **TKT-162** at shaping (2026-08-22) as the half that needs **no product decision**.\n\nTKT-162 has two branches in its AC1: *\"a scanner that went offline before a refund, and syncs after it, does not admit the refunded holder — **or**, if it already did, the operator is told through a channel that means **this** rather than *the chain is suspect*.\"*\n\nThe **first** branch (a revocation feed pushed to scanners) is blocked on an undecided product call — how stale a scanner's view may be, and whether it fails open or closed past that. The **second** branch is not blocked on anything: the channel already exists, and nothing is asking for it to be used.\n\n**Today an offline admit of a refunded ticket is silent.** `ReconcileAdmission` (`services/access/internal/store/reconcile.go:73`) never consults `ticketRefunded`. The occurrence is appended as an ordinary `redeemed` event, `access verify-lifecycle` verifies clean, and the trail reads as a normal admission. Nobody — operator, organizer, finance — ever learns the refunded holder walked in. TKT-157 closed the live path (`postgres.go:319` single-entry, `scan.go:95` pass); this is the offline half, and ADR-038 §4 says so explicitly.\n\nThis ticket makes it **visible**. It does not make it *stop* — stopping it is TKT-162's feed and needs the staleness decision.\n\n**What it must NOT do — the constraint that shapes the whole ticket.** Reconciliation is *recording, not deciding* (ADR-025 §D2/§D6). The person is already physically inside. Refusing to record the occurrence, or downgrading it so the trail looks tidier, would falsify the trail rather than protect a gate — ADR-038 §4 rejected exactly that, and TKT-162's AC2 restates it. **An alarm is additive: the occurrence is recorded exactly as it is today, and the alarm is owed alongside it.**\n\n**Why the admission-conflict class and not the integrity class.** `oweAlarm` writes the **integrity** channel, which means *the chain is suspect*. A refunded-but-admitted ticket is not an integrity event — the chain is perfectly valid, the world disagreed with it — and overloading that channel would also make TKT-147 (replacing its free-text reason with fixed reason codes) worse. `SubjectAdmissionConflictAlarm` / `platform.access.admission-conflict.alarm` (`reconcile.go:18`) is the class that already means precisely this, and `oweConflictAlarm` (`reconcile.go:309`) is the existing shape to follow — it commits the alarm into the shared outbox **in the same transaction** as the append, which is what makes the alarm and the fact inseparable.\n\n**Acceptance Criteria:**\n- [ ] Reconciling an occurrence for a **refunded** ticket owes an admission-conflict alarm on `platform.access.admission-conflict.alarm`, committed in the **same transaction** as the append — never one without the other.\n- [ ] The occurrence is still **recorded exactly as it is today**. No occurrence is dropped, refused, or downgraded to make the trail look better (ADR-025 §D2, ADR-038 §4, TKT-162 AC2). A test asserts the lifecycle row is present and unchanged in shape.\n- [ ] `access verify-lifecycle` verifies clean afterwards, and the canonical golden literals are **unchanged** — the alarm rides the outbox, nothing new enters the canonical form (ADR-025 §D8).\n- [ ] A **replay** of the same occurrence (`ReconcileSynced`) owes **no second alarm** — the existing replay-before-everything ordering (`reconcile.go:124`) must keep holding.\n- [ ] The refunded case is covered on **each branch it can reach**, not just the convenient one — see the plan note below; a single test proves one branch and is silent about the others.\n\n**Explicitly out of scope** (TKT-162 keeps these): the revocation feed endpoint, any scanner-side change, the staleness ceiling, and any fail-open/fail-closed behaviour at a gate. Nothing in this ticket changes what a scanner does.\n\nQuality gates: `make check` green; `access verify-lifecycle` green; contract tests.",
+  "links": [
+    {
+      "type": "split-from",
+      "key": "TKT-162"
+    }
+  ],
+  "context": {
+    "capturedAt": "2026-08-22",
+    "binding": [
+      {
+        "id": "PRD-v1",
+        "date": "2026-08-22",
+        "rule": "Traceability is a must, for money and tickets: every ticket/entitlement state change is an append-only lifecycle event linked to its order."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "Parent ticket and the branch this splits from",
+        "link": "TKT-162"
+      },
+      {
+        "summary": "Service layout and ownership",
+        "link": "docs/architecture.md"
+      }
+    ],
+    "governingAdrs": [
+      {
+        "id": "ADR-025",
+        "why": "§D2/§D6 are the whole frame. Reconciliation is RECORDING, NOT DECIDING — it cannot retroactively deny, so every occurrence still lands. §D6 defines the admission-conflict alarm class as deliberately separate from integrity alarms (the chain is valid; the world disagreed). §D2 says pass reconciliation NEVER mints conflict events — which is why a pass slot is excluded from this ticket's alarm, not an oversight. §D8: no new field enters the canonical form; reasons live in the alarm payload."
+      },
+      {
+        "id": "ADR-038",
+        "why": "§4 is the ticket's direct lineage: it states that a refunded ticket is refused by a LIVE gate only, that an offline scanner will still admit it, and that refusing to RECORD the admission would falsify the trail rather than protect a gate. It also explicitly rejected raising an INTEGRITY alarm for this case. Read it before touching the reconcile path."
+      },
+      {
+        "id": "ADR-021",
+        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals. Also: NAME THE ADVERSARY — this alarm is honest-writer visibility, not tamper-evidence; a writer with database access can delete the refunded row."
+      },
+      {
+        "id": "ADR-017",
+        "why": "If the conflict alarm PAYLOAD changes, bump on CONSUMER SEMANTICS, not parse compatibility, and consumers dispatch on `schema` BEFORE decoding `data`. The admission-conflict alarm is a schema-1 contract. A fixture built from the type under test cannot fail."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Contract-first. IF the plan chooses to add a wire outcome value, openapi.yaml changes first, then openapi_gen.go is regenerated AND COMMITTED before the gate runs — check-generate diffs against HEAD, so an uncommitted regen reads as drift. If the plan takes the recommended contract-free route, this ADR simply does not bind."
+      },
+      {
+        "id": "ADR-028",
+        "why": "Fail closed: responses are validated against the spec and an undeclared status code becomes a 500. Relevant only if the wire shape changes; the reconcile route must keep answering exactly the statuses it declares."
+      }
+    ],
+    "governingTests": [
+      {
+        "id": "services/access/internal/store/occurrence_smoke_test.go",
+        "why": "The reconciliation suite this change sits inside: TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm (:543) is the exact pattern to follow for asserting an owed alarm; TestReconcileRecordsOfflineRedemption (:340) pins the no-prior-admission branch; TestReconcileBrokenChainRecordsQuarantineSide (:662) pins the quarantine branch that deliberately owes NO conflict alarm — do not 'fix' it."
+      },
+      {
+        "id": "services/access/internal/store/pass_admission_smoke_test.go",
+        "why": "TestPassReconcileRecordsFactualEntryExitOnly (:354) pins ADR-025 §D2's rule that pass reconciliation records facts only and never mints conflict events. A refunded alarm extended to pass slots would go red here — which is the correct outcome, not a test to update."
+      },
+      {
+        "id": "services/access/internal/store/refunds_smoke_test.go",
+        "why": "TestScanOfRefundedTicketIsRefused (:126) and TestRefundedRefusalPrecedesIntegrityFailOpen (:171) pin the LIVE half from TKT-157 and ADR-038 §4's ordering. This ticket must not regress either; they are also the nearest precedent for how a refunded fixture is built."
+      },
+      {
+        "id": "scripts/smoke.sh:502,549",
+        "why": "`access verify-lifecycle` runs inside the gate AND the suite deliberately corrupts the trail to assert the verifier REFUSES (502-507). Any direct INSERT into lifecycle_events, or any canonical-form change, fails here."
+      },
+      {
+        "id": "services/access/internal/store/alarm_envelope_test.go",
+        "why": "Pins the alarm envelope shapes including admissionConflictAlarmEnvelope. If the payload struct is touched at all, this is where the schema-1 contract is enforced (ADR-017)."
+      }
+    ]
+  },
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "An offline admit of a refunded ticket is currently invisible — recorded as an ordinary redemption, chain verifying clean, nobody informed. Making it visible is independently valuable and is the half of TKT-162 AC1 that needs no product decision."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: a refunded check inside ReconcileAdmission that owes an admission-conflict alarm alongside the existing append. OUT: the revocation feed, any scanner change, the staleness ceiling, and any fail-open/closed gate behaviour — all retained by TKT-162. The boundary is sharp because this ticket changes only what is RECORDED about an occurrence, never whether it is recorded and never what any gate does."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "One genuine design choice, and it is small enough to settle in the plan rather than by a product call: whether the wire `result` gains a distinct value. `ReconcileResult.result` is a CLOSED enum in the contract — [recorded, conflict, synced, rejected] (services/access/api/openapi.yaml:236) — so returning a new outcome is an OpenAPI change plus a regenerate-and-commit (ADR-009), while keeping `recorded` and owing only the alarm is contract-free. Recommend CONTRACT-FREE: the scanner is explicitly out of scope, it does not act on the result (reconciliation is recording, not deciding), and an unknown enum value reaching an old scanner is a version-skew problem this ticket has no reason to create. The plan states the choice and its reason either way. No other unknowns: the alarm class, the payload type, the outbox mechanism and the transaction discipline all already exist and are being reused, not designed."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-157 (live refusal, the helper this reuses) is Done. TKT-162 is the PARENT of this split and stays in Backlog — it is not a blocker: this ticket is deliberately the branch that does not depend on TKT-162's undecided staleness call, and nothing here constrains what that decision can later be. TKT-147 (fixed reason codes for the integrity channel) is untouched — this ticket deliberately avoids that channel."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Verified against HEAD, not proposed. `ticketRefunded(ctx, tx, ticketID)` (services/access/internal/store/refunds.go:195) reads `lifecycle_events` for an event_type 'refunded' on the CALLER'S transaction, and ReconcileAdmission already holds the ticket row lock (`SELECT ... FROM tickets ... FOR UPDATE`, reconcile.go:96) — so the helper drops in with no new locking and no new query shape. `oweConflictAlarm` (reconcile.go:309) is the existing alarm shape: it INSERTs the envelope into lifecycle_integrity_alarm_outbox inside the caller's transaction, which is what makes the alarm and the recorded fact atomic. NOTE the alarm payload type `conflictAlarmData` (reconcile.go:297) is a fixed struct on a schema-1 contract; if the refunded case needs to be DISTINGUISHABLE from a duplicate-admit conflict in the payload, that is an ADR-017 change — bump on CONSUMER SEMANTICS, not parse compatibility — so prefer reusing the payload as-is unless the plan argues a consumer genuinely cannot tell them apart. AUTH/MONEY NOTE: this touches neither — it adds no endpoint, no credential path, and no money field; it only adds an outbox row beside an append that already happens."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "This ticket IS the slice — it was carved out of TKT-162 precisely to be one. No further splitting: the change is one guard plus one alarm call in a single function, and cutting it smaller would ship a check that owes nothing."
+    },
+    "success": {
+      "state": "met",
+      "note": "The five ACs on the ticket are each independently testable and none needs a number that does not exist yet. THE TEST PLAN'S LOAD-BEARING QUESTION, established while reading the code so the drafter inherits it: a refunded ticket can reach reconciliation through SEVERAL DISTINCT BRANCHES, and a fixture that lands on one proves nothing about the others — (a) single-entry with NO prior redemption (reconcile.go:190, appends 'redeemed'), (b) single-entry WITH a prior redemption (reconcile.go:215, appends duplicate_admit and ALREADY owes a conflict alarm — so the assertion here is about the refunded reason, not about an alarm existing), (c) a PASS slot (reconcile.go:166, appends entry/exit and never mints conflict events per ADR-025 §D2), and (d) a BROKEN CHAIN (reconcile.go:135, lands quarantine-side and deliberately owes no conflict alarm). The plan must state which of these four the AC applies to and WHY the others are excluded — (c) and (d) in particular have standing ADR reasons not to alarm, so silently covering them would contradict ADR-025. MUTATION CHECK the guard: delete the refunded check and each test must go red for the branch it claims; a test that stays green is about something else. And derive the assertion from the RULE ('an offline admit of a voided ticket is never silent'), never from what a run produced."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked at creation from TKT-162's mémo, then re-verified at HEAD on 2026-08-22 rather than inherited: every ADR below resolves to a real file in docs/adr/, and governingTests is populated from the actual suite."
+    }
+  },
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS (8/8)\n\nShaped at creation, split out of **TKT-162**. Every item was resolved by **reading the code at HEAD**, not by asking — which is the point of the split: this is the branch of TKT-162's AC1 that needs no product decision.\n\n| Item | State | Resolved by |\n|---|---|---|\n| `objective` | met | ADR-038 §4 states the gap; confirmed live in `reconcile.go:73` |\n| `scope` | met | In/out boundary is sharp — records more *about* an occurrence, never changes *whether* it is recorded |\n| `uncertainties` | met | One design choice (wire enum), settled in-plan with a recommendation |\n| `dependencies` | met | No blockers; TKT-157 Done, TKT-162 deliberately not a blocker |\n| `approach` | met | Both mechanisms verified to exist and be reusable as-is |\n| `first_slice` | met | This ticket *is* the slice |\n| `success` | met | 5 ACs, all testable; branch enumeration recorded below |\n| `context_memo` | met | 6 ADRs + 5 governing tests, each verified to resolve at HEAD |\n\n**Why `approach` is `met` and not `owner: human`.** `shaping.md` forbids deferring the approach on an auth or money surface. This touches neither: no endpoint, no credential path, no money field — it adds an outbox row beside an append that already happens. Both moving parts already exist and are being *reused*, not designed:\n\n- `ticketRefunded(ctx, tx, ticketID)` (`refunds.go:195`) reads on the **caller's transaction**, and `ReconcileAdmission` already holds the ticket row lock (`reconcile.go:96`) — no new locking, no new query shape.\n- `oweConflictAlarm` (`reconcile.go:309`) INSERTs the envelope into the shared outbox **inside the caller's transaction** — which is exactly what makes the alarm and the recorded fact atomic, as AC1 requires.\n\n**The one design choice, with a recommendation.** `ReconcileResult.result` is a **closed enum** on the wire (`openapi.yaml:236`). Returning a distinct outcome is an OpenAPI change plus regenerate-and-commit (ADR-009); keeping `recorded` and owing only the alarm is contract-free. **Recommend contract-free** — the scanner is out of scope and does not act on the result (reconciliation is recording, not deciding), so a new enum value would create a version-skew problem this ticket has no reason to create. The plan states the choice and its reason either way.\n\n### ⚠️ The trap this ticket will fall into, named now\n\nA refunded ticket can reach reconciliation through **four distinct branches**, and a fixture that lands on one proves nothing about the others:\n\n| Branch | Line | Today's behaviour |\n|---|---|---|\n| (a) single-entry, **no** prior redemption | `reconcile.go:190` | appends `redeemed` |\n| (b) single-entry, **with** prior redemption | `reconcile.go:215` | appends `duplicate_admit`, **already** owes a conflict alarm |\n| (c) **pass** slot | `reconcile.go:166` | appends `entry`/`exit`, never mints conflict events (ADR-025 §D2) |\n| (d) **broken chain** | `reconcile.go:135` | lands quarantine-side, deliberately owes **no** conflict alarm |\n\nTwo of these have *standing ADR reasons* not to alarm. (c) is pinned by `TestPassReconcileRecordsFactualEntryExitOnly` and (d) by `TestReconcileBrokenChainRecordsQuarantineSide` — a change that extends the refunded alarm into them goes red there, and **that is the correct outcome, not a test to update**. Branch (b) already owes an alarm, so a test there asserting merely \"an alarm exists\" is vacuous — it passes with the new guard deleted.\n\n**The plan must state which branches the AC applies to and why the others are excluded**, then mutation-check the guard: delete the refunded check and each test goes red for the branch it claims. Derive assertions from the rule — *an offline admit of a voided ticket is never silent* — never from what a run produced.\n\n### Risk verdict\n\n**`risk:low` NOT claimed.** By blast radius it would qualify — one guard, one alarm call, one function, no auth, no money, no migration. But `SKILL.md` is explicit that `risk:low` is about blast radius *and* that the two come apart: keep the plan gate when the central question is a design question whose answer is non-obvious, **above all \"how do I construct a test that can actually fail?\"** That is precisely this ticket — the four-branch table above is the whole difficulty, two branches must *not* be covered, and one of the coverable ones already owes an alarm for a different reason. TKT-266 is the cited precedent: tests-only, two files, correctly low-blast-radius, and it still burned three build cycles on fixture design because every obvious fixture was unfalsifiable. A plan critique costs one delegated read and catches that class cheaply.\n\n### ⛔ Gate 1 — ready for your call\n\nAll eight DoR items are `met`, so the board will accept the drag to **Ready**. Priority remains yours."
+    }
+  ]
+}
