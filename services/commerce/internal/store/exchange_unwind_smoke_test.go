@@ -810,3 +810,108 @@ func settlingMarker(t *testing.T, db *sql.DB, ctx context.Context, exchangeID uu
 	}
 	return at.Time
 }
+
+// A STALE marker stops vetoing, and payments decides instead (ai-review pass 2 [high]).
+//
+// This is the test for the defect the FIRST version of the marker introduced. `settling_at`
+// is write-once and nothing clears it, so a settlement that failed definitively — payments
+// refusing, or unreachable long enough that the caller gave up — left the marker set forever
+// and the source order permanently un-unwindable. That is the wedge this whole ticket exists
+// to fix, reintroduced by the guard added to protect against a race, and worse than the
+// original because it also blocks the operator command.
+//
+// So the marker bounds a WINDOW. Inside it the unwind refuses cheaply; outside it the marker
+// stops deciding and the authoritative check takes over — payments' own records, which is
+// what COS 2 says must decide this. An exchange that really did move money is still refused,
+// by the money guard, which this test proves separately below.
+func TestAStaleSettlingMarkerNoLongerVetoesTheUnwind(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-stale")
+	withBasis(t, db, ctx, c, ex, +1000)
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh: refused, which is the guard doing its job.
+	if err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "a reason", false); !errors.Is(err, ErrExchangeSettling) {
+		t.Fatalf("a FRESH marker answered %v, want ErrExchangeSettling — without this half the "+
+			"test below could pass against a guard that never refuses at all", err)
+	}
+
+	// Age it past the window, the way a settlement that failed hours ago would be.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_exchanges SET settling_at=now()-$2::interval WHERE id=$1`,
+		ex.ID, (SettlingGraceWindow + time.Minute).String()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stale AND payments says no money moved: the unwind proceeds. If it did not, a failed
+	// settlement would strand the source order forever with no way out.
+	if err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "settlement failed hours ago", false); err != nil {
+		t.Fatalf("a STALE marker still refused: %v. A settlement that failed definitively must "+
+			"not leave the source order permanently un-unwindable — that is the wedge this "+
+			"ticket exists to remove, reintroduced by its own guard", err)
+	}
+	if n := exchangeRowCount(t, db, ctx, c.OrderID); n != 0 {
+		t.Errorf("order_exchanges rows = %d, want 0", n)
+	}
+}
+
+// A stale marker does NOT weaken the money guard, which is the check that actually matters.
+//
+// The window only stops the marker from deciding; it never grants permission. An exchange
+// whose money moved is refused by payments' evidence however old its marker is — otherwise
+// "wait five minutes" would be a way to unwind a charged buyer.
+func TestAStaleSettlingMarkerStillRefusesWhenMoneyMoved(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-stale-paid")
+	withBasis(t, db, ctx, c, ex, +1000)
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_exchanges SET settling_at=now()-$2::interval WHERE id=$1`,
+		ex.ID, (SettlingGraceWindow + time.Minute).String()); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "a reason", true)
+	if !errors.Is(err, ErrExchangeMoneyMoved) {
+		t.Fatalf("err = %v, want ErrExchangeMoneyMoved. Ageing out of the settling window must "+
+			"not become a route to deleting a charged buyer's binding", err)
+	}
+	if n := exchangeRowCount(t, db, ctx, c.OrderID); n != 1 {
+		t.Errorf("order_exchanges rows = %d, want 1", n)
+	}
+}
+
+// Marking an exchange that an unwind already deleted reports it, rather than reporting success.
+//
+// Zero rows updated has two meanings: already-marked (ordinary — a resume marks on every
+// retry) and the row is GONE (an unwind won the race while this settlement sat between
+// finalize and the provider). Reporting the second as a successful mark tells the caller it
+// is protected when it is not, and its log line is the only notice anyone gets.
+func TestMarkingSettlingReportsAnExchangeThatWasUnwound(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-vanished")
+
+	if err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "unwound first", false); err != nil {
+		t.Fatal(err)
+	}
+	err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID)
+	if !errors.Is(err, ErrExchangeUnwound) {
+		t.Fatalf("err = %v, want ErrExchangeUnwound. A mark that updated no rows because the "+
+			"row no longer exists is not a successful mark", err)
+	}
+
+	// And the ordinary already-marked case is still silent, so the check above cannot be
+	// passing by failing everything.
+	c2, ex2 := seedWedged(t, db, ctx, "settling-twice-ok")
+	if err := MarkExchangeSettling(ctx, db, c2.OrganizerID, ex2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkExchangeSettling(ctx, db, c2.OrganizerID, ex2.ID); err != nil {
+		t.Fatalf("a repeat mark on a live exchange answered %v, want nil — a resume marks on "+
+			"every retry and must not be told anything is wrong", err)
+	}
+}

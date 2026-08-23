@@ -217,14 +217,55 @@ func LoadWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.UU
 // is otherwise fine, because the marker protects against a concurrent operator command, not
 // against losing money. The caller logs and continues.
 func MarkExchangeSettling(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) error {
-	_, err := db.ExecContext(ctx, `
+	result, err := db.ExecContext(ctx, `
 		UPDATE order_exchanges SET settling_at=now()
 		WHERE organizer_id=$1 AND id=$2 AND settling_at IS NULL`, org, exchangeID)
 	if err != nil {
 		return fmt.Errorf("mark exchange %s settling: %w", exchangeID, err)
 	}
+	// ZERO ROWS HAS TWO MEANINGS and only one of them is benign (ai-review pass 2).
+	// Already-marked is the ordinary case — a resume marks on every retry. But the row
+	// being GONE means an unwind won the race and deleted it while this settlement was
+	// between finalize and the provider, and reporting that as a successful mark tells the
+	// caller it is protected when it is not. The caller cannot undo the finalize, but it can
+	// be told, and its log line is the only notice anyone gets.
+	if n, _ := result.RowsAffected(); n == 0 {
+		var exists bool
+		if err := db.QueryRowContext(ctx, `
+			SELECT EXISTS (SELECT 1 FROM order_exchanges WHERE organizer_id=$1 AND id=$2)`,
+			org, exchangeID).Scan(&exists); err != nil {
+			return fmt.Errorf("confirm exchange %s still exists: %w", exchangeID, err)
+		}
+		if !exists {
+			return fmt.Errorf("%w: %s", ErrExchangeUnwound, exchangeID)
+		}
+	}
 	return nil
 }
+
+// SettlingGraceWindow bounds how long a settlement-in-flight marker VETOES an unwind
+// (ai-review pass 2 [high]).
+//
+// The marker must not be a permanent veto, and the first version of it was. `settling_at` is
+// write-once and nothing clears it, so a settlement that failed definitively — payments
+// refusing, or unreachable for long enough that the caller gave up — left the marker set
+// forever and the source order permanently un-unwindable. That is the WEDGE THIS TICKET
+// EXISTS TO FIX, reintroduced by the guard added to protect it, and it would have been worse
+// than the original because it also blocks the operator command.
+//
+// So the marker bounds a WINDOW rather than granting a veto. Inside it, a settlement is
+// plausibly still in flight at the provider and the unwind refuses without asking anything
+// else — cheap, and correct for the case the marker was added for. Outside it, the marker
+// stops deciding and the authoritative check takes over: payments' own records, which is
+// what COS 2 says must decide this and what a commerce flag can never answer. A settlement
+// that really did move money is refused by that check anyway; one that failed before moving
+// any is unwound, which is the outcome an operator needs.
+//
+// Five minutes because it is comfortably longer than any settlement round trip this system
+// makes and short enough that an operator working an incident is not blocked by it. It is not
+// a lease: nothing reclaims the marker, and its AGE stays visible in the listing so a
+// long-stale one is still a state a human should look at.
+const SettlingGraceWindow = 5 * time.Minute
 
 // UnwindWedgedExchange removes a wedged exchange's binding and records why, atomically.
 //
@@ -312,7 +353,7 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 	// operator told "a settlement is in flight" should wait and re-run, while "money moved"
 	// means stop and compensate. Reporting the second for the first would send them to the
 	// wrong place.
-	if settlingAt.Valid {
+	if settlingAt.Valid && time.Since(settlingAt.Time) < SettlingGraceWindow {
 		return fmt.Errorf("%w: %s (since %s)", ErrExchangeSettling, exchangeID,
 			settlingAt.Time.UTC().Format(time.RFC3339))
 	}
@@ -339,8 +380,9 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 
 	result, err := tx.ExecContext(ctx, `
 		DELETE FROM order_exchanges
-		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL AND settling_at IS NULL`,
-		org, exchangeID)
+		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL
+		  AND (settling_at IS NULL OR settling_at <= now() - $3::interval)`,
+		org, exchangeID, SettlingGraceWindow.String())
 	if err != nil {
 		return fmt.Errorf("unwind exchange %s: %w", exchangeID, err)
 	}

@@ -72,6 +72,10 @@ type countingStub struct {
 
 	mu     sync.Mutex
 	counts map[string]int
+	// onCharge runs INSIDE the charge handler, before it answers. It is how a test observes
+	// durable state at the instant the provider is being called rather than afterwards —
+	// "the marker was set by the end" is also true of a handler that marks too late.
+	onCharge func()
 }
 
 func (c *countingStub) hit(name string) int {
@@ -427,6 +431,9 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			c.hit("charge-submissions")
 			if c.hit("charge-key:"+r.Header.Get("Idempotency-Key")) == 1 {
 				c.hit("charge-movements")
+			}
+			if c.onCharge != nil {
+				c.onCharge()
 			}
 			_, _ = w.Write([]byte(`{"status":"captured"}`))
 		case strings.HasSuffix(r.URL.Path, "/internal/psp/partial-refund"):
@@ -1232,4 +1239,92 @@ func TestADowngradeReleasedAfterItsRefundLegIsRefusedByTheUnwind(t *testing.T) {
 	if got := s.payments.count("refund-submissions"); got != 1 {
 		t.Errorf("refund-leg submissions = %d, want 1", got)
 	}
+}
+
+// The HANDLER writes the settlement-in-flight marker, at the right instant (TKT-255,
+// ai-review pass 2 [medium]).
+//
+// The store tests prove the guard REFUSES a marked exchange. They cannot prove the shipped
+// flow ever marks one: they call `MarkExchangeSettling` themselves, so deleting the
+// production call from `completeExchangeFromBasis` leaves every one of them green. That is
+// the mechanism-versus-wiring distinction AGENTS.md names, and this test is the wiring half —
+// it drives the real HTTP handler and never touches the marker itself.
+//
+// THE INSTANT MATTERS AS MUCH AS THE FACT. The marker has to land after inventory's finalize
+// SUCCEEDS and before the provider is called: earlier and it would veto unwinding a genuinely
+// wedged exchange (finalize refuses, so the marker would be a lie), later and it would not be
+// set during the window it exists to protect. Both halves are asserted:
+//
+//   - a request whose finalize REFUSES leaves the marker NULL — the wedged case, which must
+//     stay unwindable;
+//   - a request that gets past finalize has the marker set by the time it reaches the
+//     provider, observed from the payments stub DURING the charge rather than afterwards,
+//     because "it was set at the end" is also satisfied by marking after the money moved.
+func TestTheHandlerMarksSettlingBetweenFinalizeAndTheProvider(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+
+	t.Run("a refused finalize leaves the exchange unwindable", func(t *testing.T) {
+		f := seedExchangeSource(t, db, ctx, "mark-wedged-src", 2, 1000)
+		policy := &stubPolicy{}
+		policy.catalogUnit.Store(1500)
+		s := exchangeStackFor(t, db, f, policy)
+		const key = "mark-wedged"
+
+		targetHold := uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "stub-hold:%s:%d", f.organizer, 1)).String()
+		if !policy.claims.release(targetHold) {
+			t.Fatal("could not release the target claim")
+		}
+		if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+			t.Fatalf("answered %d, want 409", code)
+		}
+		if at := settlingMarkerAt(t, s.db, ctx, f.organizer, key); at.Valid {
+			t.Errorf("settling_at was set to %s for an exchange whose finalize REFUSED. A wedged "+
+				"exchange never reaches the provider, and marking it would make the one state "+
+				"this ticket exists to unwind permanently un-unwindable", at.Time)
+		}
+	})
+
+	t.Run("the marker is set before the provider is called", func(t *testing.T) {
+		f := seedExchangeSource(t, db, ctx, "mark-live-src", 2, 1000)
+		policy := &stubPolicy{}
+		policy.catalogUnit.Store(1500) // delta +1000
+		s := exchangeStackFor(t, db, f, policy)
+		const key = "mark-live"
+
+		// Observed FROM INSIDE the charge. Asserting after the request returns would also be
+		// satisfied by a handler that marked once the money had already moved, which is the
+		// ordering the marker exists to rule out.
+		var markedDuringCharge sql.NullTime
+		var probed bool
+		s.payments.onCharge = func() {
+			probed = true
+			markedDuringCharge = settlingMarkerAt(t, s.db, ctx, f.organizer, key)
+		}
+
+		if code, _ := s.exchange(t, f, key); code != http.StatusOK {
+			t.Fatalf("answered %d, want 200", code)
+		}
+		if !probed {
+			t.Fatal("the payments charge was never called, so this test observed nothing — the " +
+				"fixture must reach the provider for the ordering assertion to mean anything")
+		}
+		if !markedDuringCharge.Valid {
+			t.Error("settling_at was NULL while the provider was being called. The marker has to " +
+				"be durable BEFORE the money moves, or an operator's unwind can delete the " +
+				"binding out from under the charge — which is the race it was added to close")
+		}
+	})
+}
+
+// settlingMarkerAt reads the in-flight marker for an exchange addressed the way a test knows
+// it: by organizer and idempotency key.
+func settlingMarkerAt(t *testing.T, db *sql.DB, ctx context.Context, org uuid.UUID, key string) sql.NullTime {
+	t.Helper()
+	var at sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT settling_at FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		org, commercestore.ExchangeID(org, key)).Scan(&at); err != nil {
+		t.Fatalf("read settling marker: %v", err)
+	}
+	return at
 }

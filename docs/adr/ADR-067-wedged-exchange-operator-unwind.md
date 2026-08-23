@@ -144,12 +144,29 @@ to happen. `CompleteExchangeSettlement` then treated the missing row as *"no bas
 
 Two changes close it, and the ordering argument explains why neither alone was enough:
 
-1. **A durable `settling_at` marker.** The resume and the forward path write it once inventory's
-   `finalize` has **succeeded** — the exact instant an exchange stops being wedged and becomes able
-   to move money. The unwind reads it under the lock and refuses. It is deliberately not a lease:
-   nothing reclaims it, because a settlement that crashed after finalize leaves an exchange a retry
-   can still complete, and unwinding that silently is the thing being prevented. A stale marker is a
-   state a human should look at, and the listing shows its age.
+1. **A durable `settling_at` marker, bounding a WINDOW rather than granting a veto.** The resume and
+   the forward path write it once inventory's `finalize` has **succeeded** — the exact instant an
+   exchange stops being wedged and becomes able to move money. The unwind reads it under the lock.
+
+   The window (`SettlingGraceWindow`, five minutes) is the correction a second review pass forced,
+   and the defect it fixes is worth recording because the guard had recreated the bug it was added
+   to prevent. `settling_at` is write-once and nothing clears it, so in the first version a
+   settlement that failed **definitively** — payments refusing, or unreachable long enough that the
+   caller gave up — left the marker set forever and the source order **permanently un-unwindable**.
+   That is exactly the wedge this ticket exists to remove, reintroduced, and worse than the original
+   because it also blocked the operator command.
+
+   So inside the window the unwind refuses cheaply, which is correct for the race the marker was
+   added for; outside it the marker stops deciding and the authoritative check takes over — payments'
+   own records, which is what §2 says must decide this and what a commerce flag can never answer. A
+   settlement that really did move money is still refused, by the money guard, ageing or not. Five
+   minutes is comfortably longer than any settlement round trip here and short enough not to block an
+   operator working an incident. It is still not a lease: nothing reclaims the marker, and its age
+   stays visible in the listing, so a long-stale one remains a state a human should look at.
+
+   `MarkExchangeSettling` also reports the case where its update matched no row **because the row is
+   gone** — an unwind won the race — rather than reporting a successful mark. Its caller cannot undo
+   the finalize, but its log line is the only notice anyone gets.
 2. **`CompleteExchangeSettlement` distinguishes the two meanings of a missing row.** *"No basis yet"*
    stays a no-op — that is TKT-158's contract, and settlement cannot precede the basis. *"No row"*
    now consults the unwind evidence and returns `ErrExchangeUnwound`, which is the second reason
