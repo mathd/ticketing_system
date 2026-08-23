@@ -135,13 +135,20 @@ cd "$ROOT/services/catalog"
 # TestDirectArchiveRacingFestivalPublishCannotDesync and
 # TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically (TKT-53's scoped-read test).
 #
-# ./internal/... rather than ./internal/store, and this one closes the hole BEFORE it
-# is dug rather than after. Catalog's smoke tests all live under ./internal/store
-# today, so this widening changes nothing right now — which is the point. Access
-# carried the narrow path while its ./internal/api tests accumulated, and three of
-# them were failing on main for weeks because the gate never executed the package
-# (TKT-162). A package allowlist is the same defect as a test-name allowlist, and it
-# is invisible in exactly the same way: the gate stays green because it never looked.
+# ./internal/... rather than ./internal/store, closing the hole BEFORE it is dug.
+# Access carried the narrow path while its ./internal/api tests accumulated, and
+# three of them were failing on main for weeks because the gate never executed the
+# package (TKT-162). A package allowlist is the same defect as a test-name
+# allowlist, and it is invisible in exactly the same way: the gate stays green
+# because it never looked.
+#
+# What this costs today, stated because "it changes nothing" was the first and
+# wrong version of this comment: catalog has NO smoke-tagged tests outside
+# ./internal/store, so the widening adds no coverage now and re-runs
+# ./internal/api's and ./internal/events' ordinary tests inside the smoke stage —
+# about 12 seconds. That is the price of not having to remember this the day
+# someone adds services/catalog/internal/api/*_smoke_test.go, which is the day it
+# would otherwise silently not run.
 CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
 
