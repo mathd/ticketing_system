@@ -517,9 +517,33 @@ func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID
 		Scan(&settledAt, &alreadyReplacement)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// No row, or no basis yet. A no-op, exactly as before this function became
-			// transactional (TKT-158's asserted contract): settlement cannot precede the
-			// basis, and the caller's flow always records one first.
+			// No row, or no basis yet — and since TKT-255 those are no longer the same
+			// thing, so this branch has to tell them apart before it may return nil.
+			//
+			// "No basis yet" is TKT-158's asserted contract and stays a no-op: settlement
+			// cannot precede the basis, and the caller's flow always records one first.
+			//
+			// "NO ROW" became reachable when an exchange became deletable, and it means
+			// something entirely different — an operator unwound this exchange while this
+			// settlement was in flight. Returning nil there reports success for a
+			// settlement that did not happen: the buyer's charge has already been
+			// submitted by the caller, and commerce would record no exchange, no
+			// replacement order and no `order.exchanged` event, with nothing left to
+			// notice. That is strictly worse than the wedge this ticket exists to fix
+			// (ai-review pass 1 [critical]).
+			//
+			// The unwind evidence is what distinguishes the two, and it is durable
+			// precisely so that this question has an answer after the row is gone.
+			var unwound bool
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (SELECT 1 FROM order_exchange_unwinds
+				               WHERE organizer_id=$1 AND exchange_id=$2)`, org, exchangeID).
+				Scan(&unwound); err != nil {
+				return err
+			}
+			if unwound {
+				return fmt.Errorf("%w: %s", ErrExchangeUnwound, exchangeID)
+			}
 			return nil
 		}
 		return err

@@ -133,20 +133,50 @@ instead would lock the artefact rather than the identity that arbitrates access 
 [ADR-029](./ADR-029-seat-identity-pinning-contract.md) documents for seat maps, where a blocked
 writer rechecked a stale row.
 
-**What that does not buy:** the payments read cannot be atomic with the delete, because payments is
-another service and no lock here reaches it. Holding the order's row lock across a network round
-trip would block every checkout for that order on payments' latency. The honest guarantee is
-therefore *"the evidence was true when it was read, and the write window is one transaction wide"* —
-never *"impossible"*, which the acceptance criteria's wording invites and which nothing here can
-deliver.
+**What that does not buy, and what had to be added because of it.** The first implementation stopped
+at the lock, and an adversarial review pass called that **[critical]** — correctly. A resume
+*releases* the source-order lock when `BindOrderExchange` commits, and everything that moves money
+happens afterwards. So an unwind holding that lock cannot see an in-flight resume: it could observe
+an unsettled row, get a clean payments answer, and delete the binding out from under a charge about
+to happen. `CompleteExchangeSettlement` then treated the missing row as *"no basis yet"* and returned
+**nil**, so the buyer would be charged with no exchange, no replacement order and no
+`order.exchanged` event — silently, and strictly worse than the wedge.
 
-### 6. Four predicates, four refusals, reported separately
+Two changes close it, and the ordering argument explains why neither alone was enough:
 
-Existence, unsettled, no-money, non-blank reason. The order matters the way `UnparkOrder`'s does:
+1. **A durable `settling_at` marker.** The resume and the forward path write it once inventory's
+   `finalize` has **succeeded** — the exact instant an exchange stops being wedged and becomes able
+   to move money. The unwind reads it under the lock and refuses. It is deliberately not a lease:
+   nothing reclaims it, because a settlement that crashed after finalize leaves an exchange a retry
+   can still complete, and unwinding that silently is the thing being prevented. A stale marker is a
+   state a human should look at, and the listing shows its age.
+2. **`CompleteExchangeSettlement` distinguishes the two meanings of a missing row.** *"No basis yet"*
+   stays a no-op — that is TKT-158's contract, and settlement cannot precede the basis. *"No row"*
+   now consults the unwind evidence and returns `ErrExchangeUnwound`, which is the second reason
+   that evidence is durable: it is what makes this question answerable after the row is gone.
+
+The ordering is what makes the residual small rather than routine: `completeExchangeFromBasis` calls
+finalize **before** the provider, and a genuinely wedged exchange cannot pass finalize — that refusal
+*is* the definition of wedged. The reachable exposure was therefore an operator unwinding a
+**healthy** exchange that happened to be mid-flight, which the CLI cannot rule out because commerce
+holds no copy of inventory's claim state.
+
+**The residual that remains, stated rather than claimed away:** the payments read still cannot be
+atomic with the delete, because payments is another service and no lock here reaches it. Holding the
+order's row lock across a network round trip would block every checkout for that order on payments'
+latency. The honest guarantee is *"the evidence was true when it was read, and the write window is
+one transaction wide"* — never *"impossible"*, which the acceptance criteria's wording invites and
+which nothing here can deliver.
+
+### 6. Five predicates, five refusals, reported separately
+
+Non-blank reason, existence, unsettled, not-settling, no-money. The order matters the way `UnparkOrder`'s does:
 reporting *"money moved"* for an exchange that does not exist sends an operator hunting for a charge
-that was never made. The blank reason is refused before a transaction opens; the state is re-read
+that was never made, and reporting it for one that is merely mid-settlement sends them to compensate
+a buyer who is about to be settled normally — *"wait and re-run"* and *"stop and compensate"* are
+different instructions. The blank reason is refused before a transaction opens; the state is re-read
 **under the lock** rather than trusted from the caller's earlier read; the `DELETE` carries
-`settled_at IS NULL` as defence in depth, and a zero-row result aborts rather than committing
+`settled_at IS NULL AND settling_at IS NULL` as defence in depth, and a zero-row result aborts rather than committing
 evidence for an intervention that did not happen.
 
 ## Consequences

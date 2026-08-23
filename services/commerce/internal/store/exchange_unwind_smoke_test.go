@@ -22,6 +22,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -653,4 +654,159 @@ func seedReplacementOrder(t *testing.T, db *sql.DB, ctx context.Context, c Compl
 		_, _ = db.Exec(`DELETE FROM orders WHERE id=$1`, orderID)
 		_, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, reservation)
 	})
+}
+
+// ---------------------------------------------------------------------------------------
+// The settlement-in-flight guard (ai-review pass 1 [critical]).
+// ---------------------------------------------------------------------------------------
+
+// Predicate 5: an exchange whose settlement is IN FLIGHT refuses, and the row survives.
+//
+// This is the guard that closes the race the source-order lock cannot see. A resume releases
+// that lock when its bind transaction commits, and only then finalizes, charges and settles —
+// so between those moments an unwind holding the lock would observe an unsettled row and a
+// clean payments answer, and delete the binding out from under a charge about to happen.
+//
+// It passes every earlier predicate — good reason, existing exchange, unsettled, and payments
+// says no money moved — so the settling marker is the only thing that can refuse it. Delete
+// the `settlingAt.Valid` check and this test fails.
+func TestUnwindRefusesAnExchangeWhoseSettlementIsInFlight(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-guard")
+	withBasis(t, db, ctx, c, ex, +1000)
+
+	// Marked the way the handler marks it: through the real function, at the moment finalize
+	// has succeeded. Not a hand-written UPDATE — the fixture must exercise the writer.
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatalf("mark settling: %v", err)
+	}
+
+	err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "a perfectly good reason", false)
+	if !errors.Is(err, ErrExchangeSettling) {
+		t.Fatalf("err = %v, want ErrExchangeSettling. This exchange has passed finalize and may "+
+			"be at the provider right now; deleting its binding would strand a charge with no "+
+			"durable record of what it was for", err)
+	}
+	if n := exchangeRowCount(t, db, ctx, c.OrderID); n != 1 {
+		t.Errorf("order_exchanges rows = %d, want 1", n)
+	}
+	if n := unwindRowCount(t, db, ctx, ex.ID); n != 0 {
+		t.Errorf("evidence rows = %d, want 0", n)
+	}
+}
+
+// The marker is idempotent and preserves its FIRST instant.
+//
+// A resume marks on every retry, so a second call must not move the timestamp — an operator
+// reading "settling since" needs the moment the settlement actually started, not the moment
+// of the most recent retry, or a permanently-retrying exchange would look permanently fresh.
+func TestMarkingSettlingTwiceKeepsTheFirstInstant(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-idempotent")
+	withBasis(t, db, ctx, c, ex, +1000)
+
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+	first := settlingMarker(t, db, ctx, ex.ID)
+	if first.IsZero() {
+		t.Fatal("the first mark wrote nothing")
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+	if second := settlingMarker(t, db, ctx, ex.ID); !second.Equal(first) {
+		t.Errorf("settling_at moved from %s to %s on a repeat. A resume marks on every retry, "+
+			"so a moving marker makes an exchange that has been stuck for an hour look seconds "+
+			"old to the operator deciding whether to investigate", first, second)
+	}
+}
+
+// The listing reports the marker, because it changes what an operator may do with the row.
+func TestTheListingReportsASettlingExchange(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settling-listed")
+	withBasis(t, db, ctx, c, ex, +1000)
+	if err := MarkExchangeSettling(ctx, db, c.OrganizerID, ex.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := ListWedgedExchanges(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range all {
+		if w.ID != ex.ID {
+			continue
+		}
+		if !w.Settling {
+			t.Error("Settling = false for an exchange that is settling; an operator reading the " +
+				"listing would try to unwind it")
+		}
+		if w.SettlingAt.IsZero() {
+			t.Error("SettlingAt is zero; its AGE is what distinguishes a settlement in flight " +
+				"from one that crashed after finalize")
+		}
+		return
+	}
+	t.Fatal("the settling exchange is missing from the listing entirely")
+}
+
+// A settlement whose exchange was unwound underneath it FAILS LOUDLY rather than silently.
+//
+// Before this ticket a missing exchange row was unreachable, so CompleteExchangeSettlement
+// treated `sql.ErrNoRows` as "no basis yet" and returned nil. Once an exchange became
+// deletable that branch acquired a second meaning, and the silent nil is the dangerous one:
+// the caller has already submitted the buyer's charge, so returning success records no
+// exchange, no replacement order and no `order.exchanged` event, with nothing left to notice.
+//
+// The unwind evidence is what tells the two apart, which is the second reason it is durable.
+func TestSettlingAnUnwoundExchangeFailsLoudly(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settle-after-unwind")
+	withBasis(t, db, ctx, c, ex, +1000)
+
+	if err := UnwindWedgedExchange(ctx, db, c.OrganizerID, ex.ID, "unwound mid-flight", false); err != nil {
+		t.Fatalf("unwind: %v", err)
+	}
+
+	replacement := uuid.New()
+	seedReplacementOrder(t, db, ctx, c, replacement)
+	err := CompleteExchangeSettlement(ctx, db, c.OrganizerID, ex.ID, replacement)
+	if err == nil {
+		t.Fatal("settling an unwound exchange reported SUCCESS. The buyer's charge has already " +
+			"been submitted by the caller, so this records nothing at all and no retry can " +
+			"notice — strictly worse than the wedge this ticket exists to fix")
+	}
+	if !errors.Is(err, ErrExchangeUnwound) {
+		t.Fatalf("err = %v, want ErrExchangeUnwound", err)
+	}
+}
+
+// And an exchange with NO BASIS still settles as a no-op, which is the branch that was there
+// before and must not be turned into an error by the fix above.
+//
+// The two cases share `sql.ErrNoRows` and mean opposite things; this is the control that
+// proves the fix distinguishes them rather than failing everything.
+func TestSettlingAnExchangeWithNoBasisIsStillANoOp(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, ex := seedWedged(t, db, ctx, "settle-no-basis")
+
+	if err := CompleteExchangeSettlement(ctx, db, c.OrganizerID, ex.ID, uuid.New()); err != nil {
+		t.Fatalf("settling an exchange with no basis returned %v, want nil. Settlement cannot "+
+			"precede the basis and the caller's flow always records one first — turning this "+
+			"into an error would break TKT-158's asserted contract", err)
+	}
+}
+
+// settlingMarker reads the in-flight marker back.
+func settlingMarker(t *testing.T, db *sql.DB, ctx context.Context, exchangeID uuid.UUID) time.Time {
+	t.Helper()
+	var at sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT settling_at FROM order_exchanges WHERE id=$1`, exchangeID).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at.Time
 }

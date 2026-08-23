@@ -332,6 +332,21 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is unavailable"})
 		return
 	}
+	// The target is secured and the provider is next, which is the exact moment this
+	// exchange stops being unwindable (TKT-255, ADR-067 §5). An operator's unwind takes the
+	// SOURCE ORDER's lock, but this request released that lock when its bind committed — so
+	// without a durable marker the unwind cannot see that money is about to move here, and
+	// could delete the binding out from under the charge below.
+	//
+	// BEST EFFORT, deliberately: a failure to mark must not fail an exchange that is
+	// otherwise fine. The marker protects against a concurrent operator command, not against
+	// losing money, and refusing the buyer to protect a race that needs a human on a CLI at
+	// this instant is the wrong trade. Logged, because a persistent failure means the
+	// protection is off.
+	if err := commercestore.MarkExchangeSettling(r.Context(), s.db, ex.OrganizerID, ex.ID); err != nil {
+		slog.Default().ErrorContext(r.Context(), "mark exchange settling",
+			"exchange_id", ex.ID, "err", err)
+	}
 	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return

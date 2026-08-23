@@ -99,6 +99,29 @@ CREATE TABLE order_exchange_unwinds (
 CREATE INDEX order_exchange_unwinds_source_idx
   ON order_exchange_unwinds (source_order_id, unwound_at DESC);
 
+-- The settlement-in-flight marker (ai-review pass 1 [critical]).
+--
+-- An unwind takes the SOURCE ORDER's row lock, which is the lock BindOrderExchange and
+-- BindOrderRefund both take. That is the right lock and it is not sufficient on its own,
+-- because a resume RELEASES it when its bind transaction commits and only then finalizes,
+-- charges and settles. So between those two moments a resume is invisible to the unwind's
+-- lock, and an unwind could observe an unsettled row plus a clean payments answer and delete
+-- the binding out from under a charge that is about to happen.
+--
+-- The ordering makes that narrow rather than routine: `completeExchangeFromBasis` calls
+-- inventory's finalize BEFORE the provider, and a genuinely WEDGED exchange cannot pass
+-- finalize — that refusal is the definition of wedged. The reachable case is an operator
+-- unwinding a HEALTHY exchange that happens to be mid-flight, which the CLI cannot rule out
+-- because commerce holds no copy of inventory's claim state and says so.
+--
+-- `settling_at` is written by the resume once finalize has SUCCEEDED, which is the exact
+-- moment the exchange stops being wedged and starts being able to move money. The unwind
+-- refuses while it is set. It is deliberately NOT a lease: nothing reclaims it, because a
+-- crashed settlement leaves an exchange that a retry resumes and an operator must not
+-- silently unwind — the marker going stale is a state a human should look at, and
+-- `list-wedged-exchanges` shows it.
+ALTER TABLE order_exchanges ADD COLUMN settling_at timestamptz;
+
 -- NO index is added on `order_exchanges` for the wedged-exchange listing, deliberately, and
 -- for the reason 0023 wrote down for its own listing: `list-wedged-exchanges` is a by-hand
 -- operator command over a population bounded by how many exchanges are simultaneously stuck
@@ -114,6 +137,18 @@ CREATE INDEX order_exchange_unwinds_source_idx
 -- describes is GONE, so this table is not a duplicate of state held elsewhere. It is the
 -- only account of it. Same reasoning 0023 applies to its unpark evidence, and 0005 and 0012
 -- to theirs.
+--
+-- THE LOCK COMES FIRST, and it is what makes "fail closed" true rather than merely intended
+-- (ai-review [high]). Without it the guard reads an empty table, a concurrent unwind commits
+-- its evidence row, and the DROP then waits for that writer and destroys the row it just
+-- accepted — the exact outcome the guard exists to prevent, in the one window where it
+-- matters. `ACCESS EXCLUSIVE` is the mode DROP TABLE will take anyway; taking it before the
+-- check merely moves it earlier, so the check and the drop see the same table.
+--
+-- This is the pattern every other history-preserving Down in this service already follows
+-- (0006, 0007, 0008, 0009, 0010, 0012, 0014, 0021, 0022). 0023 does NOT, and has the same
+-- gap — pre-existing, out of this ticket's scope, and filed rather than silently fixed here.
+LOCK TABLE order_exchange_unwinds, order_exchanges IN ACCESS EXCLUSIVE MODE;
 -- +goose StatementBegin
 DO $$
 BEGIN
@@ -125,3 +160,8 @@ $$;
 -- +goose StatementEnd
 
 DROP TABLE order_exchange_unwinds;
+
+-- The marker goes with the table it exists to protect. Unlike the evidence, dropping it
+-- loses nothing an operator needs: it is transient state about a settlement in flight, and
+-- rolling back to a schema with no unwind command means nothing can act on it anyway.
+ALTER TABLE order_exchanges DROP COLUMN settling_at;

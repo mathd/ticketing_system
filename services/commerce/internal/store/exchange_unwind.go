@@ -44,6 +44,27 @@ var (
 	// ErrExchangeUnwindConflict reports a row that changed under a lock that should have
 	// prevented it.
 	ErrExchangeUnwindConflict = errors.New("exchange changed during unwind")
+	// ErrExchangeSettling reports an unwind refused because a settlement is IN FLIGHT for
+	// this exchange — it has passed inventory's finalize and may be at the provider right
+	// now (ai-review pass 1 [critical]).
+	//
+	// The window is real and narrow. A resume's source-order lock is released when
+	// `BindOrderExchange` commits, and everything that moves money happens after that, so
+	// the unwind's lock alone cannot see an in-flight resume. The mitigating fact is
+	// ordering: `completeExchangeFromBasis` calls finalize BEFORE the provider, and a
+	// genuinely wedged exchange — the only kind an operator is meant to unwind — cannot
+	// pass finalize, so it can never reach the charge. The exposure is therefore an
+	// operator unwinding a HEALTHY exchange that is mid-flight, which the CLI cannot rule
+	// out because commerce holds no copy of inventory's claim state.
+	//
+	// So the marker exists rather than the argument: a settlement that has passed finalize
+	// says so durably, and the unwind refuses while it is outstanding.
+	ErrExchangeSettling = errors.New("a settlement is in flight for this exchange")
+	// ErrExchangeUnwound reports a settlement whose exchange was unwound underneath it.
+	// Returned by CompleteExchangeSettlement instead of the silent no-op a missing row used
+	// to mean, because since this ticket a missing row is reachable and means something
+	// specific — see that function.
+	ErrExchangeUnwound = errors.New("exchange was unwound while its settlement was in flight")
 )
 
 // WedgedExchange is one unsettled exchange as an operator needs to read it.
@@ -77,6 +98,12 @@ type WedgedExchange struct {
 	// leg is addressed by it together with the derived refund key, so the listing carries it
 	// rather than making every caller re-join to `orders`.
 	PaymentSourceKey string
+	// Settling reports that this exchange passed inventory's finalize and may be moving
+	// money right now. An operator must not unwind it, and the unwind refuses. A marker that
+	// is minutes old means a settlement crashed after finalize — a retry can still complete
+	// it, so it still must not be unwound silently, and it is a state a human should look at.
+	Settling   bool
+	SettlingAt time.Time
 }
 
 // ListWedgedExchanges reports every UNSETTLED exchange, oldest first.
@@ -101,7 +128,8 @@ func ListWedgedExchanges(ctx context.Context, db *sql.DB) ([]WedgedExchange, err
 	rows, err := db.QueryContext(ctx, `
 		SELECT x.organizer_id, x.id, x.source_order_id, x.idempotency_key, x.actor, x.reason,
 		       x.currency, x.quantity, x.source_total, x.created_at,
-		       x.basis_at, x.target_hold_id, x.delta_amount, x.target_total, o.idempotency_key
+		       x.basis_at, x.target_hold_id, x.delta_amount, x.target_total, o.idempotency_key,
+		       x.settling_at
 		FROM order_exchanges x
 		JOIN orders o ON o.id = x.source_order_id
 		WHERE x.settled_at IS NULL
@@ -114,15 +142,16 @@ func ListWedgedExchanges(ctx context.Context, db *sql.DB) ([]WedgedExchange, err
 	var out []WedgedExchange
 	for rows.Next() {
 		var w WedgedExchange
-		var basisAt sql.NullTime
+		var basisAt, settlingAt sql.NullTime
 		var hold uuid.NullUUID
 		var delta, target sql.NullInt64
 		if err := rows.Scan(&w.OrganizerID, &w.ID, &w.SourceOrderID, &w.IdempotencyKey, &w.Actor,
 			&w.Reason, &w.Currency, &w.Quantity, &w.SourceTotal, &w.CreatedAt,
-			&basisAt, &hold, &delta, &target, &w.PaymentSourceKey); err != nil {
+			&basisAt, &hold, &delta, &target, &w.PaymentSourceKey, &settlingAt); err != nil {
 			return nil, fmt.Errorf("scan wedged exchange: %w", err)
 		}
 		w.BasisRecorded = basisAt.Valid
+		w.Settling, w.SettlingAt = settlingAt.Valid, settlingAt.Time.UTC()
 		w.TargetHoldID, w.DeltaAmount, w.TargetTotal = hold.UUID, delta.Int64, target.Int64
 		w.CreatedAt = w.CreatedAt.UTC()
 		out = append(out, w)
@@ -140,20 +169,20 @@ func ListWedgedExchanges(ctx context.Context, db *sql.DB) ([]WedgedExchange, err
 // instant it returns, which is exactly why it is not the only one.
 func LoadWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) (WedgedExchange, error) {
 	var w WedgedExchange
-	var basisAt, settledAt sql.NullTime
+	var basisAt, settledAt, settlingAt sql.NullTime
 	var hold uuid.NullUUID
 	var delta, target sql.NullInt64
 	err := db.QueryRowContext(ctx, `
 		SELECT x.organizer_id, x.id, x.source_order_id, x.idempotency_key, x.actor, x.reason,
 		       x.currency, x.quantity, x.source_total, x.created_at,
 		       x.basis_at, x.target_hold_id, x.delta_amount, x.target_total, o.idempotency_key,
-		       x.settled_at
+		       x.settled_at, x.settling_at
 		FROM order_exchanges x
 		JOIN orders o ON o.id = x.source_order_id
 		WHERE x.organizer_id=$1 AND x.id=$2`, org, exchangeID).
 		Scan(&w.OrganizerID, &w.ID, &w.SourceOrderID, &w.IdempotencyKey, &w.Actor, &w.Reason,
 			&w.Currency, &w.Quantity, &w.SourceTotal, &w.CreatedAt,
-			&basisAt, &hold, &delta, &target, &w.PaymentSourceKey, &settledAt)
+			&basisAt, &hold, &delta, &target, &w.PaymentSourceKey, &settledAt, &settlingAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WedgedExchange{}, fmt.Errorf("%w: %s", ErrExchangeNotFound, exchangeID)
 	}
@@ -164,9 +193,37 @@ func LoadWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.UU
 		return WedgedExchange{}, fmt.Errorf("%w: %s", ErrExchangeSettled, exchangeID)
 	}
 	w.BasisRecorded = basisAt.Valid
+	w.Settling, w.SettlingAt = settlingAt.Valid, settlingAt.Time.UTC()
 	w.TargetHoldID, w.DeltaAmount, w.TargetTotal = hold.UUID, delta.Int64, target.Int64
 	w.CreatedAt = w.CreatedAt.UTC()
 	return w, nil
+}
+
+// MarkExchangeSettling records that a settlement has passed inventory's finalize and may
+// now move money (TKT-255, ai-review pass 1 [critical]).
+//
+// Called by the resume and the forward path at the ONE moment that matters: finalize has
+// succeeded, so the target claim is secured and the provider call is next. Before that
+// instant the exchange either is wedged (finalize refuses) or has not started; after it, an
+// unwind must not delete the row.
+//
+// Idempotent and never cleared. A repeat sets the same marker again, which a resume does on
+// every retry. Nothing reclaims it, deliberately: a settlement that crashed after finalize
+// leaves an exchange a retry can still complete, and an operator who unwound it silently
+// would be doing exactly what this marker exists to prevent. A stale marker is a state a
+// human should look at, and the listing shows it.
+//
+// Best-effort by design at the call site — a failure to mark must not fail an exchange that
+// is otherwise fine, because the marker protects against a concurrent operator command, not
+// against losing money. The caller logs and continues.
+func MarkExchangeSettling(ctx context.Context, db *sql.DB, org, exchangeID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE order_exchanges SET settling_at=now()
+		WHERE organizer_id=$1 AND id=$2 AND settling_at IS NULL`, org, exchangeID)
+	if err != nil {
+		return fmt.Errorf("mark exchange %s settling: %w", exchangeID, err)
+	}
+	return nil
 }
 
 // UnwindWedgedExchange removes a wedged exchange's binding and records why, atomically.
@@ -229,23 +286,37 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 	// Re-read the exchange UNDER the lock. The caller's earlier read decided the money
 	// question against payments; this one decides the state question against the row as it
 	// stands now, which is the only reading that can be trusted to still be true at COMMIT.
-	var settledAt, basisAt sql.NullTime
+	var settledAt, basisAt, settlingAt sql.NullTime
 	var hold uuid.NullUUID
 	var delta, target sql.NullInt64
 	var idempotencyKey, actor, currency string
 	var sourceTotal int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT settled_at, basis_at, target_hold_id, delta_amount, target_total,
+		SELECT settled_at, basis_at, settling_at, target_hold_id, delta_amount, target_total,
 		       idempotency_key, actor, currency, source_total
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, exchangeID).
-		Scan(&settledAt, &basisAt, &hold, &delta, &target,
+		Scan(&settledAt, &basisAt, &settlingAt, &hold, &delta, &target,
 			&idempotencyKey, &actor, &currency, &sourceTotal); err != nil {
 		return fmt.Errorf("read exchange %s: %w", exchangeID, err)
 	}
 	if settledAt.Valid {
 		return fmt.Errorf("%w: %s", ErrExchangeSettled, exchangeID)
 	}
-	// Money last, so the three cheaper refusals are never reported as this one.
+	// SETTLING, and this predicate is what closes the resume race the source-order lock
+	// cannot (ai-review pass 1 [critical]). It is read under the lock, and the resume writes
+	// it after finalize succeeds and before it calls the provider — so an exchange that can
+	// still move money says so, and refusing here is refusing to delete a binding out from
+	// under a charge in flight.
+	//
+	// Ordered before the money check because it is the cheaper, more specific answer: an
+	// operator told "a settlement is in flight" should wait and re-run, while "money moved"
+	// means stop and compensate. Reporting the second for the first would send them to the
+	// wrong place.
+	if settlingAt.Valid {
+		return fmt.Errorf("%w: %s (since %s)", ErrExchangeSettling, exchangeID,
+			settlingAt.Time.UTC().Format(time.RFC3339))
+	}
+	// Money last, so the four cheaper refusals are never reported as this one.
 	if moneyMoved {
 		return fmt.Errorf("%w: %s", ErrExchangeMoneyMoved, exchangeID)
 	}
@@ -267,7 +338,8 @@ func UnwindWedgedExchange(ctx context.Context, db *sql.DB, org, exchangeID uuid.
 	}
 
 	result, err := tx.ExecContext(ctx, `
-		DELETE FROM order_exchanges WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL`,
+		DELETE FROM order_exchanges
+		WHERE organizer_id=$1 AND id=$2 AND settled_at IS NULL AND settling_at IS NULL`,
 		org, exchangeID)
 	if err != nil {
 		return fmt.Errorf("unwind exchange %s: %w", exchangeID, err)

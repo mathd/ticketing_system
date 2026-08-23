@@ -606,6 +606,12 @@ right now — one is unsettled for a few hundred milliseconds and looks identica
 column, and **confirm in inventory that the target claim is terminal before unwinding**. The command
 cannot check this for you, and it will happily unwind a healthy exchange.
 
+**`settling=YES` means hands off.** The exchange passed inventory's finalize, which is the moment it
+stops being wedged and becomes able to move money, so `unwind-exchange` refuses it. The marker is
+never cleared and nothing reclaims it — that is deliberate. A marker minutes old does **not** mean it
+is now safe to remove: it means a settlement crashed after finalize, and a retry of the buyer's
+request can still complete it. Read the timestamp, then investigate.
+
 **What `money=` in the listing means.** `impossible` means no provider call can have been made — the
 basis is persisted *before* the provider is called, so an exchange with no basis never reached
 payments, and an even exchange calls nobody. `possible` means only that a call could have been made;
@@ -616,6 +622,7 @@ payments, and an even exchange calls nobody. `possible` means only that a call c
 | Refusal | Meaning | What to do |
 |---|---|---|
 | `money moved` | payments records a provider movement for this exchange | **Stop.** The buyer paid. Compensating them is a product decision, not an unwind — see below. |
+| `settlement in flight` | the exchange passed inventory's finalize and may be at the provider right now | **Wait and re-run.** If it persists past a few minutes, a settlement crashed after finalize — a retry of the buyer's request can still complete it, so investigate rather than forcing anything. |
 | `indeterminate` | payments could not be asked, or gave no clean answer | Fix why payments could not answer, then re-run. **Do not** treat an unanswered question as a no. |
 | `settled` | the exchange settled; it is not wedged | You are reading the listing wrong — a settled exchange's remaining obligations belong to the sweep above. |
 | `not found` | no such organizer/exchange pair | Check the ids against the listing. |

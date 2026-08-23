@@ -73,10 +73,14 @@ func listWedgedExchanges(args []string) error {
 				money = "impossible (even exchange, no provider call)"
 			}
 		}
-		fmt.Printf("organizer=%s exchange=%s source_order=%s age=%s basis=%t target_hold=%s money=%q actor=%s\n",
+		settling := "no"
+		if w.Settling {
+			settling = "YES since " + w.SettlingAt.Format(time.RFC3339)
+		}
+		fmt.Printf("organizer=%s exchange=%s source_order=%s age=%s basis=%t target_hold=%s money=%q settling=%q actor=%s\n",
 			w.OrganizerID, w.ID, w.SourceOrderID,
 			time.Since(w.CreatedAt).Truncate(time.Second), w.BasisRecorded,
-			nullableUUID(w.TargetHoldID), money, w.Actor)
+			nullableUUID(w.TargetHoldID), money, settling, w.Actor)
 	}
 	// The caveats belong on stderr, next to the count, because they change what the list
 	// MEANS and an operator who reads only the rows will act on a misreading.
@@ -85,7 +89,9 @@ func listWedgedExchanges(args []string) error {
 		"terminal target claim from an exchange that is simply in flight right now — read the age "+
 		"column, and confirm the claim is terminal in inventory BEFORE unwinding. `money=possible` "+
 		"means only that a provider call could have been made; `unwind-exchange` asks payments and "+
-		"refuses if it was.\n", len(wedged))
+		"refuses if it was. `settling=YES` means the exchange passed finalize and may be moving "+
+		"money right now — it CANNOT be unwound, and a marker more than a few minutes old means a "+
+		"settlement crashed after finalize rather than that it is safe to remove.\n", len(wedged))
 	return nil
 }
 
@@ -163,6 +169,12 @@ func unwindExchange(args []string) error {
 				"(delta %d %s). The buyer's money moved and this command does not compensate it. "+
 				"The binding is intact and the source order remains blocked; resolving this is a "+
 				"product decision, not an unwind.\n", exchangeID, w.DeltaAmount, w.Currency)
+		case errors.Is(err, store.ErrExchangeSettling):
+			fmt.Fprintf(os.Stderr, "REFUSED: a settlement for exchange %s is IN FLIGHT — it has "+
+				"passed inventory's finalize and may be moving money right now. Nothing was "+
+				"changed. Wait and re-run. If this persists for more than a few minutes a "+
+				"settlement crashed after finalize; a retry of the buyer's request can still "+
+				"complete it, so investigate before forcing anything.\n", exchangeID)
 		case errors.Is(err, exchangeunwind.ErrMoneyIndeterminate):
 			fmt.Fprintf(os.Stderr, "REFUSED: payments could not give a clean answer for exchange %s, "+
 				"so whether money moved is UNKNOWN. Nothing was changed. Fix the reason payments "+
