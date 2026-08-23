@@ -1,0 +1,58 @@
+{
+  "key": "TKT-271",
+  "type": "Story",
+  "parent": "TKT-19",
+  "classification": "complex",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "summary": "Scanner consumes the revocation feed and fails closed past a staleness ceiling",
+  "description": "Split from **TKT-162** on the owner's instruction (2026-08-22). TKT-162 builds the **feed**; this ticket **consumes** it and is where the gate behaviour actually changes.\n\n**Blocked by TKT-162** — there is nothing to pull until the feed exists.\n\n**Owner decisions (binding, taken 2026-08-22):**\n1. **Fail closed** past the staleness ceiling — a scanner whose revocation view is too old refuses rather than admitting on a stale list.\n2. **Generous ceiling** — refunds cluster days ahead of the performance, so a start-of-shift pull closes most of the gap. The ceiling is a backstop, not a hot path. **The number itself is still open** and is this ticket's first shaping question.\n3. **Operator override past the ceiling, and the override is RECORDED** — a connectivity outage must not close the door with no local mitigation, and an override that lands in the trail is auditable.\n\n**Why the ceiling lives here and not in the feed.** `scanner_devices.last_seen_at` is server-side, best-effort, and documented *\"Advisory only… Never read by any decision\"*. It records when the server last **heard from** a device — not when the device last **successfully pulled**. Only the scanner holds that fact, so only the scanner can bound the age of its own view.\n\n**Acceptance Criteria:**\n- [ ] The scanner pulls the revocation feed on the same `online` edge that already drives queue sync (`web/scanner/src/App.tsx`), and on a manual action, storing the result durably beside the occurrence queue.\n- [ ] An offline scan of a ticket **on the stored revocation list** is refused, without a network round-trip, and the operator is told *why* in words distinguishable from \"not paired\" and from \"already redeemed\".\n- [ ] A scanner whose last successful pull is **older than the ceiling** refuses **every** scan — fail closed — and says so.\n- [ ] Past the ceiling an **operator override** admits a single scan, and the override is **recorded** so it reaches the trail rather than evaporating on the device. A recorded override is a new fact: decide whether it is a lifecycle event value, an alarm, or a field on the occurrence, and say why. (Adding a *value* to `event_type` changes no signed bytes — the canonical form treats it as a free string — so the cheap option is available if it is the right one.)\n- [ ] The refusal is **not** a silent drop: an occurrence refused on the revocation list must still be reconcilable/visible, consistent with TKT-269's \"an offline admit is never silent\" and ADR-025's recording posture. Say explicitly what is recorded for a *refused* scan versus an *overridden* one.\n- [ ] **`make browser` + a spec in `test/browser/`** that drives the write paths through a real browser — per AGENTS.md, a web-UI ticket is not verified until a browser has submitted its forms, and a browser spec cannot see a request the SSR handler makes, so assert what the browser can see or what the write left behind.\n\n**Open shaping questions (not yet answered):**\n- **The ceiling number.** Owner said \"generous\"; the value is undecided. Candidate framing: long enough that a normal connectivity blip never reaches it, short enough to bound a refunded holder's window. Refund timing (days ahead) suggests hours rather than minutes.\n- **Does the feed carry exchanged ids too?** TKT-270 closes the alarm half for exchanges. If the answer is yes, TKT-162's contract may need to change — check before that ticket merges, not after.\n- **What does the scanner do on its very first pull ever** (no prior state, ceiling trivially exceeded)? A brand-new device must not be born refusing.\n\nQuality gates: `make check` green; **`make browser` green**; contract tests.",
+  "links": [
+    {
+      "type": "split-from",
+      "key": "TKT-162"
+    },
+    {
+      "type": "blocked-by",
+      "key": "TKT-162"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "This is where the hole actually closes. TKT-269 made an offline admit of a refunded ticket visible; TKT-162 makes the state available; only this ticket stops the admission."
+    },
+    "scope": {
+      "state": "open",
+      "note": "Scanner-side only, but the boundary has one genuinely undecided edge: whether a refused-on-revocation scan is recorded differently from an ordinary refusal, and what an overridden admission records. That is a trail-semantics decision, not a UI one."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "THREE open, one of which is the owner's. (a) THE CEILING NUMBER — 'generous' was decided, the value was not; hours rather than minutes is implied by refunds clustering days ahead, but the number is a product call about venue connectivity. (b) Does the feed carry EXCHANGED ids as well as refunded — this must be settled BEFORE TKT-162 merges, or its contract changes afterwards. (c) First-pull-ever behaviour: a brand-new device has no prior pull and trivially exceeds any ceiling; it must not be born refusing, and the rule that prevents that is a design decision."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "Blocked by TKT-162 (the feed) — a real blocker, linked. Nothing else. TKT-269 is Done and independent; TKT-270 is independent but see uncertainty (b)."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "Blocked on the uncertainties above, and deliberately NOT `deferred`: this decides who gets through a door, which is the auth surface where shaping.md forbids the escape hatch. Known direction: pull on the existing `online` handler in web/scanner/src/App.tsx (~:106-200), store beside the IndexedDB occurrence queue (src/occurrences.ts), consult before the offline admit decision. The QR credential carries `tid` (services/access/internal/ticket/token.go:14) so the check is a local set lookup with no decode beyond what the scanner already does."
+    },
+    "first_slice": {
+      "state": "open",
+      "note": "Plausibly splits again: (i) pull + store + refuse on list, (ii) ceiling + override. (i) closes the common case and needs no override semantics; (ii) is the outage path. Decide at shaping once the ceiling number exists."
+    },
+    "success": {
+      "state": "open",
+      "note": "ACs are drafted but two depend on open decisions — the ceiling AC needs a number to be testable, and the override AC needs the recording decision before its assertion can be written. The browser-spec AC is firm regardless."
+    },
+    "context_memo": {
+      "state": "open",
+      "note": "Inherit TKT-162's governingAdrs, then ADD the web/scanner browser-testing rules from AGENTS.md and ADR-025 §D3 (occurrence identity, actuation keyed on the device's own durable pending record). RE-VERIFY at claim time rather than trusting this snapshot."
+    }
+  }
+}
