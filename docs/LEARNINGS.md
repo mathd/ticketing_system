@@ -457,3 +457,17 @@ already had the provision-in-`smoke.sh` precedent, and a new 502 the OpenAPI con
 declared — were all likewise invisible to `lint`+`test`+`build`. The product change was correct on
 the first push; every CI failure was in the harness.
 [full note](learnings/2026-08-21-a-refusal-for-the-wrong-reason-is-a-green-test.md)
+
+## The mechanism was inert, not the test
+
+**2026-08-23 — TKT-162.** `AGENTS.md` says: delete the mechanism, re-run, and if it stays green the
+test is about something else. Every prior instance reads that the same way — the mechanism is real,
+the test is at fault. This is the case where the inference is wrong. A high-water "ceiling" added to
+a newest-first keyset feed survived every mutation because it could not change a result: on a
+strictly descending walk the cursor is always at or below any page-one ceiling, so the keyset
+predicate is strictly stronger and the ceiling is dead code. Three fixture rewrites all failed to
+catch its removal before the argument was done on paper. The tells are successive rewrites failing,
+and being unable to state in one sentence an input for which the mechanism changes the output. A
+dead mechanism with a green test beside it is worse than none — it reads as a guarantee while the
+race it was meant to close stays open.
+[full note](learnings/2026-08-23-the-mechanism-was-inert-not-the-test.md)

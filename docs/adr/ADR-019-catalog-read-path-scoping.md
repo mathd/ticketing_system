@@ -111,6 +111,21 @@ proportional to a subset**.
    Both reads use the same `explainGenericPlan` helper; forking it per read is how one copy
    quietly stops asserting anything.
 
+   **The scope of that rule is one package, not the platform.** It says two reads in the same
+   suite must not each grow their own prover, because the second copy inherits the first's
+   assertions and then drifts out of them silently. It does **not** ask for one platform-wide
+   helper, and three services now hold their own: catalog's (`season_smoke_test.go`), inventory's
+   (`seat_occupancy_smoke_test.go`, dropped `ctx` for `t.Context()`), and access's
+   (`voided_feed_smoke_test.go`, which parses the JSON plan to assert the `Index Cond` carries the
+   tenant parameter rather than merely naming the index). They have diverged because the reads
+   they prove differ, and a shared helper would have to be the union of three parameter-type sets
+   and two assertion styles — more surface to get wrong than the duplication costs, in test code
+   whose failure mode is loud.
+   *Recorded because TKT-162 raised the third copy as a possible violation and it is not one;*
+   the check to apply is "do two reads in one suite share a prover", not "how many provers exist".
+   If a fourth service needs one, copy the nearest and keep the JSON-plan assertion — it is
+   strictly stronger than matching the plan text.
+
    **EXPLAIN the statement production runs — not a copy of it.** Until TKT-63,
    `TestGetPublishedSeasonIsIndexScoped` EXPLAINed a *hand-copied, reduced* query (`SELECT p.id`
    over `performances` + `events` with the scoping predicate retyped) while production

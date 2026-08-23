@@ -82,6 +82,16 @@ experiment stays valid.
   the precondition during setup, and naming a state the fixture cannot construct. Delete the
   mechanism and re-run: if it stays green, the test is about something else.
   ([a green test that cannot reach the failing state](docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md))
+  **But that mutation has TWO readings, and the second one means delete code, not fix the test.**
+  A green mutation says either "the test cannot see the mechanism" or "the mechanism does not do
+  anything" — and the reflex to harden the fixture is wasted on the latter. TKT-162 added a
+  high-water ceiling to a newest-first keyset feed, wrote a test for it, and rewrote that test twice
+  before working out on paper that a descending walk keeps the cursor at or below the ceiling, so
+  the keyset predicate is strictly stronger and the ceiling could never change a result. The tells:
+  successive fixture rewrites all fail to catch the removal, and you cannot state in one sentence an
+  input for which the mechanism changes the output. Delete it — a dead mechanism with a green test
+  beside it reads as a guarantee while the race it was meant to close stays open.
+  ([the mechanism was inert](docs/learnings/2026-08-23-the-mechanism-was-inert-not-the-test.md))
 - **A guard with N predicates needs N tests, and scoping a write means scoping its FAILURE path too.**
   Two shapes from one ticket (TKT-251), both invisible to a test that only asserts "the write was
   refused". *One:* when several predicates guard one operation, an earlier refusal **short-circuits**
