@@ -10,6 +10,8 @@ Accepted
 
 **The allocation set carries a REVISION (2026-08-15, TKT-250).** Amended below in §Decision (8), §Consequences and §The adversary. This ADR's original §Consequences accepted that the full-set PUT had no stale-write protection, "acceptable while allocation editing is single-operator" — and TKT-244 falsified that premise by shipping the first UI for the endpoint. A replace may now present the revision it is replacing; it is compared under the same pool row lock as everything else here and refused with a coded 409 when stale. The accounting is untouched: a revision says *whether this save may proceed*, never *how much* is left. **It is lost-update protection between honest operators, not authorization and not tamper-evidence.**
 
+**Buyer TTL GRANTS anchor to `clock_timestamp()` (2026-08-23, TKT-148).** Amended below in §Decision (9) and §Consequences. This ADR already used `clock_timestamp()` for the allocation *release* predicate and kept `liveClaims` on `now()`; TKT-148 found the third case was decided wrong. A buyer's TTL was written `now()+ttl` on all five grant paths, and `now()` freezes at transaction start — so a grant that queued on the pool lock spent its TTL waiting and could be handed back **already expired**. The rule is now stated positively: **a duration GRANTED uses advancing time, a snapshot READ uses transaction time.** The accounting is untouched.
+
 **An allocation may bind to a SELLER (2026-08-12, TKT-246).** Amended below in §Decision (7) and §Consequences. An allocation gains a nullable `sold_by`: unset means public — every allocation predating this — and set means only that reseller may consume it. Judged in the claim paths under the same pool row lock as everything else here, in the order **window → seller → code → capacity**. The accounting is untouched: a binding says *who* may consume a cap, never *how much* is left, so `reservedForChannelsSQL` and every derived count are unchanged.
 
 ## Context
@@ -165,6 +167,39 @@ We adopt allocation rows with derived usage. Specifics:
       The optional arm exists for the smoke suite and for future internal callers, not for an
       existing one.)*
 
+- **Which clock decides what (amended 2026-08-23, TKT-148).** Three cases, one rule:
+  a value **granted** as a duration uses `clock_timestamp()`; a **snapshot read** uses `now()`;
+  a **boundary judged at decision time** uses `clock_timestamp()`.
+    - **Grants — `clock_timestamp()`.** Buyer hold TTLs (`clock_timestamp()+ttl`) on all five
+      creation paths: GA `CreateHold`, operational conversion, group-reservation draw-down, and
+      both seated paths (explicit selection and best-available). Every grant transaction takes
+      the pool row lock before it inserts, so with `now()` the lock wait was charged to the
+      buyer's TTL and a sufficiently queued hold was returned dead — `liveClaims` would not
+      count it and the seat was resellable under the buyer. Worst precisely on an on-sale.
+    - **The RETURNED reference moves with the grant.** These statements also
+      `RETURNING ... clock_timestamp()` as `server_time`, which is the buyer's clock-skew
+      reference: the storefront countdown is `expires_at - server_time`, commerce gates
+      conversion on the pair, and `Claim.expired()` is that comparison. Anchoring the expiry
+      while returning a transaction-start `server_time` would substitute a hold that
+      **overstates** its remaining time for one that is born dead. Half of this fix is a
+      different defect, not a smaller one.
+    - **Reads — `now()`.** `liveClaims`, `sweepExpired` and every capacity read stay on
+      transaction-start time: a read wants one consistent snapshot for the whole transaction,
+      and the lazy-expiry model (ADR-010) depends on every capacity number in a transaction
+      agreeing about which claims are live.
+    - **Boundaries — `clock_timestamp()`.** The allocation release predicate and the sales
+      windows (ADR-054), unchanged and for the reason given above.
+    - **Not a grant:** group-reservation *placement* stores a staff-supplied **absolute**
+      `expires_at` (ADR-027) and validates it against `clock_timestamp()` before writing. It
+      grants no duration, so it keeps `now()` as its returned reference.
+    - **Still no oversell, and the direction is stated rather than assumed.**
+      `clock_timestamp() >= now()` within a transaction, so this change can only move an expiry
+      **later**, never earlier. A later expiry keeps a claim counted as live for longer, which
+      is conservative: it can cause a rejection that a perfectly-timed clock would have allowed
+      (undersell), and cannot make a claim vanish early or reduce counted demand. The global
+      capacity check remains independent of the allocation predicate, so the original
+      independence argument above is unchanged rather than merely re-asserted.
+
 ## Consequences
 
 - **Positive:**
@@ -172,7 +207,17 @@ We adopt allocation rows with derived usage. Specifics:
       ADR-010; the contention smoke asserts exact grant counts.
     - Nothing can drift: every number is derived from claims; expiry and give-back are
       predicates, not jobs.
+    - A buyer's granted TTL is now the TTL: the wait a hold spends queueing on the pool lock
+      is no longer deducted from it, and the returned `expires_at`/`server_time` pair describes
+      one instant. Proved by `TestBuyerGrantTTLSurvivesPoolLockWait`
+      (`services/inventory/internal/store/buyer_ttl_clock_smoke_test.go`), which enforces a
+      lock wait several times the TTL on each of the five paths and asserts the hold comes back
+      live with its full duration.
 - **Negative:**
+    - Two clocks now appear in one file and the distinction is semantic, not stylistic, so it
+      cannot be enforced by a linter. A grant written with `now()` looks correct and fails only
+      under contention. The mitigation is the rule above plus a comment at each of the five
+      grant sites; a sixth grant path added without reading either would reintroduce TKT-148.
     - The serialized write path gains per-channel aggregation queries (indexed by
       `claims(pool_id, channel_code, status, expires_at)`); revisit only with US-019 data.
     - ~~Full-set PUT has no stale-write protection (`If-Match`); acceptable while allocation

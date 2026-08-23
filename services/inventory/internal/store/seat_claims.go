@@ -709,9 +709,9 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	// seated partner sale arrives, this becomes the same IS NOT DISTINCT FROM predicate
 	// CreateHold uses, and the compiler will not remind anyone: that is what this
 	// comment is for.
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,clock_timestamp(),now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
 		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if existingFP != fp {
 			return SeatHold{}, ErrIdempotency
@@ -801,8 +801,15 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	}
 
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
+	// clock_timestamp(), not now(): a buyer TTL is a duration GRANTED, so it must be
+	// anchored to insert time. now() freezes at transaction start, and this transaction
+	// took the pool lock first (ADR-010) -- under contention the wait falls between the
+	// two and is charged to the buyer's TTL, so a hold can be returned already expired.
+	// RETURNING moves with it: server_time is the buyer's reference for the countdown
+	// (expires_at - server_time), so a transaction-start server_time would overstate the
+	// remaining time by exactly the wait. TKT-148; ADR-024's clock split.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`,
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer') RETURNING expires_at,clock_timestamp()`,
 		c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fp).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return SeatHold{}, err
@@ -1577,9 +1584,9 @@ func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, t
 	// gives: 0016 made (organizer_id, idempotency_key) non-unique across reseller scopes.
 	var existing Claim
 	var existingFP string
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,clock_timestamp(),now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
 		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if existingFP != fp {
 			return SeatHold{}, ErrIdempotency
@@ -1704,8 +1711,15 @@ func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, t
 	}
 
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: count, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
+	// clock_timestamp(), not now(): a buyer TTL is a duration GRANTED, so it must be
+	// anchored to insert time. now() freezes at transaction start, and this transaction
+	// took the pool lock first (ADR-010) -- under contention the wait falls between the
+	// two and is charged to the buyer's TTL, so a hold can be returned already expired.
+	// RETURNING moves with it: server_time is the buyer's reference for the countdown
+	// (expires_at - server_time), so a transaction-start server_time would overstate the
+	// remaining time by exactly the wait. TKT-148; ADR-024's clock split.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`,
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer') RETURNING expires_at,clock_timestamp()`,
 		c.ID, org, slot, ticketType, count, unitAmount, currency, p.ttl.String(), key, fp).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return SeatHold{}, err

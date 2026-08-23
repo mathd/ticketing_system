@@ -136,6 +136,22 @@ type Claim struct {
 	Channel      string     `json:"channel,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	ServerTime   time.Time  `json:"server_time"`
+	// snapshotTime is TRANSACTION-START time (now()), and it is deliberately NOT
+	// ServerTime. A replay reads a claim under the pool lock and must answer two
+	// different questions with two different clocks (TKT-148):
+	//
+	//   - "is this claim still alive?" is a DECISION that writes -- expired() flips the
+	//     row, appends history, releases seats and returns ErrConflict. It stays on
+	//     transaction-start time so that a request queued on the pool lock judges
+	//     liveness exactly as it did before this ticket. Moving it to advancing time
+	//     would kill more in-flight holds under contention, which is a liveness
+	//     semantics change on a money path and belongs to its own ticket.
+	//   - "how long does the buyer have?" is a client-facing REFERENCE. That is
+	//     ServerTime, and it must advance, or a replayed hold reports a countdown
+	//     inflated by the lock wait while a fresh grant of the same hold does not.
+	//
+	// Zero on a fresh grant, where the two coincide by construction.
+	snapshotTime time.Time
 	Kind         string     `json:"-"`
 	Purpose      string     `json:"-"`
 	Label        string     `json:"-"`
@@ -149,7 +165,14 @@ type Claim struct {
 const liveClaims = `((status='held' AND (expires_at IS NULL OR expires_at > now())) OR status='finalizing')`
 
 func (c Claim) expired() bool {
-	return c.Status == "held" && c.ExpiresAt != nil && !c.ExpiresAt.After(c.ServerTime)
+	// See Claim.snapshotTime: liveness is decided on transaction-start time. A fresh
+	// grant leaves snapshotTime zero and falls back to ServerTime, where the two are
+	// the same instant anyway.
+	at := c.snapshotTime
+	if at.IsZero() {
+		at = c.ServerTime
+	}
+	return c.Status == "held" && c.ExpiresAt != nil && !c.ExpiresAt.After(at)
 }
 
 // sweepExpired flips due buyer holds to expired and records the expiry in claim_history,
@@ -444,8 +467,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// = NULL is unknown, which would find nothing and place a second hold on every
 	// public retry. The lookup and the uniqueness must agree exactly or a replay
 	// becomes a duplicate claim.
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
 			return Claim{}, false, ErrIdempotency
@@ -610,8 +633,27 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		}
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
+	// clock_timestamp(), not now(): a buyer TTL is a duration GRANTED to a buyer, so it is
+	// anchored to INSERT time, not transaction-start time. now() freezes when the
+	// transaction begins, and every grant path takes the pool row lock before inserting
+	// (ADR-010), so under contention the lock wait sits between the two and is silently
+	// charged to the buyer's TTL. A hold that queued longer than its TTL was handed back
+	// already expired: liveClaims would not count it and the seat was free for someone
+	// else -- worst on an on-sale, which is exactly when holds matter (TKT-148).
+	//
+	// RETURNING moves with the anchor, and that is not cosmetic. server_time is the
+	// buyer's clock-skew reference: the storefront countdown is expires_at - server_time
+	// (web/storefront/src/components/HoldPicker.tsx), commerce gates conversion on the
+	// same pair, and Claim.expired() is that comparison. Anchoring expires_at while
+	// returning a transaction-start server_time trades a hold that is born dead for one
+	// that OVERSTATES its remaining time by the length of the wait.
+	//
+	// The read side deliberately stays on now(): liveClaims and every capacity read want
+	// one consistent snapshot per transaction, a grant wants real time. ADR-024 records
+	// the split and the argument that the two clocks cannot combine into an oversell --
+	// clock_timestamp() >= now(), so this can only move an expiry later.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,reseller_scope)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,clock_timestamp()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}
