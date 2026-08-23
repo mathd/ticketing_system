@@ -163,9 +163,26 @@ func assertGrantSurvivedWait(t *testing.T, ctx context.Context, db *sql.DB, expi
 	if granted <= 0 {
 		t.Fatalf("returned pair is inconsistent: expires_at %v is not after server_time %v", expiresAt, serverTime)
 	}
+	// The band is two-sided but ASYMMETRIC, and both bounds are load-insensitive by
+	// construction rather than by hope (ai-review finding 2 argued a loaded CI box could
+	// drift the two clock_timestamp() evaluations past a tight tolerance).
+	//
+	// Both evaluations happen inside ONE statement's execution, so their separation is not a
+	// scheduling gap: measured on this database over 2000 rows, max drift was ~1us, and a
+	// single INSERT ... RETURNING showed 186us. The lower bound therefore only has to absorb
+	// that, and `slack` is four orders of magnitude above what was measured.
+	//
+	// The UPPER bound is the load-bearing one and it is NOT a tolerance -- it is the
+	// half-fix detector. If the anchor moved to clock_timestamp() while RETURNING still said
+	// now(), `granted` reads as TTL PLUS the whole lock wait. That is why it is compared
+	// against the wait rather than against slack: the wait is 4x the TTL, so the check has
+	// enormous margin and still cannot be satisfied by the half-fix.
 	const slack = 250 * time.Millisecond
-	if granted < grantTTL-slack || granted > grantTTL+slack {
-		t.Fatalf("buyer was granted %v, want %v (+/- %v): the anchor and the RETURNING clause disagree", granted, grantTTL, slack)
+	if granted < grantTTL-slack {
+		t.Fatalf("buyer was granted %v, want at least %v: the grant anchor and the RETURNING clause disagree", granted, grantTTL-slack)
+	}
+	if granted > grantTTL+waitPast/2 {
+		t.Fatalf("buyer was granted %v, want ~%v: server_time is behind the grant, so the reported countdown is inflated by the lock wait", granted, grantTTL)
 	}
 }
 
@@ -342,4 +359,69 @@ func TestBuyerGrantTTLSurvivesPoolLockWait(t *testing.T) {
 		assertGrantSurvivedWait(t, ctx, db, r.h.Claim.ExpiresAt, r.h.Claim.ServerTime, mark.Add(waitPast))
 		liveInDB(t, ctx, db, r.h.Claim.ID)
 	})
+}
+
+// TKT-148 ai-review finding 1: a REPLAY must report the buyer's countdown on the same clock a
+// fresh grant does.
+//
+// The replay path reads an existing claim under the pool lock, so it queues behind contention
+// exactly as a grant does. It returned `now()` as server_time, which is transaction-start
+// time, so a retry that waited on the lock reported a countdown inflated by the whole wait —
+// on the same wire field (`server_time`, commerce server.go:822) that a first attempt fills
+// with insert-time. Before this ticket both paths were wrong in the same direction and so
+// agreed; fixing only the grant would have made a hold's reported countdown depend on whether
+// the buyer happened to retry.
+//
+// What this test deliberately does NOT assert: that the replay's LIVENESS decision moved.
+// `expired()` still judges on transaction-start time (Claim.snapshotTime) — it writes, and
+// moving it would kill more in-flight holds under contention, which is a money-path semantics
+// change and its own ticket. This test pins the split: the reference advances, the decision
+// does not.
+func TestBuyerHoldReplayReportsAdvancingServerTime(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Hour) // long TTL: this is about the reference, not expiry
+	org, slot := provisioned(t, ctx, st, 10)
+
+	first, replayed1, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "replay-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed1 {
+		t.Fatal("first call reported a replay")
+	}
+
+	mark := dbNow(t, ctx, db)
+	blocker := blockPool(t, ctx, db, slot)
+
+	type res struct {
+		c        Claim
+		replayed bool
+		err      error
+	}
+	done := make(chan res, 1)
+	go func() {
+		c, r, err := st.CreateHold(ctx, org, slot, first.TicketTypeID, 1, 1000, "EUR", "", "replay-key")
+		done <- res{c, r, err}
+	}()
+	awaitLockWaiter(t, ctx, db, gaPoolLock, mark.Add(waitPast))
+	holdUntil(t, ctx, db, blocker, mark, waitPast)
+
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if !r.replayed {
+		t.Fatal("second call with the same idempotency key was not a replay")
+	}
+	if r.c.ID != first.ID {
+		t.Fatalf("replay returned a different claim: %v want %v", r.c.ID, first.ID)
+	}
+	// The whole point: the reference reflects when the answer was given, not when the
+	// transaction happened to begin.
+	if !r.c.ServerTime.After(mark.Add(waitPast)) {
+		t.Fatalf("replay server_time %v is not after the enforced wait boundary %v: the replay read is still anchored to transaction start, so the buyer's countdown is inflated by the lock wait", r.c.ServerTime, mark.Add(waitPast))
+	}
+	// And it is a real reference, not a value copied from the grant.
+	if !r.c.ServerTime.After(first.ServerTime) {
+		t.Fatalf("replay server_time %v did not advance past the original grant's %v", r.c.ServerTime, first.ServerTime)
+	}
 }

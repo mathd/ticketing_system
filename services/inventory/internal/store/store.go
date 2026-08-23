@@ -136,6 +136,22 @@ type Claim struct {
 	Channel      string     `json:"channel,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	ServerTime   time.Time  `json:"server_time"`
+	// snapshotTime is TRANSACTION-START time (now()), and it is deliberately NOT
+	// ServerTime. A replay reads a claim under the pool lock and must answer two
+	// different questions with two different clocks (TKT-148):
+	//
+	//   - "is this claim still alive?" is a DECISION that writes -- expired() flips the
+	//     row, appends history, releases seats and returns ErrConflict. It stays on
+	//     transaction-start time so that a request queued on the pool lock judges
+	//     liveness exactly as it did before this ticket. Moving it to advancing time
+	//     would kill more in-flight holds under contention, which is a liveness
+	//     semantics change on a money path and belongs to its own ticket.
+	//   - "how long does the buyer have?" is a client-facing REFERENCE. That is
+	//     ServerTime, and it must advance, or a replayed hold reports a countdown
+	//     inflated by the lock wait while a fresh grant of the same hold does not.
+	//
+	// Zero on a fresh grant, where the two coincide by construction.
+	snapshotTime time.Time
 	Kind         string     `json:"-"`
 	Purpose      string     `json:"-"`
 	Label        string     `json:"-"`
@@ -149,7 +165,14 @@ type Claim struct {
 const liveClaims = `((status='held' AND (expires_at IS NULL OR expires_at > now())) OR status='finalizing')`
 
 func (c Claim) expired() bool {
-	return c.Status == "held" && c.ExpiresAt != nil && !c.ExpiresAt.After(c.ServerTime)
+	// See Claim.snapshotTime: liveness is decided on transaction-start time. A fresh
+	// grant leaves snapshotTime zero and falls back to ServerTime, where the two are
+	// the same instant anyway.
+	at := c.snapshotTime
+	if at.IsZero() {
+		at = c.ServerTime
+	}
+	return c.Status == "held" && c.ExpiresAt != nil && !c.ExpiresAt.After(at)
 }
 
 // sweepExpired flips due buyer holds to expired and records the expiry in claim_history,
@@ -444,8 +467,8 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// = NULL is unknown, which would find nothing and place a second hold on every
 	// public retry. The lookup and the uniqueness must agree exactly or a replay
 	// becomes a duplicate claim.
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
-		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
+		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
 			return Claim{}, false, ErrIdempotency
