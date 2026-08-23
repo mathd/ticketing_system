@@ -610,8 +610,27 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		}
 	}
 	c := Claim{ID: uuid.New(), OrganizerID: org, PoolID: slot, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Channel: channel, Kind: "buyer"}
+	// clock_timestamp(), not now(): a buyer TTL is a duration GRANTED to a buyer, so it is
+	// anchored to INSERT time, not transaction-start time. now() freezes when the
+	// transaction begins, and every grant path takes the pool row lock before inserting
+	// (ADR-010), so under contention the lock wait sits between the two and is silently
+	// charged to the buyer's TTL. A hold that queued longer than its TTL was handed back
+	// already expired: liveClaims would not count it and the seat was free for someone
+	// else -- worst on an on-sale, which is exactly when holds matter (TKT-148).
+	//
+	// RETURNING moves with the anchor, and that is not cosmetic. server_time is the
+	// buyer's clock-skew reference: the storefront countdown is expires_at - server_time
+	// (web/storefront/src/components/HoldPicker.tsx), commerce gates conversion on the
+	// same pair, and Claim.expired() is that comparison. Anchoring expires_at while
+	// returning a transaction-start server_time trades a hold that is born dead for one
+	// that OVERSTATES its remaining time by the length of the wait.
+	//
+	// The read side deliberately stays on now(): liveClaims and every capacity read want
+	// one consistent snapshot per transaction, a grant wants real time. ADR-024 records
+	// the split and the argument that the two clocks cannot combine into an oversell --
+	// clock_timestamp() >= now(), so this can only move an expiry later.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,reseller_scope)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,now()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,clock_timestamp()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
 		return Claim{}, false, err
 	}

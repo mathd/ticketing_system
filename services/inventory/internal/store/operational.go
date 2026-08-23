@@ -330,8 +330,15 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, 
 		return ConvertResult{}, false, ErrConflict
 	}
 	child := Claim{ID: uuid.New(), OrganizerID: org, PoolID: pool, TicketTypeID: ticketType, Quantity: qty, UnitAmount: unitAmount, Currency: currency, Status: "held", Kind: "buyer"}
+	// clock_timestamp(), not now(): a buyer TTL is a duration GRANTED, so it must be
+	// anchored to insert time. now() freezes at transaction start, and this transaction
+	// took the pool lock first (ADR-010) -- under contention the wait falls between the
+	// two and is charged to the buyer's TTL, so a hold can be returned already expired.
+	// RETURNING moves with it: server_time is the buyer's reference for the countdown
+	// (expires_at - server_time), so a transaction-start server_time would overstate the
+	// remaining time by exactly the wait. TKT-148; ADR-024's clock split.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',now()+$8::interval,$9,$10,'buyer') RETURNING expires_at,now()`,
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer') RETURNING expires_at,clock_timestamp()`,
 		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), "convert:"+id.String()+":"+key, fp).Scan(&child.ExpiresAt, &child.ServerTime)
 	if err != nil {
 		return ConvertResult{}, false, err
