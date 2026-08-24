@@ -8,6 +8,87 @@
   "pr": null,
   "parent": null,
   "links": [],
-  "comments": [],
-  "description": "**The accepted cost of TKT-246's `claims.reseller_scope` migration, recorded so it is\nfindable before it becomes an incident.**\n\n`0016_claim_reseller_scope.sql` is **not online and not expand/contract** (ADR-022). goose runs it in\none transaction: `ADD COLUMN` takes ACCESS EXCLUSIVE and holds it to commit, and two full unique\nindex builds happen inside that lock — so **readers** of `claims` block for the duration, not just\nwriters, against ADR-008's 30s bound.\n\nThe binaries are also incompatible in both directions across it:\n- new binary on schema 0015 → every hold 500s (it selects `reseller_scope`)\n- previous binary on 0016 → writes NULL scope and decorates the key itself, so a partner retry\n  misses its row and places a **second hold**\n\n**This was accepted for TKT-246 only because the partner write path shipped in that same ticket** —\nthere are no partner claims in any database yet, so the second-hold window has nothing to act on,\nand every current `claims` table is small. Neither condition survives contact with production\npartner volume.\n\n**Conditions of Success:**\n- The column add is separated from the index builds, and the indexes are built outside a\n  transaction. Note **ADR-020's preconditions for `CREATE INDEX CONCURRENTLY` are still not met** —\n  that ADR has to be revisited or the approach has to avoid it, and either is a decision this ticket\n  owns rather than inherits.\n- One release where the binary tolerates both schemas, so a rolling deploy is possible.\n- The deploy note at the top of `0016` is updated or deleted — it currently says a quiesced cutover\n  is required, and that statement must not outlive the constraint.\n- Measured against a representative populated `claims` table, not asserted.\n\nSurfaced by TKT-246's ai-review pass 3 [high]. Non-goals: changing the namespace semantics."
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping verdict: NOT ready — two items `open`, both `owner: \"human\"`, both the same decision.**\n\nThe run was requested as \"move to Ready and run to Done\". Read the board first: TKT-249 was in **Backlog** with `readiness: null`, no context-mémo and no comments, so it was shaped rather than entered at Ready.\n\n**Items met (6/8):** `objective`, `scope`, `dependencies`, `first_slice`, `success`, `context_memo`.\n\n**Items open (2/8):** `approach` and `uncertainties` — one decision wearing two labels.\n\n### Why `approach` is held rather than `deferred`\n\nThe DoR's carve-out is explicit: `approach: deferred` does **not** pass when the ticket touches data migrations. This ticket *is* a data migration. So it holds at Gate 1 with `owner: \"human\"`.\n\n### The proposed remedy, verified rather than inherited\n\nThe ticket text proposes splitting the column add from the index builds and building the indexes `CONCURRENTLY`, and names ADR-020's preconditions as the obstacle. Checked against the code:\n\n- **Precondition (1)** — migrations decoupled from startup — **satisfied** (ADR-022).\n- **Precondition (2)** — a second replica or external writer — **still false.** `compose.yaml` runs inventory single-instance with no `replicas`; `deploy/` holds one bootstrap SQL file; `docs/conventions/continuous-delivery.md` states Compose is the only runtime topology.\n- **Precondition (3)** — a populated target table — **still false.** Nothing is deployed.\n\nThey are conjunctive. So adopting CIC today buys the same nothing ADR-020 already reasoned through, while taking on its named traps: `NO TRANSACTION` applies per file to Up *and* Down; the 30s deadline at `services/inventory/cmd/inventory/main.go:72` **is** propagated to goose's non-transactional branch and must be removed in the same change, never before; a cancelled CIC leaves an **INVALID** index that `IF NOT EXISTS` silently accepts.\n\nThat does not make the ticket wrong — it makes its own COS accurate: *\"either ADR-020 has to be revisited or the approach has to avoid it, and either is a decision this ticket owns rather than inherits.\"*\n\n### The choice the human owns at Gate 1\n\n- **(a) Amend ADR-020** to scope CIC adoption to inventory ahead of preconditions (2)/(3) — pay the traps now for a benefit that arrives with production.\n- **(b) Split without CIC** — column add in one migration, indexes in another. Shorter locks, honest about not being fully online. Does not touch ADR-020's decision.\n- **(c) Rule it premature** — correct `0016`'s deploy note so the cutover requirement stops reading as a defect, record the trigger, close.\n\n### Two findings the plan will need either way\n\n1. **0016 is already applied and cannot be edited in place.** `smoke_test.go:263` derives the expected goose version from migration *filenames*, and 0016 is recorded as applied in every database. Forward migrations are the only mechanism.\n2. **COS 4 (\"measured, not asserted\") has no fixture today.** No populated `claims` table exists anywhere, so the measurement requires constructing one. That is real work, not a verification step.\n\n### One live tripwire the mémo now carries\n\n`channel_allocation_seller_smoke_test.go:336` pins that a partner's key is stored **verbatim** and the namespace is the `reseller_scope` **column**, never a Go-side decoration. The obvious \"schema-tolerant read\" fallback — decorate the key when the column is missing — is precisely the DoS TKT-246 removed. A plan that reaches for it would be correct against every ADR it cites and still wrong.\n"
+    }
+  ],
+  "description": "**The accepted cost of TKT-246's `claims.reseller_scope` migration, recorded so it is\nfindable before it becomes an incident.**\n\n`0016_claim_reseller_scope.sql` is **not online and not expand/contract** (ADR-022). goose runs it in\none transaction: `ADD COLUMN` takes ACCESS EXCLUSIVE and holds it to commit, and two full unique\nindex builds happen inside that lock — so **readers** of `claims` block for the duration, not just\nwriters, against ADR-008's 30s bound.\n\nThe binaries are also incompatible in both directions across it:\n- new binary on schema 0015 → every hold 500s (it selects `reseller_scope`)\n- previous binary on 0016 → writes NULL scope and decorates the key itself, so a partner retry\n  misses its row and places a **second hold**\n\n**This was accepted for TKT-246 only because the partner write path shipped in that same ticket** —\nthere are no partner claims in any database yet, so the second-hold window has nothing to act on,\nand every current `claims` table is small. Neither condition survives contact with production\npartner volume.\n\n**Conditions of Success:**\n- The column add is separated from the index builds, and the indexes are built outside a\n  transaction. Note **ADR-020's preconditions for `CREATE INDEX CONCURRENTLY` are still not met** —\n  that ADR has to be revisited or the approach has to avoid it, and either is a decision this ticket\n  owns rather than inherits.\n- One release where the binary tolerates both schemas, so a rolling deploy is possible.\n- The deploy note at the top of `0016` is updated or deleted — it currently says a quiesced cutover\n  is required, and that statement must not outlive the constraint.\n- Measured against a representative populated `claims` table, not asserted.\n\nSurfaced by TKT-246's ai-review pass 3 [high]. Non-goals: changing the namespace semantics.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "0016 is a quiesced-cutover migration (ACCESS EXCLUSIVE held across ADD COLUMN + two unique index builds, in one goose transaction) with a two-way binary incompatibility. Verified at HEAD: services/inventory/internal/store/store.go:470 selects reseller_scope, so a new binary on schema 0015 errors on every hold. Accepted for TKT-246 only because no partner claims exist yet; neither the empty-table nor the no-partner-volume condition survives production."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: new inventory migrations that make the reseller_scope index topology reachable online; a schema-tolerant read for one release; correcting/removing 0016's deploy note; a measurement against a populated claims table. OUT: 0016 is already applied in every database and is NOT edited in place (goose version history is immutable; smoke_test.go:263 latestMigrationVersion derives from filenames, so forward migrations are the only mechanism). OUT: namespace semantics (ticket's stated non-goal). OUT: making other services' migrations online."
+    },
+    "uncertainties": {
+      "state": "open",
+      "owner": "human",
+      "note": "See approach: the ticket's central question is whether ADR-020 gets amended (adopt CIC for inventory) or the approach avoids CIC entirely. That is a decision, not an investigation."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers, no blocked-by links. TKT-246 (which shipped 0016) is merged. Depends on ADR-020 and ADR-022 as decisions, not as work."
+    },
+    "approach": {
+      "state": "open",
+      "owner": "human",
+      "note": "HELD DELIBERATELY — the DoR's data-migrations carve-out applies: `approach: deferred` does not pass on a data-migration ticket, so this is owner:human at Gate 1 rather than an escape hatch. VERIFIED AGAINST CODE, not inherited: the ticket text proposes 'split the column add from the index builds and build them CONCURRENTLY', citing ADR-020's preconditions as the obstacle. That reading is correct but incomplete. ADR-020's three preconditions are CONJUNCTIVE. (1) is satisfied by ADR-022. (2) more-than-one-replica-or-external-writer: checked compose.yaml — inventory runs single-instance, no replicas key, deploy/ holds one bootstrap SQL file, docs/conventions/continuous-delivery.md states Compose is the only runtime topology. STILL FALSE. (3) a populated target table: no deployment exists, so no claims table is populated. STILL FALSE. So adopting CIC today buys the same nothing ADR-020 already reasoned about, AND drags in its named traps: NO TRANSACTION applies per-file to Up and Down both; the 30s deadline in services/inventory/cmd/inventory/main.go:72 IS propagated to the non-transactional branch and must be removed in the same change that adopts CIC, never before; a cancelled CIC leaves an INVALID index that CREATE INDEX CONCURRENTLY IF NOT EXISTS silently accepts. The honest framing for the plan gate is therefore a THREE-way choice, and the ticket's own COS says this decision is the ticket's to own: (a) amend ADR-020 to scope CIC adoption to inventory ahead of preconditions (2)/(3), paying the traps for a future benefit; (b) split the migration WITHOUT CIC — column add in its own migration, indexes in another, each a shorter lock, honest about not being fully online; (c) rule the ticket premature, correct 0016's deploy note to say the cutover requirement is real and record the trigger, and close. Note that COS bullet 4 ('measured against a representative populated claims table, not asserted') is a real cost under any option: no such table exists, so it must be constructed."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: the migration split + schema-tolerant read + deploy-note correction + the measurement, all in inventory. Nothing to defer to a second ticket."
+    },
+    "success": {
+      "state": "met",
+      "note": "The ticket's four COS are concrete and each has an observable: indexes built outside a transaction; one release where the binary tolerates both schemas; the deploy note updated or deleted; a measurement rather than an assertion. Note COS 2 needs a test that can actually fail — a schema-tolerant read is exactly the shape where a test seeds the NEW schema and proves nothing about the OLD one."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below. governingAdrs and governingTests both populated; every cited ADR verified to resolve at HEAD via git cat-file."
+    }
+  },
+  "context": {
+    "governingAdrs": [
+      {
+        "id": "ADR-020-catalog-index-build-concurrency.md",
+        "constrains": "THE decision this ticket must either satisfy or amend. CIC is NOT adopted; preconditions are conjunctive and (2)/(3) are still false at HEAD (verified against compose.yaml and docs/conventions/continuous-delivery.md). Its 'Traps for whoever adopts it' section is a checklist this ticket must answer item by item if it chooses CIC: NO TRANSACTION is per-file (Up AND Down), the 30s deadline reaches the non-transactional branch and must be removed in the SAME change, a cancelled CIC leaves an INVALID index that IF NOT EXISTS hides, recovery needs plain DROP INDEX. Also: 'scope any adoption to indexes added to PRE-EXISTING tables' — claims is pre-existing, so that clause is satisfied. The ADR is written about catalog; extending it to inventory is itself an amendment, not an inheritance."
+      },
+      {
+        "id": "ADR-022-out-of-band-service-migrations.md",
+        "constrains": "Migrations run as a one-shot Compose job (inventory-migrate) that the service waits on via service_completed_successfully; the server path never migrates. Any new migration this ticket adds runs there, not at startup. The 30s deadline and fail-fast are explicitly retained ('The 30s deadline stays… this is not that change'), so removing it is an ADR-022 amendment too. Its three gate assertions constrain what a new migration may break."
+      },
+      {
+        "id": "ADR-008-embedded-migrations.md",
+        "constrains": "goose-as-library, SQL embedded via embed.FS, per-service schema ownership, fail-fast, 30s bound. Superseded on PLACEMENT ONLY by ADR-022 — everything else stands. The 30s bound is ADR-008's, which is why relaxing it touches two ADRs."
+      }
+    ],
+    "governingTests": [
+      {
+        "path": "smoke/smoke_test.go:304 TestMigrationsAppliedOutOfBand",
+        "invariant": "Every service database is at the highest goose version derivable from its checked-in migration FILENAMES (latestMigrationVersion, smoke_test.go:263). Adding 0019/0020 to inventory automatically raises the expected version — so a new migration that fails to apply fails this, and a migration file added but not applied is caught. This is the tripwire that makes editing 0016 in place useless: the version is derived from names, and 0016 is already recorded as applied."
+      },
+      {
+        "path": "smoke/smoke_test.go:567 TestMigrationsRanBeforeServicesStarted",
+        "invariant": "Each migrate job exited 0 AND its service was created declaring service_completed_successfully on that job, required:true — read from the container's depends_on label plus the merged compose config. A migration that fails, or a compose edge weakened to make a slow CIC build tolerable, fails here."
+      },
+      {
+        "path": "smoke/smoke_test.go:622 TestServerModeDoesNotMigrate",
+        "invariant": "Catalog in server mode against an empty database never creates goose_db_version. Constrains the shape of any 'schema-tolerant read' solution: tolerance must live in the QUERY, never in a startup-time schema probe that migrates or repairs."
+      },
+      {
+        "path": "services/inventory/internal/store/channel_allocation_seller_smoke_test.go:336",
+        "invariant": "A partner's idempotency key is stored VERBATIM and the namespace is the reseller_scope COLUMN, never a decoration on the caller's key. This is TKT-246's authorization fix, pinned. A schema-tolerant read that falls back to Go-side key decoration on the old schema would re-introduce exactly the DoS this test exists to prevent — it is a live tripwire against the obvious fallback."
+      },
+      {
+        "path": "scripts/check-adr-numbers.sh",
+        "invariant": "ADR numbering/registry consistency — relevant because this ticket may amend ADR-020 and ADR-022 rather than author a new one."
+      }
+    ],
+    "notes": "The two-way incompatibility is asymmetric and both directions are verified at HEAD. Forward (new binary, old schema): store.go:470, seat_claims.go:713 and :1588 all name reseller_scope in SQL, so every hold errors — a hard, loud failure. Backward (old binary, new schema): the old binary writes NULL scope and decorates the key in Go, so a partner retry misses its row and places a SECOND hold — silent, and the one that costs money. A schema-tolerant read only addresses the forward direction; the backward direction is closed by ordering (migrate before the old binary is gone is exactly what must NOT happen), which is a deploy-sequencing constraint, not code."
+  }
 }
