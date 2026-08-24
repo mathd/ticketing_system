@@ -6,6 +6,15 @@ Date: 2026-07-15
 
 Accepted (approved at the TKT-62 plan gate, 2026-07-15).
 
+**Amended 2026-08-24 (TKT-249):** this ADR is titled for catalog, but its preconditions are the
+repo's test for adopting CIC **anywhere** — `services/inventory/internal/store/migrations/0016_claim_reseller_scope.sql`
+cites them, and TKT-249 was filed to act on that citation. It was examined and **closed without code**:
+preconditions (2) and (3) are still false for inventory too (single-instance under Compose, nothing
+deployed, no populated `claims` table), so the decision below applies unchanged. Read this ADR as
+governing **every service's** index builds, not catalog's alone; the catalog-specific parts are the
+five-site table and the `performances_by_event` question, not the decision. The re-open trigger is
+recorded in 0016's deploy note as well as here.
+
 **Amended 2026-07-15 (TKT-66):** precondition (1) is now **satisfied** —
 [ADR-022](./ADR-022-out-of-band-service-migrations.md) moved migrations out of the startup path.
 **Preconditions (2) and (3) remain false, so this ADR's decision is unchanged: CIC is still not
@@ -146,7 +155,7 @@ index stands.
 
 ## References
 
-- TKT-62 · TKT-60 (PR #42, where the Codex review raised it) · TKT-2
+- TKT-62 · TKT-60 (PR #42, where the Codex review raised it) · TKT-2 · TKT-249 (inventory 0016 — closed without code; preconditions still false)
 - [ADR-008](./ADR-008-embedded-migrations.md) — the startup-coupled migration model this defers to
 - [ADR-019](./ADR-019-catalog-read-path-scoping.md) — `performances_by_event` and the scan assertions
 - [goose annotations](https://pressly.github.io/goose/documentation/annotations/)

@@ -22,6 +22,25 @@
 -- transaction, and giving the binary a schema-tolerant read for one release. ADR-020's
 -- preconditions for CONCURRENTLY are still not met, so that is a ticket, not a tweak.
 -- Recorded here rather than discovered during an incident.
+--
+-- TRIGGER (TKT-249, examined 2026-08-24 and closed without code). Doing that work now
+-- was considered and rejected: ADR-020's preconditions are conjunctive, and (2) a second
+-- replica or external writer and (3) a populated target table are both still false --
+-- inventory runs single-instance under Compose and nothing is deployed. Adopting CIC
+-- against an empty table would take the ADR's named traps (NO TRANSACTION applies to Up
+-- AND Down; the 30s bound in cmd/inventory/main.go IS propagated to goose's
+-- non-transactional branch and must be dropped in the same change; a cancelled build
+-- leaves an INVALID index that IF NOT EXISTS silently accepts) in exchange for nothing
+-- measurable. Splitting the migration without CIC was also rejected: two shorter
+-- ACCESS EXCLUSIVE windows are still not online, so it changes the shape and no
+-- observable property.
+--
+-- Re-open when EITHER precondition turns true -- inventory gains a second replica or an
+-- external writer, or a claims table anywhere holds enough rows for the build duration
+-- to matter. Whoever re-opens it inherits one cost that has no shortcut: this migration
+-- is already applied everywhere, and smoke_test.go's latestMigrationVersion derives the
+-- expected goose version from migration FILENAMES, so the fix is forward migrations --
+-- editing this file is not available.
 -- Idempotency keys are scoped to the RESELLER, structurally (TKT-246 ai-review pass 2).
 --
 -- claims were UNIQUE (organizer_id, idempotency_key). Two reseller credentials may
