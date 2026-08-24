@@ -57,8 +57,8 @@
     "capturedAt": "2026-08-24",
     "governingAdrs": [
       {
-        "id": "ADR-016",
-        "why": "The transactional-outbox contract these two tests prove (completion and the owed event commit together). Whatever replaces claimOne must not weaken the claim/lease semantics ADR-016 defines. VERIFY the exact filename under docs/adr/ before briefing — cited from the tests' own comments, not yet resolved to a file."
+        "id": "ADR-016-checkout-recovery-state-machine.md",
+        "why": "Owns the transactional outbox (§ line 190: the row is written inside the completion transaction; the outbox persists the canonical envelope with a frozen id). Resolved to a real file at HEAD and read — the tests' bare 'ADR-016' citation is correct despite the filename naming checkout recovery, which is exactly the kind of mismatch that sends a drafter looking for the wrong document. Constrains the fix: claim/lease semantics and the frozen envelope are ADR-016's, so a replacement for claimOne may not change what claiming MEANS, only how the test locates its own row."
       }
     ],
     "governingTests": [
