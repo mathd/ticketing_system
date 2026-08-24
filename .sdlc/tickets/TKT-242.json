@@ -12,6 +12,83 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-235's gate run — incidental, not blocking that ticket\n\n**Triage: incidental.** TKT-235's diff contains no commerce file; the test passes 5/5 in isolation\nand passed inside two full green `make check` runs on a superset of the same commits. Fixing an\nunrelated service's flaky test inside a channel-registry PR would be scope creep, and would bloat a\ndiff a reviewer has to read.\n\nNeeds shaping before Gate 1 — in particular, whether this shares a root cause with TKT-231 (same\npackage, same shape) and should be merged into it rather than run separately."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Shaping verdict: READY.** 7/8 `met`, 1 `deferred` with the reason stated. No `open` items, no blockers.\n\n**This ticket now carries TKT-231.** That is the re-scope TKT-242's own non-goals permit — *\"unless the diagnosis turns out to be one shared root cause — in which case say so and re-scope explicitly rather than silently widening.\"* Saying so explicitly:\n\nBoth failures are the **same line of the same helper**. `claimOne` (`outbox_smoke_test.go:463`) claims a batch and searches it for the caller's order; when it does not find it, it calls `t.Fatalf(\"order %s not claimable\", order)` at `:474`. That is the observed failure text in **both** tickets. TKT-242 reaches it from `:417`, TKT-231 from `:367`. In neither case is the assertion the test exists to make ever evaluated.\n\nThis also closes TKT-231's stated gap. It was filed with **no description** and *\"no sample assertion text was captured… the first job is to reproduce it or to retrieve the failure output, not to guess a fix.\"* The output did not need retrieving — the string is `claimOne`'s, and it identifies the helper unambiguously.\n\n### One candidate cause investigated and ruled out\n\nCross-package database contention is **not** it. `scripts/smoke.sh:66-100` already provisions four separate commerce databases, each block carrying the incident that motivated it, and `TestCommerceSmokeDatabasesAreIsolated` fails if a fifth package starts sharing. The contention is *within* `./internal/store`.\n\n### Two live candidates, both closed by one fix\n\n- **LIMIT** — `claimOne` calls `ClaimOutbox(ctx, db, 50, …)` and searches the result. Above 50 claimable rows the seeded row can simply be outside the batch.\n- **ORDER BY tie** — the claim query orders by `next_attempt_at`, which `DEFAULT`s to `now()` (`0003_completion_outbox.sql:45`). Rows created in one test run tie, and order among ties is arbitrary. This is the shape TKT-230 already proved for `claim_history`.\n\n`uncertainties` is `deferred` rather than `open` because both are closed by the same change and settling which one fired is the first *build* step, not a precondition for starting.\n\n### The trap this ticket must not fall into\n\nCOS 2 says the fix must not remove the test's teeth. The tempting fixes both do: raising the `LIMIT` moves the cliff without removing it, and relaxing `ClaimOutbox`'s production predicate to make a test row findable changes shipped behaviour to suit a test. The deliverable's proof is a **mutation check on both covered mechanisms** — break `MarkPublished`, watch `:411` redden; break `BackfillCompletionOutbox`, watch `:344` redden. A `claimOne` that always succeeds would pass both tests and prove nothing.\n"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Two commerce outbox tests fail under gate load at the SAME line of the SAME helper — claimOne (outbox_smoke_test.go:463), reporting 'order <id> not claimable'. TKT-242 fails at :417, TKT-231 at :367. The assertion each test exists to make is never reached; the helper gives up first. Goal: make claimOne find the row it seeded regardless of what else is in the table, without weakening what the two tests prove."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: services/commerce/internal/store/outbox_smoke_test.go — claimOne and any seeding that feeds it. Carries TKT-231 (see the re-scope note): same helper, same failure string, one fix. OUT: services/commerce/internal/store/store.go ClaimOutbox itself — this is a TEST defect, and changing the production claim query to make a test findable is the fix that removes the test's teeth (COS 2). OUT: TKT-218 (different runtime, no database — cannot share this cause). OUT: TKT-149."
+    },
+    "uncertainties": {
+      "state": "deferred",
+      "note": "Which of two mechanisms starves claimOne is not yet settled, and BOTH are closed by the same fix, which is why this is deferred rather than open. (a) LIMIT: claimOne calls ClaimOutbox(ctx, db, 50, ...) and searches the returned batch; with >50 claimable rows the seeded row can fall outside it. (b) ORDER BY tie: the claim query is `ORDER BY next_attempt_at` and the column DEFAULTs to now() (0003_completion_outbox.sql:45), so rows created within the same test run tie and the order among them is arbitrary — the same ordering-tie shape TKT-230 proved for claim_history. Under load, more rows are in flight and both get likelier. Settling it is the FIRST build step (reproduce, then instrument), not a precondition for starting."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No open blockers. NOTE — one candidate cause was investigated and RULED OUT at shaping: cross-package database contention. scripts/smoke.sh:66-100 provisions four separate commerce databases precisely because `go test ./internal/...` runs packages concurrently, and TestCommerceSmokeDatabasesAreIsolated (dsn_isolation_smoke_test.go:53) fails if a fifth package starts sharing. So the contention is WITHIN ./internal/store, between tests in one sequential binary — not between packages."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Make claimOne deterministic about its own row instead of searching a bounded, arbitrarily-ordered batch. The direction that satisfies COS 2: have the helper assert on the row it seeded — claim with a predicate or a limit that cannot exclude it, or assert claimability directly — so the test still fails if MarkPublished/Backfill genuinely regresses. Explicitly REJECTED: raising the LIMIT (moves the cliff, does not remove it), and touching ClaimOutbox's production predicate. The mutation check is the deliverable's proof: break MarkPublished and BackfillCompletionOutbox in turn and observe each test go red — a fix that makes claimOne always succeed would pass both tests while proving nothing."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice: reproduce under load (seed >50 claimable rows, or force a next_attempt_at tie), then fix claimOne, then mutate both covered mechanisms to show the tests still bite. Both tickets close together."
+    },
+    "success": {
+      "state": "met",
+      "note": "TKT-242's three COS, plus TKT-231's (reproduce or explain). Restated as observables: (1) the mechanism is named from evidence, not inferred; (2) both tests survive simulated suite load; (3) breaking MarkPublished reddens :411 and breaking BackfillCompletionOutbox reddens :344 — the teeth check."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "Baked below. governingAdrs and governingTests both populated; ADR files verified to resolve at HEAD."
+    }
+  },
+  "context": {
+    "capturedAt": "2026-08-24",
+    "governingAdrs": [
+      {
+        "id": "ADR-016",
+        "why": "The transactional-outbox contract these two tests prove (completion and the owed event commit together). Whatever replaces claimOne must not weaken the claim/lease semantics ADR-016 defines. VERIFY the exact filename under docs/adr/ before briefing — cited from the tests' own comments, not yet resolved to a file."
+      }
+    ],
+    "governingTests": [
+      {
+        "path": "services/commerce/internal/store/dsn_isolation_smoke_test.go:53 TestCommerceSmokeDatabasesAreIsolated",
+        "invariant": "Fails if a fifth commerce smoke package shares commerce_store_smoke. This is the tripwire proving cross-package contention is NOT the cause here, and it constrains any fix that tries to solve the problem by adding a database."
+      },
+      {
+        "path": "services/commerce/internal/store/outbox_smoke_test.go:173 TestConcurrentDrainersClaimDisjointRows",
+        "invariant": "Seeds 6 orders and runs 4 concurrent drainers claiming with a 1-minute lease, asserting each owed event is claimed by exactly one. It is the heaviest row producer in the file AND it depends on ClaimOutbox's batch semantics — so a change to claimOne or to seeding must not disturb it. It is also a live example of the contention being diagnosed."
+      },
+      {
+        "path": "services/commerce/internal/store/outbox_smoke_test.go:280 TestPoisonRowDoesNotStarveNewerEvents",
+        "invariant": "Asserts a dead-lettered row never re-claims and a newer row drains past it. Depends on ORDER BY next_attempt_at behaviour directly — the same column whose ties are a candidate mechanism here. Changing seeding timestamps to break ties could invalidate this test's premise."
+      },
+      {
+        "path": "scripts/smoke.sh:66-100",
+        "invariant": "Four separate commerce databases, each with a written rationale. Any fix proposing a new database or a shared-state change must answer these comments — they record three prior incidents of exactly that reasoning going wrong."
+      }
+    ],
+    "notes": "TKT-231 is CARRIED BY THIS TICKET (owner decision at Gate 1, 2026-08-24). TKT-242's non-goals allowed exactly this: 'unless the diagnosis turns out to be one shared root cause — in which case say so and re-scope explicitly'. The shared cause is established by reading, not inferred: both tests call the same helper claimOne, both fail with its t.Fatalf string 'order %s not claimable' (outbox_smoke_test.go:474), and neither reaches its own assertions. TKT-231's ticket carried NO description and no captured assertion text; that gap is now closed — the failure string is claimOne's, and the mechanism candidates are named above. TKT-218 was considered for this group and EXCLUDED: it is a Vitest storefront test with no database, so it cannot share a Postgres contention cause; bundling it would have put a false scope claim in the closeout."
+  },
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-231"
+    },
+    {
+      "type": "relates",
+      "key": "TKT-218"
     }
   ]
 }
