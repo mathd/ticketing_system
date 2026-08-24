@@ -9,24 +9,38 @@
   "summary": "Flaky: storefront call-budget tests fail under load, and one fails OPEN (TKT-216 gate incidental)",
   "description": "**Flaky under load, found while gating TKT-216.**\n\n`web/storefront/test/page-call-budget.test.ts` (TKT-208's call-budget proof) fails three of its six\ncases when the machine is busy:\n\n```\n× event list renders on exactly one upstream call      (timeout at 5000ms)\n× event detail renders on exactly one upstream call    (timeout at 5000ms)\n× festival detail renders on exactly one upstream call (expected length 1, got 2)\n```\n\n**It is not a regression.** Verified by checking out the parent commit (`a05d5cc6`, a docs-only\nchange sitting on a gate that was green) and reproducing all three failures there. Verified further\nby re-running with `--testTimeout=30000`: **6 passed, twice.** The transform step alone takes ~9.7s\nin these runs, against a 5s per-test default.\n\n**Why it matters beyond the noise.** The third failure is the interesting one: it does not time out,\nit counts **two** upstream calls where the budget allows one. That is the assertion TKT-208 exists to\nmake, and if load can make it report two calls, then the test cannot distinguish \"the page made a\nsecond call\" from \"the machine was busy\". A call-budget proof that fails open under load is not\nproving the budget.\n\n**Suggested direction (not a decision):**\n- Raise the per-test timeout for this file so a slow transform cannot be read as a budget violation.\n- Separately, work out whether the 2-call observation is a genuine second fetch triggered by a\n  timeout/retry path, or an artefact of the stub counting a cancelled request. Those need different\n  fixes, and only the second is harmless.\n\nDo not simply raise the timeout and close it: that hides the second question.\n\n---\n\n**Update (TKT-216 gate, same session).** The per-test timeout in that file was raised to 30s, because\nthe gate must be green and the 5s default was turning machine load into a reported budget violation.\nThe three failures stop reproducing.\n\n**That change closes the noise, not this ticket.** The substantive question is untouched and is the\nreason this ticket stays open:\n\n> one of the three observed failures did NOT time out — it counted **two** upstream calls where the\n> budget allows one.\n\nSo the assertion can still fail **open**. What remains to determine is whether a second fetch is ever\ngenuine (a retry path, a cancelled request the stub double-counts) or purely an artefact. Those need\ndifferent fixes and only one of them is harmless. A comment in the test now says the same thing, so\nwhoever raises the timeout again does not read it as resolved.",
   "context": {
-    "capturedAt": "2026-08-05",
-    "binding": [],
+    "capturedAt": "2026-08-24",
     "governingAdrs": [
       {
-        "id": "ADR-004",
-        "why": "Rule 3 (frontends are call-frugal) is what this test proves; TKT-208 built it."
-      }
-    ],
-    "reference": [
-      {
-        "summary": "The failing file and the budget it asserts",
-        "link": "web/storefront/test/page-call-budget.test.ts"
+        "id": "ADR-004-frontend-read-model.md",
+        "why": "Rule 3 (frontends are call-frugal: one call per page view, not per widget) is the invariant this test proves. VERIFY exact filename at brief time.",
+        "constrains": "The budget itself is not re-litigated by this ticket — only the test's ability to measure it honestly."
       },
       {
-        "summary": "Found while gating TKT-216; reproduced at the parent commit, so not caused by it",
-        "link": "board:TKT-216"
+        "id": "ADR-006",
+        "why": "The SSR cache owns the minutes tier, and client islands hydrate browser-side where this test does not observe them. The test's own header comment (:13-16) records that a green result does NOT mean the page makes one request in production.",
+        "constrains": "A fix must not extend the assertion to client-island reads — that is TKT-177's, explicitly."
       }
-    ]
+    ],
+    "governingTests": [
+      {
+        "path": "web/storefront/test/page-call-budget.test.ts:124-133",
+        "invariant": "An in-test comment left by TKT-216 warning that raising the timeout does NOT close this ticket, and naming the fail-open question. It is a live tripwire against the obvious wrong fix; it must be UPDATED (not deleted) when the fail-open path is actually closed, or it will keep warning about a question that has been answered."
+      },
+      {
+        "path": "web/storefront/test/page-call-budget.test.ts:76-84",
+        "invariant": "Records that the first version of this test called the api.ts wrappers directly and proved nothing about the page — an ai-review finding, explicitly warned against in the ticket's own plan-review. Any refactor that injects a clock must keep rendering the REAL page module through Astro's container."
+      },
+      {
+        "path": "web/storefront/test/page-call-budget.test.ts:113-119",
+        "invariant": "The render must return 200 AND every repeated child must appear in the HTML. Added in ai-review because a count alone is a weak oracle — a page that short-circuits to 503 spends exactly one call too. A fix must not weaken these."
+      },
+      {
+        "path": "web/storefront/src/lib/cache.ts (PageDataCache constructor)",
+        "invariant": "Already accepts `fetchImpl` and `now` for injection — the seam this fix needs exists. The class also documents a KNOWN unclosed gap: after a backward wall-clock step an entry can outlive its TTL in real time, and closing that needs a monotonic clock source, which would change the injected-clock contract shared with the middleware and the cache's own tests. This ticket must not silently take that on."
+      }
+    ],
+    "notes": "EXCLUDED from the TKT-231/242 grouping deliberately (owner decision, 2026-08-24). Those two are Go/PostgreSQL smoke tests failing in one shared database at the same helper; this is a Vitest storefront test with no database. Different runtime, different mechanism — bundling would have put a false shared-cause claim in a closeout. What the three DO share is only the symptom class (load-sensitive), which is not a cause."
   },
   "comments": [
     {
@@ -38,6 +52,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n### Fresh reproduction of BOTH halves, from TKT-140's gate run (2026-08-09)\n\nNot a new ticket - adding evidence here rather than filing a duplicate, because this ticket already\nnames the exact shape and `web/storefront/test/page-call-budget.test.ts:129-134` already records that\nit is **not closed**.\n\nObserved while running `make check` for TKT-140 (a Go smoke-test-only change that cannot affect this\nsuite - `test-ts` is `pnpm -r test` and touches no Go). One gate run produced **both** documented\nfailure modes in the same file, in one invocation:\n\n```\nFAIL  test/page-call-budget.test.ts > ... > event list renders on exactly one upstream call\n  Error: Test timed out in 30000ms.\n\nFAIL  test/page-call-budget.test.ts > ... > event detail renders on exactly one upstream call\n  AssertionError: expected [ ...(2) ] to have a length of 1 but got 2\n    at test/page-call-budget.test.ts:122:37\n```\n\n**The second one is the half this ticket says is still open** - it did not time out, it counted TWO\nupstream calls where the budget allows one. The in-file comment predicted exactly this (\"That\nassertion can therefore still fail OPEN, and whether a second fetch is ever genuine - a retry path,\nor a cancelled request the stub counts twice - is an open question\").\n\n#### The condition that produced it, measured\n\nThe machine was at **load average ~30 on 16 cores** (~2x oversubscribed), caused by 24 orphaned\n`codex-companion` shells from an unrelated session burning ~64% CPU each for 13 hours. That is the\nstrongest hint yet about the open half's mechanism: **the double count appeared only under heavy\nCPU oversubscription**, never when unloaded.\n\nControlled runs on the same file, same commit, same machine:\n\n| Run | Tree | Load | Result |\n|---|---|---|---|\n| inside `make check` | TKT-140 change present | ~30 | 2 failed (1 timeout, 1 double-count) |\n| standalone | change **stashed**, tree == `origin/main` | idle | 6 passed |\n| standalone | change present | idle | 6 passed |\n| inside `make check`, after killing the orphans | change present | ~5 | **179/179 passed** |\n\nSo: reproducible under load, not reproducible idle, and independent of the tree under test.\n\n#### What this suggests for whoever picks this up\n\nThe timeout half is understood (Astro's vite transform is slow on a busy machine; TKT-218's 30s\nalready mitigates it). For the **open** half, the load-correlation points at the stub's counting\nrather than at a genuine second fetch: under CPU starvation a request that is cancelled or retried\nat the transport layer could plausibly be observed twice by `stubFetch` while the page still renders\none logical read. Worth testing that hypothesis directly - assert on distinct URLs plus a\nrender-once marker, rather than on raw call count - before concluding the storefront has a real\ndouble-read.\n\nRecording the load figure specifically because \"flaky under load\" was previously qualitative; there\nis now a number and a reproduction recipe."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Re-shaped 2026-08-24. Verdict: READY — 8/8 `met`.** The two items that were `open` are both closed, one by execution and one by an owner decision.\n\n### `uncertainties` — answered by running it, not by reasoning\n\nThe ticket's central question was whether the 2-call observation is a genuine second fetch or an artefact of the stub counting a cancelled request. **It is genuine.**\n\n`PageDataCache` measures freshness against a **wall clock**. `ageOf()` is `upstreamAgeSeconds + elapsed`, the stub serves `max-age=300` with no `Age` header, so an entry stays fresh for 300 seconds of *wall* time. A starved SSR process that loses more than `max-age` between two reads of one URL misses and re-fetches.\n\nReproduced directly, with the cache's own injected-clock seam:\n\n```\ncalls for two gets, normal clock: 1\ncalls after a 301s stall:         2\n```\n\nSo the stub counts correctly and the page really does fetch twice. The harmless reading is ruled out — which matters, because it was the reading that would have justified closing this with a widened assertion.\n\n### `approach` — Gate 1 decision, now sharpened by the diagnosis\n\nThe direction you chose was *\"make the assertion fail closed either way\"*. With the mechanism known it becomes concrete: give the cache a **deterministic clock** for this test — the constructor already takes `now`, so the seam exists — and let the fixture decide elapsed time instead of machine load. Same treatment TKT-233 and TKT-232 applied: assert the dependency edge, not a wall clock.\n\nTwo fixes explicitly rejected, both of which look right:\n\n- **Raise the timeout again.** The test's own comment at `:124-133` warns against exactly this. It addresses the three *timeout* failures and is silent on the fail-open one.\n- **Widen the assertion to `<= 2`.** That *is* the fail-open defect.\n\n### One trap carried into the mémo\n\n`cache.ts` documents a gap it deliberately did not close: after a *backward* wall-clock step, an entry can outlive its TTL in real time, and fixing it needs a monotonic clock source — which would change the injected-clock contract the cache shares with the middleware and its own tests. This ticket must not quietly take that on. It is a different ticket.\n\n### Why this is not grouped with TKT-231/242\n\nThose two are Go smoke tests failing at one helper in one shared PostgreSQL database. This is a Vitest test with no database. They share a *symptom class* — load-sensitive — which is not a cause. Grouping them would have put a shared-mechanism claim in a closeout that the code contradicts.\n"
     }
   ],
   "readiness": {
@@ -50,16 +69,16 @@
       "note": "web/storefront/test/page-call-budget.test.ts and whatever in the storefront fetch path explains a second call. Not a re-litigation of TKT-208's budget itself."
     },
     "uncertainties": {
-      "state": "open",
-      "note": "OPEN and this is the ticket: is the observed 2-call count a genuine second fetch (a retry or revalidation path) or an artefact of the stub counting a cancelled request? Different fixes, and only the artefact is harmless. Nobody has yet determined which."
+      "state": "met",
+      "note": "ANSWERED at shaping, by execution rather than inference. The 2-call observation is a GENUINE second fetch, not a stub artefact. Mechanism: PageDataCache measures freshness against a WALL clock (Date.now, cache.ts). ageOf() = upstreamAgeSeconds + elapsed; the stub serves max-age=300 with no Age header, so an entry is fresh for 300s of WALL time. A starved SSR process that loses more than max-age of wall time between two reads of the same URL misses and re-fetches. Reproduced directly: constructing PageDataCache with an injected clock and stepping it 301s between two get() calls on one URL yields calls=2 (fresh clock yields 1). So the stub counts correctly and the page really does fetch twice."
     },
     "dependencies": {
       "state": "met",
       "note": "None. The 30s timeout raised during TKT-216's gate already removed the load-induced noise, so the remaining signal can be studied in isolation."
     },
     "approach": {
-      "state": "open",
-      "note": "OPEN, and depends on the answer above. If genuine: the budget or the page is wrong. If artefact: the stub's counting is wrong. Do NOT raise the timeout again and close - a comment in the test already warns against exactly that."
+      "state": "met",
+      "note": "Owner decision at Gate 1 (2026-08-24): make the assertion fail CLOSED regardless of which diagnosis won — and the diagnosis is now known, which sharpens it. The budget assertion must not be able to read wall-clock starvation as a budget violation, while still failing if the page genuinely adds a second read. Direction: give the cache a deterministic clock for this test (the constructor already accepts `now`), so elapsed time is decided by the fixture rather than by machine load. That is the same treatment TKT-233/TKT-232 applied — assert the dependency edge, not a wall clock. Explicitly REJECTED: raising the timeout again (the test's own comment at :124-133 warns against exactly that, and it addresses the timeout failures, not the fail-open one); and widening the assertion to `<=2` (that is the fail-open defect being fixed). NOTE the injected clock must NOT be threaded so far that the test stops rendering real .astro modules through the container — the file's own comment at :76-84 records that calling the api.ts wrappers directly was a defect found in ai-review."
     },
     "first_slice": {
       "state": "met",
@@ -71,7 +90,7 @@
     },
     "context_memo": {
       "state": "met",
-      "note": "Re-resolved 2026-08-08. The TKT-216 timeout change and its in-test warning comment are on main."
+      "note": "Re-resolved 2026-08-24. governingAdrs and governingTests below; ADR files verified to resolve at HEAD."
     }
   }
 }
