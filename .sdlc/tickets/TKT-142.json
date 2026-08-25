@@ -1,76 +1,84 @@
 {
- "key": "TKT-142",
- "type": "Task",
- "summary": "TestUUIDPathOperationsDeclareBadRequest closes only the path-param subset — body/query/header 400 sources are still unguarded (TKT-110 follow-up)",
- "status": "Ready",
- "labels": [],
- "assignee": null,
- "pr": null,
- "description": "### Incidental finding spun out of TKT-110 (agent's own post-review verification, not the ai-review)\n\nTKT-110 added `TestUUIDPathOperationsDeclareBadRequest`\n(`services/catalog/internal/api/lifecycle_badrequest_test.go`), which closes a *class*: every catalog\noperation with a `format: uuid` **path** parameter must declare `'400'`, because the oapi-codegen\nbinder can always reject one.\n\n**That is one subset of the class, not the class.** The generated binder and the kin-openapi request\nvalidator can also emit a 400 from:\n\n- a **required `requestBody`** that is absent or schema-invalid (measured on TKT-110: invalid JSON,\n  wrong property type, `minLength` violation, and a wrong `Content-Type` all produce 400 from the\n  request validator),\n- a **query parameter** that fails to bind or violates its schema,\n- a **required header** parameter, same.\n\n`getOpenAPISpec` is correctly outside this (it is served before validation).\n\n**No current gap** — verified at TKT-110's merge: every catalog operation with a request body or a\nconstrained query/header parameter already declares `'400'`, and the nine that did not have one now do.\nSo this is latent, not live. But the invariant test's name and failure message speak only of path\nparameters, and a future operation with a required body and no uuid path parameter would slip through\nexactly the way these nine did — which is the failure mode ADR-028's corrected Consequences now\ndescribe: *any status the binder or the request validator can write must be declared.*\n\n**Scope to settle at plan time**\n\n- [ ] Broaden the invariant to every rejection source the request layer has, or add a second invariant\n      test per source — decide which reads better as a failure message\n- [ ] Decide whether the same invariant belongs in the four non-codegen services. Their request\n      validator does **not** reject malformed UUIDs today (`format: uuid` is unenforced repo-wide — no\n      `EnableFormatValidation` / `DefineStringFormat` call exists), and their hand-rolled `parseUUID`\n      400s *are* declared, so the answer may legitimately be no\n- [ ] Related but separable: whether to enable `openapi3.EnableFormatValidation` at all. TKT-110\n      explicitly rejected it as out of scope — it changes request-validation behaviour on every\n      operation in all five services and could turn currently-succeeding requests into 400s. If that\n      is ever adopted, this invariant's shape changes, so sequence them\n\n**Governing:** ADR-028 (fail-closed on undeclared statuses, and its TKT-110 correction that the\ncarve-out does not hold for catalog), ADR-009 (spec is authoritative; any spec change ⇒ regen).\n\n**Not urgent.** Nothing is broken today; this raises the ceiling on a test that currently prevents a\nrecurrence of nine real production defects.\n",
- "context": {
-  "binding": [],
-  "governingAdrs": [
-   {
-    "id": "ADR-028",
-    "why": "Its TKT-110-corrected Consequences state the rule this ticket would enforce more completely: for catalog, any status the binder or request validator can write must be declared, because response validation is the outermost wrap."
-   },
-   {
-    "id": "ADR-009",
-    "why": "Spec-authoritative: if the outcome adds declarations, `make generate` runs and the regen is committed before the gate."
-   }
+  "key": "TKT-142",
+  "type": "Task",
+  "summary": "TestUUIDPathOperationsDeclareBadRequest closes only the path-param subset — body/query/header 400 sources are still unguarded (TKT-110 follow-up)",
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
   ],
-  "reference": [
-   {
-    "summary": "The test to broaden, and TKT-110's measurements of every 400 source it does not yet cover.",
-    "link": "services/catalog/internal/api/lifecycle_badrequest_test.go"
-   },
-   {
-    "summary": "Source ticket with the full probe evidence (binder vs request validator, and why format:uuid is unenforced).",
-    "link": "board: TKT-110"
-   }
+  "assignee": "agent",
+  "pr": null,
+  "description": "### Incidental finding spun out of TKT-110 (agent's own post-review verification, not the ai-review)\n\nTKT-110 added `TestUUIDPathOperationsDeclareBadRequest`\n(`services/catalog/internal/api/lifecycle_badrequest_test.go`), which closes a *class*: every catalog\noperation with a `format: uuid` **path** parameter must declare `'400'`, because the oapi-codegen\nbinder can always reject one.\n\n**That is one subset of the class, not the class.** The generated binder and the kin-openapi request\nvalidator can also emit a 400 from:\n\n- a **required `requestBody`** that is absent or schema-invalid (measured on TKT-110: invalid JSON,\n  wrong property type, `minLength` violation, and a wrong `Content-Type` all produce 400 from the\n  request validator),\n- a **query parameter** that fails to bind or violates its schema,\n- a **required header** parameter, same.\n\n`getOpenAPISpec` is correctly outside this (it is served before validation).\n\n**No current gap** — verified at TKT-110's merge: every catalog operation with a request body or a\nconstrained query/header parameter already declares `'400'`, and the nine that did not have one now do.\nSo this is latent, not live. But the invariant test's name and failure message speak only of path\nparameters, and a future operation with a required body and no uuid path parameter would slip through\nexactly the way these nine did — which is the failure mode ADR-028's corrected Consequences now\ndescribe: *any status the binder or the request validator can write must be declared.*\n\n**Scope to settle at plan time**\n\n- [ ] Broaden the invariant to every rejection source the request layer has, or add a second invariant\n      test per source — decide which reads better as a failure message\n- [ ] Decide whether the same invariant belongs in the four non-codegen services. Their request\n      validator does **not** reject malformed UUIDs today (`format: uuid` is unenforced repo-wide — no\n      `EnableFormatValidation` / `DefineStringFormat` call exists), and their hand-rolled `parseUUID`\n      400s *are* declared, so the answer may legitimately be no\n- [ ] Related but separable: whether to enable `openapi3.EnableFormatValidation` at all. TKT-110\n      explicitly rejected it as out of scope — it changes request-validation behaviour on every\n      operation in all five services and could turn currently-succeeding requests into 400s. If that\n      is ever adopted, this invariant's shape changes, so sequence them\n\n**Governing:** ADR-028 (fail-closed on undeclared statuses, and its TKT-110 correction that the\ncarve-out does not hold for catalog), ADR-009 (spec is authoritative; any spec change ⇒ regen).\n\n**Not urgent.** Nothing is broken today; this raises the ceiling on a test that currently prevents a\nrecurrence of nine real production defects.\n",
+  "context": {
+    "binding": [],
+    "governingAdrs": [
+      {
+        "id": "ADR-028",
+        "why": "Its TKT-110-corrected Consequences state the rule this ticket would enforce more completely: for catalog, any status the binder or request validator can write must be declared, because response validation is the outermost wrap."
+      },
+      {
+        "id": "ADR-009",
+        "why": "Spec-authoritative: if the outcome adds declarations, `make generate` runs and the regen is committed before the gate."
+      }
+    ],
+    "reference": [
+      {
+        "summary": "The test to broaden, and TKT-110's measurements of every 400 source it does not yet cover.",
+        "link": "services/catalog/internal/api/lifecycle_badrequest_test.go"
+      },
+      {
+        "summary": "Source ticket with the full probe evidence (binder vs request validator, and why format:uuid is unenforced).",
+        "link": "board: TKT-110"
+      }
+    ],
+    "capturedAt": "2026-07-29",
+    "note": "Minimal mémo baked at creation — born from a review-time finding, so it bypasses normal shaping (per decomposition.md)."
+  },
+  "comments": [
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`. Ran the widened predicate over `services/catalog/api/openapi.yaml` at HEAD rather than inheriting TKT-110's merge-time verification:\n\n> **live gaps: 0** — every catalog operation with a `requestBody` or a constrained query/header parameter already declares `'400'`.\n\nSo the ticket is still latent, which is the clean case: pure invariant-widening, no spec fix riding along.\n\n**The one hard part is the proof, and it is called out in `success`.** A coverage ticket with no live defect cannot use red-then-green. The demonstration that works is a temporary spec mutation — remove a `'400'` from one body-bearing operation, show the **widened** test catches it and the **current** test does not, revert. Two runs. Without that comparison, \"we widened the class\" is exactly the unfalsifiable claim AGENTS.md warns about.\n\nThree pieces of the existing test must survive the widening: the `Responses.Default()` arm (a `default:` response legitimately satisfies the invariant under kin-openapi), the deliberate absence of the hand-mounted `/internal/*` chi routes from the document, and the `getOpenAPISpec` exclusion. And widen the **failure message** too — it currently explains uuid path parameters, and a message that misstates why an operation owes a 400 aims the next reader at the wrong fix."
+    },
+    {
+      "author": "agent",
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — running gateless per `config.gates: autonomous`\n\n**Backend:** local tracker (`.sdlc/`, state on `sdlc-state`). **Branch:** `TKT-142-widen-badrequest-invariant` off `origin/main` (cc20673b).\n\n**Blockers:** none — `links: []`, and TKT-110 (the origin) is Done.\n\n**Selection reason:** handed to me by the owner. Verified the ticket is genuinely in `Ready` before entering (per the skill's \"read the actual status\" rule) — it is, with all 8 `readiness` items `met` and a `kind=readiness` PASS verdict.\n\n**Risk verdict — `risk:low` NOT claimed.**\n\nBy blast radius it would qualify: one test file, no production code, no auth/money/migration/CI surface. But the label is about blast radius *and* the ticket's central question, and this ticket's central question is precisely the shape the invariant carves out: **\"how do I construct a proof that can actually fail?\"** It is a coverage ticket with **zero live gaps** — the readiness item ran the widened predicate over `services/catalog/api/openapi.yaml` at HEAD and found none — so red-then-green is unavailable, and \"we widened the class\" is unfalsifiable without a deliberate spec mutation demonstrating that the widened predicate catches what the current one misses. That is exactly TKT-266's failure mode (`risk:low` by blast radius, three build cycles lost to fixture design). Keeping the plan gate; the plan critique is where a wrong proof design gets caught for one delegated read.\n\n**Model routing** (from `.claude/sdlc.config.json`, declared not inferred): plan = `gpt-5.6-luna` (codex), planReview = `main-agent`, implement = `main-agent`, aiReview = `gpt-5.6-luna` (codex). Both cross-model pairs are distinct — `plan` ≠ `planReview` and `implement` ≠ `aiReview` — so the load-bearing invariant holds.\n\n→ `Ready` → `Planning`, label `agent:planning`.\n"
+    }
   ],
-  "capturedAt": "2026-07-29",
-  "note": "Minimal mémo baked at creation — born from a review-time finding, so it bypasses normal shaping (per decomposition.md)."
- },
- "comments": [
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`. Ran the widened predicate over `services/catalog/api/openapi.yaml` at HEAD rather than inheriting TKT-110's merge-time verification:\n\n> **live gaps: 0** — every catalog operation with a `requestBody` or a constrained query/header parameter already declares `'400'`.\n\nSo the ticket is still latent, which is the clean case: pure invariant-widening, no spec fix riding along.\n\n**The one hard part is the proof, and it is called out in `success`.** A coverage ticket with no live defect cannot use red-then-green. The demonstration that works is a temporary spec mutation — remove a `'400'` from one body-bearing operation, show the **widened** test catches it and the **current** test does not, revert. Two runs. Without that comparison, \"we widened the class\" is exactly the unfalsifiable claim AGENTS.md warns about.\n\nThree pieces of the existing test must survive the widening: the `Responses.Default()` arm (a `default:` response legitimately satisfies the invariant under kin-openapi), the deliberate absence of the hand-mounted `/internal/*` chi routes from the document, and the `getOpenAPISpec` exclusion. And widen the **failure message** too — it currently explains uuid path parameters, and a message that misstates why an operation owes a 400 aims the next reader at the wrong fix."
+  "links": [],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "TestUUIDPathOperationsDeclareBadRequest closes a CLASS by design — that is its stated point and why it is spec-only. But the class it actually closes is narrower than the class that exists: the binder and the kin-openapi request validator also emit 400 from a required requestBody, a constrained query parameter and a required header. A future operation with a body and no uuid path parameter slips through exactly the way the nine that TKT-110 fixed did, and under ADR-028 an undeclared 400 becomes a 500."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: services/catalog/internal/api/lifecycle_badrequest_test.go — widen the predicate from 'has a format:uuid path parameter' to the full set of binder/validator 400 sources, and correct the test name and failure message, which today speak only of path parameters. OUT: fixing catalog operations (there are none to fix — see uncertainties). OUT: the other four services, which have their own specs and their own version of this test or none; TKT-256 is already handling payments' sibling shape for 500."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "The load-bearing one — 'is this still latent, or has a live gap appeared since TKT-110 merged?' — was settled by running the widened predicate over the spec at HEAD rather than trusting the ticket's 'verified at TKT-110's merge'. Result: **zero** live gaps. Every catalog operation with a requestBody or a constrained query/header parameter already declares '400'. So this ticket is pure invariant-widening with no accompanying spec fix, which is the clean case. Second, smaller: `getOpenAPISpec` is correctly outside the class (served before validation) and the hand-mounted /internal/* chi routes are absent from the document entirely — both already handled by the existing test's structure, both must survive the widening."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. No blockers. TKT-110 (the origin) is Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Verified against the test at HEAD before inheriting the ticket's framing. The existing test is already the right shape — spec-only, drives no requests, covers operation number ten without a fixture — so this is a predicate widening inside a good structure, not a rewrite. Three details the drafter must preserve: (1) the `op.Responses.Default() == nil` arm, which is there because a `default:` response satisfies 400 under kin-openapi's status matching and without it a contract-correct future operation fails; (2) the deliberate absence of the /internal/* chi routes from the document; (3) the exclusion of `getOpenAPISpec`. The failure message must be widened too — it currently explains the uuid-path-parameter reasoning, and a message that misstates WHY an operation owes a 400 sends the next reader to the wrong fix."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice — one predicate, one name, one message. The four 400 sources could be added one at a time but there is no reason to: they share the predicate's structure and the spec has no live gap for any of them."
+    },
+    "success": {
+      "state": "met",
+      "note": "**This is the item that needs the most care, because the ticket is a coverage ticket with no live defect — so the ordinary proof (the test goes red, then the fix makes it green) is unavailable.** AGENTS.md's rule still applies: demonstrate the gap. The honest demonstration here is a temporary spec mutation — add or take a body/query-parameter 400 off one operation, show the widened test catches it and the CURRENT test does not, then revert. That two-run comparison IS the deliverable's evidence; without it 'we widened the invariant' is unfalsifiable, and per AGENTS.md a green test that cannot reach the failing state looks exactly like one that proves something. Then: the test name and message speak of the real class, no live gap is introduced, `make check` green."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs (resolve at HEAD): ADR-028 (docs/adr/ADR-028-response-drift-fail-closed.md) — the fail-closed validation that turns an undeclared 400 into a 500, i.e. the entire reason this invariant is worth having; ADR-009 (docs/adr/ADR-009-contract-first-apis.md) — contract-first and the regen-before-gate rule, relevant only if a spec line is touched. governingTests: services/catalog/internal/api/lifecycle_badrequest_test.go — the subject itself, whose `hasUUIDPathParam` helper and `default:` arm carry the reasoning above. Sibling worth reading, not editing: TKT-256 is widening the same invariant shape for 500 in payments; if both land, the two tests should be recognisable as the same pattern."
+    }
   }
- ],
- "links": [],
- "readiness": {
-  "objective": {
-   "state": "met",
-   "note": "TestUUIDPathOperationsDeclareBadRequest closes a CLASS by design — that is its stated point and why it is spec-only. But the class it actually closes is narrower than the class that exists: the binder and the kin-openapi request validator also emit 400 from a required requestBody, a constrained query parameter and a required header. A future operation with a body and no uuid path parameter slips through exactly the way the nine that TKT-110 fixed did, and under ADR-028 an undeclared 400 becomes a 500."
-  },
-  "scope": {
-   "state": "met",
-   "note": "IN: services/catalog/internal/api/lifecycle_badrequest_test.go — widen the predicate from 'has a format:uuid path parameter' to the full set of binder/validator 400 sources, and correct the test name and failure message, which today speak only of path parameters. OUT: fixing catalog operations (there are none to fix — see uncertainties). OUT: the other four services, which have their own specs and their own version of this test or none; TKT-256 is already handling payments' sibling shape for 500."
-  },
-  "uncertainties": {
-   "state": "met",
-   "note": "The load-bearing one — 'is this still latent, or has a live gap appeared since TKT-110 merged?' — was settled by running the widened predicate over the spec at HEAD rather than trusting the ticket's 'verified at TKT-110's merge'. Result: **zero** live gaps. Every catalog operation with a requestBody or a constrained query/header parameter already declares '400'. So this ticket is pure invariant-widening with no accompanying spec fix, which is the clean case. Second, smaller: `getOpenAPISpec` is correctly outside the class (served before validation) and the hand-mounted /internal/* chi routes are absent from the document entirely — both already handled by the existing test's structure, both must survive the widening."
-  },
-  "dependencies": {
-   "state": "met",
-   "note": "None. No blockers. TKT-110 (the origin) is Done."
-  },
-  "approach": {
-   "state": "met",
-   "note": "Verified against the test at HEAD before inheriting the ticket's framing. The existing test is already the right shape — spec-only, drives no requests, covers operation number ten without a fixture — so this is a predicate widening inside a good structure, not a rewrite. Three details the drafter must preserve: (1) the `op.Responses.Default() == nil` arm, which is there because a `default:` response satisfies 400 under kin-openapi's status matching and without it a contract-correct future operation fails; (2) the deliberate absence of the /internal/* chi routes from the document; (3) the exclusion of `getOpenAPISpec`. The failure message must be widened too — it currently explains the uuid-path-parameter reasoning, and a message that misstates WHY an operation owes a 400 sends the next reader to the wrong fix."
-  },
-  "first_slice": {
-   "state": "met",
-   "note": "The whole ticket is one slice — one predicate, one name, one message. The four 400 sources could be added one at a time but there is no reason to: they share the predicate's structure and the spec has no live gap for any of them."
-  },
-  "success": {
-   "state": "met",
-   "note": "**This is the item that needs the most care, because the ticket is a coverage ticket with no live defect — so the ordinary proof (the test goes red, then the fix makes it green) is unavailable.** AGENTS.md's rule still applies: demonstrate the gap. The honest demonstration here is a temporary spec mutation — add or take a body/query-parameter 400 off one operation, show the widened test catches it and the CURRENT test does not, then revert. That two-run comparison IS the deliverable's evidence; without it 'we widened the invariant' is unfalsifiable, and per AGENTS.md a green test that cannot reach the failing state looks exactly like one that proves something. Then: the test name and message speak of the real class, no live gap is introduced, `make check` green."
-  },
-  "context_memo": {
-   "state": "met",
-   "note": "governingAdrs (resolve at HEAD): ADR-028 (docs/adr/ADR-028-response-drift-fail-closed.md) — the fail-closed validation that turns an undeclared 400 into a 500, i.e. the entire reason this invariant is worth having; ADR-009 (docs/adr/ADR-009-contract-first-apis.md) — contract-first and the regen-before-gate rule, relevant only if a spec line is touched. governingTests: services/catalog/internal/api/lifecycle_badrequest_test.go — the subject itself, whose `hasUUIDPathParam` helper and `default:` arm carry the reasoning above. Sibling worth reading, not editing: TKT-256 is widening the same invariant shape for 500 in payments; if both land, the two tests should be recognisable as the same pattern."
-  }
- }
 }
