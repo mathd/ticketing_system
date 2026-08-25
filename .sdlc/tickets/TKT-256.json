@@ -1,24 +1,62 @@
 {
-  "key": "TKT-256",
-  "type": "Task",
-  "classification": "simple",
-  "summary": "GET /internal/operations can answer 500 and does not declare it",
-  "description": "Found by the TKT-168 plan review (Amendment 3), as incidental scope.\n\n`GET /internal/operations` can answer **500**: `s.operation` writes\n`500 {\"error\": \"lookup operation\"}` when `LookupOperation` fails\n(`services/payments/internal/api/server.go`). The operation's `responses:` block in\n`services/payments/api/openapi.yaml` declares only `200`, `400`, `401`, `404`.\n\nUnder ADR-028 the service fails closed and validates responses against the spec, so an\nundeclared status is itself a contract violation — the 500 a caller receives during a database\nfault is not the 500 the handler meant to send, and the real cause is obscured exactly when\nsomeone is debugging an outage.\n\n**Why it was not fixed in TKT-168:** that ticket's diff is a money-evidence change and does not\ntouch this code path. The declaration gap pre-dates it. Folding an unrelated contract correction\ninto a money diff was judged the worse trade at plan review; the fix is a one-line spec addition\nplus a regen, and it deserves its own commit message saying why.\n\n**Worth checking while here:** whether OTHER operations in the payments contract (and the other\nservices' contracts) have the same shape — a handler that can write a status the spec does not\ndeclare. If several do, this becomes a small sweep rather than a one-liner, and possibly a test\nthat walks each handler's reachable statuses.\n\n**Acceptance Criteria:**\n- [ ] `/internal/operations` declares `500` in `services/payments/api/openapi.yaml`.\n- [ ] Regenerated code committed before the gate (ADR-009 — `check-generate` diffs against HEAD).\n- [ ] A check for the same shape elsewhere in the payments contract, with findings either fixed\n      here or split into their own ticket.\n- [ ] `make check` green.\n",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "links": [
-    {
-      "type": "found-in",
-      "key": "TKT-168"
-    }
-  ],
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-168 ai-review triage (incidental)\n\nRaised at TKT-168's plan review and deliberately **not** fixed there: pre-existing gap, untouched code path, and mixing a contract correction into a money-evidence diff was the worse trade.\n\n**Not shaped yet** — no `readiness` object, so Gate 1 is blocked until someone fills the DoR. The open question that decides its size is whether this is one missing status or a class: if several handlers can emit statuses their specs do not declare, the deliverable is a sweep plus a guard, not a one-line spec edit."
-    }
-  ]
+ "key": "TKT-256",
+ "type": "Task",
+ "classification": "simple",
+ "summary": "GET /internal/operations can answer 500 and does not declare it",
+ "description": "Found by the TKT-168 plan review (Amendment 3), as incidental scope.\n\n`GET /internal/operations` can answer **500**: `s.operation` writes\n`500 {\"error\": \"lookup operation\"}` when `LookupOperation` fails\n(`services/payments/internal/api/server.go`). The operation's `responses:` block in\n`services/payments/api/openapi.yaml` declares only `200`, `400`, `401`, `404`.\n\nUnder ADR-028 the service fails closed and validates responses against the spec, so an\nundeclared status is itself a contract violation — the 500 a caller receives during a database\nfault is not the 500 the handler meant to send, and the real cause is obscured exactly when\nsomeone is debugging an outage.\n\n**Why it was not fixed in TKT-168:** that ticket's diff is a money-evidence change and does not\ntouch this code path. The declaration gap pre-dates it. Folding an unrelated contract correction\ninto a money diff was judged the worse trade at plan review; the fix is a one-line spec addition\nplus a regen, and it deserves its own commit message saying why.\n\n**Worth checking while here:** whether OTHER operations in the payments contract (and the other\nservices' contracts) have the same shape — a handler that can write a status the spec does not\ndeclare. If several do, this becomes a small sweep rather than a one-liner, and possibly a test\nthat walks each handler's reachable statuses.\n\n**Acceptance Criteria:**\n- [ ] `/internal/operations` declares `500` in `services/payments/api/openapi.yaml`.\n- [ ] Regenerated code committed before the gate (ADR-009 — `check-generate` diffs against HEAD).\n- [ ] A check for the same shape elsewhere in the payments contract, with findings either fixed\n      here or split into their own ticket.\n- [ ] `make check` green.\n",
+ "status": "Ready",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "links": [
+  {
+   "type": "found-in",
+   "key": "TKT-168"
+  }
+ ],
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-168 ai-review triage (incidental)\n\nRaised at TKT-168's plan review and deliberately **not** fixed there: pre-existing gap, untouched code path, and mixing a contract correction into a money-evidence diff was the worse trade.\n\n**Not shaped yet** — no `readiness` object, so Gate 1 is blocked until someone fills the DoR. The open question that decides its size is whether this is one missing status or a class: if several handlers can emit statuses their specs do not declare, the deliverable is a sweep plus a guard, not a one-line spec edit."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`.\n\n**The ticket's own open question is answered, and the answer changes the scope.** It asked whether other payments operations have the same shape. They do — one more:\n\n| operation | can write 500 | declares 500 |\n|---|---|---|\n| `/internal/operations` | `server.go:131` | ❌ (the filed defect) |\n| `/internal/facts` | via `refused()` → `server.go:99` | ❌ **newly found** |\n| all 7 others | yes | ✅ |\n\n`/internal/facts` calls `refused(w, 400, err)`, and `refused` writes **500** for any non-sentinel error — every wrapped pgx error takes that arm. So this is a two-line fix, and the sweep AC is discharged with a finding rather than an omission.\n\n**Two traps carried into `approach`/`success`:**\n1. Commit the regen **before** `make check` (ADR-009 `check-generate` diffs against HEAD — an uncommitted honest regen reads as drift; cost two gate runs on TKT-114).\n2. Do not write a test that greps the YAML for `500`. Copy catalog's class-invariant shape (`TestUUIDPathOperationsDeclareBadRequest`) and **show it red at HEAD with both operations named** — that run is the ticket's evidence the gap was real, per AGENTS.md's rule that a coverage ticket must demonstrate its gap.\n\nThe out-of-scope half — whether catalog/commerce/inventory/access have the same shape — is deliberately not folded in. If the drafter wants it, file it; do not widen this diff."
+  }
+ ],
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "Under ADR-028 the payments service validates its own responses against the spec and fails closed, so a handler that writes a status the contract does not declare turns a database fault into a contract violation — the 500 the caller sees is not the 500 the handler meant, and the real cause is obscured exactly while someone is debugging an outage."
+  },
+  "scope": {
+   "state": "met",
+   "note": "IN: declare the missing 500s in services/payments/api/openapi.yaml, regenerate, commit the regen, plus the sweep the ticket asked for across the payments contract. OUT: the other four services' contracts — if they have the same shape it is a separate ticket (see uncertainties). OUT: any handler behaviour change; this ticket only makes the contract describe what the code already does."
+  },
+  "uncertainties": {
+   "state": "met",
+   "note": "The ticket's open question — \"is this a one-liner or a sweep?\" — was settled by reading, not deferred. Walking every operation's `responses:` block against every `write(w, 500, ...)` in services/payments/internal/api/server.go: **two** operations are undeclared, not one. `/internal/operations` (the filed defect) and `/internal/facts`, which calls `refused(w, 400, err)` — and `refused` writes **500** for any error that is not a `store.IsRefusal` sentinel, i.e. any wrapped pgx error. Every other payments operation already declares 500. So: two lines, and the sweep item is discharged with a finding rather than an omission."
+  },
+  "dependencies": {
+   "state": "met",
+   "note": "None. No blockers. TKT-168 (found-in) is Done and does not touch this path."
+  },
+  "approach": {
+   "state": "met",
+   "note": "Two `'500': {$ref: '#/components/responses/Error'}` entries, then regen. The `Error` response component already exists and is what every sibling operation uses, so there is no new schema. **The gate trap is procedural, not technical**: ADR-009's `check-generate` diffs the regenerated code against HEAD, so `openapi_gen.go` must be committed BEFORE running `make check` or an honest regen reads as drift and burns a gate run (AGENTS.md; cost two runs on TKT-114)."
+  },
+  "first_slice": {
+   "state": "met",
+   "note": "The whole ticket is one slice — two spec lines, one regen, one test."
+  },
+  "success": {
+   "state": "met",
+   "note": "Both operations declare 500; regen committed before the gate; `make check` green. **The test is the part that needs care.** An assertion that the spec contains '500' is a fact about the YAML, not about the contract holding — it stays green if a third operation is added tomorrow with the same gap. The catalog analogue to copy is `services/catalog/internal/api/lifecycle_badrequest_test.go::TestUUIDPathOperationsDeclareBadRequest`, which closes a CLASS: every operation matching a structural predicate must declare the status. The honest version here is \"every operation whose handler can reach `refused()` or a literal `write(w, 500, ...)` declares 500\" — and it must be shown to go RED against the spec as it stands at HEAD (two failures, named), which is this ticket's proof that the gap was real."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "governingAdrs (all resolve at HEAD): ADR-028 (docs/adr/ADR-028-response-drift-fail-closed.md) — the fail-closed response validation that makes an undeclared status a violation rather than cosmetics; ADR-009 (docs/adr/ADR-009-contract-first-apis.md) — contract-first plus the `check-generate` regen-before-gate rule. governingTests: services/catalog/internal/api/lifecycle_badrequest_test.go (the class-invariant pattern to copy, and the ticket TKT-142 is filed against for being narrower than its name); services/payments/internal/api/server_test.go and the payments `*_smoke_test.go` files, which exercise these two routes and will run the response validator against the amended spec."
+  }
+ }
 }
