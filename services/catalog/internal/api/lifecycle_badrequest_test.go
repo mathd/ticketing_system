@@ -131,10 +131,11 @@ func operationsMissingBadRequest(doc *openapi3.T) []string {
 // guarantee TKT-110 measured; a plain string path parameter binds anything, so
 // widening this arm would demand 400s no source can produce.
 //
-// The header arm is UNEXERCISED BY CONSTRUCTION: this document declares no
-// header parameter, so no mutation of it can prove the branch. It is kept
-// because it is correct for a future operation, and labelled because a branch a
-// fixture cannot reach must not be mistaken for coverage.
+// No header parameter exists in the catalog document, so the LIVE spec cannot
+// exercise the header arm — but a synthetic one can, and does: see
+// TestRejectionSourceAndDeclarationEdgeCases. An earlier revision of this file
+// called the arm "unexercised by construction" and left it untested, which was a
+// claim about the live spec masquerading as a claim about the test.
 func hasRejectionSource(pathParams, opParams openapi3.Parameters, body *openapi3.RequestBodyRef) bool {
 	if body != nil && body.Value != nil {
 		return true
@@ -224,6 +225,33 @@ func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
 		}
 	})
 
+	// The `default:` arm. The failure message promises this spelling is accepted
+	// and nothing exercised it: the live spec declares no `default:`, and the
+	// 4XX case above only reaches Status(400). Deleting the Default() fallback
+	// left the whole suite green until this case existed.
+	t.Run("default response alone satisfies the invariant", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query, schema: {type: string}}]\n" +
+			"      responses:\n        default: {description: whatever}\n"
+		if got := missingIn(t, doc); len(got) != 0 {
+			t.Fatalf("a `default:` response covers 400 under kin-openapi's status matching, so it "+
+				"satisfies the invariant, but the operation was reported missing: %v", got)
+		}
+	})
+
+	// The header arm. The file used to call this "unexercised by construction"
+	// because the catalog document declares no header parameter — true of the
+	// live spec, and wrong as a claim about the test: a synthetic document
+	// reaches it fine. A regression dropping headers from hasRejectionSource
+	// passed every other case here (TKT-142 ai-review, third pass).
+	t.Run("schema-backed header parameter creates an obligation", func(t *testing.T) {
+		doc := head + "      parameters: [{name: X-Thing, in: header, schema: {type: string, minLength: 1}}]\n" +
+			"      responses:\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 1 {
+			t.Fatalf("a header parameter with a schema is rejectable by the request validator, so "+
+				"it must demand a 400, got %v", got)
+		}
+	})
+
 	// Requiredness is NOT the line — this is the case the ai-review's proposed
 	// "count only required parameters" fix would have wrongly exempted. Measured
 	// against the real spec: `?channel_code=` (optional, minLength 1) answers 400
@@ -277,12 +305,21 @@ func TestSchemalessParameterExemptionIsAboutTheLoaderNotTheContract(t *testing.T
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
-			// Pin the reason this case is quarantined: if OpenAPI ever admits a
-			// parameter with neither schema nor content, this fixture belongs
-			// back with the valid ones above and this guard says so.
-			if err := doc.Validate(loader.Context); err == nil {
+			// Pin the reason this case is quarantined, and pin it by CAUSE: a
+			// bare "Validate returned an error" would also be satisfied by a
+			// typo in the fixture, leaving this test green while covering
+			// nothing. Assert the schema/content rule specifically, so the day
+			// OpenAPI admits the shape — or the day the fixture breaks for some
+			// other reason — this says which happened.
+			err = doc.Validate(loader.Context)
+			if err == nil {
 				t.Fatal("this fixture is kept separate BECAUSE doc.Validate rejects it; it now " +
 					"validates, so fold it into TestRejectionSourceAndDeclarationEdgeCases")
+			}
+			if !strings.Contains(err.Error(), "exactly one of content and schema") {
+				t.Fatalf("the fixture must be rejected for having neither schema nor content — "+
+					"that is the state under test. It was rejected for something else, so this "+
+					"test no longer covers the schemaless case: %v", err)
 			}
 			if got := operationsMissingBadRequest(doc); len(got) != 0 {
 				t.Fatalf("a schemaless parameter is exempt from validation before its requiredness "+
