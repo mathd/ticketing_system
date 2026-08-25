@@ -114,6 +114,22 @@ export class PageDataCache {
   // stampede the catalog (ADR-004's whole point at that moment).
   #inFlight = new Map<string, Promise<CachedResult<unknown>>>();
   #fetch: typeof fetch;
+  /**
+   * Elapsed-time source. **Must be monotonic** — the contract, not a preference.
+   *
+   * Entry aging subtracts two readings of this and trusts the result not to go
+   * backwards; there is no floor underneath it any more, because a floor over a
+   * wall clock is what TKT-206 tried and TKT-212 replaced. Hand this `Date.now`
+   * and an entry can report a shrinking age and re-advertise freshness it has
+   * already spent.
+   *
+   * It exists for tests, which drive it forward by hand. No production caller
+   * passes it: `api.ts` constructs the one singleton with no arguments, on
+   * purpose, so the default is the thing the suite exercises (TKT-220 — inject a
+   * clock anywhere in production and swapping the default back to a wall clock
+   * leaves every test green). Same shape, and the same reasoning, as
+   * `session.ts`'s `now = monotonicNow()`.
+   */
   #now: () => number;
 
   constructor(fetchImpl: typeof fetch = fetch, now: () => number = monotonicNow) {

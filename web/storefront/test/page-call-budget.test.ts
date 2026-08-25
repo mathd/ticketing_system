@@ -170,8 +170,11 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
     // The timeout addressed the two cases that TIMED OUT. The third did not: it
     // counted TWO upstream calls where the budget allows one, so the assertion
     // could still fail OPEN. TKT-218 answered which it was — the second call is
-    // GENUINE, not a stub artefact: PageDataCache expires entries against a wall
-    // clock, so a process starved for longer than max-age really does re-fetch.
+    // GENUINE, not a stub artefact: PageDataCache expires entries against real
+    // elapsed time, so a process starved for longer than max-age really does
+    // re-fetch. (That clock is monotonic since TKT-212 rather than wall — which
+    // changes nothing here: both advance under load, which is the starvation
+    // this describes.)
     // The frozen clock in beforeEach is what closes it; see the comment there for
     // why the spy must precede the page import.
   }, 30_000);
