@@ -14,6 +14,10 @@
 // entry (RFC 9111) and a response already at or past its max-age is used once
 // and not retained. Freshness is now measured from catalog's load, not from
 // ours — which is what keeps the no-stacking claim true.
+//
+// The LOCAL half of that measurement runs on a monotonic clock (TKT-212, see
+// monotonicNow), so an entry's real-time lifetime is its max-age no matter what
+// the system clock does. The upstream half is a wire value and keeps catalog's.
 
 export class UpstreamError extends Error {
   constructor(
@@ -38,14 +42,6 @@ interface Entry {
   maxAgeSeconds: number;
   /** Upstream age at fetch time; the entry is already this stale when stored. */
   upstreamAgeSeconds: number;
-  /**
-   * The highest age this entry has ever reported. `now` is a WALL clock, so a
-   * backward step shrinks the elapsed term; without a high-water mark the same
-   * live entry would report a smaller age than a previous call already
-   * established, and the middleware would hand the page back freshness it had
-   * already spent.
-   */
-  reportedAgeSeconds: number;
 }
 
 export function parseMaxAge(cacheControl: string | null): number {
@@ -66,18 +62,45 @@ export function parseAge(age: string | null): number {
 }
 
 /**
- * The age this entry would report at `nowMs`, per RFC 9111 as TKT-206 applies it:
- * upstream age at fetch time plus local elapsed, floored by the high-water mark so a
- * backward wall-clock step cannot hand back freshness already spent.
+ * The clock entry aging runs on — **monotonic, not wall-clock**.
  *
- * Pure on purpose. `get()` writes the high-water mark because it REPORTS an age; the
- * sweep only asks, so it must not. Extracted so expiry has exactly one definition —
- * a sweep that decided expiry differently from `get()` would drop live entries or
- * keep dead ones, and either way the two would drift apart silently.
+ * Same reasoning, and the same shape, as `session.ts`'s expiry clock (TKT-220):
+ * `performance.now()` counts milliseconds since process start and is unaffected by
+ * system clock changes in either direction, so a step cannot change how long an
+ * entry lives rather than merely being defended against.
+ *
+ * TKT-206 defended instead, with a per-entry high-water mark over `Date.now()`. That
+ * closed age DECREASING but not the residual this replaces: after a backward step the
+ * age stopped ADVANCING until wall time caught up, so the entry outlived its TTL in
+ * real time by the size of the jump. TKT-220 had already learned by mutation that a
+ * non-decreasing floor over a wall clock is the wrong tool for this exact defect.
+ *
+ * Relative milliseconds, not epoch: never serialize it or compare it with an HTTP
+ * date. Only the LOCAL elapsed term uses it — `upstreamAgeSeconds` is a value received
+ * over the wire and belongs to catalog's clock (ADR-045).
+ */
+function monotonicNow(): number {
+  return performance.now();
+}
+
+/**
+ * The age this entry would report at `nowMs`, per RFC 9111 as ADR-045 applies it:
+ * upstream age at fetch time plus local elapsed on the monotonic clock.
+ *
+ * No high-water mark. With a monotonic source `upstreamAgeSeconds + elapsed` is
+ * non-decreasing by construction, so flooring it by the highest age already reported
+ * could never change the result — there is no input for which the two differ, which
+ * is the test AGENTS.md sets for deleting a mechanism rather than keeping it beside
+ * the one that works.
+ *
+ * Pure on purpose, and now pure in both directions: `get()` no longer writes anything
+ * back through it. Extracted so expiry has exactly one definition — a sweep that
+ * decided expiry differently from `get()` would drop live entries or keep dead ones,
+ * and either way the two would drift apart silently.
  */
 function ageOf(entry: Entry, nowMs: number): number {
   const elapsedSeconds = Math.max(0, Math.floor((nowMs - entry.fetchedAtMs) / 1000));
-  return Math.max(entry.reportedAgeSeconds, entry.upstreamAgeSeconds + elapsedSeconds);
+  return entry.upstreamAgeSeconds + elapsedSeconds;
 }
 
 // One cache load is shared by every request waiting for the same URL. Give that
@@ -93,7 +116,7 @@ export class PageDataCache {
   #fetch: typeof fetch;
   #now: () => number;
 
-  constructor(fetchImpl: typeof fetch = fetch, now: () => number = Date.now) {
+  constructor(fetchImpl: typeof fetch = fetch, now: () => number = monotonicNow) {
     this.#fetch = fetchImpl;
     this.#now = now;
   }
@@ -132,23 +155,12 @@ export class PageDataCache {
     const nowMs = this.#now();
     const entry = this.#entries.get(url);
     if (entry) {
-      // `now` is a WALL clock and can step backwards, so age is computed as a
-      // HIGH-WATER MARK rather than a subtraction. Clamping the elapsed term at
-      // zero is not enough on its own: an entry sitting at age 300 whose clock
-      // steps back 50 seconds still yields 250 — a decrease, and 50 seconds of
-      // advertised freshness the previous call had already spent.
-      //
-      // Monotonic by construction, and it makes expiry no later than before: age
-      // only ever rises, so an entry cannot regain life it has used.
-      //
-      // What this does NOT close: after a backward step the age stops advancing
-      // until wall time catches up, so an entry can outlive its TTL in real time
-      // by the size of the jump. That predates TKT-206 — this cache measured
-      // wall time before the ticket touched it — and closing it needs a
-      // monotonic clock source, which changes the injected-clock contract this
-      // cache shares with its tests and the middleware.
+      // `now` is MONOTONIC (see monotonicNow), so elapsed time only ever rises
+      // and the entry's real-time lifetime is exactly its max-age regardless of
+      // what the system clock does in either direction. Nothing is written back
+      // to the entry here: with a monotonic source there is no high-water mark
+      // left to maintain (TKT-212).
       const ageSeconds = ageOf(entry, nowMs);
-      entry.reportedAgeSeconds = ageSeconds;
       if (ageSeconds < entry.maxAgeSeconds) {
         return { data: entry.data as T, ageSeconds, maxAgeSeconds: entry.maxAgeSeconds };
       }
@@ -194,7 +206,6 @@ export class PageDataCache {
           fetchedAtMs: nowMs,
           maxAgeSeconds,
           upstreamAgeSeconds,
-          reportedAgeSeconds: upstreamAgeSeconds,
         });
       }
       return { data, ageSeconds: upstreamAgeSeconds, maxAgeSeconds };
