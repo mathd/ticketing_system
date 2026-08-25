@@ -1,9 +1,11 @@
 {
   "key": "TKT-218",
   "type": "Task",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "summary": "Flaky: storefront call-budget tests fail under load, and one fails OPEN (TKT-216 gate incidental)",
@@ -57,6 +59,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n**Re-shaped 2026-08-24. Verdict: READY — 8/8 `met`.** The two items that were `open` are both closed, one by execution and one by an owner decision.\n\n### `uncertainties` — answered by running it, not by reasoning\n\nThe ticket's central question was whether the 2-call observation is a genuine second fetch or an artefact of the stub counting a cancelled request. **It is genuine.**\n\n`PageDataCache` measures freshness against a **wall clock**. `ageOf()` is `upstreamAgeSeconds + elapsed`, the stub serves `max-age=300` with no `Age` header, so an entry stays fresh for 300 seconds of *wall* time. A starved SSR process that loses more than `max-age` between two reads of one URL misses and re-fetches.\n\nReproduced directly, with the cache's own injected-clock seam:\n\n```\ncalls for two gets, normal clock: 1\ncalls after a 301s stall:         2\n```\n\nSo the stub counts correctly and the page really does fetch twice. The harmless reading is ruled out — which matters, because it was the reading that would have justified closing this with a widened assertion.\n\n### `approach` — Gate 1 decision, now sharpened by the diagnosis\n\nThe direction you chose was *\"make the assertion fail closed either way\"*. With the mechanism known it becomes concrete: give the cache a **deterministic clock** for this test — the constructor already takes `now`, so the seam exists — and let the fixture decide elapsed time instead of machine load. Same treatment TKT-233 and TKT-232 applied: assert the dependency edge, not a wall clock.\n\nTwo fixes explicitly rejected, both of which look right:\n\n- **Raise the timeout again.** The test's own comment at `:124-133` warns against exactly this. It addresses the three *timeout* failures and is silent on the fail-open one.\n- **Widen the assertion to `<= 2`.** That *is* the fail-open defect.\n\n### One trap carried into the mémo\n\n`cache.ts` documents a gap it deliberately did not close: after a *backward* wall-clock step, an entry can outlive its TTL in real time, and fixing it needs a monotonic clock source — which would change the injected-clock contract the cache shares with the middleware and its own tests. This ticket must not quietly take that on. It is a different ticket.\n\n### Why this is not grouped with TKT-231/242\n\nThose two are Go smoke tests failing at one helper in one shared PostgreSQL database. This is a Vitest test with no database. They share a *symptom class* — load-sensitive — which is not a cause. Grouping them would have put a shared-mechanism claim in a closeout that the code contradicts.\n"
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n**Claimed.** Running gateless per `config.gates: autonomous`; local tracker backend. Gate 1 taken by the owner (2026-08-24), including the decision to run this **separately** from TKT-231/242 rather than bundled — it is a Vitest test with no database and cannot share their PostgreSQL batch-limit cause.\n\n**Selection reason:** second and last of the two approved tickets. TKT-242 closed first because its shared-cause merge closed two board items; this one was left until its mechanism could be attacked with a clean context.\n\n**Blockers:** none. `links` relate to TKT-242 (explicitly *not* a shared cause).\n\n**Pre-claim check:** `git log origin/main..main` empty — nothing stranded on the local default branch. (This check is the retro item from TKT-242, where an unpushed TKT-249 commit surfaced only at merge time. Applied here rather than filed.)\n\n### Risk verdict: `risk:low` NOT claimed\n\nBlast radius is small — the expected diff is `web/storefront/test/page-call-budget.test.ts` plus possibly a test-only seam. But the plan gate is kept for the same reason as TKT-242, and more sharply:\n\nThe ticket's central question **is** *\"how do I construct a test that can actually fail?\"* — the shape the invariant names explicitly. This test's whole defect is that it **fails open**: it counted two upstream calls where the budget allows one, and could not distinguish \"the page made a second call\" from \"the machine was busy\". A fix that makes it stop reporting the failure without making it able to *detect* the real one is the obvious wrong answer, and the file already carries a comment warning the next person against exactly that.\n\nThere is a second reason specific to this ticket. `cache.ts` documents a gap it deliberately left open — after a **backward** wall-clock step an entry can outlive its TTL, and closing it needs a monotonic clock source that would change the injected-clock contract shared with the middleware and the cache's own tests. A plan is where that boundary gets stated and held, not discovered mid-implementation.\n\nSo: plan gate kept, cross-model critique runs, `agent:planning` set.\n"
     }
   ],
   "readiness": {
