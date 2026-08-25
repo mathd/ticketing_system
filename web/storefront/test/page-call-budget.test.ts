@@ -19,6 +19,8 @@ const GATEWAY = 'http://localhost:8080';
 
 // Any fixed instant. Its value is irrelevant; that it never advances is the point.
 const FROZEN_NOW_MS = 1_780_000_000_000;
+// Relative ms since process start, not epoch — the monotonic clock's units.
+const FROZEN_MONOTONIC_MS = 5_000;
 
 type Call = { url: string };
 
@@ -100,9 +102,15 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
   // The clock is FROZEN for every case in this file, and the order of these two
   // lines is load-bearing (TKT-218).
   //
-  // PageDataCache decides freshness from a wall clock: an entry serves for
-  // max-age seconds of REAL time. A busy machine that loses more than max-age
-  // between two reads of one URL therefore makes the cache miss and re-fetch,
+  // PageDataCache decides freshness from a MONOTONIC clock since TKT-212, so
+  // performance.now() is the reading that has to be frozen here; freezing only
+  // Date.now would leave this file green while freezing nothing the cache reads,
+  // which is the shape TKT-218's own first attempt hit. Date.now stays frozen
+  // too: it is cheap, and it keeps anything else in the render path still.
+  //
+  // An entry serves for max-age seconds of REAL time. A busy machine that loses
+  // more than max-age between two reads of one URL therefore makes the cache
+  // miss and re-fetch,
   // and the budget assertion counts that as a second upstream call — a page-call
   // violation reported for a machine-load reason. That is the fail-open this
   // ticket closes: the assertion could not tell "the page made a second call"
@@ -114,14 +122,15 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
   // in both directions, not assumed.
   //
   // WHY THE SPY MUST COME FIRST: cache.ts takes the clock as a DEFAULT PARAMETER
-  // (`now: () => number = Date.now`) and stores the resolved reference, so the
-  // singleton in api.ts binds whatever Date.now is when that module is first
-  // imported. renderPage imports it dynamically, so a spy installed here reaches
-  // it — but a spy installed after the first import silently does nothing, and
-  // the symptom is a test that PASSES while proving nothing. The first attempt at
-  // this fix failed exactly that way.
+  // (`now: () => number = monotonicNow`) and stores the resolved reference, so
+  // the singleton in api.ts binds whatever that resolves to when the module is
+  // first imported. renderPage imports it dynamically, so a spy installed here
+  // reaches it — but a spy installed after the first import silently does
+  // nothing, and the symptom is a test that PASSES while proving nothing. The
+  // first attempt at this fix failed exactly that way.
   beforeEach(() => {
     vi.resetModules();
+    vi.spyOn(performance, 'now').mockReturnValue(FROZEN_MONOTONIC_MS);
     vi.spyOn(Date, 'now').mockReturnValue(FROZEN_NOW_MS);
   });
   afterEach(() => {
@@ -161,8 +170,11 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
     // The timeout addressed the two cases that TIMED OUT. The third did not: it
     // counted TWO upstream calls where the budget allows one, so the assertion
     // could still fail OPEN. TKT-218 answered which it was — the second call is
-    // GENUINE, not a stub artefact: PageDataCache expires entries against a wall
-    // clock, so a process starved for longer than max-age really does re-fetch.
+    // GENUINE, not a stub artefact: PageDataCache expires entries against real
+    // elapsed time, so a process starved for longer than max-age really does
+    // re-fetch. (That clock is monotonic since TKT-212 rather than wall — which
+    // changes nothing here: both advance under load, which is the starvation
+    // this describes.)
     // The frozen clock in beforeEach is what closes it; see the comment there for
     // why the spy must precede the page import.
   }, 30_000);

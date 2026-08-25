@@ -294,54 +294,118 @@ describe('expired entries are swept', () => {
   });
 });
 
-// TKT-206 ai-review: `now` is a wall clock, so it can step backwards. Age must
-// never decrease below what upstream already reported, or the middleware
-// advertises remaining freshness that does not exist — which is precisely the
-// stacking guarantee this ticket added Age to keep.
-describe('age is monotonic under a backward clock', () => {
-  it('does not decrease after age has already advanced', async () => {
-    // The case the first version of this test missed. Clamping elapsed time at
-    // zero only covers a jump to before fetchedAtMs; an entry that has already
-    // aged forward can still shrink, handing the page back freshness it spent.
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'cache-control': 'public, max-age=300', age: '100' },
-      }),
-    );
-    let now = 1_000_000;
-    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    await cache.get('http://catalog/public/events');
+// TKT-212: entry aging runs on a MONOTONIC clock, so a wall-clock step cannot
+// change how long an entry lives. TKT-206 got the other half — age could no
+// longer DECREASE — with a per-entry high-water mark, but that left the entry
+// outliving its TTL in real time by the size of a backward jump, because age
+// simply stopped advancing until wall time caught up.
+//
+// These drive the DEFAULT constructor argument and never inject `now`. That is
+// load-bearing, and it is the third of the three unfalsifiable shapes
+// session.test.ts:332 enumerates (TKT-220): injecting a clock ANYWHERE means the
+// production default is never exercised, so swapping the default back to
+// Date.now would leave the test green.
+describe('entry aging is monotonic and the wall clock cannot move it', () => {
+  const cacheable = (maxAge: number, age?: string) =>
+    new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers:
+        age === undefined
+          ? { 'cache-control': `public, max-age=${maxAge}` }
+          : { 'cache-control': `public, max-age=${maxAge}`, age },
+    });
 
-    now = 1_100_000; // +100s → age 200
-    const advanced = await cache.get('http://catalog/public/events');
-    expect(advanced.ageSeconds).toBe(200);
+  it('ages on the default monotonic clock, which the wall clock cannot move OR extend', async () => {
+    // Both halves in one sequence, because either alone is satisfiable by a
+    // wrong implementation: asserting only "age advanced despite the backward
+    // step" is also true of a cache that never expires anything, and asserting
+    // only "it expired" is also true of one still reading the wall clock.
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      perf.mockReturnValue(1_000);
+      Date.now = () => 10_000_000;
+      const fetchImpl = vi.fn(async () => cacheable(10));
+      const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
+      await cache.get('http://catalog/public/events');
 
-    now = 1_050_000; // 50s back, still AFTER fetchedAtMs
-    const afterStep = await cache.get('http://catalog/public/events');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(afterStep.ageSeconds).toBeGreaterThanOrEqual(advanced.ageSeconds);
-    expect(afterStep.ageSeconds).toBe(200);
+      // Five monotonic seconds on, with the WALL clock stepped five seconds
+      // BACKWARD underneath it. At HEAD the elapsed term clamps to zero and the
+      // entry reports age 0 — five seconds of freshness it has already spent.
+      perf.mockReturnValue(6_000);
+      Date.now = () => 9_995_000;
+      const hit = await cache.get('http://catalog/public/events');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(hit.ageSeconds).toBe(5);
+
+      // The monotonic clock crossing max-age is what ends the entry — with the
+      // wall clock STILL rolled back, so nothing here is attributable to it.
+      // This is the leg that stops "never expires" from passing.
+      perf.mockReturnValue(11_500);
+      await cache.get('http://catalog/public/events');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
   });
 
-  it('never reports less than the upstream age after the clock steps back', async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'cache-control': 'public, max-age=300', age: '200' },
-      }),
-    );
-    let now = 1_000_000;
-    const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    const miss = await cache.get('http://catalog/public/events');
-    expect(miss.ageSeconds).toBe(200);
+  it('sweeps on the monotonic clock too, so a rolled-back wall clock cannot strand entries', async () => {
+    // #sweep is the path that actually FREES memory, and get() re-fetches an
+    // expired entry whether or not it was ever dropped — so this asserts
+    // through `size` on a second URL. A fix that moved only get() to the
+    // monotonic clock leaves the map growing on the wrong one, and no
+    // assertion written against get() alone can see it.
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      // The wall clock is pinned NEAR the monotonic reading, not at an epoch
+      // value. That is load-bearing: with Date.now in the trillions, a sweep on
+      // the wrong clock computes a colossal elapsed and evicts anyway — the
+      // right answer for the wrong reason, and the mutation survives. Pinned
+      // here, a wall-clock sweep sees elapsed <= 0 and strands the entry.
+      perf.mockReturnValue(1_000);
+      Date.now = () => 1_000;
+      const fetchImpl = vi.fn(async () => cacheable(10));
+      const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
+      await cache.get('http://catalog/public/events/stranded');
+      expect(cache.size).toBe(1);
 
-    now = 940_000; // a 60-second backward step
-    const hit = await cache.get('http://catalog/public/events');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    // Without the clamp this would report 140 and the page would claim 160
-    // seconds of freshness it does not have.
-    expect(hit.ageSeconds).toBe(200);
-    expect(hit.ageSeconds).toBeGreaterThanOrEqual(miss.ageSeconds);
+      // 11 monotonic seconds past a 10-second max-age, wall clock rolled back.
+      // The insert below is the only thing that runs the sweep.
+      perf.mockReturnValue(12_000);
+      Date.now = () => 500;
+      await cache.get('http://catalog/public/events/other');
+      expect(cache.size).toBe(1);
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
+  });
+
+  it('still never reports an age below what upstream already declared', async () => {
+    // TKT-206's guarantee, restated against the monotonic clock: it now falls
+    // out of `upstreamAge + non-decreasing elapsed` rather than out of a
+    // high-water mark. Kept because the property is the ADR-045 contract, not
+    // because the deleted mechanism needs a memorial.
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      perf.mockReturnValue(1_000);
+      Date.now = () => 10_000_000;
+      const fetchImpl = vi.fn(async () => cacheable(300, '200'));
+      const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
+      const miss = await cache.get('http://catalog/public/events');
+      expect(miss.ageSeconds).toBe(200);
+
+      Date.now = () => 9_940_000; // a 60-second backward wall step
+      const hit = await cache.get('http://catalog/public/events');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(hit.ageSeconds).toBe(200);
+      expect(hit.ageSeconds).toBeGreaterThanOrEqual(miss.ageSeconds);
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
   });
 });
