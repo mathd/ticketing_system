@@ -460,9 +460,52 @@ func TestReplayedCompletionOwesExactlyOneEvent(t *testing.T) {
 	}
 }
 
+// A backlog deeper than one claim batch must not decide whether this file's tests
+// can see their own row (TKT-242, carrying TKT-231).
+//
+// Both tickets were one defect in this helper. It used to claim a batch of 50 and
+// search it, so once more than 50 rows were claimable the seeded row could simply
+// be outside the batch — and the helper reported "order ... not claimable", which
+// reads as a product failure. Neither test ever reached the assertion it exists to
+// make. Reproduced deterministically before the fix: a 40-row backlog passes, a
+// 60-row backlog fails, so the cliff is the LIMIT and not a timestamp tie (every
+// row in both runs ties on next_attempt_at, which DEFAULTs to now()).
+//
+// The fix makes the target unambiguously first and claims exactly it, so the
+// helper's result depends on the row it seeded rather than on how many other
+// tests have run. ClaimOutbox is untouched: this was a test defect, and changing
+// the production claim query so a test can find its row is what would remove
+// these tests' teeth.
 func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) OutboxMessage {
 	t.Helper()
-	msgs, err := ClaimOutbox(ctx, db, 50, time.Minute)
+	// -infinity, not now()-something: every row seeded in one run ties on
+	// next_attempt_at, and a computed offset would land in that tie. The sentinel
+	// is written and compared only in SQL — nothing in commerce scans this column
+	// into a time.Time, so it never reaches Go.
+	//
+	// LOAD-BEARING BEYOND THIS CALL: the write PERSISTS, and
+	// TestMarkPublishedRemovesRowFromClaimableSet depends on that. Its final step
+	// clears every lease and claims 50 again, asserting the published row is
+	// absent — an assertion that would pass for the wrong reason if the row were
+	// merely outside that batch. Because this sentinel keeps the row first, an
+	// absence there means published, not unlucky. Do NOT reset next_attempt_at
+	// after claiming, and do NOT scope this write to the first claim only: either
+	// silently restores the vacuous pass, and every test stays green.
+	res, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at='-infinity'::timestamptz
+		WHERE order_id=$1 AND published_at IS NULL AND dead_lettered_at IS NULL`, order)
+	if err != nil {
+		t.Fatalf("prioritise %s for claiming: %v", order, err)
+	}
+	// Exactly one, not "at least one": zero means the caller never owed an event
+	// (or it was already published), and this helper must not paper over that by
+	// claiming someone else's row.
+	switch n, err := res.RowsAffected(); {
+	case err != nil:
+		t.Fatalf("prioritise %s: rows affected: %v", order, err)
+	case n != 1:
+		t.Fatalf("order %s has %d claimable outbox rows; want exactly 1", order, n)
+	}
+	msgs, err := ClaimOutbox(ctx, db, 1, time.Minute)
 	if err != nil {
 		t.Fatalf("claim outbox: %v", err)
 	}
@@ -473,4 +516,44 @@ func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) Ou
 	}
 	t.Fatalf("order %s not claimable", order)
 	return OutboxMessage{}
+}
+
+// The regression proof for the helper above: a backlog one row deeper than the old
+// batch must not hide the row under test.
+//
+// Every one of the 50 background rows is load-bearing. Drop one and the target sits
+// at position 50, inside the old batch, and this fixture passes against the very
+// helper it exists to reject — which is the shape of a test that cannot fail.
+func TestClaimOneSeesItsRowBeneathAFullBatch(t *testing.T) {
+	db, ctx := outboxDB(t)
+	// One full old-batch worth of older, claimable rows, all owed by other orders.
+	for range 50 {
+		bg, ref := seedCompletable(t, db, ctx, "outbox-backlog-"+uuid.New().String())
+		if _, err := CompleteOrder(ctx, db, bg, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Older than the target on purpose: ORDER BY next_attempt_at then puts all 50
+	// ahead of it, so the old helper's batch is full before it reaches the target.
+	if _, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at=now()-interval '1 minute' WHERE published_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+
+	c, candidate := seedCompletable(t, db, ctx, "outbox-beneath-backlog")
+	if _, err := CompleteOrder(ctx, db, c, candidate); err != nil {
+		t.Fatal(err)
+	}
+
+	m := claimOne(t, db, ctx, c.OrderID)
+	if m.OrderID != c.OrderID {
+		t.Fatalf("claimed order %s; want %s", m.OrderID, c.OrderID)
+	}
+	// The claim must be a REAL one, not a lookup: a helper that hand-built an
+	// OutboxMessage would satisfy the line above and prove nothing.
+	if m.ClaimID == uuid.Nil {
+		t.Fatal("claimed message carries no claim id; the helper must claim, not select")
+	}
+	if len(m.Envelope) == 0 {
+		t.Fatal("claimed message carries no envelope")
+	}
 }
