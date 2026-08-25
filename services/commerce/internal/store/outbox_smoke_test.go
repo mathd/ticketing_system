@@ -491,12 +491,24 @@ func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) Ou
 	// absence there means published, not unlucky. Do NOT reset next_attempt_at
 	// after claiming, and do NOT scope this write to the first claim only: either
 	// silently restores the vacuous pass, and every test stays green.
-	// The predicate mirrors ClaimOutbox's own gates, INCLUDING the lease. Matching
-	// only published/dead-lettered would count a live-leased row as claimable, and
-	// the helper would then fail at "not claimable" below having just asserted the
-	// row was fine — which is the confusing failure this whole change exists to
-	// remove. A leased row is a real state a caller can be in (claim, don't
-	// release, claim again), so it gets its own message rather than a miscount.
+	// The predicate covers the two gates this write does NOT itself satisfy.
+	//
+	// ClaimOutbox has four (store.go): published_at IS NULL, dead_lettered_at IS
+	// NULL, next_attempt_at<=now(), and the lease. Three are matched here; the
+	// backoff gate is deliberately absent, because the SET clause satisfies it by
+	// construction — writing '-infinity' makes next_attempt_at<=now() true for
+	// whatever the row was doing before, so a row in backoff is matched and then
+	// made claimable rather than being refused later. (Verified by running it: a
+	// row 10 minutes into backoff matches n=1 and is then claimed.) An
+	// ai-review pass read this as a missing gate; it is a gate this statement
+	// closes rather than tests.
+	//
+	// The LEASE is the opposite case and must be matched, because nothing here
+	// clears it: without this predicate a live-leased row counts as claimable and
+	// the helper then fails at "not claimable" below having just asserted the row
+	// was fine — the confusing failure this whole change exists to remove. A
+	// leased row is a real state a caller can be in (claim, don't release, claim
+	// again), so it gets its own message rather than a miscount.
 	res, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at='-infinity'::timestamptz
 		WHERE order_id=$1 AND published_at IS NULL AND dead_lettered_at IS NULL
 		  AND (lease_until IS NULL OR lease_until<=now())`, order)
@@ -541,6 +553,14 @@ func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) Ou
 // Every one of the 50 background rows is load-bearing. Drop one and the target sits
 // at position 50, inside the old batch, and this fixture passes against the very
 // helper it exists to reject — which is the shape of a test that cannot fail.
+//
+// It is not circular, though an ai-review pass read it as such: the objection was
+// that claimOne's own '-infinity' write reorders the target ahead of the backlog,
+// so the old helper would find it too. That write belongs to the FIX. Remove the
+// fix and the reordering goes with it, which is why reverting claimOne to its
+// original body — no sentinel write, LIMIT 50 — makes this test fail with the very
+// string the two tickets reported. Confirmed by running that revert, not by
+// reasoning about it.
 func TestClaimOneSeesItsRowBeneathAFullBatch(t *testing.T) {
 	db, ctx := outboxDB(t)
 	// One full old-batch worth of older, claimable rows, all owed by other orders.
