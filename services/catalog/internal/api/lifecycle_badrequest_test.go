@@ -83,6 +83,22 @@ func TestCatalogRequestRejectionSourcesDeclareBadRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
 	}
+	missing := operationsMissingBadRequest(doc)
+	if len(missing) > 0 {
+		t.Fatalf("these operations carry a request-layer rejection source (a format:uuid path "+
+			"parameter, a request body, a query parameter or a header parameter), so the binder "+
+			"or the kin-openapi request validator can answer 400; ADR-028 turns an undeclared "+
+			"400 into a 500, so each must declare '400' (or a '4XX' range, or a `default:` response). "+
+			"Missing on %d:\n  %s", len(missing), strings.Join(missing, "\n  "))
+	}
+}
+
+// The ONE scan both the live-spec assertion above and the synthetic edge cases
+// below run. It is shared deliberately: when the two were separate, an edit to
+// the live predicate could leave every edge case green while the real invariant
+// regressed — the edge tests would have been pinning their own copy of the logic
+// rather than the contract (TKT-142 ai-review, second pass).
+func operationsMissingBadRequest(doc *openapi3.T) []string {
 	var missing []string
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
@@ -94,22 +110,13 @@ func TestCatalogRequestRejectionSourcesDeclareBadRequest(t *testing.T) {
 			// Responses.Status(status) and falls back to Default(). Status()
 			// accepts the exact key AND the patterned `4XX` range, so all three
 			// spellings — '400', '4XX', `default:` — satisfy the contract and
-			// must satisfy this test. Checking Value("400") alone would fail a
-			// contract-correct operation; none of the three exists in this spec
-			// today, which is exactly why the arms need writing down rather than
-			// discovering later.
+			// must satisfy this test.
 			if op.Responses.Status(http.StatusBadRequest) == nil && op.Responses.Default() == nil {
 				missing = append(missing, method+" "+path+" ("+op.OperationID+")")
 			}
 		}
 	}
-	if len(missing) > 0 {
-		t.Fatalf("these operations carry a request-layer rejection source (a format:uuid path "+
-			"parameter, a request body, a query parameter or a header parameter), so the binder "+
-			"or the kin-openapi request validator can answer 400; ADR-028 turns an undeclared "+
-			"400 into a 500, so each must declare '400' (or a '4XX' range, or a `default:` response). "+
-			"Missing on %d:\n  %s", len(missing), strings.Join(missing, "\n  "))
-	}
+	return missing
 }
 
 // A source the request layer can reject on, before any handler runs.
@@ -161,36 +168,33 @@ func hasRejectionSource(pathParams, opParams openapi3.Parameters, body *openapi3
 	return false
 }
 
-// The predicate above has two arms that the catalog document cannot exercise —
-// no operation declares `4XX`, and no query or header parameter is schemaless —
-// so both would ship as unfalsifiable claims if only the live spec tested them.
+// The predicate above has arms the catalog document cannot exercise — no
+// operation declares `4XX`, and no query or header parameter is schemaless — so
+// they would ship as unfalsifiable claims if only the live spec tested them.
 // TKT-142's ai-review found both, and a fix with no test that can fail is how
-// the same defect returns. These build synthetic documents instead: small, but
-// they reach states the real spec cannot.
+// the same defect returns.
+//
+// These build synthetic documents and run them through the SAME
+// operationsMissingBadRequest the live assertion uses, so the two cannot drift.
+// Every document here is checked with doc.Validate first — catalog's NewRouter
+// validates the document before serving it, so a fixture that Validate rejects
+// could never reach the router, and an invariant "proved" on one would be proved
+// about nothing. The one shape OpenAPI cannot express is split out below.
 func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
-	load := func(t *testing.T, doc string) *openapi3.T {
+	// Loads the document, REFUSES it if it is not a valid OpenAPI contract, and
+	// returns what the live scanner reports missing.
+	missingIn := func(t *testing.T, doc string) []string {
 		t.Helper()
-		d, err := openapi3.NewLoader().LoadFromData([]byte(doc))
+		loader := openapi3.NewLoader()
+		d, err := loader.LoadFromData([]byte(doc))
 		if err != nil {
 			t.Fatalf("load synthetic spec: %v", err)
 		}
-		return d
-	}
-	// Returns the operations a run over `doc` would report as missing a 400.
-	missingIn := func(t *testing.T, doc string) []string {
-		t.Helper()
-		var missing []string
-		for path, item := range load(t, doc).Paths.Map() {
-			for method, op := range item.Operations() {
-				if !hasRejectionSource(item.Parameters, op.Parameters, op.RequestBody) {
-					continue
-				}
-				if op.Responses.Status(http.StatusBadRequest) == nil && op.Responses.Default() == nil {
-					missing = append(missing, method+" "+path)
-				}
-			}
+		if err := d.Validate(loader.Context); err != nil {
+			t.Fatalf("synthetic spec is not a valid OpenAPI document, so proving anything on it "+
+				"would prove nothing about a contract the router can serve: %v", err)
 		}
-		return missing
+		return operationsMissingBadRequest(d)
 	}
 
 	const head = "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /p:\n    get:\n      operationId: probe\n"
@@ -220,22 +224,10 @@ func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
 		}
 	})
 
-	// A parameter with neither schema nor content is unrejectable — kin-openapi's
-	// ValidateParameter returns nil for it — so it must NOT create a 400
-	// obligation. Before the fix every query parameter counted, so this operation
-	// was required to declare a status no request could provoke.
-	t.Run("schemaless parameter creates no obligation", func(t *testing.T) {
-		doc := head + "      parameters: [{name: q, in: query}]\n" +
-			"      responses:\n        '200': {description: ok}\n"
-		if got := missingIn(t, doc); len(got) != 0 {
-			t.Fatalf("a schemaless query parameter cannot be rejected, so it must not demand a "+
-				"400, but the operation was reported missing: %v", got)
-		}
-	})
-
-	// Requiredness is NOT the line — this is the case the review's proposed
+	// Requiredness is NOT the line — this is the case the ai-review's proposed
 	// "count only required parameters" fix would have wrongly exempted. Measured
-	// against the real spec: `?channel_code=` (optional, minLength 1) answers 400.
+	// against the real spec: `?channel_code=` (optional, minLength 1) answers 400
+	// "minimum string length is 1".
 	t.Run("optional but constrained parameter does create an obligation", func(t *testing.T) {
 		doc := head + "      parameters: [{name: q, in: query, required: false, schema: {type: string, minLength: 1}}]\n" +
 			"      responses:\n        '200': {description: ok}\n"
@@ -244,4 +236,58 @@ func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
 				"it must demand a 400, got %v", got)
 		}
 	})
+}
+
+// The schemaless exemption in hasRejectionSource, tested apart from the cases
+// above because OpenAPI CANNOT EXPRESS the shape: a parameter must contain
+// exactly one of `schema` and `content`, so `doc.Validate` rejects this document
+// and catalog's NewRouter — which validates before serving — would refuse to
+// start on it. The exemption is therefore about a state only kin-openapi's
+// loader can hold, not about a contract any router can serve, and saying so is
+// the point of keeping it separate (TKT-142 ai-review, second pass).
+//
+// It still earns its place. `Parameter.Schema == nil && Content == nil` is
+// reachable in the loader, hasRejectionSource is written against the loader's
+// types, and if the exemption were wrong the failure would be a FALSE NEGATIVE —
+// the defect class this whole test exists to close.
+//
+// Deliberately INVALID fixture. Do not "fix" it by adding a schema; that deletes
+// the case.
+func TestSchemalessParameterExemptionIsAboutTheLoaderNotTheContract(t *testing.T) {
+	const head = "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /p:\n    get:\n      operationId: probe\n"
+
+	for _, tc := range []struct {
+		name  string
+		param string
+	}{
+		{"optional", "{name: q, in: query}"},
+		// The sharpest case, and the one a reader will doubt. In
+		// openapi3filter.ValidateParameter the schema-less early return sits at
+		// the TOP of the function, before the `parameter.Required && !found`
+		// presence check, so a missing required-but-schemaless parameter never
+		// reaches that check and no 400 is produced. If that ordering ever
+		// reverses, the exemption becomes a false negative and this goes red.
+		{"required", "{name: q, in: query, required: true}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loader := openapi3.NewLoader()
+			doc, err := loader.LoadFromData([]byte(head +
+				"      parameters: [" + tc.param + "]\n" +
+				"      responses:\n        '200': {description: ok}\n"))
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			// Pin the reason this case is quarantined: if OpenAPI ever admits a
+			// parameter with neither schema nor content, this fixture belongs
+			// back with the valid ones above and this guard says so.
+			if err := doc.Validate(loader.Context); err == nil {
+				t.Fatal("this fixture is kept separate BECAUSE doc.Validate rejects it; it now " +
+					"validates, so fold it into TestRejectionSourceAndDeclarationEdgeCases")
+			}
+			if got := operationsMissingBadRequest(doc); len(got) != 0 {
+				t.Fatalf("a schemaless parameter is exempt from validation before its requiredness "+
+					"is ever checked, so it demands no 400, got %v", got)
+			}
+		})
+	}
 }
