@@ -10,6 +10,7 @@ package api
 // two tests pin the runtime status and the contract, respectively.
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -252,6 +253,21 @@ func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
 		}
 	})
 
+	// The `content:` arm of the parameter check. Every other case here declares
+	// `schema:`, and the predicate is `p.Schema != nil || p.Content != nil`, so
+	// short-circuiting meant nothing ever evaluated the second operand: deleting
+	// it left the suite green while content-backed parameters silently became
+	// exempt (TKT-142 ai-review, fourth pass). A parameter carries exactly one of
+	// the two, so this fixture declares `content` and no `schema`.
+	t.Run("content-backed parameter creates an obligation", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query, content: {application/json: {schema: {type: object}}}}]\n" +
+			"      responses:\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 1 {
+			t.Fatalf("a content-backed parameter is rejectable — the validator decodes and "+
+				"schema-checks it — so it must demand a 400, got %v", got)
+		}
+	})
+
 	// Requiredness is NOT the line — this is the case the ai-review's proposed
 	// "count only required parameters" fix would have wrongly exempted. Measured
 	// against the real spec: `?channel_code=` (optional, minLength 1) answers 400
@@ -316,7 +332,12 @@ func TestSchemalessParameterExemptionIsAboutTheLoaderNotTheContract(t *testing.T
 				t.Fatal("this fixture is kept separate BECAUSE doc.Validate rejects it; it now " +
 					"validates, so fold it into TestRejectionSourceAndDeclarationEdgeCases")
 			}
-			if !strings.Contains(err.Error(), "exactly one of content and schema") {
+			// Matched on the TYPED error, not the message. kin-openapi exports
+			// *openapi3.ParameterContentSchemaExactlyOne for exactly this rule,
+			// so a wording change upstream must not redden a test whose subject
+			// is the rule rather than its phrasing.
+			var exactlyOne *openapi3.ParameterContentSchemaExactlyOne
+			if !errors.As(err, &exactlyOne) {
 				t.Fatalf("the fixture must be rejected for having neither schema nor content — "+
 					"that is the state under test. It was rejected for something else, so this "+
 					"test no longer covers the schemaless case: %v", err)
