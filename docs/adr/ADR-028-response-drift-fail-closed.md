@@ -87,8 +87,11 @@ five services enforce the same policy.
       declared.** `TestCatalogRequestRejectionSourcesDeclareBadRequest` enforces that rule at
       the spec level, across every source the request layer can reject on: a `format: uuid`
       path parameter (the binder), and a request body, query parameter or header parameter
-      (the kin-openapi request validator). Widened from the `format: uuid`-only predicate by
-      TKT-142; `getOpenAPISpec` falls outside it structurally, having no rejection source.
+      (the kin-openapi request validator), excluding a parameter with neither schema nor content,
+      which that validator cannot reject. It accepts any spelling the validator resolves —
+      `'400'`, a `'4XX'` range, or `default:` — because `ValidateResponse` matches via
+      `Responses.Status`. Widened from the `format: uuid`-only predicate by TKT-142;
+      `getOpenAPISpec` falls outside it structurally, having no rejection source.
 - **Negative:**
     - A schema mistake (over-strict spec) is a production outage for that operation until
       corrected; the tests above are the mitigation, not a guarantee.

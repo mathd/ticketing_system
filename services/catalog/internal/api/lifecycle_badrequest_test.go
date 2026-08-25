@@ -89,12 +89,16 @@ func TestCatalogRequestRejectionSourcesDeclareBadRequest(t *testing.T) {
 			if !hasRejectionSource(item.Parameters, op.Parameters, op.RequestBody) {
 				continue
 			}
-			// A `default:` response covers 400 under kin-openapi's status
-			// matching, so it satisfies the invariant. None exist in this spec
-			// today (ADR-028 notes the same for its coverage gate); without this
-			// arm the test would fail a future default-documented operation that
-			// is in fact contract-correct.
-			if op.Responses.Value("400") == nil && op.Responses.Default() == nil {
+			// Mirror the matcher the response validator itself uses:
+			// openapi3filter.ValidateResponse resolves the declaration with
+			// Responses.Status(status) and falls back to Default(). Status()
+			// accepts the exact key AND the patterned `4XX` range, so all three
+			// spellings — '400', '4XX', `default:` — satisfy the contract and
+			// must satisfy this test. Checking Value("400") alone would fail a
+			// contract-correct operation; none of the three exists in this spec
+			// today, which is exactly why the arms need writing down rather than
+			// discovering later.
+			if op.Responses.Status(http.StatusBadRequest) == nil && op.Responses.Default() == nil {
 				missing = append(missing, method+" "+path+" ("+op.OperationID+")")
 			}
 		}
@@ -103,7 +107,7 @@ func TestCatalogRequestRejectionSourcesDeclareBadRequest(t *testing.T) {
 		t.Fatalf("these operations carry a request-layer rejection source (a format:uuid path "+
 			"parameter, a request body, a query parameter or a header parameter), so the binder "+
 			"or the kin-openapi request validator can answer 400; ADR-028 turns an undeclared "+
-			"400 into a 500, so each must declare '400': BadRequest (or a `default:` response). "+
+			"400 into a 500, so each must declare '400' (or a '4XX' range, or a `default:` response). "+
 			"Missing on %d:\n  %s", len(missing), strings.Join(missing, "\n  "))
 	}
 }
@@ -136,7 +140,17 @@ func hasRejectionSource(pathParams, opParams openapi3.Parameters, body *openapi3
 			}
 			switch p.In {
 			case openapi3.ParameterInQuery, openapi3.ParameterInHeader:
-				return true
+				// A parameter with neither schema nor content is unrejectable:
+				// openapi3filter.ValidateParameter returns nil immediately for
+				// it ("assume that everything passes a schema-less check"), so
+				// demanding a 400 for it would be an obligation no request can
+				// trigger. Requiredness is NOT the line — an optional parameter
+				// with a schema is rejectable when supplied invalid, measured on
+				// this spec: `?channel_code=` (optional, minLength 1) answers
+				// 400 "minimum string length is 1".
+				if p.Schema != nil || p.Content != nil {
+					return true
+				}
 			case openapi3.ParameterInPath:
 				if p.Schema != nil && p.Schema.Value != nil && p.Schema.Value.Format == "uuid" {
 					return true
@@ -145,4 +159,89 @@ func hasRejectionSource(pathParams, opParams openapi3.Parameters, body *openapi3
 		}
 	}
 	return false
+}
+
+// The predicate above has two arms that the catalog document cannot exercise —
+// no operation declares `4XX`, and no query or header parameter is schemaless —
+// so both would ship as unfalsifiable claims if only the live spec tested them.
+// TKT-142's ai-review found both, and a fix with no test that can fail is how
+// the same defect returns. These build synthetic documents instead: small, but
+// they reach states the real spec cannot.
+func TestRejectionSourceAndDeclarationEdgeCases(t *testing.T) {
+	load := func(t *testing.T, doc string) *openapi3.T {
+		t.Helper()
+		d, err := openapi3.NewLoader().LoadFromData([]byte(doc))
+		if err != nil {
+			t.Fatalf("load synthetic spec: %v", err)
+		}
+		return d
+	}
+	// Returns the operations a run over `doc` would report as missing a 400.
+	missingIn := func(t *testing.T, doc string) []string {
+		t.Helper()
+		var missing []string
+		for path, item := range load(t, doc).Paths.Map() {
+			for method, op := range item.Operations() {
+				if !hasRejectionSource(item.Parameters, op.Parameters, op.RequestBody) {
+					continue
+				}
+				if op.Responses.Status(http.StatusBadRequest) == nil && op.Responses.Default() == nil {
+					missing = append(missing, method+" "+path)
+				}
+			}
+		}
+		return missing
+	}
+
+	const head = "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /p:\n    get:\n      operationId: probe\n"
+
+	// A `4XX` range declaration satisfies the contract: ValidateResponse resolves
+	// it via Responses.Status(400). Before the fix this read Value("400") and
+	// reported this contract-correct operation as missing.
+	t.Run("4XX range satisfies the invariant", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query, schema: {type: string}}]\n" +
+			"      responses:\n        '4XX': {description: bad}\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 0 {
+			t.Fatalf("an operation declaring '4XX' is contract-correct and must satisfy the "+
+				"invariant, but it was reported missing: %v", got)
+		}
+	})
+
+	// The complement, so the arm above cannot pass by admitting everything: an
+	// operation with a rejectable parameter and NO 4xx spelling at all is still
+	// caught. Without this the test would stay green if the declaration check
+	// were deleted outright.
+	t.Run("no 400, 4XX or default is still caught", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query, schema: {type: string}}]\n" +
+			"      responses:\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 1 {
+			t.Fatalf("an operation with a rejectable query parameter and no 400/4XX/default must "+
+				"be reported missing, got %v", got)
+		}
+	})
+
+	// A parameter with neither schema nor content is unrejectable — kin-openapi's
+	// ValidateParameter returns nil for it — so it must NOT create a 400
+	// obligation. Before the fix every query parameter counted, so this operation
+	// was required to declare a status no request could provoke.
+	t.Run("schemaless parameter creates no obligation", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query}]\n" +
+			"      responses:\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 0 {
+			t.Fatalf("a schemaless query parameter cannot be rejected, so it must not demand a "+
+				"400, but the operation was reported missing: %v", got)
+		}
+	})
+
+	// Requiredness is NOT the line — this is the case the review's proposed
+	// "count only required parameters" fix would have wrongly exempted. Measured
+	// against the real spec: `?channel_code=` (optional, minLength 1) answers 400.
+	t.Run("optional but constrained parameter does create an obligation", func(t *testing.T) {
+		doc := head + "      parameters: [{name: q, in: query, required: false, schema: {type: string, minLength: 1}}]\n" +
+			"      responses:\n        '200': {description: ok}\n"
+		if got := missingIn(t, doc); len(got) != 1 {
+			t.Fatalf("an optional parameter with a schema is rejectable when supplied invalid, so "+
+				"it must demand a 400, got %v", got)
+		}
+	})
 }
