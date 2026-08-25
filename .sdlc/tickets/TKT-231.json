@@ -2,7 +2,7 @@
   "key": "TKT-231",
   "type": "Task",
   "summary": "Flaky: TestBackfillOwesEventsForPreExistingCompletedOrders (commerce) fails under load — mechanism unknown",
-  "status": "Backlog",
+  "status": "Done",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -10,6 +10,10 @@
     {
       "type": "relates",
       "key": "TKT-230"
+    },
+    {
+      "type": "relates",
+      "key": "TKT-242"
     }
   ],
   "comments": [
@@ -17,6 +21,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Split out of TKT-230 at shaping (2026-08-09).** TKT-230 originally carried four load-sensitive smoke failures. Its `claim_history` ordering mechanism was proven by measurement and closes the two *inventory history* failures. **This one is not explained by that mechanism** and was carried no further, because TKT-230's COS requires a mechanism for each failure it claims — bundling an unexplained failure into it guarantees it cannot close honestly.\n\nObserved 2026-08-08, run 3 of four consecutive `make check` runs while gating TKT-229 (a TypeScript-only diff, so it cannot have caused a Go smoke failure).\n\n```\nTestBackfillOwesEventsForPreExistingCompletedOrders  commerce/internal/store\n```\n\n**What is known:** it is DB-backed, it failed once under gate load, and zero `already exists` / `partial migration` errors appeared in that run (so TKT-198's migration race is not implicated).\n\n**What is not known:** everything else. No sample assertion text was captured. The first job is to reproduce it or to retrieve the failure output, not to guess a fix.\n\n**Do not** assume it shares TKT-230's cause. The two inventory failures were ordering ties on `claim_history`; this is a different service and a different table. Needs shaping before Gate 1."
+    },
+    {
+      "stage": "done",
+      "kind": "metrics",
+      "body": "<!-- sdlc:stage=done kind=metrics -->\n**Closed by TKT-242** (merged `d45bcba4`, [PR #317](https://github.com/mathd/ticketing_system/pull/317)). Not worked separately: same defect, same helper, one diff.\n\n### The gap this ticket was filed with, closed\n\nFiled with **no description** and: *\"No sample assertion text was captured. The first job is to reproduce it or to retrieve the failure output, not to guess a fix.\"*\n\nThe output did not need retrieving. `TestBackfillOwesEventsForPreExistingCompletedOrders` fails at `outbox_smoke_test.go:367`, inside the shared helper `claimOne`, whose `t.Fatalf` reads `order %s not claimable`. TKT-242's failure is the **same helper** reached from `:417`. Neither test ever reached its own assertion.\n\n### The mechanism, established by reproduction\n\n`claimOne` claimed a batch of 50 (`ClaimOutbox(ctx, db, 50, …)`) and searched it. Above 50 claimable rows the seeded row could be outside the batch. Reproduced deterministically: a 40-row backlog passes, 60 fails.\n\nThe ticket's explicit warning — *\"Do not assume it shares TKT-230's cause. The two inventory failures were ordering ties on `claim_history`; this is a different service and a different table\"* — was correct, and the reproduction confirms it: every row in both runs ties on `next_attempt_at`, so if ties were the mechanism the 40-row run would be unstable too. It is not. **Not an ordering tie. A batch limit.**\n\nAlso ruled out, as the ticket suspected: TKT-198's migration race is not implicated, and cross-package database contention is already closed by four isolated commerce databases plus `TestCommerceSmokeDatabasesAreIsolated`.\n\n### Evidence it stays fixed\n\n`BackfillCompletionOutbox` mutated to insert no row → `:367` reddens with *\"has 0 claimable outbox rows; want exactly 1 … and no row to explain why\"*. The assertion is the test's own, not the helper's.\n\n| stage | duration |\n|---|---|\n| Backlog (split from TKT-230 2026-08-09 → closed) | 16 days, unworked |\n| all pipeline stages | `n/a` — closed by TKT-242 |\n\n- **human-wait total:** `n/a` — the merge decision was Gate 1 on TKT-242 (owner, 2026-08-24).\n- **diff:** `n/a` — no separate diff; see TKT-242 (+129/−1).\n- **overrides:** `none`.\n- **learnings:** none of its own; carried in TKT-242's closeout.\n- **retro:** one item. This ticket was correctly split out of TKT-230 for having no proven mechanism, and correctly warned against inheriting TKT-230's — both judgements held up. What it lacked was the **failure string**, and one `grep` of the test name would have produced it at filing time, turning \"mechanism unknown\" into \"shared helper\" eight days earlier. → *Concrete change:* when filing a flake ticket, paste the `t.Fatalf`/assertion text, or the test name **and** the line it failed at. `references/shaping.md` treats reproduction as the first job; for a Go test the cheaper first job is locating the assertion. **Not applied** — offered to the owner.\n"
     }
   ]
 }
