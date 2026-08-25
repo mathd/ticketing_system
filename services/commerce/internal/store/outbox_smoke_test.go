@@ -491,19 +491,36 @@ func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) Ou
 	// absence there means published, not unlucky. Do NOT reset next_attempt_at
 	// after claiming, and do NOT scope this write to the first claim only: either
 	// silently restores the vacuous pass, and every test stays green.
+	// The predicate mirrors ClaimOutbox's own gates, INCLUDING the lease. Matching
+	// only published/dead-lettered would count a live-leased row as claimable, and
+	// the helper would then fail at "not claimable" below having just asserted the
+	// row was fine — which is the confusing failure this whole change exists to
+	// remove. A leased row is a real state a caller can be in (claim, don't
+	// release, claim again), so it gets its own message rather than a miscount.
 	res, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at='-infinity'::timestamptz
-		WHERE order_id=$1 AND published_at IS NULL AND dead_lettered_at IS NULL`, order)
+		WHERE order_id=$1 AND published_at IS NULL AND dead_lettered_at IS NULL
+		  AND (lease_until IS NULL OR lease_until<=now())`, order)
 	if err != nil {
 		t.Fatalf("prioritise %s for claiming: %v", order, err)
 	}
-	// Exactly one, not "at least one": zero means the caller never owed an event
-	// (or it was already published), and this helper must not paper over that by
-	// claiming someone else's row.
+	// Exactly one, not "at least one": zero means the caller never owed an event,
+	// or it is published, or it is still leased to an earlier claim — and this
+	// helper must not paper over any of those by claiming someone else's row.
+	// completion_outbox has one row per order, so two is unreachable; the check is
+	// written as an equality anyway, because a schema that stops guaranteeing that
+	// should break here rather than silently return an arbitrary row.
 	switch n, err := res.RowsAffected(); {
 	case err != nil:
 		t.Fatalf("prioritise %s: rows affected: %v", order, err)
 	case n != 1:
-		t.Fatalf("order %s has %d claimable outbox rows; want exactly 1", order, n)
+		var published, dead, leased bool
+		if err := db.QueryRowContext(ctx, `SELECT published_at IS NOT NULL, dead_lettered_at IS NOT NULL,
+			lease_until IS NOT NULL AND lease_until>now() FROM completion_outbox WHERE order_id=$1`, order).
+			Scan(&published, &dead, &leased); err != nil {
+			t.Fatalf("order %s has %d claimable outbox rows (want 1), and no row to explain why", order, n)
+		}
+		t.Fatalf("order %s has %d claimable outbox rows; want exactly 1 (published=%v dead_lettered=%v leased=%v)",
+			order, n, published, dead, leased)
 	}
 	msgs, err := ClaimOutbox(ctx, db, 1, time.Minute)
 	if err != nil {
@@ -527,15 +544,23 @@ func claimOne(t *testing.T, db *sql.DB, ctx context.Context, order uuid.UUID) Ou
 func TestClaimOneSeesItsRowBeneathAFullBatch(t *testing.T) {
 	db, ctx := outboxDB(t)
 	// One full old-batch worth of older, claimable rows, all owed by other orders.
+	backlog := make([]uuid.UUID, 0, 50)
 	for range 50 {
 		bg, ref := seedCompletable(t, db, ctx, "outbox-backlog-"+uuid.New().String())
 		if _, err := CompleteOrder(ctx, db, bg, ref); err != nil {
 			t.Fatal(err)
 		}
+		backlog = append(backlog, bg.OrderID)
 	}
 	// Older than the target on purpose: ORDER BY next_attempt_at then puts all 50
 	// ahead of it, so the old helper's batch is full before it reaches the target.
-	if _, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at=now()-interval '1 minute' WHERE published_at IS NULL`); err != nil {
+	//
+	// Scoped to the ids this test created. A table-wide UPDATE would also rewrite
+	// the retry schedule of rows other tests left behind — this package shares one
+	// database and cleanup is per-test at test end — so it could change ordering
+	// and lease behaviour for whatever runs next (ai-review).
+	if _, err := db.ExecContext(ctx, `UPDATE completion_outbox SET next_attempt_at=now()-interval '1 minute'
+		WHERE order_id=ANY($1)`, backlog); err != nil {
 		t.Fatal(err)
 	}
 
