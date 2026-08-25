@@ -84,8 +84,11 @@ five services enforce the same policy.
       path UUID reached clients as this decision's generic 500 (plus an ERROR log) until
       TKT-110 declared it. **The rule for catalog is therefore stricter than this bullet
       originally implied: any status the binder or the request validator can write must be
-      declared.** `TestUUIDPathOperationsDeclareBadRequest` enforces the `format: uuid` case
-      of that rule at the spec level.
+      declared.** `TestCatalogRequestRejectionSourcesDeclareBadRequest` enforces that rule at
+      the spec level, across every source the request layer can reject on: a `format: uuid`
+      path parameter (the binder), and a request body, query parameter or header parameter
+      (the kin-openapi request validator). Widened from the `format: uuid`-only predicate by
+      TKT-142; `getOpenAPISpec` falls outside it structurally, having no rejection source.
 - **Negative:**
     - A schema mistake (over-strict spec) is a production outage for that operation until
       corrected; the tests above are the mitigation, not a guarantee.

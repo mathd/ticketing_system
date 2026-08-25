@@ -54,12 +54,31 @@ func TestLifecycleRejectionsAreDeclaredBadRequests(t *testing.T) {
 	})
 }
 
-// The class, not the nine instances: any operation whose path carries a
-// format:uuid parameter can be rejected by the generated binder, so it owes the
-// contract a '400'. Spec-only — it drives no requests, so it covers operation
-// number ten without a fixture. The hand-mounted /internal/* chi routes are
-// deliberately absent from the document and so out of its reach.
-func TestUUIDPathOperationsDeclareBadRequest(t *testing.T) {
+// The class, not the nine instances: any operation the request layer can reject
+// owes the contract a '400'. Four sources produce one — the generated binder
+// rejecting a `format: uuid` path parameter, and the kin-openapi request
+// validator rejecting a request body, a query parameter or a header parameter
+// (measured on TKT-110: invalid JSON, a wrong property type, a minLength
+// violation and a wrong Content-Type all reach the client as 400). ADR-028
+// wraps response validation around the router from the OUTSIDE, so each of those
+// 400s is written inside it and an undeclared one is rewritten into a 500.
+//
+// Spec-only — it drives no requests, so it covers operation number ten without a
+// fixture. Two notes on its reach, both deliberate:
+//
+//   - `getOpenAPISpec` drops out STRUCTURALLY, not by name: it has no parameters
+//     and no request body, so it has no rejection source. Do not "simplify" this
+//     into a name check — the exclusion is a consequence of the predicate and
+//     should stay one.
+//   - At HEAD the predicate selects 41 of the document's 42 operations, so it
+//     discriminates little TODAY. Its value is prospective: it fires on the
+//     future operation that carries a body, query or header and no uuid path
+//     parameter — which is exactly how the nine TKT-110 fixed slipped through.
+//
+// The hand-mounted /internal/* chi routes (server.go NewRouter) are absent from
+// the document and mounted outside the validator, so they are out of reach here.
+// The two /internal/* paths that ARE documented are in scope like any other.
+func TestCatalogRequestRejectionSourcesDeclareBadRequest(t *testing.T) {
 	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
@@ -67,7 +86,7 @@ func TestUUIDPathOperationsDeclareBadRequest(t *testing.T) {
 	var missing []string
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
-			if !hasUUIDPathParam(item.Parameters, op.Parameters) {
+			if !hasRejectionSource(item.Parameters, op.Parameters, op.RequestBody) {
 				continue
 			}
 			// A `default:` response covers 400 under kin-openapi's status
@@ -81,21 +100,47 @@ func TestUUIDPathOperationsDeclareBadRequest(t *testing.T) {
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("operations with a format:uuid path parameter can be rejected by the generated "+
-			"binder with 400; ADR-028 turns an undeclared 400 into a 500, so each must declare "+
-			"'400': BadRequest. Missing on %d:\n  %s", len(missing), strings.Join(missing, "\n  "))
+		t.Fatalf("these operations carry a request-layer rejection source (a format:uuid path "+
+			"parameter, a request body, a query parameter or a header parameter), so the binder "+
+			"or the kin-openapi request validator can answer 400; ADR-028 turns an undeclared "+
+			"400 into a 500, so each must declare '400': BadRequest (or a `default:` response). "+
+			"Missing on %d:\n  %s", len(missing), strings.Join(missing, "\n  "))
 	}
 }
 
-func hasUUIDPathParam(sets ...openapi3.Parameters) bool {
-	for _, params := range sets {
+// A source the request layer can reject on, before any handler runs.
+//
+// The request body counts whether or not it is `required`: closeSlot's is
+// `required: false` and TestLifecycleRejectionsAreDeclaredBadRequests above
+// proves an invalid-but-optional body still returns 400. Query and header
+// parameters count whether or not they are required, for the same reason — a
+// supplied value can violate its schema.
+//
+// Path parameters count ONLY when the format is uuid. That is the binder
+// guarantee TKT-110 measured; a plain string path parameter binds anything, so
+// widening this arm would demand 400s no source can produce.
+//
+// The header arm is UNEXERCISED BY CONSTRUCTION: this document declares no
+// header parameter, so no mutation of it can prove the branch. It is kept
+// because it is correct for a future operation, and labelled because a branch a
+// fixture cannot reach must not be mistaken for coverage.
+func hasRejectionSource(pathParams, opParams openapi3.Parameters, body *openapi3.RequestBodyRef) bool {
+	if body != nil && body.Value != nil {
+		return true
+	}
+	for _, params := range []openapi3.Parameters{pathParams, opParams} {
 		for _, ref := range params {
 			p := ref.Value
-			if p == nil || p.In != openapi3.ParameterInPath || p.Schema == nil || p.Schema.Value == nil {
+			if p == nil {
 				continue
 			}
-			if p.Schema.Value.Format == "uuid" {
+			switch p.In {
+			case openapi3.ParameterInQuery, openapi3.ParameterInHeader:
 				return true
+			case openapi3.ParameterInPath:
+				if p.Schema != nil && p.Schema.Value != nil && p.Schema.Value.Format == "uuid" {
+					return true
+				}
 			}
 		}
 	}
