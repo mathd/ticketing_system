@@ -17,6 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const GATEWAY = 'http://localhost:8080';
 
+// Any fixed instant. Its value is irrelevant; that it never advances is the point.
+const FROZEN_NOW_MS = 1_780_000_000_000;
+
 type Call = { url: string };
 
 function stubFetch(handler: (url: string) => Response): Call[] {
@@ -94,8 +97,37 @@ async function renderPage(path: string, params: Record<string, string>) {
 }
 
 describe('storefront SSR call budget (ADR-004 rule 3)', () => {
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.unstubAllGlobals());
+  // The clock is FROZEN for every case in this file, and the order of these two
+  // lines is load-bearing (TKT-218).
+  //
+  // PageDataCache decides freshness from a wall clock: an entry serves for
+  // max-age seconds of REAL time. A busy machine that loses more than max-age
+  // between two reads of one URL therefore makes the cache miss and re-fetch,
+  // and the budget assertion counts that as a second upstream call — a page-call
+  // violation reported for a machine-load reason. That is the fail-open this
+  // ticket closes: the assertion could not tell "the page made a second call"
+  // from "the process was starved". Reproduced before fixing: two reads of one
+  // URL spend 1 call on a still clock and 2 across a 301s stall.
+  //
+  // Freezing does NOT make the budget inert. A genuine second fetch reads a
+  // different URL (or a URL the cache cannot serve) and still counts — verified
+  // in both directions, not assumed.
+  //
+  // WHY THE SPY MUST COME FIRST: cache.ts takes the clock as a DEFAULT PARAMETER
+  // (`now: () => number = Date.now`) and stores the resolved reference, so the
+  // singleton in api.ts binds whatever Date.now is when that module is first
+  // imported. renderPage imports it dynamically, so a spy installed here reaches
+  // it — but a spy installed after the first import silently does nothing, and
+  // the symptom is a test that PASSES while proving nothing. The first attempt at
+  // this fix failed exactly that way.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.spyOn(Date, 'now').mockReturnValue(FROZEN_NOW_MS);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it.each([
     // Each page renders a different repeated child, so the marker is per page.
@@ -126,11 +158,13 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
     // alone takes ~10s on a busy machine — so the default turned load into a
     // failure of the BUDGET, which is not what this test is about.
     //
-    // This does NOT close TKT-218. One of the failures observed there did not
-    // time out: it counted TWO upstream calls where the budget allows one. That
-    // assertion can therefore still fail OPEN, and whether a second fetch is ever
-    // genuine — a retry path, or a cancelled request the stub counts twice — is
-    // an open question this timeout deliberately does not answer.
+    // The timeout addressed the two cases that TIMED OUT. The third did not: it
+    // counted TWO upstream calls where the budget allows one, so the assertion
+    // could still fail OPEN. TKT-218 answered which it was — the second call is
+    // GENUINE, not a stub artefact: PageDataCache expires entries against a wall
+    // clock, so a process starved for longer than max-age really does re-fetch.
+    // The frozen clock in beforeEach is what closes it; see the comment there for
+    // why the spy must precede the page import.
   }, 30_000);
 
   it('a repeat render inside the tier spends zero — not per-request either', async () => {
