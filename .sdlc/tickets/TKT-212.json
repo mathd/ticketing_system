@@ -1,58 +1,66 @@
 {
- "key": "TKT-212",
- "type": "Task",
- "parent": "TKT-31",
- "classification": "simple",
- "summary": "The storefront cache ages entries on a wall clock, so a backward step extends their real lifetime",
- "status": "Ready",
- "labels": [],
- "assignee": null,
- "pr": null,
- "links": [],
- "description": "**Carried out of TKT-206's ai-review (pass 2) as the half of a finding that was deliberately not fixed there.**\n\n`web/storefront/src/lib/cache.ts` measures an entry's age from an injected `now()` that is `Date.now` in production — a **wall** clock. An NTP step backwards makes elapsed time negative.\n\n**What TKT-206 fixed:** age is now a per-entry **high-water mark**, `max(previously reported, upstream + clamped elapsed)`. A live entry can no longer report a smaller age than a previous call already established, so the middleware cannot hand a page back freshness it had already spent. That was the part TKT-206 introduced, and it is closed.\n\n**What remains open, and is this ticket:** after a backward step the age stops advancing until wall time catches up, so an entry can **outlive its TTL in real time by roughly the size of the jump**. A buyer can see an event listing that should have expired.\n\n**Not a regression.** This cache measured wall time before TKT-206 touched it, and the reviewer checked the claim independently: *\"It does not change expiry behavior, so the delayed-expiry residual genuinely predates TKT-206 and is not made worse by this patch.\"*\n\n**Why it was not fixed there:** the fix changes the injected-clock contract. `PageDataCache`'s constructor takes `now: () => number` and that seam is shared with `web/storefront/src/middleware.ts` and every existing cache test, several of which drive wall-clock milliseconds directly. Swapping the source is a small change with a wide blast radius through test fixtures, and it deserves to be reviewed as itself rather than as a footnote to a 1,800-line caching ticket.\n\n**Conditions of Success:**\n- [ ] Entry aging uses a **monotonic** elapsed-time source (`performance.now()` in Node/SSR, or an injected monotonic clock), so a wall-clock step in either direction cannot change how long an entry lives.\n- [ ] Expiry is bounded in real time: a test steps the clock backward mid-life and proves the entry still expires within its original budget.\n- [ ] The high-water behaviour TKT-206 added is preserved — a monotonic source should make it redundant rather than contradict it. Say which, and if redundant, remove it rather than leaving two mechanisms for one property.\n- [ ] The existing injected-clock tests keep working, or are migrated deliberately with the reason recorded. `middleware.ts` still derives outgoing `Cache-Control` from remaining freshness correctly.\n- [ ] `make check` green, including the TS build (vitest does **not** typecheck — run the build before the full gate).\n\nQuality gates: `make check`.",
- "comments": [
-  {
-   "stage": "backlog",
-   "kind": "readiness",
-   "body": "### Not yet shaped — created as a review carve-out\n\nBorn from TKT-206's ai-review pass 2 (2026-08-04). Minimal memo below; full shaping owed before Gate 1.\n\nSmall in lines, wider in reach than it looks: the clock is injected and shared, so this touches test fixtures across the storefront suite.\n\n**Context so the plan does not re-derive it:**\n- The aging arithmetic and its comment block: `web/storefront/src/lib/cache.ts` (`get`, `#fetchThrough`, `Entry.reportedAgeSeconds`).\n- The consumer whose behaviour must not change: `web/storefront/src/middleware.ts`, which derives the page's outgoing `Cache-Control` from remaining freshness.\n- The tests that inject a wall clock today: `web/storefront/test/cache.test.ts`.\n- **Governing ADRs:** ADR-045 (why `Age` exists at all and what it does *not* buy — the residual is named there), ADR-006 (the storefront owns the minutes tier on the page layer), ADR-004 (the tier itself).\n- The reviewer's own words on scope, worth reading before deciding how far to take this: the residual predates TKT-206 and this patch does not make it worse."
-  },
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`.\n\n**Shaping changed the ticket's own risk assessment.** It was filed with \"a small change with a wide blast radius through test fixtures, several of which drive wall-clock milliseconds directly\". Reading `web/storefront/test/cache.test.ts` does not support that: every case already constructs `new PageDataCache(fetchSpy, () => nowMs)` with a hand-driven counter. The injected seam is already universal, and forward-stepping counters already satisfy a monotonic contract. The change is the **default** plus **one** production construction (`api.ts:25`) — smaller than filed, and the drafter should not budget for a fixture migration that isn't there.\n\n**Two traps written into `approach`/`success`:**\n1. **Do not delete TKT-206's high-water mark** as newly redundant. It answers a different adversary (a shrinking upstream `Age` header, and a per-process monotonic clock behind a map that outlives neither cleanly). AGENTS.md's dead-mechanism rule cuts both ways — the test is \"name an input where it changes the output\", and here you can.\n2. **Move both `ageOf()` call sites**, `get()` and `#sweep()`. Sweeping is what evicts; a fix that only corrects `get()` leaves the map growing on the wrong clock, and a test written against `get()` alone cannot see it — which is precisely why the class already exposes `size`.\n\nThe backward-step test must be shown **red at HEAD** before the fix."
+  "key": "TKT-212",
+  "type": "Task",
+  "parent": "TKT-31",
+  "classification": "simple",
+  "summary": "The storefront cache ages entries on a wall clock, so a backward step extends their real lifetime",
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
+  "pr": null,
+  "links": [],
+  "description": "**Carried out of TKT-206's ai-review (pass 2) as the half of a finding that was deliberately not fixed there.**\n\n`web/storefront/src/lib/cache.ts` measures an entry's age from an injected `now()` that is `Date.now` in production — a **wall** clock. An NTP step backwards makes elapsed time negative.\n\n**What TKT-206 fixed:** age is now a per-entry **high-water mark**, `max(previously reported, upstream + clamped elapsed)`. A live entry can no longer report a smaller age than a previous call already established, so the middleware cannot hand a page back freshness it had already spent. That was the part TKT-206 introduced, and it is closed.\n\n**What remains open, and is this ticket:** after a backward step the age stops advancing until wall time catches up, so an entry can **outlive its TTL in real time by roughly the size of the jump**. A buyer can see an event listing that should have expired.\n\n**Not a regression.** This cache measured wall time before TKT-206 touched it, and the reviewer checked the claim independently: *\"It does not change expiry behavior, so the delayed-expiry residual genuinely predates TKT-206 and is not made worse by this patch.\"*\n\n**Why it was not fixed there:** the fix changes the injected-clock contract. `PageDataCache`'s constructor takes `now: () => number` and that seam is shared with `web/storefront/src/middleware.ts` and every existing cache test, several of which drive wall-clock milliseconds directly. Swapping the source is a small change with a wide blast radius through test fixtures, and it deserves to be reviewed as itself rather than as a footnote to a 1,800-line caching ticket.\n\n**Conditions of Success:**\n- [ ] Entry aging uses a **monotonic** elapsed-time source (`performance.now()` in Node/SSR, or an injected monotonic clock), so a wall-clock step in either direction cannot change how long an entry lives.\n- [ ] Expiry is bounded in real time: a test steps the clock backward mid-life and proves the entry still expires within its original budget.\n- [ ] The high-water behaviour TKT-206 added is preserved — a monotonic source should make it redundant rather than contradict it. Say which, and if redundant, remove it rather than leaving two mechanisms for one property.\n- [ ] The existing injected-clock tests keep working, or are migrated deliberately with the reason recorded. `middleware.ts` still derives outgoing `Cache-Control` from remaining freshness correctly.\n- [ ] `make check` green, including the TS build (vitest does **not** typecheck — run the build before the full gate).\n\nQuality gates: `make check`.",
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "### Not yet shaped — created as a review carve-out\n\nBorn from TKT-206's ai-review pass 2 (2026-08-04). Minimal memo below; full shaping owed before Gate 1.\n\nSmall in lines, wider in reach than it looks: the clock is injected and shared, so this touches test fixtures across the storefront suite.\n\n**Context so the plan does not re-derive it:**\n- The aging arithmetic and its comment block: `web/storefront/src/lib/cache.ts` (`get`, `#fetchThrough`, `Entry.reportedAgeSeconds`).\n- The consumer whose behaviour must not change: `web/storefront/src/middleware.ts`, which derives the page's outgoing `Cache-Control` from remaining freshness.\n- The tests that inject a wall clock today: `web/storefront/test/cache.test.ts`.\n- **Governing ADRs:** ADR-045 (why `Age` exists at all and what it does *not* buy — the residual is named there), ADR-006 (the storefront owns the minutes tier on the page layer), ADR-004 (the tier itself).\n- The reviewer's own words on scope, worth reading before deciding how far to take this: the residual predates TKT-206 and this patch does not make it worse."
+    },
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`.\n\n**Shaping changed the ticket's own risk assessment.** It was filed with \"a small change with a wide blast radius through test fixtures, several of which drive wall-clock milliseconds directly\". Reading `web/storefront/test/cache.test.ts` does not support that: every case already constructs `new PageDataCache(fetchSpy, () => nowMs)` with a hand-driven counter. The injected seam is already universal, and forward-stepping counters already satisfy a monotonic contract. The change is the **default** plus **one** production construction (`api.ts:25`) — smaller than filed, and the drafter should not budget for a fixture migration that isn't there.\n\n**Two traps written into `approach`/`success`:**\n1. **Do not delete TKT-206's high-water mark** as newly redundant. It answers a different adversary (a shrinking upstream `Age` header, and a per-process monotonic clock behind a map that outlives neither cleanly). AGENTS.md's dead-mechanism rule cuts both ways — the test is \"name an input where it changes the output\", and here you can.\n2. **Move both `ageOf()` call sites**, `get()` and `#sweep()`. Sweeping is what evicts; a fix that only corrects `get()` leaves the map growing on the wrong clock, and a test written against `get()` alone cannot see it — which is precisely why the class already exposes `size`.\n\nThe backward-step test must be shown **red at HEAD** before the fix."
+    },
+    {
+      "stage": "ready",
+      "kind": "claim",
+      "author": "agent",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — running gateless per `config.gates: autonomous`\n\nLocal tracker backend (`config.tracker: local`); state on `sdlc-state`, code on\n`TKT-212-monotonic-cache-clock` off `origin/main` (f75d73f4).\n\n**Selection reason.** Handed to this run by the owner. The ticket was already in `Ready` with all\neight `readiness` items `met` and zero blockers — verified against the board, not assumed from the\nhand-off.\n\n**Risk verdict: `risk:low` NOT claimed.**\n\nBy blast radius alone it would qualify — one file's clock source, one default parameter, one\nproduction construction site (`web/storefront/src/lib/api.ts:25`), no auth, no money path, no\nmigration, no CI/deploy config, well under five files. That is exactly the trap AGENTS.md and the\nskill's `risk:low` invariant both name: *blast radius and difficulty come apart*.\n\nThe plan gate stays because this ticket's central question is a **test-construction** question, and\nit is wrong-by-default:\n\n1. The COS demands a test that steps the clock **backward mid-life** and proves the entry still\n   expires within its original real-time budget. Once aging runs on an injected *monotonic* clock,\n   a \"backward step\" of that clock is not a thing the contract permits — so the obvious fixture\n   (step the injected `now` back) tests nothing, because it is stepping the very source the fix\n   made authoritative. Constructing a fixture that can still fail requires deciding **which** clock\n   the test steps and **what** the two clocks are relative to each other. Both obvious readings are\n   unfalsifiable for structural reasons; that is TKT-266's shape verbatim.\n2. The shaping pass already flagged a second wrong-by-default move — deleting TKT-206's high-water\n   mark as \"now redundant\" — and the deletion argument and the retention argument are both\n   plausible from the code alone.\n\nOne delegated plan critique is cheap against three build cycles. Verified `performance.now()`\nexists in this runtime (node v24.11.1) before claiming.\n\n**Confirmed by reading, not inherited from the ticket text.** The ticket was filed asserting \"a wide\nblast radius through test fixtures, several of which drive wall-clock milliseconds directly\".\n`web/storefront/test/cache.test.ts` does not support that and the shaping pass already corrected it:\nall ~19 cases construct `new PageDataCache(fetchSpy, () => nowMs)` against a hand-driven counter,\nand every counter steps forward. No fixture migration is owed.\n"
+    }
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "After a backward NTP step the storefront cache's age stops advancing until wall time catches up, so an entry outlives its TTL in real time by roughly the size of the jump and a buyer can be served an event listing that should have expired. TKT-206 closed the other half (age can no longer DECREASE); this is the residual its own code comment names."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: web/storefront/src/lib/cache.ts — the clock source behind entry aging and the #sweep, its default in the constructor, and the one production construction site. OUT: the high-water mark TKT-206 added (keep it — see approach), the upstream-age accounting, the in-flight coalescing, and ADR-004's cache tiers. No API or contract change."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Resolved by reading rather than deferred. The ticket predicted 'a wide blast radius through test fixtures'; that is NOT what the code shows. The injected-clock seam ALREADY exists — `constructor(fetchImpl, now: () => number = Date.now)` — and web/storefront/test/cache.test.ts drives every one of its ~19 cases through that injected `now`, never through the real clock. So the fixtures do not need rewriting: they are already clock-injected, and a monotonic contract is satisfied by the forward-stepping counters they already use. The real change is narrower than filed: the DEFAULT, plus the single production construction at web/storefront/src/lib/api.ts:25. Remaining unknown, and it is small: `performance.now()` in the Astro/Node SSR runtime returns ms since process start with sub-ms resolution — cheap to confirm with one node -e."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. No blockers, no links. TKT-206 is Done and is the reason the high-water mark exists."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Swap the aging clock to a monotonic source (`performance.now()`, still injectable) and keep TKT-206's high-water mark rather than replacing it. **Keep it deliberately, and say so in the code**: the two mechanisms answer different adversaries — monotonic time closes the wall-clock STEP, the high-water mark closes an entry reporting less age than a previous call already established, which also covers a monotonic source that is per-process while the map is not. Deleting it as 'now redundant' is the tempting move and it is the AGENTS.md dead-mechanism trap run in reverse: before removing it, state in one sentence an input for which it changes the output — if you can (and you can: an upstream `Age` header that shrinks between fetches), it stays. Both `ageOf()` call sites must move together — `get()` AND `#sweep()`, which is the one that actually evicts."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: one clock source, one default, one production call site, two tests. Nothing here is worth splitting."
+    },
+    "success": {
+      "state": "met",
+      "note": "The COS on the ticket, with one sharpened. A test that steps the injected clock BACKWARD mid-life and asserts the entry still expires within its original real-time TTL is the ticket's proof — and it must be shown RED against HEAD before the fix, or it is a test about the new code rather than about the defect (AGENTS.md: a coverage ticket must demonstrate its gap). Second assertion, easy to omit: prove eviction, not just re-fetch. `#sweep` is the path that frees memory, and `get()` re-fetches an expired entry whether or not it was ever dropped — the existing suite already exposes `size` for exactly this reason, so assert on `size`."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs: ADR-004 (docs/adr/ADR-004-cache-first-read-path.md) — the cache-first read path and its tiers, incl. the TKT-128 amendment noting no CDN or shared cache exists anywhere in the stack, which is what bounds this defect's blast radius to the SSR process's own map. Resolves at HEAD. governingTests: web/storefront/test/cache.test.ts — ~19 cases, all clock-injected, and the file that will prove or fail to prove this; note its TKT-206 block (`:166+`) which pins the high-water behaviour that must SURVIVE this change. Also web/storefront/src/lib/api.ts:25, the single production construction site — not a test, but the one line where the default actually takes effect."
+    }
   }
- ],
- "readiness": {
-  "objective": {
-   "state": "met",
-   "note": "After a backward NTP step the storefront cache's age stops advancing until wall time catches up, so an entry outlives its TTL in real time by roughly the size of the jump and a buyer can be served an event listing that should have expired. TKT-206 closed the other half (age can no longer DECREASE); this is the residual its own code comment names."
-  },
-  "scope": {
-   "state": "met",
-   "note": "IN: web/storefront/src/lib/cache.ts — the clock source behind entry aging and the #sweep, its default in the constructor, and the one production construction site. OUT: the high-water mark TKT-206 added (keep it — see approach), the upstream-age accounting, the in-flight coalescing, and ADR-004's cache tiers. No API or contract change."
-  },
-  "uncertainties": {
-   "state": "met",
-   "note": "Resolved by reading rather than deferred. The ticket predicted 'a wide blast radius through test fixtures'; that is NOT what the code shows. The injected-clock seam ALREADY exists — `constructor(fetchImpl, now: () => number = Date.now)` — and web/storefront/test/cache.test.ts drives every one of its ~19 cases through that injected `now`, never through the real clock. So the fixtures do not need rewriting: they are already clock-injected, and a monotonic contract is satisfied by the forward-stepping counters they already use. The real change is narrower than filed: the DEFAULT, plus the single production construction at web/storefront/src/lib/api.ts:25. Remaining unknown, and it is small: `performance.now()` in the Astro/Node SSR runtime returns ms since process start with sub-ms resolution — cheap to confirm with one node -e."
-  },
-  "dependencies": {
-   "state": "met",
-   "note": "None. No blockers, no links. TKT-206 is Done and is the reason the high-water mark exists."
-  },
-  "approach": {
-   "state": "met",
-   "note": "Swap the aging clock to a monotonic source (`performance.now()`, still injectable) and keep TKT-206's high-water mark rather than replacing it. **Keep it deliberately, and say so in the code**: the two mechanisms answer different adversaries — monotonic time closes the wall-clock STEP, the high-water mark closes an entry reporting less age than a previous call already established, which also covers a monotonic source that is per-process while the map is not. Deleting it as 'now redundant' is the tempting move and it is the AGENTS.md dead-mechanism trap run in reverse: before removing it, state in one sentence an input for which it changes the output — if you can (and you can: an upstream `Age` header that shrinks between fetches), it stays. Both `ageOf()` call sites must move together — `get()` AND `#sweep()`, which is the one that actually evicts."
-  },
-  "first_slice": {
-   "state": "met",
-   "note": "The whole ticket is one slice: one clock source, one default, one production call site, two tests. Nothing here is worth splitting."
-  },
-  "success": {
-   "state": "met",
-   "note": "The COS on the ticket, with one sharpened. A test that steps the injected clock BACKWARD mid-life and asserts the entry still expires within its original real-time TTL is the ticket's proof — and it must be shown RED against HEAD before the fix, or it is a test about the new code rather than about the defect (AGENTS.md: a coverage ticket must demonstrate its gap). Second assertion, easy to omit: prove eviction, not just re-fetch. `#sweep` is the path that frees memory, and `get()` re-fetches an expired entry whether or not it was ever dropped — the existing suite already exposes `size` for exactly this reason, so assert on `size`."
-  },
-  "context_memo": {
-   "state": "met",
-   "note": "governingAdrs: ADR-004 (docs/adr/ADR-004-cache-first-read-path.md) — the cache-first read path and its tiers, incl. the TKT-128 amendment noting no CDN or shared cache exists anywhere in the stack, which is what bounds this defect's blast radius to the SSR process's own map. Resolves at HEAD. governingTests: web/storefront/test/cache.test.ts — ~19 cases, all clock-injected, and the file that will prove or fail to prove this; note its TKT-206 block (`:166+`) which pins the high-water behaviour that must SURVIVE this change. Also web/storefront/src/lib/api.ts:25, the single production construction site — not a test, but the one line where the default actually takes effect."
-  }
- }
 }
