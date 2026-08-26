@@ -1612,6 +1612,17 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 		// e.organizer, which is what fixtures must use when they need to know
 		// which tenant a write landed in.
 		req.Header.Set(organizerAssertionHeader, e.assertionFor(e.organizer))
+		// TKT-200: the three create operations declare a required
+		// Idempotency-Key, and the generated wrapper refuses a request without
+		// one before the handler runs. A FRESH key per call, so a fixture that
+		// creates two resources still creates two — a shared constant here would
+		// silently turn every second create in a test into a replay of the first,
+		// which is the opposite of what these fixtures mean.
+		//
+		// Set on every unsafe request, not just the three: harmless where the
+		// operation does not declare it, and it means a newly declared key does
+		// not break this helper again.
+		req.Header.Set("Idempotency-Key", "test-"+uuid.NewString())
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, req)

@@ -319,6 +319,7 @@ paths:
       security:
         - CatalogStaffWriteCredential: []
           CatalogOrganizerAssertion: []
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       summary: Create an event (localizable content)
       requestBody:
         required: true
@@ -340,6 +341,7 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
   /performances:
     post:
       operationId: createPerformance
@@ -349,6 +351,7 @@ paths:
       security:
         - CatalogStaffWriteCredential: []
           CatalogOrganizerAssertion: []
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       summary: Create a dated performance (draft)
       description: >
         A performance is the catalog's first dated slot (ADR-005): a datable,
@@ -378,7 +381,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >
-            Seated reference to a seat map that is not published (TKT-103).
+            Seated reference to a seat map that is not published (TKT-103), or
+            an idempotency key reused for a different request (TKT-200). One
+            status, two causes: the body's message names which.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -907,6 +912,7 @@ paths:
       security:
         - CatalogStaffWriteCredential: []
           CatalogOrganizerAssertion: []
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       summary: Create a ticket type with a price
       requestBody:
         required: true
@@ -929,6 +935,7 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
   /ticket-types/{ticketTypeId}/price-resolution:
     get:
       operationId: resolveTicketTypePrice
@@ -1628,6 +1635,36 @@ components:
       in: header
       name: X-Catalog-Organizer-Assertion
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Deduplicates a create (TKT-200). A repeat carrying the same key returns
+        the resource the first call created instead of making a second one, and
+        two concurrent submits of one key create exactly one row — the guarantee
+        is a UNIQUE (organizer_id, idempotency_key) index, not application
+        logic, so it holds for requests that are in flight together and never
+        see each other's result.
+
+        Scoped by organizer (ADR-002), so two tenants may use the same key
+        string without colliding. The organizer comes from the verified
+        assertion (TKT-245), never the body, which is what makes the scope
+        trustworthy.
+
+        Same key with a DIFFERENT request body is a 409, not a silent replay of
+        somebody else's resource — the same decision commerce made, for the same
+        reason.
+
+        `required: true` is a contract statement, not an enforcement mechanism:
+        oapi-codegen generates a Params struct nothing references, so each
+        handler checks the header itself, exactly as commerce's eight write
+        paths do. A test that mutates this line to prove enforcement would be
+        testing a comment.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
     Locale:
       name: locale
       in: query
@@ -1801,6 +1838,17 @@ components:
             $ref: '#/components/schemas/Error'
     BadRequest:
       description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    IdempotencyConflict:
+      description: >-
+        The idempotency key has already been used for a DIFFERENT request
+        (TKT-200). Replaying the first result here would hand the caller a
+        resource it did not ask for, so the reuse is refused instead. Retry with
+        a fresh key, or repeat the original request byte-for-byte to get its
+        result back.
       content:
         application/json:
           schema:

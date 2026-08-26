@@ -39,7 +39,16 @@ func (s *Server) CreateVenue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) CreateEvent(w http.ResponseWriter, r *http.Request) {
+// CreateEvent, CreatePerformance and CreateTicketType take their idempotency key
+// from the generated params rather than reading the header themselves (TKT-200).
+//
+// The generated wrapper binds and REFUSES an absent Idempotency-Key before this
+// handler runs — catalog generates chi-server, unlike commerce, which generates
+// models only and therefore checks the header by hand in eight places. That
+// ordering is load-bearing and is asserted by a test: the wrapper's refusal
+// precedes the security check, so a request with neither the key nor a valid
+// credential answers 400, not 401. See TestCreateRefusesMissingIdempotencyKey.
+func (s *Server) CreateEvent(w http.ResponseWriter, r *http.Request, params CreateEventParams) {
 	var in EventCreate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
@@ -58,9 +67,10 @@ func (s *Server) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev, err := s.store.CreateEvent(r.Context(), store.EventInput{
-		OrganizerID: organizerID,
-		Name:        store.LocalizedText(in.Name),
-		Description: desc,
+		OrganizerID:    organizerID,
+		Name:           store.LocalizedText(in.Name),
+		Description:    desc,
+		IdempotencyKey: string(params.IdempotencyKey),
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)
@@ -245,7 +255,7 @@ func (s *Server) AttachDayToFestival(w http.ResponseWriter, r *http.Request, fes
 	writeJSON(w, http.StatusOK, festivalToAPI(out))
 }
 
-func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
+func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request, params CreatePerformanceParams) {
 	var in PerformanceCreate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
@@ -309,6 +319,8 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 		Timezone:    in.Timezone,
 		ReEntry:     re,
 		SeatMapID:   in.SeatMapId,
+
+		IdempotencyKey: string(params.IdempotencyKey),
 	}
 	if in.OperatingDate != nil {
 		d := in.OperatingDate.Time

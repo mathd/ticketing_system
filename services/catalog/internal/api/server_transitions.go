@@ -328,7 +328,7 @@ func (s *Server) emitClosure(w http.ResponseWriter, r *http.Request, p store.Per
 	writeJSON(w, http.StatusOK, performanceToAPI(p))
 }
 
-func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request) {
+func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request, params CreateTicketTypeParams) {
 	var in TicketTypeCreate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid body"})
@@ -343,11 +343,12 @@ func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tt, err := s.store.CreateTicketType(r.Context(), store.TicketTypeInput{
-		OrganizerID:   organizerID,
-		PerformanceID: in.PerformanceId,
-		Name:          store.LocalizedText(in.Name),
-		PriceAmount:   in.Price.Amount,
-		Currency:      in.Price.Currency,
+		OrganizerID:    organizerID,
+		PerformanceID:  in.PerformanceId,
+		Name:           store.LocalizedText(in.Name),
+		PriceAmount:    in.Price.Amount,
+		Currency:       in.Price.Currency,
+		IdempotencyKey: string(params.IdempotencyKey),
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)

@@ -112,16 +112,62 @@ func (p *Postgres) CreateEvent(ctx context.Context, in EventInput) (Event, error
 		}
 		desc = b
 	}
+	// The fingerprint covers the values actually stored, so a replay of the same
+	// request agrees with itself. `name` and `desc` are the marshalled forms —
+	// the row's own bytes — which is what makes that true rather than hopeful.
+	descBytes, _ := desc.([]byte)
+	print := fingerprint(string(name), string(descBytes))
+
 	e := Event{OrganizerID: in.OrganizerID, Name: in.Name, Description: in.Description}
+	idempotencyBarrier()
 	err = p.db.QueryRowContext(ctx,
-		`INSERT INTO events (organizer_id, name, description)
-		 VALUES ($1, $2, $3) RETURNING id, created_at`,
-		in.OrganizerID, name, desc).Scan(&e.ID, &e.CreatedAt)
+		`INSERT INTO events (organizer_id, name, description, idempotency_key, request_fingerprint)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (organizer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		 RETURNING id, created_at`,
+		in.OrganizerID, name, desc, nullableKey(in.IdempotencyKey), nullableFingerprint(in.IdempotencyKey, print)).
+		Scan(&e.ID, &e.CreatedAt)
 	if isFKViolation(err) {
 		return Event{}, fmt.Errorf("organizer: %w", ErrNotFound)
 	}
+	// ErrNoRows here is not an error: ON CONFLICT DO NOTHING returns no row when
+	// the key is already taken, which is precisely the signal to replay. Letting
+	// it fall through to the generic wrapper below would turn the CORRECT outcome
+	// of a won race into a 500 for whichever caller lost it.
+	if errors.Is(err, sql.ErrNoRows) {
+		return p.replayEvent(ctx, in, print)
+	}
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
+	}
+	return e, nil
+}
+
+// replayEvent answers the caller that lost the insert race, or that simply
+// repeated itself. Reached only when a row already holds this (organizer, key).
+//
+// The stored row is read back rather than reconstructed from the input: the
+// fingerprint has already established that the two requests are the same, so
+// the difference that matters is the row's OWN id and created_at — the first
+// call's, not this one's.
+func (p *Postgres) replayEvent(ctx context.Context, in EventInput, print string) (Event, error) {
+	id, found, match, err := replayLookup(ctx, p.db, "events", in.OrganizerID, in.IdempotencyKey, print)
+	if err != nil {
+		return Event{}, fmt.Errorf("replay event: %w", err)
+	}
+	if !found {
+		// The conflict fired but the row is gone: a concurrent delete, or an
+		// insert this transaction cannot see. Neither is a replay, and inventing
+		// a result would be worse than saying so.
+		return Event{}, fmt.Errorf("insert event: conflicting row vanished")
+	}
+	if !match {
+		return Event{}, ErrIdempotencyConflict
+	}
+	e := Event{ID: id, OrganizerID: in.OrganizerID, Name: in.Name, Description: in.Description}
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT created_at FROM events WHERE id = $1`, id).Scan(&e.CreatedAt); err != nil {
+		return Event{}, fmt.Errorf("replay event: %w", err)
 	}
 	return e, nil
 }

@@ -62,31 +62,71 @@ try {
       : 'Something went wrong talking to the catalog. Try again.';
 }
 
+// TKT-200: one idempotency key per rendered create form.
+//
+// The key must originate with the state the operator acted on — the page they
+// were looking at — and travel back unchanged, which is what makes a
+// double-click two requests carrying ONE key. Minting it inside the client, or
+// per fetch, would give the retry a fresh key and create the second row this
+// ticket exists to prevent: the mechanism would be present, wired, and inert.
+//
+// `crypto.randomUUID` is available in the SSR runtime (Node 20+ / workerd) and
+// in every browser this back office supports; nothing here runs in the browser
+// regardless — the value is rendered into a hidden input server-side.
+const freshKey = () => crypto.randomUUID();
+
+// Keys for the forms this request renders. On a failed submit these are
+// REPLACED below by the submitted ones (see `carriedKey`).
+let eventKey = freshKey();
+let performanceKey = freshKey();
+let ticketTypeKey = freshKey();
+
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const action = String(form.get('_action') ?? '');
   const field = (name: string) => String(form.get(name) ?? '');
   submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
+  // The SUBMITTED key, not a fresh one. On a validation failure this page
+  // re-renders the form the operator just posted, and re-rendering a NEW key
+  // there would mean the corrected resubmit is a different request as far as
+  // catalog is concerned — so a double-click on the corrected form would once
+  // again produce two rows. Falls back to a fresh key only when the field is
+  // absent entirely, which is a form that predates this change.
+  const carriedKey = (name: string) => field(name) || freshKey();
+  if (action === 'create-event') eventKey = carriedKey('idempotency_key');
+  if (action === 'create-performance') performanceKey = carriedKey('idempotency_key');
+  if (action === 'create-ticket-type') ticketTypeKey = carriedKey('idempotency_key');
+
   try {
-    // There is deliberately NO replay guard here.
+    // There is still deliberately NO page-side replay guard here, and since
+    // TKT-200 there is no longer anything for one to do.
     //
-    // An earlier version refused a step whose id was already in the query
-    // string. It could never fire (ai-review pass 2): a resubmitted POST carries
-    // the ORIGINAL url, which by construction lacks the id that POST produced —
-    // so every legitimate create ran again and every duplicate got through. A
-    // guard that reads as protection and provides none is worse than none.
+    // History, because the shape recurs: an earlier version refused a step whose
+    // id was already in the query string. It could never fire (TKT-192 ai-review
+    // pass 2) — a resubmitted POST carries the ORIGINAL url, which by
+    // construction lacks the id that POST produced — so every legitimate create
+    // ran again and every duplicate got through. It was removed rather than
+    // repaired: a guard that reads as protection and provides none is worse than
+    // none.
     //
-    // Post/redirect/get is what actually reduces accidental replays; closing the
-    // double-submit race needs an idempotency key catalog's creates do not
-    // accept, which is TKT-200. Duplicates here are unpublished drafts.
+    // What closes the race now is the SERVER: each create form carries a hidden
+    // idempotency key, catalog scopes it by organizer under a unique index, and
+    // two submits of one key produce one row and two identical responses. That
+    // is a guarantee no page-side logic could offer, because both requests are
+    // in flight before either id exists.
+    //
+    // So this page's remaining job is only to keep the key STABLE — mint one per
+    // rendered form, re-render the submitted one after a refusal — which is what
+    // the `carriedKey` block above does. Post/redirect/get still removes the
+    // accidental refresh; it was never what made the guarantee.
     if (action === 'create-event') {
       const name = parseLocalizedName({ en: field('name_en'), fr: field('name_fr') });
       if (!name.ok) {
         error = name.message;
         errorField = `name_${name.field}`;
       } else {
-        const created = await createEvent(staff.organizerAssertion, name.value);
+        const created = await createEvent(staff.organizerAssertion, name.value, eventKey);
         return Astro.redirect(`${here}?event=${encodeURIComponent(created.id)}`, 303);
       }
     } else if (action === 'create-performance') {
@@ -105,7 +145,7 @@ if (Astro.request.method === 'POST') {
         venueId: field('venue_id'),
         startsAt: field('starts_at'),
         timezone: field('timezone'),
-      });
+      }, performanceKey);
       return Astro.redirect(
         `${here}?event=${encodeURIComponent(String(eventId))}&performance=${encodeURIComponent(perf.id)}`,
         303,
@@ -125,7 +165,7 @@ if (Astro.request.method === 'POST') {
           name: name.value,
           amount: amount.value,
           currency: currency.value,
-        });
+        }, ticketTypeKey);
         return Astro.redirect(
           `${here}?event=${encodeURIComponent(String(eventId))}` +
             `&performance=${encodeURIComponent(String(performanceId))}` +
@@ -180,6 +220,11 @@ const val = (name: string) => submitted[name] ?? '';
   {step === 1 && (
     <form method="post" action="">
       <input type="hidden" name="_action" value="create-event" />
+      <!-- TKT-200: the idempotency key for THIS rendered form. A hidden
+           input, so a double-click sends the same key twice and catalog
+           returns one resource; after a refusal the SUBMITTED key is
+           re-rendered, so the corrected resubmit is still that request. -->
+      <input type="hidden" name="idempotency_key" value={eventKey} />
       <h2>1. The event</h2>
       <label for="name_en">Name (English)</label>
       <input id="name_en" name="name_en" required value={val('name_en')}
@@ -205,6 +250,11 @@ const val = (name: string) => submitted[name] ?? '';
   {step === 2 && !readFailed && (
     <form method="post" action="">
       <input type="hidden" name="_action" value="create-performance" />
+      <!-- TKT-200: the idempotency key for THIS rendered form. A hidden
+           input, so a double-click sends the same key twice and catalog
+           returns one resource; after a refusal the SUBMITTED key is
+           re-rendered, so the corrected resubmit is still that request. -->
+      <input type="hidden" name="idempotency_key" value={performanceKey} />
       <h2>2. When and where</h2>
       <label for="venue_id">Venue</label>
       <select id="venue_id" name="venue_id" required>
@@ -226,6 +276,11 @@ const val = (name: string) => submitted[name] ?? '';
   {step === 3 && (
     <form method="post" action="">
       <input type="hidden" name="_action" value="create-ticket-type" />
+      <!-- TKT-200: the idempotency key for THIS rendered form. A hidden
+           input, so a double-click sends the same key twice and catalog
+           returns one resource; after a refusal the SUBMITTED key is
+           re-rendered, so the corrected resubmit is still that request. -->
+      <input type="hidden" name="idempotency_key" value={ticketTypeKey} />
       <h2>3. The price</h2>
       <label for="tt_name_en">Ticket name (English)</label>
       <input id="tt_name_en" name="tt_name_en" required value={val('tt_name_en')}

@@ -37,6 +37,15 @@ try {
   check('admin signs in', page.url().includes('/admin'));
 
   await page.goto(PATH, { waitUntil: 'domcontentloaded' });
+
+  // TKT-200: the event form carries a hidden idempotency key. Read it BEFORE
+  // submitting — it is what a duplicate submit would reuse, and it is the only
+  // way this tier can connect the rendered page to the stored row. The browser
+  // cannot see the SSR fetch that carries it upstream, so the assertion is on
+  // what the page rendered and what the write left behind.
+  const eventKey = await page.inputValue('form:has(input[value="create-event"]) input[name="idempotency_key"]');
+  check('the event form renders an idempotency key', Boolean(eventKey), eventKey);
+
   await page.fill('#name_en', eventName);
   await page.fill('#name_fr', eventNameFr);
   let request = await submitForm(page, page.getByRole('button', { name: 'Create event' }));
@@ -91,6 +100,61 @@ try {
       `SELECT performance_id::text || '|' || price_amount::text || '|' || currency
        FROM ticket_types WHERE id='${ticketTypeId}'`,
     ) === `${performanceId}|4550|EUR`,
+  );
+  // TKT-200: the stored row carries the key the PAGE rendered. This is the
+  // wiring claim — hidden input to SSR client to catalog column — and no other
+  // tier can make it, because only here does a real browser produce the request.
+  check(
+    'the event row stores the key the form rendered',
+    sql(PG, 'catalog', `SELECT idempotency_key FROM events WHERE id='${eventId}'`) === eventKey,
+  );
+
+  // ...and the assertion that makes the one above mean something.
+  //
+  // "A submit stored a key" is green against a build that writes the column and
+  // never reads it — the mechanism present, wired, and inert. So RESUBMIT the
+  // same form with the same key and count rows: one key, one event.
+  //
+  // Done by re-posting the rendered form rather than clicking twice: a real
+  // double-click is a race this tier cannot schedule, and the store suite
+  // already proves the concurrent case under a forced interleaving. What is
+  // uniquely provable here is that the key SURVIVES a browser round trip.
+  const replay = await page.evaluate(
+    async ([path, key, en, fr]) => {
+      const body = new URLSearchParams({
+        _action: 'create-event',
+        idempotency_key: key,
+        name_en: en,
+        name_fr: fr,
+      });
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body,
+        redirect: 'follow',
+      });
+      return res.url;
+    },
+    [PATH, eventKey, eventName, eventNameFr],
+  );
+  check('the replayed submit was accepted', Boolean(replay), replay);
+  check(
+    'resubmitting one key leaves exactly one event',
+    sql(
+      PG,
+      'catalog',
+      `SELECT count(*)::text FROM events WHERE organizer_id='${ORGANIZER}' AND idempotency_key='${eventKey}'`,
+    ) === '1',
+  );
+  // And it is the SAME event, not a replacement: a build that deleted and
+  // reinserted would also count one.
+  check(
+    'the replay resolved to the original event',
+    sql(
+      PG,
+      'catalog',
+      `SELECT id::text FROM events WHERE organizer_id='${ORGANIZER}' AND idempotency_key='${eventKey}'`,
+    ) === eventId,
   );
 } finally {
   await browser.close();
