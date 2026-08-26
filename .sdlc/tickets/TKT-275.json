@@ -2,10 +2,8 @@
   "key": "TKT-275",
   "type": "Task",
   "summary": "The now() mutation is only half-pinned: no test covers the open-side clock_timestamp() in windowOpen",
-  "status": "PO Review",
-  "labels": [
-    "agent:ai-review"
-  ],
+  "status": "Done",
+  "labels": [],
   "assignee": "agent",
   "pr": {
     "number": 324,
