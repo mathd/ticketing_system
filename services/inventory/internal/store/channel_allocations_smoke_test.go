@@ -631,6 +631,20 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // caught by the new occurrence rather than by coverage that already existed.
 // Deleting either one leaves an occurrence of the shipped predicate unpinned.
 //
+// Say exactly what the pair does and does not pin, because the two are easy to
+// conflate. Both evaluate the shipped const in an ad hoc SELECT, so what they
+// pin is the CLOCK SEMANTICS OF THE EXPRESSION — that windowOpen reads
+// clock_timestamp() and not now(), on both bounds. They do NOT pin the WIRING:
+// that the claim paths interpolate this const at all, or embed it with the right
+// scope and ordering. windowOpen is a shared const spliced into the claim paths
+// (store.go, reservations.go), which is what carries the expression's semantics
+// into production — but a path that stopped using it, or used it wrongly, would
+// leave both of these green. That gap is covered where it belongs, at the claim
+// path: TestChannelSalesWindowGatesHoldsAndIsDistinguishable drives CreateHold
+// through open, not-yet-open and closed windows, and
+// TestReleaseCutoffHoldsUnderPoolLockContention pins the sibling cutoff under a
+// real lock wait.
+//
 // Do not reach for a within-statement argument here either: adjacent
 // clock_timestamp() calls in ONE expression barely move. Measured on one
 // machine on one run, over 20,000 rows evaluating it twice per row, the two
@@ -771,6 +785,14 @@ func TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
 // and acquires it after reads the frozen start time and is refused as
 // not-yet-open — at the highest-contention moment the system has. Same class as
 // the release_at bug ADR-024 litigated, on the other bound.
+//
+// Scope, stated so it is not read as more than it is: this evaluates the shipped
+// const directly, so it pins the expression's CLOCK CHOICE, not the claim path's
+// use of it. The lock wait above is the motivation, not the fixture — the
+// transaction is held open to manufacture the same divergence a lock wait
+// produces, without a second session. The claim path itself is covered by
+// TestChannelSalesWindowGatesHoldsAndIsDistinguishable, and a real lock wait by
+// TestReleaseCutoffHoldsUnderPoolLockContention.
 func TestWindowPredicateOpenSideDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
 	ctx, _, db := storeForTest(t, time.Minute)
 
