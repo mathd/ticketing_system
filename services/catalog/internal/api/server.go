@@ -609,6 +609,13 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "channel code is immutable; create a new channel and disable this one instead of renaming"})
 	case errors.Is(err, store.ErrChannelInvalidInput):
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid channel: code 1..100 bytes, display_name 1..200, kind one of web/pos/presale/reseller"})
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		// TKT-200: the key is taken by a DIFFERENT request. Replaying the first
+		// result would hand the caller a resource it never asked for, so this is
+		// a refusal, not a replay. The message says which of the two 409 causes
+		// this is on the performance path, where TKT-103's unpublished-seat-map
+		// conflict shares the status.
+		writeJSON(w, http.StatusConflict, Error{Error: "idempotency key reused with different terms"})
 	case errors.Is(err, store.ErrSeatIdentityNotFound):
 		// Defensive: never let this store sentinel fall through to 500. No HTTP
 		// path triggers it today (PinSeat is store-only), but if one does, it is a

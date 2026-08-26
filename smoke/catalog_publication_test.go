@@ -114,6 +114,9 @@ func postJSONAs(t *testing.T, url, assertion string, body any) (int, []byte) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(staffWriteHeader, staffWriteToken())
 	req.Header.Set(organizerAssertionHeader, assertion)
+	// TKT-200: a valid key, so a cross-tenant assertion below is refused for the
+	// TENANCY reason it is testing and not for a missing header.
+	req.Header.Set("Idempotency-Key", "smoke-as-"+uuid.NewString())
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
@@ -167,7 +170,12 @@ func getWithHeaders(t *testing.T, url string) (int, []byte, http.Header) {
 
 func created(t *testing.T, url string, in any) map[string]any {
 	t.Helper()
-	code, body := postJSON(t, url, in)
+	// TKT-200: catalog's three creates declare a required Idempotency-Key, so
+	// this routes through the EXISTING postWithKey rather than gaining a second
+	// key helper beside it. A fresh key per call: every `created` in this suite
+	// means "make me a new resource", and a shared constant would turn the second
+	// call into a replay of the first.
+	code, body := postWithKey(t, url, "smoke-"+uuid.NewString(), in)
 	if code != http.StatusCreated {
 		t.Fatalf("POST %s: status %d: %s", url, code, body)
 	}
@@ -214,7 +222,9 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 	// the gap: before the schemas were tightened it returned 201, and a test that
 	// had merely been updated to expect 201 would have recorded "extras are
 	// accepted" as if it were the intended design.
-	if code, body := postJSON(t, catalog+"/performances", map[string]any{
+	// TKT-200: keyed, so the 400 below is the additionalProperties refusal this
+	// case is about, not a missing Idempotency-Key.
+	if code, body := postWithKey(t, catalog+"/performances", "smoke-"+uuid.NewString(), map[string]any{
 		"organizer_id": "11111111-1111-1111-1111-111111111111",
 		"event_id":     event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-09-18T17:30:00Z", "timezone": "Europe/Paris",
@@ -642,7 +652,8 @@ func TestSeatedPublicationCoexistsWithGA(t *testing.T) {
 	draftMap := created(t, catalog+"/venues/"+fmt.Sprint(venue["id"])+"/seat-maps", map[string]any{
 		"name": "Draft " + suffix,
 	})
-	if code, _ := postJSON(t, catalog+"/performances", map[string]any{
+	// TKT-200: keyed, so the 409 is the unpublished-seat-map conflict.
+	if code, _ := postWithKey(t, catalog+"/performances", "smoke-"+uuid.NewString(), map[string]any{
 		"event_id": event["id"], "venue_id": venue["id"],
 		"starts_at": "2026-10-02T20:00:00Z", "timezone": "Europe/Paris",
 		"seat_map_id": draftMap["id"],
@@ -1696,6 +1707,13 @@ func TestCatalogRefusesUnauthenticatedWriteThroughTheGateway(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Content-Type", "application/json")
+			// TKT-200: a VALID idempotency key, deliberately. This test is about
+			// the credential, and the generated wrapper refuses a missing
+			// required header BEFORE the security middleware runs — so a keyless
+			// request here would answer 400 and this whole authorization test
+			// would quietly become a parameter-binding test that can never fail
+			// for the reason it exists.
+			req.Header.Set("Idempotency-Key", "smoke-unauth-"+uuid.NewString())
 			if tc.token != "" {
 				req.Header.Set(staffWriteHeader, tc.token)
 			}

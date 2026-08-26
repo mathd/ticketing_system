@@ -59,6 +59,12 @@ var (
 	// seat the current version does not contain — together they close the
 	// edit-vs-sale race (ADR-018 two-sided lock).
 	ErrSeatIdentityNotFound = errors.New("seat identity not in current published version")
+	// ErrIdempotencyConflict reports a create whose idempotency key already
+	// belongs to a DIFFERENT request for this organizer (TKT-200). Replaying the
+	// first result would hand the caller a resource it did not ask for, so the
+	// reuse is refused. Same decision, and the same reasoning, as commerce's
+	// checkout and refund paths.
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different terms")
 )
 
 type SeriesTransitionConflict struct {
@@ -312,6 +318,11 @@ type EventInput struct {
 	OrganizerID uuid.UUID
 	Name        LocalizedText
 	Description LocalizedText
+	// IdempotencyKey deduplicates the create (TKT-200). The API refuses an empty
+	// one before reaching here, so an empty value means a non-contract caller
+	// (a test fixture, a future internal writer) and stores NULL — outside the
+	// partial unique index rather than colliding with every other keyless row.
+	IdempotencyKey string
 }
 
 type SeatMapInput struct {
@@ -441,6 +452,8 @@ type PerformanceInput struct {
 	// seat-map version (TKT-103). The store validates the map exists, is
 	// published, and shares the performance's organizer and venue; nil is GA.
 	SeatMapID *uuid.UUID
+	// IdempotencyKey deduplicates the create (TKT-200). See EventInput.
+	IdempotencyKey string
 }
 
 type TicketTypeInput struct {
@@ -449,6 +462,8 @@ type TicketTypeInput struct {
 	Name          LocalizedText
 	PriceAmount   int64
 	Currency      string
+	// IdempotencyKey deduplicates the create (TKT-200). See EventInput.
+	IdempotencyKey string
 }
 
 type SeriesInput struct {

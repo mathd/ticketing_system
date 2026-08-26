@@ -122,11 +122,27 @@ async function parseError(res: Response): Promise<CatalogApiError> {
   return new CatalogApiError(res.status, message);
 }
 
-async function postCatalog<T>(path: string, assertion: string, body: unknown): Promise<T> {
+async function postCatalog<T>(
+  path: string,
+  assertion: string,
+  body: unknown,
+  // TKT-200: an optional idempotency key, forwarded verbatim when present.
+  //
+  // It is a PARAMETER, not something minted here. A key generated inside this
+  // function would be fresh on every call, so the retry it is supposed to
+  // deduplicate would carry a different key and create a second row — the
+  // mechanism would be present, wired, and inert. The key must originate with
+  // the state the user acted on (the rendered form) and travel back unchanged.
+  idempotencyKey?: string,
+): Promise<T> {
   return withUpstreamDeadline(async (signal) => {
+    const headers = writeHeaders(assertion);
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = idempotencyKey;
+    }
     const res = await fetch(catalog(path), {
       method: 'POST',
-      headers: writeHeaders(assertion),
+      headers,
       body: JSON.stringify(body),
       signal,
     });
@@ -368,13 +384,21 @@ export type Performance = components['schemas']['Performance'];
 export type TicketType = components['schemas']['TicketType'];
 export type LocalizedStringDto = components['schemas']['LocalizedString'];
 
-export function createEvent(assertion: string, name: LocalizedStringDto): Promise<Event> {
-  return postCatalog<Event>('/events', assertion, { name });
+// The three creates take a REQUIRED idempotency key (TKT-200). Required rather
+// than optional so a new call site cannot silently omit it: an optional key is
+// the same defect as no key at all, discovered later and by a duplicate row.
+export function createEvent(
+  assertion: string,
+  name: LocalizedStringDto,
+  idempotencyKey: string,
+): Promise<Event> {
+  return postCatalog<Event>('/events', assertion, { name }, idempotencyKey);
 }
 
 export function createPerformance(
   assertion: string,
   input: { eventId: string; venueId: string; startsAt: string; timezone: string },
+  idempotencyKey: string,
 ): Promise<Performance> {
   return postCatalog<Performance>('/performances', assertion, {
     event_id: input.eventId,
@@ -385,12 +409,13 @@ export function createPerformance(
     // the server — silently, and only for them.
     starts_at: input.startsAt,
     timezone: input.timezone,
-  });
+  }, idempotencyKey);
 }
 
 export function createTicketType(
   assertion: string,
   input: { performanceId: string; name: LocalizedStringDto; amount: number; currency: string },
+  idempotencyKey: string,
 ): Promise<TicketType> {
   return postCatalog<TicketType>('/ticket-types', assertion, {
     performance_id: input.performanceId,
@@ -398,7 +423,7 @@ export function createTicketType(
     // Integer minor units + ISO code, parsed as such (ADR-001). Nothing on this
     // path has ever been a float.
     price: { amount: input.amount, currency: input.currency },
-  });
+  }, idempotencyKey);
 }
 
 /**

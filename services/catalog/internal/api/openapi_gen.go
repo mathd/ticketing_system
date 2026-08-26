@@ -1323,6 +1323,9 @@ type EventId = openapi_types.UUID
 // FestivalId defines model for FestivalId.
 type FestivalId = openapi_types.UUID
 
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
+
 // Locale defines model for Locale.
 type Locale = string
 
@@ -1347,6 +1350,9 @@ type VenueId = openapi_types.UUID
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
+// IdempotencyConflict defines model for IdempotencyConflict.
+type IdempotencyConflict = Error
+
 // InternalError defines model for InternalError.
 type InternalError = Error
 
@@ -1365,6 +1371,15 @@ type catalogOrganizerAssertionContextKey string
 // catalogStaffWriteCredentialContextKey is the context key for CatalogStaffWriteCredential security scheme
 type catalogStaffWriteCredentialContextKey string
 
+// CreateEventParams defines parameters for CreateEvent.
+type CreateEventParams struct {
+	// IdempotencyKey Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+	// Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+	// Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+	// `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // ResolvePerformanceDisplayNamesParams defines parameters for ResolvePerformanceDisplayNames.
 type ResolvePerformanceDisplayNamesParams struct {
 	Ids []openapi_types.UUID `form:"ids" json:"ids"`
@@ -1377,6 +1392,15 @@ type ResolvePerformanceDisplayNamesParams struct {
 type ResolveTicketTypeFeesParams struct {
 	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024). A channel registry now exists (TKT-235) but is a LOOKUP, NOT A CONSTRAINT: nothing validates this value against it, and an unregistered code resolves exactly as it always has. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
 	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
+}
+
+// CreatePerformanceParams defines parameters for CreatePerformance.
+type CreatePerformanceParams struct {
+	// IdempotencyKey Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+	// Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+	// Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+	// `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
 // ListPublicChannelsParams defines parameters for ListPublicChannels.
@@ -1413,6 +1437,15 @@ type GetPublicSeasonParams struct {
 type ListPublicVenuesParams struct {
 	// OrganizerId Tenant scope (ADR-002); required — no session to infer from
 	OrganizerId OrganizerId `form:"organizer_id" json:"organizer_id"`
+}
+
+// CreateTicketTypeParams defines parameters for CreateTicketType.
+type CreateTicketTypeParams struct {
+	// IdempotencyKey Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+	// Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+	// Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+	// `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
 // ResolveTicketTypePriceParams defines parameters for ResolveTicketTypePrice.
@@ -1495,7 +1528,7 @@ type ServerInterface interface {
 	UpdateChannel(w http.ResponseWriter, r *http.Request, channelId ChannelId)
 	// Create an event (localizable content)
 	// (POST /events)
-	CreateEvent(w http.ResponseWriter, r *http.Request)
+	CreateEvent(w http.ResponseWriter, r *http.Request, params CreateEventParams)
 	// Create a localized shared-capacity festival
 	// (POST /festivals)
 	CreateFestival(w http.ResponseWriter, r *http.Request)
@@ -1519,7 +1552,7 @@ type ServerInterface interface {
 	GetOpenAPISpec(w http.ResponseWriter, r *http.Request)
 	// Create a dated performance (draft)
 	// (POST /performances)
-	CreatePerformance(w http.ResponseWriter, r *http.Request)
+	CreatePerformance(w http.ResponseWriter, r *http.Request, params CreatePerformanceParams)
 	// Archive a published performance (idempotent)
 	// (POST /performances/{performanceId}/archive)
 	ArchivePerformance(w http.ResponseWriter, r *http.Request, performanceId PerformanceId)
@@ -1600,7 +1633,7 @@ type ServerInterface interface {
 	AuthenticateStaff(w http.ResponseWriter, r *http.Request)
 	// Create a ticket type with a price
 	// (POST /ticket-types)
-	CreateTicketType(w http.ResponseWriter, r *http.Request)
+	CreateTicketType(w http.ResponseWriter, r *http.Request, params CreateTicketTypeParams)
 	// Resolve a ticket type's unit price through the rule hierarchy, with provenance
 	// (GET /ticket-types/{ticketTypeId}/price-resolution)
 	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID, params ResolveTicketTypePriceParams)
@@ -1633,7 +1666,7 @@ func (_ Unimplemented) UpdateChannel(w http.ResponseWriter, r *http.Request, cha
 
 // Create an event (localizable content)
 // (POST /events)
-func (_ Unimplemented) CreateEvent(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreateEvent(w http.ResponseWriter, r *http.Request, params CreateEventParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1681,7 +1714,7 @@ func (_ Unimplemented) GetOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 
 // Create a dated performance (draft)
 // (POST /performances)
-func (_ Unimplemented) CreatePerformance(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreatePerformance(w http.ResponseWriter, r *http.Request, params CreatePerformanceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1843,7 +1876,7 @@ func (_ Unimplemented) AuthenticateStaff(w http.ResponseWriter, r *http.Request)
 
 // Create a ticket type with a price
 // (POST /ticket-types)
-func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request, params CreateTicketTypeParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1939,6 +1972,9 @@ func (siw *ServerInterfaceWrapper) UpdateChannel(w http.ResponseWriter, r *http.
 // CreateEvent operation middleware
 func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
@@ -1947,8 +1983,36 @@ func (siw *ServerInterfaceWrapper) CreateEvent(w http.ResponseWriter, r *http.Re
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateEventParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateEvent(w, r)
+		siw.Handler.CreateEvent(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2187,6 +2251,9 @@ func (siw *ServerInterfaceWrapper) GetOpenAPISpec(w http.ResponseWriter, r *http
 // CreatePerformance operation middleware
 func (siw *ServerInterfaceWrapper) CreatePerformance(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
@@ -2195,8 +2262,36 @@ func (siw *ServerInterfaceWrapper) CreatePerformance(w http.ResponseWriter, r *h
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreatePerformanceParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreatePerformance(w, r)
+		siw.Handler.CreatePerformance(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3052,6 +3147,9 @@ func (siw *ServerInterfaceWrapper) AuthenticateStaff(w http.ResponseWriter, r *h
 // CreateTicketType operation middleware
 func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, CatalogOrganizerAssertionScopes, []string{})
@@ -3060,8 +3158,36 @@ func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *ht
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateTicketTypeParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateTicketType(w, r)
+		siw.Handler.CreateTicketType(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {

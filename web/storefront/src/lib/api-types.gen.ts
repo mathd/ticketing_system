@@ -1613,6 +1613,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The idempotency key has already been used for a DIFFERENT request (TKT-200). Replaying the first result here would hand the caller a resource it did not ask for, so the reuse is refused instead. Retry with a fresh key, or repeat the original request byte-for-byte to get its result back. */
+        IdempotencyConflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Referenced entity does not exist (or is not published, on public reads) */
         NotFound: {
             headers: {
@@ -1633,6 +1642,13 @@ export interface components {
         };
     };
     parameters: {
+        /**
+         * @description Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+         *     Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+         *     Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+         *     `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+         */
+        IdempotencyKey: string;
         /** @description BCP-47 primary subtag; supported set is data, not schema (TKT-36) */
         Locale: string;
         PerformanceId: string;
@@ -1955,7 +1971,15 @@ export interface operations {
     createEvent: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /**
+                 * @description Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+                 *     Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+                 *     Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+                 *     `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1977,13 +2001,22 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["IdempotencyConflict"];
             500: components["responses"]["InternalError"];
         };
     };
     createPerformance: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /**
+                 * @description Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+                 *     Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+                 *     Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+                 *     `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -2005,7 +2038,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description Seated reference to a seat map that is not published (TKT-103). */
+            /** @description Seated reference to a seat map that is not published (TKT-103), or an idempotency key reused for a different request (TKT-200). One status, two causes: the body's message names which. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2544,7 +2577,15 @@ export interface operations {
     createTicketType: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /**
+                 * @description Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
+                 *     Scoped by organizer (ADR-002), so two tenants may use the same key string without colliding. The organizer comes from the verified assertion (TKT-245), never the body, which is what makes the scope trustworthy.
+                 *     Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
+                 *     `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
+                 */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -2566,6 +2607,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["IdempotencyConflict"];
             500: components["responses"]["InternalError"];
         };
     };

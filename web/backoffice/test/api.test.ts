@@ -11,6 +11,9 @@ import {
   authenticateStaff,
   CatalogApiError,
   createChannel,
+  createEvent,
+  createPerformance,
+  createTicketType,
   listChannelsForOperator,
   createSeatMap,
   editSeatMap,
@@ -808,5 +811,108 @@ describe('inventory allocation client', () => {
     await expect(
       replaceChannelAllocations(SLOT, { organizer_id: 'org-1', allocations: [] }),
     ).rejects.toThrow(/INVENTORY_STAFF_WRITE_TOKEN/);
+  });
+});
+
+// TKT-200. The three creates forward a caller-supplied Idempotency-Key.
+//
+// This is a WIRING test, and it asserts the value that crossed the boundary
+// rather than that a function was called: the mechanism that fails silently here
+// is a client that accepts the key and never puts it on the request, which looks
+// identical from the call site.
+describe('catalog create idempotency (TKT-200)', () => {
+  function captureHeaders(body: unknown) {
+    let sent: Headers | undefined;
+    const spy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sent = new Headers(init?.headers);
+      return jsonResponse(body);
+    });
+    vi.stubGlobal('fetch', spy);
+    return { spy, header: () => sent?.get('Idempotency-Key') };
+  }
+
+  it('sends the caller\'s key verbatim on createEvent', async () => {
+    const { header } = captureHeaders({
+      id: '00000000-0000-0000-0000-0000000000e1',
+      organizer_id: TEST_ORGANIZER_ID,
+      name: { en: 'Night', fr: 'Nuit' },
+      created_at: '2026-08-26T00:00:00Z',
+    });
+
+    await createEvent(TEST_ASSERTION, { en: 'Night', fr: 'Nuit' }, 'key-from-the-form');
+
+    // Verbatim: not hashed, not prefixed, not regenerated. A client that minted
+    // its own would give a retry a different key and create a second row.
+    expect(header()).toBe('key-from-the-form');
+  });
+
+  it('sends the caller\'s key on createPerformance and createTicketType', async () => {
+    const perf = captureHeaders({
+      id: '00000000-0000-0000-0000-0000000000p1',
+      organizer_id: TEST_ORGANIZER_ID,
+      event_id: '00000000-0000-0000-0000-0000000000e1',
+      venue_id: '00000000-0000-0000-0000-0000000000a2',
+      kind: 'performance',
+      status: 'draft',
+      starts_at: '2026-09-01T20:00:00Z',
+      timezone: 'UTC',
+      created_at: '2026-08-26T00:00:00Z',
+    });
+    await createPerformance(
+      TEST_ASSERTION,
+      {
+        eventId: '00000000-0000-0000-0000-0000000000e1',
+        venueId: '00000000-0000-0000-0000-0000000000a2',
+        startsAt: '2026-09-01T20:00:00Z',
+        timezone: 'UTC',
+      },
+      'perf-key',
+    );
+    expect(perf.header()).toBe('perf-key');
+
+    const tt = captureHeaders({
+      id: '00000000-0000-0000-0000-0000000000t1',
+      organizer_id: TEST_ORGANIZER_ID,
+      performance_id: '00000000-0000-0000-0000-0000000000p1',
+      name: { en: 'GA', fr: 'GA' },
+      price: { amount: 2500, currency: 'EUR' },
+      created_at: '2026-08-26T00:00:00Z',
+    });
+    await createTicketType(
+      TEST_ASSERTION,
+      {
+        performanceId: '00000000-0000-0000-0000-0000000000p1',
+        name: { en: 'GA', fr: 'GA' },
+        amount: 2500,
+        currency: 'EUR',
+      },
+      'tt-key',
+    );
+    expect(tt.header()).toBe('tt-key');
+  });
+
+  it('still sends the staff credential and the organizer assertion alongside it', async () => {
+    // The key is an ADDITION, not a replacement. A refactor that built fresh
+    // headers around the key and dropped the two credentials would 401 in
+    // production and pass a test that only looked at Idempotency-Key.
+    let sent: Headers | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_i: RequestInfo | URL, init?: RequestInit) => {
+        sent = new Headers(init?.headers);
+        return jsonResponse({
+          id: '00000000-0000-0000-0000-0000000000e2',
+          organizer_id: TEST_ORGANIZER_ID,
+          name: { en: 'N', fr: 'N' },
+          created_at: '2026-08-26T00:00:00Z',
+        });
+      }),
+    );
+
+    await createEvent(TEST_ASSERTION, { en: 'N', fr: 'N' }, 'k');
+
+    expect(sent?.get('X-Catalog-Staff-Write-Token')).toBe('test-credential');
+    expect(sent?.get('X-Catalog-Organizer-Assertion')).toBe(TEST_ASSERTION);
+    expect(sent?.get('Idempotency-Key')).toBe('k');
   });
 });

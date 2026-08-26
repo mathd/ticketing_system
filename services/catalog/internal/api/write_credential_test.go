@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/google/uuid"
 
 	apispec "ticketing/services/catalog/api"
 )
@@ -405,6 +406,16 @@ func TestConvertedWriteRefusesEitherCredentialAlone(t *testing.T) {
 			if tc.name == "assertion alone" {
 				headers = map[string]string{organizerAssertionHeader: e.assertionFor(e.organizer)}
 			}
+			// TKT-200: a VALID idempotency key, so this test still reaches the
+			// guard it is about. The generated wrapper binds the required header
+			// before HandlerMiddlewares run, so a keyless request answers 400 and
+			// the 401 assertion below would be measuring the wrong refusal — an
+			// authorization suite silently re-pointed at parameter binding. The
+			// key is deliberately present and valid; nothing here is testing it.
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			headers["Idempotency-Key"] = "credential-guard-" + uuid.NewString()
 			before := len(e.store.events)
 			rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), headers)
 			if rec.Code != http.StatusUnauthorized {
@@ -581,7 +592,10 @@ func TestCatalogRefusesUnsafeRequestWithoutCredential(t *testing.T) {
 			e := newEnv(t)
 			before := len(e.store.events)
 
-			hdr := map[string]string{}
+			// TKT-200: valid key, so the 401 below is the credential guard's
+			// refusal and not the wrapper's missing-header 400. See
+			// TestConvertedWriteRefusesEitherCredentialAlone for the full reason.
+			hdr := map[string]string{"Idempotency-Key": "credential-guard-" + uuid.NewString()}
 			if tc.header != "" {
 				hdr[staffWriteHeader] = tc.header
 			}
@@ -615,12 +629,103 @@ func TestCatalogRefusesUnsafeRequestWithoutCredential(t *testing.T) {
 // a credential is configured at all.
 func TestCatalogRefusalsAreIndistinguishable(t *testing.T) {
 	e := newEnv(t)
-	absent := e.doWithHeaders("POST", "/events", validEventCreate(), nil)
+	// TKT-200: both requests carry a valid key, so both reach the credential
+	// guard. Without one they would BOTH answer 400 and still be identical —
+	// the assertion would pass while comparing two parameter-binding errors and
+	// saying nothing about credentials.
+	absent := e.doWithHeaders("POST", "/events", validEventCreate(),
+		map[string]string{"Idempotency-Key": "refusal-" + uuid.NewString()})
 	wrong := e.doWithHeaders("POST", "/events", validEventCreate(),
-		map[string]string{staffWriteHeader: "wrong"})
+		map[string]string{staffWriteHeader: "wrong", "Idempotency-Key": "refusal-" + uuid.NewString()})
+	if absent.Code != http.StatusUnauthorized || wrong.Code != http.StatusUnauthorized {
+		t.Fatalf("both must be credential refusals, got %d and %d", absent.Code, wrong.Code)
+	}
 	if absent.Body.String() != wrong.Body.String() {
 		t.Fatalf("absent and wrong credentials differ:\n absent=%s\n wrong=%s",
 			absent.Body.String(), wrong.Body.String())
+	}
+}
+
+// TestMissingIdempotencyKeyRefusalPrecedesTheCredentialGuard pins an ordering
+// that is easy to assume the other way round and is NOT what happens (TKT-200).
+//
+// oapi-codegen's wrapper binds and validates declared parameters BEFORE applying
+// HandlerMiddlewares, and catalog's security check is one of those middlewares
+// (the validator in NewRouter). So an unauthenticated request that also omits
+// the key answers 400 — naming the header — rather than 401.
+//
+// Recorded as a test rather than a comment because it has a real consequence:
+// every authorization test on these three operations MUST send a valid key, or
+// it silently stops testing authorization. Two such tests in this file were
+// re-pointed at parameter binding by this ticket before this was understood.
+//
+// It is not a disclosure problem: the 400 names only a header the OpenAPI
+// document already declares publicly, and it reveals nothing about whether a
+// credential exists or is correct. If that judgement ever changes, the fix is
+// a pre-router guard like guardInternalSurface — not a handler-level check,
+// which by this same ordering could never run first.
+// TestIdempotencyKeyBoundsAreEnforced answers an ai-review [high] that read the
+// generated binder in isolation and concluded the declared 1..200 bounds were
+// documentation only — that an empty header would reach the store and create an
+// unprotected keyless row, and an over-long one would violate the column CHECK
+// and surface as a 500.
+//
+// Refuted by executing it, which is the only thing that settles this class of
+// claim. Catalog's request path is binder THEN kin-openapi request validator,
+// and between them both bounds are enforced before any handler runs. This test
+// is the standing proof, so the question is not re-litigated from the generated
+// code again.
+func TestIdempotencyKeyBoundsAreEnforced(t *testing.T) {
+	for _, tc := range []struct{ name, key string }{
+		{"empty", ""},
+		{"one over the maximum", strings.Repeat("k", 201)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), map[string]string{
+				staffWriteHeader:         testStaffWriteToken,
+				organizerAssertionHeader: e.assertionFor(e.organizer),
+				"Idempotency-Key":        tc.key,
+			})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s key = %d, want 400: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			// The refusal must happen BEFORE the store, or an empty key becomes
+			// a keyless row that the partial index does not protect.
+			if len(e.store.events) != 0 {
+				t.Fatalf("%s key still created %d events", tc.name, len(e.store.events))
+			}
+		})
+	}
+
+	// The bound is inclusive at the top: exactly 200 is valid. Present so a
+	// future "fix" cannot satisfy the two cases above by refusing everything.
+	t.Run("exactly the maximum is accepted", func(t *testing.T) {
+		e := newEnv(t)
+		rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), map[string]string{
+			staffWriteHeader:         testStaffWriteToken,
+			organizerAssertionHeader: e.assertionFor(e.organizer),
+			"Idempotency-Key":        strings.Repeat("k", 200),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("a 200-character key = %d, want 201: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestMissingIdempotencyKeyRefusalPrecedesTheCredentialGuard(t *testing.T) {
+	e := newEnv(t)
+	rec := e.doWithHeaders("POST", "/events", validEventCreate(), nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("no key and no credential = %d, want 400 (binding precedes the guard): %s",
+			rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Idempotency-Key") {
+		t.Fatalf("the 400 must name the missing header, got %s", rec.Body.String())
+	}
+	// And it must still not have written anything.
+	if len(e.store.events) != 0 {
+		t.Fatalf("a request refused at binding created %d events", len(e.store.events))
 	}
 }
 

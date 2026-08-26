@@ -74,16 +74,58 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	if mode == "" {
 		mode = "single"
 	}
+	// Fingerprinted over the NORMALIZED values — `kind` and `mode` after
+	// defaulting, not as submitted. Fingerprinting the raw request would make
+	// `kind: ""` and `kind: "performance"` two fingerprints for one identical
+	// row, so a replay of a semantically identical request would 409.
+	//
+	// starts_at is normalized HERE, to the precision timestamptz keeps, and the
+	// same value then feeds both the fingerprint and the INSERT below. Two
+	// representations of one instant is exactly how a retry ends up conflicting
+	// with its own original (ai-review pass 2); one value cannot.
+	if in.StartsAt != nil {
+		normalized := normalizeStartsAt(*in.StartsAt)
+		in.StartsAt = &normalized
+	}
+	print := performanceFingerprint(in, kind, mode)
+
 	var id uuid.UUID
+	idempotencyBarrier()
 	err = p.db.QueryRowContext(ctx,
 		`INSERT INTO performances
 		   (organizer_id, event_id, venue_id, kind, starts_at, operating_date,
-		    opens_at, closes_at, timezone, re_entry_mode, max_entries, requires_exit, seat_map_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		    opens_at, closes_at, timezone, re_entry_mode, max_entries, requires_exit, seat_map_id,
+		    idempotency_key, request_fingerprint)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		 ON CONFLICT (organizer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		 RETURNING id`,
 		in.OrganizerID, in.EventID, in.VenueID, kind, in.StartsAt, in.OperatingDate,
-		in.OpensAt, in.ClosesAt, in.Timezone, mode, in.ReEntry.MaxEntries, in.ReEntry.RequiresExit, in.SeatMapID).
+		in.OpensAt, in.ClosesAt, in.Timezone, mode, in.ReEntry.MaxEntries, in.ReEntry.RequiresExit, in.SeatMapID,
+		nullableKey(in.IdempotencyKey), nullableFingerprint(in.IdempotencyKey, print)).
 		Scan(&id)
+	// No row means the key is already taken — the signal to replay, not a
+	// failure. See CreateEvent for why this branch must precede the generic one.
+	if errors.Is(err, sql.ErrNoRows) {
+		existing, found, match, lookupErr := replayLookup(ctx, p.db, "performances", in.OrganizerID, in.IdempotencyKey, print)
+		if lookupErr != nil {
+			return Performance{}, fmt.Errorf("replay performance: %w", lookupErr)
+		}
+		if !found {
+			// See CreateEvent.replayEvent: ErrNotFound so this surfaces as the
+			// declared 404 rather than a 500. Unreachable through the service —
+			// catalog archives and never deletes these rows.
+			return Performance{}, fmt.Errorf("replayed performance: %w", ErrNotFound)
+		}
+		if !match {
+			return Performance{}, ErrIdempotencyConflict
+		}
+		id = existing
+		perf, _, _, err := p.getPerformance(ctx, id)
+		if err != nil {
+			return Performance{}, err
+		}
+		return perf, nil
+	}
 	if err != nil {
 		return Performance{}, fmt.Errorf("insert performance: %w", err)
 	}
@@ -115,11 +157,40 @@ func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (Ti
 	}
 	tt := TicketType{OrganizerID: in.OrganizerID, PerformanceID: in.PerformanceID,
 		Name: in.Name, PriceAmount: in.PriceAmount, Currency: in.Currency}
+	// Money stays integer minor units + ISO code all the way into the hash
+	// (ADR-001): the amount is rendered with strconv, never formatted as a
+	// float, so nothing on this path has ever been one.
+	print := fingerprint(in.PerformanceID.String(), string(name), fingerprintInt(in.PriceAmount), in.Currency)
+
+	idempotencyBarrier()
 	err = p.db.QueryRowContext(ctx,
-		`INSERT INTO ticket_types (organizer_id, performance_id, name, price_amount, currency)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-		in.OrganizerID, in.PerformanceID, name, in.PriceAmount, in.Currency).
+		`INSERT INTO ticket_types (organizer_id, performance_id, name, price_amount, currency,
+		                           idempotency_key, request_fingerprint)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (organizer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		 RETURNING id, created_at`,
+		in.OrganizerID, in.PerformanceID, name, in.PriceAmount, in.Currency,
+		nullableKey(in.IdempotencyKey), nullableFingerprint(in.IdempotencyKey, print)).
 		Scan(&tt.ID, &tt.CreatedAt)
+	// No row means the key is already taken — replay, not failure. See
+	// CreateEvent for why this branch must precede the generic one.
+	if errors.Is(err, sql.ErrNoRows) {
+		existing, found, match, lookupErr := replayLookup(ctx, p.db, "ticket_types", in.OrganizerID, in.IdempotencyKey, print)
+		if lookupErr != nil {
+			return TicketType{}, fmt.Errorf("replay ticket type: %w", lookupErr)
+		}
+		if !found {
+			// See CreateEvent.replayEvent.
+			return TicketType{}, fmt.Errorf("replayed ticket type: %w", ErrNotFound)
+		}
+		if !match {
+			return TicketType{}, ErrIdempotencyConflict
+		}
+		// A replay creates nothing, so it must NOT re-announce public-read
+		// invalidation below: the listability change was announced by the call
+		// that actually inserted.
+		return p.GetTicketType(ctx, existing)
+	}
 	if err != nil {
 		return TicketType{}, fmt.Errorf("insert ticket type: %w", err)
 	}
