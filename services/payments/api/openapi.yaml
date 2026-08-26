@@ -9,6 +9,12 @@ paths:
         '200': {description: Appended, content: {application/json: {schema: {$ref: '#/components/schemas/FactResult'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
+        # The handler answers 400 through `refused`, which classifies: a store.IsRefusal
+        # sentinel is echoed to the caller, and anything else — every wrapped pgx error —
+        # becomes a 500 (TKT-256). Undeclared, ADR-028 failed that closed and rewrote it
+        # into a generic contract 500 plus an ERROR log, hiding the store fault behind a
+        # contract alarm.
+        '500': {$ref: '#/components/responses/Error'}
   /internal/charges:
     post:
       operationId: charge
@@ -82,6 +88,11 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        # A failing LookupOperation is a 500 the handler writes itself (TKT-256). It is
+        # distinct from 404: 404 is evidence the charge was never submitted, which commerce
+        # acts on, while this says the journal could not be read at all — a difference a
+        # recovery pass must not lose to ADR-028's generic rewrite.
+        '500': {$ref: '#/components/responses/Error'}
   /internal/refund-legs:
     get:
       # Read-only evidence for ONE post-purchase refund leg (TKT-168, ADR-032
