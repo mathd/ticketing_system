@@ -602,21 +602,26 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // TKT-234 — clock_timestamp() narrows the window, it does not close it).
 //
 // The weaker statement is the one that condemns the fixture: it cannot place
-// the bound on the boundary DELIBERATELY, so whatever it observes about `>` vs
-// `>=` is an accident of timing that a rerun may not repeat. A test that cannot
-// aim at the case it means to prove does not prove it — the point is
-// reliability, not impossibility. A first version of this test did exactly
-// that, and two mutants survived its runs: `>` for `>=` on the close and `<`
-// for `<=` on the open. Not because landing on the boundary is impossible, but
-// because it cannot be arranged — a fixture that ever caught them would be
-// flaky rather than proving anything.
+// the bound on the boundary DELIBERATELY. So for `>` vs `>=` on the close and
+// `<` vs `<=` on the open, the mutant's verdict is decided by whatever the
+// clock did, not by the test. Both failure directions follow, and the quiet one
+// is the dangerous one: such a fixture may fail on an accidental equality, and
+// — far more often — pass green while the mutant is still live, because a bound
+// that lands clearly before or after the evaluation instant is answered the
+// same way by either operator. A green run is therefore not evidence that the
+// boundary operator is correct. That is why the first version of this test left
+// those two mutants alive: not because equality is impossible, but because
+// nothing in the fixture could aim at it.
 //
 // The third mutant of that first version, `now()` for `clock_timestamp()`, is a
-// different problem with a different answer: it IS deliberately detectable, by
-// holding a transaction open across the cutoff so the two clocks diverge.
-// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart below does that
-// and pins it. It is named here only so this paragraph is not read as covering
-// it.
+// different problem with a different answer, and is only PARTLY pinned.
+// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart (below) holds a
+// transaction open across the cutoff so the two clocks diverge, and catches the
+// substitution — but it sets opens_at to NULL, so it exercises only the
+// CLOSE-side occurrence of clock_timestamp() in windowOpen. A mutation of the
+// OPEN-side occurrence alone would stay green. Mentioned here so this paragraph
+// is not read as covering `now()`, and so the gap is on the record rather than
+// implied shut.
 //
 // Do not reach for a within-statement argument here either: adjacent
 // clock_timestamp() calls in ONE expression barely move. Measured on one
