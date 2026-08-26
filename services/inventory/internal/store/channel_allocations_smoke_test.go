@@ -590,14 +590,22 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // The window is half-open [opens_at, closes_at) — asserted against the PREDICATE
 // itself, because a claim-path fixture cannot sit on the boundary.
 //
-// Why not through CreateHold: the bounds are written as clock_timestamp()
-// arithmetic, and clock_timestamp() ADVANCES WITHIN A STATEMENT — verified
-// against this database: `SELECT clock_timestamp() = clock_timestamp()` is
-// false. So a bound written as exactly `clock_timestamp()` is already in the
-// past by the time the predicate reads it, and `>` and `>=` give the same
-// answer. A first version of this test did exactly that and three mutants
-// survived it — `now()` for `clock_timestamp()`, `>` for `>=` on the close, and
-// `<` for `<=` on the open — because no fixture could distinguish them.
+// Why not through CreateHold: setWindow writes the bounds as clock_timestamp()
+// arithmetic in an UPDATE, and CreateHold reads them back in a LATER, SEPARATE
+// statement. That statement boundary — not any drift within a single expression
+// — is what puts a bare `clock_timestamp()` bound reliably in the past by the
+// time the predicate compares against it, so `>` and `>=` give the same answer.
+// A first version of this test did exactly that and three mutants survived it —
+// `now()` for `clock_timestamp()`, `>` for `>=` on the close, and `<` for `<=`
+// on the open — because no fixture could distinguish them.
+//
+// Do not reach for a within-statement argument here: adjacent clock_timestamp()
+// calls in ONE expression barely move. Measured against this database, over
+// 20,000 rows evaluating it twice per row, the two calls were equal 19,653
+// times and differed by exactly 1µs the other 347, never going backwards; the
+// clock is also coarse across rows (2,000 rows produced 86 distinct values).
+// Those are observations of this database, not a portable guarantee — re-run
+// them before building on them.
 //
 // Evaluating the predicate against literal bounds makes the boundary
 // expressible: the instant is fixed, so "at the bound" is a real case rather
