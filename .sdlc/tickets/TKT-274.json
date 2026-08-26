@@ -1,58 +1,62 @@
 {
- "key": "TKT-274",
- "type": "Task",
- "summary": "Wrong evidence in a clock comment: clock_timestamp() does NOT advance between adjacent calls in one expression",
- "status": "Ready",
- "labels": [
-  "risk:low"
- ],
- "assignee": null,
- "pr": null,
- "links": [
-  {
-   "type": "relates",
-   "key": "TKT-148"
+  "key": "TKT-274",
+  "type": "Task",
+  "summary": "Wrong evidence in a clock comment: clock_timestamp() does NOT advance between adjacent calls in one expression",
+  "status": "Ready",
+  "labels": [
+    "risk:low"
+  ],
+  "assignee": "agent",
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-148"
+    }
+  ],
+  "comments": [
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`. `risk:low` (already labelled) — comment-only, no behaviour change, plan gate skipped.\n\nVerified at HEAD rather than inherited:\n- The false claim survives at **one** site (`channel_allocations_smoke_test.go:595`). The scope's third bullet (\"check for the same claim elsewhere\") is therefore already answered — it is a one-sentence fix, not a sweep.\n- The measurement behind the correction was run against a real PostgreSQL 18, not reasoned from docs.\n\nThe one trap worth naming for the drafter: the paragraph does two jobs — it states the (wrong) evidence *and* it justifies why the test evaluates the predicate against literal bounds instead of going through `CreateHold`. Correct the first without deleting the second, or the next reader removes a design that three surviving mutants paid for."
+    },
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\n### Claimed — TKT-274\n\nRunning **gateless per `config.gates: autonomous`** (local tracker backend). Branch `TKT-274-clock-timestamp-evidence` off `origin/main`.\n\n**Risk verdict: `risk:low` claimed, and it holds.** The deliverable is one comment block in one `_test.go` file. Zero production code, zero behaviour change, one file. None of the carve-outs apply: no auth, no money path, no data migration, no CI/deploy config, well under 5 files. The plan gate is therefore skipped.\n\nThe one carve-out worth stating explicitly, because it is the one that catches `risk:low` tickets that *look* trivial: this ticket's central question is **not** a design question with a non-obvious answer (the TKT-266 shape). The test's design is explicitly out of scope and stays byte-identical; the only question is what the evidence sentence should say, and that is settled by measurement, not judgement.\n\n### Selection reason\n\nHanded over as the ticket to run; verified in `Ready` against the board with all 8 `readiness` items `met` and no open links. `TKT-148` (relates) is Done.\n\n### The claim was re-measured at claim time, not inherited — and it is more subtle than either the code or the ticket says\n\nThe ticket's whole point is that inherited evidence goes stale, so inheriting *its* evidence would repeat the defect it exists to fix. Measured against a real **PostgreSQL 18.4** container (the exact pinned digest from `compose.yaml`):\n\n```\nSELECT clock_timestamp() = clock_timestamp();        -> t\nSELECT version();                                    -> PostgreSQL 18.4 (Debian 18.4-1.pgdg12+1)\n```\n\nSo the shipped comment's stated evidence is **false**, as the ticket says. But two further measurements refine what the replacement sentence may claim:\n\n```\n-- 20,000 rows, two adjacent calls per row\nSELECT count(*), count(*) FILTER (WHERE b > a), max(b - a)\n  FROM (SELECT clock_timestamp() a, clock_timestamp() b FROM generate_series(1,20000)) s;\n-> 20000 | 347 | 00:00:00.000001\n\nSELECT count(*) FILTER (WHERE clock_timestamp() > clock_timestamp()) FROM generate_series(1,20000);\n-> 0\n```\n\nAdjacent calls are equal in 19,653 of 20,000 rows; in 347 they advance, always by exactly **1µs**, and never backwards. So the precise rule is **monotonic but negligible** advance within one expression evaluation — *not* \"does not advance\", which is how the ticket description phrases it, and *not* \"ADVANCES WITHIN A STATEMENT\" implying material drift, which is what the comment says.\n\nAcross rows it does advance, but coarsely — 2000 rows produced only **86** distinct values (~23 rows per tick).\n\n**Consequence for the edit:** the replacement sentence must not swing from one wrong absolute to the other. Writing \"two adjacent calls return the same value\" would be a new false-in-detail claim of exactly the kind this ticket exists to remove, and a future ticket could build on it just as readily. The correction states the bound (≤1µs, monotonic), which is what actually supports the conclusion.\n\n**The conclusion survives, and its justification is now stronger, not weaker.** A bound written as bare `clock_timestamp()` is at most 1µs in the past when the predicate reads it — but *at most 1µs in the past is still in the past*, and `> `/`>=` still cannot be distinguished by any clock-relative fixture. The literal-bound design and its three surviving mutants stay untouched, exactly as the readiness `scope` requires."
+    }
+  ],
+  "description": "Incidental, found while verifying TKT-148's mechanism against a real database rather than inheriting the repo's stated facts.\n\n`services/inventory/internal/store/channel_allocations_smoke_test.go` (comment block ~line 593) says:\n\n> `clock_timestamp()` ADVANCES WITHIN A STATEMENT — verified against this database: `SELECT clock_timestamp() = clock_timestamp()` is false.\n\nOn PostgreSQL 18 that query returns **true**. Two adjacent calls in one expression are evaluated to the same value; `clock_timestamp()` advances across **rows** and across **statements**, not between adjacent calls in a single expression.\n\n```\nSELECT clock_timestamp() = clock_timestamp();          -> t\nSELECT clock_timestamp() FROM generate_series(1,3);    -> three distinct values\n```\n\nMeasured over 2000 rows of `INSERT ... SELECT clock_timestamp()+interval '500 ms', clock_timestamp()`, the separation between the two evaluations was **~1 microsecond** (186µs on a single-row `INSERT ... RETURNING`).\n\n## Why it is worth fixing rather than ignoring\n\nThe comment's **conclusion is correct** — a bound written as bare `clock_timestamp()` is already in the past by the time it is compared, and the test's design around it is right. Only the stated evidence is wrong.\n\nThat is precisely what makes it worth correcting: the sentence reads as a *verified fact about this database*, so a future ticket will reasonably build on it. TKT-148 nearly did — the claim implied the two `clock_timestamp()` evaluations in `clock_timestamp()+ttl … RETURNING clock_timestamp()` could drift materially, which an ai-review pass then argued would make an assertion band flaky. Measuring settled it in one command; inheriting it would have widened a tolerance for no reason.\n\n## Scope\n\n- [ ] Correct the evidence sentence, keep the conclusion and the design it justifies\n- [ ] State the real rule: same value within one expression evaluation, advances across rows and statements\n- [ ] Check for the same claim elsewhere (`git grep -n \"clock_timestamp() = clock_timestamp()\"`)\n\nComment-only; no behaviour change. `risk:low`.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "A comment states a verified fact about this database that is false. Its conclusion is right, so nothing is broken today — but the sentence reads as measured evidence and a future ticket will build on it. TKT-148 nearly did."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the evidence sentence in channel_allocations_smoke_test.go (~:593-600) and any other occurrence of the same claim. OUT: the test's design, its literal-bound approach, and the three mutants that justified it — all correct and unchanged. Comment-only, zero behaviour change."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None. The claim was measured on PostgreSQL 18 rather than reasoned about: `SELECT clock_timestamp() = clock_timestamp()` returns TRUE; clock_timestamp() advances across ROWS and across STATEMENTS, not between adjacent calls in one expression evaluation. Separation measured at ~1us over 2000 rows."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "None. No blockers, no open links. TKT-148 (relates) is Done."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Verified against the code at HEAD: the claim survives at exactly one site — `git grep -n 'clock_timestamp() = clock_timestamp()'` returns services/inventory/internal/store/channel_allocations_smoke_test.go:595 and nothing else. So the sweep item is already answered: one sentence to correct, not a sweep. Rewrite the evidence to state the real rule and keep the conclusion (a bare `clock_timestamp()` bound is already in the past when the predicate reads it, so `>` and `>=` cannot be distinguished by a claim-path fixture) and the literal-bound design it justifies."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: one comment block, one grep to prove no second site."
+    },
+    "success": {
+      "state": "met",
+      "note": "The comment states the correct rule; the conclusion and the test body are byte-identical; `git grep` for the old claim returns nothing; `make check` green. Note the risk of over-correction — the paragraph must still justify why the test does NOT go through CreateHold, or the next reader deletes the literal-bound design as unmotivated."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs: NONE — looked, and there is no ADR governing test-comment evidence; the discipline lives in AGENTS.md (\"a security claim is a hypothesis until it is executed\", and the fixture-that-cannot-fail family), which is exactly the rule this ticket applies to a comment. governingTests: services/inventory/internal/store/channel_allocations_smoke_test.go::TestChannelSalesWindowIsHalfOpen — the test the comment belongs to; its three named mutants (now()/clock_timestamp(), >/>= on close, </<= on open) are the reason the design is what it is and must survive the edit unchanged."
+    }
   }
- ],
- "comments": [
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nAll 8 items `met`. `risk:low` (already labelled) — comment-only, no behaviour change, plan gate skipped.\n\nVerified at HEAD rather than inherited:\n- The false claim survives at **one** site (`channel_allocations_smoke_test.go:595`). The scope's third bullet (\"check for the same claim elsewhere\") is therefore already answered — it is a one-sentence fix, not a sweep.\n- The measurement behind the correction was run against a real PostgreSQL 18, not reasoned from docs.\n\nThe one trap worth naming for the drafter: the paragraph does two jobs — it states the (wrong) evidence *and* it justifies why the test evaluates the predicate against literal bounds instead of going through `CreateHold`. Correct the first without deleting the second, or the next reader removes a design that three surviving mutants paid for."
-  }
- ],
- "description": "Incidental, found while verifying TKT-148's mechanism against a real database rather than inheriting the repo's stated facts.\n\n`services/inventory/internal/store/channel_allocations_smoke_test.go` (comment block ~line 593) says:\n\n> `clock_timestamp()` ADVANCES WITHIN A STATEMENT — verified against this database: `SELECT clock_timestamp() = clock_timestamp()` is false.\n\nOn PostgreSQL 18 that query returns **true**. Two adjacent calls in one expression are evaluated to the same value; `clock_timestamp()` advances across **rows** and across **statements**, not between adjacent calls in a single expression.\n\n```\nSELECT clock_timestamp() = clock_timestamp();          -> t\nSELECT clock_timestamp() FROM generate_series(1,3);    -> three distinct values\n```\n\nMeasured over 2000 rows of `INSERT ... SELECT clock_timestamp()+interval '500 ms', clock_timestamp()`, the separation between the two evaluations was **~1 microsecond** (186µs on a single-row `INSERT ... RETURNING`).\n\n## Why it is worth fixing rather than ignoring\n\nThe comment's **conclusion is correct** — a bound written as bare `clock_timestamp()` is already in the past by the time it is compared, and the test's design around it is right. Only the stated evidence is wrong.\n\nThat is precisely what makes it worth correcting: the sentence reads as a *verified fact about this database*, so a future ticket will reasonably build on it. TKT-148 nearly did — the claim implied the two `clock_timestamp()` evaluations in `clock_timestamp()+ttl … RETURNING clock_timestamp()` could drift materially, which an ai-review pass then argued would make an assertion band flaky. Measuring settled it in one command; inheriting it would have widened a tolerance for no reason.\n\n## Scope\n\n- [ ] Correct the evidence sentence, keep the conclusion and the design it justifies\n- [ ] State the real rule: same value within one expression evaluation, advances across rows and statements\n- [ ] Check for the same claim elsewhere (`git grep -n \"clock_timestamp() = clock_timestamp()\"`)\n\nComment-only; no behaviour change. `risk:low`.",
- "readiness": {
-  "objective": {
-   "state": "met",
-   "note": "A comment states a verified fact about this database that is false. Its conclusion is right, so nothing is broken today — but the sentence reads as measured evidence and a future ticket will build on it. TKT-148 nearly did."
-  },
-  "scope": {
-   "state": "met",
-   "note": "IN: the evidence sentence in channel_allocations_smoke_test.go (~:593-600) and any other occurrence of the same claim. OUT: the test's design, its literal-bound approach, and the three mutants that justified it — all correct and unchanged. Comment-only, zero behaviour change."
-  },
-  "uncertainties": {
-   "state": "met",
-   "note": "None. The claim was measured on PostgreSQL 18 rather than reasoned about: `SELECT clock_timestamp() = clock_timestamp()` returns TRUE; clock_timestamp() advances across ROWS and across STATEMENTS, not between adjacent calls in one expression evaluation. Separation measured at ~1us over 2000 rows."
-  },
-  "dependencies": {
-   "state": "met",
-   "note": "None. No blockers, no open links. TKT-148 (relates) is Done."
-  },
-  "approach": {
-   "state": "met",
-   "note": "Verified against the code at HEAD: the claim survives at exactly one site — `git grep -n 'clock_timestamp() = clock_timestamp()'` returns services/inventory/internal/store/channel_allocations_smoke_test.go:595 and nothing else. So the sweep item is already answered: one sentence to correct, not a sweep. Rewrite the evidence to state the real rule and keep the conclusion (a bare `clock_timestamp()` bound is already in the past when the predicate reads it, so `>` and `>=` cannot be distinguished by a claim-path fixture) and the literal-bound design it justifies."
-  },
-  "first_slice": {
-   "state": "met",
-   "note": "The whole ticket is one slice: one comment block, one grep to prove no second site."
-  },
-  "success": {
-   "state": "met",
-   "note": "The comment states the correct rule; the conclusion and the test body are byte-identical; `git grep` for the old claim returns nothing; `make check` green. Note the risk of over-correction — the paragraph must still justify why the test does NOT go through CreateHold, or the next reader deletes the literal-bound design as unmotivated."
-  },
-  "context_memo": {
-   "state": "met",
-   "note": "governingAdrs: NONE — looked, and there is no ADR governing test-comment evidence; the discipline lives in AGENTS.md (\"a security claim is a hypothesis until it is executed\", and the fixture-that-cannot-fail family), which is exactly the rule this ticket applies to a comment. governingTests: services/inventory/internal/store/channel_allocations_smoke_test.go::TestChannelSalesWindowIsHalfOpen — the test the comment belongs to; its three named mutants (now()/clock_timestamp(), >/>= on close, </<= on open) are the reason the design is what it is and must survive the edit unchanged."
-  }
- }
 }
