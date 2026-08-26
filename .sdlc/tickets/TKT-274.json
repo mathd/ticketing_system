@@ -5,7 +5,7 @@
   "status": "Building",
   "labels": [
     "risk:low",
-    "agent:coding"
+    "agent:ai-review"
   ],
   "assignee": "agent",
   "pr": {
