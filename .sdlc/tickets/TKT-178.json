@@ -3,9 +3,11 @@
   "type": "Task",
   "classification": "simple",
   "summary": "POST /venues with an unknown organizer answers 500, not 404 (ADR-028 fail-closed on an undeclared status)",
-  "status": "Ready",
-  "labels": [],
-  "assignee": null,
+  "status": "Planning",
+  "labels": [
+    "agent:planning"
+  ],
+  "assignee": "agent",
   "pr": null,
   "links": [],
   "description": "Found while seeding a browser fixture for TKT-174.\n\n```\nPOST /api/catalog/venues  {\"organizer_id\":\"<unknown>\", ...}\n-> 500 {\"error\":\"response violates OpenAPI contract\"}\n\ncatalog log: \"response violates OpenAPI contract\" status=404 error=\"status is not supported\"\n```\n\nThe handler correctly answers **404** for an organizer that does not exist. `POST /venues` does not declare a 404, so ADR-028's fail-closed response validator converts it to a 500 — which is the validator working exactly as designed, on a contract that is incomplete.\n\nThis is a small, contained fix (declare `404` on the operation), but it is worth checking whether the same gap exists on the other catalog writes that validate an organizer, rather than patching one operation. A caller currently cannot tell \"you named a tenant that does not exist\" from \"the service is broken\".\n\nPre-existing; unrelated to TKT-174 beyond having been tripped over by it.",
@@ -34,6 +36,12 @@
     {
       "author": "agent",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98`. **All eight items `met`, no blockers.** Ready for Gate 1.\n\n**Two corrections to the ticket text, both found by reading rather than inherited.** `shaping.md` requires a proposed remedy be verified before `approach` adopts it, and this ticket needed it twice.\n\n**1. The repro in the description is stale.** It shows `POST /api/catalog/venues` with an unknown `organizer_id` **in the body**. TKT-245 (Done) moved the organizer to a credential assertion — `CreateVenue` now takes it from `s.organizerFor(w, r)` (`server_authoring.go:23`) and the body no longer carries the field. The **defect survives**: `writeStoreError` still maps `store.ErrNotFound` to 404 (`server.go:565-566`), `postgres.go:70` still returns it for an unknown organizer, and `createVenue` still declares only 401/500/201/400. But anyone reproducing it from the ticket text as written will fail to, and conclude it is fixed.\n\n**2. It is not one operation — it is five.** Ten of catalog's 42 operations declare no 404. Five of them route errors through `writeStoreError` and can therefore reach one: `createVenue`, `createEvent`, `createChannel`, `resolvePerformanceDisplayNames`, `listVenueSeatMaps`. Fixing only the one in the title would leave the identical hole four operations over *while looking like the class had been addressed* — which is precisely the reasoning ADR-059 used to make its own floor cover every credential at once. The scope item reflects the five.\n\n**The design constraint worth carrying to the planner.** TKT-142's 400-invariant is **spec-only** — it works because 400-reachability is visible in the document (a uuid path param, a body, a query or header parameter). **404-reachability is not**: it depends on whether the handler can return `ErrNotFound`, which the spec cannot see. So this invariant cannot be a copy of that one. It must either drive the handlers or accept being a maintained list with a stated reason. Deciding which is the plan's first job, and it is why this is not `risk:low`.\n\n**Recommend NOT `risk:low`** — five operations plus an invariant whose shape is genuinely different from its template."
+    },
+    {
+      "author": "agent",
+      "stage": "ready",
+      "kind": "claim",
+      "body": "<!-- sdlc:stage=ready kind=claim -->\nClaimed. Backend: **local tracker** (`.sdlc/`, state on `sdlc-state`). Running **gateless per `config.gates: autonomous`** — Gate 1 was taken by the human; Gates 2-4 are the agent's per the skill's § Autonomous mode.\n\n**Blockers:** none. `links` is empty; TKT-245 and TKT-142 are Done and referenced as history/template, not dependencies.\n\n**Branch:** `TKT-178-declare-404-catalog-writes` off `origin/main` @ `228acf97`.\n\n**Risk verdict: `risk:low` NOT claimed.**\nBlast radius is genuinely small — declaring a status the handler already returns changes no trust boundary, touches no money/auth/migration/CI surface, and cannot alter a single handler's behaviour. But `risk:low` is about blast radius *and* the skill's carve-out for a ticket whose central question is a design question with a non-obvious answer applies squarely here. The readiness review named it: **404-reachability has no structural predicate the way TKT-142's 400 did.** A 400 is visible in the spec document (a uuid path param, a body, a query/header param); a 404 depends on whether the *handler* can return `store.ErrNotFound`, which the document cannot see. So the invariant test cannot be a copy of the template — it must either drive from the handler side or accept being a maintained list with a stated reason. That is exactly the \"how do I construct a test that can actually fail?\" shape the skill says to keep the plan gate for. Plan gate stays.\n\n**Models for this run** (per `config.models`, cross-model pairs verified distinct): plan = `gpt-5.6-luna` (codex), planReview = `main-agent`, implement = `main-agent`, aiReview = `gpt-5.6-luna` (codex).\n\n**Selection reason:** requested by the owner.\n"
     }
   ],
   "readiness": {
