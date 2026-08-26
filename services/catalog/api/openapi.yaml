@@ -50,6 +50,7 @@ paths:
                 $ref: '#/components/schemas/Venue'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404': { $ref: '#/components/responses/NotFound' }
   /venues/{venueId}/seat-maps:
     post:
       operationId: createSeatMap
@@ -338,6 +339,7 @@ paths:
                 $ref: '#/components/schemas/Event'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404': { $ref: '#/components/responses/NotFound' }
   /performances:
     post:
       operationId: createPerformance
@@ -1052,6 +1054,7 @@ paths:
         # so a store failure would surface as contract drift rather than as
         # itself. Every status the handler can produce has to be here.
         '500': { $ref: '#/components/responses/InternalError' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /internal/ticket-types/{id}/fee-resolution:
     get:
       operationId: resolveTicketTypeFees
@@ -1259,6 +1262,7 @@ paths:
                 $ref: '#/components/schemas/PublicEventList'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404': { $ref: '#/components/responses/NotFound' }
   /public/events/{eventId}:
     get:
       operationId: getPublicEvent
@@ -1370,6 +1374,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicVenueList' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /public/venues/{venueId}/seat-maps:
     get:
       operationId: listVenueSeatMaps
@@ -1396,6 +1401,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SeatMapList' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /public/seat-maps/{seatMapId}:
     get:
       operationId: getPublicSeatMapGeometry
@@ -1492,6 +1498,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /channels/{channelId}:
     put:
       operationId: updateChannel
@@ -1572,6 +1579,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicChannelList' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /openapi.yaml:
     get:
       operationId: getOpenAPISpec

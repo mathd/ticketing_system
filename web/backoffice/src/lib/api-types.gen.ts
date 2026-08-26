@@ -1697,6 +1697,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -1975,6 +1976,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2622,6 +2624,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2735,6 +2738,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2851,6 +2855,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2876,6 +2881,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2955,6 +2961,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
+            404: components["responses"]["NotFound"];
             /** @description This organizer already has a channel with that code */
             409: {
                 headers: {
@@ -3031,6 +3038,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };
