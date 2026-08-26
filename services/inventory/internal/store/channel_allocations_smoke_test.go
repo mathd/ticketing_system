@@ -588,16 +588,48 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 }
 
 // The window is half-open [opens_at, closes_at) — asserted against the PREDICATE
-// itself, because a claim-path fixture cannot sit on the boundary.
+// itself, because a claim-path fixture cannot AIM at the boundary.
 //
-// Why not through CreateHold: the bounds are written as clock_timestamp()
-// arithmetic, and clock_timestamp() ADVANCES WITHIN A STATEMENT — verified
-// against this database: `SELECT clock_timestamp() = clock_timestamp()` is
-// false. So a bound written as exactly `clock_timestamp()` is already in the
-// past by the time the predicate reads it, and `>` and `>=` give the same
-// answer. A first version of this test did exactly that and three mutants
-// survived it — `now()` for `clock_timestamp()`, `>` for `>=` on the close, and
-// `<` for `<=` on the open — because no fixture could distinguish them.
+// Why not through CreateHold: setWindow writes the bounds as clock_timestamp()
+// arithmetic in an UPDATE, and CreateHold reads them back in a LATER, SEPARATE
+// statement. Nothing in that arrangement lets the test say where the bound
+// falls relative to the instant the predicate evaluates — the gap is whatever
+// the wall clock did in between, and it is neither controllable nor
+// reproducible. Note what is NOT being claimed: not that the bound is always in
+// the past, and not that landing exactly on it is impossible. Both would be
+// guarantees about a non-monotonic wall clock, which cannot give them (see
+// docs/learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md §2 and
+// TKT-234 — clock_timestamp() narrows the window, it does not close it).
+//
+// The weaker statement is the one that condemns the fixture: it cannot place
+// the bound on the boundary DELIBERATELY. So for `>` vs `>=` on the close and
+// `<` vs `<=` on the open, the mutant's verdict is decided by whatever the
+// clock did, not by the test. Both failure directions follow, and the quiet one
+// is the dangerous one: such a fixture may fail on an accidental equality, and
+// — far more often — pass green while the mutant is still live, because a bound
+// that lands clearly before or after the evaluation instant is answered the
+// same way by either operator. A green run is therefore not evidence that the
+// boundary operator is correct. That is why the first version of this test left
+// those two mutants alive: not because equality is impossible, but because
+// nothing in the fixture could aim at it.
+//
+// The third mutant of that first version, `now()` for `clock_timestamp()`, is a
+// different problem with a different answer, and is only PARTLY pinned.
+// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart (below) holds a
+// transaction open across the cutoff so the two clocks diverge, and catches the
+// substitution — but it sets opens_at to NULL, so it exercises only the
+// CLOSE-side occurrence of clock_timestamp() in windowOpen. A mutation of the
+// OPEN-side occurrence alone would stay green. Mentioned here so this paragraph
+// is not read as covering `now()`, and so the gap is on the record rather than
+// implied shut.
+//
+// Do not reach for a within-statement argument here either: adjacent
+// clock_timestamp() calls in ONE expression barely move. Measured on one
+// machine on one run, over 20,000 rows evaluating it twice per row, the two
+// calls were equal 19,653 times and differed by exactly 1µs the other 347; the
+// clock is also coarse across rows (2,000 rows produced 86 distinct values).
+// Observations, not guarantees — re-run them before building on them, and do
+// not turn them into a rule about ordering.
 //
 // Evaluating the predicate against literal bounds makes the boundary
 // expressible: the instant is fixed, so "at the bound" is a real case rather
