@@ -592,20 +592,27 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 //
 // Why not through CreateHold: setWindow writes the bounds as clock_timestamp()
 // arithmetic in an UPDATE, and CreateHold reads them back in a LATER, SEPARATE
-// statement. That statement boundary — not any drift within a single expression
-// — is what puts a bare `clock_timestamp()` bound reliably in the past by the
-// time the predicate compares against it, so `>` and `>=` give the same answer.
-// A first version of this test did exactly that and three mutants survived it —
-// `now()` for `clock_timestamp()`, `>` for `>=` on the close, and `<` for `<=`
-// on the open — because no fixture could distinguish them.
+// statement. The test cannot control the gap between the two — it is whatever
+// the wall clock did in between — so it cannot place the bound ON the instant
+// the predicate evaluates. Note the claim is NOT "the bound is always in the
+// past": that would be a guarantee this clock cannot give, since
+// clock_timestamp() reads a non-monotonic wall clock (see
+// docs/learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md §2, and
+// TKT-234 — it narrows the window, it does not close it). The weaker claim is
+// the one that matters and it holds either way: the boundary case is
+// UNREACHABLE, so `>` and `>=` give the same answer for every input such a
+// fixture can construct. A first version of this test did exactly that and
+// three mutants survived it — `now()` for `clock_timestamp()`, `>` for `>=` on
+// the close, and `<` for `<=` on the open — because no fixture could
+// distinguish them.
 //
 // Do not reach for a within-statement argument here: adjacent clock_timestamp()
 // calls in ONE expression barely move. Measured against this database, over
 // 20,000 rows evaluating it twice per row, the two calls were equal 19,653
-// times and differed by exactly 1µs the other 347, never going backwards; the
-// clock is also coarse across rows (2,000 rows produced 86 distinct values).
-// Those are observations of this database, not a portable guarantee — re-run
-// them before building on them.
+// times and differed by exactly 1µs the other 347; the clock is also coarse
+// across rows (2,000 rows produced 86 distinct values). Those are observations
+// of one machine on one run, not a portable guarantee — re-run them before
+// building on them, and do not turn them into a rule about ordering.
 //
 // Evaluating the predicate against literal bounds makes the boundary
 // expressible: the instant is fixed, so "at the bound" is a real case rather
