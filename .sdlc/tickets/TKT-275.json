@@ -1,0 +1,23 @@
+{
+  "key": "TKT-275",
+  "type": "Task",
+  "summary": "The now() mutation is only half-pinned: no test covers the open-side clock_timestamp() in windowOpen",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-274"
+    }
+  ],
+  "comments": [
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-274's fourth ai-review pass as an **incidental** finding — outside that ticket's comment-only scope, so it was recorded in the code comment and split out here rather than fixed in place.\n\nVerified at HEAD, not inherited from the review:\n- `windowOpen` has two `clock_timestamp()` occurrences (`channel_allocations.go:43-44`).\n- `TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`:697`) sets `opens_at` to NULL, so only the close-side occurrence is exercised.\n\nNeeds shaping before Gate 1."
+    }
+  ],
+  "description": "Incidental, found by the fourth adversarial review pass on TKT-274 (a comment-only ticket) and verified against the code.\n\n`windowOpen` (`services/inventory/internal/store/channel_allocations.go:43`) contains **two** `clock_timestamp()` occurrences:\n\n```sql\n(opens_at IS NULL OR opens_at <= clock_timestamp())\nAND (closes_at IS NULL OR closes_at > clock_timestamp())\n```\n\n`TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`channel_allocations_smoke_test.go:697`) is the test that pins \"the predicate decides at DECISION time, not transaction-start time\" — the `now()`-for-`clock_timestamp()` mutant. It works by holding a transaction open across the cutoff, so frozen `now()` and moving `clock_timestamp()` diverge.\n\nBut it sets `opens_at` to **NULL** and only makes `closes_at` cross the gap. So it exercises **only the close-side occurrence**. A per-occurrence mutation of the **open-side** `clock_timestamp()` to `now()` leaves it green.\n\n## Why it matters\n\nThe open side is not symmetric decoration. A window written with `now()` on `opens_at` decides \"has the sale opened?\" at **transaction-start** time. A hold that queues on the pool lock before the on-sale instant and acquires it after would read the frozen start time and be refused as not-yet-open — or, with a transaction that began before the boundary, admitted early. That is the same class of bug ADR-024 litigated for `release_at`, on the side that governs **on-sale**, which is the highest-contention moment in the system.\n\n## Scope\n\n- [ ] Add a transaction-held case with a non-NULL `opens_at` that opens DURING the held transaction, asserting the shipped predicate says OPEN while frozen `now()` says not-yet-open (the mirror of the existing close-side case, including its \"fixture did not reproduce the divergence\" guard).\n- [ ] Mutate the OPEN-side `clock_timestamp()` alone to `now()` and observe the new case go red — the mutation that is evidence is the one only this case can catch. Confirm the existing close-side case stays green under that mutation, which is what demonstrates the gap was real.\n- [ ] Update the TKT-274 comment block: it currently records this gap as open (\"only PARTLY pinned... a mutation of the OPEN-side occurrence alone would stay green\"). Close that wording when the test lands.\n\n## Notes\n\nTKT-274 recorded the gap in the comment rather than closing it, because that ticket was comment-only by scope. The wording there is deliberately explicit so the gap is on the record rather than implied shut — do not delete it without adding the test.\n\nNot `risk:low` on its face: the deliverable is a test, but its central question is \"how do I construct a fixture that can actually fail?\", which is the shape AGENTS.md says to keep the plan gate for (the TKT-266 precedent). The existing close-side case is a working template, which argues the other way. Let shaping settle it.",
+  "readiness": null
+}
