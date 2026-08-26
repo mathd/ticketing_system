@@ -750,3 +750,66 @@ func TestPassReconcileRefundedTicketRecordsFactWithoutConflictAlarm(t *testing.T
 		t.Fatalf("%d admission-conflict alarms on a refunded PASS admission, want 0 — pass conflicts are derived and revisable (§D2); an alarm minted above the pass split would be neither", n)
 	}
 }
+
+// C′ (TKT-270) — branch (c) for exchanges: an EXCHANGED pass ticket. Pass
+// reconciliation records factual entry/exit only and never mints conflict
+// events (ADR-025 §D2), and that holds whether the ticket is refunded,
+// exchanged, or both.
+//
+// WHAT THIS TEST PINS, stated precisely because the obvious claim is wrong.
+// The pass branch RETURNS (reconcile.go:163-186) before reaching the position
+// where the exchanged guard lives, so DELETING that guard leaves this test
+// green — it cannot catch guard removal, and reading it as though it could
+// would overstate the coverage. What it does catch is any implementation that
+// owes an admission-conflict alarm on a pass admission: the guard hoisted above
+// the pass split, or a later "alarm on every voided ticket" refactor. Policy
+// conflicts on a pass are DERIVED and revisable projections, so an immutable
+// conflict alarm no later event could retract is the wrong instrument.
+//
+// The exchange seed is load-bearing, not decoration — the same question the
+// TKT-269 plan critique forced on the refunded case above. Without it every
+// assertion here is satisfied by any pass reconcile and the test duplicates
+// TestPassReconcileRecordsFactualEntryExitOnly. The exchanged-event
+// precondition is what makes the seed observable rather than assumed.
+func TestPassReconcileExchangedTicketRecordsFactWithoutConflictAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi"})
+	if err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID:       uuid.New(),
+		ExchangeID:    uuid.New(),
+		SourceOrderID: s.id.OrderID,
+		OrganizerID:   s.id.OrganizerID,
+		Tickets:       replacementTickets(uuid.New(), s.id.OrganizerID, s.id.SlotID, 1),
+	}); err != nil {
+		t.Fatalf("seed the exchange: %v", err)
+	}
+	if got := countEvents(t, ctx, db, s.ticketID, "exchanged"); got != 1 {
+		t.Fatalf("exchanged events before reconciling = %d, want 1 — the seed this test's whole "+
+			"claim rests on did not land, so nothing below would mean what it says", got)
+	}
+
+	in := s.reconcileInput(uuid.New(), deviceTime())
+	in.Type = AdmissionEntry
+	result, err := st.ReconcileAdmission(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("exchanged pass reconcile outcome = %s, want recorded — recording is not deciding (ADR-025 §D2)", result.Outcome)
+	}
+	if got := countEvents(t, ctx, db, s.ticketID, "entry"); got != 1 {
+		t.Fatalf("entry events = %d, want 1 — the factual admission is recorded", got)
+	}
+	for _, banned := range []string{"redeemed", "duplicate_admit"} {
+		if got := countEvents(t, ctx, db, s.ticketID, banned); got != 0 {
+			t.Fatalf("%s events = %d, want 0 — pass reconciliation never mints them (§D2)", banned, got)
+		}
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm); n != 0 {
+		t.Fatalf("%d admission-conflict alarms on an exchanged PASS admission, want 0 — pass conflicts "+
+			"are derived and revisable (§D2); an alarm minted above the pass split would be neither", n)
+	}
+}

@@ -1147,3 +1147,333 @@ func TestReconcileRefundedAlarmAndAppendCommitTogether(t *testing.T) {
 		t.Fatalf("%d refunded rows, want 1 — a rolled-back reconcile must not disturb it", n)
 	}
 }
+
+// TKT-270 — an offline admit of an EXCHANGED ticket must not be silent either.
+//
+// The sibling of TKT-269 above, and deliberately NOT a copy of it. TKT-166 /
+// ADR-039 refuse an exchanged ticket at a LIVE gate for a reason that is not the
+// refund reason: an exchanged ticket has a LIVE REPLACEMENT somewhere, so
+// admitting the original would admit the exchange twice — and the replacement
+// can be admitted legitimately at another gate the same night. Offline, the
+// scanner cannot know, admits the holder, and reconciliation recorded an
+// ordinary redemption with the chain verifying clean and nobody informed.
+//
+// The invariant, said without naming the implementation: AN OFFLINE ADMIT OF A
+// COMMERCIALLY VOIDED TICKET IS NEVER SILENT — and ONE PHYSICAL ADMISSION OWES
+// EXACTLY ONE ALARM, however many voiding facts apply.
+//
+// Which ADR governs, since this is the one place the ticket is not TKT-269 with
+// a word changed: ADR-025 §D2/§D6. NOT ADR-038 — its Consequences narrow the
+// fail-open exception to "tickets a refund has voided", so it does not reach
+// exchanges; and ADR-039 explains the live refusal without defining
+// reconciliation at all. Per ADR-021 this is honest-writer consistency, not
+// tamper-evidence: a writer with database access can delete the voiding fact.
+
+// exchangeOwnTicket voids the single-ticket order issueTicket minted, through
+// the real SwitchExchange path — never a hand-written lifecycle_events insert.
+// That is not fastidiousness: every lifecycle event goes through
+// appendLifecycle, `access verify-lifecycle` asserts one-to-one coverage in the
+// gate, and a direct insert reads as tampering.
+//
+// One source ticket and one replacement satisfy the whole-order rule — an
+// exchange has no partial form (TKT-158, exchanges.go:140) — and issueTicket
+// gives each ticket its own order, so the source order is exactly this ticket.
+func exchangeOwnTicket(t *testing.T, ctx context.Context, st *Postgres, s seeded) {
+	t.Helper()
+	if err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID:       uuid.New(),
+		ExchangeID:    uuid.New(),
+		SourceOrderID: s.id.OrderID,
+		OrganizerID:   s.id.OrganizerID,
+		Tickets:       replacementTickets(uuid.New(), s.id.OrganizerID, s.id.SlotID, 1),
+	}); err != nil {
+		t.Fatalf("seed the exchange: %v", err)
+	}
+}
+
+// conflictAlarmsFor counts admission-conflict alarms naming a specific ticket
+// and occurrence, by decoding the envelope — the outbox has no ticket_id column,
+// so the identity is only inside the payload.
+//
+// conflictAlarmCount, which every earlier test uses, counts by SUBJECT ALONE.
+// The second ai-review pass on TKT-270 was right that this is weaker than it
+// reads: exchangeOwnTicket issues a REPLACEMENT ticket, so an implementation
+// that alarmed on the wrong ticket would keep the total at one and pass. The
+// count still matters — it is what catches a second alarm being owed — so the
+// tests that care about identity assert BOTH: the right ticket is named, and no
+// other alarm exists beside it.
+func conflictAlarmsFor(t *testing.T, ctx context.Context, db *sql.DB, ticketID, occurrenceID uuid.UUID) int {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT envelope FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	matching := 0
+	for rows.Next() {
+		var envelope []byte
+		if err := rows.Scan(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		var alarm struct {
+			Data struct {
+				TicketID     uuid.UUID `json:"ticket_id"`
+				OccurrenceID uuid.UUID `json:"occurrence_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(envelope, &alarm); err != nil {
+			t.Fatal(err)
+		}
+		if alarm.Data.TicketID == ticketID && alarm.Data.OccurrenceID == occurrenceID {
+			matching++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return matching
+}
+
+// requireVoidingFacts asserts the seeds actually landed BEFORE the reconcile
+// under test runs. Without it a seed that silently stopped working would leave
+// the test asserting an alarm count on a ticket carrying fewer voiding facts
+// than it names — passing for the wrong reason, which is the failure mode these
+// tests exist to catch in the production code.
+func requireVoidingFacts(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID, types ...string) {
+	t.Helper()
+	for _, eventType := range types {
+		if n := countEvents(t, ctx, db, ticketID, eventType); n != 1 {
+			t.Fatalf("%d %s rows before reconciling, want 1 — the seed this test's whole claim "+
+				"rests on did not land, so nothing below would mean what it says", n, eventType)
+		}
+	}
+}
+
+// A′ — branch (a) for exchanges: single-entry, exchanged, no prior redemption.
+// Recorded exactly as an unexchanged one would be, AND owes one conflict alarm.
+func TestReconcileExchangedTicketRecordsRedemptionAndOwesAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
+
+	occ := uuid.New()
+	offlineAt := deviceTime().Add(3 * time.Minute)
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, offlineAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recorded, not refused and not downgraded: the person is already inside and
+	// dropping the occurrence would falsify the trail (ADR-025 §D2/§D6).
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("exchanged offline admit outcome = %s, want recorded — reconciliation records, it does not decide", result.Outcome)
+	}
+	var occurredAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT occurred_at FROM lifecycle_events WHERE id=$1 AND ticket_id=$2 AND event_type='redeemed'`, occ, s.ticketID).Scan(&occurredAt); err != nil {
+		t.Fatalf("redeemed row keyed on the occurrence: %v", err)
+	}
+	if !occurredAt.Equal(offlineAt) {
+		t.Fatalf("redeemed at %v, want the device-claimed %v", occurredAt, offlineAt)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "duplicate_admit"); n != 0 {
+		t.Fatalf("%d duplicate_admit rows; a first admission is a redemption, exchanged or not", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d admission-conflict alarms, want exactly 1 — an offline admit of a voided ticket is never silent", n)
+	}
+}
+
+// B′ — branch (b) for exchanges. Read the note: this test pins PLACEMENT, not
+// the guard's presence.
+//
+// The duplicate path already owes an alarm of its own (reconcile.go, the
+// duplicate_admit branch), so DELETING the exchanged guard leaves this green.
+// That is expected and is why the discriminating mutation for guard presence is
+// A′ and F′, not this one. What this catches is the exchanged check hoisted
+// ABOVE the prior-redeemed lookup: one occurrence would then owe two alarms.
+//
+// Construction order is forced. SwitchExchange refuses a source ticket that has
+// already been admitted (ErrSourceTicketsAlreadyAdmitted, exchanges.go:165), so
+// the exchange cannot follow the first admission — unlike the refunded case
+// above, which redeems first. Redo the analysis, do not port it.
+func TestReconcileExchangedDuplicateOwesExactlyOneAdditionalAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
+
+	occA, occB := uuid.New(), uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occA, deviceTime().Add(2*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	before := conflictAlarmCount(t, ctx, db)
+
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occB, deviceTime().Add(5*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileConflict {
+		t.Fatalf("outcome = %s, want conflict — the trace already held an admission", result.Outcome)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "duplicate_admit"); n != 1 {
+		t.Fatalf("%d duplicate_admit rows, want 1", n)
+	}
+	// The DELTA, not the total: occurrence A legitimately owed one of its own.
+	if got := conflictAlarmCount(t, ctx, db) - before; got != 1 {
+		t.Fatalf("occurrence B added %d admission-conflict alarms, want exactly 1 — one occurrence "+
+			"owes one alarm, and an exchanged check placed above the prior-redeemed lookup would owe a second", got)
+	}
+	// And the one it added names occurrence B, not the replacement ticket or a
+	// second alarm for occurrence A — a delta of one is satisfiable by an alarm
+	// raised for the wrong subject.
+	if got := conflictAlarmsFor(t, ctx, db, s.ticketID, occB); got != 1 {
+		t.Fatalf("%d admission-conflict alarms name this ticket and occurrence B, want exactly 1", got)
+	}
+}
+
+// D′ — branch (d) for exchanges: exchanged AND a broken chain. The quarantine
+// path owes NO conflict alarm — the integrity class owns a suspect chain
+// (ADR-021 §D6) and every live scan of this ticket already raises it. The
+// exchange seed is load-bearing here rather than decoration: an exchanged guard
+// firing before verifyTicketChain would mint one, and without the seed nothing
+// in this fixture could tell that apart from an ordinary broken chain.
+func TestReconcileExchangedBrokenChainRecordsQuarantineWithoutConflictAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
+	corruptChain(t, ctx, db, s.ticketID)
+
+	occ := uuid.New()
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("outcome = %s, want recorded", result.Outcome)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ); n != 1 {
+		t.Fatalf("%d quarantine-side records, want 1 — the occurrence lands somewhere", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','duplicate_admit')`, s.ticketID); n != 0 {
+		t.Fatal("reconciliation appended onto an unverified chain")
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 0 {
+		t.Fatalf("%d admission-conflict alarms on a broken chain, want 0 — the integrity class owns a "+
+			"suspect chain (ADR-021 §D6), and an exchanged guard firing before verifyTicketChain would mint one", n)
+	}
+}
+
+// F′ — the case that does not exist in TKT-269 at all, and the reason this
+// ticket is not a copy-paste: a ticket BOTH refunded AND exchanged.
+//
+// The invariant, stated without naming the implementation, and the source of
+// the expected count — derived from the requirement, never from a run:
+//
+//	ONE PHYSICAL OFFLINE ADMISSION OWES EXACTLY ONE ADMISSION-CONFLICT ALARM,
+//	HOWEVER MANY COMMERCIAL VOIDING FACTS APPLY TO THE TICKET.
+//
+// Two independent alarm-owning branches would satisfy every other test in this
+// file and fail only this one, with a count of two. That is the mutation it
+// exists to catch.
+//
+// Construction order is forced and was verified in both directions:
+// SwitchExchange refuses an already-VOIDED source (ErrSourceTicketsAlreadyVoided,
+// exchanges.go:151), so refund-first is impossible; RefundOrderTickets selects on
+// refundThatVoided alone (refunds.go:120), so an exchanged ticket is still
+// refundable. Exchange, then refund.
+// F′ deliberately CANNOT detect removal of the exchanged guard: with both facts
+// present, ticketRefunded still answers true and TKT-269's half still owes the
+// one alarm this asserts. That is not a hole — it is what makes F′ specifically
+// about the COUNT. Guard PRESENCE is A′'s job, on a fixture with no refund in it
+// at all, and A′ is the only test that can do it.
+//
+// An earlier revision of this file added a second exchanged-only test here on
+// the theory that A′ and it covered "opposite ends of the two-fact space". They
+// did not: the fixtures were identical, so it was A′ with a different name, and
+// the second ai-review pass was right to call it a duplicate. Deleted. The
+// lesson is worth the comment — a test that FEELS like it adds a dimension adds
+// nothing unless you can name the state it reaches that no other test does.
+func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	refundOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged", "refunded")
+
+	occ := uuid.New()
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime().Add(3*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileRecorded {
+		t.Fatalf("outcome = %s, want recorded — two voiding facts do not change that reconciliation records", result.Outcome)
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "redeemed"); n != 1 {
+		t.Fatalf("%d redeemed rows, want 1 — one admission is one redemption", n)
+	}
+	// Both directions. The COUNT is what catches two independent alarm-owning
+	// branches; the IDENTITY is what stops an alarm raised for the replacement
+	// ticket — which exchangeOwnTicket also issues — from satisfying the count.
+	if n := conflictAlarmsFor(t, ctx, db, s.ticketID, occ); n != 1 {
+		t.Fatalf("%d admission-conflict alarms naming this ticket and occurrence, want exactly 1: one "+
+			"physical offline admission owes one admission-conflict alarm, however many commercial "+
+			"voiding facts apply to the ticket. Two independent alarm-owning branches would produce 2 here", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d admission-conflict alarms in total, want 1 — one was owed for this admission and "+
+			"nothing else in this fixture owes one", n)
+	}
+}
+
+// E′ — atomicity for exchanges. On the success path both artifacts exist whether
+// or not they share a transaction, so no happy-path test can tell one
+// transaction from two. Reject the outbox insert and assert NEITHER committed.
+// The seam is the database transaction because that IS the mechanism — a mock
+// callback would pin the harness rather than the contract.
+func TestReconcileExchangedAlarmAndAppendCommitTogether(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE FUNCTION reject_alarm() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'alarm outbox rejected (TKT-270 atomicity probe)'; END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER reject_alarm_trigger BEFORE INSERT ON lifecycle_integrity_alarm_outbox
+		FOR EACH ROW EXECUTE FUNCTION reject_alarm();`); err != nil {
+		t.Fatal(err)
+	}
+
+	occ := uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime())); err == nil {
+		t.Fatal("reconcile succeeded while the alarm insert was rejected; the alarm is owed, not best-effort")
+	}
+	if n := countEvents(t, ctx, db, s.ticketID, "redeemed"); n != 0 {
+		t.Fatalf("%d redeemed rows committed while its owed alarm failed — the append and the alarm are one transaction", n)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 0 {
+		t.Fatalf("%d alarms committed, want 0", n)
+	}
+	// The fact that preceded the failed reconcile is untouched.
+	if n := countEvents(t, ctx, db, s.ticketID, "exchanged"); n != 1 {
+		t.Fatalf("%d exchanged rows, want 1 — a rolled-back reconcile must not disturb it", n)
+	}
+}

@@ -200,29 +200,62 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 			}
 			return ReconcileResult{}, appendErr
 		}
-		// A refunded ticket that got in offline (TKT-269). TKT-157 refuses one at
-		// a LIVE gate; an offline scanner cannot know about the refund, so it
-		// admits the holder and this is where we learn of it. The occurrence is
-		// still recorded exactly as an unrefunded one would be — reconciliation
-		// is recording, not deciding, and the person is already inside, so
-		// dropping it would falsify the trail rather than protect a gate
-		// (ADR-038 §4). What is owed is VISIBILITY: an alarm on the
-		// admission-conflict class, which means "the chain is valid and the world
-		// disagreed with it" — never the integrity class, which means "the chain
-		// is suspect" and which ADR-038 §4 rejected for exactly this case.
+		// A COMMERCIALLY VOIDED ticket that got in offline — refunded (TKT-269) or
+		// exchanged (TKT-270). Both are refused at a LIVE gate; an offline scanner
+		// cannot know, so it admits the holder and this is where we learn of it.
+		// The occurrence is still recorded exactly as an unvoided one would be —
+		// reconciliation is recording, not deciding, and the person is already
+		// inside, so dropping it would falsify the trail rather than protect a
+		// gate. What is owed is VISIBILITY: an alarm on the admission-conflict
+		// class, which means "the chain is valid and the world disagreed with it"
+		// — never the integrity class, which means "the chain is suspect".
 		//
-		// The check sits HERE, inside the no-prior-redemption branch and below
-		// the redeemed lookup, and the placement is load-bearing in three
-		// directions: above the redeemed lookup it would owe a second alarm for
-		// an occurrence the conflict path already alarms; above the pass split it
-		// would mint an immutable conflict on a pass, whose conflicts are derived
-		// and revisable (ADR-025 §D2); above verifyTicketChain it would alarm on
-		// a broken chain, which the integrity class already owns.
+		// Two facts, ONE alarm, and that is a requirement rather than a
+		// convenience: one physical offline admission owes exactly one
+		// admission-conflict alarm, however many voiding facts apply. A ticket can
+		// be both (exchange the order, then refund it — the refund path selects on
+		// refundThatVoided alone and does not exclude an exchanged ticket), and two
+		// independent alarm-owning branches would owe two alarms for one person
+		// walking through one door. Hence one disjunction over two lookups, not two
+		// blocks. Pinned by TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm.
+		//
+		// They stay SEPARATE verdicts rather than collapsing into
+		// ticketCommerciallyVoid (exchanges.go:197): that predicate is
+		// SwitchExchange's source-eligibility check, and reusing it here would make
+		// the both-voided case indistinguishable from either fact alone.
+		//
+		// The two reasons differ, which is why this is not one fact with two names.
+		// A refunded ticket's holder has been paid back. An EXCHANGED ticket has a
+		// LIVE REPLACEMENT somewhere (ADR-039), so admitting the original admits
+		// the exchange twice — and the replacement can be admitted legitimately at
+		// another gate on the same night. The pattern to recognise if a third
+		// voiding fact ever appears: the live paths refuse it, reconciliation
+		// cannot, so reconciliation owes the alarm.
+		//
+		// Which ADR governs, since the two cases do not share one. ADR-025 §D2/§D6
+		// covers both. ADR-038 §4 covers the REFUND case only — its Consequences
+		// narrow the fail-open exception to "tickets a refund has voided", so it
+		// must not be cited for exchanges. ADR-039 explains the live refusal of an
+		// exchanged ticket and says nothing about reconciliation. Per ADR-021 this
+		// is honest-writer consistency, not tamper-evidence: a writer with database
+		// access can delete the voiding fact and the alarm never fires.
+		//
+		// The check sits HERE, inside the no-prior-redemption branch and below the
+		// redeemed lookup, and the placement is load-bearing in three directions:
+		// above the redeemed lookup it would owe a second alarm for an occurrence
+		// the conflict path already alarms; above the pass split it would mint an
+		// immutable conflict on a pass, whose conflicts are derived and revisable
+		// (ADR-025 §D2); above verifyTicketChain it would alarm on a broken chain,
+		// which the integrity class already owns.
 		refunded, refundErr := ticketRefunded(ctx, tx, in.TicketID)
 		if refundErr != nil {
 			return ReconcileResult{}, refundErr
 		}
-		if refunded {
+		exchanged, exchangeErr := ticketExchanged(ctx, tx, in.TicketID)
+		if exchangeErr != nil {
+			return ReconcileResult{}, exchangeErr
+		}
+		if refunded || exchanged {
 			// Owed in the SAME transaction as the append: the recorded fact and
 			// the alarm are inseparable, so no crash can leave an admission
 			// nobody was told about.
