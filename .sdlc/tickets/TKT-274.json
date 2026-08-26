@@ -2,10 +2,10 @@
   "key": "TKT-274",
   "type": "Task",
   "summary": "Wrong evidence in a clock comment: clock_timestamp() does NOT advance between adjacent calls in one expression",
-  "status": "Planning",
+  "status": "Building",
   "labels": [
     "risk:low",
-    "agent:plan-review"
+    "agent:coding"
   ],
   "assignee": "agent",
   "pr": null,
