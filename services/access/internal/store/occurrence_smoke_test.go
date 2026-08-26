@@ -1191,6 +1191,49 @@ func exchangeOwnTicket(t *testing.T, ctx context.Context, st *Postgres, s seeded
 	}
 }
 
+// conflictAlarmsFor counts admission-conflict alarms naming a specific ticket
+// and occurrence, by decoding the envelope — the outbox has no ticket_id column,
+// so the identity is only inside the payload.
+//
+// conflictAlarmCount, which every earlier test uses, counts by SUBJECT ALONE.
+// The second ai-review pass on TKT-270 was right that this is weaker than it
+// reads: exchangeOwnTicket issues a REPLACEMENT ticket, so an implementation
+// that alarmed on the wrong ticket would keep the total at one and pass. The
+// count still matters — it is what catches a second alarm being owed — so the
+// tests that care about identity assert BOTH: the right ticket is named, and no
+// other alarm exists beside it.
+func conflictAlarmsFor(t *testing.T, ctx context.Context, db *sql.DB, ticketID, occurrenceID uuid.UUID) int {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT envelope FROM lifecycle_integrity_alarm_outbox WHERE subject=$1`, SubjectAdmissionConflictAlarm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	matching := 0
+	for rows.Next() {
+		var envelope []byte
+		if err := rows.Scan(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		var alarm struct {
+			Data struct {
+				TicketID     uuid.UUID `json:"ticket_id"`
+				OccurrenceID uuid.UUID `json:"occurrence_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(envelope, &alarm); err != nil {
+			t.Fatal(err)
+		}
+		if alarm.Data.TicketID == ticketID && alarm.Data.OccurrenceID == occurrenceID {
+			matching++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return matching
+}
+
 // requireVoidingFacts asserts the seeds actually landed BEFORE the reconcile
 // under test runs. Without it a seed that silently stopped working would leave
 // the test asserting an alarm count on a ticket carrying fewer voiding facts
@@ -1287,6 +1330,12 @@ func TestReconcileExchangedDuplicateOwesExactlyOneAdditionalAlarm(t *testing.T) 
 		t.Fatalf("occurrence B added %d admission-conflict alarms, want exactly 1 — one occurrence "+
 			"owes one alarm, and an exchanged check placed above the prior-redeemed lookup would owe a second", got)
 	}
+	// And the one it added names occurrence B, not the replacement ticket or a
+	// second alarm for occurrence A — a delta of one is satisfiable by an alarm
+	// raised for the wrong subject.
+	if got := conflictAlarmsFor(t, ctx, db, s.ticketID, occB); got != 1 {
+		t.Fatalf("%d admission-conflict alarms name this ticket and occurrence B, want exactly 1", got)
+	}
 }
 
 // D′ — branch (d) for exchanges: exchanged AND a broken chain. The quarantine
@@ -1343,13 +1392,18 @@ func TestReconcileExchangedBrokenChainRecordsQuarantineWithoutConflictAlarm(t *t
 // exchanges.go:151), so refund-first is impossible; RefundOrderTickets selects on
 // refundThatVoided alone (refunds.go:120), so an exchanged ticket is still
 // refundable. Exchange, then refund.
-// Read with G′ below, which is its complement. F′ deliberately CANNOT detect
-// removal of the exchanged guard: with both facts present, ticketRefunded still
-// answers true and TKT-269's half still owes the one alarm this asserts. That is
-// not a hole in F′ — it is what makes F′ specifically about the COUNT — but on
-// its own it would leave "the exchanged half is load-bearing" resting entirely
-// on A′. G′ closes that by holding the fixture one step away from F′'s and
-// removing the refund.
+// F′ deliberately CANNOT detect removal of the exchanged guard: with both facts
+// present, ticketRefunded still answers true and TKT-269's half still owes the
+// one alarm this asserts. That is not a hole — it is what makes F′ specifically
+// about the COUNT. Guard PRESENCE is A′'s job, on a fixture with no refund in it
+// at all, and A′ is the only test that can do it.
+//
+// An earlier revision of this file added a second exchanged-only test here on
+// the theory that A′ and it covered "opposite ends of the two-fact space". They
+// did not: the fixtures were identical, so it was A′ with a different name, and
+// the second ai-review pass was right to call it a duplicate. Deleted. The
+// lesson is worth the comment — a test that FEELS like it adds a dimension adds
+// nothing unless you can name the state it reaches that no other test does.
 func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1371,54 +1425,17 @@ func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
 	if n := countEvents(t, ctx, db, s.ticketID, "redeemed"); n != 1 {
 		t.Fatalf("%d redeemed rows, want 1 — one admission is one redemption", n)
 	}
-	if n := conflictAlarmCount(t, ctx, db); n != 1 {
-		t.Fatalf("%d admission-conflict alarms, want exactly 1: one physical offline admission owes "+
-			"one admission-conflict alarm, however many commercial voiding facts apply to the ticket. "+
-			"Two independent alarm-owning branches would produce 2 here", n)
-	}
-}
-
-// G′ — the complement of F′, and the answer to the ai-review pass's finding.
-//
-// F′ holds two voiding facts and asserts a count of one; it cannot see the
-// exchanged half of the disjunction disappear, because the refund half still
-// owes that one alarm. So "the exchanged predicate is load-bearing" rested
-// entirely on A′, one test, on a fixture with no refund in it at all.
-//
-// G′ is F′'s fixture minus the refund: same construction, same exchange, same
-// single admission, and the assertion that the alarm is still owed. Deleting the
-// exchanged guard turns BOTH A′ and G′ red, from opposite ends of the two-fact
-// space, and the pair is what makes the claim independent of any one fixture.
-//
-// It is also the case an operator actually meets: a ticket exchanged and never
-// refunded, admitted offline, is precisely the scenario ADR-039 describes — the
-// replacement is live somewhere, and admitting the original admits the exchange
-// twice. That an exchanged-only ticket is the COMMON case and the both-voided
-// one is the corner is worth stating, since the test order above implies the
-// reverse.
-func TestReconcileExchangedButNotRefundedStillOwesItsAlarm(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	db := migratedDB(t, ctx)
-	st := New(db, testConfig(t))
-	s := issueTicket(t, ctx, st, uuid.New())
-	exchangeOwnTicket(t, ctx, st, s)
-	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
-	// The negative half of the fixture, asserted rather than assumed: with a
-	// `refunded` row present this test would be F′ and could not fail.
-	if n := countEvents(t, ctx, db, s.ticketID, "refunded"); n != 0 {
-		t.Fatalf("%d refunded rows, want 0 — this test's entire claim is that the EXCHANGED fact "+
-			"alone owes the alarm, which a refunded row would settle for the wrong reason", n)
-	}
-
-	occ := uuid.New()
-	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime().Add(3*time.Minute))); err != nil {
-		t.Fatal(err)
+	// Both directions. The COUNT is what catches two independent alarm-owning
+	// branches; the IDENTITY is what stops an alarm raised for the replacement
+	// ticket — which exchangeOwnTicket also issues — from satisfying the count.
+	if n := conflictAlarmsFor(t, ctx, db, s.ticketID, occ); n != 1 {
+		t.Fatalf("%d admission-conflict alarms naming this ticket and occurrence, want exactly 1: one "+
+			"physical offline admission owes one admission-conflict alarm, however many commercial "+
+			"voiding facts apply to the ticket. Two independent alarm-owning branches would produce 2 here", n)
 	}
 	if n := conflictAlarmCount(t, ctx, db); n != 1 {
-		t.Fatalf("%d admission-conflict alarms on an exchanged-but-not-refunded ticket, want exactly 1 "+
-			"— an offline admit of a voided ticket is never silent, and the exchanged fact voids it "+
-			"on its own", n)
+		t.Fatalf("%d admission-conflict alarms in total, want 1 — one was owed for this admission and "+
+			"nothing else in this fixture owes one", n)
 	}
 }
 
