@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -77,13 +78,23 @@ func performanceFingerprint(in PerformanceInput, kind, mode string) string {
 		}
 		return *p
 	}
+	// Canonicalized to the DATABASE's representation, not Go's (ai-review
+	// [medium]). The fingerprint's whole contract is "same stored row, same
+	// hash", so any precision Go carries and Postgres discards is a way for two
+	// requests that become one identical row to hash differently — and a retry
+	// reconstructed from the stored value would then be refused as a conflict.
+	//
+	// starts_at is timestamptz, whose default precision is MICROseconds, so a
+	// nanosecond-bearing instant must truncate here exactly as the column will.
+	// operating_date is a DATE: the time-of-day is discarded on write, so
+	// hashing a full timestamp would distinguish two requests the column cannot.
 	starts := "\x01nil"
 	if in.StartsAt != nil {
-		starts = in.StartsAt.UTC().Format(timeFingerprintLayout)
+		starts = in.StartsAt.UTC().Truncate(time.Microsecond).Format(timeFingerprintLayout)
 	}
 	operating := "\x01nil"
 	if in.OperatingDate != nil {
-		operating = in.OperatingDate.UTC().Format(timeFingerprintLayout)
+		operating = in.OperatingDate.UTC().Format(dateFingerprintLayout)
 	}
 	seatMap := "\x01nil"
 	if in.SeatMapID != nil {
@@ -100,10 +111,16 @@ func performanceFingerprint(in PerformanceInput, kind, mode string) string {
 	)
 }
 
-// timeFingerprintLayout pins the rendering of a time in a fingerprint. RFC 3339
-// with nanoseconds, in UTC: two callers sending the same instant in different
-// offsets must fingerprint alike, because the row stores one instant.
-const timeFingerprintLayout = "2006-01-02T15:04:05.000000000Z07:00"
+// timeFingerprintLayout pins the rendering of an instant in a fingerprint. UTC,
+// with MICROsecond digits — the precision timestamptz actually keeps. Two
+// callers sending the same instant in different offsets must fingerprint alike,
+// because the row stores one instant; and two instants Postgres cannot tell
+// apart must fingerprint alike for the same reason.
+const timeFingerprintLayout = "2006-01-02T15:04:05.000000Z07:00"
+
+// dateFingerprintLayout matches the DATE column: no time-of-day, because the
+// column stores none.
+const dateFingerprintLayout = "2006-01-02"
 
 // nullableFingerprint stores a fingerprint only alongside a key. A fingerprint
 // on a keyless row would be dead weight: nothing can ever look it up, because

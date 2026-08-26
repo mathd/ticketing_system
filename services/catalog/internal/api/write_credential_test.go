@@ -664,6 +664,55 @@ func TestCatalogRefusalsAreIndistinguishable(t *testing.T) {
 // credential exists or is correct. If that judgement ever changes, the fix is
 // a pre-router guard like guardInternalSurface — not a handler-level check,
 // which by this same ordering could never run first.
+// TestIdempotencyKeyBoundsAreEnforced answers an ai-review [high] that read the
+// generated binder in isolation and concluded the declared 1..200 bounds were
+// documentation only — that an empty header would reach the store and create an
+// unprotected keyless row, and an over-long one would violate the column CHECK
+// and surface as a 500.
+//
+// Refuted by executing it, which is the only thing that settles this class of
+// claim. Catalog's request path is binder THEN kin-openapi request validator,
+// and between them both bounds are enforced before any handler runs. This test
+// is the standing proof, so the question is not re-litigated from the generated
+// code again.
+func TestIdempotencyKeyBoundsAreEnforced(t *testing.T) {
+	for _, tc := range []struct{ name, key string }{
+		{"empty", ""},
+		{"one over the maximum", strings.Repeat("k", 201)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), map[string]string{
+				staffWriteHeader:         testStaffWriteToken,
+				organizerAssertionHeader: e.assertionFor(e.organizer),
+				"Idempotency-Key":        tc.key,
+			})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s key = %d, want 400: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			// The refusal must happen BEFORE the store, or an empty key becomes
+			// a keyless row that the partial index does not protect.
+			if len(e.store.events) != 0 {
+				t.Fatalf("%s key still created %d events", tc.name, len(e.store.events))
+			}
+		})
+	}
+
+	// The bound is inclusive at the top: exactly 200 is valid. Present so a
+	// future "fix" cannot satisfy the two cases above by refusing everything.
+	t.Run("exactly the maximum is accepted", func(t *testing.T) {
+		e := newEnv(t)
+		rec := e.doWithHeaders(http.MethodPost, "/events", validEventCreate(), map[string]string{
+			staffWriteHeader:         testStaffWriteToken,
+			organizerAssertionHeader: e.assertionFor(e.organizer),
+			"Idempotency-Key":        strings.Repeat("k", 200),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("a 200-character key = %d, want 201: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func TestMissingIdempotencyKeyRefusalPrecedesTheCredentialGuard(t *testing.T) {
 	e := newEnv(t)
 	rec := e.doWithHeaders("POST", "/events", validEventCreate(), nil)

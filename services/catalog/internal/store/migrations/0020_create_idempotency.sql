@@ -53,13 +53,37 @@
 -- +goose Up
 ALTER TABLE events
     ADD COLUMN idempotency_key     text CHECK (length(idempotency_key) BETWEEN 1 AND 200),
-    ADD COLUMN request_fingerprint text;
+    ADD COLUMN request_fingerprint text
+    -- The two columns are present together or absent together. A keyed row with
+    -- no fingerprint is the one state the replay path cannot answer correctly:
+    -- replayLookup reads a NULL fingerprint as a MISMATCH, so an exact retry of
+    -- the original request would be refused as a conflict forever (ai-review
+    -- [medium]). Fail-closed is the right reading of an unknown fingerprint —
+    -- but the row should not be constructible in the first place.
+    ,ADD CONSTRAINT events_key_and_fingerprint_agree
+        CHECK ((idempotency_key IS NULL) = (request_fingerprint IS NULL));
 ALTER TABLE performances
     ADD COLUMN idempotency_key     text CHECK (length(idempotency_key) BETWEEN 1 AND 200),
-    ADD COLUMN request_fingerprint text;
+    ADD COLUMN request_fingerprint text
+    -- The two columns are present together or absent together. A keyed row with
+    -- no fingerprint is the one state the replay path cannot answer correctly:
+    -- replayLookup reads a NULL fingerprint as a MISMATCH, so an exact retry of
+    -- the original request would be refused as a conflict forever (ai-review
+    -- [medium]). Fail-closed is the right reading of an unknown fingerprint —
+    -- but the row should not be constructible in the first place.
+    ,ADD CONSTRAINT performances_key_and_fingerprint_agree
+        CHECK ((idempotency_key IS NULL) = (request_fingerprint IS NULL));
 ALTER TABLE ticket_types
     ADD COLUMN idempotency_key     text CHECK (length(idempotency_key) BETWEEN 1 AND 200),
-    ADD COLUMN request_fingerprint text;
+    ADD COLUMN request_fingerprint text
+    -- The two columns are present together or absent together. A keyed row with
+    -- no fingerprint is the one state the replay path cannot answer correctly:
+    -- replayLookup reads a NULL fingerprint as a MISMATCH, so an exact retry of
+    -- the original request would be refused as a conflict forever (ai-review
+    -- [medium]). Fail-closed is the right reading of an unknown fingerprint —
+    -- but the row should not be constructible in the first place.
+    ,ADD CONSTRAINT ticket_types_key_and_fingerprint_agree
+        CHECK ((idempotency_key IS NULL) = (request_fingerprint IS NULL));
 
 -- Plain CREATE INDEX, not CONCURRENTLY: ADR-020's preconditions are conjunctive
 -- and (2) and (3) remain false, so catalog has not adopted CONCURRENTLY and this

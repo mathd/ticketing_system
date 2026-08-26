@@ -102,7 +102,10 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 			return Performance{}, fmt.Errorf("replay performance: %w", lookupErr)
 		}
 		if !found {
-			return Performance{}, fmt.Errorf("insert performance: conflicting row vanished")
+			// See CreateEvent.replayEvent: ErrNotFound so this surfaces as the
+			// declared 404 rather than a 500. Unreachable through the service —
+			// catalog archives and never deletes these rows.
+			return Performance{}, fmt.Errorf("replayed performance: %w", ErrNotFound)
 		}
 		if !match {
 			return Performance{}, ErrIdempotencyConflict
@@ -168,7 +171,8 @@ func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (Ti
 			return TicketType{}, fmt.Errorf("replay ticket type: %w", lookupErr)
 		}
 		if !found {
-			return TicketType{}, fmt.Errorf("insert ticket type: conflicting row vanished")
+			// See CreateEvent.replayEvent.
+			return TicketType{}, fmt.Errorf("replayed ticket type: %w", ErrNotFound)
 		}
 		if !match {
 			return TicketType{}, ErrIdempotencyConflict

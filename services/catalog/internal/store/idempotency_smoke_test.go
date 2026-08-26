@@ -402,6 +402,72 @@ func TestPerformanceFingerprintUsesNormalizedValues(t *testing.T) {
 	}
 }
 
+// TestFingerprintCanonicalisesToTheStoredPrecision covers ai-review [medium].
+//
+// The fingerprint's contract is "same stored row, same hash". Go carries
+// nanoseconds; timestamptz keeps microseconds. So an instant differing only
+// below the microsecond becomes ONE row, and a retry reconstructed from the
+// stored value must replay rather than be refused as a conflict.
+//
+// The mutation that turns this red is restoring the nanosecond layout.
+func TestFingerprintCanonicalisesToTheStoredPrecision(t *testing.T) {
+	dsn := idempotencyDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	f := newIdempotencyFixture(t, ctx, openAdmin(t, dsn), dsn)
+	defer f.cleanup()
+
+	base := time.Date(2026, 9, 1, 20, 0, 0, 123456000, time.UTC)
+	// Same microsecond, different nanosecond tail: one row, by the column's
+	// definition rather than by observation.
+	jittered := base.Add(789 * time.Nanosecond)
+
+	in := PerformanceInput{
+		OrganizerID: f.org, EventID: f.event, VenueID: f.venue,
+		StartsAt: &base, Timezone: "UTC", IdempotencyKey: "precision",
+	}
+	first, err := f.st.CreatePerformance(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.StartsAt = &jittered
+	second, err := f.st.CreatePerformance(ctx, in)
+	if err != nil {
+		t.Fatalf("instants Postgres cannot distinguish must fingerprint alike: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("sub-microsecond jitter created a second row: %s and %s", first.ID, second.ID)
+	}
+}
+
+// TestKeyedRowRequiresAFingerprint covers ai-review [medium]. A keyed row with a
+// NULL fingerprint is the one state the replay path cannot answer: replayLookup
+// reads NULL as a mismatch, so the ORIGINAL request would be refused as a
+// conflict forever. Fail-closed is the right reading; the row should simply not
+// be constructible.
+//
+// Asserted against the database directly, because the constraint is the
+// mechanism and the store never produces this state.
+func TestKeyedRowRequiresAFingerprint(t *testing.T) {
+	dsn := idempotencyDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	f := newIdempotencyFixture(t, ctx, openAdmin(t, dsn), dsn)
+	defer f.cleanup()
+
+	_, err := f.db.ExecContext(ctx,
+		`INSERT INTO events(organizer_id,name,idempotency_key) VALUES($1,'{"en":"x","fr":"x"}','orphan-key')`, f.org)
+	if err == nil {
+		t.Fatal("a keyed row with no fingerprint must be refused by the schema")
+	}
+	// And the symmetric direction, which the same constraint owns.
+	_, err = f.db.ExecContext(ctx,
+		`INSERT INTO events(organizer_id,name,request_fingerprint) VALUES($1,'{"en":"y","fr":"y"}','orphan-print')`, f.org)
+	if err == nil {
+		t.Fatal("a fingerprint with no key must be refused by the schema")
+	}
+}
+
 // TestTicketTypeCreateIsIdempotent covers the third operation, whose replay path
 // must also skip the public-read invalidation: a replay creates nothing, so
 // announcing a listability change would be announcing an event that did not

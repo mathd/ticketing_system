@@ -156,17 +156,26 @@ func (p *Postgres) replayEvent(ctx context.Context, in EventInput, print string)
 		return Event{}, fmt.Errorf("replay event: %w", err)
 	}
 	if !found {
-		// The conflict fired but the row is gone: a concurrent delete, or an
-		// insert this transaction cannot see. Neither is a replay, and inventing
-		// a result would be worse than saying so.
-		return Event{}, fmt.Errorf("insert event: conflicting row vanished")
+		// The conflict fired but the row is gone. Catalog has no DELETE for any
+		// of these three tables — it archives — so reaching this needs a writer
+		// outside the service, which ADR-021 puts outside the honest-writer
+		// boundary this design defends. Answered as ErrNotFound rather than a
+		// bare error so it surfaces as the declared 404 instead of a 500: the
+		// caller's create genuinely did not produce a readable resource, and
+		// that is what 404 says. Inventing a result would be worse.
+		return Event{}, fmt.Errorf("replayed event: %w", ErrNotFound)
 	}
 	if !match {
 		return Event{}, ErrIdempotencyConflict
 	}
 	e := Event{ID: id, OrganizerID: in.OrganizerID, Name: in.Name, Description: in.Description}
-	if err := p.db.QueryRowContext(ctx,
-		`SELECT created_at FROM events WHERE id = $1`, id).Scan(&e.CreatedAt); err != nil {
+	err = p.db.QueryRowContext(ctx,
+		`SELECT created_at FROM events WHERE id = $1`, id).Scan(&e.CreatedAt)
+	// Same race, one statement later, and the same answer for the same reason.
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, fmt.Errorf("replayed event: %w", ErrNotFound)
+	}
+	if err != nil {
 		return Event{}, fmt.Errorf("replay event: %w", err)
 	}
 	return e, nil
