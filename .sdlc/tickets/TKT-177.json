@@ -1,35 +1,39 @@
 {
-  "key": "TKT-177",
-  "type": "Task",
-  "classification": "simple",
-  "summary": "Seat-occupancy polling scales with users x seated performances (TKT-174 ai-review)",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "links": [],
-  "description": "Every mounted seat picker polls `GET /slots/{id}/seat-occupancy` every 5s while the tab is visible. On an event page with several seated performances that is one request per performance per 5s per open tab, including maps far outside the viewport — and no shared cache or hot-event tier is deployed, so every one of them reaches the inventory database.\n\nRaised by TKT-174's first ai-review pass and **deliberately not fixed there**. Viewport-gating the poll (IntersectionObserver) is a real improvement, but it is new behaviour with its own failure modes — a picker that stops updating because it scrolled out of view is its own class of bug — and it would have gone into a diff that had already been rewritten three times.\n\nThe actual answer is ADR-004 rule 2's shared cache / request-coalescing tier, which is **TKT-31**'s and undeployed. This ticket is the reminder that the storefront now has a seconds-tier read in production shape without it.\n\nOptions, cheapest first: viewport-gate the poll; deduplicate per slot within a page; back off when the tab has been idle; or land TKT-31. The first three are mitigations, the last is the fix.\n\n**Do not** lengthen the poll interval to compensate: 5s is the contract's own `max-age` and a longer one silently degrades the freshness the tier promises.",
-  "context": {
-    "capturedAt": "2026-08-02",
-    "binding": [],
-    "reference": [
-      {
-        "summary": "Surfaced during TKT-174",
-        "link": "https://github.com/mathd/ticketing_system/pull/148"
-      }
-    ],
-    "governingAdrs": [
-      {
-        "id": "ADR-004",
-        "why": "Rule 2's shared cache tier is the real answer to the polling load; rule 1 fixes the 5s interval that must not be lengthened to compensate."
-      }
-    ]
-  },
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
-    }
+ "key": "TKT-177",
+ "type": "Task",
+ "classification": "simple",
+ "summary": "Seat-occupancy polling scales with users x seated performances (TKT-174 ai-review)",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "links": [],
+ "description": "Every mounted seat picker polls `GET /slots/{id}/seat-occupancy` every 5s while the tab is visible. On an event page with several seated performances that is one request per performance per 5s per open tab, including maps far outside the viewport — and no shared cache or hot-event tier is deployed, so every one of them reaches the inventory database.\n\nRaised by TKT-174's first ai-review pass and **deliberately not fixed there**. Viewport-gating the poll (IntersectionObserver) is a real improvement, but it is new behaviour with its own failure modes — a picker that stops updating because it scrolled out of view is its own class of bug — and it would have gone into a diff that had already been rewritten three times.\n\nThe actual answer is ADR-004 rule 2's shared cache / request-coalescing tier, which is **TKT-31**'s and undeployed. This ticket is the reminder that the storefront now has a seconds-tier read in production shape without it.\n\nOptions, cheapest first: viewport-gate the poll; deduplicate per slot within a page; back off when the tab has been idle; or land TKT-31. The first three are mitigations, the last is the fix.\n\n**Do not** lengthen the poll interval to compensate: 5s is the contract's own `max-age` and a longer one silently degrades the freshness the tier promises.",
+ "context": {
+  "capturedAt": "2026-08-02",
+  "binding": [],
+  "reference": [
+   {
+    "summary": "Surfaced during TKT-174",
+    "link": "https://github.com/mathd/ticketing_system/pull/148"
+   }
+  ],
+  "governingAdrs": [
+   {
+    "id": "ADR-004",
+    "why": "Rule 2's shared cache tier is the real answer to the polling load; rule 1 fixes the 5s interval that must not be lengthened to compensate."
+   }
   ]
+ },
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ PARTIALLY STALE — mitigated on the client, unfixed on the server; a delegation silently failed\n\nBacklog review 2026-08-25 at HEAD `ad849f98`.\n\n**What changed since filing.** The client side is materially better than the description says: `SeatMapPicker.tsx:349` now gates polling on `document.visibilityState` and derives its cadence from the response TTL rather than the hardcoded 5s (`FALLBACK_POLL_MS` at `:78` is now only a fallback). A hidden tab no longer polls.\n\n**What did not change, and is the ticket's actual substance.** `seatOccupancy` (`services/inventory/internal/api/server.go:534-553`) still calls `s.st.SeatOccupancy` on **every request** — there is no server-side cache on this route. Only *availability* got one (`availability.Cache`, TKT-31). There is still no viewport gating and no per-slot dedup across several mounted pickers on one page.\n\n**The finding worth flagging beyond the code.** This ticket's mitigation was explicitly **delegated to TKT-31**, and TKT-31 is now **Done** — so a status-only read of the board says this is handled. It is not: TKT-31 cached *availability* and left *seat-occupancy* uncached. The delegation was discharged in name and not in substance, and nothing on the board records that.\n\n**Recommendation: keep open, re-scope to the server side.** The honest remaining subject is *\"seat-occupancy has no server-side cache and no cross-picker dedup\"* — the client-side half is done. Not re-shaped here, because the scope narrowing is the owner's call. **Held at Gate 1.**"
+  }
+ ]
 }

@@ -1,23 +1,22 @@
 {
-  "key": "TKT-258",
-  "type": "Story",
-  "summary": "Best-available on pools without the orphan rule (decouple the ordering projection)",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "description": "### Best-available on pools that do not want the orphan rule\n\n**As** an organizer whose venue has the orphan-prevention rule OFF, **I want** best-available\nseat selection to work on my performances, **so that** a product decision about stranded seats\ndoes not silently decide whether buyers can ask for \"4 together\".\n\nTKT-81 shipped best-available reading the ordering projection (`row_key`, `row_rank`,\n`position` on `seat_claim_adjacency`). That projection is written only when\n`orphan_prevention_enabled` is on, because ADR-041 provisioned it for the orphan rule and\nTKT-81 deliberately did not decouple the two — decoupling changes what catalog emits and what\n`ProvisionSeated` requires, which ADR-041's own delivery section shows is an ordered,\nmulti-ticket, three-service rollout. Bundling it into a ticket about selection would have\njoined two independent risks.\n\nThe consequence is real and currently visible only as a refusal: such a pool answers\n`best_available_unsupported`, deterministically, for every party size, until it is\nre-provisioned. That code exists precisely so the limitation is legible rather than presenting\nas a sellout — see ADR-061 § Consequences, which names this as the follow-up it most expects to\nbe superseded by.\n\n**Acceptance criteria:**\n- [ ] A seated performance whose bound map has orphan prevention OFF still receives an ordering\n      projection at provisioning, and best-available works on it.\n- [ ] The orphan rule remains OFF on those pools — the projection and the rule are independent,\n      and turning one on must not turn the other on. Proven by a pool that serves best-available\n      and still permits a stranding named-seat selection.\n- [ ] Existing rule-off seated pools are repaired by the correction-wave path, not by a\n      migration, following ADR-041's ordering and TKT-81's rank-only-correction rule.\n- [ ] `best_available_unsupported` remains reachable for a pool that genuinely has no projection\n      — the state must stay distinguishable rather than becoming unreachable and untested.\n\n**Depends on:** TKT-81 (Done). Governing: ADR-041 (rollout ordering, consumer-before-producer),\nADR-061 (what the projection carries and why the rank is correctable), ADR-017 (any schema bump).\n\n**Quality gates (every story):**\n- `make check` green\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n",
-  "links": [
-    {
-      "type": "blocked-by",
-      "key": "TKT-81"
-    }
-  ],
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nRaised at TKT-81 closeout (2026-08-18) as its named follow-up, not shaped. Needs the 8-item DoR before Gate 1 — in particular the `approach` item, since decoupling touches catalog's emission, inventory's `ProvisionSeated` and the rollout order, and ADR-041 shows that sequencing is the hard part rather than the code."
-    }
-  ]
+ "key": "TKT-258",
+ "type": "Story",
+ "summary": "Best-available on pools without the orphan rule (decouple the ordering projection)",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "description": "### Best-available on pools that do not want the orphan rule\n\n**As** an organizer whose venue has the orphan-prevention rule OFF, **I want** best-available\nseat selection to work on my performances, **so that** a product decision about stranded seats\ndoes not silently decide whether buyers can ask for \"4 together\".\n\nTKT-81 shipped best-available reading the ordering projection (`row_key`, `row_rank`,\n`position` on `seat_claim_adjacency`). That projection is written only when\n`orphan_prevention_enabled` is on, because ADR-041 provisioned it for the orphan rule and\nTKT-81 deliberately did not decouple the two — decoupling changes what catalog emits and what\n`ProvisionSeated` requires, which ADR-041's own delivery section shows is an ordered,\nmulti-ticket, three-service rollout. Bundling it into a ticket about selection would have\njoined two independent risks.\n\nThe consequence is real and currently visible only as a refusal: such a pool answers\n`best_available_unsupported`, deterministically, for every party size, until it is\nre-provisioned. That code exists precisely so the limitation is legible rather than presenting\nas a sellout — see ADR-061 § Consequences, which names this as the follow-up it most expects to\nbe superseded by.\n\n**Acceptance criteria:**\n- [ ] A seated performance whose bound map has orphan prevention OFF still receives an ordering\n      projection at provisioning, and best-available works on it.\n- [ ] The orphan rule remains OFF on those pools — the projection and the rule are independent,\n      and turning one on must not turn the other on. Proven by a pool that serves best-available\n      and still permits a stranding named-seat selection.\n- [ ] Existing rule-off seated pools are repaired by the correction-wave path, not by a\n      migration, following ADR-041's ordering and TKT-81's rank-only-correction rule.\n- [ ] `best_available_unsupported` remains reachable for a pool that genuinely has no projection\n      — the state must stay distinguishable rather than becoming unreachable and untested.\n\n**Depends on:** TKT-81 (Done). Governing: ADR-041 (rollout ordering, consumer-before-producer),\nADR-061 (what the projection carries and why the rank is correctable), ADR-017 (any schema bump).\n\n**Quality gates (every story):**\n- `make check` green\n- Contract tests pass for any touched service boundary (ADR-009 drift check)\n",
+ "links": [],
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\nRaised at TKT-81 closeout (2026-08-18) as its named follow-up, not shaped. Needs the 8-item DoR before Gate 1 — in particular the `approach` item, since decoupling touches catalog's emission, inventory's `ProvisionSeated` and the rollout order, and ADR-041 shows that sequencing is the hard part rather than the code."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Blocker cleared (TKT-81 is Done) — needs shaping before Gate 1\n\nBacklog review 2026-08-25 at HEAD `ad849f98`.\n\n**Removed the stale `blocked-by: TKT-81`.** Best-available shipped in TKT-81, which is what this ticket builds on rather than waits for — it is the origin, not a dependency. A stale blocker matters here because the board hard-blocks the Gate 1 drag on an open blocker.\n\n**The gap is confirmed at HEAD, not inherited.** `services/inventory/internal/consumer/consumer.go:169-174` still short-circuits: `if !in.orphanPrevention { return in, nil }`. A pool whose organizer has the orphan rule **off** never gets the geometry fetch, so `seat_claim_adjacency` carries no `row_key` / `row_rank` / `position`, so best-available has nothing to order by and answers `best_available_unsupported` (`api/server.go:439`) forever.\n\n**The ticket's framing is right and worth preserving:** a *product* decision about stranded seats currently decides, silently, whether a buyer can ask for \"4 together\" at all. Those are two different questions and one is answering the other.\n\n**Not shaped yet** — no `readiness` object. It needs the 8-item DoR before Gate 1. Two things shaping should establish, both cheap to read: what catalog must emit when the rule is off (the decoupling changes the event payload, so **ADR-017** governs — bump on consumer semantics), and what `ProvisionSeated` then requires. Recommend **not** `risk:low`: it changes a domain event's payload and an ADR (ADR-041) provisioned the projection for the orphan rule specifically."
+  }
+ ]
 }

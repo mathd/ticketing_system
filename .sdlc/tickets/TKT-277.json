@@ -1,0 +1,27 @@
+{
+ "key": "TKT-277",
+ "type": "Story",
+ "summary": "The reseller settlement leg for an uncaptured sale — the half of the partner API that was descoped",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "links": [
+  {
+   "type": "found-in",
+   "key": "TKT-240"
+  },
+  {
+   "type": "relates",
+   "key": "TKT-23"
+  }
+ ],
+ "description": "**Filed 2026-08-25 by a backlog review. TKT-240 parked this on TKT-23, an undecomposed epic; it had no discrete ticket.**\n\nTKT-240 shipped a reseller API in which a partner authenticates, is confined by its credential, and **can read its own availability** — and cannot sell. Its own closeout is explicit:\n\n> The COS row \"The partner may hold and confirm a sale\" — **NOT MET — descoped.**\n> TKT-23 (or a new child) must define the settlement leg for a sale that was never captured, which means amending ADR-048. That is a **larger piece of work than everything else in this ticket**.\n\n**Why it needs its own ticket.** It was carried as a `kind=blocker` comment on **TKT-23**, which is an epic in Backlog whose own description says *\"Not yet decomposed — US-stories are created when the owner prioritizes this epic.\"* So the largest known gap in a shipped feature is parked on a container that, by its own terms, is not being decomposed yet. A reader of the board sees a delivered reseller API; the fact that it cannot complete a sale is one comment deep on an unrelated epic.\n\n**The substance.** A reseller sale is not the buyer flow with a different credential: the partner takes the money (or does not), so the platform books a sale for which it never captured funds. ADR-048 (settlement ledger) has no representation for that today, which is why TKT-240 removed the capability after building it rather than shipping a false claim.\n\n**Acceptance Criteria:**\n- [ ] ADR-048 is amended (or a new ADR recorded) defining how an uncaptured reseller sale settles: what the ledger records, what the platform is owed, and what the partner owes — money as integer minor units, no fabricated money facts (ADR-003: the journal records what happened, not what didn't).\n- [ ] The partner hold + confirm path exists behind `PartnerCredential`, confined to the partner's own channel allocation (ADR-056, ADR-060).\n- [ ] Reseller-scoped idempotency, so a partner's retry cannot double-sell.\n- [ ] A test proves a partner sale consumes its own channel's allocation and no other's — asserted in the store under the pool lock, which is where the mechanism lives (ADR-010, and AGENTS.md on test tiers).\n\n**Explicitly open, and this ticket's first shaping question:** whether \"the partner never captures\" is one model or several (agency vs. net-rate vs. consignment). Those settle differently and the choice is the owner's, not a planner's.\n\n**Non-goals:** the credential model itself (ADR-056, shipped), availability reads (shipped), invoicing/B2B terms (TKT-34).\n\nQuality gates: `make check`; money paths integer minor units.",
+ "comments": [
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by the 2026-08-25 backlog review. TKT-240's closeout named this the largest remaining piece — *\"a larger piece of work than everything else in this ticket\"* — and handed it to **TKT-23**, an epic that is not decomposed. That is a real gap in the board rather than in the code: the reseller API reads as delivered while its selling half is absent.\n\n**Not ready, and should not be forced.** The settlement model is a product decision that changes ADR-048, and shaping should expect at least one `owner: human` item (which reseller commercial model) plus probably a spike on the ledger shape. Recommend it be shaped as a child of TKT-23 if the owner decomposes that epic, rather than run standalone.\n\n**Needs shaping before Gate 1.**"
+  }
+ ],
+ "classification": "complex"
+}

@@ -1,35 +1,73 @@
 {
-  "key": "TKT-178",
-  "type": "Task",
-  "classification": "simple",
-  "summary": "POST /venues with an unknown organizer answers 500, not 404 (ADR-028 fail-closed on an undeclared status)",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "links": [],
-  "description": "Found while seeding a browser fixture for TKT-174.\n\n```\nPOST /api/catalog/venues  {\"organizer_id\":\"<unknown>\", ...}\n-> 500 {\"error\":\"response violates OpenAPI contract\"}\n\ncatalog log: \"response violates OpenAPI contract\" status=404 error=\"status is not supported\"\n```\n\nThe handler correctly answers **404** for an organizer that does not exist. `POST /venues` does not declare a 404, so ADR-028's fail-closed response validator converts it to a 500 — which is the validator working exactly as designed, on a contract that is incomplete.\n\nThis is a small, contained fix (declare `404` on the operation), but it is worth checking whether the same gap exists on the other catalog writes that validate an organizer, rather than patching one operation. A caller currently cannot tell \"you named a tenant that does not exist\" from \"the service is broken\".\n\nPre-existing; unrelated to TKT-174 beyond having been tripped over by it.",
-  "context": {
-    "capturedAt": "2026-08-02",
-    "binding": [],
-    "reference": [
-      {
-        "summary": "Surfaced during TKT-174",
-        "link": "https://github.com/mathd/ticketing_system/pull/148"
-      }
-    ],
-    "governingAdrs": [
-      {
-        "id": "ADR-028",
-        "why": "The validator failing an undeclared status closed is correct behaviour; the defect is the contract, not the validator. Fixing it means declaring the status, never relaxing the validator."
-      }
-    ]
-  },
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
-    }
+ "key": "TKT-178",
+ "type": "Task",
+ "classification": "simple",
+ "summary": "POST /venues with an unknown organizer answers 500, not 404 (ADR-028 fail-closed on an undeclared status)",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "links": [],
+ "description": "Found while seeding a browser fixture for TKT-174.\n\n```\nPOST /api/catalog/venues  {\"organizer_id\":\"<unknown>\", ...}\n-> 500 {\"error\":\"response violates OpenAPI contract\"}\n\ncatalog log: \"response violates OpenAPI contract\" status=404 error=\"status is not supported\"\n```\n\nThe handler correctly answers **404** for an organizer that does not exist. `POST /venues` does not declare a 404, so ADR-028's fail-closed response validator converts it to a 500 — which is the validator working exactly as designed, on a contract that is incomplete.\n\nThis is a small, contained fix (declare `404` on the operation), but it is worth checking whether the same gap exists on the other catalog writes that validate an organizer, rather than patching one operation. A caller currently cannot tell \"you named a tenant that does not exist\" from \"the service is broken\".\n\nPre-existing; unrelated to TKT-174 beyond having been tripped over by it.",
+ "context": {
+  "capturedAt": "2026-08-02",
+  "binding": [],
+  "reference": [
+   {
+    "summary": "Surfaced during TKT-174",
+    "link": "https://github.com/mathd/ticketing_system/pull/148"
+   }
+  ],
+  "governingAdrs": [
+   {
+    "id": "ADR-028",
+    "why": "The validator failing an undeclared status closed is correct behaviour; the defect is the contract, not the validator. Fixing it means declaring the status, never relaxing the validator."
+   }
   ]
+ },
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from TKT-174's ai-review triage as an incidental — recorded rather than folded into that PR. Not shaped."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98`. **All eight items `met`, no blockers.** Ready for Gate 1.\n\n**Two corrections to the ticket text, both found by reading rather than inherited.** `shaping.md` requires a proposed remedy be verified before `approach` adopts it, and this ticket needed it twice.\n\n**1. The repro in the description is stale.** It shows `POST /api/catalog/venues` with an unknown `organizer_id` **in the body**. TKT-245 (Done) moved the organizer to a credential assertion — `CreateVenue` now takes it from `s.organizerFor(w, r)` (`server_authoring.go:23`) and the body no longer carries the field. The **defect survives**: `writeStoreError` still maps `store.ErrNotFound` to 404 (`server.go:565-566`), `postgres.go:70` still returns it for an unknown organizer, and `createVenue` still declares only 401/500/201/400. But anyone reproducing it from the ticket text as written will fail to, and conclude it is fixed.\n\n**2. It is not one operation — it is five.** Ten of catalog's 42 operations declare no 404. Five of them route errors through `writeStoreError` and can therefore reach one: `createVenue`, `createEvent`, `createChannel`, `resolvePerformanceDisplayNames`, `listVenueSeatMaps`. Fixing only the one in the title would leave the identical hole four operations over *while looking like the class had been addressed* — which is precisely the reasoning ADR-059 used to make its own floor cover every credential at once. The scope item reflects the five.\n\n**The design constraint worth carrying to the planner.** TKT-142's 400-invariant is **spec-only** — it works because 400-reachability is visible in the document (a uuid path param, a body, a query or header parameter). **404-reachability is not**: it depends on whether the handler can return `ErrNotFound`, which the spec cannot see. So this invariant cannot be a copy of that one. It must either drive the handlers or accept being a maintained list with a stated reason. Deciding which is the plan's first job, and it is why this is not `risk:low`.\n\n**Recommend NOT `risk:low`** — five operations plus an invariant whose shape is genuinely different from its template."
+  }
+ ],
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "A catalog handler answers 404 for an entity that does not exist, the operation does not declare 404, and ADR-028's fail-closed response validator rewrites it into a 500 carrying 'response violates OpenAPI contract'. The caller cannot tell 'you referenced something that is not there' from 'we broke'. Re-verified at HEAD ad849f98."
+  },
+  "scope": {
+   "state": "met",
+   "note": "IN: adding the missing '404' declaration to every catalog operation that can reach store.ErrNotFound, plus an invariant test that keeps the class closed. OUT: changing any handler's status code (the handlers are already right — this is a contract-declaration gap), and the same sweep in commerce/inventory/payments/access (a real and unfiled gap; see the note on the board, but it is not this ticket)."
+  },
+  "uncertainties": {
+   "state": "met",
+   "note": "Settled by reading. The one that mattered: 404 has NO purely structural predicate the way TKT-142's 400 did. A 400 is reachable from the spec alone (a uuid path param, a body, a query or header param); a 404 is reachable only if the HANDLER can return store.ErrNotFound, which is a code property the document cannot see. So the invariant test cannot be spec-only — it must be driven from the handler side, or accept being a maintained list. That is a design constraint, not an open question."
+  },
+  "dependencies": {
+   "state": "met",
+   "note": "No blockers. TKT-245 (Done) moved the organizer from the request body to the credential assertion, which changed this ticket's REPRO but not its substance — see the readiness comment. TKT-142 (Done) is the template, not a dependency."
+  },
+  "approach": {
+   "state": "met",
+   "note": "Declare '404' on the affected operations and extend the TKT-142 harness pattern in services/catalog/internal/api/lifecycle_badrequest_test.go. Reuse its single-scan discipline verbatim: that file's own comment records that when the live-spec assertion and the synthetic edge cases had separate scans, an edit to the live predicate left every edge case green while the real invariant regressed. One scan, shared. Not a money/auth/migration/CI surface — declaring a status the handler already returns changes no trust boundary, so `deferred` was never needed."
+  },
+  "first_slice": {
+   "state": "met",
+   "note": "The whole ticket is one slice: five declarations plus one invariant test. Small enough that splitting would cost more than it saves."
+  },
+  "success": {
+   "state": "met",
+   "note": "(1) A request to each affected operation naming a non-existent referenced entity answers 404, not 500. (2) An invariant test fails if a future operation that can reach ErrNotFound omits the declaration. (3) The mutation that is evidence: delete ONE declaration and the invariant test goes red — proving it observes the class rather than restating the spec. Deriving the expected status from the requirement (ADR-028: an undeclared status is a 500) rather than from a run, per AGENTS.md."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "governingAdrs: ADR-028 (fail-closed response validation — the mechanism that converts the undeclared 404 into a 500, and the reason this is a contract bug rather than a handler bug); ADR-058-catalog-organizer-assertion.md (TKT-245 moved the organizer to the credential, which is what changed the repro path); ADR-002 (organizer scoping). All verified present at HEAD. governingTests: TestCatalogRequestRejectionSourcesDeclareBadRequest and TestRejectionSourceAndDeclarationEdgeCases (lifecycle_badrequest_test.go:82,185) — the TKT-142 400-invariant this ticket mirrors, whose single-scan structure must be copied and whose own coverage must not regress; TestLifecycleRejectionsAreDeclaredBadRequests (:28). Looked for a tripwire forbidding new declarations and found none — that is a finding, not an omission."
+  }
+ }
 }

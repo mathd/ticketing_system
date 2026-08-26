@@ -1,52 +1,58 @@
 {
-  "key": "TKT-270",
-  "type": "Story",
-  "parent": "TKT-19",
-  "classification": "complex",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "summary": "An offline admit of an EXCHANGED ticket is still silent — the sibling of TKT-269",
-  "description": "Found by the agent during TKT-269's ai-review stage, while checking the review's own question about a ticket that is both refunded and exchanged. Filed as incidental — real, out of TKT-269's scope, and not folded into it.\n\n**The same offline gap TKT-269 just closed for refunds is still open for exchanges.**\n\n`ticketExchanged` (`services/access/internal/store/exchanges.go:208`) is consulted on **both live scan paths** — `postgres.go:332` (single-entry) and `scan.go:106` (pass) — and appears **nowhere** in `reconcile.go`.\n\nTKT-166 / ADR-039 refuse an exchanged ticket at a live gate for a reason that is *not* the refund reason: an exchanged ticket has a **live replacement somewhere**, so admitting the original would admit the exchange twice. That is arguably a sharper failure than the refund case, because the replacement can be admitted legitimately at another gate on the same night.\n\nOffline, an exchanged ticket is admitted and reconciliation records it as an ordinary redemption. Chain verifies clean. Nobody is told.\n\n**The remedy is almost certainly TKT-269's, applied to the sibling fact** — the same guard position (inside the no-prior-redemption branch, below the `redeemed` lookup), the same admission-conflict alarm class, the same four-branch analysis, the same five mutation runs. Do not assume it transfers without checking: the exchange path has its own vocabulary (`exchanged` is a singleton event, and `ExchangeReplacement` semantics may differ) and the branch analysis must be redone rather than copied. TKT-269's `kind=coding` comment carries the mutation table to reuse as a template.\n\n**Acceptance Criteria:**\n- [ ] Reconciling an occurrence for an **exchanged** ticket owes an admission-conflict alarm, in the same transaction as the append.\n- [ ] The occurrence is still recorded exactly as today — recording, not deciding (ADR-025 §D2/§D6).\n- [ ] The pass, broken-chain and duplicate-admit branches are analysed explicitly, with a stated reason for each that does not alarm.\n- [ ] A ticket that is **both** refunded and exchanged owes exactly **one** alarm, not two — this is the case that does not exist in TKT-269 and is the reason this cannot be a copy-paste.\n- [ ] Each new test verified red against the mutation it claims to catch.\n\nQuality gates: `make check` green; `access verify-lifecycle` green.",
-  "links": [
-    {
-      "type": "found-in",
-      "key": "TKT-269"
-    }
-  ],
-  "readiness": {
-    "objective": {
-      "state": "met",
-      "note": "Same class of hole as TKT-269, arguably sharper: an exchanged ticket's replacement is live elsewhere, so an offline admit of the original can admit the exchange twice on one night."
-    },
-    "scope": {
-      "state": "open",
-      "note": "Almost certainly TKT-269's shape applied to `ticketExchanged`, but the branch analysis must be redone rather than copied — see the refunded-AND-exchanged AC, a case TKT-269 never had to answer."
-    },
-    "uncertainties": {
-      "state": "open",
-      "note": "Does a ticket that is both refunded and exchanged owe one alarm or two? One, almost certainly — one physical admission is one occurrence — but the guard structure that guarantees it is the design question, and the naive fix (a second independent check beside the first) gets it wrong."
-    },
-    "dependencies": {
-      "state": "met",
-      "note": "No blockers. TKT-269 is merged and is the template, not a dependency."
-    },
-    "approach": {
-      "state": "open",
-      "note": "Blocked on the scope question above. Not `deferred`: this is an access-control surface, and `shaping.md` forbids deferring the approach there."
-    },
-    "first_slice": {
-      "state": "open",
-      "note": "Likely the whole ticket, as TKT-269 was — one guard, one alarm. Confirm at shaping."
-    },
-    "success": {
-      "state": "met",
-      "note": "Five ACs on the ticket, each testable; the refunded-AND-exchanged one is the novel case."
-    },
-    "context_memo": {
-      "state": "open",
-      "note": "Inherit TKT-269's governingAdrs and governingTests, then ADD ADR-039 and the TKT-166 exchange tests, and RE-VERIFY at claim time — a shaping-time snapshot goes stale."
-    }
+ "key": "TKT-270",
+ "type": "Story",
+ "parent": "TKT-19",
+ "classification": "complex",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "summary": "An offline admit of an EXCHANGED ticket is still silent — the sibling of TKT-269",
+ "description": "Found by the agent during TKT-269's ai-review stage, while checking the review's own question about a ticket that is both refunded and exchanged. Filed as incidental — real, out of TKT-269's scope, and not folded into it.\n\n**The same offline gap TKT-269 just closed for refunds is still open for exchanges.**\n\n`ticketExchanged` (`services/access/internal/store/exchanges.go:208`) is consulted on **both live scan paths** — `postgres.go:332` (single-entry) and `scan.go:106` (pass) — and appears **nowhere** in `reconcile.go`.\n\nTKT-166 / ADR-039 refuse an exchanged ticket at a live gate for a reason that is *not* the refund reason: an exchanged ticket has a **live replacement somewhere**, so admitting the original would admit the exchange twice. That is arguably a sharper failure than the refund case, because the replacement can be admitted legitimately at another gate on the same night.\n\nOffline, an exchanged ticket is admitted and reconciliation records it as an ordinary redemption. Chain verifies clean. Nobody is told.\n\n**The remedy is almost certainly TKT-269's, applied to the sibling fact** — the same guard position (inside the no-prior-redemption branch, below the `redeemed` lookup), the same admission-conflict alarm class, the same four-branch analysis, the same five mutation runs. Do not assume it transfers without checking: the exchange path has its own vocabulary (`exchanged` is a singleton event, and `ExchangeReplacement` semantics may differ) and the branch analysis must be redone rather than copied. TKT-269's `kind=coding` comment carries the mutation table to reuse as a template.\n\n**Acceptance Criteria:**\n- [ ] Reconciling an occurrence for an **exchanged** ticket owes an admission-conflict alarm, in the same transaction as the append.\n- [ ] The occurrence is still recorded exactly as today — recording, not deciding (ADR-025 §D2/§D6).\n- [ ] The pass, broken-chain and duplicate-admit branches are analysed explicitly, with a stated reason for each that does not alarm.\n- [ ] A ticket that is **both** refunded and exchanged owes exactly **one** alarm, not two — this is the case that does not exist in TKT-269 and is the reason this cannot be a copy-paste.\n- [ ] Each new test verified red against the mutation it claims to catch.\n\nQuality gates: `make check` green; `access verify-lifecycle` green.",
+ "links": [
+  {
+   "type": "found-in",
+   "key": "TKT-269"
   }
+ ],
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "An offline admit of an EXCHANGED ticket is silent. Re-verified at HEAD ad849f98: `ticketExchanged` is consulted on both live paths (postgres.go:332, scan.go:106) and appears ZERO times in reconcile.go, while TKT-269's refunded guard sits at reconcile.go:221. Sharper than the refund case: an exchanged ticket has a live replacement somewhere, so admitting the original can admit the exchange twice, and the replacement can be admitted legitimately at another gate the same night."
+  },
+  "scope": {
+   "state": "met",
+   "note": "IN: an exchanged guard in reconcile.go alongside the refunded one, on the same admission-conflict alarm class; the four-branch coverage TKT-269 established, INCLUDING the pass path (pass_admission_smoke_test.go:711 shows TKT-269's branch (c) covered passes, so an exchange-only single-entry fix would leave the pass path open); the refunded-AND-exchanged case. OUT: the live-gate paths (already correct since TKT-166); the voided-ticket feed (TKT-162, Done); changing the alarm schema."
+  },
+  "uncertainties": {
+   "state": "met",
+   "note": "Both resolved by reading the template rather than deferred. (1) One alarm or two for a ticket both refunded and exchanged? ONE — one physical admission is one conflict, and TKT-269's branch (b) test (TestReconcileRefundedDuplicateOwesExactlyOneAlarm) exists precisely because the COUNT is what constrains guard PLACEMENT: hoisting a check above the prior-redeemed lookup owes a second alarm for one occurrence. The same trap applies here and the same count assertion catches it. (2) Does the payload need a new reason? No — the admission-conflict class already means 'the chain is valid and the world disagreed with it'; the wire golden (TestWireGoldenAdmissionConflictAlarm) pins the shape and a canonical-form change would be a version migration, not a test update."
+  },
+  "dependencies": {
+   "state": "met",
+   "note": "No blockers. TKT-269 is Done and is the template, not a dependency; TKT-166/ADR-039 established the live-gate refusal. TKT-162 (the feed) is Done and independent."
+  },
+  "approach": {
+   "state": "met",
+   "note": "Add the guard inside the no-prior-redemption branch, BELOW the `redeemed` lookup — the placement TKT-269's branch (b) test pins and the placement a naive hoist gets wrong. Reuse the existing admission-conflict alarm class and `oweConflictAlarm` (reconcile.go:336). Do NOT copy TKT-269's branch analysis: redo it, because the exchange path has its own vocabulary and its own predicate (`ticketExchanged`, exchanges.go:208). Not `deferred`: this is an access-control surface, one of shaping.md's four carve-outs."
+  },
+  "first_slice": {
+   "state": "met",
+   "note": "The whole ticket, as TKT-269 was — one guard, one alarm class, four branches plus the combined case. Splitting single-entry from pass would ship a half-closed hole, which is the failure mode this ticket exists to correct."
+  },
+  "success": {
+   "state": "met",
+   "note": "Five ACs on the ticket, each testable. The discriminating evidence is per-branch mutation: delete the exchanged guard and the NEW branch tests go red while TKT-269's refunded tests stay green — a mutation caught only by the new tier is the one that is evidence (AGENTS.md). The combined refunded-AND-exchanged case asserts a COUNT of exactly one alarm, stated as the invariant rather than as an observed value: one physical admission owes one conflict alarm."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "governingAdrs: ADR-039-exchange-settles-the-difference.md (why an exchanged ticket is refused live — a DIFFERENT reason from the refund case); ADR-025-admission-events-and-offline-reconciliation.md (§D2/§D6 — reconciliation RECORDS, it does not decide, and the person is already inside); ADR-038-refund-reversal-ticket-voiding.md (§4 states the offline gap and hands it onward — NOTE its Consequences say the fail-open narrowing 'applies only to tickets a refund has voided', so ADR-038 does NOT cover the exchange case and this ticket must say which ADR does, or amend one); ADR-021 (name the adversary: honest-writer consistency, not tamper-evidence). All four verified present at HEAD. governingTests: the TKT-269 four-branch suite in occurrence_smoke_test.go (:911 onward) — in particular TestReconcileRefundedDuplicateOwesExactlyOneAlarm (:1039), which pins guard PLACEMENT via an alarm count and is the single most transferable constraint; TestPassReconcileRefundedTicketRecordsFactWithoutConflictAlarm (pass_admission_smoke_test.go:722) and branch (c) at :711, which prove the pass path is in scope; TestWireGoldenAdmissionConflictAlarm (alarm_envelope_test.go:63), a golden literal — changing a byte is a canonical-version migration, not a test update."
+  }
+ },
+ "comments": [
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98`. **All eight items `met`** — the five that were `open` at filing are now closed by reading the code and TKT-269's shipped suite. Ready for Gate 1.\n\n**The gap is confirmed at HEAD, not inherited from the filing review.** `ticketExchanged` (`exchanges.go:208`) is consulted at `postgres.go:332` and `scan.go:106` and appears **zero** times in `reconcile.go`, where TKT-269's refunded guard sits at `:221`.\n\n**Three findings that change the work, all from reading rather than assuming.** The ticket said \"the remedy is almost certainly TKT-269's, applied to the sibling fact — do not assume it transfers without checking.\" Checked:\n\n1. **The pass path is in scope, and the ticket does not say so.** TKT-269's branch (c) covered passes (`pass_admission_smoke_test.go:711`, `TestPassReconcileRefundedTicketRecordsFactWithoutConflictAlarm`). An exchange guard added only to single-entry reconciliation leaves the pass path silent — the same half-closed hole this ticket exists to correct.\n\n2. **The alarm COUNT is the assertion that bites, not \"an alarm exists.\"** `TestReconcileRefundedDuplicateOwesExactlyOneAlarm` (`:1039`) exists because branch (b) already owed an alarm before TKT-269, so presence proves nothing; what it constrains is **placement** — hoisting the check above the prior-redeemed lookup owes a *second* alarm for one occurrence. That trap transfers exactly, and it answers the ticket's open question: a ticket both refunded and exchanged owes **one** alarm. One physical admission is one conflict.\n\n3. **No ADR currently covers this case.** ADR-038 §4 states the offline gap, but its Consequences say the narrowing \"applies only to tickets a **refund** has voided.\" So the exchange case has no governing decision — the ticket must either amend ADR-038 or say plainly which ADR governs. Per `shaping.md`, an honest mémo names that rather than citing a decision that does not reach the case.\n\n**Recommend NOT `risk:low`** — an access-control surface, four branches plus a combined case, and an ADR question to settle."
+  }
+ ]
 }

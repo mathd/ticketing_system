@@ -1,17 +1,58 @@
 {
-  "key": "TKT-253",
-  "type": "Task",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "summary": "STRIPE_SECRET_KEY is accepted on prefix alone, so a malformed key starts cleanly (TKT-252 incidental)",
-  "description": "**Surfaced by TKT-252's ai-review [medium], confirmed, and deliberately NOT fixed there.**\n\n`pspForKey` (`services/payments/cmd/payments/main.go:136-158`) selects the provider from\n`STRIPE_SECRET_KEY` and accepts **any** value beginning with `sk_test_`. `sk_test_x` selects the\nreal Stripe adapter and the service starts cleanly; the configuration error surfaces only when a\nmoney-path request reaches Stripe and fails, which is the opposite of the fail-fast contract every\nother credential in this binary keeps.\n\nIt is loaded with a bare `os.Getenv` at `main.go:330`, bypassing `runtimecfg.RequiredCredential`\nentirely — so TKT-252's floor does not reach it.\n\n**Why TKT-252 rejected it rather than fixing it.** It is not *our* credential. Stripe issues it and\ndefines its format, so a length floor we invent could refuse a legitimate key — the one failure mode\nworse than the current one, because it would refuse a working deployment. The failure also differs in\nkind from the credentials TKT-252 covers: a weak `INTERNAL_SERVICE_TOKEN` lets an attacker *in*,\nwhereas a malformed Stripe key only makes our own outbound calls fail. And it pre-dates that diff\n(unchanged at `origin/main` — verified), so it was not TKT-252's to close.\n\n**What the fix probably is** — worth deciding rather than assuming: validate the key's *shape*\nagainst Stripe's documented format (prefix + expected body length/charset) rather than inventing a\nminimum, and refuse at startup with a message that names the variable and never the value. Check\nwhat Stripe actually guarantees about test-key format before pinning anything; if the format is not\ncontractually stable, the honest answer may be a `[low]`-severity sanity bound or an explicit\ndecision to leave it, recorded.\n\n**Non-goals:** live-key handling (already refused at `main.go:152`), rotation, PSP selection changes.\n\nQuality gates: `make check`.\n",
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-252's ai-review pass 1 — confirmed, triaged as incidental\n\nThe finding is accurate and was **verified**: `pspForKey` branches on `strings.HasPrefix(key,\n\"sk_test_\")` with no further validation, and `main.go:330` reads the variable with `os.Getenv`, not\n`runtimecfg.RequiredCredential`.\n\nTriaged **incidental rather than blocking** for TKT-252 on three grounds, all checked:\n\n1. **Not our credential.** Stripe defines the format. A floor we invent can refuse a valid key —\n   a worse failure than the one it fixes.\n2. **Different threat.** TKT-252 is about credentials that let an attacker *in*. A malformed Stripe\n   key fails our own outbound calls; it grants nobody anything.\n3. **Pre-existing.** Unchanged at `origin/main`, so outside that ticket's diff.\n\n**Needs shaping before Gate 1** — in particular the `approach` item, which turns on a fact nobody\nhas established yet: *what does Stripe actually guarantee about test-key format?* If the answer is\n\"nothing contractual\", the right outcome may be a recorded decision to leave it rather than code.\nThat question is the whole ticket, and shaping should answer it by reading Stripe's docs before any\nplan is drafted.\n"
-    }
-  ]
+ "key": "TKT-253",
+ "type": "Task",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "summary": "STRIPE_SECRET_KEY is accepted on prefix alone, so a malformed key starts cleanly (TKT-252 incidental)",
+ "description": "**Surfaced by TKT-252's ai-review [medium], confirmed, and deliberately NOT fixed there.**\n\n`pspForKey` (`services/payments/cmd/payments/main.go:136-158`) selects the provider from\n`STRIPE_SECRET_KEY` and accepts **any** value beginning with `sk_test_`. `sk_test_x` selects the\nreal Stripe adapter and the service starts cleanly; the configuration error surfaces only when a\nmoney-path request reaches Stripe and fails, which is the opposite of the fail-fast contract every\nother credential in this binary keeps.\n\nIt is loaded with a bare `os.Getenv` at `main.go:330`, bypassing `runtimecfg.RequiredCredential`\nentirely — so TKT-252's floor does not reach it.\n\n**Why TKT-252 rejected it rather than fixing it.** It is not *our* credential. Stripe issues it and\ndefines its format, so a length floor we invent could refuse a legitimate key — the one failure mode\nworse than the current one, because it would refuse a working deployment. The failure also differs in\nkind from the credentials TKT-252 covers: a weak `INTERNAL_SERVICE_TOKEN` lets an attacker *in*,\nwhereas a malformed Stripe key only makes our own outbound calls fail. And it pre-dates that diff\n(unchanged at `origin/main` — verified), so it was not TKT-252's to close.\n\n**What the fix probably is** — worth deciding rather than assuming: validate the key's *shape*\nagainst Stripe's documented format (prefix + expected body length/charset) rather than inventing a\nminimum, and refuse at startup with a message that names the variable and never the value. Check\nwhat Stripe actually guarantees about test-key format before pinning anything; if the format is not\ncontractually stable, the honest answer may be a `[low]`-severity sanity bound or an explicit\ndecision to leave it, recorded.\n\n**Non-goals:** live-key handling (already refused at `main.go:152`), rotation, PSP selection changes.\n\nQuality gates: `make check`.\n",
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Filed from TKT-252's ai-review pass 1 — confirmed, triaged as incidental\n\nThe finding is accurate and was **verified**: `pspForKey` branches on `strings.HasPrefix(key,\n\"sk_test_\")` with no further validation, and `main.go:330` reads the variable with `os.Getenv`, not\n`runtimecfg.RequiredCredential`.\n\nTriaged **incidental rather than blocking** for TKT-252 on three grounds, all checked:\n\n1. **Not our credential.** Stripe defines the format. A floor we invent can refuse a valid key —\n   a worse failure than the one it fixes.\n2. **Different threat.** TKT-252 is about credentials that let an attacker *in*. A malformed Stripe\n   key fails our own outbound calls; it grants nobody anything.\n3. **Pre-existing.** Unchanged at `origin/main`, so outside that ticket's diff.\n\n**Needs shaping before Gate 1** — in particular the `approach` item, which turns on a fact nobody\nhas established yet: *what does Stripe actually guarantee about test-key format?* If the answer is\n\"nothing contractual\", the right outcome may be a recorded decision to leave it rather than code.\nThat question is the whole ticket, and shaping should answer it by reading Stripe's docs before any\nplan is drafted.\n"
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS → **hold at Gate 1**\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98`.\n\n**Five of eight `met`; three `open` with `owner: human`** — so this does not pass, and it should not be dragged to Ready yet.\n\n**The defect is confirmed, not inherited.** `pspForKey` still branches on `strings.HasPrefix(key, \"sk_test_\")` with nothing after it (`main.go:147`), and `main.go:330` still reads the variable with a bare `os.Getenv`, so TKT-252's `runtimecfg` floor does not reach it. `sk_test_x` selects the real Stripe adapter and the service starts.\n\n**Why the three items are held rather than deferred.** This is a credential on a money path — two of the four surfaces where `shaping.md` explicitly refuses the `deferred` escape hatch, because the approach *is* the decision. The open question is not technical difficulty; it is **how much shape to assert about a credential Stripe issues and we do not control**. Getting that wrong in the strict direction refuses a working deployment, which is worse than today's failure.\n\n**A recommendation, so the human is choosing rather than starting from scratch:** the loose sanity bound. A non-empty, whitespace-free body after the prefix catches `sk_test_x`, a truncated paste, and a shell-mangled value — the failures actually observed — while asserting nothing about Stripe's body length or charset that could age badly. Refuse at startup naming the variable and never the value.\n\n**\"Leave it, recorded\" is a legitimate outcome** and would close this as an ADR-032 amendment with no code. The ticket exists so that becomes a decision rather than an accident; it should not be forced into a code change to justify itself.\n\n**Mitigating context for prioritisation:** `compose.yaml:288` defaults `STRIPE_SECRET_KEY` to `fake`, so neither the gate nor the offline stack can hit this. It bites a real deployment only."
+  }
+ ],
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "pspForKey selects the real Stripe adapter on prefix alone, so a malformed key (sk_test_x) starts the service cleanly and the configuration error surfaces only when a money-path request reaches Stripe and fails. Re-verified at HEAD ad849f98: main.go:147 branches on strings.HasPrefix with no further check, and main.go:330 reads the variable with a bare os.Getenv, bypassing runtimecfg entirely."
+  },
+  "scope": {
+   "state": "met",
+   "note": "IN: the startup validation of STRIPE_SECRET_KEY in services/payments/cmd/payments/main.go, and the decision (recorded either way) of what shape to validate. OUT, per the ticket: live-key handling (already refused at main.go:152), rotation, PSP selection changes, and any change to runtimecfg.CredentialMinBytes (ADR-059 ruled its own floor out of scope for exactly this kind of side-effect reversal)."
+  },
+  "uncertainties": {
+   "state": "open",
+   "owner": "human",
+   "note": "THE DECISION, and it is the whole ticket: how much shape to pin on a credential we do not issue. The ticket states the trap correctly — a bound we invent can refuse a legitimate key, which is a worse failure than the one it fixes, because it refuses a working deployment. Three candidate answers, and a human should pick: (a) validate against Stripe's documented format (prefix + body charset/length) and refuse at startup; (b) a deliberately loose sanity bound (non-empty body, no whitespace) that catches sk_test_x and a truncated paste while refusing nothing Stripe could plausibly mint; (c) decide to leave it and record why, closing the ticket as a documented acceptance. Recommend (b): it closes the observed failure without asserting knowledge of a third party's format stability."
+  },
+  "dependencies": {
+   "state": "met",
+   "note": "No blockers. TKT-252 is Done and is the origin, not a dependency. ADR-059 is the governing decision and is already merged."
+  },
+  "approach": {
+   "state": "open",
+   "owner": "human",
+   "note": "HELD DELIBERATELY, and shaping.md forbids `deferred` here: this is a money path and a credential, two of the four carve-outs where the approach IS the redesign. The approach follows directly from the uncertainty above and cannot be settled without it. What is already established: whatever is chosen must refuse at startup naming the VARIABLE and never the VALUE (the redaction discipline of TKT-202/ADR-012), and the default remains `fake` (compose.yaml:288), so no chosen shape may break the offline stack or the gate."
+  },
+  "first_slice": {
+   "state": "met",
+   "note": "The whole ticket is one slice regardless of which option wins — a validation branch plus its tests, or a recorded decision plus an ADR amendment. Option (c) makes the deliverable documentation only."
+  },
+  "success": {
+   "state": "open",
+   "owner": "human",
+   "note": "Depends on the decision. Under (a)/(b): a malformed key refuses startup, a well-formed test key still starts, `fake` and empty still select the fake, and the refusal message names the variable and not the value. Under (c): the acceptance is recorded in ADR-032 and this ticket closes without code. The ACs cannot be written until the option is chosen, which is why this is `open` rather than `met`."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "governingAdrs: ADR-032-stripe-behind-the-psp-port.md (the fail-fast selection contract this violates, and the home for a recorded acceptance under option (c)); ADR-059-credential-length-floor.md (the floor that deliberately does NOT reach this variable, and whose own reasoning — 'a floor one service over leaves the identical hole while looking like the class had been addressed' — is the argument for handling this rather than shrugging); ADR-012 (redaction: name the variable, never the value). All verified present at HEAD. governingTests: LOOKED, and the relevant ones are pspForKey's own table tests in services/payments/cmd/payments — the live-key refusal and the unrecognized-value refusal are already pinned there, so a new branch must not weaken them. No cross-cutting tripwire of the channel_seam_test.go kind exists on this path; that is a finding, not an omission."
+  }
+ }
 }

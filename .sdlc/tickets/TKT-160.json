@@ -1,89 +1,88 @@
 {
-  "key": "TKT-160",
-  "type": "Task",
-  "parent": "TKT-9",
-  "classification": "complex",
-  "summary": "Transfers & controlled resale — carved out of TKT-9, blocked on an open product decision",
-  "description": "Carved out of TKT-9 at decomposition (2026-07-31). The epic's prose lists *transfers and controlled resale* alongside refunds/exchanges/cancellation, but it is **not** in the epic's Conditions of Success, and it is not buildable today:\n\n1. **Open product decision.** `docs/product/prd-v1.md` lists *resale marketplace rules (TKT-9)* in its own open-decisions section. Nobody has decided the rules — price caps, who may resell, fee treatment, whether resale is peer-to-peer or organizer-brokered. Building against an undecided rule set is how you ship the wrong thing twice.\n2. **Missing prerequisite.** The PRD names customer accounts (TKT-21, *'guest checkout + optional account, ticket wallet, prerequisites for transfers/limits'*) as the prerequisite for transfers. Today's checkout is guest-only with a `guest_order_ref`; there is no account to transfer a ticket **to**.\n\nThe trail already anticipates both: ADR-003 names `transferred` and `resold` among the ticket lifecycle states, so this lands as lifecycle events when it lands.\n\n**Not ready. Do not prioritize** until the resale rules are decided and TKT-21 exists. Shaping this ticket starts with a decision, not a plan.",
-  "context": {
-    "capturedAt": "2026-07-31",
-    "binding": [
-      {
-        "id": "PRD-v1",
-        "date": "2026-07-31",
-        "rule": "every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
-      }
-    ],
-    "governingAdrs": [
-      {
-        "id": "ADR-021",
-        "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
-      },
-      {
-        "id": "ADR-003",
-        "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
-      }
-    ],
-    "reference": [
-      {
-        "summary": "Open decision: resale marketplace rules",
-        "link": "docs/product/prd-v1.md (open decisions)"
-      },
-      {
-        "summary": "Prerequisite epic: customer accounts & wallet",
-        "link": "TKT-21"
-      }
-    ]
-  },
-  "readiness": {
-    "objective": {
-      "state": "met",
-      "note": "Tracks the carved-out half of TKT-9's prose so it is not silently lost when the epic closes on its COS."
-    },
-    "scope": {
-      "state": "open",
-      "note": "Undefined until the resale rules are decided."
-    },
-    "uncertainties": {
-      "state": "open",
-      "note": "The whole ticket is the uncertainty: resale rules are an open product decision."
-    },
-    "dependencies": {
-      "state": "open",
-      "note": "Needs TKT-21 (customer accounts) to exist."
-    },
-    "approach": {
-      "state": "open",
-      "note": "Blocked behind the decision."
-    },
-    "first_slice": {
-      "state": "open",
-      "note": "Blocked behind the decision."
-    },
-    "success": {
-      "state": "open",
-      "note": "Blocked behind the decision."
-    },
-    "context_memo": {
-      "state": "met",
-      "note": "Minimal mémo baked: the lifecycle-trail constraint that will govern it whenever it runs."
-    }
-  },
-  "links": [
-    {
-      "type": "blocked-by",
-      "key": "TKT-21"
-    }
+ "key": "TKT-160",
+ "type": "Task",
+ "parent": "TKT-9",
+ "classification": "complex",
+ "summary": "Transfers & controlled resale — carved out of TKT-9, blocked on an open product decision",
+ "description": "Carved out of TKT-9 at decomposition (2026-07-31). The epic's prose lists *transfers and controlled resale* alongside refunds/exchanges/cancellation, but it is **not** in the epic's Conditions of Success, and it is not buildable today:\n\n1. **Open product decision.** `docs/product/prd-v1.md` lists *resale marketplace rules (TKT-9)* in its own open-decisions section. Nobody has decided the rules — price caps, who may resell, fee treatment, whether resale is peer-to-peer or organizer-brokered. Building against an undecided rule set is how you ship the wrong thing twice.\n2. **Missing prerequisite.** The PRD names customer accounts (TKT-21, *'guest checkout + optional account, ticket wallet, prerequisites for transfers/limits'*) as the prerequisite for transfers. Today's checkout is guest-only with a `guest_order_ref`; there is no account to transfer a ticket **to**.\n\nThe trail already anticipates both: ADR-003 names `transferred` and `resold` among the ticket lifecycle states, so this lands as lifecycle events when it lands.\n\n**Not ready. Do not prioritize** until the resale rules are decided and TKT-21 exists. Shaping this ticket starts with a decision, not a plan.",
+ "context": {
+  "capturedAt": "2026-07-31",
+  "binding": [
+   {
+    "id": "PRD-v1",
+    "date": "2026-07-31",
+    "rule": "every ticket/entitlement state change (issued, delivered, transferred, resold, exchanged, redeemed, reissued, invalidated) is an append-only lifecycle event linked to its order."
+   }
   ],
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ❌ Implementation readiness — FAIL (deliberately)\n\nNot a defect: this ticket exists to *hold* scope that cannot be shaped yet. Four DoR items are `open` and the board will refuse Gate 1 until the resale rules are decided and TKT-21 lands. That refusal is the point."
-    }
+  "governingAdrs": [
+   {
+    "id": "ADR-021",
+    "why": "Every lifecycle event goes through store.appendLifecycle — the verifier asserts one-to-one coverage, so a direct INSERT into lifecycle_events reads as tampering and fails `access verify-lifecycle` in the gate. Canonical forms are pinned by golden literals; changing a byte is a canonical-version migration, not a test update. Also: name the adversary before writing 'tamper-evident'."
+   },
+   {
+    "id": "ADR-003",
+    "why": "Corrections are COMPENSATING ENTRIES, never mutations. A refund/exchange appends a new signed fact; the original sale fact and its hash link are untouched. The payments journal has a DB trigger that raises on UPDATE/DELETE — any design that 'adjusts' a fact is rejected by the database, not by review."
+   }
+  ],
+  "reference": [
+   {
+    "summary": "Open decision: resale marketplace rules",
+    "link": "docs/product/prd-v1.md (open decisions)"
+   },
+   {
+    "summary": "Prerequisite epic: customer accounts & wallet",
+    "link": "TKT-21"
+   }
   ]
+ },
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "Tracks the carved-out half of TKT-9's prose so it is not silently lost when the epic closes on its COS."
+  },
+  "scope": {
+   "state": "open",
+   "note": "Undefined until the resale rules are decided."
+  },
+  "uncertainties": {
+   "state": "open",
+   "note": "The whole ticket is the uncertainty: resale rules are an open product decision."
+  },
+  "dependencies": {
+   "state": "open",
+   "note": "Needs TKT-21 (customer accounts) to exist."
+  },
+  "approach": {
+   "state": "open",
+   "note": "Blocked behind the decision."
+  },
+  "first_slice": {
+   "state": "open",
+   "note": "Blocked behind the decision."
+  },
+  "success": {
+   "state": "open",
+   "note": "Blocked behind the decision."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "Minimal mémo baked: the lifecycle-trail constraint that will govern it whenever it runs."
+  }
+ },
+ "links": [],
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ❌ Implementation readiness — FAIL (deliberately)\n\nNot a defect: this ticket exists to *hold* scope that cannot be shaped yet. Four DoR items are `open` and the board will refuse Gate 1 until the resale rules are decided and TKT-21 lands. That refusal is the point."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### One of two blockers discharged — **still hold at Gate 1**\n\nBacklog review 2026-08-25 at HEAD `ad849f98`.\n\n**Removed the stale `blocked-by: TKT-21`.** The ticket named two blockers; this was the second of them:\n\n> **Missing prerequisite.** The PRD names customer accounts (TKT-21 …) as the prerequisite for transfers. Today's checkout is guest-only with a `guest_order_ref`; there is no account to transfer a ticket **to**.\n\n**TKT-21 is Done** — customer accounts and the wallet shipped, so there is now an account to transfer a ticket to. That sentence in the description is out of date and should be read as discharged.\n\n**The first blocker is untouched, and it is the one that matters.** `docs/product/prd-v1.md:378` still lists *\"resale marketplace rules (TKT-9)\"* in its open-decisions line. Nobody has decided price caps, who may resell, fee treatment, or whether resale is peer-to-peer or organizer-brokered. Building against an undecided rule set is what the ticket was carved out to avoid.\n\n**So: half-unblocked, still not ready.** Six `readiness` items remain `open`, and they cannot close before the product decision does. The next move is the owner deciding the resale rules — or explicitly parking this until they do — not a Gate 1 drag."
+  }
+ ]
 }

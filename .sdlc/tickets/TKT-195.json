@@ -1,113 +1,113 @@
 {
-  "key": "TKT-195",
-  "type": "Story",
-  "summary": "Back-office login rate limiting and abuse telemetry (TKT-190 follow-up)",
-  "status": "Backlog",
-  "labels": [],
-  "assignee": null,
-  "pr": null,
-  "parent": "TKT-22",
-  "description": "Carved out of **TKT-190** at plan time and named in **ADR-042 § Decision (1)** as\nthe control that actually addresses login submission volume. TKT-190 deliberately built none of it.\n\n**The gap — narrowed by TKT-191 (2026-08-03).** There is now **one** anonymous surface, not two:\n\n- `POST /admin/login` — the back-office form, which must be anonymous by construction (a staff\n  member cannot sign in through a page that requires a session). **This is the whole surface.**\n- ~~`POST /api/catalog/staff/authenticate`~~ — **no longer public.** TKT-191 guards it with the\n  dedicated catalog staff-write credential, so only the back office can reach it (ADR-042, amended).\n\nThat simplifies this ticket: a control on the login form now *does* discharge it, where before it\nwould not have. The original wording demanded both entry points because TKT-190's argument rested on\ntheir being equivalent in exposure; TKT-191 broke that equivalence in the useful direction.\n\nEach attempt costs a bcrypt comparison at cost 10 on the unknown-account path as well as the known\none (deliberately — it is what removes the timing oracle, see `staff.go`). So unbounded attempts are\na CPU-exhaustion vector against catalog, not only a credential-guessing one.\n\n**Conditions of Success:**\n- [ ] Sustained failed attempts against a single identifier are throttled, and the throttle is\n      observable — a test drives it over the threshold and asserts the refusal.\n- [ ] Sustained failed attempts from a single source are throttled independently of the identifier,\n      so rotating identifiers does not reset the budget.\n- [ ] A test proves the catalog authenticate operation is **not** separately reachable at an\n      unthrottled rate — i.e. that TKT-191's guard still holds and has not been loosened to create a\n      second unthrottled path.\n- [ ] A throttled response is indistinguishable from an ordinary refusal in what it discloses about\n      account existence (TKT-190 COS-4 must not regress — a 429 that appears only for real accounts\n      is an enumeration oracle).\n- [ ] A legitimate operator who mistypes a password twice is not locked out of their own account by\n      an attacker deliberately burning the budget on their identifier — say which of lockout vs.\n      backoff was chosen and why.\n- [ ] Failed-attempt volume is visible in telemetry with no raw identifier in the emitted labels\n      (ADR-003: pseudonymous only).\n- [ ] `make check` green.\n\n**Explicitly open questions for the plan:** where the counter lives (in-process is per-replica and\nresets on restart, exactly like TKT-190's sessions — that may or may not be acceptable here); whether\nthe gateway is the right enforcement point given it currently holds no state at all (ADR-002).",
-  "links": [
-    {
-      "type": "blocked-by",
-      "key": "TKT-190"
-    },
-    {
-      "type": "relates",
-      "key": "TKT-224"
-    }
-  ],
-  "context": {
-    "binding": [],
-    "governingAdrs": [
-      {
-        "id": "ADR-042",
-        "why": "Names this ticket as the control for login submission volume and records why the authenticate endpoint is public — the reasoning this ticket must not invalidate."
-      },
-      {
-        "id": "ADR-002",
-        "why": "The gateway is the single public entry point but holds no state today; putting a rate-limit counter there is a deviation that needs saying out loud."
-      },
-      {
-        "id": "ADR-003",
-        "why": "No raw PII in emitted records — abuse telemetry carries pseudonymous staff ids, never identifiers."
-      },
-      {
-        "id": "ADR-028",
-        "why": "A 429 must be declared in catalog's contract or the response validator turns it into a 500."
-      },
-      {
-        "id": "ADR-042",
-        "why": "Amended by TKT-191: the authenticate operation is guarded, so the login form is the only anonymous surface left. Do not re-open it to 'make throttling easier'."
-      }
-    ],
-    "reference": [
-      {
-        "summary": "The KDF cost that makes unbounded attempts a CPU vector, and the equal-cost unknown-account path a throttle must not undo.",
-        "link": "services/catalog/internal/store/staff.go"
-      },
-      {
-        "summary": "The anonymous path list the form lives on.",
-        "link": "web/backoffice/src/lib/gate.ts"
-      }
-    ],
-    "capturedAt": "2026-08-03"
-  },
-  "comments": [
-    {
-      "stage": "backlog",
-      "kind": "summary",
-      "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated during **TKT-190**'s implementation, as an explicit deliverable of that ticket's plan rather\nthan as a discovered defect. ADR-042 cites it by key, so this ticket existing is what makes that\ncitation honest.\n\nNot shaped yet: it needs the 8-item DoR before Gate 1, and the two open questions in the description\nare real decisions, not details."
-    },
-    {
-      "stage": "backlog",
-      "kind": "summary",
-      "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Scope narrowed by TKT-191 (merged `f29d7e02`).** `POST /api/catalog/staff/authenticate` is no\nlonger public — it requires the dedicated catalog staff-write credential, so the back office is its\nonly caller.\n\nThis ticket therefore has **one** anonymous surface to protect (`/admin/login`), not two. The\noriginal COS demanded both because TKT-190's reasoning rested on their equivalence; that equivalence\nis gone, and the ACs are updated rather than left demanding coverage of a now-guarded endpoint —\nwhich would have sent this ticket at the wrong target (`decomposition.md` § spike-amended scope).\n\nEach failed attempt still costs a cost-10 bcrypt on the unknown-account path (deliberately — it is\nwhat removes the timing oracle), so the CPU-exhaustion framing is unchanged."
-    },
-    {
-      "stage": "backlog",
-      "kind": "summary",
-      "body": "<!-- sdlc:stage=backlog kind=summary -->\n### TKT-224 shipped the sibling half — and built this ticket's mechanism on purpose\n\nBoard validation 2026-08-08. TKT-224 (public customer surface rate limiting) landed on 2026-08-07 as\n`ab9920b`. Its shaping named this ticket as the first thing to settle, and warned that *\"two\nhalf-solutions would be the bad outcome.\"* Half is now shipped. This is the other half.\n\n**What TKT-224 left you, deliberately.** The limiter is `shared/go/ratelimit` — a shared package\nrather than a commerce-local one, chosen *because* this ticket needs the same thing in a different\nprocess. The commit says so outright: *\"one package and two wirings rather than two limiters grown\nindependently.\"* So this ticket is a **wiring job plus a placement decision**, not a design.\n\n**Four decisions already made and paid for — reuse them, do not re-litigate:**\n\n1. **In-process counters, not database-backed.** A DB-backed counter makes every *refused* request\n   cost a write, handing an attacker write amplification. ADR-051 §2 states what that bounds.\n2. **Two keys: per subject, per source.** The key is what stays FIXED across an attempt sequence,\n   never what is being attempted.\n3. **Spend the refusal BEFORE the store lookup.** Otherwise a 429 answers \"this account exists\" —\n   a sharper oracle than the one you are blunting. For a *staff* login this matters differently:\n   the provisioned set is closed and known, so enumeration is a weaker threat than for customers —\n   **say which it is for this surface rather than copying the customer rationale unexamined.**\n4. **Declare the 429 in the OpenAPI document.** TKT-224 shipped a limiter that worked while the\n   response validator rewrote its 429 to a 500 (ADR-009): the buyer saw an outage. **No handler\n   test could see it** — handler tests never cross the contract middleware. `make browser` caught\n   it. `POST /admin/login` is a back-office form, so this trap applies here directly.\n\n**The genuinely open question, which is why this is not mechanical.** The surface is now *one*\nendpoint, not two: TKT-191 took `POST /api/catalog/staff/authenticate` off the public path, leaving\n`POST /admin/login` — the back-office form, anonymous by construction. That form is served by the\n**back-office SSR app**, not by commerce. So where does the limiter live? TKT-224 settled its own\nplacement by arguing that a storefront-side limiter protects nothing because the API is reachable\ndirectly through the gateway. **That argument may not transfer** if the only way to reach this\nsurface is through the SSR form. Settle it from the actual route topology, not by analogy.\n\n**Also note the residue from TKT-196/TKT-228:** the browser harness now exists, but there is still\nno committed spec asserting the three TKT-190 staff-session behaviours (`Origin` on same-origin\nPOST, `SameSite=Lax`, cookie `Path=/admin` scoping). A `test/browser/` spec for the login form is a\nnatural fit for this ticket."
-    },
-    {
-      "stage": "backlog",
-      "kind": "readiness",
-      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS (shaped 2026-08-08)\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | Bound login volume; add the telemetry ADR-042 asked for |\n| Scope | OK | One endpoint — TKT-191 already removed the second |\n| Uncertainties | **WARN** | Limiter placement; the TKT-224 argument may not transfer |\n| Dependencies | OK | Nothing blocking; the mechanism is already on main |\n| Approach | OK (deferred) | Reuse `shared/go/ratelimit`; placement is the plan's call |\n| AC verifiable | OK | Volume refusal + a normal staff retry + 429 survives the validator |\n| Context-mémo | OK | Re-resolved today |\n\n**Verdict: CONCERNS — proceedable.** The mechanism exists and four design decisions are already\npaid for. The one real question is placement, and it is a plan decision with the alternatives named.\n\n**Why it is worth doing now rather than later:** the context is fresh (ADR-051 was written\nyesterday), and leaving it produces exactly the outcome TKT-224's shaping called the bad one — two\nindependently grown half-solutions. Ranked behind TKT-198 only because the gate is red on main and\nnothing can be certified until that clears."
-    }
-  ],
-  "readiness": {
-    "objective": {
-      "state": "met",
-      "note": "Back-office login submission volume is bounded, and abuse against it is visible in telemetry. Closes the half of the rate-limiting story TKT-224 left open."
-    },
-    "scope": {
-      "state": "met",
-      "note": "POST /admin/login - the whole anonymous staff surface since TKT-191 removed the second one. Plus the telemetry ADR-042 asked for."
-    },
-    "uncertainties": {
-      "state": "open",
-      "note": "OPEN and load-bearing: WHERE the limiter lives. TKT-224 put it in commerce because its API was reachable directly through the gateway; this surface may only be reachable through the back-office SSR form, which breaks the analogy. Settle from the route topology. Secondary: whether staff enumeration matters at all given a closed provisioned set - it changes whether the refusal must be spent before the lookup."
-    },
-    "dependencies": {
-      "state": "met",
-      "note": "None blocking. TKT-190 (session) and TKT-191 (staff-write guard) are Done; shared/go/ratelimit is on main from TKT-224."
-    },
-    "approach": {
-      "state": "deferred",
-      "note": "Reuse shared/go/ratelimit - that is settled and was the reason it is a shared package. What is NOT settled is the placement, which is the uncertainty above."
-    },
-    "first_slice": {
-      "state": "met",
-      "note": "The one endpoint behind the shared limiter, with 429 declared in the contract, plus a test/browser/ spec submitting the login form."
-    },
-    "success": {
-      "state": "met",
-      "note": "Deterministic: refused under the intended volume; a staff member who mistypes once and retries is never refused; and the 429 survives the response validator (the TKT-224 trap) - which only make browser can show."
-    },
-    "context_memo": {
-      "state": "met",
-      "note": "Re-resolved 2026-08-08 against main at ab9920b, with ADR-051 and shared/go/ratelimit now on main."
-    }
+ "key": "TKT-195",
+ "type": "Story",
+ "summary": "Back-office login rate limiting and abuse telemetry (TKT-190 follow-up)",
+ "status": "Backlog",
+ "labels": [],
+ "assignee": null,
+ "pr": null,
+ "parent": "TKT-22",
+ "description": "Carved out of **TKT-190** at plan time and named in **ADR-042 § Decision (1)** as\nthe control that actually addresses login submission volume. TKT-190 deliberately built none of it.\n\n**The gap — narrowed by TKT-191 (2026-08-03).** There is now **one** anonymous surface, not two:\n\n- `POST /admin/login` — the back-office form, which must be anonymous by construction (a staff\n  member cannot sign in through a page that requires a session). **This is the whole surface.**\n- ~~`POST /api/catalog/staff/authenticate`~~ — **no longer public.** TKT-191 guards it with the\n  dedicated catalog staff-write credential, so only the back office can reach it (ADR-042, amended).\n\nThat simplifies this ticket: a control on the login form now *does* discharge it, where before it\nwould not have. The original wording demanded both entry points because TKT-190's argument rested on\ntheir being equivalent in exposure; TKT-191 broke that equivalence in the useful direction.\n\nEach attempt costs a bcrypt comparison at cost 10 on the unknown-account path as well as the known\none (deliberately — it is what removes the timing oracle, see `staff.go`). So unbounded attempts are\na CPU-exhaustion vector against catalog, not only a credential-guessing one.\n\n**Conditions of Success:**\n- [ ] Sustained failed attempts against a single identifier are throttled, and the throttle is\n      observable — a test drives it over the threshold and asserts the refusal.\n- [ ] Sustained failed attempts from a single source are throttled independently of the identifier,\n      so rotating identifiers does not reset the budget.\n- [ ] A test proves the catalog authenticate operation is **not** separately reachable at an\n      unthrottled rate — i.e. that TKT-191's guard still holds and has not been loosened to create a\n      second unthrottled path.\n- [ ] A throttled response is indistinguishable from an ordinary refusal in what it discloses about\n      account existence (TKT-190 COS-4 must not regress — a 429 that appears only for real accounts\n      is an enumeration oracle).\n- [ ] A legitimate operator who mistypes a password twice is not locked out of their own account by\n      an attacker deliberately burning the budget on their identifier — say which of lockout vs.\n      backoff was chosen and why.\n- [ ] Failed-attempt volume is visible in telemetry with no raw identifier in the emitted labels\n      (ADR-003: pseudonymous only).\n- [ ] `make check` green.\n\n**Explicitly open questions for the plan:** where the counter lives (in-process is per-replica and\nresets on restart, exactly like TKT-190's sessions — that may or may not be acceptable here); whether\nthe gateway is the right enforcement point given it currently holds no state at all (ADR-002).",
+ "links": [
+  {
+   "type": "relates",
+   "key": "TKT-224"
   }
+ ],
+ "context": {
+  "binding": [],
+  "governingAdrs": [
+   {
+    "id": "ADR-042",
+    "why": "Names this ticket as the control for login submission volume and records why the authenticate endpoint is public — the reasoning this ticket must not invalidate."
+   },
+   {
+    "id": "ADR-002",
+    "why": "The gateway is the single public entry point but holds no state today; putting a rate-limit counter there is a deviation that needs saying out loud."
+   },
+   {
+    "id": "ADR-003",
+    "why": "No raw PII in emitted records — abuse telemetry carries pseudonymous staff ids, never identifiers."
+   },
+   {
+    "id": "ADR-028",
+    "why": "A 429 must be declared in catalog's contract or the response validator turns it into a 500."
+   },
+   {
+    "id": "ADR-042",
+    "why": "Amended by TKT-191: the authenticate operation is guarded, so the login form is the only anonymous surface left. Do not re-open it to 'make throttling easier'."
+   }
+  ],
+  "reference": [
+   {
+    "summary": "The KDF cost that makes unbounded attempts a CPU vector, and the equal-cost unknown-account path a throttle must not undo.",
+    "link": "services/catalog/internal/store/staff.go"
+   },
+   {
+    "summary": "The anonymous path list the form lives on.",
+    "link": "web/backoffice/src/lib/gate.ts"
+   }
+  ],
+  "capturedAt": "2026-08-03"
+ },
+ "comments": [
+  {
+   "stage": "backlog",
+   "kind": "summary",
+   "body": "<!-- sdlc:stage=backlog kind=summary -->\nCreated during **TKT-190**'s implementation, as an explicit deliverable of that ticket's plan rather\nthan as a discovered defect. ADR-042 cites it by key, so this ticket existing is what makes that\ncitation honest.\n\nNot shaped yet: it needs the 8-item DoR before Gate 1, and the two open questions in the description\nare real decisions, not details."
+  },
+  {
+   "stage": "backlog",
+   "kind": "summary",
+   "body": "<!-- sdlc:stage=backlog kind=summary -->\n**Scope narrowed by TKT-191 (merged `f29d7e02`).** `POST /api/catalog/staff/authenticate` is no\nlonger public — it requires the dedicated catalog staff-write credential, so the back office is its\nonly caller.\n\nThis ticket therefore has **one** anonymous surface to protect (`/admin/login`), not two. The\noriginal COS demanded both because TKT-190's reasoning rested on their equivalence; that equivalence\nis gone, and the ACs are updated rather than left demanding coverage of a now-guarded endpoint —\nwhich would have sent this ticket at the wrong target (`decomposition.md` § spike-amended scope).\n\nEach failed attempt still costs a cost-10 bcrypt on the unknown-account path (deliberately — it is\nwhat removes the timing oracle), so the CPU-exhaustion framing is unchanged."
+  },
+  {
+   "stage": "backlog",
+   "kind": "summary",
+   "body": "<!-- sdlc:stage=backlog kind=summary -->\n### TKT-224 shipped the sibling half — and built this ticket's mechanism on purpose\n\nBoard validation 2026-08-08. TKT-224 (public customer surface rate limiting) landed on 2026-08-07 as\n`ab9920b`. Its shaping named this ticket as the first thing to settle, and warned that *\"two\nhalf-solutions would be the bad outcome.\"* Half is now shipped. This is the other half.\n\n**What TKT-224 left you, deliberately.** The limiter is `shared/go/ratelimit` — a shared package\nrather than a commerce-local one, chosen *because* this ticket needs the same thing in a different\nprocess. The commit says so outright: *\"one package and two wirings rather than two limiters grown\nindependently.\"* So this ticket is a **wiring job plus a placement decision**, not a design.\n\n**Four decisions already made and paid for — reuse them, do not re-litigate:**\n\n1. **In-process counters, not database-backed.** A DB-backed counter makes every *refused* request\n   cost a write, handing an attacker write amplification. ADR-051 §2 states what that bounds.\n2. **Two keys: per subject, per source.** The key is what stays FIXED across an attempt sequence,\n   never what is being attempted.\n3. **Spend the refusal BEFORE the store lookup.** Otherwise a 429 answers \"this account exists\" —\n   a sharper oracle than the one you are blunting. For a *staff* login this matters differently:\n   the provisioned set is closed and known, so enumeration is a weaker threat than for customers —\n   **say which it is for this surface rather than copying the customer rationale unexamined.**\n4. **Declare the 429 in the OpenAPI document.** TKT-224 shipped a limiter that worked while the\n   response validator rewrote its 429 to a 500 (ADR-009): the buyer saw an outage. **No handler\n   test could see it** — handler tests never cross the contract middleware. `make browser` caught\n   it. `POST /admin/login` is a back-office form, so this trap applies here directly.\n\n**The genuinely open question, which is why this is not mechanical.** The surface is now *one*\nendpoint, not two: TKT-191 took `POST /api/catalog/staff/authenticate` off the public path, leaving\n`POST /admin/login` — the back-office form, anonymous by construction. That form is served by the\n**back-office SSR app**, not by commerce. So where does the limiter live? TKT-224 settled its own\nplacement by arguing that a storefront-side limiter protects nothing because the API is reachable\ndirectly through the gateway. **That argument may not transfer** if the only way to reach this\nsurface is through the SSR form. Settle it from the actual route topology, not by analogy.\n\n**Also note the residue from TKT-196/TKT-228:** the browser harness now exists, but there is still\nno committed spec asserting the three TKT-190 staff-session behaviours (`Origin` on same-origin\nPOST, `SameSite=Lax`, cookie `Path=/admin` scoping). A `test/browser/` spec for the login form is a\nnatural fit for this ticket."
+  },
+  {
+   "stage": "backlog",
+   "kind": "readiness",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Implementation readiness — CONCERNS (shaped 2026-08-08)\n\n| Criterion | Status | Note |\n|---|---|---|\n| Objective | OK | Bound login volume; add the telemetry ADR-042 asked for |\n| Scope | OK | One endpoint — TKT-191 already removed the second |\n| Uncertainties | **WARN** | Limiter placement; the TKT-224 argument may not transfer |\n| Dependencies | OK | Nothing blocking; the mechanism is already on main |\n| Approach | OK (deferred) | Reuse `shared/go/ratelimit`; placement is the plan's call |\n| AC verifiable | OK | Volume refusal + a normal staff retry + 429 survives the validator |\n| Context-mémo | OK | Re-resolved today |\n\n**Verdict: CONCERNS — proceedable.** The mechanism exists and four design decisions are already\npaid for. The one real question is placement, and it is a plan decision with the alternatives named.\n\n**Why it is worth doing now rather than later:** the context is fresh (ADR-051 was written\nyesterday), and leaving it produces exactly the outcome TKT-224's shaping called the bad one — two\nindependently grown half-solutions. Ranked behind TKT-198 only because the gate is red on main and\nnothing can be certified until that clears."
+  },
+  {
+   "author": "agent",
+   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ MIS-TRACKED — the mechanism SHIPPED; this ticket is not what its text says it is\n\nBacklog review 2026-08-25 at HEAD `ad849f98`. **Do not plan this ticket from its description.** Most of it is already built, and three ADRs still say it is not.\n\n**What shipped, and where.** `services/catalog/internal/api/ratelimit.go` exists (dated 2026-08-10) and wires `shared/go/ratelimit` with **dual subject + source limiters** (`:68-75`). `server.go:114` names this ticket in its comment: *\"limiters bound the public staff-login surface (TKT-195).\"* It refuses **before** the store lookup, deliberately, so it is not an enumeration oracle (`ratelimit.go:105`). It landed under commit `1783c843` — *\"security: close the fourteen findings of the 2026-08-10 review\"* — i.e. **through the security sweep, not through this ticket**, which is why the board never learned about it.\n\n**What is genuinely still owed** — and it is the second half of the ticket's own title:\n1. **Abuse telemetry.** `ratelimit.go` contains **zero** metric, counter, or log statements (grepped for `obs.`, `metric`, `Counter`, `Inc()`, `slog`, `log.` — no matches). \"and abuse telemetry\" was an explicit AC and nothing satisfies it. A limiter that refuses silently tells an operator nothing about whether it is firing.\n2. **ADR reconciliation, which is the more urgent half.** Three clauses now assert an absent guard that is in fact present:\n   - `ADR-042:97` — *\"the control for it is rate limiting — TKT-195 … It is not addressed here.\"*\n   - `ADR-042:182` — *\"Login attempt volume is **unbounded** until TKT-195.\"*\n   - `ADR-051:11` — *\"TKT-195 … is still open.\"*\n\n**Why the second half matters more than it looks.** This is documentation drift in the *inverse* of the usual direction. The common failure is a doc claiming a guarantee the code lost; here the docs claim a **missing** control that actually exists. That is the direction that gets a *second* limiter built by someone who reads ADR-042 and believes it, or a real risk accepted in a design review on the strength of a sentence that is no longer true.\n\n**Recommendation: re-scope, do not close and do not plan as written.** New shape: *\"telemetry for the shipped catalog staff-login limiter, and reconcile ADR-042/ADR-051 with what was built.\"* The readiness object is deliberately left untouched — re-shaping against the old description would bake in the wrong scope. **Held at Gate 1 pending the owner's decision on the re-scope**, because narrowing a ticket's subject is theirs, not mine."
+  }
+ ],
+ "readiness": {
+  "objective": {
+   "state": "met",
+   "note": "Back-office login submission volume is bounded, and abuse against it is visible in telemetry. Closes the half of the rate-limiting story TKT-224 left open."
+  },
+  "scope": {
+   "state": "met",
+   "note": "POST /admin/login - the whole anonymous staff surface since TKT-191 removed the second one. Plus the telemetry ADR-042 asked for."
+  },
+  "uncertainties": {
+   "state": "open",
+   "note": "OPEN and load-bearing: WHERE the limiter lives. TKT-224 put it in commerce because its API was reachable directly through the gateway; this surface may only be reachable through the back-office SSR form, which breaks the analogy. Settle from the route topology. Secondary: whether staff enumeration matters at all given a closed provisioned set - it changes whether the refusal must be spent before the lookup."
+  },
+  "dependencies": {
+   "state": "met",
+   "note": "None blocking. TKT-190 (session) and TKT-191 (staff-write guard) are Done; shared/go/ratelimit is on main from TKT-224."
+  },
+  "approach": {
+   "state": "deferred",
+   "note": "Reuse shared/go/ratelimit - that is settled and was the reason it is a shared package. What is NOT settled is the placement, which is the uncertainty above."
+  },
+  "first_slice": {
+   "state": "met",
+   "note": "The one endpoint behind the shared limiter, with 429 declared in the contract, plus a test/browser/ spec submitting the login form."
+  },
+  "success": {
+   "state": "met",
+   "note": "Deterministic: refused under the intended volume; a staff member who mistypes once and retries is never refused; and the 429 survives the response validator (the TKT-224 trap) - which only make browser can show."
+  },
+  "context_memo": {
+   "state": "met",
+   "note": "Re-resolved 2026-08-08 against main at ab9920b, with ADR-051 and shared/go/ratelimit now on main."
+  }
+ }
 }
