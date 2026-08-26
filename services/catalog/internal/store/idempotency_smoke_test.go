@@ -21,7 +21,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -423,10 +422,27 @@ func TestFingerprintCanonicalisesToTheStoredPrecision(t *testing.T) {
 	// pass 2 [medium] caught exactly that). 1900ns is the sharp one: Postgres
 	// stores .000002, so an implementation that TRUNCATES hashes .000001 and the
 	// stored-value retry below conflicts with its own original.
-	for _, ns := range []int{1900, 500, 2500, 3500, 1200} {
-		t.Run(fmt.Sprintf("ns=%d", ns), func(t *testing.T) {
-			key := fmt.Sprintf("precision-%d", ns)
-			raw := time.Date(2026, 9, 1, 20, 0, 0, ns, time.UTC)
+	//
+	// The instants cover the boundaries a precision rule can get wrong: a
+	// pre-epoch value (Go's truncation is toward the zero YEAR, not the epoch),
+	// one a nanosecond short of a second rollover, and a far-future one.
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{"1900ns", time.Date(2026, 9, 1, 20, 0, 0, 1900, time.UTC)},
+		{"500ns", time.Date(2026, 9, 1, 20, 0, 0, 500, time.UTC)},
+		{"2500ns", time.Date(2026, 9, 1, 20, 0, 0, 2500, time.UTC)},
+		{"3500ns", time.Date(2026, 9, 1, 20, 0, 0, 3500, time.UTC)},
+		{"1200ns", time.Date(2026, 9, 1, 20, 0, 0, 1200, time.UTC)},
+		{"pre-epoch", time.Date(1969, 7, 20, 20, 17, 0, 123456789, time.UTC)},
+		{"second rollover", time.Date(2026, 9, 1, 20, 0, 59, 999999999, time.UTC)},
+		{"day rollover", time.Date(2026, 9, 1, 23, 59, 59, 999999999, time.UTC)},
+		{"far future", time.Date(2999, 12, 31, 23, 59, 59, 999999999, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := "precision-" + tc.name
+			raw := tc.at
 			in := PerformanceInput{
 				OrganizerID: f.org, EventID: f.event, VenueID: f.venue,
 				StartsAt: &raw, Timezone: "UTC", IdempotencyKey: key,
@@ -436,17 +452,28 @@ func TestFingerprintCanonicalisesToTheStoredPrecision(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Read back what Postgres ACTUALLY stored. This is the step that makes
-			// the test about precision rather than about "two calls with one key
-			// replay": without it the implementation could drop starts_at from the
-			// fingerprint entirely and stay green.
+			// The expected instant, derived from the RULE and not from the run
+			// (ai-review pass 3 [medium]): sub-microsecond precision is dropped,
+			// so the stored value is the input with its nanosecond remainder
+			// removed. Computed here in the test rather than by calling
+			// normalizeStartsAt, which would be the implementation grading itself.
+			want := raw.Add(-time.Duration(raw.Nanosecond() % 1000))
+
 			var stored time.Time
 			if err := f.db.QueryRowContext(ctx,
 				`SELECT starts_at FROM performances WHERE id=$1`, first.ID).Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
+			// THIS is what makes the retry below non-vacuous. Without it, a
+			// normalizeStartsAt that zeroed or shifted the instant would still
+			// replay — the retry echoes whatever the implementation chose, so it
+			// can only prove self-consistency, never correctness.
+			if !stored.Equal(want) {
+				t.Fatalf("%s stored %v, want %v (the input with sub-microsecond precision dropped)",
+					tc.name, stored.UTC(), want.UTC())
+			}
 			if stored.Equal(raw) {
-				t.Fatalf("ns=%d did not exercise the column's precision: stored %v equals the raw input", ns, stored)
+				t.Fatalf("%s did not exercise the column's precision: stored %v equals the raw input", tc.name, stored)
 			}
 
 			// The retry a real client makes: it echoes the instant the server
