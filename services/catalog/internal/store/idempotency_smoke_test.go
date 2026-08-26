@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -417,26 +418,113 @@ func TestFingerprintCanonicalisesToTheStoredPrecision(t *testing.T) {
 	f := newIdempotencyFixture(t, ctx, openAdmin(t, dsn), dsn)
 	defer f.cleanup()
 
-	base := time.Date(2026, 9, 1, 20, 0, 0, 123456000, time.UTC)
-	// Same microsecond, different nanosecond tail: one row, by the column's
-	// definition rather than by observation.
-	jittered := base.Add(789 * time.Nanosecond)
+	// The values are chosen to be UNALIGNED and to straddle the rounding rule,
+	// because a pair that truncates and rounds alike proves nothing (ai-review
+	// pass 2 [medium] caught exactly that). 1900ns is the sharp one: Postgres
+	// stores .000002, so an implementation that TRUNCATES hashes .000001 and the
+	// stored-value retry below conflicts with its own original.
+	for _, ns := range []int{1900, 500, 2500, 3500, 1200} {
+		t.Run(fmt.Sprintf("ns=%d", ns), func(t *testing.T) {
+			key := fmt.Sprintf("precision-%d", ns)
+			raw := time.Date(2026, 9, 1, 20, 0, 0, ns, time.UTC)
+			in := PerformanceInput{
+				OrganizerID: f.org, EventID: f.event, VenueID: f.venue,
+				StartsAt: &raw, Timezone: "UTC", IdempotencyKey: key,
+			}
+			first, err := f.st.CreatePerformance(ctx, in)
+			if err != nil {
+				t.Fatal(err)
+			}
 
+			// Read back what Postgres ACTUALLY stored. This is the step that makes
+			// the test about precision rather than about "two calls with one key
+			// replay": without it the implementation could drop starts_at from the
+			// fingerprint entirely and stay green.
+			var stored time.Time
+			if err := f.db.QueryRowContext(ctx,
+				`SELECT starts_at FROM performances WHERE id=$1`, first.ID).Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.Equal(raw) {
+				t.Fatalf("ns=%d did not exercise the column's precision: stored %v equals the raw input", ns, stored)
+			}
+
+			// The retry a real client makes: it echoes the instant the server
+			// returned, which is the stored one. It must replay.
+			in.StartsAt = &stored
+			second, err := f.st.CreatePerformance(ctx, in)
+			if err != nil {
+				t.Fatalf("a retry echoing the STORED instant must replay, not conflict: %v", err)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("stored-value retry created a second row: %s and %s", first.ID, second.ID)
+			}
+		})
+	}
+}
+
+// TestOperatingDateFingerprintIsACalendarDate covers ai-review pass 2 [medium].
+//
+// operating_date is a DATE — a calendar date, not an instant. A caller in a
+// positive-offset zone passing midnight local means that day; converting the
+// time.Time to UTC first turns it into the day BEFORE in the hash, while the
+// column still stores the local day. The retry then conflicts with its own
+// original.
+//
+// The mutation that turns this red is restoring `.UTC().Format(...)`.
+func TestOperatingDateFingerprintIsACalendarDate(t *testing.T) {
+	dsn := idempotencyDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	f := newIdempotencyFixture(t, ctx, openAdmin(t, dsn), dsn)
+	defer f.cleanup()
+
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	// Midnight in Tokyo on the 1st is 15:00 UTC on the 31st — the rollover.
+	local := time.Date(2026, 9, 1, 0, 0, 0, 0, tokyo)
+	opens, closes := "09:00", "18:00"
 	in := PerformanceInput{
 		OrganizerID: f.org, EventID: f.event, VenueID: f.venue,
-		StartsAt: &base, Timezone: "UTC", IdempotencyKey: "precision",
+		Kind: KindOperatingDay, OperatingDate: &local,
+		OpensAt: &opens, ClosesAt: &closes,
+		Timezone: "Asia/Tokyo", IdempotencyKey: "tokyo-date",
 	}
 	first, err := f.st.CreatePerformance(ctx, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.StartsAt = &jittered
+
+	// What the column actually kept, and the day the caller meant.
+	var stored string
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT operating_date::text FROM performances WHERE id=$1`, first.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "2026-09-01" {
+		t.Fatalf("the column stored %s; the caller meant the local calendar date 2026-09-01", stored)
+	}
+
+	// The retry a real client makes: it echoes the date the server stored, read
+	// back as the DATE the column holds. That is a different time.Time from the
+	// one submitted — same calendar day, no location offset — and it is what
+	// makes this test able to fail. Repeating the ORIGINAL input proves nothing:
+	// an implementation that converts to UTC converts BOTH calls the same wrong
+	// way and replays happily (verified — that version survived the mutation).
+	var storedDate time.Time
+	if err := f.db.QueryRowContext(ctx,
+		`SELECT operating_date FROM performances WHERE id=$1`, first.ID).Scan(&storedDate); err != nil {
+		t.Fatal(err)
+	}
+	in.OperatingDate = &storedDate
 	second, err := f.st.CreatePerformance(ctx, in)
 	if err != nil {
-		t.Fatalf("instants Postgres cannot distinguish must fingerprint alike: %v", err)
+		t.Fatalf("a retry echoing the STORED calendar date must replay, not conflict: %v", err)
 	}
 	if second.ID != first.ID {
-		t.Fatalf("sub-microsecond jitter created a second row: %s and %s", first.ID, second.ID)
+		t.Fatalf("one key produced two rows: %s and %s", first.ID, second.ID)
 	}
 }
 
@@ -455,16 +543,42 @@ func TestKeyedRowRequiresAFingerprint(t *testing.T) {
 	f := newIdempotencyFixture(t, ctx, openAdmin(t, dsn), dsn)
 	defer f.cleanup()
 
-	_, err := f.db.ExecContext(ctx,
-		`INSERT INTO events(organizer_id,name,idempotency_key) VALUES($1,'{"en":"x","fr":"x"}','orphan-key')`, f.org)
-	if err == nil {
-		t.Fatal("a keyed row with no fingerprint must be refused by the schema")
-	}
-	// And the symmetric direction, which the same constraint owns.
-	_, err = f.db.ExecContext(ctx,
-		`INSERT INTO events(organizer_id,name,request_fingerprint) VALUES($1,'{"en":"y","fr":"y"}','orphan-print')`, f.org)
-	if err == nil {
-		t.Fatal("a fingerprint with no key must be refused by the schema")
+	// Asserting on the NAMED constraint, not on "some error" (ai-review pass 2
+	// [medium]). Any error would stay green if an unrelated constraint rejected
+	// the insert, or if the pairing CHECK were replaced by a blanket refusal that
+	// also rejects legitimate keyed rows — and the positive case below is what
+	// rules that second one out.
+	//
+	// All three tables, because each carries its own constraint: a green events
+	// assertion says nothing about performances or ticket_types.
+	for _, tc := range []struct{ table, cols, values string }{
+		{"events", "organizer_id,name", `$1,'{"en":"x","fr":"x"}'`},
+		{"performances", "organizer_id,event_id,venue_id,starts_at,timezone,status", `$1,'` + f.event.String() + `','` + f.venue.String() + `',now(),'UTC','draft'`},
+		{"ticket_types", "organizer_id,performance_id,name,price_amount,currency", `$1,'` + f.perf.String() + `','{"en":"t","fr":"t"}',100,'EUR'`},
+	} {
+		t.Run(tc.table, func(t *testing.T) {
+			want := tc.table + "_key_and_fingerprint_agree"
+			for _, d := range []struct{ name, col, val string }{
+				{"key without fingerprint", "idempotency_key", "orphan-key"},
+				{"fingerprint without key", "request_fingerprint", "orphan-print"},
+			} {
+				_, err := f.db.ExecContext(ctx,
+					`INSERT INTO `+tc.table+`(`+tc.cols+`,`+d.col+`) VALUES(`+tc.values+`,'`+d.val+`')`, f.org)
+				if err == nil {
+					t.Fatalf("%s: %s must be refused by the schema", tc.table, d.name)
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s: %s was refused by the wrong mechanism; want constraint %q, got: %v",
+						tc.table, d.name, want, err)
+				}
+			}
+			// The positive direction: both present is accepted. Without this, a
+			// constraint of `false` would satisfy every assertion above.
+			if _, err := f.db.ExecContext(ctx,
+				`INSERT INTO `+tc.table+`(`+tc.cols+`,idempotency_key,request_fingerprint) VALUES(`+tc.values+`,'paired-`+tc.table+`','print')`, f.org); err != nil {
+				t.Fatalf("%s: a row carrying BOTH must be accepted: %v", tc.table, err)
+			}
+		})
 	}
 }
 

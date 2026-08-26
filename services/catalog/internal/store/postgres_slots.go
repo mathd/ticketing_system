@@ -78,6 +78,15 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	// defaulting, not as submitted. Fingerprinting the raw request would make
 	// `kind: ""` and `kind: "performance"` two fingerprints for one identical
 	// row, so a replay of a semantically identical request would 409.
+	//
+	// starts_at is normalized HERE, to the precision timestamptz keeps, and the
+	// same value then feeds both the fingerprint and the INSERT below. Two
+	// representations of one instant is exactly how a retry ends up conflicting
+	// with its own original (ai-review pass 2); one value cannot.
+	if in.StartsAt != nil {
+		normalized := normalizeStartsAt(*in.StartsAt)
+		in.StartsAt = &normalized
+	}
 	print := performanceFingerprint(in, kind, mode)
 
 	var id uuid.UUID

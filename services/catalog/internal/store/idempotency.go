@@ -28,6 +28,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -84,17 +85,25 @@ func performanceFingerprint(in PerformanceInput, kind, mode string) string {
 	// requests that become one identical row to hash differently — and a retry
 	// reconstructed from the stored value would then be refused as a conflict.
 	//
-	// starts_at is timestamptz, whose default precision is MICROseconds, so a
-	// nanosecond-bearing instant must truncate here exactly as the column will.
-	// operating_date is a DATE: the time-of-day is discarded on write, so
-	// hashing a full timestamp would distinguish two requests the column cannot.
+	// starts_at is fingerprinted from the value the INSERT will use:
+	// CreatePerformance normalizes it once, before either (normalizeStartsAt),
+	// so the two representations cannot disagree. Two representations of one
+	// instant is exactly how a retry ends up conflicting with its own original.
 	starts := "\x01nil"
 	if in.StartsAt != nil {
-		starts = in.StartsAt.UTC().Truncate(time.Microsecond).Format(timeFingerprintLayout)
+		starts = in.StartsAt.UTC().Format(timeFingerprintLayout)
 	}
+	// operating_date is a DATE — a CALENDAR date, not an instant. Its fields are
+	// read in their own location and never converted: a caller passing midnight
+	// in Asia/Tokyo means 2026-09-01, and .UTC() would turn that into
+	// 2026-08-31 in the hash while the column still stores 2026-09-01 (ai-review
+	// pass 2 [medium]). The contract path always parses a bare YYYY-MM-DD into
+	// UTC midnight, so this is invisible there — but a direct store caller in a
+	// positive-offset zone would get a false conflict on retry.
 	operating := "\x01nil"
 	if in.OperatingDate != nil {
-		operating = in.OperatingDate.UTC().Format(dateFingerprintLayout)
+		y, m, d := in.OperatingDate.Date()
+		operating = fmt.Sprintf("%04d-%02d-%02d", y, int(m), d)
 	}
 	seatMap := "\x01nil"
 	if in.SeatMapID != nil {
@@ -111,16 +120,35 @@ func performanceFingerprint(in PerformanceInput, kind, mode string) string {
 	)
 }
 
+// normalizeStartsAt drops sub-microsecond precision from an instant, so the
+// value fingerprinted and the value INSERTed are the same value.
+//
+// Truncation, not an attempt to reproduce Postgres's rounding — and the reason
+// is that once this runs, there is no rounding left to reproduce. A whole number
+// of microseconds is stored by timestamptz unchanged, so the stored value equals
+// the normalized value for ANY rule that lands on a microsecond boundary, and a
+// retry echoing the stored instant matches by construction.
+//
+// This replaced a half-to-even implementation that modelled Postgres exactly.
+// It was deleted rather than kept: with normalization happening BEFORE the
+// insert, no input exists for which round and truncate produce different
+// outcomes, and mutating one into the other left every test green. A dead
+// mechanism with a green test beside it reads as a guarantee.
+//
+// The rounding rule still matters to anyone hashing an instant that has already
+// been stored, which is why the history is here: Postgres rounds half to EVEN
+// ('…0000005Z' -> '…00', '…0000025Z' -> '…000002', '…0000035Z' -> '…000004'),
+// which is neither Go's time.Truncate nor Go's time.Round.
+func normalizeStartsAt(t time.Time) time.Time {
+	return t.Truncate(time.Microsecond)
+}
+
 // timeFingerprintLayout pins the rendering of an instant in a fingerprint. UTC,
 // with MICROsecond digits — the precision timestamptz actually keeps. Two
 // callers sending the same instant in different offsets must fingerprint alike,
 // because the row stores one instant; and two instants Postgres cannot tell
 // apart must fingerprint alike for the same reason.
 const timeFingerprintLayout = "2006-01-02T15:04:05.000000Z07:00"
-
-// dateFingerprintLayout matches the DATE column: no time-of-day, because the
-// column stores none.
-const dateFingerprintLayout = "2006-01-02"
 
 // nullableFingerprint stores a fingerprint only alongside a key. A fingerprint
 // on a keyless row would be dead weight: nothing can ever look it up, because
