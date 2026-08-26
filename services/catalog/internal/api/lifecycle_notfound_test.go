@@ -155,55 +155,48 @@ func discoverStoreErrorOperations(t *testing.T, dir string, doc *openapi3.T) []d
 	routes := generatedRoutes(t, dir)
 
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		// Non-test source only: a _test.go file has no generated operation, and
-		// this very file mentions writeStoreError in prose.
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse %s: %v", dir, err)
-	}
-
 	var out []discoveredOp
 	seen := map[string]string{} // "METHOD path" -> handler, to catch duplicates
-	for _, pkg := range pkgs {
-		for name, file := range pkg.Files {
-			if filepath.Base(name) == "openapi_gen.go" {
-				continue // generated; its wrappers are not handlers
+	// parser.ParseFile per source file rather than parser.ParseDir: the latter is
+	// deprecated (SA1019) for ignoring build tags, and a per-file walk is what
+	// this needs anyway — the filtering below is by file NAME, not by package.
+	for _, path := range sourceFiles(t, dir) {
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil {
+				continue
 			}
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Recv == nil || fn.Body == nil {
-					continue
-				}
-				if !isServerMethod(fn) || !fn.Name.IsExported() {
-					continue
-				}
-				if !callsWriteStoreError(fn.Body) {
-					continue
-				}
-				route, ok := routes[fn.Name.Name]
-				if !ok {
-					t.Fatalf("exported handler %s calls writeStoreError but does not appear in the "+
-						"generated ServerInterface's \"// (METHOD /path)\" comments in openapi_gen.go. "+
-						"Either the generator's comment format changed — in which case fix this mapping, "+
-						"do NOT fall back to guessing from the method name — or this method is not a "+
-						"generated operation and should not be exported on *Server.", fn.Name.Name)
-				}
-				if item := doc.Paths.Find(route.path); item == nil || item.Operations()[route.method] == nil {
-					t.Fatalf("handler %s maps to %s %s via openapi_gen.go, but the OpenAPI document has "+
-						"no such operation — the generated code and the document have drifted",
-						fn.Name.Name, route.method, route.path)
-				}
-				key := route.method + " " + route.path
-				if prev, dup := seen[key]; dup {
-					t.Fatalf("handlers %s and %s both map to %s — the mapping is not one-to-one, so "+
-						"the invariant would silently check one operation twice and another never",
-						prev, fn.Name.Name, key)
-				}
-				seen[key] = fn.Name.Name
-				out = append(out, discoveredOp{handler: fn.Name.Name, method: route.method, path: route.path})
+			if !isServerMethod(fn) || !fn.Name.IsExported() {
+				continue
 			}
+			if !callsWriteStoreError(fn.Body) {
+				continue
+			}
+			route, ok := routes[fn.Name.Name]
+			if !ok {
+				t.Fatalf("exported handler %s calls writeStoreError but does not appear in the "+
+					"generated ServerInterface's \"// (METHOD /path)\" comments in openapi_gen.go. "+
+					"Either the generator's comment format changed — in which case fix this mapping, "+
+					"do NOT fall back to guessing from the method name — or this method is not a "+
+					"generated operation and should not be exported on *Server.", fn.Name.Name)
+			}
+			if item := doc.Paths.Find(route.path); item == nil || item.Operations()[route.method] == nil {
+				t.Fatalf("handler %s maps to %s %s via openapi_gen.go, but the OpenAPI document has "+
+					"no such operation — the generated code and the document have drifted",
+					fn.Name.Name, route.method, route.path)
+			}
+			key := route.method + " " + route.path
+			if prev, dup := seen[key]; dup {
+				t.Fatalf("handlers %s and %s both map to %s — the mapping is not one-to-one, so "+
+					"the invariant would silently check one operation twice and another never",
+					prev, fn.Name.Name, key)
+			}
+			seen[key] = fn.Name.Name
+			out = append(out, discoveredOp{handler: fn.Name.Name, method: route.method, path: route.path})
 		}
 	}
 
@@ -220,6 +213,35 @@ func discoverStoreErrorOperations(t *testing.T, dir string, doc *openapi3.T) []d
 			"comment parsing before lowering this floor.", len(out), floor)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].handler < out[j].handler })
+	return out
+}
+
+// sourceFiles lists the package's hand-written .go files: no _test.go (a test
+// file has no generated operation, and this very file mentions writeStoreError
+// in prose) and not openapi_gen.go (generated; its wrappers are not handlers).
+func sourceFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") ||
+			strings.HasSuffix(name, "_test.go") || name == "openapi_gen.go" {
+			continue
+		}
+		out = append(out, filepath.Join(dir, name))
+	}
+	// Same reasoning as the floors below: this listing is the input to the whole
+	// invariant, and an empty or near-empty one makes every later check vacuous
+	// while looking like a clean pass.
+	if len(out) < 5 {
+		t.Fatalf("found only %d hand-written .go files in %s; the invariant scans them for "+
+			"handlers, so an under-collected listing would silently check almost nothing", len(out), dir)
+	}
+	sort.Strings(out)
 	return out
 }
 
