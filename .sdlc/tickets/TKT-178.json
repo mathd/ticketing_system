@@ -3,7 +3,7 @@
   "type": "Task",
   "classification": "simple",
   "summary": "POST /venues with an unknown organizer answers 500, not 404 (ADR-028 fail-closed on an undeclared status)",
-  "status": "PO Review",
+  "status": "Done",
   "labels": [],
   "assignee": "agent",
   "pr": {
