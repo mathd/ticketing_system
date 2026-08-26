@@ -1343,6 +1343,13 @@ func TestReconcileExchangedBrokenChainRecordsQuarantineWithoutConflictAlarm(t *t
 // exchanges.go:151), so refund-first is impossible; RefundOrderTickets selects on
 // refundThatVoided alone (refunds.go:120), so an exchanged ticket is still
 // refundable. Exchange, then refund.
+// Read with G′ below, which is its complement. F′ deliberately CANNOT detect
+// removal of the exchanged guard: with both facts present, ticketRefunded still
+// answers true and TKT-269's half still owes the one alarm this asserts. That is
+// not a hole in F′ — it is what makes F′ specifically about the COUNT — but on
+// its own it would leave "the exchanged half is load-bearing" resting entirely
+// on A′. G′ closes that by holding the fixture one step away from F′'s and
+// removing the refund.
 func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1368,6 +1375,50 @@ func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
 		t.Fatalf("%d admission-conflict alarms, want exactly 1: one physical offline admission owes "+
 			"one admission-conflict alarm, however many commercial voiding facts apply to the ticket. "+
 			"Two independent alarm-owning branches would produce 2 here", n)
+	}
+}
+
+// G′ — the complement of F′, and the answer to the ai-review pass's finding.
+//
+// F′ holds two voiding facts and asserts a count of one; it cannot see the
+// exchanged half of the disjunction disappear, because the refund half still
+// owes that one alarm. So "the exchanged predicate is load-bearing" rested
+// entirely on A′, one test, on a fixture with no refund in it at all.
+//
+// G′ is F′'s fixture minus the refund: same construction, same exchange, same
+// single admission, and the assertion that the alarm is still owed. Deleting the
+// exchanged guard turns BOTH A′ and G′ red, from opposite ends of the two-fact
+// space, and the pair is what makes the claim independent of any one fixture.
+//
+// It is also the case an operator actually meets: a ticket exchanged and never
+// refunded, admitted offline, is precisely the scenario ADR-039 describes — the
+// replacement is live somewhere, and admitting the original admits the exchange
+// twice. That an exchanged-only ticket is the COMMON case and the both-voided
+// one is the corner is worth stating, since the test order above implies the
+// reverse.
+func TestReconcileExchangedButNotRefundedStillOwesItsAlarm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueTicket(t, ctx, st, uuid.New())
+	exchangeOwnTicket(t, ctx, st, s)
+	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged")
+	// The negative half of the fixture, asserted rather than assumed: with a
+	// `refunded` row present this test would be F′ and could not fail.
+	if n := countEvents(t, ctx, db, s.ticketID, "refunded"); n != 0 {
+		t.Fatalf("%d refunded rows, want 0 — this test's entire claim is that the EXCHANGED fact "+
+			"alone owes the alarm, which a refunded row would settle for the wrong reason", n)
+	}
+
+	occ := uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime().Add(3*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if n := conflictAlarmCount(t, ctx, db); n != 1 {
+		t.Fatalf("%d admission-conflict alarms on an exchanged-but-not-refunded ticket, want exactly 1 "+
+			"— an offline admit of a voided ticket is never silent, and the exchanged fact voids it "+
+			"on its own", n)
 	}
 }
 
