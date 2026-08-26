@@ -1,60 +1,60 @@
 {
- "key": "TKT-275",
- "type": "Task",
- "summary": "The now() mutation is only half-pinned: no test covers the open-side clock_timestamp() in windowOpen",
- "status": "Backlog",
- "labels": [],
- "assignee": null,
- "pr": null,
- "links": [
-  {
-   "type": "relates",
-   "key": "TKT-274"
+  "key": "TKT-275",
+  "type": "Task",
+  "summary": "The now() mutation is only half-pinned: no test covers the open-side clock_timestamp() in windowOpen",
+  "status": "Ready",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "relates",
+      "key": "TKT-274"
+    }
+  ],
+  "comments": [
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-274's fourth ai-review pass as an **incidental** finding — outside that ticket's comment-only scope, so it was recorded in the code comment and split out here rather than fixed in place.\n\nVerified at HEAD, not inherited from the review:\n- `windowOpen` has two `clock_timestamp()` occurrences (`channel_allocations.go:43-44`).\n- `TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`:697`) sets `opens_at` to NULL, so only the close-side occurrence is exercised.\n\nNeeds shaping before Gate 1."
+    },
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98` (174 commits after the last backlog drain, so nothing was inherited from the earlier pass).\n\n**All eight items `met`, no blockers, nothing `deferred`.** Ready for Gate 1 — the human's call.\n\n**The claim holds at HEAD, checked rather than trusted:**\n- `windowOpen` still has two `clock_timestamp()` occurrences (`channel_allocations.go:43-44`).\n- The pinning test's fixture still selects `NULL::timestamptz AS opens_at` (`channel_allocations_smoke_test.go:725`), so the open-side occurrence is genuinely unexercised.\n\n**The risk question the ticket left open, settled.** Its own note argued both ways: a fixture-design ticket (keep the plan gate) versus a test with a working template beside it (`risk:low`). **Recommend NOT `risk:low`.** The deliverable is a fixture whose whole purpose is to be able to fail, and the ticket's central AC is a *discriminating* mutation — the exact shape AGENTS.md keeps the plan gate for. The template lowers the cost of the plan; it does not remove the question.\n\n**One trap the mémo carries and the drafter must not walk into.** `TestTransitionKeepsTransactionStartClockDeliberately` (`buyer_ttl_clock_smoke_test.go:541`) *deliberately* pins transaction-start time on the transition path, and says in its own comment: \"THIS TEST IS THE THING THAT MUST BE CONSCIOUSLY UPDATED — do not delete it to make a change pass.\" This ticket does not touch that path, and must not: the two clocks are different answers to different questions, on purpose."
+    }
+  ],
+  "description": "Incidental, found by the fourth adversarial review pass on TKT-274 (a comment-only ticket) and verified against the code.\n\n`windowOpen` (`services/inventory/internal/store/channel_allocations.go:43`) contains **two** `clock_timestamp()` occurrences:\n\n```sql\n(opens_at IS NULL OR opens_at <= clock_timestamp())\nAND (closes_at IS NULL OR closes_at > clock_timestamp())\n```\n\n`TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`channel_allocations_smoke_test.go:697`) is the test that pins \"the predicate decides at DECISION time, not transaction-start time\" — the `now()`-for-`clock_timestamp()` mutant. It works by holding a transaction open across the cutoff, so frozen `now()` and moving `clock_timestamp()` diverge.\n\nBut it sets `opens_at` to **NULL** and only makes `closes_at` cross the gap. So it exercises **only the close-side occurrence**. A per-occurrence mutation of the **open-side** `clock_timestamp()` to `now()` leaves it green.\n\n## Why it matters\n\nThe open side is not symmetric decoration. A window written with `now()` on `opens_at` decides \"has the sale opened?\" at **transaction-start** time. A hold that queues on the pool lock before the on-sale instant and acquires it after would read the frozen start time and be refused as not-yet-open — or, with a transaction that began before the boundary, admitted early. That is the same class of bug ADR-024 litigated for `release_at`, on the side that governs **on-sale**, which is the highest-contention moment in the system.\n\n## Scope\n\n- [ ] Add a transaction-held case with a non-NULL `opens_at` that opens DURING the held transaction, asserting the shipped predicate says OPEN while frozen `now()` says not-yet-open (the mirror of the existing close-side case, including its \"fixture did not reproduce the divergence\" guard).\n- [ ] Mutate the OPEN-side `clock_timestamp()` alone to `now()` and observe the new case go red — the mutation that is evidence is the one only this case can catch. Confirm the existing close-side case stays green under that mutation, which is what demonstrates the gap was real.\n- [ ] Update the TKT-274 comment block: it currently records this gap as open (\"only PARTLY pinned... a mutation of the OPEN-side occurrence alone would stay green\"). Close that wording when the test lands.\n\n## Notes\n\nTKT-274 recorded the gap in the comment rather than closing it, because that ticket was comment-only by scope. The wording there is deliberately explicit so the gap is on the record rather than implied shut — do not delete it without adding the test.\n\nNot `risk:low` on its face: the deliverable is a test, but its central question is \"how do I construct a fixture that can actually fail?\", which is the shape AGENTS.md says to keep the plan gate for (the TKT-266 precedent). The existing close-side case is a working template, which argues the other way. Let shaping settle it.",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "windowOpen has two clock_timestamp() occurrences; the test that pins the decision-time property exercises only the close side. Re-verified at HEAD ad849f98: channel_allocations.go:43-44, and the fixture at channel_allocations_smoke_test.go:725 selects `NULL::timestamptz AS opens_at`. The open side governs on-sale, the highest-contention moment in the system."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: one new transaction-held case with a non-NULL opens_at crossing the boundary, in channel_allocations_smoke_test.go; the per-occurrence mutation run that proves it; closing TKT-274's comment wording. OUT: changing windowOpen itself (it is already correct), codeWindowOpen (TKT-239/ADR-064, a separate const by deliberate design), and the release_at cutoff (ADR-024, already pinned by TestReleaseCutoffHoldsUnderPoolLockContention)."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "Settled by reading rather than deferred. (1) The divergence is reproducible: the existing close-side case establishes it in-repo with pg_sleep(0.05) inside a held transaction, so no new technique is needed. (2) The fixture must carry the same 'did not reproduce the divergence' guard the close-side case has, or a run where now() and clock_timestamp() do not separate would pass vacuously. (3) Direction of the assertion is the mirror, not the copy: shipped predicate says OPEN while frozen now() says not-yet-open."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-274 is Done and is the origin, not a dependency. Nothing else in flight touches channel_allocations.go."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror the existing close-side case at channel_allocations_smoke_test.go:702 — it is a working template, which is what keeps this from being a fixture-design problem. Set opens_at to a bound that falls AFTER the transaction's frozen now() and BEFORE clock_timestamp() at decision time, closes_at NULL. Not a money-path/auth/migration/CI approach, so `deferred` was never needed here."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "The whole ticket is one slice: one test case plus its mutation evidence. No decomposition warranted."
+    },
+    "success": {
+      "state": "met",
+      "note": "Three ACs on the ticket, each executable. The one that matters is the discriminating mutation: mutate ONLY the open-side clock_timestamp() to now() and the NEW case must go red while the existing close-side case stays green. Per AGENTS.md, the mutation that is evidence is the one only the new case can catch — a green close-side case under that mutation is what demonstrates the gap was real."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs: ADR-024-channel-allocations.md (the release_at cutoff this property was first litigated for), ADR-054-per-channel-sales-windows.md (the half-open [opens_at, closes_at) convention), ADR-010-postgres-claim-transaction.md (every window read happens under the pool row lock, which is what puts wait time between transaction start and the decision). All three verified present at HEAD. governingTests: TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart (:702, the template and the case that must stay GREEN under the open-side mutation); TestChannelSalesWindowIsHalfOpen (:637, pins boundary inclusivity — do not disturb); TestReleaseCutoffHoldsUnderPoolLockContention (:351, the ADR-024 precedent); and the TRIPWIRE TestTransitionKeepsTransactionStartClockDeliberately (buyer_ttl_clock_smoke_test.go:541) which deliberately pins transaction-start time on the transition path and carries an explicit do-not-delete instruction — a change that moves everything to clock_timestamp() breaks it, and it must NOT be edited to pass."
+    }
   }
- ],
- "comments": [
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-274's fourth ai-review pass as an **incidental** finding — outside that ticket's comment-only scope, so it was recorded in the code comment and split out here rather than fixed in place.\n\nVerified at HEAD, not inherited from the review:\n- `windowOpen` has two `clock_timestamp()` occurrences (`channel_allocations.go:43-44`).\n- `TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`:697`) sets `opens_at` to NULL, so only the close-side occurrence is exercised.\n\nNeeds shaping before Gate 1."
-  },
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS\n\nBacklog review 2026-08-25, re-verified at HEAD `ad849f98` (174 commits after the last backlog drain, so nothing was inherited from the earlier pass).\n\n**All eight items `met`, no blockers, nothing `deferred`.** Ready for Gate 1 — the human's call.\n\n**The claim holds at HEAD, checked rather than trusted:**\n- `windowOpen` still has two `clock_timestamp()` occurrences (`channel_allocations.go:43-44`).\n- The pinning test's fixture still selects `NULL::timestamptz AS opens_at` (`channel_allocations_smoke_test.go:725`), so the open-side occurrence is genuinely unexercised.\n\n**The risk question the ticket left open, settled.** Its own note argued both ways: a fixture-design ticket (keep the plan gate) versus a test with a working template beside it (`risk:low`). **Recommend NOT `risk:low`.** The deliverable is a fixture whose whole purpose is to be able to fail, and the ticket's central AC is a *discriminating* mutation — the exact shape AGENTS.md keeps the plan gate for. The template lowers the cost of the plan; it does not remove the question.\n\n**One trap the mémo carries and the drafter must not walk into.** `TestTransitionKeepsTransactionStartClockDeliberately` (`buyer_ttl_clock_smoke_test.go:541`) *deliberately* pins transaction-start time on the transition path, and says in its own comment: \"THIS TEST IS THE THING THAT MUST BE CONSCIOUSLY UPDATED — do not delete it to make a change pass.\" This ticket does not touch that path, and must not: the two clocks are different answers to different questions, on purpose."
-  }
- ],
- "description": "Incidental, found by the fourth adversarial review pass on TKT-274 (a comment-only ticket) and verified against the code.\n\n`windowOpen` (`services/inventory/internal/store/channel_allocations.go:43`) contains **two** `clock_timestamp()` occurrences:\n\n```sql\n(opens_at IS NULL OR opens_at <= clock_timestamp())\nAND (closes_at IS NULL OR closes_at > clock_timestamp())\n```\n\n`TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart` (`channel_allocations_smoke_test.go:697`) is the test that pins \"the predicate decides at DECISION time, not transaction-start time\" — the `now()`-for-`clock_timestamp()` mutant. It works by holding a transaction open across the cutoff, so frozen `now()` and moving `clock_timestamp()` diverge.\n\nBut it sets `opens_at` to **NULL** and only makes `closes_at` cross the gap. So it exercises **only the close-side occurrence**. A per-occurrence mutation of the **open-side** `clock_timestamp()` to `now()` leaves it green.\n\n## Why it matters\n\nThe open side is not symmetric decoration. A window written with `now()` on `opens_at` decides \"has the sale opened?\" at **transaction-start** time. A hold that queues on the pool lock before the on-sale instant and acquires it after would read the frozen start time and be refused as not-yet-open — or, with a transaction that began before the boundary, admitted early. That is the same class of bug ADR-024 litigated for `release_at`, on the side that governs **on-sale**, which is the highest-contention moment in the system.\n\n## Scope\n\n- [ ] Add a transaction-held case with a non-NULL `opens_at` that opens DURING the held transaction, asserting the shipped predicate says OPEN while frozen `now()` says not-yet-open (the mirror of the existing close-side case, including its \"fixture did not reproduce the divergence\" guard).\n- [ ] Mutate the OPEN-side `clock_timestamp()` alone to `now()` and observe the new case go red — the mutation that is evidence is the one only this case can catch. Confirm the existing close-side case stays green under that mutation, which is what demonstrates the gap was real.\n- [ ] Update the TKT-274 comment block: it currently records this gap as open (\"only PARTLY pinned... a mutation of the OPEN-side occurrence alone would stay green\"). Close that wording when the test lands.\n\n## Notes\n\nTKT-274 recorded the gap in the comment rather than closing it, because that ticket was comment-only by scope. The wording there is deliberately explicit so the gap is on the record rather than implied shut — do not delete it without adding the test.\n\nNot `risk:low` on its face: the deliverable is a test, but its central question is \"how do I construct a fixture that can actually fail?\", which is the shape AGENTS.md says to keep the plan gate for (the TKT-266 precedent). The existing close-side case is a working template, which argues the other way. Let shaping settle it.",
- "readiness": {
-  "objective": {
-   "state": "met",
-   "note": "windowOpen has two clock_timestamp() occurrences; the test that pins the decision-time property exercises only the close side. Re-verified at HEAD ad849f98: channel_allocations.go:43-44, and the fixture at channel_allocations_smoke_test.go:725 selects `NULL::timestamptz AS opens_at`. The open side governs on-sale, the highest-contention moment in the system."
-  },
-  "scope": {
-   "state": "met",
-   "note": "IN: one new transaction-held case with a non-NULL opens_at crossing the boundary, in channel_allocations_smoke_test.go; the per-occurrence mutation run that proves it; closing TKT-274's comment wording. OUT: changing windowOpen itself (it is already correct), codeWindowOpen (TKT-239/ADR-064, a separate const by deliberate design), and the release_at cutoff (ADR-024, already pinned by TestReleaseCutoffHoldsUnderPoolLockContention)."
-  },
-  "uncertainties": {
-   "state": "met",
-   "note": "Settled by reading rather than deferred. (1) The divergence is reproducible: the existing close-side case establishes it in-repo with pg_sleep(0.05) inside a held transaction, so no new technique is needed. (2) The fixture must carry the same 'did not reproduce the divergence' guard the close-side case has, or a run where now() and clock_timestamp() do not separate would pass vacuously. (3) Direction of the assertion is the mirror, not the copy: shipped predicate says OPEN while frozen now() says not-yet-open."
-  },
-  "dependencies": {
-   "state": "met",
-   "note": "No blockers. TKT-274 is Done and is the origin, not a dependency. Nothing else in flight touches channel_allocations.go."
-  },
-  "approach": {
-   "state": "met",
-   "note": "Mirror the existing close-side case at channel_allocations_smoke_test.go:702 — it is a working template, which is what keeps this from being a fixture-design problem. Set opens_at to a bound that falls AFTER the transaction's frozen now() and BEFORE clock_timestamp() at decision time, closes_at NULL. Not a money-path/auth/migration/CI approach, so `deferred` was never needed here."
-  },
-  "first_slice": {
-   "state": "met",
-   "note": "The whole ticket is one slice: one test case plus its mutation evidence. No decomposition warranted."
-  },
-  "success": {
-   "state": "met",
-   "note": "Three ACs on the ticket, each executable. The one that matters is the discriminating mutation: mutate ONLY the open-side clock_timestamp() to now() and the NEW case must go red while the existing close-side case stays green. Per AGENTS.md, the mutation that is evidence is the one only the new case can catch — a green close-side case under that mutation is what demonstrates the gap was real."
-  },
-  "context_memo": {
-   "state": "met",
-   "note": "governingAdrs: ADR-024-channel-allocations.md (the release_at cutoff this property was first litigated for), ADR-054-per-channel-sales-windows.md (the half-open [opens_at, closes_at) convention), ADR-010-postgres-claim-transaction.md (every window read happens under the pool row lock, which is what puts wait time between transaction start and the decision). All three verified present at HEAD. governingTests: TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart (:702, the template and the case that must stay GREEN under the open-side mutation); TestChannelSalesWindowIsHalfOpen (:637, pins boundary inclusivity — do not disturb); TestReleaseCutoffHoldsUnderPoolLockContention (:351, the ADR-024 precedent); and the TRIPWIRE TestTransitionKeepsTransactionStartClockDeliberately (buyer_ttl_clock_smoke_test.go:541) which deliberately pins transaction-start time on the transition path and carries an explicit do-not-delete instruction — a change that moves everything to clock_timestamp() breaks it, and it must NOT be edited to pass."
-  }
- }
 }
