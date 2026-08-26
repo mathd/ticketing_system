@@ -592,27 +592,30 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 //
 // Why not through CreateHold: setWindow writes the bounds as clock_timestamp()
 // arithmetic in an UPDATE, and CreateHold reads them back in a LATER, SEPARATE
-// statement. The test cannot control the gap between the two — it is whatever
-// the wall clock did in between — so it cannot place the bound ON the instant
-// the predicate evaluates. Note the claim is NOT "the bound is always in the
-// past": that would be a guarantee this clock cannot give, since
-// clock_timestamp() reads a non-monotonic wall clock (see
-// docs/learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md §2, and
-// TKT-234 — it narrows the window, it does not close it). The weaker claim is
-// the one that matters and it holds either way: the boundary case is
-// UNREACHABLE, so `>` and `>=` give the same answer for every input such a
-// fixture can construct. A first version of this test did exactly that and
-// three mutants survived it — `now()` for `clock_timestamp()`, `>` for `>=` on
-// the close, and `<` for `<=` on the open — because no fixture could
-// distinguish them.
+// statement. Nothing in that arrangement lets the test say where the bound
+// falls relative to the instant the predicate evaluates — the gap is whatever
+// the wall clock did in between, and it is neither controllable nor
+// reproducible. Note what is NOT being claimed: not that the bound is always in
+// the past, and not that landing exactly on it is impossible. Both would be
+// guarantees about a non-monotonic wall clock, which cannot give them (see
+// docs/learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md §2 and
+// TKT-234 — clock_timestamp() narrows the window, it does not close it).
 //
-// Do not reach for a within-statement argument here: adjacent clock_timestamp()
-// calls in ONE expression barely move. Measured against this database, over
-// 20,000 rows evaluating it twice per row, the two calls were equal 19,653
-// times and differed by exactly 1µs the other 347; the clock is also coarse
-// across rows (2,000 rows produced 86 distinct values). Those are observations
-// of one machine on one run, not a portable guarantee — re-run them before
-// building on them, and do not turn them into a rule about ordering.
+// The weaker statement is the one that condemns the fixture: it cannot place
+// the bound on the boundary DELIBERATELY, so whatever it observes about `>` vs
+// `>=` is an accident of timing that a rerun may not repeat. A test that cannot
+// aim at the case it means to prove does not prove it. A first version of this
+// test did exactly that and three mutants survived it — `now()` for
+// `clock_timestamp()`, `>` for `>=` on the close, and `<` for `<=` on the open
+// — because no fixture could distinguish them.
+//
+// Do not reach for a within-statement argument here either: adjacent
+// clock_timestamp() calls in ONE expression barely move. Measured on one
+// machine on one run, over 20,000 rows evaluating it twice per row, the two
+// calls were equal 19,653 times and differed by exactly 1µs the other 347; the
+// clock is also coarse across rows (2,000 rows produced 86 distinct values).
+// Observations, not guarantees — re-run them before building on them, and do
+// not turn them into a rule about ordering.
 //
 // Evaluating the predicate against literal bounds makes the boundary
 // expressible: the instant is fixed, so "at the bound" is a real case rather
