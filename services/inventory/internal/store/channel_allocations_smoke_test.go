@@ -604,10 +604,19 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // The weaker statement is the one that condemns the fixture: it cannot place
 // the bound on the boundary DELIBERATELY, so whatever it observes about `>` vs
 // `>=` is an accident of timing that a rerun may not repeat. A test that cannot
-// aim at the case it means to prove does not prove it. A first version of this
-// test did exactly that and three mutants survived it — `now()` for
-// `clock_timestamp()`, `>` for `>=` on the close, and `<` for `<=` on the open
-// — because no fixture could distinguish them.
+// aim at the case it means to prove does not prove it — the point is
+// reliability, not impossibility. A first version of this test did exactly
+// that, and two mutants survived its runs: `>` for `>=` on the close and `<`
+// for `<=` on the open. Not because landing on the boundary is impossible, but
+// because it cannot be arranged — a fixture that ever caught them would be
+// flaky rather than proving anything.
+//
+// The third mutant of that first version, `now()` for `clock_timestamp()`, is a
+// different problem with a different answer: it IS deliberately detectable, by
+// holding a transaction open across the cutoff so the two clocks diverge.
+// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart below does that
+// and pins it. It is named here only so this paragraph is not read as covering
+// it.
 //
 // Do not reach for a within-statement argument here either: adjacent
 // clock_timestamp() calls in ONE expression barely move. Measured on one
