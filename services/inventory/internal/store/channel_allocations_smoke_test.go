@@ -588,7 +588,7 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 }
 
 // The window is half-open [opens_at, closes_at) — asserted against the PREDICATE
-// itself, because a claim-path fixture cannot sit on the boundary.
+// itself, because a claim-path fixture cannot AIM at the boundary.
 //
 // Why not through CreateHold: setWindow writes the bounds as clock_timestamp()
 // arithmetic in an UPDATE, and CreateHold reads them back in a LATER, SEPARATE
