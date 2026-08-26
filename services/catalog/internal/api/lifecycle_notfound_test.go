@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -173,6 +174,7 @@ func discoverStoreErrorOperations(t *testing.T, dir string, doc *openapi3.T) []d
 	fset := token.NewFileSet()
 	callGraph := map[string][]string{}
 	exported := map[string]bool{}
+	receiverCalled := map[string][]string{} // callee -> the methods invoking it on s
 	for _, path := range sourceFiles(t, dir) {
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -185,7 +187,39 @@ func discoverStoreErrorOperations(t *testing.T, dir string, doc *openapi3.T) []d
 			}
 			callGraph[fn.Name.Name] = calledServerMethods(fn.Body)
 			exported[fn.Name.Name] = fn.Name.IsExported()
+			for _, name := range receiverCalls(fn) {
+				receiverCalled[name] = append(receiverCalled[name], fn.Name.Name)
+			}
 		}
+	}
+
+	// EDGE COMPLETENESS. The handler-side completeness check below asks whether
+	// every generated OPERATION was visited; this asks whether every EDGE was.
+	// They are different holes, and the second review pass found the second one:
+	// lose the source file holding an unexported helper and every exported
+	// handler is still visited, len(out) is still non-zero, both later guards are
+	// still satisfied — and an operation that reaches the boundary only through
+	// that helper is silently reclassified as safe. Executed: dropping the helper
+	// edges and deleting publishSeries's 404 passed every other guard.
+	//
+	// So: every method invoked on the receiver must be a method the graph has a
+	// body for. If it is not, the scan is missing source, and it fails rather
+	// than computing a closure over a graph with holes in it.
+	var danglingEdges []string
+	for callee, callers := range receiverCalled {
+		if _, known := callGraph[callee]; !known {
+			sort.Strings(callers)
+			danglingEdges = append(danglingEdges,
+				callee+" (called by "+strings.Join(slices.Compact(callers), ", ")+")")
+		}
+	}
+	if len(danglingEdges) > 0 {
+		sort.Strings(danglingEdges)
+		t.Fatalf("%d method(s) are invoked on the *Server receiver but the scan found no "+
+			"declaration for them, so the call graph has holes and the reachability closure "+
+			"below is computed over an incomplete graph. A handler that reaches writeStoreError "+
+			"only through a missing edge would be misclassified as unable to. Check sourceFiles. "+
+			"Dangling:\n  %s", len(danglingEdges), strings.Join(danglingEdges, "\n  "))
 	}
 
 	// Pass 2: the transitive closure, then the exported members of it.
@@ -321,6 +355,72 @@ func calledServerMethods(body *ast.BlockStmt) []string {
 		}
 		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 			out = append(out, sel.Sel.Name)
+		}
+		return true
+	})
+	return out
+}
+
+// receiverCalls returns every *Server method fn invokes on its own receiver —
+// `s.foo(...)` and `defer s.foo(...)`. It feeds the edge-completeness check, not
+// the closure, and the two want opposite things: the closure over-collects by
+// name so it cannot miss an edge, while this must be precise about the RECEIVER,
+// or `w.Write` and `r.Context` would be reported as missing *Server methods.
+//
+// `s.store.CreateVenue(...)` drops out correctly: the called selector's X is
+// `s.store`, not the identifier `s`.
+//
+// WHAT THIS DOES NOT COVER, stated rather than implied. Only the call position
+// is inspected, so a method taken as a VALUE — `f := s.writeStoreError; f(...)`
+// — is invisible to both this and the closure, and an operation reaching the
+// boundary only that way would be misclassified. The second review pass raised
+// that shape, along with interface dispatch and package-level indirection.
+// Distinguishing a method value from a field read (`s.store`) by name alone is
+// not possible; it needs go/types, which is a materially heavier test than the
+// property justifies.
+//
+// The bound on the risk is that no such instance exists: writeStoreError is
+// invoked directly at every one of its call sites and is referenced nowhere as
+// a value (`grep -n "StatusNotFound"` finds exactly one writer, server.go:566).
+// If someone introduces one, this invariant under-approximates silently — which
+// is the honest residual, recorded here rather than papered over with a check
+// that cannot actually see it.
+func receiverCalls(fn *ast.FuncDecl) []string {
+	recv := ""
+	if len(fn.Recv.List) == 1 && len(fn.Recv.List[0].Names) == 1 {
+		recv = fn.Recv.List[0].Names[0].Name
+	}
+	if recv == "" || recv == "_" {
+		return nil // an unnamed receiver cannot be called through
+	}
+	// `s.foo` where foo is INVOKED, not where it is a field being read. `s.store`
+	// and `s.log` are fields, and `s.store.CreateVenue(...)` invokes a method on
+	// the field's type, not on *Server — so the selector that must be a *Server
+	// method is only the one in the Fun position of the call, or one used as a
+	// bare function value.
+	onReceiver := func(e ast.Expr) (string, bool) {
+		sel, ok := e.(*ast.SelectorExpr)
+		if !ok {
+			return "", false
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != recv {
+			return "", false
+		}
+		return sel.Sel.Name, true
+	}
+	// Only the Fun position. A bare `s.store` is a FIELD read, and telling a field
+	// from a method by name alone needs full type information — which is the
+	// price this invariant deliberately does not pay. See the note on
+	// receiverMethodValues below for what that costs and what covers it.
+	var out []string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if name, ok := onReceiver(call.Fun); ok {
+			out = append(out, name)
 		}
 		return true
 	})
