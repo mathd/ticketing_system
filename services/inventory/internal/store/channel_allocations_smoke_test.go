@@ -640,10 +640,15 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // (store.go, reservations.go), which is what carries the expression's semantics
 // into production — but a path that stopped using it, or used it wrongly, would
 // leave both of these green. That gap is covered where it belongs, at the claim
-// path: TestChannelSalesWindowGatesHoldsAndIsDistinguishable drives CreateHold
-// through open, not-yet-open and closed windows, and
-// TestReleaseCutoffHoldsUnderPoolLockContention pins the sibling cutoff under a
-// real lock wait.
+// paths — and there are TWO of them, each with its own windowOpen query, so
+// naming only one would repeat in miniature the mistake this paragraph exists to
+// correct. CreateHold (store.go) is driven through not-yet-open, closed, open and
+// no-window by TestChannelSalesWindowGatesHoldsAndIsDistinguishable;
+// PlaceGroupReservation (reservations.go) has its own query and its own refusal,
+// pinned by TestGroupDrawDownSurvivesAClosedWindowButPlacementDoesNot and
+// TestClosedWindowRefusesAsAWindowEvenOnAnExhaustedPool. The sibling release_at
+// cutoff is pinned under a real lock wait by
+// TestReleaseCutoffHoldsUnderPoolLockContention.
 //
 // Do not reach for a within-statement argument here either: adjacent
 // clock_timestamp() calls in ONE expression barely move. Measured on one
@@ -790,8 +795,10 @@ func TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
 // const directly, so it pins the expression's CLOCK CHOICE, not the claim path's
 // use of it. The lock wait above is the motivation, not the fixture — the
 // transaction is held open to manufacture the same divergence a lock wait
-// produces, without a second session. The claim path itself is covered by
-// TestChannelSalesWindowGatesHoldsAndIsDistinguishable, and a real lock wait by
+// produces, without a second session. The claim paths themselves are covered by
+// TestChannelSalesWindowGatesHoldsAndIsDistinguishable (CreateHold) and
+// TestGroupDrawDownSurvivesAClosedWindowButPlacementDoesNot (the separate
+// PlaceGroupReservation query), and a real lock wait by
 // TestReleaseCutoffHoldsUnderPoolLockContention.
 func TestWindowPredicateOpenSideDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
 	ctx, _, db := storeForTest(t, time.Minute)
