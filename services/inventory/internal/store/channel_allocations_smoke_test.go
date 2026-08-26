@@ -614,14 +614,22 @@ func TestChannelSalesWindowGatesHoldsAndIsDistinguishable(t *testing.T) {
 // nothing in the fixture could aim at it.
 //
 // The third mutant of that first version, `now()` for `clock_timestamp()`, is a
-// different problem with a different answer, and is only PARTLY pinned.
-// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart (below) holds a
-// transaction open across the cutoff so the two clocks diverge, and catches the
-// substitution — but it sets opens_at to NULL, so it exercises only the
-// CLOSE-side occurrence of clock_timestamp() in windowOpen. A mutation of the
-// OPEN-side occurrence alone would stay green. Mentioned here so this paragraph
-// is not read as covering `now()`, and so the gap is on the record rather than
-// implied shut.
+// different problem with a different answer, and is pinned by a PAIR of tests
+// below rather than by this one. Each holds a transaction open across a bound so
+// the frozen and moving clocks diverge, and each covers ONE of the two
+// clock_timestamp() occurrences in windowOpen:
+// TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart the close side,
+// TestWindowPredicateOpenSideDecidesAtDecisionTimeNotTransactionStart the open
+// side (TKT-275).
+//
+// The pair is not duplication, and neither half is redundant. The close-side
+// case sets opens_at to NULL, and `NULL IS NULL` short-circuits the open half to
+// true under EITHER clock — so it is structurally blind to a substitution on the
+// open side, and a mutation of that occurrence alone leaves it green. That is
+// what the open-side case exists to catch, and what makes the close-side case
+// its control: red there and green here is the evidence the substitution was
+// caught by the new occurrence rather than by coverage that already existed.
+// Deleting either one leaves an occurrence of the shipped predicate unpinned.
 //
 // Do not reach for a within-statement argument here either: adjacent
 // clock_timestamp() calls in ONE expression barely move. Measured on one
@@ -736,6 +744,74 @@ func TestWindowPredicateDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
 		t.Fatal("the shipped predicate reports OPEN for a window that closed before decision time — " +
 			"it is reading now(), which freezes at transaction start. A hold queued on the pool lock " +
 			"across the cutoff would sell a closed channel (ADR-024's reasoning for release_at).")
+	}
+}
+
+// The same property, on the OPEN side — the occurrence the case above cannot
+// see (TKT-275).
+//
+// windowOpen names clock_timestamp() twice, and the case above sets opens_at to
+// NULL. `NULL IS NULL` short-circuits the open half to true under EITHER clock,
+// so that case is structurally blind to a now()-for-clock_timestamp()
+// substitution on the open side: mutate that occurrence alone and it stays green. The
+// pair is therefore not decoration. This case is the open-side evidence and the
+// case above is its control — a run where this one goes red and that one stays
+// green is what proves the substitution was caught HERE and not somewhere that
+// already covered it. Deleting either one leaves an occurrence unpinned.
+//
+// The mirror, not the copy: the guard flips direction. Above, now() must say
+// OPEN (the window closed during the transaction). Here, now() must say
+// NOT-YET-OPEN (the window opened during the transaction) while the shipped
+// predicate says OPEN. A guard copied across without flipping would assert
+// something the fixture always satisfies, and would not be a guard.
+//
+// Why the open side is not symmetric decoration: it governs ON-SALE. Written
+// with now(), "has the sale opened?" is answered at transaction-start time, so
+// a hold that queues on the pool row lock (ADR-010) before the on-sale instant
+// and acquires it after reads the frozen start time and is refused as
+// not-yet-open — at the highest-contention moment the system has. Same class as
+// the release_at bug ADR-024 litigated, on the other bound.
+func TestWindowPredicateOpenSideDecidesAtDecisionTimeNotTransactionStart(t *testing.T) {
+	ctx, _, db := storeForTest(t, time.Minute)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Freeze the transaction's now() just before the bound we are about to set.
+	var frozen time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT now()`).Scan(&frozen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_sleep(0.05)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A window that opened AFTER this transaction began but BEFORE now: frozen
+	// now() still thinks it has not opened; clock_timestamp() knows it has. The
+	// bound sits 10ms past the freeze and the sleep is 50ms, so the decision-time
+	// clock clears it with room to spare. closes_at is NULL so nothing but the
+	// open-side comparison can decide the result.
+	var byClock, byNow bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+windowOpen+`,
+		       (opens_at IS NULL OR opens_at <= now()) AND (closes_at IS NULL OR closes_at > now())
+		FROM (SELECT $1::timestamptz + interval '10 milliseconds' AS opens_at, NULL::timestamptz AS closes_at) w`,
+		frozen).Scan(&byClock, &byNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byNow != false {
+		t.Fatalf("the fixture did not reproduce the divergence: now() says open already, " +
+			"so this test cannot distinguish the two clocks")
+	}
+	if !byClock {
+		t.Fatal("the shipped predicate reports NOT-YET-OPEN for a window that opened before decision " +
+			"time — it is reading now(), which freezes at transaction start. A hold that queued on the " +
+			"pool lock before the on-sale instant and acquired it after would be refused (ADR-024's " +
+			"reasoning for release_at, on the bound that governs on-sale).")
 	}
 }
 
