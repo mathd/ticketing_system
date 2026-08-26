@@ -36,6 +36,17 @@ func (f *fakeStore) RegisterPublicReadInvalidator(func(store.PublicReadScope)) {
 
 type fakeStore struct {
 	displayNamesErr error
+	// unknownOrganizer makes the three creating methods that map an unknown
+	// organizer FK to ErrNotFound in the real store — CreateVenue, CreateEvent,
+	// CreateChannel (postgres.go:70, postgres.go:121, channels_postgres.go:61) —
+	// reproduce that at this tier (TKT-178). The fake otherwise inserts
+	// unconditionally, so there was no way to drive the handler's 404 branch and
+	// therefore no way to observe ADR-028 laundering it into a 500.
+	//
+	// It is uuid.Nil when unset, and the handler can never be reached with
+	// uuid.Nil: the organizer comes from a verified assertion (ADR-058), never
+	// from the body. So an unset seam changes nothing for every other test.
+	unknownOrganizer uuid.UUID
 	// organizerSeen records the organizer each transition method was called with
 	// (TKT-251). It exists ONLY so the wiring test can assert the handler passed
 	// the VERIFIED organizer rather than uuid.Nil or a request-derived value; it
@@ -597,6 +608,9 @@ func (f *fakeStore) AttachEventToSeason(_ context.Context, organizerID, seasonID
 }
 
 func (f *fakeStore) CreateVenue(_ context.Context, in store.VenueInput) (store.Venue, error) {
+	if err := f.rejectUnknownOrganizer(in.OrganizerID); err != nil {
+		return store.Venue{}, err
+	}
 	v := store.Venue{ID: uuid.New(), OrganizerID: in.OrganizerID, Name: in.Name,
 		GACapacity: in.GACapacity, CreatedAt: time.Now().UTC()}
 	f.venues[v.ID] = v
@@ -614,7 +628,19 @@ func (f *fakeStore) ListVenues(_ context.Context, organizerID uuid.UUID) ([]stor
 	return out, nil
 }
 
+// rejectUnknownOrganizer reproduces the real store's unknown-organizer FK
+// violation (TKT-178). See fakeStore.unknownOrganizer.
+func (f *fakeStore) rejectUnknownOrganizer(organizerID uuid.UUID) error {
+	if f.unknownOrganizer != uuid.Nil && organizerID == f.unknownOrganizer {
+		return fmt.Errorf("organizer: %w", store.ErrNotFound)
+	}
+	return nil
+}
+
 func (f *fakeStore) CreateEvent(_ context.Context, in store.EventInput) (store.Event, error) {
+	if err := f.rejectUnknownOrganizer(in.OrganizerID); err != nil {
+		return store.Event{}, err
+	}
 	e := store.Event{ID: uuid.New(), OrganizerID: in.OrganizerID, Name: in.Name,
 		Description: in.Description, CreatedAt: time.Now().UTC()}
 	f.events[e.ID] = e
@@ -2841,6 +2867,9 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 // with a store that leaks disabled channels to the public read.
 func (f *fakeStore) CreateChannel(_ context.Context, in store.ChannelInput) (store.Channel, error) {
 	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
+		return store.Channel{}, err
+	}
+	if err := f.rejectUnknownOrganizer(in.OrganizerID); err != nil {
 		return store.Channel{}, err
 	}
 	if f.channels == nil {
