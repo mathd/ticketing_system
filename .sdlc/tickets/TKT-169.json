@@ -126,6 +126,11 @@
       "stage": "backlog",
       "kind": "note",
       "body": "<!-- sdlc:stage=backlog kind=note -->\n### Premise updated by TKT-166's ai-review\n\nThis ticket was filed as *\"a double admission is shipped and undefended\"*. It is not: TKT-166's review caught it before merge, and the switch now **refuses** an already-admitted source ticket.\n\nWhat is left is the harder half, and it is a product question rather than a defect: **the refusal costs a paid buyer their exchange**, and for a multi-entry pass it is almost certainly too strict — one `entry` on a 5-day pass should probably not block an exchange of the remaining days.\n\nStays at CONCERNS. The engineering is small; the decision is not."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — held on a genuine product decision\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`. Every claim verified.\n\nThe refusal shipped and is live: `ErrSourceTicketsAlreadyAdmitted` (`services/access/internal/store/exchanges.go:63`), with the comment at `:59-62` naming TKT-169 as the owner of the open decision. Both tests the AC says to *update, not delete* exist (`exchanges_smoke_test.go:357`, `:402`). ADR-039 §2 still carries the qualification verbatim (`:76-81`), and `docs/development.md:430,440` repeats the open state.\n\n**Held: the multi-entry-pass case is squarely a product policy call.** \"Used\" is not binary for a pass — one `entry` on a 5-day pass should probably not block exchanging the remaining days — and the three options (refuse pre-money / carry the entry forward / keep the post-settlement refusal) have different blast radii. Engineering is small once the rule is chosen. Carried into the decision brief.\n\n**One item to re-check at shaping:** the AC *\"a stranded settled-but-unswitched exchange has a documented operator resolution\"* may now be partly covered by **ADR-067** (wedged-exchange operator unwind), which postdates the ticket.\n"
     }
   ]
 }

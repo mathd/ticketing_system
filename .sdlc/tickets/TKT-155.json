@@ -56,6 +56,12 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from a plan-review finding, not shaped. It is a **product decision** (is forward pricing public?) with four costed options, so it needs the plan gate rather than a straight-to-Ready path. Minimal mémo baked at creation per `decomposition.md`. **Not blocking TKT-153** — that ticket's behaviour is identical either way."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — the exposure has WIDENED twice since filing, and a precedent now points at the answer\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed live.** `GET /ticket-types/{ticketTypeId}/price-resolution` is declared, non-`/internal/`, and explicitly `security: []` (`openapi.yaml:932-936`). No handler guard — `guardInternalSurface` (`server.go:254`) covers only the `/internal/` prefix. The gateway proxies `/api/catalog/` (`gateway/cmd/gateway/main.go:30`) and denies only `prefix+\"internal/\"` (`main.go:226` — ticket cites `:47`, drifted). `candidates` still reports `rule_id`, `scope_level`, `scope_id`, `amount`, `priority`, `forced` per loser (`openapi.yaml:2010-2036, 2112-2115`), and `outside_window_future` is still in the reason enum (`:2036`, `store/pricing.go:75`).\n\n**What the ticket does not know:**\n\n1. **TKT-237 partially mitigated it on the same reasoning, without closing the ticket.** Channel-aware pricing omits different-channel rules from `candidates` *\"because this operation is public\"* (`openapi.yaml:981-987`).\n2. **The fee sibling took the internal-credential route.** `resolveTicketTypeFees` is `/internal/` for exactly this reason (`openapi.yaml:1076-1093`), and ADR-046 (`:217`) names TKT-155 as the open record. There is a live assertion pinning the concern at `store/pricing_test.go:795,831` (*\"this publishes the channel price matrix on a PUBLIC endpoint\"*), with cross-references at `openapi.yaml:1092` and `services/commerce/internal/api/catalog_pricing.go:92`.\n\n**So the decision space has narrowed from four options to essentially one with a precedent.** Option 1 (require the internal credential) is what the sibling operation already does. Still `owner: human` — it is a public-contract and disclosure call, and the ticket is right that only the owner can take it — but it should be put to the owner as *\"confirm we do here what `resolveTicketTypeFees` already does\"* rather than as an open four-way. Carried into the decision brief.\n"
     }
-  ]
+  ],
+  "parent": "TKT-5"
 }

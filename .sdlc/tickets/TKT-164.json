@@ -117,6 +117,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ❌ Implementation readiness — FAIL (deliberately)\n\nThe ownership question is genuinely open — the association spans inventory, access and the ADR-029 pinning contract, and no one service obviously owns it. Shaping starts there, not with a plan.\n\n**Note the `blocks TKT-158` edge.** Exchange has the same problem with a worse failure mode: exchanging one seat of three cannot identify which seat leaves. TKT-158's planning must decide whether it restricts itself to unseated exchanges or waits for this."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — and the blast radius has GROWN since filing\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed.** `tickets` has no seat column — `services/access/internal/store/migrations/0001_tickets.sql:3` is the only tickets DDL and a grep for `seat` across access migrations returns nothing. `claim_seats` lives only in inventory (`inventory/.../migrations/0009_seat_claims.sql:28`). The partial-seated refusal is live and still cites this ticket (`inventory/internal/store/refund_returns.go:31-37`, derivation at `:113-116`).\n\n**Three consumers now hard-depend on the gap, two of them added after filing:**\n- `services/commerce/internal/api/exchanges.go:177-185` refuses **any** seated exchange — not just a partial one.\n- ADR-040 (`:149-152`) parks cancelled-event seated orders as permanent `failed/reversal_outstanding`.\n- ADR-062 / TKT-163's reconciler excludes them outright (`ADR-062:65,189`; `commerce/.../migrations/0021_refund_reversal_reconciliation.sql:18`).\n\n**One description edit for shaping:** the ticket's own \"Update (TKT-158)\" note is accurate but understated — ADR-039:215 says a seated order cannot be exchanged **at all**, not merely partially.\n\n**Verdict: needs shaping, but NOT a human product decision.** The open item is ownership/architecture — association on `tickets`, a join table, or carried in the issuance event, and which service owns it. That is an ADR an architect can settle. All cited ADRs (029, 031, 038, 040) resolve at HEAD.\n"
     }
   ]
 }

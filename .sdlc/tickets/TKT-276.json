@@ -1,23 +1,29 @@
 {
- "key": "TKT-276",
- "type": "Task",
- "summary": "Reseller credential overlap is unbounded and an operator cannot enumerate credentials to reconcile",
- "status": "Backlog",
- "labels": [],
- "assignee": null,
- "pr": null,
- "links": [
-  {
-   "type": "found-in",
-   "key": "TKT-240"
-  }
- ],
- "description": "**Filed 2026-08-25 by a backlog review. Recorded as UNOWNED by TKT-240's closeout and by ADR-056 itself; no ticket existed for it.**\n\nTKT-240's closeout lists this under \"**Unowned:**\", and `ADR-056-partner-credential-identity.md:51-53` states it in the ADR's own words:\n\n> **Known gap (ai-review pass 2):** the overlap is currently *unbounded* — repeated enrolment yields any number of live credentials, and `ListResellerCredentials` exists in the store but is **not exposed as a CLI command**, so an operator cannot enumerate them to reconcile. Bounding the overlap and shipping the listing command is **outstanding work**, recorded on the ticket rather than implied to be done.\n\n**Verified at HEAD `ad849f98`, not inherited:**\n- `ListResellerCredentials` exists at `services/commerce/internal/store/reseller_credentials.go:143` and its own comment calls it \"the operator's view of one organizer's partners\".\n- Grepping `services/commerce/cmd/` and `shared/` for `ListResellerCredentials` returns **nothing** — it has no caller outside the store and its tests.\n- The CLI has exactly two reseller verbs: `enrol-reseller` and `revoke-reseller` (`services/commerce/cmd/commerce/main.go:53`). There is no list.\n\n**Why this is worth a ticket rather than a shrug.** These are live partner credentials on a selling surface. The two facts compose badly: enrolment can mint unboundedly many live credentials for one partner, and the operator has no way to see them. `revoke-reseller` takes a *credential id* — which an operator has no supported way to obtain after the one-time token print. So the practical position is that a partner's credential set can grow without limit and cannot be reconciled with the CLI that exists, which makes revocation unreliable in exactly the situation revocation is for (a suspected leak).\n\n**Acceptance Criteria:**\n- [ ] `commerce list-resellers <organizer-id>` (name to be settled) exposes `ListResellerCredentials`, printing credential id, reseller id, channel code, label, created/revoked state — and **never** the token or any prefix of it (ADR-012 redaction: name the field, not the value).\n- [ ] A decision, recorded either way, on bounding the overlap: cap live credentials per (organizer, reseller), or supersede-on-enrol, or accept it explicitly with the reason. \"Accept, recorded\" is a legitimate outcome for a testbed; silence is not.\n- [ ] ADR-056's \"Known gap\" paragraph is updated to describe what was actually done, so the ADR stops asserting outstanding work that has shipped.\n- [ ] A test proves the listing shows a credential that `enrol-reseller` created and reflects `revoke-reseller` afterwards — asserted against the database, not the fake, since the mechanism is SQL (AGENTS.md: a test must live at the tier its mechanism does).\n\n**Non-goals:** rotation, credential expiry, the partner write path (TKT-246, Done), the settlement leg (TKT-277).\n\nQuality gates: `make check`.",
- "comments": [
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by the 2026-08-25 backlog review, which swept the last ~35 Done tickets for deferrals that never became tickets. This was the clearest: **named as \"Unowned\" in TKT-240's closeout and stated as a known gap in ADR-056 §51-53, with no ticket anywhere.**\n\nEvery fact re-verified at HEAD rather than inherited: `ListResellerCredentials` exists in the store (`reseller_credentials.go:143`), has no caller outside its tests, and the CLI offers only `enrol-reseller` / `revoke-reseller` (`main.go:53`).\n\n**Needs shaping before Gate 1.** Likely `simple`, but the overlap-bounding half is a real decision (cap, supersede, or accept) and should be graded `owner: human` at shaping — it is an auth-surface policy, not plumbing."
-  }
- ],
- "classification": "simple"
+  "key": "TKT-276",
+  "type": "Task",
+  "summary": "Reseller credential overlap is unbounded and an operator cannot enumerate credentials to reconcile",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [
+    {
+      "type": "found-in",
+      "key": "TKT-240"
+    }
+  ],
+  "description": "**Filed 2026-08-25 by a backlog review. Recorded as UNOWNED by TKT-240's closeout and by ADR-056 itself; no ticket existed for it.**\n\nTKT-240's closeout lists this under \"**Unowned:**\", and `ADR-056-partner-credential-identity.md:51-53` states it in the ADR's own words:\n\n> **Known gap (ai-review pass 2):** the overlap is currently *unbounded* — repeated enrolment yields any number of live credentials, and `ListResellerCredentials` exists in the store but is **not exposed as a CLI command**, so an operator cannot enumerate them to reconcile. Bounding the overlap and shipping the listing command is **outstanding work**, recorded on the ticket rather than implied to be done.\n\n**Verified at HEAD `ad849f98`, not inherited:**\n- `ListResellerCredentials` exists at `services/commerce/internal/store/reseller_credentials.go:143` and its own comment calls it \"the operator's view of one organizer's partners\".\n- Grepping `services/commerce/cmd/` and `shared/` for `ListResellerCredentials` returns **nothing** — it has no caller outside the store and its tests.\n- The CLI has exactly two reseller verbs: `enrol-reseller` and `revoke-reseller` (`services/commerce/cmd/commerce/main.go:53`). There is no list.\n\n**Why this is worth a ticket rather than a shrug.** These are live partner credentials on a selling surface. The two facts compose badly: enrolment can mint unboundedly many live credentials for one partner, and the operator has no way to see them. `revoke-reseller` takes a *credential id* — which an operator has no supported way to obtain after the one-time token print. So the practical position is that a partner's credential set can grow without limit and cannot be reconciled with the CLI that exists, which makes revocation unreliable in exactly the situation revocation is for (a suspected leak).\n\n**Acceptance Criteria:**\n- [ ] `commerce list-resellers <organizer-id>` (name to be settled) exposes `ListResellerCredentials`, printing credential id, reseller id, channel code, label, created/revoked state — and **never** the token or any prefix of it (ADR-012 redaction: name the field, not the value).\n- [ ] A decision, recorded either way, on bounding the overlap: cap live credentials per (organizer, reseller), or supersede-on-enrol, or accept it explicitly with the reason. \"Accept, recorded\" is a legitimate outcome for a testbed; silence is not.\n- [ ] ADR-056's \"Known gap\" paragraph is updated to describe what was actually done, so the ADR stops asserting outstanding work that has shipped.\n- [ ] A test proves the listing shows a credential that `enrol-reseller` created and reflects `revoke-reseller` afterwards — asserted against the database, not the fake, since the mechanism is SQL (AGENTS.md: a test must live at the tier its mechanism does).\n\n**Non-goals:** rotation, credential expiry, the partner write path (TKT-246, Done), the settlement leg (TKT-277).\n\nQuality gates: `make check`.",
+  "comments": [
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled by the 2026-08-25 backlog review, which swept the last ~35 Done tickets for deferrals that never became tickets. This was the clearest: **named as \"Unowned\" in TKT-240's closeout and stated as a known gap in ADR-056 §51-53, with no ticket anywhere.**\n\nEvery fact re-verified at HEAD rather than inherited: `ListResellerCredentials` exists in the store (`reseller_credentials.go:143`), has no caller outside its tests, and the CLI offers only `enrol-reseller` / `revoke-reseller` (`main.go:53`).\n\n**Needs shaping before Gate 1.** Likely `simple`, but the overlap-bounding half is a real decision (cap, supersede, or accept) and should be graded `owner: human` at shaping — it is an auth-surface policy, not plumbing."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Re-verified — still unshaped; one auth-policy decision inside an otherwise plumbing ticket\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`, re-checked rather than inherited from yesterday's filing.\n\n`ListResellerCredentials` still exists at `services/commerce/internal/store/reseller_credentials.go:143` with no caller outside its tests, and the CLI still offers only `enrol-reseller` / `revoke-reseller` (`cmd/commerce/main.go:53`). ADR-056 (`:51-53`) still states the gap in its own words.\n\n**The ticket splits cleanly, and the halves have different gates:**\n- **The listing command** — plumbing. A CLI verb over a store method that already exists. No decision; Ready-able on its own, and it is the half that unblocks the operator today, since `revoke-reseller` takes a credential id an operator has no supported way to obtain after the one-time token print.\n- **Bounding the overlap** — cap, supersede, or accept. That is an auth-surface policy call, `owner: human`, and per `shaping.md` the `deferred` escape hatch is unavailable on an auth surface.\n\n**Recommend shaping it as the listing command first**, with the bound as a follow-up carrying the owner's answer. That gets the operator a reconciliation path without waiting on a policy decision. Carried into the decision brief.\n"
+    }
+  ],
+  "classification": "simple",
+  "parent": "TKT-17"
 }

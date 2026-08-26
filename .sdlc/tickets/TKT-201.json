@@ -46,6 +46,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-193's scope survey (owner decision, 2026-08-04): ship the console over what is readable, ticket the rest. Not shaped — needs the 8-item DoR before Gate 1.\n\nThe open question in the description is a real one and should be answered at shaping, not discovered at implementation."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — held on two authorization/product questions\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed.** `OrderState` is still exactly `{order_id, status}` with `additionalProperties: false` — now at `services/commerce/api/openapi.yaml:1013-1019` (**drift**: the ticket cites `:330`, which is now inside the partner-availability path). `/internal/buyers/{id}/delivery-email` is still the only buyer-contact read (`:530`).\n\n**Two live in-code dependencies confirm the gap is load-bearing, not cosmetic:**\n- `web/backoffice/src/lib/unresolved-refunds.ts:20-25`: *\"This module has a known expiry: TKT-201 … Whoever lands it should delete this, not extend it.\"*\n- `web/backoffice/src/pages/orders.astro:168`, and ADR-042 (`:385-386`) independently states there is no such read.\n\n**Held.** Two questions, both the owner's: one read or two (a staff detail read alongside the existing minimal state, or a widened `OrderState`), and the buyer-contact CoS which is an explicit unanswered authorization question — *\"name **which** caller may see it and why\"*. That is PII on a surface that has none today, and ADR-042 deliberately gives the back office no internal credential. Both carried into the decision brief.\n\n**Whichever way it goes, ADR-001 binds the money half:** integer minor units + ISO currency, no float on the path.\n"
     }
   ]
 }

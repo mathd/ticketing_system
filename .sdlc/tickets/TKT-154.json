@@ -52,6 +52,12 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFiled from a TKT-150 review finding, not yet shaped. It is a **decision** (bound the column, bound the API, or accept and record), so it needs the plan gate rather than a straight-to-Ready path. Minimal mémo baked at creation per `decomposition.md` — review-born tickets get one so Planning does not re-derive the context. Not blocking TKT-151: the range is unreachable with today's data, and ADR-036 already bounds the new table."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — and the window is no longer theoretical\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed.** `price_amount bigint NOT NULL CHECK (price_amount >= 0)` with no upper bound (`migrations/0001_catalog_schema.sql:51` — line accurate). No later migration alters `ticket_types`; the only references are comments in `0012_price_rules.sql:31-39` and `0016_fee_rules.sql:45` naming this gap as TKT-154's.\n\n**The \"why it has been invisible\" reasoning is now STALE, in the direction that strengthens the ticket.** It argues the only reader is the hand-mounted `/internal/` route, which the validator skips. But TKT-151's contract-declared `resolveTicketTypePrice` has **shipped** (`openapi.yaml:932-1000`, generated route `openapi_gen.go:3434`) and returns `base_price` as `Money`. The reachable path the ticket describes as prospective **exists at HEAD**.\n\n**Line drift:** `Money.amount`'s `maximum: 9007199254740991` is now at `openapi.yaml:2425-2439`, not `:1011-1022` (~1400 lines). `getTicketType` is at `server.go:206`, not `:104`.\n\n**A second instance worth folding in:** `currency char(3) NOT NULL` at `0001_catalog_schema.sql:52` carries no case constraint, while the contract pattern is `^[A-Z]{3}$`. Same decision shape, same migration.\n\n**Verdict: near-Ready, and the precedent answers it.** The ticket offers three options, but `price_rules` and `fee_rules` both already carry the CHECK constraints — option 1 (add the bound at the column) is the in-repo convention. Worth one line of owner confirmation rather than an open three-way; carried into the decision brief as a low-stakes technical call.\n"
     }
-  ]
+  ],
+  "parent": "TKT-5"
 }

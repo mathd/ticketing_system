@@ -20,6 +20,12 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — NOT promoted (backlog drain, HEAD `ac2952b`)\n\n**Held — no trigger exists.** The ticket says it plainly: \"No streaming or hijacking route exists in the repo today. This is a placeholder for when one is proposed.\" Verified still true. Moving it to Ready would queue a decision about a route that nobody has asked for. Leave it as the tripwire it is."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⏸ HOLD — correctly parked; the trigger still does not exist\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`. Re-verified rather than inherited.\n\nMechanism intact: `responseValidated` still buffers into an `httptest.ResponseRecorder` (`shared/go/contract/http.go:118-158`, recorder at `:120-121`, replay at `:153-157`), which implements neither `Flusher` nor `Hijacker`. The doc comment at `:115-117` now states the consequence explicitly. The conditional-on-flag claim holds: `ResponseValidator` returns `next` untouched when validation is off (`:76-78`).\n\n**The ticket's \"not urgent\" premise is still true.** A repo-wide sweep for `http.Flusher`, `http.Hijacker`, `Hijack()`, `text/event-stream`, `EventSource`, `websocket`, `chunked` and long-poll across Go/TS/Astro/YAML returns exactly one non-test hit: `shared/go/obs/requestlog.go:41-51`, a defensive `Unwrap()`/`Flush()` passthrough in the request-log middleware added at scaffold time — not produced by any route.\n\n**No action.** Both ACs are decisions with no trigger. Leave it as a tripwire; the ticket to re-open it is the first one that proposes a streaming or hijacking route.\n"
     }
-  ]
+  ],
+  "parent": "TKT-37"
 }

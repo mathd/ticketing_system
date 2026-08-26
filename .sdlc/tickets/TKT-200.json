@@ -2,7 +2,7 @@
   "key": "TKT-200",
   "type": "Story",
   "summary": "Catalog create operations take no idempotency key, so a double-submit duplicates",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -33,6 +33,46 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-192's ai-review triage as **incidental**: real, but pre-existing and outside that ticket's scope. Not shaped — needs the 8-item DoR before Gate 1."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS. Promoted Backlog → Ready.\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`. **All eight items `met`, no blockers, nothing `deferred`.**\n\n**The gap is confirmed at HEAD, not inherited.** `grep -n Idempotency services/catalog/api/openapi.yaml` → **zero hits**, on any operation. TKT-192's page guard is live and self-documents the residual: `web/backoffice/src/pages/events/new.astro:80-82` — *\"closing the double-submit race needs an idempotency key catalog's creates do not accept, which is TKT-200.\"*\n\n**What makes this Ready rather than merely well-described: the decision was already taken elsewhere.** Commerce has shipped this four times over, and the shape is uniform — `idempotency_key` + `request_fingerprint` under `UNIQUE (organizer_id, idempotency_key)` (`migrations/0001_checkout.sql:20`, `0007_order_refunds.sql:36,51`, `0012_cancellation_refunds.sql:25,54`, `0024_exchange_unwinds.sql:56`). There is no open question about storage, scoping, or what a repeat returns; there is an implementation to copy.\n\n**One thing changed under this ticket since filing, and it helps.** TKT-245 added `CatalogStaffWriteCredential` + `CatalogOrganizerAssertion` to all three operations, so the `organizer_id` the UNIQUE constraint needs is now authenticated on the request rather than taken from the body. That is what makes the commerce pattern transferable rather than merely analogous.\n\n**Two traps recorded so the drafter does not walk into them:**\n\n1. **The concurrency CoS names its own failure mode.** A sequential repeat passes against a naive check-then-insert and proves nothing about the race this ticket exists to close. The assertion must run two genuinely concurrent submits of one key and count rows.\n2. **`make check` cannot verify this.** It changes a back-office write form, so per AGENTS.md a browser spec that *submits* is required — `test/browser/event-builder.mjs` exists and is the file to extend. A spec that only renders the form would pass while the key never leaves the page.\n\n**Parent set to TKT-2** (Catalog & event structure) — it had none, which is a board-hygiene gap this review is fixing across the backlog.\n\n**Not `risk:low`:** a new migration on a shared authoring path, plus a contract change on three operations.\n"
     }
-  ]
+  ],
+  "parent": "TKT-2",
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "POST /events, /performances and /ticket-types accept no idempotency key, so a true double-click race creates duplicate rows. Verified: `grep -n Idempotency services/catalog/api/openapi.yaml` returns ZERO hits across the whole catalog contract, while commerce declares IdempotencyKey as a required header param (services/commerce/api/openapi.yaml:7,24,335,354). The asymmetry is catalog's, not the platform's."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: the three catalog create operations (contract + handler + store), the storage the replay reads back, and the back-office builder sending a key. OUT: publish/archive and every other catalog write -- creates are what duplicate. OUT: commerce, which already has this. RE-EXAMINE, per the ticket's own CoS: TKT-192's page-side replay guard at web/backoffice/src/pages/events/new.astro:80-82, which names TKT-200 as the thing that would make it redundant."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None open, because the pattern is settled in-repo rather than invented here. Commerce's shape, verified at HEAD: an `idempotency_key text NOT NULL` column plus a `request_fingerprint`, under a `UNIQUE (organizer_id, idempotency_key)` constraint (migrations/0001_checkout.sql:20, 0007_order_refunds.sql:36,51, 0012_cancellation_refunds.sql:25,54, 0024_exchange_unwinds.sql:56 which also bounds length 1..200). The concurrency question -- what a second in-flight request sees -- is answered by that UNIQUE constraint under the insert, not by application logic."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-192 (origin) is Done. TKT-245 has since added CatalogStaffWriteCredential + CatalogOrganizerAssertion to all three operations, so the organizer_id the UNIQUE constraint needs is already authenticated on the request -- which is what makes the commerce pattern transferable rather than merely similar."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Mirror commerce: declare an Idempotency-Key parameter on the three operations, persist key + request fingerprint scoped by organizer_id under a UNIQUE constraint, and replay the first result on a repeat. NOT `deferred`. The carve-out check, run rather than assumed: this is NOT a money path (the ticket's own 'blast radius is duplicated drafts, not money' is verified -- nothing here publishes or charges) and NOT auth (TKT-245 already authenticates these operations; this adds no trust boundary). It IS a data migration -- a new table or columns -- so the plan gate stays and the migration follows the goose/out-of-band rules. FINGERPRINT MISMATCH IS A DECISION THE COMMERCE PRECEDENT ALREADY MADE: same key + different body must not silently replay the first result; copy what commerce does rather than re-deriving it."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "All three operations in one slice -- they share one contract, one store and one migration, and shipping one of three leaves the builder half-protected. Comfortably a sprint: commerce's implementation is the worked example."
+    },
+    "success": {
+      "state": "met",
+      "note": "Four CoS on the ticket, each testable. The load-bearing one is the second and it names its own trap: exactly one resource under REAL concurrency, not a sequential repeat -- a sequential test passes against a naive check-then-insert and proves nothing about the race the ticket exists to close. Derive the expected value from the requirement (a double-submit of one key yields one row and two identical responses), never from a run."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs, verified to resolve at HEAD: ADR-002-services-from-day-one.md (every entity carries organizer_id -- the scope the UNIQUE constraint must include, or one organizer's key collides with another's); ADR-009-contract-first-apis.md (contract-first: edit openapi.yaml and COMMIT openapi_gen.go + api-types.gen.ts BEFORE the gate, check-generate diffs against HEAD). ADR-008/ADR-022 govern the migration's placement (out-of-band, per-service migrate subcommand). governingTests: smoke/backoffice_event_builder_test.go:15 drives the real authoring path end-to-end and is what a regression would break; web/backoffice/test/event-builder.test.ts and web/backoffice/test/authorization.test.ts:104 cover the page tier; smoke's postWithKey helper (smoke/customer_accounts_test.go:254, smoke/partner_reserve_test.go:202) is the existing harness for key-carrying requests -- reuse it rather than writing a second one. BROWSER SPEC REQUIRED: this changes a back-office write form, so per AGENTS.md `make check` cannot verify it -- test/browser/event-builder.mjs already exists and is the file to extend, and it must submit the form, not just render it."
+    }
+  }
 }

@@ -4,7 +4,7 @@
   "parent": "TKT-31",
   "classification": "complex",
   "summary": "Tighten catalog's free-form CacheControl component, and delete TKT-204's allowlist",
-  "status": "Backlog",
+  "status": "Ready",
   "labels": [],
   "assignee": null,
   "pr": null,
@@ -15,6 +15,45 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "### Not yet shaped — created as a carve-out, not as a ready ticket\n\nBorn at TKT-204's plan-final (2026-08-04) as the named alternative that ticket declined, so the decision is visible rather than implicit. Minimal memo below; full shaping (the 8-item DoR) is still owed before Gate 1.\n\n`risk:low` NOT claimable: this is a deliberate behaviour change on four **public** reads, and its point is that a drifted header starts returning 500 instead of a wrong header.\n\n**Context to start from, so the plan does not re-derive it:**\n- The allowlist to delete: `freeFormAllowed`, `shared/go/cachetier/spec_audit_test.go`, and the coverage list `wantDeclarations` beside it.\n- The shape to copy: `services/inventory/api/openapi.yaml` `components.headers.AvailabilityCacheControl`, and its test `TestAvailabilityCacheTierIsContractEnforced` (two cases — the drift pin and the enforcement pin, and the comment there explains why neither implies the other).\n- **Governing ADRs:** ADR-009 (the contract is authoritative; regenerate and commit before the gate), ADR-028 (declared response headers fail closed — this is the mechanism being switched on), ADR-004 (the tier decision itself, and the amendment this ticket owes it).\n- One catalog read is *not* in scope and must stay as it is: the seat-map tier already uses the two-value `SeatMapCacheControl` enum, which ADR-004's TKT-107 amendment fixed deliberately."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ✅ Implementation readiness — PASS. Promoted Backlog → Ready.\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`. **All eight items `met`, no blockers, nothing `deferred`.**\n\n**Every claim re-verified against the code, not inherited from the ticket text:**\n- The free-form component is intact: `services/catalog/api/openapi.yaml:1694-1697` — `type: string`, no enum, not `required`.\n- `freeFormAllowed` still carries exactly the five named operations (`shared/go/cachetier/spec_audit_test.go:58-64`), and the free-form branch is still conditional at `:203-207`.\n- The target shape exists in-repo to mirror: inventory's `MinutesCacheControl` / `SeatMapCacheControl` et al. are single-valued and `required: true` (`openapi.yaml:1720-1780`), with `TestAvailabilityCacheTierIsContractEnforced` (`services/inventory/internal/api/availability_cache_tier_test.go:28`) as the test template.\n- Three in-tree comments name TKT-209 as the closer (`spec_audit_test.go:56-57,124`, `openapi.yaml:1760`, both generated TS clients, `web/storefront/test/middleware-page-tier.test.ts:60`).\n- All three governing ADRs resolve at HEAD.\n\n**Why this one and not the other 34.** It is the only backlog ticket with *no* open decision. The target shape is not a design question — it is a copy of a closed sibling — and the one judgement it appears to contain (should a drifted header 500?) was already made by ADR-028.\n\n**One correction the drafter needs.** The description's rationale says \"a runtime 500 on **four** public reads\" while its CoS lists **five** operations. Five is right: four on minutes plus `listPublicVenues` on hours. Fix the text at Planning rather than planning against the wrong count.\n\n**Do NOT claim `risk:low`.** The deliverable is a deliberate fail-closed behaviour change on five public reads — exactly what TKT-204 refused to smuggle into a no-behaviour-change prefactor. The plan gate is earned.\n"
     }
-  ]
+  ],
+  "readiness": {
+    "objective": {
+      "state": "met",
+      "note": "Catalog's shared CacheControl response-header component is `type: string` with no enum (openapi.yaml:1694-1697), so it commits no value: ADR-028's validator has nothing to check and the cross-service tier audit has nothing to enumerate. Five operations sit behind a named allowlist purely because of it."
+    },
+    "scope": {
+      "state": "met",
+      "note": "IN: services/catalog/api/openapi.yaml's CacheControl component -> single-valued components mirroring inventory; regenerated openapi_gen.go + api-types.gen.ts; deletion of freeFormAllowed in shared/go/cachetier/spec_audit_test.go and the conditional free-form branch at :203-207; a per-read fail-closed test; an ADR-004 amendment. OUT: any change to which tier a read is on -- this pins today's tiers, it does not re-decide them. OUT: inventory, which is already closed."
+    },
+    "uncertainties": {
+      "state": "met",
+      "note": "None open. The target shape is not a design question: inventory already ships it (MinutesCacheControl, SeatMapCacheControl et al., single-valued + required:true, openapi.yaml:1720-1780) and TestAvailabilityCacheTierIsContractEnforced (services/inventory/internal/api/availability_cache_tier_test.go:28) is the test template. The one judgement -- that a drifted header SHOULD become a 500 rather than pass -- is ADR-028's existing fail-closed rule, not a new call."
+    },
+    "dependencies": {
+      "state": "met",
+      "note": "No blockers. TKT-204 (the origin) is Done and is what created the allowlist; TKT-31 (parent) is Done. Nothing is waiting on this."
+    },
+    "approach": {
+      "state": "met",
+      "note": "Copy inventory's closed shape. NOT `deferred`, and it does not need to be: none of the four carve-outs applies (no auth, no money path, no data migration, no CI/deploy config). Verified at HEAD rather than inherited from the ticket text: the free-form component, the five-entry allowlist and the conditional branch are all exactly where the ticket says. COUNT OF AFFECTED READS: five, not four -- the ticket's own rationale paragraph says 'four public reads' while its CoS lists five operations (four minutes + listPublicVenues on hours). Five is correct; the text should be fixed at Planning."
+    },
+    "first_slice": {
+      "state": "met",
+      "note": "One slice, and it must stay one: the enum, the regen, the allowlist deletion and the tests move together or the audit goes red mid-way. Well inside a sprint -- one spec edit, one generated-code commit, one test file, one ADR amendment."
+    },
+    "success": {
+      "state": "met",
+      "note": "Six CoS on the ticket, each testable. The load-bearing one is the mutation: set a handler's Cache-Control to any other value and the read must 500 with the payload withheld, per read -- proving the declaration and the constant can only move together. Plus: freeFormAllowed is GONE (not emptied) and the free-form branch is an unconditional violation."
+    },
+    "context_memo": {
+      "state": "met",
+      "note": "governingAdrs, each verified to resolve at HEAD: ADR-004-cache-first-read-path.md (the tier table this pins, and the home for the required amendment); ADR-009-contract-first-apis.md (a tier change is a contract change -- regen and COMMIT before the gate, check-generate diffs against HEAD); ADR-028-response-drift-fail-closed.md (what makes a drifted header a 500 with the payload withheld -- the behaviour change itself). governingTests, populated: TestAvailabilityCacheTierIsContractEnforced (services/inventory/internal/api/availability_cache_tier_test.go:28) is the TEMPLATE to mirror; shared/go/cachetier/spec_audit_test.go is the test being EDITED -- freeFormAllowed at :58-64 deleted, the branch at :203-207 made unconditional, wantDeclarations updated for any coverage change; web/storefront/test/middleware-page-tier.test.ts:60 records that TKT-209 is open against the tier set and must be re-read. NOT risk:low: this is a deliberate fail-closed behaviour change on five public reads, which is precisely what TKT-204 refused to smuggle into a no-behaviour-change prefactor."
+    }
+  }
 }

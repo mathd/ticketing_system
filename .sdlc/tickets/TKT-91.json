@@ -1,27 +1,28 @@
 {
- "key": "TKT-91",
- "type": "Task",
- "summary": "Staff-sale crash repair vs mutable catalog inputs (op-convert + group draw-down)",
- "status": "Backlog",
- "labels": [],
- "assignee": null,
- "pr": null,
- "links": [],
- "comments": [
-  {
-   "stage": "backlog",
-   "kind": "readiness",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFrom TKT-79 ai-review (gpt-5.6-sol, finding 1, triaged incidental/pre-existing): the ADR-023 staff-sale seam (operational convert AND group draw-down) repairs a crash between the inventory commit and the commerce reservation insert by replaying the same request, reconstructing the inventory fingerprint from *live catalog data*. Today ticket-type price/slot are create-only, so reconstruction is stable and the repair always works. If catalog pricing ever becomes mutable (TKT-5/TKT-17 territory), an intervening price change makes the replay fingerprint mismatch (409) and strands a committed carve with no commerce reservation. Options sketched by the reviewer: persist the catalog snapshot/intent before calling inventory, or add an inventory replay-by-key lookup that does not require reconstructed inputs. Gate this ticket on (or fold it into) whichever pricing ticket introduces mutability. Not shaped; DoR pending."
-  },
-  {
-   "stage": "backlog",
-   "kind": "readiness",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — NOT promoted (backlog drain, HEAD `ac2952b`)\n\n**Held — blocking precondition still does not exist.** The ticket's own trigger is catalog price mutability. Verified at HEAD: price is a create-only field on `ticket_types` (`services/catalog/internal/store/migrations/0001_catalog_schema.sql:46-56`), there is no pricing engine, and commerce reconstructs the fingerprint from live catalog data that cannot change. The replay is stable, so there is nothing to harden yet. Wire this as `blocks`-linked to TKT-5 and pull it in with that epic."
-  },
-  {
-   "author": "agent",
-   "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⏸ HOLD in Backlog — the precondition it guards against still does not exist\n\nBacklog review 2026-08-25, re-verified against the code rather than against the ticket text.\n\nThe ticket's own framing is \"blocking precondition in the wild: catalog price mutability, **which does not exist yet**\". That is still true at HEAD: no catalog write path updates `ticket_types.price_amount`. The only `UPDATE ticket_types` in the tree is a deliberate corruption inside `services/catalog/internal/store/festival_smoke_test.go:307`, which sets `name`, not price.\n\nDeliberately **not** closed as obsolete, and deliberately not promoted:\n- Unlike TKT-55 and TKT-196, nothing has delivered this. The hardening is genuinely absent, so closing it would drop a real gap.\n- But shaping it now would produce a DoR against a hypothetical: the mutation shapes that crash repair must tolerate are decided by *how* price mutability is eventually introduced, and inventing them now means the plan is written against a guess. That is the \"prefer not starting over blocking mid-flight\" case `shaping.md` opens with.\n\n**The trigger to re-shape is concrete**: the first ticket that makes any catalog price field mutable. That ticket should carry a `blocks` link to this one. Until then this is correctly parked, and this comment exists so the next backlog review does not re-derive the same conclusion."
-  }
- ],
- "description": "Harden the shared commerce staff-sale seam against mutable catalog inputs during crash repair. Pre-existing behavior shipped with TKT-77 (ADR-023); TKT-79 clones it. Blocking precondition in the wild: catalog price mutability, which does not exist yet."
+  "key": "TKT-91",
+  "type": "Task",
+  "summary": "Staff-sale crash repair vs mutable catalog inputs (op-convert + group draw-down)",
+  "status": "Backlog",
+  "labels": [],
+  "assignee": null,
+  "pr": null,
+  "links": [],
+  "comments": [
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\nFrom TKT-79 ai-review (gpt-5.6-sol, finding 1, triaged incidental/pre-existing): the ADR-023 staff-sale seam (operational convert AND group draw-down) repairs a crash between the inventory commit and the commerce reservation insert by replaying the same request, reconstructing the inventory fingerprint from *live catalog data*. Today ticket-type price/slot are create-only, so reconstruction is stable and the repair always works. If catalog pricing ever becomes mutable (TKT-5/TKT-17 territory), an intervening price change makes the replay fingerprint mismatch (409) and strands a committed carve with no commerce reservation. Options sketched by the reviewer: persist the catalog snapshot/intent before calling inventory, or add an inventory replay-by-key lookup that does not require reconstructed inputs. Gate this ticket on (or fold it into) whichever pricing ticket introduces mutability. Not shaped; DoR pending."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### Gate 1 validation — NOT promoted (backlog drain, HEAD `ac2952b`)\n\n**Held — blocking precondition still does not exist.** The ticket's own trigger is catalog price mutability. Verified at HEAD: price is a create-only field on `ticket_types` (`services/catalog/internal/store/migrations/0001_catalog_schema.sql:46-56`), there is no pricing engine, and commerce reconstructs the fingerprint from live catalog data that cannot change. The replay is stable, so there is nothing to harden yet. Wire this as `blocks`-linked to TKT-5 and pull it in with that epic."
+    },
+    {
+      "author": "agent",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⏸ HOLD in Backlog — the precondition it guards against still does not exist\n\nBacklog review 2026-08-25, re-verified against the code rather than against the ticket text.\n\nThe ticket's own framing is \"blocking precondition in the wild: catalog price mutability, **which does not exist yet**\". That is still true at HEAD: no catalog write path updates `ticket_types.price_amount`. The only `UPDATE ticket_types` in the tree is a deliberate corruption inside `services/catalog/internal/store/festival_smoke_test.go:307`, which sets `name`, not price.\n\nDeliberately **not** closed as obsolete, and deliberately not promoted:\n- Unlike TKT-55 and TKT-196, nothing has delivered this. The hardening is genuinely absent, so closing it would drop a real gap.\n- But shaping it now would produce a DoR against a hypothetical: the mutation shapes that crash repair must tolerate are decided by *how* price mutability is eventually introduced, and inventing them now means the plan is written against a guess. That is the \"prefer not starting over blocking mid-flight\" case `shaping.md` opens with.\n\n**The trigger to re-shape is concrete**: the first ticket that makes any catalog price field mutable. That ticket should carry a `blocks` link to this one. Until then this is correctly parked, and this comment exists so the next backlog review does not re-derive the same conclusion."
+    }
+  ],
+  "description": "Harden the shared commerce staff-sale seam against mutable catalog inputs during crash repair. Pre-existing behavior shipped with TKT-77 (ADR-023); TKT-79 clones it. Blocking precondition in the wild: catalog price mutability, which does not exist yet.",
+  "parent": "TKT-9"
 }

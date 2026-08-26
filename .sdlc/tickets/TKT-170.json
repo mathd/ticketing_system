@@ -1,7 +1,7 @@
 {
   "key": "TKT-170",
   "type": "Task",
-  "parent": null,
+  "parent": "TKT-24",
   "classification": "complex",
   "summary": "Who may publish to the PLATFORM stream, and what must a consumer verify before acting on an event?",
   "status": "Backlog",
@@ -121,6 +121,11 @@
       "stage": "backlog",
       "kind": "readiness",
       "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### ⚠️ Implementation readiness — CONCERNS\n\nA platform-wide trust question surfaced by one subject's review. Filed here rather than fixed in TKT-166 on purpose: hardening `order.exchanged` alone while `order.completed` stays open would add a synchronous dependency to the switch path and close the smaller hole.\n\n**Concerns:** the scope is genuinely open (ACLs vs consumer verification vs both), and the answer touches every consumer. Worth doing while there are five of them rather than fifteen.\n\n**Verdict:** CONCERNS — shapeable, wants a decision on scope first."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — both halves; zero broker auth exists anywhere in the repo\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Publisher ACLs: nothing exists.** NATS runs as `command: [\"-js\",\"-sd\",\"/data\",\"-m\",\"8222\"]` — no auth, no config file (`compose.yaml:96-107`). A repo-wide grep for `authorization`, `permissions`, `nats.UserCredentials` and `nkey` across compose files, `services/*/internal/events` and `pkg/` returns **zero hits**. No NATS `.conf` exists in the tree.\n\n**What TKT-166 closed, and what it did not.** The derivable-id check is at `services/access/internal/consumer/consumer.go:265-271`. The remaining gap is stated in the code itself at `:259-264`: *\"Nothing here proves `source_order_id` belongs to that exchange; only commerce knows … That gap is the platform's standing 'the broker is trusted' posture.\"*\n\nAll four cited ADRs (033, 034, 021, 017) resolve at HEAD. The ticket has no in-tree references of its own; its narrative rests on that consumer comment, which matches exactly.\n\n**Verdict: Ready-able as an ADR + config slice, no product decision.** The scope question (per-subject ACLs, consumer-side verification, or both) is technical. Its own `first_slice` note remains the right one and is now the cheapest path — publisher ACLs are pure configuration and nothing in the repo would conflict. The \"do it while there are five consumers, not fifteen\" argument still holds.\n\n**Per ADR-021, name the adversary first.** ACLs bind a publisher that goes through the broker's auth; they say nothing about an attacker with broker access. Say which one the deliverable is for before writing \"forged event is refused\".\n"
     }
   ]
 }

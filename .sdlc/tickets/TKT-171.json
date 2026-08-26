@@ -14,6 +14,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nCarved out of **TKT-159** (US-O4), which found it and recorded it deliberately rather than widening\nits own diff. TKT-159's whole design hangs off the money leg, and a reversal with no money leg is a\ndifferent shape — see ADR-040 §Consequences (\"what this does not cover, deliberately\").\n\n**Not shaped yet:** the 8-item DoR is unfilled and the reversal-without-refund shape is an open\ndesign question. Shape before prioritising."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — every fact checks out; one bounded product call stands between it and Ready\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed exactly as described.** `ErrRefundNoMoney` at `services/commerce/internal/store/refunds.go:34`, raised at `:166`; `unit_amount bigint NOT NULL CHECK (unit_amount >= 0)` at `migrations/0001_checkout.sql:5` — zero is permitted and refunds refuse it. The run still reports these as `failed/no_captured_money` (`internal/bulkrefund/runner.go:356`, enum in `migrations/0012_cancellation_refunds.sql:81`, test at `runner_test.go:327`). Visible-but-unrepaired is documented at `docs/development.md:477` and ADR-040 (`:143-148`) names it a deliberate follow-up. All cited ADRs resolve.\n\n**`readiness` is `null`** — the 8-item DoR was never filled.\n\n**The one blocker is AC5, and the ticket already flags it:** *\"whether a comped order can be 'refunded' on its own is a product decision this ticket must state, not assume.\"* That is a small, bounded call scoped to the staff path. The cancellation-run path itself — void the tickets, return the capacity, emit no money fact — is plannable engineering with no ambiguity.\n\n**Verdict: one owner answer away from shapeable.** Carried into the decision brief as a single yes/no. Note ADR-003's constraint governs the deliverable either way: the journal records what happened, not what didn't, so a comped reversal must not fabricate a zero-amount provider call.\n"
     }
   ],
   "links": []

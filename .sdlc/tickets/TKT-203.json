@@ -42,6 +42,11 @@
       "stage": "backlog",
       "kind": "summary",
       "body": "<!-- sdlc:stage=backlog kind=summary -->\nFiled from TKT-194's scope survey (2026-08-04). Same shape as TKT-201: the ticket assumed a write that does not exist. Not shaped — needs the 8-item DoR before Gate 1.\n\nThe open question in the description is the real one: a storefront self-service resend may answer the same customer problem with no staff credential and no fraud surface."
+    },
+    {
+      "stage": "backlog",
+      "kind": "readiness",
+      "body": "<!-- sdlc:stage=backlog kind=readiness -->\n### STILL VALID — nothing delivered; held on a fraud-surface decision\n\nBacklog review 2026-08-26 at HEAD `1aaee7cd`.\n\n**Confirmed.** Delivery is still a side effect of consuming issuance — `services/access/internal/consumer/consumer.go:403-425` (`deliver` → `PendingDeliveries` → `email` → `mailer.Send` → `MarkDelivered`), called from `processCompleted` at `:432` (**drift**: ticket cites `410-423`). The `NOT EXISTS (… event_type='delivered')` filter is exactly as described at `services/access/internal/store/postgres.go:141`, so replaying the event would deliver nothing.\n\n**No resend exists anywhere.** The only `resend` hits in the tree are comments in `services/commerce/internal/mailer/drainer.go:33` and its smoke test, about the mailer's own retry — not a staff-triggered resend.\n\n**Held on two product questions, and the ticket states both correctly:**\n1. **The destination address is the whole question.** On-file is safe and often useless (the customer is calling *because* they cannot receive it); operator-typed turns the back office into a mail relay emitting ticket capabilities to arbitrary recipients.\n2. Whether resend belongs to the back office at all, versus a storefront self-service flow.\n\nBoth carried into the decision brief.\n\n**Two constraints to carry into shaping whichever way it goes:** a resend re-emits a guest retrieval capability (ADR-012) and nothing revokes the old one; and it needs its own lifecycle event through `store.appendLifecycle`, or the trail says delivered-once when it was delivered four times (ADR-021).\n"
     }
   ]
 }
