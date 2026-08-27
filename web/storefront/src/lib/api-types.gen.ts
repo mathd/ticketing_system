@@ -1671,8 +1671,10 @@ export interface components {
          *     Bounded by the tier itself: an entry older than max-age is not served.
          */
         PublicReadAge: number;
-        /** @description ADR-004 volatility tier for a seat-map read, driven by the payload's statuses (TKT-107): the hours tier only when the response is non-empty and every seat map in it is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
+        /** @description ADR-004 volatility tier for the BY-ID seat-map geometry read, driven by the payload's status (TKT-107): the hours tier when the map is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct — and that immutability is why this read KEPT the hours tier when TKT-141 demoted the two list reads to SeatMapListCacheControl. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
+        /** @description ADR-004 volatility tier for the two seat-map LIST reads (TKT-141): the minutes tier when the response is non-empty and every seat map in it is published, otherwise no-store. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. Deliberately a SHORTER tier than the by-id read's. The by-id read caches an immutable published version (ADR-029), which is an honest hour-long claim; a list caches MEMBERSHIP, and membership is not immutable — authoring a seat map, or an ADR-029 edit inserting a published successor, changes the list a second after it was cached. TKT-107 accepted that staleness and recorded it in ADR-004; this component is where it is withdrawn. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
+        SeatMapListCacheControl: "no-store" | "public, max-age=300, s-maxage=300";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). */
         PriceResolutionCacheControl: "no-store";
         /**
@@ -2920,7 +2922,7 @@ export interface operations {
             /** @description The venue's seat maps */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapListCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2972,7 +2974,7 @@ export interface operations {
             /** @description The family's versions, newest first */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapListCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {

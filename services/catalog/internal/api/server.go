@@ -53,6 +53,18 @@ var CacheControlPublicReads = cachetier.Minutes.CacheControl()
 // whole payload is published — see cacheControlForSeatMaps (TKT-107).
 var CacheControlPublicVenueReads = cachetier.Hours.CacheControl()
 
+// CacheControlPublicListReads is the ADR-004 minutes tier as carried by the two
+// public seat-map LIST reads (TKT-141).
+//
+// Same rendered value as CacheControlPublicReads, and deliberately a second name
+// rather than a reuse: the aggregated storefront reads take the minutes tier
+// because event data is slow-moving, while these take it because list MEMBERSHIP
+// is mutable — authoring a seat map, or an ADR-029 edit inserting a published
+// successor, changes the list a second after it was cached. Two rationales that
+// happen to land on one duration today; folding them into one constant would
+// make a future re-tier of one silently re-tier the other.
+var CacheControlPublicListReads = cachetier.Minutes.CacheControl()
+
 // cacheControlNever is ADR-004's never tier, rendered once at init rather than
 // per request. The rendering is safe on any path for a registered tier, but
 // keeping every cachetier call at package level means the panic that guards
@@ -60,23 +72,29 @@ var CacheControlPublicVenueReads = cachetier.Hours.CacheControl()
 // install no panic-recovery middleware.
 var cacheControlNever = cachetier.Never.CacheControl()
 
-// cacheControlForSeatMaps is TKT-107's tier rule for the three public seat-map
-// reads: the hours tier only when the response is non-empty and every seat map in
-// it is published, otherwise no-store. Draft geometry is mutable, so an hour of
-// shared-cache lifetime would make an authoring write look lost; published
-// versions are immutable (ADR-029 — an edit inserts a new version rather than
-// mutating one), which is what makes the hours branch correct rather than merely
-// inherited. One response carries one header, so for a list the least-cacheable
-// member decides. Any other status ('archived', or a future one — migration 0009
+// cacheControlForSeatMaps is TKT-107's fail-closed rule, shared by the three
+// public seat-map reads: a response is cacheable only when it is non-empty and
+// every seat map in it is published, otherwise no-store. Draft geometry is
+// mutable, so any shared-cache lifetime would make an authoring write look lost.
+// One response carries one header, so for a list the least-cacheable member
+// decides. Any other status ('archived', or a future one — migration 0009
 // constrains the column to draft/published/archived) fails closed to no-store.
+//
+// WHICH cacheable tier is the caller's, not this function's (TKT-141), because
+// the two answers rest on different facts: the by-id read caches an immutable
+// published version (ADR-029) and earns the hours tier, while a list caches
+// MEMBERSHIP, which no ADR makes immutable. Call it through
+// cacheControlForSeatMapGeometry or cacheControlForSeatMapList rather than
+// directly — passing the tier at each call site is how the two silently
+// converged in the first place.
 //
 // The emptiness guard is for ListVenueSeatMaps, the only one of the three that can
 // return zero rows; ListSeatMapVersions returns ErrNotFound instead. Caching "this
-// venue has no seat maps" for an hour would hide the venue's first map.
+// venue has no seat maps" at all would hide the venue's first map.
 //
 // no-store closes the *shared-cache* vector only. It is not access control: a
 // reader who knows the id still gets the draft (ADR-004 § TKT-107 amendment).
-func cacheControlForSeatMaps(maps ...store.SeatMap) string {
+func cacheControlForSeatMaps(cacheable string, maps ...store.SeatMap) string {
 	if len(maps) == 0 {
 		return cacheControlNever
 	}
@@ -85,7 +103,28 @@ func cacheControlForSeatMaps(maps ...store.SeatMap) string {
 			return cacheControlNever
 		}
 	}
-	return CacheControlPublicVenueReads
+	return cacheable
+}
+
+// cacheControlForSeatMapGeometry is the by-id read's tier: the fail-closed rule
+// above, cashing out to the HOURS tier. A single published seat-map version is
+// immutable (ADR-029), so an hour of shared-cache lifetime is an honest claim.
+func cacheControlForSeatMapGeometry(m store.SeatMap) string {
+	return cacheControlForSeatMaps(CacheControlPublicVenueReads, m)
+}
+
+// cacheControlForSeatMapList is the two list reads' tier: the same fail-closed
+// rule, cashing out to the MINUTES tier (TKT-141).
+//
+// Shorter than the by-id read on purpose. What a list response caches is
+// MEMBERSHIP, and membership is not immutable the way a published version is:
+// authoring a seat map, or an ADR-029 edit inserting a published successor,
+// changes the list a second after it was cached — the same "an authoring write
+// looks lost" failure TKT-107 was filed for, which TKT-107 fixed for draft
+// CONTENT and left open for list membership (ADR-004 § TKT-107 amendment, now
+// § TKT-141).
+func cacheControlForSeatMapList(maps ...store.SeatMap) string {
+	return cacheControlForSeatMaps(CacheControlPublicListReads, maps...)
 }
 
 type Server struct {

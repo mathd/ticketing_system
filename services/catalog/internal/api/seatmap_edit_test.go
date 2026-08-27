@@ -110,9 +110,11 @@ func TestEditSeatMapEmitFailureReturns500(t *testing.T) {
 
 // TestListSeatMapVersionsHistoryAndCurrent is COS-3: the version-history read
 // returns every version of the family newest-first, each with published_at, and
-// current_version = the highest published version. It keeps the hours tier under
-// TKT-107 because both versions here are published: an ADR-029 edit inserts a
-// *published* successor, so this family never holds a draft row. The status-driven
+// current_version = the highest published version. Both versions here are
+// published, so under TKT-107 it earned the cacheable branch — but TKT-141
+// demoted that branch to the MINUTES tier for the two list reads, because this
+// is exactly the read whose membership an ADR-029 edit changes: the successor
+// this test creates is a new row in the very list being cached. The status-driven
 // tier is proven by TestSeatMapReadCacheTierByStatus.
 func TestListSeatMapVersionsHistoryAndCurrent(t *testing.T) {
 	e := newEnv(t)
@@ -125,8 +127,8 @@ func TestListSeatMapVersionsHistoryAndCurrent(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("versions read: %d %s", rec.Code, rec.Body.String())
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=3600, s-maxage=3600" {
-		t.Fatalf("versions read must be ADR-004 hours tier, got %q", cc)
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=300, s-maxage=300" {
+		t.Fatalf("versions read must be ADR-004 minutes tier, got %q", cc)
 	}
 	h := decode[SeatMapVersionHistory](t, rec)
 	if len(h.Versions) != 2 {
