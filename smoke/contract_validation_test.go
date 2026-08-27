@@ -225,6 +225,16 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		wantBody string
 	}{
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001", byGateway},
+		// TKT-155 moved price resolution onto catalog's internal surface; the new
+		// path is refused at the edge like its siblings. The RETIRED public path is
+		// NOT asserted here: this table's fixtures are fixed all-zero UUIDs, which
+		// is right for proving which layer refuses an internal path and fatal for
+		// proving a public route is gone — a restored route handed a ticket type
+		// that does not exist answers 404 from the store, and every assertion here
+		// would stay green while the exposure was back. It lives in
+		// TestReserveUsesRuleResolvedPriceAndPinsTheQuote, against a seeded and
+		// priced ticket type that a restored route would really resolve.
+		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution", byGateway},
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
 		{http.MethodPost, "/api/payments/internal/facts", byGateway},
 		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments", byGateway},

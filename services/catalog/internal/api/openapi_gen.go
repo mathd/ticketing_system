@@ -1394,6 +1394,13 @@ type ResolveTicketTypeFeesParams struct {
 	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
 }
 
+// ResolveTicketTypePriceParams defines parameters for ResolveTicketTypePrice.
+type ResolveTicketTypePriceParams struct {
+	// ChannelCode The sales channel to resolve for (TKT-237). An exact opaque string (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never prices a sale that named no channel.
+	// A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. TKT-237 made that a disclosure decision on the grounds that this operation was public. TKT-155 has since moved it behind the internal credential, so that justification has narrowed — the behaviour is DELIBERATELY unchanged (see ADR-046 § TKT-155): widening a payload is the wrong direction to take on a ticket whose purpose is narrowing an audience.
+	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
+}
+
 // CreatePerformanceParams defines parameters for CreatePerformance.
 type CreatePerformanceParams struct {
 	// IdempotencyKey Deduplicates a create (TKT-200). A repeat carrying the same key returns the resource the first call created instead of making a second one, and two concurrent submits of one key create exactly one row — the guarantee is a UNIQUE (organizer_id, idempotency_key) index, not application logic, so it holds for requests that are in flight together and never see each other's result.
@@ -1446,13 +1453,6 @@ type CreateTicketTypeParams struct {
 	// Same key with a DIFFERENT request body is a 409, not a silent replay of somebody else's resource — the same decision commerce made, for the same reason.
 	// `required: true` is a contract statement, not an enforcement mechanism: oapi-codegen generates a Params struct nothing references, so each handler checks the header itself, exactly as commerce's eight write paths do. A test that mutates this line to prove enforcement would be testing a comment.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
-
-// ResolveTicketTypePriceParams defines parameters for ResolveTicketTypePrice.
-type ResolveTicketTypePriceParams struct {
-	// ChannelCode The sales channel to resolve for (TKT-237). An exact opaque string (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never prices a sale that named no channel.
-	// A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. That is a disclosure decision, not an omission: this operation is public, so reporting other channels' rules would publish which channels carry bespoke pricing and at what amounts.
-	ChannelCode *string `form:"channel_code,omitempty" json:"channel_code,omitempty"`
 }
 
 // CreateChannelJSONRequestBody defines body for CreateChannel for application/json ContentType.
@@ -1547,6 +1547,9 @@ type ServerInterface interface {
 	// Resolve which fees apply to a ticket type, in a channel, with provenance
 	// (GET /internal/ticket-types/{id}/fee-resolution)
 	ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams)
+	// Resolve a ticket type's unit price through the rule hierarchy, with provenance
+	// (GET /internal/ticket-types/{id}/price-resolution)
+	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypePriceParams)
 	// This contract, as committed (ADR-009)
 	// (GET /openapi.yaml)
 	GetOpenAPISpec(w http.ResponseWriter, r *http.Request)
@@ -1634,9 +1637,6 @@ type ServerInterface interface {
 	// Create a ticket type with a price
 	// (POST /ticket-types)
 	CreateTicketType(w http.ResponseWriter, r *http.Request, params CreateTicketTypeParams)
-	// Resolve a ticket type's unit price through the rule hierarchy, with provenance
-	// (GET /ticket-types/{ticketTypeId}/price-resolution)
-	ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID, params ResolveTicketTypePriceParams)
 	// Create a general-admission venue
 	// (POST /venues)
 	CreateVenue(w http.ResponseWriter, r *http.Request)
@@ -1703,6 +1703,12 @@ func (_ Unimplemented) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *
 // Resolve which fees apply to a ticket type, in a channel, with provenance
 // (GET /internal/ticket-types/{id}/fee-resolution)
 func (_ Unimplemented) ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resolve a ticket type's unit price through the rule hierarchy, with provenance
+// (GET /internal/ticket-types/{id}/price-resolution)
+func (_ Unimplemented) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypePriceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1877,12 +1883,6 @@ func (_ Unimplemented) AuthenticateStaff(w http.ResponseWriter, r *http.Request)
 // Create a ticket type with a price
 // (POST /ticket-types)
 func (_ Unimplemented) CreateTicketType(w http.ResponseWriter, r *http.Request, params CreateTicketTypeParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Resolve a ticket type's unit price through the rule hierarchy, with provenance
-// (GET /ticket-types/{ticketTypeId}/price-resolution)
-func (_ Unimplemented) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, ticketTypeId openapi_types.UUID, params ResolveTicketTypePriceParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2225,6 +2225,48 @@ func (siw *ServerInterfaceWrapper) ResolveTicketTypeFees(w http.ResponseWriter, 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResolveTicketTypeFees(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveTicketTypePrice operation middleware
+func (siw *ServerInterfaceWrapper) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResolveTicketTypePriceParams
+
+	// ------------- Optional query parameter "channel_code" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "channel_code", r.URL.Query(), &params.ChannelCode, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channel_code"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channel_code", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveTicketTypePrice(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3197,48 +3239,6 @@ func (siw *ServerInterfaceWrapper) CreateTicketType(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
-// ResolveTicketTypePrice operation middleware
-func (siw *ServerInterfaceWrapper) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "ticketTypeId" -------------
-	var ticketTypeId openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "ticketTypeId", chi.URLParam(r, "ticketTypeId"), &ticketTypeId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ticketTypeId", Err: err})
-		return
-	}
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ResolveTicketTypePriceParams
-
-	// ------------- Optional query parameter "channel_code" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "channel_code", r.URL.Query(), &params.ChannelCode, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channel_code"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channel_code", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ResolveTicketTypePrice(w, r, ticketTypeId, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // CreateVenue operation middleware
 func (siw *ServerInterfaceWrapper) CreateVenue(w http.ResponseWriter, r *http.Request) {
 
@@ -3470,6 +3470,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/internal/ticket-types/{id}/fee-resolution", wrapper.ResolveTicketTypeFees)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/internal/ticket-types/{id}/price-resolution", wrapper.ResolveTicketTypePrice)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
 	})
 	r.Group(func(r chi.Router) {
@@ -3555,9 +3558,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/ticket-types", wrapper.CreateTicketType)
-	})
-	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/ticket-types/{ticketTypeId}/price-resolution", wrapper.ResolveTicketTypePrice)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/venues", wrapper.CreateVenue)

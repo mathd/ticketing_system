@@ -656,8 +656,42 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 
 	// Now change the price under the buyer: a higher-priority rule wins from here on.
 	seedRule(9900, 100)
-	// Catalog really does resolve the new price for a fresh caller.
-	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/api/catalog/ticket-types/%s/price-resolution", gatewayURL, ticketType))
+	// TKT-155 moved price resolution onto catalog's /internal/ surface. The
+	// RETIRED public path is asserted here, against THIS ticket type, and the
+	// fixture is the whole point: `ticketType` is seeded, priced, and carries the
+	// 9900 rule just written above, so a restored public route would answer 200
+	// with a real resolution.
+	//
+	// Asserted here rather than in contract_validation_test.go's table for exactly
+	// that reason. That table uses fixed all-zero UUIDs, which is right for its
+	// job (proving WHICH layer refuses an internal path) and fatal for this one: a
+	// restored route handed a ticket type that does not exist answers 404 from the
+	// store, so every assertion would stay green while the exposure was back. The
+	// test must be able to see the payload it forbids. (Found by the adversarial
+	// review; the first version of this assertion had exactly that defect.)
+	// A RAW client, not getWithHeaders: that helper validates the response against
+	// the service contract, and a retired path has no operation to validate
+	// against — it would fail the request before this assertion could make its
+	// point, which is a fact about the helper rather than about the route.
+	retired, err := (&http.Client{Timeout: 10 * time.Second}).Get(
+		fmt.Sprintf("%s/api/catalog/ticket-types/%s/price-resolution", gatewayURL, ticketType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(retired.Body)
+	_ = retired.Body.Close()
+	if retired.StatusCode == 200 {
+		t.Fatalf("the retired public price-resolution path still answers: %s", body)
+	}
+	if strings.Contains(string(body), `"amount":9900`) || strings.Contains(string(body), "candidates") {
+		t.Fatalf("the retired public path is still returning a price resolution: %s", body)
+	}
+
+	// COS-2: the ANSWER is unchanged for a credentialed caller. The ticket closes
+	// an audience; it does not change what catalog computes, so this read has to
+	// survive the move rather than be replaced by refusal assertions.
+	code, body = internalJSON(t, "GET",
+		fmt.Sprintf("%s/internal/ticket-types/%s/price-resolution", catalogURL, ticketType), "", nil)
 	if code != 200 {
 		t.Fatalf("resolution %d %s", code, body)
 	}

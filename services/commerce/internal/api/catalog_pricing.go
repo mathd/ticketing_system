@@ -87,11 +87,15 @@ type priceResolution struct {
 // resolveTicketTypePrice performs the single catalog read and refuses anything
 // it cannot fully trust.
 //
-// The internal credential is deliberately NOT sent: this is a declared,
-// publicly routable operation, and putting a service credential on a public
-// route would be strictly worse than the exposure TKT-155 records.
+// The internal credential IS sent: TKT-155 moved this operation onto catalog's
+// /internal/ surface, because `candidates` reports every considered rule —
+// including future ones that lost with outside_window_future — and publishing an
+// organizer's unannounced prices is a commercial disclosure. Before that move the
+// credential was deliberately withheld, since putting one on a publicly routable
+// route would have been strictly worse than the exposure itself. Both halves of
+// that reasoning moved together; sending it now is what the route requires.
 func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organizerID uuid.UUID, quantity int32, channel *string) (priceResolution, error) {
-	endpoint := s.catalogURL + "/ticket-types/" + ticketTypeID.String() + "/price-resolution"
+	endpoint := s.catalogURL + "/internal/ticket-types/" + ticketTypeID.String() + "/price-resolution"
 	if channel != nil {
 		// Omitting the parameter is the default/public context, NOT a wildcard
 		// (ADR-046 §4, applied to prices by TKT-237). A nil channel must send NO
@@ -99,7 +103,7 @@ func (s *Server) resolveTicketTypePrice(ctx context.Context, ticketTypeID, organ
 		// would reject anyway. Same shape as the fee call.
 		endpoint += "?channel_code=" + url.QueryEscape(*channel)
 	}
-	code, body, err := s.call(ctx, http.MethodGet, endpoint, "", nil, false)
+	code, body, err := s.call(ctx, http.MethodGet, endpoint, "", nil, true)
 	if err != nil {
 		return priceResolution{}, fmt.Errorf("%w: %v", errResolveUnavailable, err)
 	}

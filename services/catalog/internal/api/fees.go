@@ -14,8 +14,10 @@ import (
 // channel, right now, and why" (TKT-214 / ADR-046).
 //
 // INTERNAL. This response carries `absorbed` fees — the organizer's cost
-// structure, not anything the buyer pays — so unlike its price-resolution
-// sibling it is not a public read. The gateway already denies
+// structure, not anything the buyer pays. Its price-resolution sibling was the
+// public contrast this comment used to draw; TKT-155 moved that one here as
+// well, for a different disclosure (unannounced future prices in `candidates`),
+// so catalog's two resolution reads are now both internal. The gateway already denies
 // /api/<svc>/internal/ at the edge; the credential is what stands between it and
 // the container network, and it is an inline check rather than a declared
 // security scheme because ADR-043 puts a service's internal surface on that side

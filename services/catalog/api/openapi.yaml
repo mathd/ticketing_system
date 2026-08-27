@@ -936,15 +936,26 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
-  /ticket-types/{ticketTypeId}/price-resolution:
+  /internal/ticket-types/{id}/price-resolution:
     get:
       operationId: resolveTicketTypePrice
-      # Public read: opts out of the document-level staff-write requirement.
+      # INTERNAL. security: [] opts out of the document-level staff-write
+      # requirement; the credential is the /internal/ prefix guard's, not a
+      # declared scheme (ADR-043). Same posture as resolveTicketTypeFees.
       security: []
       summary: Resolve a ticket type's unit price through the rule hierarchy, with provenance
       description: >
         Answers "what does this ticket type cost right now, and why" (TKT-151,
-        ADR-036). Rules attach to one of five scope levels — ticket_type, slot,
+        ADR-036).
+
+        INTERNAL since TKT-155. `candidates` reports every CONSIDERED rule,
+        including those that lost with outside_window_future — so this response
+        carries an organizer's unannounced future prices and the shape of their
+        whole rule ladder. That is forward pricing intent, not the current state
+        of what is on sale, and publishing it let a competitor, a reseller or a
+        buyer waiting for a drop read it before the on-sale. The gateway denies
+        /api/<svc>/internal/ at the edge; catalog's prefix guard is what stands
+        between it and the container network. Rules attach to one of five scope levels — ticket_type, slot,
         series, event, venue — and the narrowest wins, except that a rule marked
         force_ancestor_override restricts the competition to forced rules and
         inverts the order, so the broadest house rule wins. Ties break on
@@ -970,9 +981,14 @@ paths:
         rounded down and capped at the earliest upcoming window boundary — a
         different endpoint and a different contract.
       parameters:
-        - name: ticketTypeId
+        - name: id
           in: path
           required: true
+          description: >
+            Named `id` rather than `ticketTypeId` to match the sibling
+            /internal/ticket-types/{id} routes it shares a router with; two
+            different parameter names at one position is a routing conflict, not
+            a style choice.
           schema:
             type: string
             format: uuid
@@ -987,10 +1003,12 @@ paths:
             prices a sale that named no channel.
 
             A rule belonging to a DIFFERENT channel is absent from `candidates`
-            entirely rather than reported as a loser. That is a disclosure
-            decision, not an omission: this operation is public, so reporting
-            other channels' rules would publish which channels carry bespoke
-            pricing and at what amounts.
+            entirely rather than reported as a loser. TKT-237 made that a
+            disclosure decision on the grounds that this operation was public.
+            TKT-155 has since moved it behind the internal credential, so that
+            justification has narrowed — the behaviour is DELIBERATELY unchanged
+            (see ADR-046 § TKT-155): widening a payload is the wrong direction to
+            take on a ticket whose purpose is narrowing an audience.
           schema:
             type: string
             minLength: 1
@@ -1007,6 +1025,8 @@ paths:
                 $ref: '#/components/schemas/PriceResolution'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InternalRouteUnauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':

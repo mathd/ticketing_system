@@ -95,6 +95,14 @@ func internalRequest(t *testing.T, fail func(string, ...any), method, url, key s
 
 // directService maps a direct (non-gateway) base URL to its contract; the
 // internal surface is off the gateway, so gateway-path parsing never sees it.
+//
+// Catalog is deliberately ABSENT, and it was tried: TKT-155 added it so the
+// direct price-resolution read would be contract-validated, and it broke two
+// unrelated tests. Catalog serves hand-mounted routes that its contract does not
+// declare — /internal/cache-control is the operator kill switch — so mapping the
+// whole base URL to "catalog" asserts every direct catalog call is a declared
+// operation, which is false by design. A per-route opt-in would be the way to add
+// it; a base-URL match is not.
 func directService(url string) string {
 	switch {
 	case strings.HasPrefix(url, inventoryURL):

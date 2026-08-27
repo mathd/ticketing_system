@@ -476,7 +476,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ticket-types/{ticketTypeId}/price-resolution": {
+    "/internal/ticket-types/{id}/price-resolution": {
         parameters: {
             query?: never;
             header?: never;
@@ -485,7 +485,8 @@ export interface paths {
         };
         /**
          * Resolve a ticket type's unit price through the rule hierarchy, with provenance
-         * @description Answers "what does this ticket type cost right now, and why" (TKT-151, ADR-036). Rules attach to one of five scope levels — ticket_type, slot, series, event, venue — and the narrowest wins, except that a rule marked force_ancestor_override restricts the competition to forced rules and inverts the order, so the broadest house rule wins. Ties break on priority, then on lowest rule id.
+         * @description Answers "what does this ticket type cost right now, and why" (TKT-151, ADR-036).
+         *     INTERNAL since TKT-155. `candidates` reports every CONSIDERED rule, including those that lost with outside_window_future — so this response carries an organizer's unannounced future prices and the shape of their whole rule ladder. That is forward pricing intent, not the current state of what is on sale, and publishing it let a competitor, a reseller or a buyer waiting for a drop read it before the on-sale. The gateway denies /api/<svc>/internal/ at the edge; catalog's prefix guard is what stands between it and the container network. Rules attach to one of five scope levels — ticket_type, slot, series, event, venue — and the narrowest wins, except that a rule marked force_ancestor_override restricts the competition to forced rules and inverts the order, so the broadest house rule wins. Ties break on priority, then on lowest rule id.
          *     With no applicable rule the ticket type's own price is returned and fallback_reason says so, so a catalog with no rules prices exactly as it did before this operation existed.
          *     The evaluation instant is the server's, NOT a request parameter. Letting a caller choose it would let anyone ask a sale-time price endpoint for early-bird pricing after the window closed. TKT-152 adds effective windows; the instant stays server-side.
          *     This is catalog's question, not commerce's: ADR-036 §6 amends ADR-002 so rule-based unit-price resolution sits with the rule definitions, while sale-time composition (price + fees + promos + taxes) stays in commerce.
@@ -2623,13 +2624,14 @@ export interface operations {
             query?: {
                 /**
                  * @description The sales channel to resolve for (TKT-237). An exact opaque string (ADR-024) — matching is case-sensitive and nothing trims. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never prices a sale that named no channel.
-                 *     A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. That is a disclosure decision, not an omission: this operation is public, so reporting other channels' rules would publish which channels carry bespoke pricing and at what amounts.
+                 *     A rule belonging to a DIFFERENT channel is absent from `candidates` entirely rather than reported as a loser. TKT-237 made that a disclosure decision on the grounds that this operation was public. TKT-155 has since moved it behind the internal credential, so that justification has narrowed — the behaviour is DELIBERATELY unchanged (see ADR-046 § TKT-155): widening a payload is the wrong direction to take on a ticket whose purpose is narrowing an audience.
                  */
                 channel_code?: string;
             };
             header?: never;
             path: {
-                ticketTypeId: string;
+                /** @description Named `id` rather than `ticketTypeId` to match the sibling /internal/ticket-types/{id} routes it shares a router with; two different parameter names at one position is a routing conflict, not a style choice. */
+                id: string;
             };
             cookie?: never;
         };
@@ -2646,6 +2648,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["InternalRouteUnauthorized"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
