@@ -105,7 +105,20 @@ type StaffOrderDetail struct {
 // Deliberately BETWEEN the queries rather than at the start: that is the only instant at
 // which the two isolation levels differ. Under one snapshot the second query still sees
 // the first query's instant; under two autocommit reads it sees a newer one.
-var betweenStaffOrderDetailQueries func()
+//
+// IT REPORTS WHAT THE CODE OBSERVED, and takes the transaction rather than nothing, which
+// is the difference between a test about this function and a test about its
+// instrumentation (ai-review pass 3). A bare `func()` proves only that a callback ran, so
+// a COORDINATED reversion passes it: delete the transaction AND move the call below both
+// queries, and a test asserting "consistent, and pre-commit" sees two pre-commit values
+// and goes green while the mechanism is gone.
+//
+// Handing it `tx` closes that. The seam re-reads the counters THROUGH THE SAME HANDLE the
+// second query will use, so the value it reports is the one the code is about to read
+// with — not a fact about the probe. Delete the transaction and the argument is nil and
+// the test says so; move the call below both queries and the reported value no longer
+// precedes the refund read, so the ordering assertion fails.
+var betweenStaffOrderDetailQueries func(tx *sql.Tx)
 
 func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID) (StaffOrderDetail, error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
@@ -137,7 +150,7 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 	d.Totals.Currency = d.Line.Currency
 
 	if betweenStaffOrderDetailQueries != nil {
-		betweenStaffOrderDetailQueries()
+		betweenStaffOrderDetailQueries(tx)
 	}
 
 	// Scoped by organizer here TOO, rather than trusting that the order was already
