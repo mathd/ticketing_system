@@ -92,6 +92,21 @@ type StaffOrderDetail struct {
 // staff member what has already happened to an order before they decide what to do next,
 // and the two halves disagreeing is precisely the confusion it was built to end. So: one
 // REPEATABLE READ transaction, read-only, and both queries see the same instant.
+// betweenStaffOrderDetailQueries is a test-only seam, nil in production.
+//
+// It exists because the consistency this function promises cannot be tested any other
+// way. The failure it guards is a competing transaction committing BETWEEN the two
+// queries, and that interleave is not reachable from outside: both queries complete in
+// microseconds, so a test that merely runs them concurrently observes the commit before
+// both or after both and never the tear. A plain SELECT cannot be blocked with a row lock
+// either — MVCC readers do not wait — so there is no way to stall the reader from the
+// database side.
+//
+// Deliberately BETWEEN the queries rather than at the start: that is the only instant at
+// which the two isolation levels differ. Under one snapshot the second query still sees
+// the first query's instant; under two autocommit reads it sees a newer one.
+var betweenStaffOrderDetailQueries func()
+
 func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID) (StaffOrderDetail, error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
@@ -120,6 +135,10 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 	// (migration 0014), so this is never negative.
 	d.Totals.PassedOnFees = d.Line.TotalAmount - d.Line.FaceValue
 	d.Totals.Currency = d.Line.Currency
+
+	if betweenStaffOrderDetailQueries != nil {
+		betweenStaffOrderDetailQueries()
+	}
 
 	// Scoped by organizer here TOO, rather than trusting that the order was already
 	// scoped above. order_refunds carries its own organizer_id, so the predicate is
@@ -150,11 +169,6 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 		d.Refunds = append(d.Refunds, f)
 	}
 	if err := rows.Err(); err != nil {
-		return StaffOrderDetail{}, err
-	}
-	// Closed before the deferred rollback so the rows are drained while the snapshot is
-	// still open; the rollback then ends a transaction that wrote nothing.
-	if err := rows.Close(); err != nil {
 		return StaffOrderDetail{}, err
 	}
 	return d, nil
