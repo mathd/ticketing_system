@@ -167,9 +167,24 @@ We adopt allocation rows with derived usage. Specifics:
       The optional arm exists for the smoke suite and for future internal callers, not for an
       existing one.)*
 
-- **Which clock decides what (amended 2026-08-23, TKT-148).** Three cases, one rule:
+- **Which clock decides what (amended 2026-08-23 TKT-148; 2026-08-27 TKT-273).** Four cases:
   a value **granted** as a duration uses `clock_timestamp()`; a **snapshot read** uses `now()`;
-  a **boundary judged at decision time** uses `clock_timestamp()`.
+  a **boundary judged at decision time** uses `clock_timestamp()`; and a **liveness admission** —
+  deciding whether an already-granted hold may still be acted on — uses `now()`.
+  The last two both compare against a deadline and take opposite answers, so the distinction is
+  *whose* deadline it is: a sales window or an allocation release is a **policy boundary** the
+  system applies to itself, and the honest answer is the current instant. A hold's TTL is a
+  **promise already made to a buyer**, and charging that buyer for the lock wait their request
+  spent queueing would break it.
+  **The admission case is not uniform, and this says so rather than averaging it.** `Transition`
+  and the replays are mechanically independent — they reach `expired()` by different routes (see
+  below) and either could move without the other — so they hold the same clock for *different*
+  strengths of reason. For `Transition` the argument is strong and is the money-path one: refusing
+  a finalize that queued behind an on-sale loses a sale that was about to complete. For the replays
+  it is weaker, and the residual recorded below is what it costs. **Uniformity here is the status
+  quo kept deliberately, not a derivation** — a ticket that moves replay admission to decision time
+  while leaving `Transition` alone is arguing against this paragraph, not against the whole rule,
+  and the residual below is the case for it.
     - **Grants — `clock_timestamp()`.** Buyer hold TTLs (`clock_timestamp()+ttl`) on all five
       creation paths: GA `CreateHold`, operational conversion, group-reservation draw-down, and
       both seated paths (explicit selection and best-available). Every grant transaction takes
@@ -178,8 +193,9 @@ We adopt allocation rows with derived usage. Specifics:
       count it and the seat was resellable under the buyer. Worst precisely on an on-sale.
     - **The RETURNED reference moves with the grant.** These statements also
       `RETURNING ... clock_timestamp()` as `server_time`, which is the buyer's clock-skew
-      reference: the storefront countdown is `expires_at - server_time`, commerce gates
-      conversion on the pair, and `Claim.expired()` is that comparison. Anchoring the expiry
+      reference: the storefront countdown is `expires_at - server_time`, and commerce gates
+      conversion on the pair. It is *not* what `Claim.expired()` compares against — that is a
+      liveness decision on its own clock, specified in the next sub-bullet. Anchoring the expiry
       while returning a transaction-start `server_time` would substitute a hold that
       **overstates** its remaining time for one that is born dead. Half of this fix is a
       different defect, not a smaller one.
@@ -187,6 +203,63 @@ We adopt allocation rows with derived usage. Specifics:
       transaction-start time: a read wants one consistent snapshot for the whole transaction,
       and the lazy-expiry model (ADR-010) depends on every capacity number in a transaction
       agreeing about which claims are live.
+    - **Liveness admission — `now()` (amended 2026-08-27, TKT-273).** `Claim.expired()` uses
+      transaction-start time too, but for a different reason than the accounting reads above, and
+      the distinction is the point of this bullet: it is an **admission decision**, not a snapshot
+      read. It answers "may this existing hold still be acted on?", and when it says no the
+      pool-locked transaction writes — flips the row, appends history, releases seats. Four call
+      sites judge it, all under the pool lock and all landing on transaction-start time — but by
+      **two different routes**, and the difference matters to anyone editing them:
+        - The three **replays** (GA `CreateHold`, both seated) scan `now()` into
+          `Claim.snapshotTime`, and `expired()` compares against that.
+        - **`Transition`** (confirm / finalize / release) scans `now()` into `ServerTime` and
+          leaves `snapshotTime` **zero**, so `expired()` reaches its zero-value fallback
+          (`store.go:167-176`) and compares against `ServerTime`. Here the buyer-facing reference
+          and the liveness clock are the same value — which is safe only because this path returns
+          transaction-start time rather than `clock_timestamp()`. Giving `Transition` an advancing
+          response clock would silently move its **admission** decision to decision time.
+      The conversion replays read the child claim but never judge it, so they are outside this rule.
+      **Why transaction-start, deliberately.** The lock wait sits between the transaction's start
+      and the decision, so a hold whose TTL lapses *while its caller queues* is still admitted. That
+      is the buyer-safe direction and it is chosen, not inherited: a buyer completing a purchase
+      behind an on-sale must not lose the hold to the wait, and decision-time (`clock_timestamp()`)
+      would refuse exactly those in-flight finalizes. The trade is asymmetric on purpose — the cost
+      of the alternative is a lost sale on a money path, the cost of this rule is a stale read.
+      **Accepted residual, stated by path — it is sharper than "the next click fails".** A replay
+      can return, with a success status, a hold whose wall-clock TTL has already elapsed. What the
+      buyer then sees is not a live hold: commerce passes inventory's `expires_at`/`server_time`
+      pair straight through, `server_time` is the advancing `clock_timestamp()` taken *after* the
+      lock wait, and the storefront's countdown is `max(0, expires_at - server_time)` — so the
+      buyer's remaining time is **zero on arrival**. What they actually see is worse than an
+      immediate expiry notice: `HoldPicker` sets the "held" status unconditionally on a successful
+      reserve, while the countdown and the checkout form render only when `remaining > 0`, so the
+      page reads as *held* with no timer and no way to pay until a tick flips it to expired. And
+      because the reserve idempotency key is derived from the terms and is stable while they do not
+      change, pressing Reserve again **replays the same dead hold** and reproduces the same
+      response; the buyer cannot get a fresh hold for the same seats without changing the terms or
+      reloading. Meanwhile `liveClaims` — on `now()` in the *next* transaction, so it sees the
+      elapsed TTL — no longer counts the claim, and the stock is resellable to someone else. The
+      admitted hold is therefore not merely stale: it is a success response over inventory that has
+      already been released, with a retry path that returns it again.
+      **This is the weakest part of the rule and is recorded as such, not blessed.** The storefront
+      behaviour above is a defect of its own — a zero-duration reservation should enter the expired
+      state synchronously and rotate its key — and it is not fixed here because this ticket changes
+      no code. `sweepExpired` and every capacity read are unchanged by this rule.
+      **Pinned by test, in the manner of ADR-021's rollback-gap test — but unevenly, and the gap
+      is named rather than papered over.** Both live in
+      `services/inventory/internal/store/buyer_ttl_clock_smoke_test.go`.
+        - `TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime` pins **liveness** directly on
+          the replay path: it queues a replay before expiry, releases the lock after it, and
+          asserts the hold is still returned.
+        - `TestTransitionKeepsTransactionStartClockDeliberately` pins `Transition`'s **response
+          clock**, not its liveness — it runs a one-hour TTL under which the claim survives either
+          way, and asserts only that `server_time` predates the lock release. It covers admission
+          **indirectly**, because `Transition` decides on `ServerTime`; a refactor that gave that
+          path a separate decision-time liveness snapshot while keeping its response clock would
+          move the money-path behaviour with this test still green. No test closes that gap today.
+      Both go red if the clock they *do* pin moves — that is the designed signal, not a regression.
+      A ticket that changes this rule updates them consciously and amends this bullet; it never
+      deletes them to make a change pass.
     - **Boundaries — `clock_timestamp()`.** The allocation release predicate and the sales
       windows (ADR-054), unchanged and for the reason given above.
     - **Not a grant:** group-reservation *placement* stores a staff-supplied **absolute**
