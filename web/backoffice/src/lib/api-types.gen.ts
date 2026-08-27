@@ -1683,6 +1683,7 @@ export interface components {
         /**
          * @description Always the ADR-004 hours tier. The sibling of `MinutesCacheControl` for the one public read whose data is long-lived: `listPublicVenues`, since venue geometry changes on a scale of months (ADR-004 rule 1).
          *     Single-valued and required for the same reasons: the ADR-028 response validator turns any other value — and a missing header — into a 500 with the payload withheld, and the cross-service tier audit (shared/go/cachetier) can check the committed value rather than take it on trust.
+         *     The enforced claim is about the header's FIRST field value. A response that emits the declared tier and then appends a second value passes validation, because the validator decodes a primitive header from raw[0]. That gap is not specific to this component — it applies to every enum-declared response header in every service — and is pinned open by TestPublicReadCacheTierDuplicateHeaderIsNotCaught rather than left to inference.
          *     Distinct from `SeatMapCacheControl`, which also carries this tier but conditionally: a seat-map response earns the hours tier only when every map in it is published, and takes no-store otherwise (TKT-107). This component is unconditional, so the two cannot share a declaration.
          */
         HoursCacheControl: "public, max-age=3600, s-maxage=3600";

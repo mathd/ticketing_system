@@ -179,6 +179,60 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 	}
 }
 
+// TestPublicReadCacheTierDuplicateHeaderIsNotCaught pins a KNOWN, OPEN gap so the
+// claim above cannot quietly drift from the behaviour (ADR-021's rule: a gap that
+// is not this ticket's to close is pinned as a test asserting it is PRESENT).
+//
+// `required: true` plus a one-value enum constrains the FIRST field value only.
+// kin-openapi decodes a primitive header from raw[0] and never looks at the rest,
+// while the response wrapper forwards every value — so a handler that emits the
+// declared tier and then APPENDS a second value passes validation, and both values
+// reach the client. A shared cache reading that response gets a conflicting
+// directive the contract says cannot happen.
+//
+// Scope, established by running it: this is NOT introduced by TKT-209 and is not
+// specific to these five reads. It is a property of the shared response validator
+// (shared/go/contract) and applies to every enum-declared response header in every
+// service — `PriceResolutionCacheControl` and `NeverCacheControl`, catalog's
+// `SeatMapCacheControl`, and inventory's, all of which predate this branch and
+// behave identically. Closing it means rejecting a multi-valued declared header in
+// the shared validator, which changes behaviour for all five services and belongs
+// in its own ticket rather than smuggled into a catalog contract change.
+//
+// This test asserts the gap is STILL THERE. If it ever fails, the validator has
+// been fixed — update the ADR-004 amendment and delete this test; do not "repair"
+// it. Found by TKT-209's adversarial ai-review and verified by execution.
+func TestPublicReadCacheTierDuplicateHeaderIsNotCaught(t *testing.T) {
+	r := chi.NewRouter()
+	r.Get("/public/venues", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The declared tier FIRST, so raw[0] satisfies the enum...
+		w.Header().Add("Cache-Control", CacheControlPublicVenueReads)
+		// ...and a value the enum does not permit second.
+		w.Header().Add("Cache-Control", "public, max-age=300, s-maxage=300")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"venues":[]}`))
+	})
+	h, err := contract.ResponseValidator(apispec.Spec, r, nil, true)
+	if err != nil {
+		t.Fatalf("ResponseValidator: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"http://catalog.local/public/venues?organizer_id="+uuid.NewString(), nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the duplicate-header gap appears to be CLOSED (got %d, want 200). "+
+			"If the shared response validator now rejects a multi-valued declared header, "+
+			"that is good news: update ADR-004's TKT-209 amendment and delete this test.", rec.Code)
+	}
+	// The second, undeclared value really does reach the client — the part that
+	// makes this a gap rather than a curiosity.
+	if got := rec.Result().Header.Values("Cache-Control"); len(got) != 2 {
+		t.Fatalf("expected both values to be forwarded to the client, got %v", got)
+	}
+}
+
 // publicEventDetailJSON is a minimal schema-valid PublicEventDetail, so only the
 // header is under test.
 const publicEventDetailJSON = `{"id":"00000000-0000-0000-0000-000000000000",` +

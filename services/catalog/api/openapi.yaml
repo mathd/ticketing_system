@@ -1809,6 +1809,14 @@ components:
         (shared/go/cachetier) can check the committed value rather than take it
         on trust.
 
+        The enforced claim is about the header's FIRST field value. A response
+        that emits the declared tier and then appends a second value passes
+        validation, because the validator decodes a primitive header from raw[0].
+        That gap is not specific to this component — it applies to every
+        enum-declared response header in every service — and is pinned open by
+        TestPublicReadCacheTierDuplicateHeaderIsNotCaught rather than left to
+        inference.
+
         Distinct from `SeatMapCacheControl`, which also carries this tier but
         conditionally: a seat-map response earns the hours tier only when every
         map in it is published, and takes no-store otherwise (TKT-107). This

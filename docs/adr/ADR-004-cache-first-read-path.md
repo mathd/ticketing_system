@@ -264,6 +264,19 @@ this amendment, on any of these five reads:
 
 Before this amendment all three were served as 200 with the wrong header, or with none.
 
+**What this does NOT close, stated so the claim cannot be read wider than it is.** The enforcement
+binds the header's **first field value**. A response that emits the declared tier and then *appends*
+a second `Cache-Control` value passes validation and both values reach the client, because
+kin-openapi decodes a primitive header from `raw[0]` and the response wrapper forwards the rest. This
+is **not introduced here and not specific to these five reads**: it is a property of the shared
+response validator (`shared/go/contract`) and applies to every enum-declared response header in every
+service, `SeatMapCacheControl`, `PriceResolutionCacheControl`, `NeverCacheControl` and inventory's
+included — all of which predate this amendment. Closing it means rejecting a multi-valued declared
+header in the shared validator, which changes behaviour for all five services and is its own decision.
+The gap is pinned open by `TestPublicReadCacheTierDuplicateHeaderIsNotCaught`, which asserts it is
+still present; if that test ever fails the validator has been fixed and this paragraph should be
+updated rather than the test repaired (the ADR-021 convention).
+
 **This is a real availability cost, and it is ADR-028's accepted trade-off, not a new decision.** A
 handler and its declaration can now only move together: change one without the other and that read is
 down until they agree. That is the same bargain ADR-028 struck for response bodies — a detectable
