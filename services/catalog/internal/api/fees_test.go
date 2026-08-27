@@ -271,7 +271,9 @@ func TestResolveTicketTypeFeesCarriesTheBasisFaithfully(t *testing.T) {
 }
 
 // The guard. This response carries absorbed fees — the organizer's cost
-// structure — so unlike price-resolution it is not a public read. The gateway
+// structure. Price resolution was the public sibling this comment contrasted
+// with until TKT-155 moved it here too, so both resolution reads are now
+// internal, for two different disclosures. The gateway
 // denies /internal/ at the edge; this is the check that stands between the route
 // and the container network.
 func TestResolveTicketTypeFeesRequiresTheInternalCredential(t *testing.T) {
@@ -419,11 +421,17 @@ func TestResolveTicketTypeFeesRefusesMalformedRequestsUniformly(t *testing.T) {
 // something that matched everything would pass every assertion above.
 func TestTheInternalGuardDoesNotTouchPublicRoutes(t *testing.T) {
 	e := newEnv(t)
-	ttID, _ := seedPricedTicketType(t, e, 4550, "EUR")
+	venueID := seedVenue(t, e, "Hall")
 
-	rec := e.do(http.MethodGet, "/ticket-types/"+ttID.String()+"/price-resolution", nil)
+	// A real public READ through the same router, not a static asset: the
+	// mutation this test exists to kill is a prefix widened until it matches
+	// everything, and only a route the guard could plausibly swallow proves it
+	// did not. (It used to use price-resolution; TKT-155 moved that operation
+	// onto the internal surface, which would have made this fixture assert the
+	// opposite of the truth.)
+	rec := e.do(http.MethodGet, "/public/venues?organizer_id="+e.store.venues[venueID].OrganizerID.String(), nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("the public price resolution must still answer without a credential: %d %s",
+		t.Fatalf("a public read must still answer without a credential: %d %s",
 			rec.Code, rec.Body)
 	}
 }

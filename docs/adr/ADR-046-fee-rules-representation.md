@@ -13,7 +13,8 @@ eligibility and precedence rules this ADR wrote for fees now govern `price_rules
 deliberate divergence: a foreign channel's rule is hidden from **fee** provenance to avoid
 publishing the channel fee matrix to other services, and hidden from **price** provenance for a
 strictly larger reason — `price-resolution` is a PUBLIC operation where fee-resolution is
-`/internal/` (§6). §7's revisit trigger is unchanged; see the amendment there for why, now that the
+`/internal/` (§6). **→ That premise no longer holds: TKT-155 moved price resolution onto the
+internal surface. The hiding behaviour is unchanged; see § Amendment (TKT-155) for why.** §7's revisit trigger is unchanged; see the amendment there for why, now that the
 two comparators resemble each other more closely than when §7 was written. Decision taken under the
 owner-waived gates of that run, recorded on the ticket.
 
@@ -371,6 +372,40 @@ is the booking fee not showing up?"*.
   policy, and TKT-215 fixed it by storing the face value explicitly and pointing the delta at it —
   while the `order.exchange.reversed` money fact continues to reverse the **gross**, because the
   journal must agree with what was captured.
+
+## Amendment (2026-08-27, TKT-155) — price resolution is internal too, and §7's justification narrows
+
+`GET /ticket-types/{ticketTypeId}/price-resolution` moved to
+`GET /internal/ticket-types/{id}/price-resolution`. Both of catalog's resolution reads are now on the
+internal surface, for two different disclosures: fee resolution carries `absorbed` fees (the
+organizer's cost structure), and price resolution carries `candidates` — **every considered rule**,
+including those that lost with `outside_window_future`. That is an organizer's unannounced future
+prices and the shape of their whole rule ladder, readable before the on-sale by a competitor, a
+reseller, or a buyer waiting for a drop.
+
+**What this does to the §4/§7 amendment of TKT-237.** That amendment hid a foreign channel's rule
+from **price** provenance "for a strictly larger reason" than it hid it from fee provenance — the
+larger reason being that `price-resolution` was PUBLIC where fee-resolution was `/internal/` (§6).
+**That premise is now false.** The two operations sit on the same surface behind the same credential.
+
+**The behaviour is deliberately UNCHANGED.** Foreign-channel rules stay absent from price
+`candidates`. The justification narrowed; the conduct did not, for two reasons:
+
+1. Relaxing it would **widen a payload** on a ticket whose entire purpose is narrowing an audience.
+   That is the wrong direction to take incidentally, inside a security change.
+2. The remaining justification still stands on its own — the one fee resolution always had. Reporting
+   other channels' rules publishes which channels carry bespoke pricing and at what amounts, to every
+   service holding the internal credential. Sharing a trust boundary is not the same as having no
+   reason to withhold.
+
+If anyone wants that relaxed, it is a deliberate ticket with its own argument, not a side effect of
+this one. §7's revisit trigger is otherwise unchanged.
+
+**Consequence for callers.** Commerce's sale path (`services/commerce/internal/api/catalog_pricing.go`)
+now sends the internal credential to this route. Before the move it deliberately withheld it, on the
+grounds that putting a service credential on a publicly routable path would be strictly worse than the
+exposure — both halves of that reasoning moved together. No storefront or back-office code called the
+operation.
 
 ## References
 

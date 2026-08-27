@@ -53,9 +53,17 @@ func seedPricedTicketType(t *testing.T, e *env, amount int64, currency string) (
 	return ttID, scopes
 }
 
+// pricePath is the operation's path since TKT-155 moved it onto catalog's
+// /internal/ surface. Built here rather than spelled at each call site so the
+// next move is one edit — and so the credential and the path cannot drift apart.
+func pricePath(ttID uuid.UUID) string {
+	return "/internal/ticket-types/" + ttID.String() + "/price-resolution"
+}
+
 func resolvePrice(t *testing.T, e *env, ttID uuid.UUID) (*httptest.ResponseRecorder, PriceResolution) {
 	t.Helper()
-	rec := e.do(http.MethodGet, "/ticket-types/"+ttID.String()+"/price-resolution", nil)
+	rec := e.doWithHeaders(http.MethodGet, pricePath(ttID), nil,
+		map[string]string{"X-Internal-Token": feeInternalToken})
 	var out PriceResolution
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -184,7 +192,8 @@ func TestResolveTicketTypePriceCurrencyMismatchFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := e.do(http.MethodGet, "/ticket-types/"+ttID.String()+"/price-resolution", nil)
+	rec := e.doWithHeaders(http.MethodGet, pricePath(ttID), nil,
+		map[string]string{"X-Internal-Token": feeInternalToken})
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 — a misconfigured rule is not client-actionable", rec.Code)
 	}
@@ -195,7 +204,8 @@ func TestResolveTicketTypePriceCurrencyMismatchFailsClosed(t *testing.T) {
 
 func TestResolveTicketTypePriceNotFound(t *testing.T) {
 	e := newEnv(t)
-	rec := e.do(http.MethodGet, "/ticket-types/"+uuid.New().String()+"/price-resolution", nil)
+	rec := e.doWithHeaders(http.MethodGet, pricePath(uuid.New()), nil,
+		map[string]string{"X-Internal-Token": feeInternalToken})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -363,5 +373,108 @@ func TestPriceLossReasonEnumMatchesTheContract(t *testing.T) {
 		if !emitted[r] {
 			t.Errorf("the contract declares %q, which nothing emits", r)
 		}
+	}
+}
+
+// TestResolveTicketTypePriceRequiresTheInternalCredential is TKT-155's COS-1 at
+// the catalog tier: the operation moved onto /internal/, so the prefix guard
+// authenticates it.
+//
+// The refusal must also leak nothing. An unauthorized caller learning the
+// resolved amount from a 401 body would defeat the point — this ticket exists
+// because the payload is the sensitive thing, not the status code.
+func TestResolveTicketTypePriceRequiresTheInternalCredential(t *testing.T) {
+	e := newEnv(t)
+	ttID, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 9900, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, token string
+		want        int
+	}{
+		{name: "missing", want: http.StatusUnauthorized},
+		{name: "wrong", token: "nope", want: http.StatusUnauthorized},
+		{name: "valid", token: feeInternalToken, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := map[string]string{}
+			if tc.token != "" {
+				hdr["X-Internal-Token"] = tc.token
+			}
+			rec := e.doWithHeaders(http.MethodGet, pricePath(ttID), nil, hdr)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.want, rec.Body)
+			}
+			if tc.want != http.StatusUnauthorized {
+				return
+			}
+			// The forward price is the disclosure this ticket closes. Asserting on
+			// the AMOUNT rather than on body length: a refusal that happened to be
+			// long would pass a length check, and one that leaked exactly this
+			// number is the failure that matters.
+			if bodyMentions(rec.Body.String(), "9900") {
+				t.Errorf("the refusal leaked a resolved amount: %s", rec.Body)
+			}
+		})
+	}
+}
+
+// TestResolveTicketTypePriceIsGoneFromThePublicPath is the mutation evidence the
+// ticket names: revert the path move alone and this returns 200 again.
+//
+// It is the only assertion here about the EXPOSURE rather than about the
+// credential. Every other test in this file now sends the token, so all of them
+// would stay green with the operation still ALSO mounted publicly — they prove
+// the credentialed path works, not that the uncredentialed one is gone.
+func TestResolveTicketTypePriceIsGoneFromThePublicPath(t *testing.T) {
+	e := newEnv(t)
+	ttID, scopes := seedPricedTicketType(t, e, 4550, "EUR")
+	if _, err := e.store.CreatePriceRule(t.Context(), store.PriceRuleInput{
+		ScopeLevel: store.ScopeEvent, ScopeID: scopes.EventID, Amount: 9900, Currency: "EUR"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No credential, the old public path — an internet caller's exact request.
+	rec := e.do(http.MethodGet, "/ticket-types/"+ttID.String()+"/price-resolution", nil)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("the public price-resolution route is still answering: %d %s", rec.Code, rec.Body)
+	}
+	if bodyMentions(rec.Body.String(), "9900") {
+		t.Fatalf("the public route leaked a resolved amount: %s", rec.Body)
+	}
+}
+
+// TestResolveTicketTypePriceAuthenticatesBeforeBinding mirrors the fee route's
+// path-shape block (fees_test.go): every malformed spelling answers the SAME
+// fixed 401, with no credential sent.
+//
+// What it proves is ordering, not validation. guardInternalSurface wraps the
+// finished handler, so the credential check precedes routing and parameter
+// binding — move the check into the handler and a malformed uuid answers 400
+// with schema detail, handing an unauthenticated caller an oracle. Each case
+// below would then return 400 or 404 instead of 401.
+func TestResolveTicketTypePriceAuthenticatesBeforeBinding(t *testing.T) {
+	e := newEnv(t)
+	ttID, _ := seedPricedTicketType(t, e, 4550, "EUR")
+	id := ttID.String()
+
+	for name, path := range map[string]string{
+		"malformed uuid":        "/internal/ticket-types/not-a-uuid/price-resolution",
+		"empty uuid":            "/internal/ticket-types//price-resolution",
+		"unknown ticket type":   "/internal/ticket-types/" + uuid.New().String() + "/price-resolution",
+		"unknown internal path": "/internal/ticket-types/" + id + "/price-resolution/extra",
+		"empty channel_code":    "/internal/ticket-types/" + id + "/price-resolution?channel_code=",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := e.do(http.MethodGet, path, nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s: status = %d, want 401 — the credential check must precede "+
+					"routing and binding, so a malformed request must not get a schema answer (body %s)",
+					path, rec.Code, rec.Body)
+			}
+		})
 	}
 }

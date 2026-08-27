@@ -656,8 +656,36 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 
 	// Now change the price under the buyer: a higher-priority rule wins from here on.
 	seedRule(9900, 100)
-	// Catalog really does resolve the new price for a fresh caller.
+	// TKT-155: price resolution moved onto catalog's /internal/ surface, because
+	// `candidates` reports every considered rule — including future ones — and
+	// that publishes an organizer's unannounced prices. Three assertions, because
+	// the exposure and the answer are separate claims and each has its own
+	// audience.
+
+	// (a) The audience that actually had the exposure: an internet caller on the
+	// OLD public path, through the gateway. It must no longer resolve.
 	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/api/catalog/ticket-types/%s/price-resolution", gatewayURL, ticketType))
+	if code == 200 {
+		t.Fatalf("the old public price-resolution path still answers through the gateway: %s", body)
+	}
+	if strings.Contains(string(body), `"amount":9900`) {
+		t.Fatalf("the old public path leaked a resolved amount: %s", body)
+	}
+
+	// (b) The new path is refused AT THE EDGE, before it reaches catalog at all.
+	// Asserted on the gateway's own distinguishable body: "404 page not found" is
+	// emitted by chi and the services too, so a status-only check could not tell
+	// WHICH layer refused (gateway/cmd/gateway/main.go, edgeDeniedBody).
+	code, body, _ = getWithHeaders(t, fmt.Sprintf("%s/api/catalog/internal/ticket-types/%s/price-resolution", gatewayURL, ticketType))
+	if code != 404 || !strings.Contains(string(body), "refused at the gateway edge") {
+		t.Fatalf("the gateway must edge-deny the internal path: %d %s", code, body)
+	}
+
+	// (c) The ANSWER is unchanged for a credentialed caller. This ticket closes an
+	// audience; it does not change what catalog computes — so the successful read
+	// has to survive the move, not be replaced by two refusals.
+	code, body = internalJSON(t, "GET",
+		fmt.Sprintf("%s/internal/ticket-types/%s/price-resolution", catalogURL, ticketType), "", nil)
 	if code != 200 {
 		t.Fatalf("resolution %d %s", code, body)
 	}

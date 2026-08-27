@@ -101,12 +101,16 @@ func pricingStack(t *testing.T, status int, body string) (*Server, *int64, func(
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/price-resolution") {
-			// The internal credential must NEVER be sent to this route: it is a
-			// declared, publicly routable operation, and leaking a service
-			// credential onto a public path would be strictly worse than the
-			// exposure TKT-155 already records.
-			if r.Header.Get("X-Internal-Token") != "" {
-				t.Errorf("internal credential leaked to the public resolution route")
+			// TKT-155 moved this operation onto catalog's /internal/ surface, so
+			// BOTH halves are pinned here: the path and the credential. They are
+			// one change — a request on the internal path without the token is a
+			// 401, and the old public path no longer exists — and asserting only
+			// one would stay green through half a revert.
+			if !strings.HasPrefix(r.URL.Path, "/internal/ticket-types/") {
+				t.Errorf("price resolution must be read from catalog's internal surface, got %q", r.URL.Path)
+			}
+			if r.Header.Get("X-Internal-Token") == "" {
+				t.Errorf("the internal credential must be sent to the internal resolution route")
 			}
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(status)

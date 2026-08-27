@@ -97,6 +97,8 @@ func internalRequest(t *testing.T, fail func(string, ...any), method, url, key s
 // internal surface is off the gateway, so gateway-path parsing never sees it.
 func directService(url string) string {
 	switch {
+	case strings.HasPrefix(url, catalogURL):
+		return "catalog"
 	case strings.HasPrefix(url, inventoryURL):
 		return "inventory"
 	case strings.HasPrefix(url, commerceURL):
