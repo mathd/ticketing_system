@@ -79,10 +79,19 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// face_value_amount goes with them: reservations_face_value_bounds (migration
-	// 0014) requires face <= total, so zeroing the total alone is refused — the
-	// constraint keeping the three numbers coherent, working as designed.
-	if _, err := com0.Exec(ctx, `UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0
+	// Every money column AND the fee snapshot, together. Migration 0014 enforces
+	// both that face <= total (reservations_face_value_bounds) and that the stored
+	// snapshot AGREES with the columns it explains (reservations_fee_snapshot_shape:
+	// "a snapshot that says one thing while the row charges another is worse than no
+	// snapshot"). Zeroing them piecemeal is refused, twice — the schema resisting an
+	// incoherent comped state, which is the behaviour those constraints exist for.
+	if _, err := com0.Exec(ctx, `UPDATE reservations
+		SET unit_amount=0, total_amount=0, face_value_amount=0,
+		    fee_resolution_snapshot = jsonb_set(jsonb_set(jsonb_set(
+		        fee_resolution_snapshot,
+		        '{face_value}', '0'::jsonb),
+		        '{passed_on_fees}', '0'::jsonb),
+		        '{total_amount}', '0'::jsonb)
 		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, order.OrderID); err != nil {
 		t.Fatal(err)
 	}
