@@ -156,6 +156,32 @@ func TestParkedReleasePendingGetsTheSameAnswerFromBothPaths(t *testing.T) {
 				t.Fatalf("a %s release_pending order must be answered %d, both paths said %d: %s",
 					tc.name, tc.want, recA.Code, recA.Body.String())
 			}
+
+			// The CODE is not the whole answer, and agreement alone does not settle it
+			// (ai-review [medium]): two paths could consistently return 409 with an
+			// unrelated body, or omit the message entirely, and everything above would
+			// still pass. What a parked order owes the buyer is a statement that a human
+			// must act — so assert the field that carries it.
+			var answer map[string]any
+			if err := json.Unmarshal(recA.Body.Bytes(), &answer); err != nil {
+				t.Fatalf("response body is not JSON: %s", recA.Body.String())
+			}
+			if got := answer["status"]; got != "release_pending" {
+				t.Fatalf("the answer must echo the durable status, got %v: %s", got, recA.Body.String())
+			}
+			if tc.parked {
+				// The same message reconciliation_required gets, because it means the
+				// same thing to a buyer: nothing will advance this without a human.
+				if got := answer["error"]; got != "order awaiting payment reconciliation" {
+					t.Fatalf("a parked order must tell the buyer a human must act, got %v: %s",
+						got, recA.Body.String())
+				}
+			} else if _, present := answer["error"]; present {
+				// The unparked control's other half: recovery is still working on this
+				// order, so there is nothing to escalate and no error to report.
+				t.Fatalf("an unparked release_pending order must not report an error: %s",
+					recA.Body.String())
+			}
 		})
 	}
 }
@@ -173,4 +199,121 @@ func sameJSONAnswer(t *testing.T, a, b []byte) bool {
 		t.Fatalf("path B body is not JSON: %s", b)
 	}
 	return fmt.Sprintf("%v", av) == fmt.Sprintf("%v", bv)
+}
+
+// TKT-280, ai-review [high]. The test above proves answerRecovered ANSWERS correctly; it
+// calls it directly, so deleting every call site in checkout would leave it green while
+// real buyers went back to the optimistic 202. That is the AGENTS.md wiring rule (TKT-202):
+// ask which edit your test catches -- breaking the mechanism, or REMOVING IT FROM THE PLACE
+// THAT USES IT -- and assert at the boundary the value crosses on its way out.
+//
+// So this one never mentions answerRecovered. It drives the real checkout handler and
+// constructs the actual race: the order is `created` when claimOrder reads it, and the
+// payments stub parks it as release_pending mid-request -- exactly what a recovery pass
+// winning the race does. The guarded UPDATE that follows is scoped to
+// ('created','payment_unknown','confirmation_pending'), so it matches zero rows, and the
+// handler must consult the durable truth instead of answering its optimistic 202.
+//
+// The assertion is on the HANDLER's response. Nothing here can be satisfied by editing
+// instrumentation, and removing the answerRecovered call at the guarded-write site turns
+// it red.
+func TestCheckoutConsultsTheParkedTruthWhenItsGuardedWriteLoses(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "wiring-"+uuid.NewString(), 1, 2500)
+
+	const name, email, token = "Racing Buyer", "racing@example.test", fakepsp.TokenSuccess
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s",
+		f.reservation, name, strings.ToLower(email), token))))
+	key := "checkout-wiring-" + uuid.NewString()
+
+	if _, err := db.ExecContext(ctx,
+		`UPDATE reservations SET status='finalizing' WHERE id=$1`, f.reservation); err != nil {
+		t.Fatal(err)
+	}
+	// `created`, NOT release_pending: claimOrder must find a live order and let the
+	// request proceed. If it were already parked the replay branch would answer first and
+	// this test would prove nothing about the guarded-write path.
+	if _, err := db.ExecContext(ctx, `
+		UPDATE orders SET status='created', idempotency_key=$2, request_fingerprint=$3,
+		    updated_at=now()
+		WHERE id=$1`, f.order, key, fingerprint); err != nil {
+		t.Fatal(err)
+	}
+
+	// Payments answers the charge, and in the same instant recovery wins the race: the
+	// order becomes release_pending with the park marker set. This is the durable state
+	// the handler will meet after its own guarded write matches nothing.
+	payments := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := db.ExecContext(r.Context(), `
+			UPDATE orders SET status='release_pending', terminal_outcome='declined',
+			    recovery_attempts=10, recovery_last_error='attempts exhausted',
+			    recovery_parked_at=now()
+			WHERE id=$1`, f.order); err != nil {
+			t.Errorf("park the order mid-request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"captured"}`))
+	}))
+	defer payments.Close()
+
+	// Inventory must ACCEPT the finalize and refuse only the confirm. Refusing both
+	// answers 409 "hold expired" from a branch that sits BEFORE payments is ever called
+	// (server.go:1666) -- the right status code from the wrong branch, which is how the
+	// first run of this test passed its code assertion while proving nothing. Refusing
+	// the confirm is what routes the handler into the guarded UPDATE whose loss is the
+	// subject here.
+	inventory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/finalize") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"finalized"}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer inventory.Close()
+
+	srv := New(db, http.DefaultClient, "", inventory.URL, payments.URL, "tok")
+	r := chi.NewRouter()
+	r.Post("/reservations/{id}/checkout", srv.checkout)
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":%q,"email":%q,"payment_token":%q}`,
+		f.reservation, name, email, token)
+	req := httptest.NewRequest(http.MethodPost,
+		"/reservations/"+f.reservation.String()+"/checkout", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	// Prove the race actually happened before judging the answer: if the stub never ran,
+	// the row is still `created` and a 202 would be correct rather than a defect.
+	var parked sql.NullTime
+	var status string
+	if err := db.QueryRowContext(ctx,
+		`SELECT status,recovery_parked_at FROM orders WHERE id=$1`, f.order).Scan(&status, &parked); err != nil {
+		t.Fatal(err)
+	}
+	if status != "release_pending" || !parked.Valid {
+		t.Fatalf("the race did not happen: status=%q parked=%v -- this test proves nothing",
+			status, parked.Valid)
+	}
+
+	// THE BOUNDARY ASSERTION. A parked order tells every caller a human must act, and the
+	// handler is a caller. 202 here would be the optimistic fallback answering for a row
+	// no worker will ever advance.
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("checkout answered %d for a parked order its guarded write missed; "+
+			"the durable truth is release_pending+parked, which owes the buyer 409: %s",
+			rec.Code, rec.Body.String())
+	}
+	var answer map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("response body is not JSON: %s", rec.Body.String())
+	}
+	if got := answer["error"]; got != "order awaiting payment reconciliation" {
+		t.Fatalf("a parked order must tell the buyer a human must act, got %v: %s",
+			got, rec.Body.String())
+	}
 }

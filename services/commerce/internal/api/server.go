@@ -1405,8 +1405,22 @@ func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, x r
 	// input, and keeps the parked answer identical to the replay branch's by routing to
 	// the same arm rather than by writing a second copy of the same body.
 	//
-	// Only release_pending is affected. A parked order in any other status either is
-	// already reconciling (same answer) or is not a state ReleaseStuckOrder parks.
+	// SCOPED TO release_pending, and the scope is a match to the replay branch rather
+	// than a claim that no other status can be parked. It can: ClaimStuckOrders admits
+	// created, payment_unknown, confirmation_pending, release_pending and
+	// reconciliation_required (store/recovery.go), and ReleaseStuckOrder parks on
+	// attempt exhaustion with NO status predicate (`WHERE id=$1 AND recovery_claim_id=$2`),
+	// so a parked created/payment_unknown/confirmation_pending row is reachable and still
+	// receives the optimistic 202 here.
+	//
+	// That is deliberate and it is NOT a gap this normalisation leaves open, because the
+	// replay branch does exactly the same: it reads recoveryParked once, inside its own
+	// release_pending branch (see below), and answers those three statuses optimistically
+	// too. The two paths therefore agree across the whole vocabulary, which is this
+	// function's contract. Whether a parked created/payment_unknown/confirmation_pending
+	// order SHOULD still be told 202 is a product question about what 202 promises, open
+	// on TKT-145 and deliberately not pre-empted here (ai-review [medium], accepted as a
+	// correction to this comment's reasoning, rejected as a scope change).
 	if class == recoveredPending && recoveryParked.Valid {
 		class = recoveredReconciling
 	}
