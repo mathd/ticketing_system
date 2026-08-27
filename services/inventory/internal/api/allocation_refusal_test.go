@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,6 +48,23 @@ func TestAllocationRefusalsCarryAMachineReadableCodeAndTheOffendingChannel(t *te
 			wantCode:    "allocation_cap_below_consumption",
 			wantChannel: "reseller-acme",
 		},
+		// TKT-176. A seated pool cannot carry channel allocations at all, and that
+		// refusal deliberately carries NO code — it belongs in this table rather than
+		// beside it, because the table's subject is which refusals are machine-readable
+		// and which are not, and a future author adding a code should have to edit the
+		// statement that says this one has none.
+		//
+		// Why it earns no code, in the terms the other two do: a code exists so the
+		// editor can put a message beside the field an operator must fix. There is no
+		// such field here. Every cap in the submitted set could be correct and the
+		// replace would still be refused, because what is wrong is the pool's kind — the
+		// operator's remedy is to stop trying, not to change a number. The editor's
+		// default branch surfaces the message verbatim, which is the right outcome.
+		{
+			name:       "a seated pool refuses allocations wholesale and names no field to fix",
+			err:        fmt.Errorf("channel allocations are not supported on seated pools: %w", store.ErrPoolKindMismatch),
+			wantStatus: http.StatusConflict,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := httptest.NewRecorder()
@@ -59,8 +77,20 @@ func TestAllocationRefusalsCarryAMachineReadableCodeAndTheOffendingChannel(t *te
 			if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decode body %q: %v", res.Body.String(), err)
 			}
-			if got, _ := body["code"].(string); got != tc.wantCode {
-				t.Errorf("code=%q want=%q (body=%s)", got, tc.wantCode, res.Body.String())
+			// TKT-176 tightened this from `got, _ :=`. The discarded ok made an ABSENT
+			// `code` key and a key present as "" indistinguishable, so a case expecting no
+			// code passed either way — and would have kept passing if a code were later
+			// added but failed to serialize. Mirrors the channel assertion below, which
+			// already distinguished the two.
+			code, codePresent := body["code"].(string)
+			if tc.wantCode == "" {
+				if codePresent {
+					t.Errorf("code=%q present on a refusal that names no field to fix; "+
+						"a code invites the editor to attribute this to a row, and no row "+
+						"is wrong (body=%s)", code, res.Body.String())
+				}
+			} else if code != tc.wantCode {
+				t.Errorf("code=%q want=%q (body=%s)", code, tc.wantCode, res.Body.String())
 			}
 			got, present := body["channel"].(string)
 			if tc.wantChannel == "" {

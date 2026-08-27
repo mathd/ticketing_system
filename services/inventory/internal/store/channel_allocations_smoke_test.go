@@ -1047,3 +1047,118 @@ func TestAChannelWithNoAllocationStillRefusesAsCapacity(t *testing.T) {
 			"channel to be closed, so this is not a window refusal", err)
 	}
 }
+
+// TKT-176. A channel allocation is a quantity cap, and a seated pool does not admit
+// against quantity — CreateSeatHold consults capacity alone and never reads
+// channel_allocations. So an allocation on a seated pool is subtracted by the public
+// availability read while binding nobody who can actually claim a seat: the read and the
+// claim disagree, and the allocation reserves inventory that is still freely sellable.
+//
+// The owner's decision (2026-08-26) is to make that state unrepresentable rather than to
+// teach the seated claim path about channels. A seat-set-shaped allocation — one naming
+// WHICH seats rather than how many — is a different design and a different ticket.
+//
+// THE INVARIANT THIS PINS, stated without naming the implementation: a refused replace
+// leaves the allocation set and its revision exactly as it found them. The expected
+// values below follow from that sentence, not from watching what the code produced, and
+// every one of them reads the DATABASE back rather than trusting a return value.
+func TestChannelAllocationsAreRefusedOnASeatedPool(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 10)
+
+	// Seeded by direct SQL on purpose: ReplaceChannelAllocations is the very thing under
+	// test and will refuse, so it cannot be used to build the precondition. This row is
+	// load-bearing — delete it and the "the set is unchanged" assertion below has nothing
+	// to be unchanged about, and the test would pass against an implementation that
+	// refused AND wiped the table.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_allocations(pool_id, channel_code, cap)
+		VALUES ($1, 'legacy', 4)`, slot); err != nil {
+		t.Fatal(err)
+	}
+
+	before := currentRevision(t, ctx, st, org, slot)
+	rowsBefore := allocationRows(t, ctx, st, slot)
+
+	_, err := st.ReplaceChannelAllocations(ctx, org, slot,
+		[]ChannelAllocation{{Channel: "reseller", Cap: 5}}, &before)
+	if !errors.Is(err, ErrPoolKindMismatch) {
+		t.Fatalf("replace on a seated pool err = %v want ErrPoolKindMismatch", err)
+	}
+	// The refusal must land BEFORE the revision bump, not merely somewhere. A refused
+	// call that still burned a revision would break TKT-250's stale-write protection for
+	// every other operator holding a form on this slot: their view would go stale because
+	// of a write that never happened.
+	if after := currentRevision(t, ctx, st, org, slot); after != before {
+		t.Errorf("revision after a refused replace = %d want %d (unchanged): the refusal "+
+			"landed after the allocation_revision bump", after, before)
+	}
+	if got := allocationRows(t, ctx, st, slot); !allocationSetsEqual(got, rowsBefore) {
+		t.Errorf("allocation set after a refused replace = %v want %v (unchanged)", got, rowsBefore)
+	}
+}
+
+// The other half of the predicate, and it is not optional: a test that only proves a
+// seated pool is refused cannot tell "refuses seated pools" from "refuses everything".
+// This leg fails against an always-refuse implementation, which is the mutation the
+// seated leg above is blind to.
+//
+// It lives HERE, beside the refusal, rather than being delegated to the pre-existing GA
+// allocation tests. Those run in the same package and would go red first on an
+// always-refuse mutation, so they would kill the mutant before this test ever spoke —
+// and a mutation killed by a suite that runs first is evidence the mechanism is live,
+// not evidence that this test caught it.
+func TestChannelAllocationsStillSucceedOnAGaPool(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	before := currentRevision(t, ctx, st, org, slot)
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot,
+		[]ChannelAllocation{{Channel: "reseller", Cap: 5}}, &before); err != nil {
+		t.Fatalf("replace on a GA pool: %v", err)
+	}
+	// Derived from the rule "a successful replace advances the revision exactly once",
+	// not read back from the implementation.
+	if after := currentRevision(t, ctx, st, org, slot); after != before+1 {
+		t.Errorf("revision after a successful GA replace = %d want %d", after, before+1)
+	}
+	if got := allocationRows(t, ctx, st, slot); !allocationSetsEqual(got, map[string]int32{"reseller": 5}) {
+		t.Errorf("allocation set after a successful GA replace = %v want {reseller:5}", got)
+	}
+}
+
+// A STALE seated set is refused for being STALE, not for being seated.
+//
+// This pins guard ORDERING rather than pool kind, and it is the only assertion that
+// catches the kind check being hoisted above the staleness check — a tempting refactor,
+// since the kind is the cheaper test. The reason the order matters is already written
+// into ReplaceChannelAllocations: a stale set must be refused for staleness so the
+// operator's remedy is "reload", and answering "this pool is seated" would send an
+// operator whose view is out of date to reason about something that is not what went
+// wrong. Separate from the kind case above so that an earlier refusal short-circuiting a
+// later one stays visible instead of hiding inside one test that passes for two reasons.
+func TestAStaleSeatedReplaceIsRefusedForStalenessNotForKind(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 10)
+
+	stale := currentRevision(t, ctx, st, org, slot) - 1
+	_, err := st.ReplaceChannelAllocations(ctx, org, slot,
+		[]ChannelAllocation{{Channel: "reseller", Cap: 5}}, &stale)
+	if !errors.Is(err, ErrAllocationRevisionMismatch) {
+		t.Fatalf("stale replace on a seated pool err = %v want ErrAllocationRevisionMismatch: "+
+			"the kind check must not be hoisted above the staleness check", err)
+	}
+}
+
+// allocationSetsEqual compares two allocation sets read from the table.
+func allocationSetsEqual(a, b map[string]int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || v != w {
+			return false
+		}
+	}
+	return true
+}
