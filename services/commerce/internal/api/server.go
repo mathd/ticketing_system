@@ -1390,10 +1390,27 @@ func (s *Server) markUnknown(ctx context.Context, reservationID, orderID uuid.UU
 // (the miss was a plain write failure, and 202-with-a-hint remains the honest default).
 func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, x reservation, order uuid.UUID) bool {
 	var status string
-	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id=$1`, order).Scan(&status); err != nil {
+	// recovery_parked_at is read here, not just in claimOrder (TKT-280). Reading only
+	// `status` made this path answer 202 for a PARKED release_pending row while the
+	// replay branch answered 409 about the identical durable state — see the
+	// normalisation below.
+	var recoveryParked sql.NullTime
+	if err := s.db.QueryRowContext(ctx, `SELECT status,recovery_parked_at FROM orders WHERE id=$1`, order).Scan(&status, &recoveryParked); err != nil {
 		return false
 	}
-	switch classifyRecovered(status) {
+	class := classifyRecovered(status)
+	// Parking is a durable attribute, not a status, so classifyRecovered cannot see it:
+	// it maps the status VOCABULARY and its test pins that mapping against the CHECK
+	// constraint. Normalising here keeps that function answering one question about one
+	// input, and keeps the parked answer identical to the replay branch's by routing to
+	// the same arm rather than by writing a second copy of the same body.
+	//
+	// Only release_pending is affected. A parked order in any other status either is
+	// already reconciling (same answer) or is not a state ReleaseStuckOrder parks.
+	if class == recoveredPending && recoveryParked.Valid {
+		class = recoveredReconciling
+	}
+	switch class {
 	case recoveredCompleted:
 		// Recovery resolved the payment as captured and completed the order — the tickets
 		// exist. Answering the optimistic 202 here would tell a buyer their payment is
@@ -1592,10 +1609,17 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		//
 		// 202 echoing the durable status, not 402/408 from terminal_outcome: from here the
 		// release can still find a CONFIRMED claim and park the order for reconciliation
-		// (recovery.releaseAndFail), so the buyer-visible outcome is not final yet. It is
-		// also exactly what answerRecovered already returns for this state, so the guarded
-		// -write loser and this replay agree without either changing. terminal_outcome does
-		// prove no money was captured, and 202-with-status says that without over-claiming.
+		// (recovery.releaseAndFail), so the buyer-visible outcome is not final yet.
+		// terminal_outcome does prove no money was captured, and 202-with-status says that
+		// without over-claiming.
+		//
+		// The guarded-write loser returns this same 202 only while the row is UNPARKED;
+		// once parked, both paths return the reconciliation answer. An earlier version of
+		// this comment claimed the two agreed unconditionally "without either changing" —
+		// true when written, and falsified by the F2 parked fix immediately below, which
+		// was applied to this branch alone. answerRecovered caught up in TKT-280, and
+		// TestParkedReleasePendingGetsTheSameAnswerFromBothPaths now pins the agreement
+		// itself rather than each path's literal, so it cannot drift apart again silently.
 		//
 		// Unless recovery has PARKED the row (ai-review F2). 202 promises that something
 		// will advance this order, and once ReleaseStuckOrder has exhausted its attempts

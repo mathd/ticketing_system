@@ -1,0 +1,176 @@
+//go:build smoke
+
+package api
+
+import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	"ticketing/shared/fakepsp"
+)
+
+// TKT-280. One durable state, two paths, two contradictory answers.
+//
+// `orders.status='release_pending'` WITH `recovery_parked_at` set is a row no worker will
+// ever advance: ReleaseStuckOrder sets the marker and deliberately leaves the status alone,
+// and ClaimStuckOrders excludes parked rows. Parked means a human must act.
+//
+// The replay branch says so (409 "order awaiting payment reconciliation"). answerRecovered
+// said 202 for the same row, because its only query read `status` and never the marker —
+// and 202 promises that something will advance this order, which is false once the row is
+// parked.
+//
+// THE ASSERTION IS THE AGREEMENT, NOT THE LITERAL. Two separate checks that each path
+// answers 409 would pass today and drift again tomorrow, which is exactly how this defect
+// was born: the replay branch's comment asserted the two paths agreed, that was TRUE when
+// written, and a fix applied to one branch only falsified it. So this seeds ONE row and
+// compares the two responses to each other. The literal is asserted once, afterwards, and
+// derived from the requirement (a parked order tells every caller a human must act) rather
+// than from what either path currently returns.
+//
+// THE TIER IS THE POINT (AGENTS.md). answerRecovered reads the database. The ordinary API
+// tests in this package build servers with a nil db and cannot construct
+// "release_pending + recovery_parked_at set", which is the entire precondition. The store
+// tier has the row but no handler, so it cannot observe what a caller is told. Only a
+// DB-backed API test sees both.
+//
+// NOTE ON RUNNING IT: exchangeAPIDB skips when COMMERCE_API_TEST_DATABASE_URL is unset, so
+// a plain `go test ./services/commerce/internal/api/` reports ok WITHOUT running this. The
+// red observation for this ticket was made under the smoke stack, where the variable is set.
+func TestParkedReleasePendingGetsTheSameAnswerFromBothPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		parked bool
+		want   int
+	}{
+		// Parked: no worker will ever advance this row, so 202 would be a false promise.
+		{name: "parked", parked: true, want: http.StatusConflict},
+		// UNPARKED CONTROL, and it is not decoration: it is the regression that would
+		// silently break recovery. A fix that routed every release_pending order to
+		// reconciliation would satisfy the parked case and destroy this one.
+		{name: "unparked", parked: false, want: http.StatusAccepted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedExchangeSource(t, db, ctx, "parked-answer-"+tc.name+"-"+uuid.NewString(), 1, 2500)
+
+			// fakepsp.TokenSuccess, not an invented literal: checkout rejects an unknown
+			// token with 400 "invalid checkout" BEFORE it ever reaches claimOrder, so a
+			// made-up token makes the replay path unreachable and the comparison vacuous.
+			// The first run of this test did exactly that — both cases went red with
+			// path B returning 400, which is the fixture failing, not the defect showing.
+			const name, email, token = "Parked Buyer", "parked@example.test", fakepsp.TokenSuccess
+			fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s",
+				f.reservation, name, strings.ToLower(email), token))))
+			key := "checkout-" + tc.name + "-" + uuid.NewString()
+
+			// The reservation must not be `completed`: this order is mid-recovery.
+			if _, err := db.ExecContext(ctx,
+				`UPDATE reservations SET status='finalizing' WHERE id=$1`, f.reservation); err != nil {
+				t.Fatal(err)
+			}
+
+			// terminal_outcome is NOT optional padding. RecordTerminalOutcome writes it and
+			// status='release_pending' in ONE statement, and the runner treats a
+			// release_pending row without an outcome as a bug (server.go:1585-1587). A
+			// fixture omitting it would pin behaviour on a row the system considers
+			// impossible.
+			parkedAt := "NULL"
+			if tc.parked {
+				parkedAt = "now()"
+			}
+			if _, err := db.ExecContext(ctx, `
+				UPDATE orders SET status='release_pending', terminal_outcome='declined',
+				    idempotency_key=$2, request_fingerprint=$3,
+				    recovery_attempts=10, recovery_last_error='attempts exhausted',
+				    recovery_claim_id=NULL, recovery_lease_until=NULL,
+				    recovery_parked_at=`+parkedAt+`,
+				    updated_at=now()-interval '10 minutes'
+				WHERE id=$1`, f.order, key, fingerprint); err != nil {
+				t.Fatal(err)
+			}
+
+			// Prove the fixture reaches the state it claims BEFORE asserting anything about
+			// it. A fixture that silently failed to write the marker would make the parked
+			// case pass for the wrong reason.
+			var marker sql.NullTime
+			if err := db.QueryRowContext(ctx,
+				`SELECT recovery_parked_at FROM orders WHERE id=$1`, f.order).Scan(&marker); err != nil {
+				t.Fatal(err)
+			}
+			if marker.Valid != tc.parked {
+				t.Fatalf("fixture did not reach the %s state: recovery_parked_at valid=%v, want %v",
+					tc.name, marker.Valid, tc.parked)
+			}
+
+			srv := New(db, http.DefaultClient, "", "", "", "tok")
+
+			// Path A — answerRecovered, called directly. This is the guarded-write loser's
+			// answer: the path a checkout takes when recovery won the race for its order.
+			x, err := srv.load(ctx, f.reservation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recA := httptest.NewRecorder()
+			if !srv.answerRecovered(ctx, recA, x, f.order) {
+				t.Fatal("answerRecovered declined to answer for a release_pending order")
+			}
+
+			// Path B — the replay branch, reached through the real checkout handler with the
+			// matching idempotency key and fingerprint, so claimOrder returns the existing
+			// order rather than creating one.
+			r := chi.NewRouter()
+			r.Post("/reservations/{id}/checkout", srv.checkout)
+			body := fmt.Sprintf(`{"reservation_id":%q,"name":%q,"email":%q,"payment_token":%q}`,
+				f.reservation, name, email, token)
+			req := httptest.NewRequest(http.MethodPost,
+				"/reservations/"+f.reservation.String()+"/checkout", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", key)
+			recB := httptest.NewRecorder()
+			r.ServeHTTP(recB, req)
+
+			// THE REQUIREMENT: one durable state, one answer. Compare the paths to each
+			// other first — this is the assertion that cannot drift.
+			if recA.Code != recB.Code {
+				t.Fatalf("the two paths disagree about one durable state: answerRecovered=%d, replay=%d\n  A: %s\n  B: %s",
+					recA.Code, recB.Code, recA.Body.String(), recB.Body.String())
+			}
+			if !sameJSONAnswer(t, recA.Body.Bytes(), recB.Body.Bytes()) {
+				t.Fatalf("the two paths agree on the code and disagree on the body:\n  A: %s\n  B: %s",
+					recA.Body.String(), recB.Body.String())
+			}
+
+			// And the shared answer is the one the requirement demands, derived from what
+			// the state MEANS rather than from what either path happened to return.
+			if recA.Code != tc.want {
+				t.Fatalf("a %s release_pending order must be answered %d, both paths said %d: %s",
+					tc.name, tc.want, recA.Code, recA.Body.String())
+			}
+		})
+	}
+}
+
+// sameJSONAnswer compares two response bodies as JSON values, ignoring key order and
+// whitespace. Comparing raw bytes would make this brittle against a formatting change that
+// is not what the test is about.
+func sameJSONAnswer(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("path A body is not JSON: %s", a)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("path B body is not JSON: %s", b)
+	}
+	return fmt.Sprintf("%v", av) == fmt.Sprintf("%v", bv)
+}
