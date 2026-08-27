@@ -350,12 +350,20 @@ func TestPSPFromEnvTreatsAnAbsentKeyAsALegalOfflineConfiguration(t *testing.T) {
 	}
 
 	// A configured key still reaches the selector and still selects Stripe — the
-	// transport checks must not reject a legitimate value on its way through.
+	// transport checks must not reject a value on its way through.
+	//
+	// "shape-conformant", NOT "well-formed" or "valid" (ai-review [high], partially
+	// accepted): nothing here verifies that Stripe would accept this string, and no
+	// test in this repository can, because the gate never talks to Stripe (ADR-032
+	// §Constraints). This fixture satisfies the prefix and the two body predicates and
+	// that is the entire claim. `sk_test_x` satisfies them too and still reaches
+	// api.stripe.com — see the ADR-032 amendment, which states that gap rather than
+	// hiding it.
 	t.Setenv("STRIPE_SECRET_KEY", "sk_test_51H8xQ2eZvKYlo2C0abcdefgh")
 	if provider, _, err := pspFromEnv(); err != nil {
-		t.Fatalf("a well-formed test key must still select Stripe: %v", err)
+		t.Fatalf("a shape-conformant test key must still select Stripe: %v", err)
 	} else if _, ok := provider.(*psp.Stripe); !ok {
-		t.Fatalf("a well-formed test key must select Stripe, got %T", provider)
+		t.Fatalf("a shape-conformant test key must select Stripe, got %T", provider)
 	}
 
 	// And the shape refusal still reaches the caller through this path.

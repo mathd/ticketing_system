@@ -358,9 +358,21 @@ it applies the transport hygiene (the secret becomes an `Authorization` header v
 key. The service asserts nothing about Stripe's alphabet, length, checksum or future format — a
 bound invented for a credential Stripe issues and we do not control could refuse a *working*
 deployment, which is worse than the failure it prevents. What these refusals catch is a **typo or a
-quoting mistake in a deploy config**. A truncated-but-plausible key still starts cleanly and still
-fails at the first charge, exactly as before. Nothing in this repository may describe
-`STRIPE_SECRET_KEY` as validated.
+quoting mistake in a deploy config**. Nothing in this repository may describe `STRIPE_SECRET_KEY`
+as validated.
+
+**The residual, stated plainly** (TKT-253 ai-review, [high], accepted as a scope boundary rather
+than a defect): `sk_test_x` satisfies the prefix and both body predicates, constructs a real adapter
+and is sent to `api.stripe.com` on the first PSP operation — where the charge handler has already
+bound a durable payment operation, so an authentication failure surfaces as an unresolved operation
+rather than a refused deployment. That was true before these refusals and remains true after them;
+this change strictly narrows what is accepted and closes none of it.
+
+Closing it would require **authenticating the key against Stripe at startup**, which §Constraints
+forbids: the gate must run offline and deterministically, CI holds no Stripe key, and live
+verification is manual and out-of-gate. A startup call to Stripe would also make every deployment's
+boot depend on Stripe's availability. If that trade is ever worth making it is a new decision with
+its own ADR, not an amendment here.
 
 Live `sk_test_` verification remains manual and out-of-gate, per §Constraints.
 
