@@ -1761,7 +1761,8 @@ components:
         its least-cacheable member's tier, and an empty list fails closed. The enum
         is enforced at runtime, not only by the gate: catalog's ADR-028 response
         validator checks response headers and turns a third value into a 500 with
-        the payload withheld. no-store closes the shared-cache vector only — it is
+        the payload withheld. That binds the header's first field value; an
+        appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is
         not access control.
       schema:
         type: string
@@ -1774,7 +1775,9 @@ components:
         "never" tier), and once TKT-152 adds effective windows the response's
         correctness expires at a known instant — caching it past that instant
         would sell at a stale price. Single-valued and required so the ADR-028
-        response validator turns any other value into a 500.
+        response validator turns any other value into a 500. That binds the
+        header's first field value; an appended second value is not caught (see
+        ADR-004's TKT-209 amendment).
       required: true
       schema:
         type: string
@@ -1785,7 +1788,9 @@ components:
         Always the ADR-004 minutes tier. Single-valued and required, so the
         ADR-028 response validator turns any other value into a 500 and the
         cross-service tier audit (shared/go/cachetier) can check the committed
-        value rather than take it on trust.
+        value rather than take it on trust. That binds the header's first field
+        value; an appended second value is not caught (see ADR-004's TKT-209
+        amendment).
 
         Since TKT-209 every catalog public read declares its tier this way.
         The free-form `CacheControl` component this replaced was `type: string`
@@ -1831,7 +1836,9 @@ components:
         Always no-store — ADR-004's "never" tier. An authentication response is
         never shared-cacheable: it is computed from a submitted credential and
         says whether that credential is good. Single-valued and required so the
-        ADR-028 response validator turns any other value into a 500.
+        ADR-028 response validator turns any other value into a 500. That binds
+        the header's first field value; an appended second value is not caught
+        (see ADR-004's TKT-209 amendment).
       required: true
       schema:
         type: string

@@ -362,7 +362,9 @@ components:
         never shared-cacheable: it reports the live state of one process, and a
         cached answer about whether a cache is on is exactly the wrong thing to
         hand an operator mid-incident. Single-valued and required so ADR-028's
-        response validator turns any other value into a 500.
+        response validator turns any other value into a 500. That binds the
+        header's first field value; an appended second value is not caught (see
+        ADR-004's TKT-209 amendment).
       required: true
       schema:
         type: string
@@ -382,8 +384,10 @@ components:
         9111 mechanism for exactly that, and it is the only one available here:
         varying Cache-Control by remaining freshness is what the storefront
         middleware does for pages, but AvailabilityCacheControl is a required
-        single-valued enum, so ADR-028's validator turns a second value into a
-        500.
+        single-valued enum, so ADR-028's validator turns a REPLACEMENT value into
+        a 500. (An APPENDED second field value is not caught — the validator
+        decodes a primitive header from the first value only. TKT-209 verified
+        this and pinned it open; see ADR-004's TKT-209 amendment.)
 
         Bounded by the tier itself: an entry older than max-age is not served.
       required: true

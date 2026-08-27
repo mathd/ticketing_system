@@ -44,6 +44,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -228,8 +229,17 @@ func TestPublicReadCacheTierDuplicateHeaderIsNotCaught(t *testing.T) {
 	}
 	// The second, undeclared value really does reach the client — the part that
 	// makes this a gap rather than a curiosity.
-	if got := rec.Result().Header.Values("Cache-Control"); len(got) != 2 {
-		t.Fatalf("expected both values to be forwarded to the client, got %v", got)
+	//
+	// Asserted as the EXACT ordered pair, not as a count: a length check stays
+	// green if something downstream drops the forbidden value and duplicates the
+	// allowed one, which is the shape in which this gap would actually get closed.
+	// The test would then still claim the gap is open while it was shut.
+	got := rec.Result().Header.Values("Cache-Control")
+	want := []string{CacheControlPublicVenueReads, "public, max-age=300, s-maxage=300"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the forbidden second value must still reach the client verbatim.\n got: %v\nwant: %v\n"+
+			"If the forbidden value is gone, the shared validator has been fixed: update ADR-004's "+
+			"TKT-209 amendment and delete this test rather than loosening this assertion.", got, want)
 	}
 }
 
