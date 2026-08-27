@@ -79,7 +79,10 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := com0.Exec(ctx, `UPDATE reservations SET unit_amount=0, total_amount=0
+	// face_value_amount goes with them: reservations_face_value_bounds (migration
+	// 0014) requires face <= total, so zeroing the total alone is refused — the
+	// constraint keeping the three numbers coherent, working as designed.
+	if _, err := com0.Exec(ctx, `UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0
 		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, order.OrderID); err != nil {
 		t.Fatal(err)
 	}
