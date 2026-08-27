@@ -171,7 +171,7 @@ func (s *Server) WithAccess(access string) *Server {
 
 // registerRoutes is separate from Router so a test can WALK the real route
 // inventory (TKT-194). The credential enumeration proving that the back
-// office's token opens exactly one internal operation is only as good as its
+// office's token opens only the internal operations it should is only as good as its
 // knowledge of which operations exist, and a hand-maintained list cannot detect
 // a route added after it was written.
 func (s *Server) registerRoutes(r chi.Router) {
@@ -223,6 +223,9 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// compared in a handler (ADR-043).
 	r.Get("/partners/availability", s.partnerAvailability)
 	r.Post("/partners/reservations", s.partnerReserve)
+	// The staff order read (TKT-201). A GET beside the writes on the same order, behind
+	// the same inline guard, and NOT a widening of the public GET /orders/{id} above.
+	r.Get("/internal/orders/{id}", s.staffOrderDetail)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	// TKT-171: the comped-order reversal. Beside the refund because it is the same
 	// staff decision on an order with no money leg, not a different subsystem.

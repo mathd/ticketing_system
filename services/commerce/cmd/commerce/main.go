@@ -140,8 +140,10 @@ func port() string {
 }
 
 // staffWriteTokenEnv names the back office's commerce credential (TKT-194).
-// It opens exactly one operation — the staff refund — where
-// INTERNAL_SERVICE_TOKEN opens every service's internal surface.
+// It opens three operations — the staff refund, the comped-order void (TKT-171)
+// and the staff order read (TKT-201) — where INTERNAL_SERVICE_TOKEN opens every
+// service's internal surface. The narrow set is the point, and
+// api/staff_credential_test.go is what keeps it narrow.
 const staffWriteTokenEnv = "COMMERCE_STAFF_WRITE_TOKEN"
 
 // assertionKeyEnv names the HMAC key for customer checkout assertions (TKT-221).

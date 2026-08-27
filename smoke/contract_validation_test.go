@@ -236,6 +236,17 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		// priced ticket type that a restored route would really resolve.
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution", byGateway},
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
+		// TKT-201's staff order read. A credentialed internal operation is still an
+		// internal operation: the read must not become a gateway exception just because
+		// the back office wants it, and the back office does not need one — it reaches
+		// commerce directly on the container network (ADR-002).
+		//
+		// The all-zero fixture is CORRECT here and would be wrong for a different claim:
+		// this table proves WHICH LAYER refuses an internal path, and the gateway refuses
+		// on the path alone without ever consulting the id. It would be fatal for proving
+		// a route is gone — see the note above — because a restored route handed an id
+		// that does not exist answers 404 from the store while this stays green.
+		{http.MethodGet, "/api/commerce/internal/orders/00000000-0000-0000-0000-000000000001?organizer_id=00000000-0000-0000-0000-000000000001", byGateway},
 		{http.MethodPost, "/api/payments/internal/facts", byGateway},
 		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments", byGateway},
 		// The boundary, on the transitions themselves.

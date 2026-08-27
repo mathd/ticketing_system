@@ -60,8 +60,9 @@ func refundProblem(err error) (int, string) {
 
 func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 	// Either the shared internal token or the back office's commerce credential
-	// (TKT-194). This is the ONE internal operation that accepts the second;
-	// every other one still compares the internal token inline, and
+	// (TKT-194). One of the three internal operations that accept the second —
+	// this refund, the void (TKT-171), and the staff order read (TKT-201); every
+	// other one still compares the internal token inline, and
 	// staff_credential_test.go enumerates them to keep that true.
 	//
 	// Same 404 as everywhere else in this service, not a 401: it does not

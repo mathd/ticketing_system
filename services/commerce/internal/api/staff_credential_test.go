@@ -129,6 +129,14 @@ func TestTheEnumerationCoversEveryInternalRouteCommerceServes(t *testing.T) {
 	covered := map[string]bool{
 		"POST /internal/orders/{id}/refunds": true,
 		"POST /internal/orders/{id}/voids":   true,
+		// The staff order READ (TKT-201). The first non-write on this list, and the
+		// widening is deliberate: the back office cannot show a staff member what an
+		// order contains without it, and every alternative put money on a
+		// credential-free read. Proven to ACCEPT the credential
+		// (TestStaffCredentialIsAcceptedByTheOrderDetail) and to REFUSE a wrong or
+		// missing one (TestOrderDetailRefusesAWrongOrMissingStaffCredential) rather
+		// than merely listed here.
+		"GET /internal/orders/{id}": true,
 	}
 	for _, op := range everyInternalOperationExceptRefund() {
 		covered[op.method+" "+op.routeTemplate] = true
@@ -332,5 +340,68 @@ func TestInternalTokenIsChosenByDestination(t *testing.T) {
 	unsplit := &Server{paymentsURL: "http://payments:8080", token: "shared"}
 	if got := unsplit.internalTokenFor("http://payments:8080/internal/charges"); got != "shared" {
 		t.Errorf("unsplit server sent %q, want the shared credential", got)
+	}
+}
+
+// The staff order read's acceptance case (TKT-201). A separate test from the refund's and
+// the void's, for the reason the void's own comment gives: the enumeration proves the route
+// is CLASSIFIED as staff-openable, and a route classified as open that is in fact closed
+// would pass it. This is what proves the classification true.
+func TestStaffCredentialIsAcceptedByTheOrderDetail(t *testing.T) {
+	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	req := httptest.NewRequest(http.MethodGet, "/internal/orders/"+someUUID+"?organizer_id="+someUUID, nil)
+	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
+	res := httptest.NewRecorder()
+
+	defer func() {
+		// Reaching the database with no database is the proof, as above.
+		_ = recover()
+	}()
+	s.Router(nil, true).ServeHTTP(res, req)
+	if res.Code == http.StatusNotFound {
+		t.Errorf("the staff credential was refused by the order read it exists for; body=%.200s", res.Body.String())
+	}
+}
+
+// The refusal half, and the reason its request is FULLY WELL-FORMED.
+//
+// organizer_id is a required query parameter in the contract, so the request validator
+// answers 400 for a request that omits it BEFORE the handler runs — staff_credential_test's
+// own note on getCancellationRefundReport says exactly this. A refusal test that left it out
+// would be green because the validator rejected a malformed request, and would say nothing
+// about the credential. So each case below sends a valid order id and a valid organizer and
+// is refused ANYWAY, which is the claim.
+//
+// The mutation that is evidence: delete the staffOrInternal call from staffOrderDetail. These
+// cases stop returning 404 — and they cannot be rescued by a 400, because there is nothing
+// malformed to reject.
+func TestOrderDetailRefusesAWrongOrMissingStaffCredential(t *testing.T) {
+	path := "/internal/orders/" + someUUID + "?organizer_id=" + someUUID
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{"no credential at all", "", ""},
+		{"a wrong staff credential", "X-Commerce-Staff-Write-Token", "not-the-staff-token"},
+		{"the staff credential in the internal header", "X-Internal-Token", staffTok},
+		{"the internal token in the staff header", "X-Commerce-Staff-Write-Token", internalTok},
+		{"a prefix of the staff credential", "X-Commerce-Staff-Write-Token", staffTok[:len(staffTok)-1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			if tc.header != "" {
+				req.Header.Set(tc.header, tc.value)
+			}
+			res := httptest.NewRecorder()
+			s.Router(nil, true).ServeHTTP(res, req)
+
+			if res.Code != http.StatusNotFound {
+				t.Errorf("status=%d want 404 — a well-formed request with no valid credential must be "+
+					"refused, and refused indistinguishably from a missing route (ADR-043); body=%.200s",
+					res.Code, res.Body.String())
+			}
+		})
 	}
 }

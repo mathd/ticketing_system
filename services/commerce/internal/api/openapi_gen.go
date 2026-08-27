@@ -149,13 +149,13 @@ func (e ExchangePendingStatus) Valid() bool {
 
 // Defines values for OrderResultStatus.
 const (
-	Completed OrderResultStatus = "completed"
+	OrderResultStatusCompleted OrderResultStatus = "completed"
 )
 
 // Valid indicates whether the value is a known member of the OrderResultStatus enum.
 func (e OrderResultStatus) Valid() bool {
 	switch e {
-	case Completed:
+	case OrderResultStatusCompleted:
 		return true
 	default:
 		return false
@@ -164,19 +164,19 @@ func (e OrderResultStatus) Valid() bool {
 
 // Defines values for RefundRefundStatus.
 const (
-	Full    RefundRefundStatus = "full"
-	None    RefundRefundStatus = "none"
-	Partial RefundRefundStatus = "partial"
+	RefundRefundStatusFull    RefundRefundStatus = "full"
+	RefundRefundStatusNone    RefundRefundStatus = "none"
+	RefundRefundStatusPartial RefundRefundStatus = "partial"
 )
 
 // Valid indicates whether the value is a known member of the RefundRefundStatus enum.
 func (e RefundRefundStatus) Valid() bool {
 	switch e {
-	case Full:
+	case RefundRefundStatusFull:
 		return true
-	case None:
+	case RefundRefundStatusNone:
 		return true
-	case Partial:
+	case RefundRefundStatusPartial:
 		return true
 	default:
 		return false
@@ -216,6 +216,45 @@ func (e ReservationFeeBreakdownIncidence) Valid() bool {
 	case Absorbed:
 		return true
 	case PassedOn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for StaffOrderRefundStatus.
+const (
+	StaffOrderRefundStatusCompleted StaffOrderRefundStatus = "completed"
+	StaffOrderRefundStatusPending   StaffOrderRefundStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the StaffOrderRefundStatus enum.
+func (e StaffOrderRefundStatus) Valid() bool {
+	switch e {
+	case StaffOrderRefundStatusCompleted:
+		return true
+	case StaffOrderRefundStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for StaffOrderTotalsRefundStatus.
+const (
+	StaffOrderTotalsRefundStatusFull    StaffOrderTotalsRefundStatus = "full"
+	StaffOrderTotalsRefundStatusNone    StaffOrderTotalsRefundStatus = "none"
+	StaffOrderTotalsRefundStatusPartial StaffOrderTotalsRefundStatus = "partial"
+)
+
+// Valid indicates whether the value is a known member of the StaffOrderTotalsRefundStatus enum.
+func (e StaffOrderTotalsRefundStatus) Valid() bool {
+	switch e {
+	case StaffOrderTotalsRefundStatusFull:
+		return true
+	case StaffOrderTotalsRefundStatusNone:
+		return true
+	case StaffOrderTotalsRefundStatusPartial:
 		return true
 	default:
 		return false
@@ -616,6 +655,84 @@ type ReservationCreate struct {
 	TicketTypeId   openapi_types.UUID `json:"ticket_type_id"`
 }
 
+// StaffOrderDetail The staff order read (TKT-201). Carries money, so it carries a credential.
+// NO BUYER CONTACT, and that is a decision rather than an omission: no name, email, address, buyer id or customer id appears here, and the query behind it does not join buyer_pii at all. Contact is exposed only at /internal/buyers/{id}/delivery-email, to the service that must send mail. If a staff surface ever needs a buyer's name, that is its own ticket with its own argument (ADR-003).
+type StaffOrderDetail struct {
+	// LineItems Exactly one element, structurally rather than by convention: an order references exactly one reservation (`orders.reservation_id` is NOT NULL UNIQUE) and a reservation names exactly one ticket type. An exchange creates a REPLACEMENT order rather than adding a line to this one. An array rather than a single object because that is what a line item is, and a future multi-line order should widen the data rather than the shape.
+	LineItems []StaffOrderLine   `json:"line_items"`
+	OrderId   openapi_types.UUID `json:"order_id"`
+
+	// OrganizerId Echoed back so a caller can tell WHICH scope answered. It is the organizer the read was scoped to, which is by construction the one that owns the order — a mismatch is a 404, never a body naming a different organizer.
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+
+	// Refunds Every persisted refund attempt, PENDING ONES INCLUDED, oldest first. Pending is the case that matters: a refund whose request timed out or answered 5xx may have moved money, and the only safe next step is replaying the SAME idempotency key. A completed-only list would leave exactly that case invisible, which is the problem this read exists to let the back office stop solving from memory (ADR-042: "the durable answer is a read, not a store").
+	Refunds []StaffOrderRefund `json:"refunds"`
+	Status  string             `json:"status"`
+	Totals  StaffOrderTotals   `json:"totals"`
+}
+
+// StaffOrderLine defines model for StaffOrderLine.
+type StaffOrderLine struct {
+	// Currency ISO 4217, uppercase (ADR-001).
+	Currency string `json:"currency"`
+
+	// FaceValueAmount The price BEFORE passed-on fees, in minor units. Stored explicitly rather than derived because an exchange compares against a price-only target, and a reader falling back to the gross total refunds the service fee on an even exchange (see migration 0014).
+	FaceValueAmount int                `json:"face_value_amount"`
+	Quantity        int                `json:"quantity"`
+	TicketTypeId    openapi_types.UUID `json:"ticket_type_id"`
+
+	// TotalAmount Gross, in minor units — face value plus passed-on fees.
+	TotalAmount int `json:"total_amount"`
+
+	// UnitAmount Integer minor units (ADR-001). Never a float, anywhere on this path.
+	UnitAmount int `json:"unit_amount"`
+}
+
+// StaffOrderRefund defines model for StaffOrderRefund.
+type StaffOrderRefund struct {
+	// Actor Who asked for it. Staff attribution, mirroring the operational-hold conversion path: an operation that moves money cannot be less attributable than one that moves a seat.
+	Actor string `json:"actor"`
+
+	// Amount Minor units.
+	Amount int `json:"amount"`
+
+	// CompletedAt Absent while pending. Present exactly when status is completed — the table enforces the pairing with a CHECK, so the two can never disagree.
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	Currency    string     `json:"currency"`
+
+	// IdempotencyKey The durable replay identity, and the reason this read retires unresolved-refunds.ts: a page that knows which key commerce has already recorded can ASK rather than remember. Staff-scoped and never logged.
+	IdempotencyKey string                 `json:"idempotency_key"`
+	Quantity       int                    `json:"quantity"`
+	RefundId       openapi_types.UUID     `json:"refund_id"`
+	Status         StaffOrderRefundStatus `json:"status"`
+}
+
+// StaffOrderRefundStatus defines model for StaffOrderRefund.Status.
+type StaffOrderRefundStatus string
+
+// StaffOrderTotals defines model for StaffOrderTotals.
+type StaffOrderTotals struct {
+	Currency string `json:"currency"`
+
+	// FaceValueAmount Sum of face values in minor units.
+	FaceValueAmount int `json:"face_value_amount"`
+
+	// PassedOnFees The exact integer difference total_amount - face_value_amount. Computed as integers and never as a rounded share, so it reconciles by construction. ABSORBED fees do not appear here or in face_value_amount — the organizer bears them out of the face value, so they change what the organizer nets and not what the buyer paid.
+	PassedOnFees int                          `json:"passed_on_fees"`
+	RefundStatus StaffOrderTotalsRefundStatus `json:"refund_status"`
+
+	// RefundedAmount Minor units refunded so far, from the order's own counter.
+	RefundedAmount   int `json:"refunded_amount"`
+	RefundedQuantity int `json:"refunded_quantity"`
+
+	// TotalAmount Gross order total in minor units.
+	TotalAmount int `json:"total_amount"`
+}
+
+// StaffOrderTotalsRefundStatus defines model for StaffOrderTotals.RefundStatus.
+type StaffOrderTotalsRefundStatus string
+
 // VoidCreate defines model for VoidCreate.
 type VoidCreate struct {
 	Actor       string             `json:"actor"`
@@ -678,6 +795,11 @@ type DrawDownGroupReservationParams struct {
 // ConvertOperationalHoldParams defines parameters for ConvertOperationalHold.
 type ConvertOperationalHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetStaffOrderDetailParams defines parameters for GetStaffOrderDetail.
+type GetStaffOrderDetailParams struct {
+	OrganizerId OrganizerIdQuery `form:"organizer_id" json:"organizer_id"`
 }
 
 // ExchangeOrderParams defines parameters for ExchangeOrder.

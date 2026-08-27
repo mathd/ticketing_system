@@ -393,6 +393,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/orders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** An order's line, money totals and refunds, for staff */
+        get: operations["getStaffOrderDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/buyers/{id}/delivery-email": {
         parameters: {
             query?: never;
@@ -636,6 +653,73 @@ export interface components {
             /** Format: uuid */
             order_id?: string;
             status?: string;
+        };
+        /**
+         * @description The staff order read (TKT-201). Carries money, so it carries a credential.
+         *     NO BUYER CONTACT, and that is a decision rather than an omission: no name, email, address, buyer id or customer id appears here, and the query behind it does not join buyer_pii at all. Contact is exposed only at /internal/buyers/{id}/delivery-email, to the service that must send mail. If a staff surface ever needs a buyer's name, that is its own ticket with its own argument (ADR-003).
+         */
+        StaffOrderDetail: {
+            /** Format: uuid */
+            order_id: string;
+            status: string;
+            /**
+             * Format: uuid
+             * @description Echoed back so a caller can tell WHICH scope answered. It is the organizer the read was scoped to, which is by construction the one that owns the order — a mismatch is a 404, never a body naming a different organizer.
+             */
+            organizer_id: string;
+            /** @description Exactly one element, structurally rather than by convention: an order references exactly one reservation (`orders.reservation_id` is NOT NULL UNIQUE) and a reservation names exactly one ticket type. An exchange creates a REPLACEMENT order rather than adding a line to this one. An array rather than a single object because that is what a line item is, and a future multi-line order should widen the data rather than the shape. */
+            line_items: components["schemas"]["StaffOrderLine"][];
+            totals: components["schemas"]["StaffOrderTotals"];
+            /** @description Every persisted refund attempt, PENDING ONES INCLUDED, oldest first. Pending is the case that matters: a refund whose request timed out or answered 5xx may have moved money, and the only safe next step is replaying the SAME idempotency key. A completed-only list would leave exactly that case invisible, which is the problem this read exists to let the back office stop solving from memory (ADR-042: "the durable answer is a read, not a store"). */
+            refunds: components["schemas"]["StaffOrderRefund"][];
+        };
+        StaffOrderLine: {
+            /** Format: uuid */
+            ticket_type_id: string;
+            quantity: number;
+            /** @description Integer minor units (ADR-001). Never a float, anywhere on this path. */
+            unit_amount: number;
+            /** @description The price BEFORE passed-on fees, in minor units. Stored explicitly rather than derived because an exchange compares against a price-only target, and a reader falling back to the gross total refunds the service fee on an even exchange (see migration 0014). */
+            face_value_amount: number;
+            /** @description Gross, in minor units — face value plus passed-on fees. */
+            total_amount: number;
+            /** @description ISO 4217, uppercase (ADR-001). */
+            currency: string;
+        };
+        StaffOrderTotals: {
+            /** @description Gross order total in minor units. */
+            total_amount: number;
+            /** @description Sum of face values in minor units. */
+            face_value_amount: number;
+            /** @description The exact integer difference total_amount - face_value_amount. Computed as integers and never as a rounded share, so it reconciles by construction. ABSORBED fees do not appear here or in face_value_amount — the organizer bears them out of the face value, so they change what the organizer nets and not what the buyer paid. */
+            passed_on_fees: number;
+            /** @description Minor units refunded so far, from the order's own counter. */
+            refunded_amount: number;
+            refunded_quantity: number;
+            /** @enum {string} */
+            refund_status: "none" | "partial" | "full";
+            currency: string;
+        };
+        StaffOrderRefund: {
+            /** Format: uuid */
+            refund_id: string;
+            /** @enum {string} */
+            status: "pending" | "completed";
+            quantity: number;
+            /** @description Minor units. */
+            amount: number;
+            currency: string;
+            /** @description The durable replay identity, and the reason this read retires unresolved-refunds.ts: a page that knows which key commerce has already recorded can ASK rather than remember. Staff-scoped and never logged. */
+            idempotency_key: string;
+            /** @description Who asked for it. Staff attribution, mirroring the operational-hold conversion path: an operation that moves money cannot be less attributable than one that moves a seat. */
+            actor: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description Absent while pending. Present exactly when status is completed — the table enforces the pairing with a CHECK, so the two can never disagree.
+             */
+            completed_at?: string;
         };
         /**
          * @description The public order read. It answers for ANY order id and carries no credential, so it says as little as an order can say.
@@ -1596,6 +1680,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CancellationRefundReport"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    getStaffOrderDetail: {
+        parameters: {
+            query: {
+                organizer_id: components["parameters"]["OrganizerIdQuery"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Staff order detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaffOrderDetail"];
                 };
             };
             400: components["responses"]["Error"];

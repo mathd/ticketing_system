@@ -559,6 +559,45 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}:
+    get:
+      operationId: getStaffOrderDetail
+      summary: An order's line, money totals and refunds, for staff
+      # TKT-201. A SEPARATE read from the public GET /orders/{id}, deliberately, and the
+      # separation is the decision rather than an implementation detail: OrderState
+      # answers for ANY order id and carries no credential, and order ids are DERIVED
+      # (uuid.NewSHA1 over organizer + idempotency key), so anyone who watched a buyer's
+      # own checkout can recompute the id. Money on that read would be money handed to a
+      # caller who guessed. The security review that removed customer_id from OrderState
+      # made the same argument; this operation is the other half of it.
+      #
+      # Auth is INLINE, not a `security:` stanza (ADR-043): a declared scheme guards a
+      # service's public contract, an inline check guards its internal surface, and the
+      # refusal is a 404 so it is indistinguishable from the gateway's own edge deny on
+      # the same path. The gateway refuses every /api/<svc>/internal/* by construction
+      # (ADR-002) and this operation is NOT an exception to that.
+      #
+      # ADR-004 tier: NEVER. no-store, and the reasoning rather than the label: an order's
+      # status and its refund set both change under staff writes, so a cached copy is a
+      # stale answer to "what has already been done to this order" — which is the exact
+      # question a staff member asks before deciding what to do next. It also carries
+      # money and refund idempotency keys, which must not sit in a shared cache.
+      #
+      # organizer_id is a required query parameter and is the SCOPE, not the authority:
+      # the credential proves the caller is the back office, and the organizer narrows
+      # what it may see. The back office supplies it from its authenticated session, never
+      # from browser input. Commerce cannot verify the organizer itself — the signed
+      # organizer assertion (ADR-058) is minted with a catalog-only key — so a holder of
+      # COMMERCE_STAFF_WRITE_TOKEN could name another organizer. That residual is real,
+      # is unchanged by this operation, and is recorded on ADR-042.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/OrganizerIdQuery'}
+      responses:
+        '200': {description: Staff order detail, content: {application/json: {schema: {$ref: '#/components/schemas/StaffOrderDetail'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -1042,6 +1081,123 @@ components:
         error: {type: string}
         order_id: {type: string, format: uuid}
         status: {type: string}
+    StaffOrderDetail:
+      type: object
+      additionalProperties: false
+      required: [order_id, status, organizer_id, line_items, totals, refunds]
+      properties:
+        order_id: {type: string, format: uuid}
+        status: {type: string}
+        organizer_id:
+          type: string
+          format: uuid
+          description: >
+            Echoed back so a caller can tell WHICH scope answered. It is the
+            organizer the read was scoped to, which is by construction the one
+            that owns the order — a mismatch is a 404, never a body naming a
+            different organizer.
+        line_items:
+          type: array
+          description: >
+            Exactly one element, structurally rather than by convention: an order
+            references exactly one reservation (`orders.reservation_id` is NOT NULL
+            UNIQUE) and a reservation names exactly one ticket type. An exchange
+            creates a REPLACEMENT order rather than adding a line to this one. An
+            array rather than a single object because that is what a line item is,
+            and a future multi-line order should widen the data rather than the shape.
+          items: {$ref: '#/components/schemas/StaffOrderLine'}
+        totals: {$ref: '#/components/schemas/StaffOrderTotals'}
+        refunds:
+          type: array
+          description: >
+            Every persisted refund attempt, PENDING ONES INCLUDED, oldest first.
+            Pending is the case that matters: a refund whose request timed out or
+            answered 5xx may have moved money, and the only safe next step is
+            replaying the SAME idempotency key. A completed-only list would leave
+            exactly that case invisible, which is the problem this read exists to
+            let the back office stop solving from memory (ADR-042: "the durable
+            answer is a read, not a store").
+          items: {$ref: '#/components/schemas/StaffOrderRefund'}
+      description: >
+        The staff order read (TKT-201). Carries money, so it carries a credential.
+
+        NO BUYER CONTACT, and that is a decision rather than an omission: no name,
+        email, address, buyer id or customer id appears here, and the query behind
+        it does not join buyer_pii at all. Contact is exposed only at
+        /internal/buyers/{id}/delivery-email, to the service that must send mail.
+        If a staff surface ever needs a buyer's name, that is its own ticket with
+        its own argument (ADR-003).
+    StaffOrderLine:
+      type: object
+      additionalProperties: false
+      required: [ticket_type_id, quantity, unit_amount, face_value_amount, total_amount, currency]
+      properties:
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer}
+        unit_amount:
+          type: integer
+          description: 'Integer minor units (ADR-001). Never a float, anywhere on this path.'
+        face_value_amount:
+          type: integer
+          description: >
+            The price BEFORE passed-on fees, in minor units. Stored explicitly rather
+            than derived because an exchange compares against a price-only target, and
+            a reader falling back to the gross total refunds the service fee on an even
+            exchange (see migration 0014).
+        total_amount:
+          type: integer
+          description: Gross, in minor units — face value plus passed-on fees.
+        currency:
+          type: string
+          description: 'ISO 4217, uppercase (ADR-001).'
+    StaffOrderTotals:
+      type: object
+      additionalProperties: false
+      required: [total_amount, face_value_amount, passed_on_fees, refunded_amount, refunded_quantity, refund_status, currency]
+      properties:
+        total_amount: {type: integer, description: Gross order total in minor units.}
+        face_value_amount: {type: integer, description: Sum of face values in minor units.}
+        passed_on_fees:
+          type: integer
+          description: >
+            The exact integer difference total_amount - face_value_amount. Computed as
+            integers and never as a rounded share, so it reconciles by construction.
+            ABSORBED fees do not appear here or in face_value_amount — the organizer
+            bears them out of the face value, so they change what the organizer nets and
+            not what the buyer paid.
+        refunded_amount: {type: integer, description: "Minor units refunded so far, from the order's own counter."}
+        refunded_quantity: {type: integer}
+        refund_status: {type: string, enum: [none, partial, full]}
+        currency: {type: string}
+    StaffOrderRefund:
+      type: object
+      additionalProperties: false
+      required: [refund_id, status, quantity, amount, currency, idempotency_key, actor, created_at]
+      properties:
+        refund_id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, completed]}
+        quantity: {type: integer}
+        amount: {type: integer, description: Minor units.}
+        currency: {type: string}
+        idempotency_key:
+          type: string
+          description: >
+            The durable replay identity, and the reason this read retires
+            unresolved-refunds.ts: a page that knows which key commerce has already
+            recorded can ASK rather than remember. Staff-scoped and never logged.
+        actor:
+          type: string
+          description: >
+            Who asked for it. Staff attribution, mirroring the operational-hold
+            conversion path: an operation that moves money cannot be less attributable
+            than one that moves a seat.
+        created_at: {type: string, format: date-time}
+        completed_at:
+          type: string
+          format: date-time
+          description: >
+            Absent while pending. Present exactly when status is completed — the table
+            enforces the pairing with a CHECK, so the two can never disagree.
     OrderState:
       type: object
       additionalProperties: false
