@@ -55,9 +55,17 @@ halves and only one has shipped.
 <organizer-id>` exposes `ListResellerCredentials`, printing each credential's id, reseller, channel,
 label, creation time and `revoked_at` — revoked rows included, because the question asked after a
 leak is *which* credential was revoked and *when*. Rows go to stdout and prose to stderr, so the id
-that `revoke-reseller` requires can be piped straight to it. No token material is printed: the query
-selects neither the plaintext nor its hash, and the plaintext exists exactly once, in enrolment's
-return value.
+that `revoke-reseller` requires can be piped straight to it.
+
+**The listing emits no credential secret, and that claim is deliberately narrow.** What it
+guarantees is that the *stored* secret material is not selected: the query reads neither a plaintext
+column (there is none) nor `token_hash`, and the plaintext exists exactly once, in enrolment's return
+value. What it does **not** guarantee is that nothing secret-shaped appears — `label` and
+`channel_code` are free text supplied by whoever ran `enrol-reseller`, and the listing prints them
+back. Go's `%q` quoting makes them safe to *parse*, not safe to *publish*; it prevents a newline or a
+terminal escape from breaking the one-row-per-line format, and redacts nothing. **Credential
+metadata is non-secret by contract**: an operator who pastes a token into a label has disclosed it,
+and no listing can undo that.
 
 *Still open:* the overlap remains **unbounded** — repeated enrolment yields any number of live
 credentials for one (organizer, reseller) pair, by design, since zero-downtime rotation needs the old

@@ -277,13 +277,27 @@ func TestListResellerCredentialsIsScopedToOneOrganizerAndKeepsRevokedRows(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The neighbour. Its presence is the whole point of the fixture: if the scope
-	// predicate goes, this is the row that leaks.
-	neighbour, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other", "Other org")
+	// The neighbours, and there are TWO of them for a reason that a first version of
+	// this test got wrong (ai-review). Seeding only a LIVE neighbour makes a whole
+	// class of scope defect unrepresentable: a predicate like
+	// `WHERE organizer_id = $1 OR revoked_at IS NOT NULL` leaks every revoked
+	// credential in the table across every tenant, and this test stayed GREEN under
+	// exactly that mutation — its only cross-organizer row was live, so there was no
+	// revoked foreign row for the leak to return. The fixture must be able to
+	// represent the leak on BOTH sides of the revoked/live split, or it is only
+	// testing the half it happens to seed.
+	neighbourLive, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other", "Other org live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighbourRetired, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other-2", "Other org retired")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := RevokeResellerCredential(ctx, db, retired.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeResellerCredential(ctx, db, neighbourRetired.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -294,8 +308,11 @@ func TestListResellerCredentialsIsScopedToOneOrganizerAndKeepsRevokedRows(t *tes
 
 	byID := make(map[uuid.UUID]ResellerCredential, len(got))
 	for _, c := range got {
-		if c.ID == neighbour.ID {
-			t.Fatal("the listing returned another organizer's credential: the scope predicate is gone")
+		switch c.ID {
+		case neighbourLive.ID:
+			t.Fatal("the listing returned another organizer's LIVE credential: the scope predicate is gone")
+		case neighbourRetired.ID:
+			t.Fatal("the listing returned another organizer's REVOKED credential: the scope predicate does not hold for revoked rows")
 		}
 		byID[c.ID] = c
 	}

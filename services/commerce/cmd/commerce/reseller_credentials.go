@@ -116,9 +116,14 @@ func revokeReseller(args []string) error {
 // that hid them would answer a different one.
 //
 // Rows go to stdout and prose to stderr, following enrolReseller, so an operator can
-// pipe the listing into a filter and feed an id straight to revoke-reseller. There is
-// no token to redact: the plaintext exists once in enrolment's return value, and
-// ListResellerCredentials selects neither it nor its hash.
+// pipe the listing into a filter and feed an id straight to revoke-reseller.
+//
+// No STORED secret is emitted: the plaintext exists once, in enrolment's return value,
+// and ListResellerCredentials selects neither it nor token_hash. That is the whole of
+// the guarantee. `label` and `channel_code` are free text an operator chose at
+// enrolment and are printed back verbatim; %q makes them safe to PARSE — it stops a
+// newline or terminal escape from breaking the one-row-per-line contract — and redacts
+// nothing. Credential metadata is non-secret by contract (ADR-056).
 func listResellers(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: commerce list-resellers <organizer-id>")

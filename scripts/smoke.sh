@@ -346,7 +346,7 @@ SMOKE_RESELLER_LISTING=$(compose exec -T commerce /app list-resellers \
 # empty or failed listing trivially satisfies "the token does not appear", so without
 # this the redaction check would pass while proving nothing.
 SMOKE_THROWAWAY_CRED_ID=$(printf '%s\n' "$SMOKE_RESELLER_LISTING" \
-  | grep "reseller_id=$SMOKE_THROWAWAY_RESELLER_ID" | sed -n 's/^id=\([^ ]*\).*/\1/p' | head -1)
+  | grep " reseller_id=$SMOKE_THROWAWAY_RESELLER_ID " | sed -n 's/^id=\([^ ]*\).*/\1/p' | head -1)
 if [ -z "$SMOKE_THROWAWAY_CRED_ID" ]; then
   echo "smoke: list-resellers did not list the credential just enrolled — the operator has no path from enrol to revoke" >&2
   exit 1
@@ -357,14 +357,20 @@ if printf '%s\n' "$SMOKE_RESELLER_LISTING" | grep -qF "$SMOKE_THROWAWAY_TOKEN"; 
   echo "smoke: list-resellers printed the credential token" >&2
   exit 1
 fi
-if ! printf '%s\n' "$SMOKE_RESELLER_LISTING" | grep -q "id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=<none>"; then
+if ! printf '%s\n' "$SMOKE_RESELLER_LISTING" | grep -q "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=<none>"; then
   echo "smoke: a live credential must list revoked_at=<none> before it is revoked" >&2
   exit 1
 fi
 compose exec -T commerce /app revoke-reseller "$SMOKE_THROWAWAY_CRED_ID" >/dev/null 2>&1 || {
   echo "smoke: revoke-reseller refused the id taken from list-resellers" >&2; exit 1; }
+# Anchored at line start, and asserted POSITIVELY. Two reasons, both of which make
+# an unanchored `grep ... | grep -qv` a check that can pass while the row is live:
+# `id=<uuid> ` is also a substring of `reseller_id=<uuid> `, so the match can select a
+# second row; and `grep -v` over several lines succeeds when ANY line lacks the pattern,
+# so a neighbouring revoked row would satisfy it. Match the one row, require a real
+# timestamp in revoked_at.
 if ! compose exec -T commerce /app list-resellers 00000000-0000-0000-0000-000000000001 2>/dev/null \
-  | tr -d '\r' | grep "id=$SMOKE_THROWAWAY_CRED_ID " | grep -qv "revoked_at=<none>"; then
+  | tr -d '\r' | grep -q "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=[0-9][0-9-]*T"; then
   echo "smoke: the revoked credential still lists revoked_at=<none>, so an operator cannot see the revocation" >&2
   exit 1
 fi
