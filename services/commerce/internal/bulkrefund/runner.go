@@ -44,6 +44,12 @@ type Store interface {
 type Refunder interface {
 	Refund(ctx context.Context, in store.RefundRequest) (refunds.Result, error)
 	DriveReversal(ctx context.Context, refund store.Refund) store.Refund
+	// Void reverses a COMPED order — tickets and capacity, never money (TKT-171).
+	// On the interface beside Refund rather than behind a separate seam because
+	// the runner's choice between them is one branch on one fact (does the order
+	// have a money leg), and splitting the seam would let a caller hold one
+	// without the other.
+	Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error)
 }
 
 // Runner enumerates and refunds cancellation books.
@@ -66,6 +72,11 @@ type plan struct {
 	priorRun bool
 	outcome  store.CancellationOutcome
 	decided  bool
+	// void routes this order to the comped reversal instead of the refund (TKT-171).
+	// A separate flag rather than `quantity == 0`: the void's quantity comes from the
+	// reservation under the order lock, so the runner never carries one, and reusing
+	// a zero quantity as the signal would make an unrelated zero mean "void".
+	void bool
 	// terminal marks a decided outcome that a retry cannot repair, so it is finalized
 	// rather than left for another attempt. The distinction matters for an outstanding
 	// reversal: one on THIS run's own refund is repaired by replaying it, while one on a
@@ -182,6 +193,10 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		return r.record(ctx, w, p.outcome, false)
 	}
 
+	if p.void {
+		return r.processVoid(ctx, w)
+	}
+
 	result, err := r.refunder.Refund(ctx, store.RefundRequest{
 		OrderID: w.OrderID, OrganizerID: w.OrganizerID, Quantity: p.quantity,
 		IdempotencyKey: key,
@@ -212,6 +227,63 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		return r.finalize(ctx, w, out)
 	}
 	return r.record(ctx, w, out, true)
+}
+
+// processVoid reverses a comped order (TKT-171).
+//
+// Deliberately NOT folded into process's refund path with conditionals. The two
+// share only the reversal, and the refund path's machinery — the quantity
+// ceiling, ErrRefundExceedsOrder recovery, the stale-quantity clear — is entirely
+// about a money amount that a void does not have. Threading `if void` through it
+// would put a money path's error handling in front of an operation with no money.
+//
+// The outcome carries MoneyRefunded:false with the other two flags true. That is
+// the whole reason store.CancellationOutcome kept three independent flags rather
+// than one status: `voided` is a real, complete reversal, and reporting it as
+// `refunded` would tell an operator money went back to a buyer when none did.
+func (r *Runner) processVoid(ctx context.Context, w store.CancellationWork) bool {
+	result, err := r.refunder.Void(ctx, store.VoidRequest{
+		OrderID: w.OrderID, OrganizerID: w.OrganizerID,
+		// The same fixed attribution the refund path uses, and for the same reason
+		// (ADR-040 §3): actor and reason are in the void's request fingerprint, so a
+		// second run carrying a different operator would conflict with its own
+		// earlier attempt instead of replaying it.
+		IdempotencyKey: store.CancellationRefundKey(w.SlotID, w.OrderID),
+		Actor:          store.CancellationRefundActor,
+		Reason:         store.CancellationRefundReason,
+	})
+	if err != nil {
+		return r.record(ctx, w, failure(voidFailureCode(err), err.Error()), true)
+	}
+	out := store.CancellationOutcome{
+		Outcome:       "voided",
+		MoneyRefunded: false,
+		// Reported from the void's OWN progress, never assumed from the absence of an
+		// error: a downstream outage leaves an obligation outstanding and the call
+		// still returns, which is exactly the state an operator needs to see.
+		TicketsVoided:    result.Void.TicketsVoided,
+		CapacityReturned: result.Void.CapacityReturned,
+	}
+	// An outstanding obligation is not terminal — a replay of the same void id is
+	// how it gets retried, the same way an outstanding refund reversal is.
+	if !out.TicketsVoided || !out.CapacityReturned {
+		return r.record(ctx, w, out, true)
+	}
+	return r.finalize(ctx, w, out)
+}
+
+// voidFailureCode maps a void refusal onto the run's outcome vocabulary.
+func voidFailureCode(err error) string {
+	switch {
+	case errors.Is(err, store.ErrVoidHasMoney):
+		// Reachable only if the unit amount changed between resolveQuantity reading
+		// it and the bind re-reading it under the order lock. The lock's answer wins.
+		return "refund_refused"
+	case errors.Is(err, store.ErrOrderNotVoidable):
+		return "refund_refused"
+	default:
+		return "internal"
+	}
 }
 
 // record commits a verdict — unless the verdict is one that must not stick.
@@ -349,11 +421,33 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 			RefundedQuantity: state.RefundedQuantity, RefundedAmount: state.RefundedAmount,
 		})
 	}
+	if state.UnitAmount == 0 && state.TotalAmount == 0 {
+		// A comped order. It has no money leg, so it cannot be refunded — but it
+		// still admits and still holds a seat, so it must still be REVERSED
+		// (TKT-171). Route it to the void, which discharges the same two downstream
+		// obligations in the same order and moves no money.
+		//
+		// Strictly `== 0`, and the negative case falls through to the failure below
+		// on purpose: a negative unit amount is not a comped order, it is corrupt
+		// data, and voiding it would hide the corruption behind a successful-looking
+		// reversal.
+		return plan{void: true}
+	}
 	if state.UnitAmount <= 0 {
-		// A comped order has no money leg — and therefore gets no reversal at all, so its
-		// tickets keep admitting. Recorded visibly rather than skipped; closing it is a
-		// follow-up, not this ticket (ADR-040 §6).
-		return decidedPlan(failure("no_captured_money", "order has no captured money to refund"))
+		// Two shapes reach here, and neither is voidable.
+		//
+		// A zero FACE with a captured TOTAL is a comped ticket carrying a passed-on
+		// fee — real money the buyer paid. The void refuses it (it is not a
+		// no-money reversal) and so does the refund (its unit is 0), so it reports
+		// here and stays visible. That is the owner's decision of 2026-08-27:
+		// refuse rather than reverse it partially, because a void that returned
+		// fees would be a money path, which is the thing a void exists to avoid.
+		// What such an order's cancellation SHOULD do is a separate decision.
+		//
+		// A NEGATIVE unit amount is corrupt data — unreachable through any
+		// supported write, since reservations.unit_amount is CHECK(unit_amount >= 0)
+		// — and is reported rather than assumed away.
+		return decidedPlan(failure("no_captured_money", "order has no refundable unit amount"))
 	}
 	// Fixed BEFORE the provider call: recomputing it afterwards reads a different
 	// remainder, which would change the refund's request fingerprint and turn a resume

@@ -224,6 +224,9 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/partners/availability", s.partnerAvailability)
 	r.Post("/partners/reservations", s.partnerReserve)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
+	// TKT-171: the comped-order reversal. Beside the refund because it is the same
+	// staff decision on an order with no money leg, not a different subsystem.
+	r.Post("/internal/orders/{id}/voids", s.voidOrder)
 	r.Post("/internal/slots/{id}/cancellation-refunds", s.createCancellationRefundRun)
 	r.Get("/internal/cancellation-refunds/{id}", s.getCancellationRefundReport)
 	r.Post("/internal/orders/{id}/unclaim", s.unclaimOrder)

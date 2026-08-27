@@ -497,6 +497,16 @@ type OrderUnclaimed struct {
 	OrderId            openapi_types.UUID `json:"order_id"`
 }
 
+// OrderVoid defines model for OrderVoid.
+type OrderVoid struct {
+	CapacityReturned bool               `json:"capacity_returned"`
+	OrderId          openapi_types.UUID `json:"order_id"`
+	Quantity         int                `json:"quantity"`
+	Replay           bool               `json:"replay"`
+	TicketsVoided    bool               `json:"tickets_voided"`
+	VoidId           openapi_types.UUID `json:"void_id"`
+}
+
 // PartnerAvailability What the partner's own channel has left on this slot. `channel_code` is echoed so an integration can assert it is talking about the channel it believes it holds — it is an answer, never a question.
 type PartnerAvailability struct {
 	// Available Units the credential's channel may still sell on this slot.
@@ -606,6 +616,13 @@ type ReservationCreate struct {
 	TicketTypeId   openapi_types.UUID `json:"ticket_type_id"`
 }
 
+// VoidCreate defines model for VoidCreate.
+type VoidCreate struct {
+	Actor       string             `json:"actor"`
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+	Reason      string             `json:"reason"`
+}
+
 // AfterOrderId defines model for AfterOrderId.
 type AfterOrderId = openapi_types.UUID
 
@@ -678,6 +695,11 @@ type UnclaimOrderParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// VoidOrderParams defines parameters for VoidOrder.
+type VoidOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreateCancellationRefundRunParams defines parameters for CreateCancellationRefundRun.
 type CreateCancellationRefundRunParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -738,6 +760,9 @@ type RefundOrderJSONRequestBody = RefundCreate
 
 // UnclaimOrderJSONRequestBody defines body for UnclaimOrder for application/json ContentType.
 type UnclaimOrderJSONRequestBody = OrderUnclaim
+
+// VoidOrderJSONRequestBody defines body for VoidOrder for application/json ContentType.
+type VoidOrderJSONRequestBody = VoidCreate
 
 // CreateCancellationRefundRunJSONRequestBody defines body for CreateCancellationRefundRun for application/json ContentType.
 type CreateCancellationRefundRunJSONRequestBody = CancellationRefundCreate

@@ -45,6 +45,7 @@ func seedCompleted(t *testing.T, db *sql.DB, ctx context.Context, key string, qu
 	}
 	t.Cleanup(func() {
 		_, _ = db.Exec(`DELETE FROM order_refunds WHERE order_id=$1`, c.OrderID)
+		_, _ = db.Exec(`DELETE FROM order_voids WHERE order_id=$1`, c.OrderID)
 		_, _ = db.Exec(`DELETE FROM order_facts WHERE order_id=$1`, c.OrderID)
 		_, _ = db.Exec(`DELETE FROM completion_outbox WHERE order_id=$1`, c.OrderID)
 		_, _ = db.Exec(`DELETE FROM orders WHERE id=$1`, c.OrderID)

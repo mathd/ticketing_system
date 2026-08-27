@@ -107,6 +107,37 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 	return Result{Refund: s.DriveReversal(ctx, refund)}, nil
 }
 
+// VoidResult is one comped-order void and whether it was a replay.
+type VoidResult struct {
+	Void   commercestore.OrderVoid
+	Replay bool
+}
+
+// Void reverses a comped order: it voids the tickets and returns the capacity,
+// and it moves no money (TKT-171).
+//
+// Compare Refund above and note what is MISSING here rather than what is present:
+// no refundPayment, no refundFact, no CompleteOrderRefund. A void has no money
+// leg to move, no compensating fact to append and no completion to record,
+// because nothing was captured. ADR-003: the journal records what happened, not
+// what didn't.
+//
+// That makes this method shorter than Refund by exactly the money protocol, which
+// is the point — the two share the reversal and nothing else.
+func (s *Service) Void(ctx context.Context, in commercestore.VoidRequest) (VoidResult, error) {
+	existing, found, err := commercestore.LookupOrderVoid(ctx, s.db, in.OrganizerID, in.OrderID)
+	if err != nil {
+		return VoidResult{}, err
+	}
+	v, err := commercestore.BindOrderVoid(ctx, s.db, in)
+	if err != nil {
+		return VoidResult{}, err
+	}
+	// A replay is how an outstanding obligation gets retried, exactly as for a
+	// refund: drive it again and answer with the progress that resulted.
+	return VoidResult{Void: s.DriveVoid(ctx, v), Replay: found && existing.ID == v.ID}, nil
+}
+
 // DriveReversal discharges a refund's two downstream obligations, IN ORDER.
 //
 // The order is a safety property, not a preference (ADR-038 §1): freeing the seat while
@@ -119,68 +150,166 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 // downstream failure answers with the obligation still outstanding — visible, and
 // retryable by replaying the same idempotency key.
 func (s *Service) DriveReversal(ctx context.Context, refund commercestore.Refund) commercestore.Refund {
-	refund = s.voidRefundedTickets(ctx, refund)
-	if !refund.TicketsVoided {
-		return refund
-	}
-	return s.returnRefundedCapacity(ctx, refund)
-}
-
-// returnRefundedCapacity gives the seat back. A partial return of a SEATED claim is
-// refused by inventory and stays outstanding forever: nothing associates an issued ticket
-// with a seat identity, so no subset of seats can be derived (TKT-164). That is a
-// deliberate under-sell — the buyer keeps their refund and the tickets stay void — rather
-// than refusing the refund itself to protect a resale.
-func (s *Service) returnRefundedCapacity(ctx context.Context, refund commercestore.Refund) commercestore.Refund {
-	if refund.CapacityReturned || s.inventoryURL == "" || refund.HoldID == uuid.Nil {
-		return refund
-	}
-	code, _, err := s.call(ctx, http.MethodPost,
-		fmt.Sprintf("%s/internal/holds/%s/refund-capacity", s.inventoryURL, refund.HoldID), "",
-		map[string]any{"organizer_id": refund.OrganizerID, "refund_id": refund.ID, "quantity": refund.Quantity}, true)
-	if err != nil || code != http.StatusOK {
-		slog.Default().WarnContext(ctx, "refund capacity not returned; left outstanding",
-			"refund_id", refund.ID, "hold_id", refund.HoldID, "status", code, "err", err)
-		return refund
-	}
-	if err := commercestore.MarkRefundCapacityReturned(ctx, s.db, refund.OrganizerID, refund.ID); err != nil {
-		// Inventory returned it; only our record of it failed. A replay re-drives
-		// inventory, which answers as a replay, and re-marks.
-		slog.Default().ErrorContext(ctx, "record refund capacity return", "refund_id", refund.ID, "err", err)
-		return refund
-	}
-	refund.CapacityReturned = true
+	rev := s.driveOrderedReversal(ctx, reversal{
+		OperationID: refund.ID, OrderID: refund.OrderID, OrganizerID: refund.OrganizerID,
+		HoldID: refund.HoldID, Quantity: refund.Quantity,
+		TicketsVoided: refund.TicketsVoided, CapacityReturned: refund.CapacityReturned,
+		markVoided: func(ctx context.Context) error {
+			return commercestore.MarkRefundTicketsVoided(ctx, s.db, refund.OrganizerID, refund.ID)
+		},
+		markReturned: func(ctx context.Context) error {
+			return commercestore.MarkRefundCapacityReturned(ctx, s.db, refund.OrganizerID, refund.ID)
+		},
+	})
+	refund.TicketsVoided, refund.CapacityReturned = rev.TicketsVoided, rev.CapacityReturned
 	return refund
 }
 
-// voidRefundedTickets discharges the ticket-voiding half of a reversal, and never fails
-// the call. The money has already moved and the refund row is durable, so the honest answer
-// to a failure here is a successful refund reporting `tickets_voided:false` — visible, and
-// retryable by replaying the same idempotency key.
+// reversal is what the ordered driver needs to know about an operation, so the
+// ordering exists ONCE for both the refund and the comped-order void (TKT-171).
 //
-// Access answers 503 when issuance has not caught up (its outbox/JetStream path is
-// asynchronous, so a prompt refund genuinely can outrun it). That is a "not yet", not a
-// "nothing to void", and it must leave the obligation outstanding.
-func (s *Service) voidRefundedTickets(ctx context.Context, refund commercestore.Refund) commercestore.Refund {
-	if refund.TicketsVoided || s.accessURL == "" {
-		return refund
+// A void is not a refund — it has no amount, currency or payment fact, and
+// migration 0025 gives it nowhere to put one — but its two downstream obligations
+// are the same two, in the same order, for the same oversell reason. Copying
+// DriveReversal for it would copy ADR-038 §1's guarantee into a second place that
+// can drift; this makes the guarantee singular and the operations plural.
+//
+// OperationID is what both downstream services receive as `refund_id`. That field
+// is their idempotency/correlation key, not a claim that money moved: access uses
+// it to derive a deterministic ticket selection and event id, inventory for claim
+// history. Neither writes a money fact.
+type reversal struct {
+	OperationID uuid.UUID
+	OrderID     uuid.UUID
+	OrganizerID uuid.UUID
+	HoldID      uuid.UUID
+	Quantity    int32
+
+	TicketsVoided    bool
+	CapacityReturned bool
+
+	// markVoided and markReturned persist each discharged obligation. Passed in
+	// rather than switched on a type: the driver must not know which table it is
+	// writing to, which is what stops it growing a money branch.
+	markVoided   func(context.Context) error
+	markReturned func(context.Context) error
+}
+
+// driveOrderedReversal discharges the two downstream obligations, IN ORDER.
+//
+// The order is a safety property, not a preference (ADR-038 §1): freeing the seat
+// while the original ticket still admits is the one sequence that can OVERSELL.
+// Voiding first can only under-sell. So the capacity return is attempted only
+// once voiding has ACTUALLY happened — which is why the early return is a guard
+// and not a comment, and why an access outage leaves BOTH obligations outstanding
+// rather than letting the second run without the first.
+//
+// Neither leg fails the call: the caller's durable row already exists, so a
+// downstream failure answers with the obligation still outstanding — visible, and
+// retryable by replaying the same operation id.
+func (s *Service) driveOrderedReversal(ctx context.Context, rev reversal) reversal {
+	rev = s.discharge(ctx, rev, obligationTickets)
+	if !rev.TicketsVoided {
+		return rev
 	}
-	code, _, err := s.call(ctx, http.MethodPost,
-		fmt.Sprintf("%s/internal/orders/%s/refunds", s.accessURL, refund.OrderID), "",
-		map[string]any{"organizer_id": refund.OrganizerID, "refund_id": refund.ID, "quantity": refund.Quantity}, true)
+	return s.discharge(ctx, rev, obligationCapacity)
+}
+
+type obligation int
+
+const (
+	obligationTickets obligation = iota
+	obligationCapacity
+)
+
+// discharge performs one leg: the downstream call, then the durable marker.
+//
+// Two facts about the legs it replaced, kept because they are the reason each
+// behaves as it does:
+//
+//   - ACCESS answers 503 when issuance has not caught up. Its outbox/JetStream
+//     path is asynchronous, so a prompt reversal genuinely can outrun issuance.
+//     That is a "not yet", not a "nothing to void", and it must leave the
+//     obligation outstanding — which the non-200 branch below does, and which is
+//     what stops the capacity leg from running against un-voided tickets.
+//   - INVENTORY refuses a partial return of a SEATED claim, and that obligation
+//     then stays outstanding forever: nothing associates an issued ticket with a
+//     seat identity, so no subset of seats can be derived (TKT-164). That is a
+//     deliberate under-sell — the buyer keeps their money and the tickets stay
+//     void — rather than refusing the reversal itself to protect a resale.
+//
+// A failure to record a SUCCESSFUL downstream call is deliberately not fatal and
+// not marked: the downstream did the work, only our record of it failed. A replay
+// re-drives it, which answers as a replay, and re-marks. Marking optimistically
+// instead would be the one way to lose the ordering guarantee — capacity could
+// then be returned on the strength of a voiding that never happened.
+func (s *Service) discharge(ctx context.Context, rev reversal, which obligation) reversal {
+	var (
+		url  string
+		done bool
+	)
+	switch which {
+	case obligationTickets:
+		if rev.TicketsVoided || s.accessURL == "" {
+			return rev
+		}
+		url = fmt.Sprintf("%s/internal/orders/%s/refunds", s.accessURL, rev.OrderID)
+	case obligationCapacity:
+		if rev.CapacityReturned || s.inventoryURL == "" || rev.HoldID == uuid.Nil {
+			return rev
+		}
+		url = fmt.Sprintf("%s/internal/holds/%s/refund-capacity", s.inventoryURL, rev.HoldID)
+	}
+
+	body := map[string]any{
+		"organizer_id": rev.OrganizerID,
+		"refund_id":    rev.OperationID,
+		"quantity":     rev.Quantity,
+	}
+	code, _, err := s.call(ctx, http.MethodPost, url, "", body, true)
 	if err != nil || code != http.StatusOK {
-		slog.Default().WarnContext(ctx, "refund tickets not voided; left outstanding",
-			"refund_id", refund.ID, "order_id", refund.OrderID, "status", code, "err", err)
-		return refund
+		slog.Default().WarnContext(ctx, "reversal obligation not discharged; left outstanding",
+			"operation_id", rev.OperationID, "order_id", rev.OrderID, "obligation", which,
+			"status", code, "err", err)
+		return rev
 	}
-	if err := commercestore.MarkRefundTicketsVoided(ctx, s.db, refund.OrganizerID, refund.ID); err != nil {
-		// Access voided them; only our record of it failed. A replay re-drives access,
-		// which answers as a replay, and re-marks — so this is recoverable, not lost.
-		slog.Default().ErrorContext(ctx, "record refund ticket voiding", "refund_id", refund.ID, "err", err)
-		return refund
+
+	mark := rev.markVoided
+	if which == obligationCapacity {
+		mark = rev.markReturned
 	}
-	refund.TicketsVoided = true
-	return refund
+	if err := mark(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "record discharged reversal obligation",
+			"operation_id", rev.OperationID, "obligation", which, "err", err)
+		return rev
+	}
+	done = true
+	if which == obligationTickets {
+		rev.TicketsVoided = done
+	} else {
+		rev.CapacityReturned = done
+	}
+	return rev
+}
+
+// DriveVoid is the comped-order adapter over the same ordered driver (TKT-171).
+//
+// It reaches no money code by construction: there is no provider call and no
+// journal append on this path, and OrderVoid carries no amount to make one from.
+func (s *Service) DriveVoid(ctx context.Context, v commercestore.OrderVoid) commercestore.OrderVoid {
+	rev := s.driveOrderedReversal(ctx, reversal{
+		OperationID: v.ID, OrderID: v.OrderID, OrganizerID: v.OrganizerID,
+		HoldID: v.HoldID, Quantity: v.Quantity,
+		TicketsVoided: v.TicketsVoided, CapacityReturned: v.CapacityReturned,
+		markVoided: func(ctx context.Context) error {
+			return commercestore.MarkVoidTicketsVoided(ctx, s.db, v.OrganizerID, v.ID)
+		},
+		markReturned: func(ctx context.Context) error {
+			return commercestore.MarkVoidCapacityReturned(ctx, s.db, v.OrganizerID, v.ID)
+		},
+	})
+	v.TicketsVoided, v.CapacityReturned = rev.TicketsVoided, rev.CapacityReturned
+	return v
 }
 
 // refundPayment moves the money through payments' partial-refund leg. The source key is

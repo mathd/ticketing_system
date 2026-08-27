@@ -146,6 +146,8 @@ starting another run — which §3 makes safe.
   cancelled event keeps admitting and keeps its seat. The run records it `failed/no_captured_money`
   so it is **visible**; closing it needs a reversal path with no money leg, which is a follow-up, not
   this ticket.
+  **→ CLOSED by the TKT-171 amendment below (2026-08-27): a comped order is now VOIDED. This
+  paragraph is retained as the record of what was accepted and for how long.**
 - **A seated order's capacity return stays outstanding forever** — nothing associates an issued
   ticket with a seat identity, so no subset of seats can be derived (TKT-164). Such an order is a
   permanent `failed/reversal_outstanding`. That is honest, not a regression: the buyer has their
@@ -189,3 +191,100 @@ Everything above is **honest-writer consistency**: it holds against concurrency,
 It is **not tamper-evidence**. Anyone with commerce database write access can alter a run, a ledger
 row or a reported outcome. The signed, append-only payments journal remains the evidence that money
 moved, and ADR-021's limits on it are unchanged by this decision.
+
+## Amendment (2026-08-27, TKT-171) — a comped order is voided, not failed
+
+The consequence above accepted that a **zero-price (comped) order got no reversal at all**: its
+tickets kept admitting and its seat stayed sold on a cancelled event, reported as
+`failed/no_captured_money`. That acceptance is withdrawn. Comped orders are now reversed by a
+**void**, and the run drives it.
+
+**Why a void and not a zero-amount refund.** This was the ticket's one open decision and the owner
+took it: a comped reversal is **not a refund**. The alternative — relaxing `BindOrderRefund` to accept
+`unit == 0` — is the least new code and the wrong shape, because it would record a money fact that did
+not occur ([ADR-003](./ADR-003-append-only-audit-trail.md): the journal records what happened, not
+what didn't). The database already agreed: `order_refunds` carries `CHECK (unit_amount > 0)` and
+`CHECK (amount > 0)`, so a void could not have been written there without relaxing a money constraint.
+`ErrRefundNoMoney` is unchanged, and a test pins that it still refuses, so a later ticket cannot take
+the shortcut quietly.
+
+**What a void is.** A row in `order_voids` (commerce migration 0025) carrying the order, a quantity
+taken from the reservation, staff attribution, and the two progress markers. There is deliberately no
+`unit_amount`, no `amount`, no `currency` and no `payment_fact_id` — the invariant *a void moves
+tickets and capacity and never money* is enforced by the absence of columns that could record one,
+rather than by a convention someone has to remember.
+
+**Identity: derived from the ORDER, not from the request key.** Both downstream legs are keyed on the
+field they call `refund_id`, which is their idempotency/correlation key and not a claim that money
+moved — access derives a deterministic ticket selection and event id from it, inventory its claim
+history, and neither writes a money fact. `store.VoidID(organizer, order)` is therefore stable across a
+staff retry, a cancellation-run retry and a process restart, all of which arrive with **different**
+request keys. Deriving from the key would have given each its own downstream operation and reversed the
+order more than once. Its namespace is distinct from `RefundID`'s, so a void can never replay as a
+refund.
+
+**The ordering is unchanged and now has ONE implementation.** `refunds.Service.DriveReversal` was
+generalized into `driveOrderedReversal`, with the refund and the void as two adapters over it. Tickets
+are voided **before** capacity is returned ([ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) §1):
+freeing the seat while the original ticket still admits is the one sequence that can oversell. Copying
+the driver for the void would have copied that guarantee into a second place that can drift. The
+capacity leg waits on the **recorded** marker, not on the call's success — so a voiding that happened
+but was not recorded still blocks the seat's return, and a replay resumes it.
+
+**Outcome vocabulary.** A comped reversal is reported `voided`, with `MoneyRefunded:false` and the
+other two flags true. It is **not** reported `refunded`: that would tell an operator money went back to
+a buyer when none did. This is what the three independent flags on `CancellationOutcome` were for.
+
+**Eligibility is NOTHING WAS CAPTURED, not "the face was zero".** `reservations.unit_amount` is the
+FACE value, and `total = face + passed_on` (commerce migration 0014) — so a ticket priced at 0 carrying
+a fixed **passed-on fee** has `unit_amount = 0` and a real, captured `total_amount`. A void that tested
+the face alone would return that order's tickets and seat and **keep the buyer's fee**. Both numbers are
+therefore read under the order row lock, and a void requires both to be zero.
+
+**What such an order does instead — the owner's decision of 2026-08-27.** It is **refused**: by the
+void (money was captured) and by the refund (`ErrRefundNoMoney`, since its unit is 0). It therefore
+reports `failed/no_captured_money` and stays visible. Option 1 of three, and the most reversible: a
+void that returned fees would be a money path, which is precisely what a void exists to avoid, and
+keeping the fees would leave the buyer paying for an event that will not happen. **What a
+comped-with-fees sale should do on cancellation is a real open question and is deliberately not
+answered here** — a narrower, honestly-reported gap is better than reversing it wrongly.
+
+**`no_captured_money` still exists, and now means something narrower.** The branch condition was
+`UnitAmount <= 0`; it is now `UnitAmount == 0 && TotalAmount == 0` for the void, with everything else
+falling through. Three shapes reach the failure: a zero face with captured fees (above), a negative
+unit amount (corrupt data, unreachable through any supported write), and a genuine no-money order that
+is not comped. Each is asserted, so the split is a decision rather than an accident of a comparison
+operator.
+
+**Access keeps its `refunded` lifecycle event, deliberately.** A void does not introduce a `voided`
+event type. `refunded` is a lifecycle event **type** with a golden canonical form — changing the
+vocabulary is a canonical-version migration, and the token is load-bearing elsewhere (the exchange path
+treats `refunded` and `exchanged` as the entitlement-revocation set). Its meaning in access is *this
+ticket's entitlement was revoked*, which is exactly true of a comped void. **The money distinction
+lives in commerce, where the money is.** The naming mismatch is accepted and recorded here so it reads
+as a decision rather than an oversight.
+
+**A void and an exchange exclude each other, in BOTH directions.** `BindOrderVoid` refuses an order
+that already has an exchange, and `BindOrderExchange` refuses one that already has a void. The second
+half is not a restatement of the first: a void leaves the order `completed` and writes no
+`order_refunds` row, so the exchange path's existing refund-count guard cannot see it. Without it,
+void-then-exchange binds cleanly and the order carries two independent reversals with different
+downstream operation ids — duplicate capacity returns, and an exchange of tickets whose source was
+already voided. Both directions take the same order row lock, so exactly one can win a race.
+
+**A second caller ADOPTS an existing void rather than conflicting with it.** Unlike a refund, a void has
+no parameters to disagree about: its identity is the order and its quantity comes from the reservation.
+Actor and reason are a label on the operation, not part of it. So when staff void an order by hand and
+the event is then cancelled, the run reaches the same id and drives the same operation, keeping the
+first binder's attribution — they are the one who decided to reverse it. Conflicting on attribution
+would defeat the deterministic id entirely: it made a staff-bound void unrepairable by the run that
+held the correct id for its outstanding capacity leg.
+
+**Not covered by this amendment:** a back-office UI for the void (the staff surface is the credentialed
+`/internal/` API), and partial reversal of a comped order — a void is whole-order by construction.
+
+### Integrity language, unchanged (ADR-021)
+
+A void is **honest-writer consistency**, exactly like the refund path it sits beside. The `order_voids`
+row, its markers and its reported outcome are all commerce database state, and anyone with write access
+to that database can alter them. Nothing here is tamper-evidence.

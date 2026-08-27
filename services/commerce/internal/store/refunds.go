@@ -260,9 +260,16 @@ func LookupRefundByID(ctx context.Context, db *sql.DB, org, id uuid.UUID) (Refun
 // quantity ceiling, the money already returned, and whether EVERY refund of the order has
 // discharged both of its obligations.
 type OrderCancellationState struct {
-	SoldQuantity     int32
-	UnitAmount       int64
-	Currency         string
+	SoldQuantity int32
+	UnitAmount   int64
+	// TotalAmount is what the buyer was actually CHARGED, which is not
+	// quantity × UnitAmount: migration 0014 establishes `total = face + passed_on`,
+	// so a zero-FACE ticket carrying a passed-on fee has UnitAmount 0 and a real
+	// captured total. Carried separately because the void's eligibility turns on
+	// "nothing was captured", and UnitAmount alone cannot answer that (TKT-171,
+	// ai-review F1).
+	TotalAmount int64
+	Currency    string
 	OrderStatus      string
 	RefundedQuantity int32
 	RefundedAmount   int64
@@ -290,10 +297,10 @@ func (s OrderCancellationState) Outstanding() bool {
 func ReadOrderCancellationState(ctx context.Context, db *sql.DB, org, order, ownRefund uuid.UUID) (OrderCancellationState, error) {
 	var s OrderCancellationState
 	if err := db.QueryRowContext(ctx, `
-		SELECT r.quantity, r.unit_amount, r.currency, o.status, o.refunded_quantity, o.refunded_amount, o.refund_status
+		SELECT r.quantity, r.unit_amount, r.total_amount, r.currency, o.status, o.refunded_quantity, o.refunded_amount, o.refund_status
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2`, order, org).
-		Scan(&s.SoldQuantity, &s.UnitAmount, &s.Currency, &s.OrderStatus,
+		Scan(&s.SoldQuantity, &s.UnitAmount, &s.TotalAmount, &s.Currency, &s.OrderStatus,
 			&s.RefundedQuantity, &s.RefundedAmount, &s.RefundStatus); err != nil {
 		return OrderCancellationState{}, err
 	}

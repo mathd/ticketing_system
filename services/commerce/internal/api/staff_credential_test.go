@@ -120,7 +120,16 @@ func internalRoutesFromRouter(t *testing.T) []string {
 func TestTheEnumerationCoversEveryInternalRouteCommerceServes(t *testing.T) {
 	onRouter := internalRoutesFromRouter(t)
 
-	covered := map[string]bool{"POST /internal/orders/{id}/refunds": true}
+	// The two routes the back office's commerce credential may open. Both are the
+	// same staff decision on one order — refund it, or void it when it has no
+	// money leg (TKT-171) — and each is proven to ACCEPT that credential
+	// (TestStaffCredentialIsAcceptedByThe{Refund,Void}) and to REFUSE a wrong or
+	// missing one (TestRefundRefusesAWrongOrMissingStaffCredential,
+	// TestVoidRefusesAWrongOrMissingStaffCredential) rather than merely listed here.
+	covered := map[string]bool{
+		"POST /internal/orders/{id}/refunds": true,
+		"POST /internal/orders/{id}/voids":   true,
+	}
 	for _, op := range everyInternalOperationExceptRefund() {
 		covered[op.method+" "+op.routeTemplate] = true
 	}
@@ -189,6 +198,57 @@ func TestStaffCredentialIsAcceptedByTheRefund(t *testing.T) {
 	s.Router(nil, true).ServeHTTP(res, req)
 	if res.Code == http.StatusNotFound {
 		t.Errorf("the staff credential was refused by the refund it exists for; body=%.200s", res.Body.String())
+	}
+}
+
+// The void's own acceptance case. A separate test from the refund's rather than a
+// second path in it: the enumeration above only proves the route is CLASSIFIED as
+// staff-openable, and a route classified as open that is in fact closed would pass
+// it. This is what proves the classification true.
+func TestStaffCredentialIsAcceptedByTheVoid(t *testing.T) {
+	body := `{"organizer_id":"` + someUUID + `","actor":"staff:amy","reason":"event cancelled"}`
+	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/voids", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "tkt-171-accepted")
+	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
+	res := httptest.NewRecorder()
+
+	defer func() {
+		// Reaching the database with no database is the proof, as above.
+		_ = recover()
+	}()
+	s.Router(nil, true).ServeHTTP(res, req)
+	if res.Code == http.StatusNotFound {
+		t.Errorf("the staff credential was refused by the void it exists for; body=%.200s", res.Body.String())
+	}
+}
+
+// The void's refusal cases, mirroring the refund's. Every case here passes the
+// route check and fails only on the credential, so each one is about the
+// credential and not about the request.
+func TestVoidRefusesAWrongOrMissingStaffCredential(t *testing.T) {
+	body := `{"organizer_id":"` + someUUID + `","actor":"staff:amy","reason":"event cancelled"}`
+	for name, hdr := range map[string]string{
+		"no credential at all":                   "",
+		"a wrong value":                          "not-the-credential",
+		"a prefix of the credential":             staffTok[:len(staffTok)-1],
+		"the internal token in the staff header": internalTok,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/voids", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "tkt-171-refused")
+			if hdr != "" {
+				req.Header.Set("X-Commerce-Staff-Write-Token", hdr)
+			}
+			res := httptest.NewRecorder()
+			s.Router(nil, true).ServeHTTP(res, req)
+			if res.Code != http.StatusNotFound {
+				t.Errorf("status=%d want 404; body=%.200s", res.Code, res.Body.String())
+			}
+		})
 	}
 }
 
