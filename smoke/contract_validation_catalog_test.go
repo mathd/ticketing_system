@@ -40,7 +40,18 @@ func TestValidateServiceResponseCoversCatalog(t *testing.T) {
 	// array satisfies the schema — only the wrapper object is required).
 	request := httptest.NewRequest(http.MethodGet,
 		"http://gateway/api/catalog/public/venues?organizer_id=00000000-0000-0000-0000-000000000001", nil)
-	header := http.Header{"Content-Type": []string{"application/json"}}
+	// Cache-Control is part of what makes this fixture spec-valid, not decoration:
+	// TKT-209 made listPublicVenues' declaration single-valued and `required: true`
+	// (HoursCacheControl), so a response without it — or with any other tier — is a
+	// contract violation and validateServiceResponse would Fatal here before the
+	// coverage assertion below could run. The value must stay in step with
+	// CacheControlPublicVenueReads; the enforcement that they agree lives in
+	// catalog's own suite (TestPublicReadCacheTiersAreContractEnforced), which is
+	// where the handler constant is reachable.
+	header := http.Header{
+		"Content-Type":  []string{"application/json"},
+		"Cache-Control": []string{"public, max-age=3600, s-maxage=3600"},
+	}
 	body := []byte(`{"venues":[]}`)
 
 	// Isolate the observation so this pin asserts regardless of suite order:

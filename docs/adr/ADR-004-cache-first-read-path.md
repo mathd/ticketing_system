@@ -20,6 +20,11 @@ gates. Splits the seat-map row of rule 1's tier table on publication status: a s
 the hours tier only when its payload is entirely published. No other tier changes and the three
 rules stay unweakened. See § Amendment (TKT-107).
 
+**Amended by TKT-209 (2026-08-26)** — *enforcement of rule 1's declarations, not the tiers themselves.*
+Catalog's five public reads move from a free-form `CacheControl` component to single-valued, required
+components, so a drifted or missing tier header is a 500 with the payload withheld rather than a wrong
+header served. No tier assignment changes. See § Amendment (TKT-209).
+
 ## Context
 
 High-contention on-sales are a core v1 requirement (brief). Correct atomic claims (ADR-002's inventory hot path) solve oversell, but an on-sale's load is overwhelmingly **reads** — event lists, event pages, price displays, remaining-capacity checks — and an uncached read path melts the database long before the write path is stressed. The owner directed (2026-07-12): endpoints should be cacheable wherever possible with TTLs matched to data volatility, hot events should be served from in-memory structures to shed database reads, and the web frontends should minimize API calls and refresh on TTL-appropriate cadences.
@@ -222,6 +227,73 @@ fix and it is not one.**
 this change has **no observable runtime effect today** beyond the emitted header. That is the point —
 ADR-004 chose Option 3 precisely to avoid Option 2's retrofit trap, and a tier is cheap to correct
 before a cache honors it and expensive after.
+
+## Amendment (2026-08-26, TKT-209) — catalog's public-read tiers are now committed, and fail closed
+
+The TKT-128 amendment established that an emitted-but-undeclared header is a defect in its own right,
+and TKT-107 committed the seat-map tier as a two-value enum. Catalog's five **other** public reads
+were left declaring a shared `CacheControl` component that was `type: string` with **no enum and not
+required** — a declaration that commits nothing. [ADR-028](./ADR-028-response-drift-fail-closed.md)'s
+response validator had nothing to check, the contract gate had nothing to diff, and TKT-204's
+cross-service tier audit (`shared/go/cachetier`) had to carry a **named allowlist** of those five
+operations to avoid failing on them. This amendment closes that gap. **No read changes tier.**
+
+**The rule, as shipped.** Each of the five declares a single-valued, `required: true` component:
+
+| operation | component | value |
+|---|---|---|
+| `listPublicEvents` | `MinutesCacheControl` | `public, max-age=300, s-maxage=300` |
+| `getPublicEvent` | `MinutesCacheControl` | `public, max-age=300, s-maxage=300` |
+| `getPublicSeason` | `MinutesCacheControl` | `public, max-age=300, s-maxage=300` |
+| `getPublicFestival` | `MinutesCacheControl` | `public, max-age=300, s-maxage=300` |
+| `listPublicVenues` | `HoursCacheControl` (new) | `public, max-age=3600, s-maxage=3600` |
+
+`MinutesCacheControl` already existed (TKT-235, for `listPublicChannels`); `HoursCacheControl` is new
+and unconditional, which is why it cannot share `SeatMapCacheControl` — that one carries the same
+tier *conditionally*, on publication status, by TKT-107's deliberate split.
+
+**What a drifted header now does.** Catalog wraps every response in ADR-028's validator
+(`contract.ResponseValidator`, applied in `NewRouter`), which validates response **headers**. Since
+this amendment, on any of these five reads:
+
+- emitting a **different registered tier** (an hours value on a minutes read) → **500, payload
+  withheld**, with the structured `response violates OpenAPI contract` log;
+- emitting an **unregistered value** → the same;
+- emitting **no `Cache-Control` at all** → the same, which is what `required: true` adds and the enum
+  alone does not.
+
+Before this amendment all three were served as 200 with the wrong header, or with none.
+
+**What this does NOT close, stated so the claim cannot be read wider than it is.** The enforcement
+binds the header's **first field value**. A response that emits the declared tier and then *appends*
+a second `Cache-Control` value passes validation and both values reach the client, because
+kin-openapi decodes a primitive header from `raw[0]` and the response wrapper forwards the rest. This
+is **not introduced here and not specific to these five reads**: it is a property of the shared
+response validator (`shared/go/contract`) and applies to every enum-declared response header in every
+service, `SeatMapCacheControl`, `PriceResolutionCacheControl`, `NeverCacheControl` and inventory's
+included — all of which predate this amendment. Closing it means rejecting a multi-valued declared
+header in the shared validator, which changes behaviour for all five services and is its own decision.
+The gap is pinned open by `TestPublicReadCacheTierDuplicateHeaderIsNotCaught`, which asserts it is
+still present; if that test ever fails the validator has been fixed and this paragraph should be
+updated rather than the test repaired (the ADR-021 convention).
+
+**This is a real availability cost, and it is ADR-028's accepted trade-off, not a new decision.** A
+handler and its declaration can now only move together: change one without the other and that read is
+down until they agree. That is the same bargain ADR-028 struck for response bodies — a detectable
+server bug must not become a silent client-side failure — applied to the header that tells a shared
+cache how long it may serve an answer. The failure is loud, local to one operation, and caught by the
+gate rather than in production.
+
+**Consequences for the tier audit.** TKT-204's `freeFormAllowed` allowlist is **deleted**, and a
+`Cache-Control` declared without an enum is now an unconditional violation in every service. The
+audit's coverage list (`wantDeclarations`) is unchanged: it keys on `<service>/<operationId> <status>`,
+so swapping which component a response references does not move coverage.
+
+**Out of scope, deliberately.** Which tier each read is *on* is untouched — this pins today's
+assignments rather than re-deciding them; TKT-141 still owns the question of whether the venue list
+should be demoted. Inventory is already closed and unchanged. And the storefront's **page** tier
+(`web/storefront/src/lib/page-tier.ts`) is a separate mechanism computed in Astro from page data — it
+is not a catalog response header and this amendment does not touch it.
 
 ## References
 

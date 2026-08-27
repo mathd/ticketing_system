@@ -39,30 +39,6 @@ const specGlob = "../../../services/*/api/openapi.yaml"
 // about its tiers.
 const wantSpecs = 5
 
-// freeFormAllowed is TKT-204's bounded legacy exception. Catalog's shared
-// `CacheControl` response-header component is declared `type: string` with no
-// enum, so it commits no value and there is nothing for this audit to check.
-// These five operations are the ones that used it when the audit was introduced;
-// all five carry a tier the registry knows (minutes for the four public reads,
-// hours for the venue list), verified by their own handler tests rather than here.
-//
-// **Keyed by service, not by operationId alone.** An operationId is unique within
-// one contract and nothing more: `convertOperationalHold` and
-// `drawDownGroupReservation` already appear in two specs each at HEAD. A bare
-// operationId key would therefore let a new free-form declaration in *another*
-// service inherit catalog's exception by reusing a name — which would have made
-// "a sixth operation fails" untrue.
-//
-// Closing the exception entirely is a spec change (single-valued minutes/hours
-// components), deliberately not this ticket's.
-var freeFormAllowed = map[string]bool{
-	"catalog/listPublicEvents":  true, // minutes
-	"catalog/getPublicEvent":    true, // minutes
-	"catalog/getPublicSeason":   true, // minutes
-	"catalog/getPublicFestival": true, // minutes
-	"catalog/listPublicVenues":  true, // hours
-}
-
 // wantDeclarations is every SUCCESS response that declares a Cache-Control at
 // HEAD, as `<service>/<operationId> <status>`.
 //
@@ -120,8 +96,8 @@ var wantDeclarations = []string{
 	// storefront reads — a channel list is slow-moving organizer configuration
 	// and a buyer seeing a retired channel for five minutes costs a rejected
 	// hold, not a wrong price. It declares the new single-valued
-	// MinutesCacheControl component rather than joining TKT-204's free-form
-	// allowlist, which is closed to new operations (TKT-209 tracks removing it).
+	// MinutesCacheControl component, which since TKT-209 is how every catalog
+	// public read declares its tier — the free-form alternative no longer exists.
 	//
 	// updateChannel takes NEVER, like every other write's response.
 	"catalog/listPublicChannels 200",
@@ -199,11 +175,15 @@ func auditSpec(doc *openapi3.T, service string) (violations, declared []string) 
 				if h.Value.Schema != nil && h.Value.Schema.Value != nil {
 					enum = h.Value.Schema.Value.Enum
 				}
+				// TKT-209 deleted TKT-204's bounded legacy exception, so this is now
+				// unconditional: catalog's free-form `CacheControl` component is gone
+				// and every declaration commits a single tier. The `declared` append
+				// above stays HERE rather than moving into auditHeaderValue with the
+				// value rules — it is the coverage mechanism wantDeclarations rests
+				// on, and folding it into the shared helper is how it goes missing.
 				if len(enum) == 0 {
-					if !freeFormAllowed[service+"/"+op.OperationID] {
-						out = append(out, where+": Cache-Control declared without an enum, and the "+
-							"operation is not in the bounded legacy allowlist — declare a single ADR-004 tier value")
-					}
+					out = append(out, where+": Cache-Control declared without an enum — "+
+						"declare a single ADR-004 tier value")
 					continue
 				}
 				for _, v := range enum {
@@ -292,9 +272,11 @@ func TestDeclaredCacheControlValuesUseRegisteredTiers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		// services/<service>/api/openapi.yaml — the service name scopes both the
-		// allowlist and the coverage list, because an operationId is unique within
-		// one contract and nothing more.
+		// services/<service>/api/openapi.yaml — the service name scopes the coverage
+		// list, because an operationId is unique within one contract and nothing
+		// more: `convertOperationalHold` and `drawDownGroupReservation` each appear
+		// in two specs at HEAD. (It scoped TKT-204's allowlist too, until TKT-209
+		// deleted that exception.)
 		service := filepath.Base(filepath.Dir(filepath.Dir(path)))
 		v, d := auditSpec(loadDoc(t, data, path), service)
 		for _, s := range v {
@@ -315,54 +297,21 @@ func TestDeclaredCacheControlValuesUseRegisteredTiers(t *testing.T) {
 	}
 }
 
-// TestCacheControlAuditRejectsNewFreeFormDeclaration is the negative that makes
-// the allowlist bounded: without it the audit would pass any endpoint that
-// declares Cache-Control as a bare string, which is the same as not declaring it.
-func TestCacheControlAuditRejectsNewFreeFormDeclaration(t *testing.T) {
-	const spec = `
-openapi: 3.0.3
-info: {title: synthetic, version: "1"}
-paths:
-  /public/things:
-    get:
-      operationId: listPublicThings
-      responses:
-        '200':
-          description: ok
-          headers:
-            Cache-Control: {schema: {type: string}}
-`
-	v, _ := auditSpec(loadDoc(t, []byte(spec), "synthetic free-form"), "catalog")
-	if len(v) != 1 {
-		t.Fatalf("a new free-form Cache-Control must be rejected, got %d violations: %v", len(v), v)
-	}
-
-	// The same shape under an allowlisted operationId is the exception, and must
-	// still pass — otherwise the audit would be rejecting on the wrong signal.
-	const allowed = `
-openapi: 3.0.3
-info: {title: synthetic, version: "1"}
-paths:
-  /public/events:
-    get:
-      operationId: listPublicEvents
-      responses:
-        '200':
-          description: ok
-          headers:
-            Cache-Control: {schema: {type: string}}
-`
-	if v, _ := auditSpec(loadDoc(t, []byte(allowed), "synthetic allowlisted"), "catalog"); len(v) != 0 {
-		t.Fatalf("an allowlisted operation must stay permitted, got %v", v)
-	}
-}
-
-// TestCacheControlAuditAllowlistIsServiceScoped: the legacy exception belongs to
-// catalog's five operations, not to their names. An operationId is unique within
-// one contract and nothing more — `convertOperationalHold` and
-// `drawDownGroupReservation` each already appear in two specs at HEAD — so an
-// unscoped key would let any service inherit the exception by reusing a name.
-func TestCacheControlAuditAllowlistIsServiceScoped(t *testing.T) {
+// TestCacheControlAuditRejectsFreeFormDeclaration is the negative that makes the
+// value rule real: without it the audit would pass any endpoint declaring
+// Cache-Control as a bare string, which is the same as not declaring one.
+//
+// TKT-209 made the rule SERVICE-INDEPENDENT. TKT-204's bounded legacy exception
+// (freeFormAllowed) let catalog's five public reads declare a free-form header;
+// that component is gone and so is the allowlist, so a free-form declaration is
+// now a violation wherever it appears.
+//
+// The two services below are therefore NOT a scoping test — the service argument
+// can no longer change the outcome, which is exactly the point. They are a pin
+// that the exception has not come back: reintroduce an allowlist keyed on
+// catalog and the first case goes green while the second stays red, which no
+// single-service fixture could distinguish.
+func TestCacheControlAuditRejectsFreeFormDeclaration(t *testing.T) {
 	const spec = `
 openapi: 3.0.3
 info: {title: synthetic, version: "1"}
@@ -376,12 +325,15 @@ paths:
           headers:
             Cache-Control: {schema: {type: string}}
 `
-	doc := loadDoc(t, []byte(spec), "synthetic name reuse")
-	if v, _ := auditSpec(doc, "catalog"); len(v) != 0 {
-		t.Fatalf("catalog owns this exception and must keep it, got %v", v)
-	}
-	if v, _ := auditSpec(doc, "payments"); len(v) != 1 {
-		t.Fatalf("another service reusing the operationId must NOT inherit catalog's exception, got %d violations: %v", len(v), v)
+	// listPublicEvents under catalog is deliberately the fixture: it is the exact
+	// service/operation pair that WAS allowlisted, so this fails the moment the
+	// exception returns in any form.
+	doc := loadDoc(t, []byte(spec), "synthetic free-form")
+	for _, service := range []string{"catalog", "payments"} {
+		v, _ := auditSpec(doc, service)
+		if len(v) != 1 {
+			t.Fatalf("%s: a free-form Cache-Control must be rejected, got %d violations: %v", service, len(v), v)
+		}
 	}
 }
 
