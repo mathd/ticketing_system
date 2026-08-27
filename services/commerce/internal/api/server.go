@@ -1413,14 +1413,27 @@ func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, x r
 	// so a parked created/payment_unknown/confirmation_pending row is reachable and still
 	// receives the optimistic 202 here.
 	//
-	// That is deliberate and it is NOT a gap this normalisation leaves open, because the
-	// replay branch does exactly the same: it reads recoveryParked once, inside its own
-	// release_pending branch (see below), and answers those three statuses optimistically
-	// too. The two paths therefore agree across the whole vocabulary, which is this
-	// function's contract. Whether a parked created/payment_unknown/confirmation_pending
-	// order SHOULD still be told 202 is a product question about what 202 promises, open
-	// on TKT-145 and deliberately not pre-empted here (ai-review [medium], accepted as a
-	// correction to this comment's reasoning, rejected as a scope change).
+	// The two paths agree across the whole vocabulary, which is this function's contract:
+	// the replay branch also reads recoveryParked exactly once, inside its own
+	// release_pending branch (see below), so it answers those three statuses
+	// optimistically too.
+	//
+	// DO NOT READ THAT AS "the parked case is handled". It is not, and the gap is worse
+	// than a wrong status code (second ai-review pass, [high] — verified against
+	// origin/main, where it PRE-DATES this change and is neither introduced nor widened
+	// here). A parked created/payment_unknown/confirmation_pending order falls past every
+	// branch above and RESUMES ORCHESTRATION: buyer PII, the order.created fact, the
+	// inventory finalize and the payments charge. And its guarded UPDATE then matches one
+	// row — confirmation_pending IS in that predicate, unlike release_pending — so
+	// answerRecovered is never reached and the buyer is told 202 about an order no worker
+	// will ever advance. Re-entering the money path for a row awaiting a human is the
+	// real defect there; the status code is a symptom.
+	//
+	// Closing it means refusing parked resumable states BEFORE the orchestration above,
+	// not extending this normalisation, and it changes what a buyer is told on three
+	// statuses this ticket was scoped to leave alone. Tracked as its own ticket rather
+	// than absorbed here. TKT-145 owns the neighbouring product question (what 202 should
+	// promise for release_pending); this is a separate, narrower defect.
 	if class == recoveredPending && recoveryParked.Valid {
 		class = recoveredReconciling
 	}
