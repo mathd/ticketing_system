@@ -248,3 +248,119 @@ func TestLogJournalSigningKey(t *testing.T) {
 		t.Fatalf("log line does not carry the active key id: %s", out)
 	}
 }
+
+// TKT-253. The sk_test_ branch accepted the prefix and validated NOTHING after it, so the
+// literal "sk_test_" constructed a real Stripe adapter pointed at api.stripe.com and the
+// service started cleanly — the configuration error surfacing only when a money-path
+// request reached Stripe and failed. That is the opposite of the fail-fast contract every
+// other credential in this binary keeps.
+//
+// TWO INDEPENDENT PREDICATES guard the branch now, so per AGENTS.md there are two cases,
+// each passing the earlier one, each separately mutable:
+//
+//   - the body after the prefix is empty          -> "sk_test_"
+//   - the body after the prefix contains whitespace -> non-empty body, so it passes the
+//     first predicate and can only be refused by the second
+//
+// Deleting the empty-body check must turn ONLY TestPSPForKeyRefusesAnEmptyBody red;
+// deleting the whitespace check must turn ONLY TestPSPForKeyRefusesAWhitespaceBody red.
+// If deleting one kills both, an earlier refusal is short-circuiting the later predicate.
+//
+// WHAT THIS DOES NOT CLAIM (ADR-032, and the owner's decision on this ticket): nothing
+// about Stripe's alphabet, length, checksum or future format. A truncated-but-plausible
+// key still starts and still fails at the first charge. This catches a typo or a quoting
+// mistake in a deploy config, and nothing else.
+func TestPSPForKeyRefusesAnEmptyBody(t *testing.T) {
+	provider, _, err := pspForKey("sk_test_")
+	if err == nil {
+		t.Fatal(`"sk_test_" is a prefix with no key after it and must refuse startup`)
+	}
+	if provider != nil {
+		t.Fatalf("a refused key must yield no provider, got %T", provider)
+	}
+	if !strings.Contains(err.Error(), "STRIPE_SECRET_KEY") {
+		t.Fatalf("the error must name the variable an operator set: %q", err)
+	}
+}
+
+// Whitespace anywhere in the body, not merely at the edges. An interior space is the case
+// a TrimSpace-based check would admit, and it is exactly as broken as a padded one.
+//
+// Redaction (ADR-012 §TKT-202): the assertion pins the absence of the BODY, not of the
+// whole string. The prefix is a public constant and naming it in a diagnostic is fine —
+// an error reproducing all but one character of the key would pass a whole-string check.
+func TestPSPForKeyRefusesAWhitespaceBody(t *testing.T) {
+	for name, key := range map[string]string{
+		"trailing space":  "sk_test_TRAILINGBODY ",
+		"interior space":  "sk_test_INTERIORA BODY",
+		"interior tab":    "sk_test_INTERIORTAB\tBODY",
+		"leading in body": "sk_test_ LEADINGBODY",
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider, _, err := pspForKey(key)
+			if err == nil {
+				t.Fatalf("%q carries whitespace in its body and must refuse startup", key)
+			}
+			if provider != nil {
+				t.Fatalf("a refused key must yield no provider, got %T", provider)
+			}
+			if !strings.Contains(err.Error(), "STRIPE_SECRET_KEY") {
+				t.Fatalf("the error must name the variable an operator set: %q", err)
+			}
+			if strings.Contains(err.Error(), "BODY") {
+				t.Fatalf("the error echoes the supplied key: %q", err)
+			}
+		})
+	}
+}
+
+// TKT-253. The credential POLICY, pinned at the seam that reads the environment.
+//
+// This test exists because of a mutation that survived everything else: replacing
+// pspFromEnv's OptionalCredential call with runtimecfg.RequiredCredential compiles and
+// passes every other test in this package, while refusing the empty value that selects
+// the fake PSP — i.e. breaking every local run, the whole `make check` gate, and every
+// deployment that does not configure Stripe. run() opens a database and cannot be
+// unit-tested, so without this seam the call site is unpinned.
+//
+// The invariant, stated without naming the implementation: an unset STRIPE_SECRET_KEY is
+// a legal configuration that selects the offline fake, and a configured one still
+// reaches the selector unchanged.
+func TestPSPFromEnvTreatsAnAbsentKeyAsALegalOfflineConfiguration(t *testing.T) {
+	// Unset. This is how every local run and the entire gate are configured.
+	t.Setenv("STRIPE_SECRET_KEY", "")
+	provider, retention, err := pspFromEnv()
+	if err != nil {
+		t.Fatalf("an unset STRIPE_SECRET_KEY must select the fake, not refuse startup: %v", err)
+	}
+	if _, ok := provider.(*psp.Fake); !ok {
+		t.Fatalf("an unset key must select the fake, got %T", provider)
+	}
+	if retention != 0 {
+		t.Fatalf("the fake's status replay is unbounded; retention = %v", retention)
+	}
+
+	// The sentinel compose.yaml:288 defaults to. It is a mode selector, not a
+	// credential, and must not be held to credential hygiene.
+	t.Setenv("STRIPE_SECRET_KEY", "fake")
+	if provider, _, err := pspFromEnv(); err != nil {
+		t.Fatalf("the `fake` sentinel must select the fake: %v", err)
+	} else if _, ok := provider.(*psp.Fake); !ok {
+		t.Fatalf("the `fake` sentinel must select the fake, got %T", provider)
+	}
+
+	// A configured key still reaches the selector and still selects Stripe — the
+	// transport checks must not reject a legitimate value on its way through.
+	t.Setenv("STRIPE_SECRET_KEY", "sk_test_51H8xQ2eZvKYlo2C0abcdefgh")
+	if provider, _, err := pspFromEnv(); err != nil {
+		t.Fatalf("a well-formed test key must still select Stripe: %v", err)
+	} else if _, ok := provider.(*psp.Stripe); !ok {
+		t.Fatalf("a well-formed test key must select Stripe, got %T", provider)
+	}
+
+	// And the shape refusal still reaches the caller through this path.
+	t.Setenv("STRIPE_SECRET_KEY", "sk_test_")
+	if _, _, err := pspFromEnv(); err == nil {
+		t.Fatal("the bare prefix must refuse startup through pspFromEnv too")
+	}
+}
