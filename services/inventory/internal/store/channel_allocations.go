@@ -194,9 +194,13 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	// The revision rides along on this same locked read (TKT-250) rather than in a
 	// query of its own: it must be the value as of the lock, and a second SELECT
 	// would read it at a different instant for no benefit.
+	//
+	// inventory_kind rides along for the same reason: the seated refusal below must
+	// decide on the kind as of THIS lock, and a pool cannot change kind under it.
 	var capacity int32
 	var revision int64
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(target_capacity, capacity), allocation_revision FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &revision)
+	var kind string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(target_capacity, capacity), allocation_revision, inventory_kind FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2 FOR UPDATE`, slot, org).Scan(&capacity, &revision, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -209,6 +213,39 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	// send them to fix a row that is not the problem.
 	if expectedRevision != nil && *expectedRevision != revision {
 		return nil, ErrAllocationRevisionMismatch
+	}
+	// A seated pool cannot carry channel allocations (TKT-176). An allocation is a
+	// QUANTITY cap, and the seated claim path does not admit against quantity —
+	// CreateSeatHold consults capacity alone and never reads channel_allocations. So an
+	// allocation here is subtracted by the public availability read while binding nobody
+	// who can actually claim a seat: the read and the claim disagree, and the reserved
+	// inventory stays freely sellable. Refusing makes that state unrepresentable rather
+	// than merely unobserved.
+	//
+	// NOT the other fix: teaching CreateSeatHold to subtract the reservation would give
+	// allocations a meaning on seated pools that nobody designed. A seat-set-shaped
+	// allocation — one naming WHICH seats rather than how many — is a different design
+	// and a separate ticket if a reseller ever needs seated inventory.
+	//
+	// AFTER the staleness check and BEFORE everything else. After, because a stale set
+	// must be refused for being stale (see above) — an operator whose view is out of date
+	// is told to reload, not to reason about the pool's kind. Before the caps check, the
+	// consumption queries and every write, so a refused call leaves the allocation set
+	// and its revision exactly as it found them; a refusal that still burned a revision
+	// would go on to break TKT-250's stale-write protection for every other operator
+	// holding a form on this slot.
+	//
+	// EXCEPT an empty set, which is how an existing one gets REMOVED (ai-review). The
+	// invariant is that a seated pool must not CARRY allocations, and an empty replace
+	// satisfies it rather than violating it. Refusing it would make the guard
+	// unrepairable: the endpoint admitted seated allocations before this change, this
+	// store is the only writer of the table, and a pool holding legacy rows would be
+	// stuck reporting channel-adjusted public availability against a claim path that
+	// ignores the allocation — the exact divergence the refusal exists to end — with no
+	// way to fix it short of hand-editing the database. Refusing to add, while allowing
+	// to clear, is monotonic towards the invariant from either starting state.
+	if kind == "seated" && len(allocs) > 0 {
+		return nil, fmt.Errorf("channel allocations are not supported on seated pools: %w", ErrPoolKindMismatch)
 	}
 	if total > int64(capacity) {
 		return nil, ErrAllocationCapsExceedCapacity
