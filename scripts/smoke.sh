@@ -370,7 +370,7 @@ compose exec -T commerce /app revoke-reseller "$SMOKE_THROWAWAY_CRED_ID" >/dev/n
 # so a neighbouring revoked row would satisfy it. Match the one row, require a real
 # timestamp in revoked_at.
 if ! compose exec -T commerce /app list-resellers 00000000-0000-0000-0000-000000000001 2>/dev/null \
-  | tr -d '\r' | grep -q "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=[0-9][0-9-]*T"; then
+  | tr -d '\r' | grep -Eq "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"; then
   echo "smoke: the revoked credential still lists revoked_at=<none>, so an operator cannot see the revocation" >&2
   exit 1
 fi
