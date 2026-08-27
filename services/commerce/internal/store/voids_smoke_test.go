@@ -174,7 +174,11 @@ func TestBindOrderVoidGuards(t *testing.T) {
 	t.Run("an incomplete order is not voidable", func(t *testing.T) {
 		db, ctx := outboxDB(t)
 		c, _ := seedCompleted(t, db, ctx, "void-incomplete", 1, 0)
-		if _, err := db.ExecContext(ctx, `UPDATE orders SET status='failed' WHERE id=$1`, c.OrderID); err != nil {
+		// 'declined', not 'failed': orders_status_check (migration 0004) enumerates
+		// the statuses, and an invented one is refused by the database rather than
+		// silently producing a non-completed order — which is how this fixture first
+		// failed, correctly.
+		if _, err := db.ExecContext(ctx, `UPDATE orders SET status='declined' WHERE id=$1`, c.OrderID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := BindOrderVoid(ctx, db, voidRequest(c, "void-incomplete-1")); !errors.Is(err, ErrOrderNotVoidable) {
