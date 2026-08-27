@@ -50,10 +50,15 @@ func main() {
 		os.Exit(healthcheck())
 	}
 	// Operator provisioning for reseller credentials (TKT-240 / ADR-056).
-	if len(os.Args) > 1 && (os.Args[1] == "enrol-reseller" || os.Args[1] == "revoke-reseller") {
-		run := enrolReseller
-		if os.Args[1] == "revoke-reseller" {
+	if len(os.Args) > 1 && (os.Args[1] == "enrol-reseller" || os.Args[1] == "revoke-reseller" || os.Args[1] == "list-resellers") {
+		var run func([]string) error
+		switch os.Args[1] {
+		case "enrol-reseller":
+			run = enrolReseller
+		case "revoke-reseller":
 			run = revokeReseller
+		case "list-resellers":
+			run = listResellers
 		}
 		if err := run(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)

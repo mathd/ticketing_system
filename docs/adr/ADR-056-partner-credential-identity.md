@@ -48,11 +48,23 @@ between the two statements. Zero-downtime rotation needs the old and new credent
 as long as the handover takes, so the constraint went rather than the workflow. `token_hash` is
 UNIQUE, so nothing that authenticates can ever collide.
 
-**Known gap (ai-review pass 2):** the overlap is currently *unbounded* — repeated enrolment yields
-any number of live credentials, and `ListResellerCredentials` exists in the store but is **not
-exposed as a CLI command**, so an operator cannot enumerate them to reconcile. Bounding the overlap
-and shipping the listing command is outstanding work, recorded on the ticket rather than implied
-to be done.
+**Known gap, half closed (ai-review pass 2; narrowed 2026-08-27 by TKT-276).** The gap had two
+halves and only one has shipped.
+
+*Closed:* an operator can now enumerate a partner's credentials. `commerce list-resellers
+<organizer-id>` exposes `ListResellerCredentials`, printing each credential's id, reseller, channel,
+label, creation time and `revoked_at` — revoked rows included, because the question asked after a
+leak is *which* credential was revoked and *when*. Rows go to stdout and prose to stderr, so the id
+that `revoke-reseller` requires can be piped straight to it. No token material is printed: the query
+selects neither the plaintext nor its hash, and the plaintext exists exactly once, in enrolment's
+return value.
+
+*Still open:* the overlap remains **unbounded** — repeated enrolment yields any number of live
+credentials for one (organizer, reseller) pair, by design, since zero-downtime rotation needs the old
+and new credentials to coexist (above). Whether to cap the live set, supersede on enrolment, or
+accept unbounded overlap explicitly is an auth-surface policy decision and is **TKT-290's**. It was
+split out deliberately rather than folded into the listing, so making the surface reconcilable was
+not held up by a policy call.
 
 Commerce and not catalog, despite catalog owning the channel *registry* (ADR-002, ADR-024). The
 credential authorises **selling**, and orders, reservations and attribution are commerce's. Issuance
