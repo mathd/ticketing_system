@@ -334,6 +334,48 @@ distinctly named** payments-owned fact with its own idempotency decision — nev
       `MaxCallsPerOrder` and `LeaseFor` (`services/commerce/internal/recovery/runner.go`) must grow
       together or a lease can lapse mid-external-action.
 
+### Amendment — key-shape refusal at startup (TKT-253)
+
+The provider-selection clause above says a configured test-mode `STRIPE_SECRET_KEY` selects Stripe
+and anything unrecognised is refused. Until TKT-253 the `sk_test_` arm validated **nothing after the
+prefix**: the literal `sk_test_`, or `sk_test_ `, constructed a real adapter pointed at
+`api.stripe.com` and the service started cleanly, with the configuration error surfacing only when a
+money-path request reached Stripe and failed.
+
+Two refusals now guard that arm, and the value is read through `runtimecfg.OptionalCredential`
+rather than a bare `os.Getenv`:
+
+- the body after `sk_test_` is **empty**;
+- the body after `sk_test_` **contains whitespace**, interior included.
+
+Unchanged and still load-bearing: `""` and `fake` remain legal and select the offline fake, which is
+how every local run and the whole gate work. `OptionalCredential` exists precisely because
+`RequiredCredential` refuses an empty value and would therefore refuse every non-Stripe deployment;
+it applies the transport hygiene (the secret becomes an `Authorization` header value via
+`SetBasicAuth`) and deliberately applies **no length floor**.
+
+**Name the adversary, and keep the claim small (ADR-021).** This is **not** validation of a Stripe
+key. The service asserts nothing about Stripe's alphabet, length, checksum or future format — a
+bound invented for a credential Stripe issues and we do not control could refuse a *working*
+deployment, which is worse than the failure it prevents. What these refusals catch is a **typo or a
+quoting mistake in a deploy config**. Nothing in this repository may describe `STRIPE_SECRET_KEY`
+as validated.
+
+**The residual, stated plainly** (TKT-253 ai-review, [high], accepted as a scope boundary rather
+than a defect): `sk_test_x` satisfies the prefix and both body predicates, constructs a real adapter
+and is sent to `api.stripe.com` on the first PSP operation — where the charge handler has already
+bound a durable payment operation, so an authentication failure surfaces as an unresolved operation
+rather than a refused deployment. That was true before these refusals and remains true after them;
+this change strictly narrows what is accepted and closes none of it.
+
+Closing it would require **authenticating the key against Stripe at startup**, which §Constraints
+forbids: the gate must run offline and deterministically, CI holds no Stripe key, and live
+verification is manual and out-of-gate. A startup call to Stripe would also make every deployment's
+boot depend on Stripe's availability. If that trade is ever worth making it is a new decision with
+its own ADR, not an amendment here.
+
+Live `sk_test_` verification remains manual and out-of-gate, per §Constraints.
+
 ### Delivery slices (TKT-56)
 
 This ADR governs the whole ticket; the code lands in dependency-ordered slices:

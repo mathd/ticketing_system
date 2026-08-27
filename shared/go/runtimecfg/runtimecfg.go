@@ -203,6 +203,58 @@ func RequiredCredential(envVar, retiredDefault string, minBytes int) (string, er
 	return token, nil
 }
 
+// OptionalCredential validates a startup credential whose ABSENCE is a legitimate
+// configuration rather than a misconfiguration, and returns it unchanged.
+//
+// STRIPE_SECRET_KEY is the motivating case (TKT-253). An unset value selects the
+// offline fake PSP, which is how every local run and the entire gate work
+// (ADR-032) — so RequiredCredential cannot be used here at all: its first case
+// refuses token == "" outright, and applying it would refuse every non-Stripe
+// deployment, i.e. the whole test suite.
+//
+// A separate function rather than an option on RequiredCredential, deliberately
+// and for the reason stated in that function's own doc: a variadic or boolean
+// would let a new caller inherit the wrong policy in silence. As two functions,
+// choosing between them is a choice someone had to make and a reader can see.
+//
+// allowedSentinel is an exact non-secret literal that bypasses the transport
+// checks — pass "" when a credential has none. It exists because a sentinel is a
+// MODE SELECTOR, not a credential: compose.yaml sets
+// `STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-fake}`, so the literal `fake` arrives
+// through this path on every default stack, and it never reaches an Authorization
+// header because the caller's selector drops it before constructing an adapter.
+//
+// WHAT IT APPLIES: the transport hygiene, for the same reason RequiredCredential
+// does — the accepted value goes on the wire (payments sends the Stripe secret
+// through req.SetBasicAuth, so it becomes an Authorization header value), and a
+// padded value is not the value it looks like.
+//
+// WHAT IT DELIBERATELY DOES NOT APPLY: CredentialMinBytes. This function serves
+// credentials issued by SOMEONE ELSE, whose format is theirs to change. A length
+// floor we invent could refuse a working deployment — which is worse than the
+// failure it would prevent, because it turns a deploy-time surprise into an
+// outage. A caller that wants a floor wants RequiredCredential.
+//
+// Errors never echo the supplied value (ADR-012 §TKT-202).
+func OptionalCredential(envVar, allowedSentinel string) (string, error) {
+	token := os.Getenv(envVar)
+	switch {
+	case token == "":
+		return "", nil
+	case allowedSentinel != "" && token == allowedSentinel:
+		return token, nil
+	// ORDER MATTERS, for the same reason it does in RequiredCredential: this
+	// whitespace case must stay AHEAD of the httpguts check, which PERMITS edge
+	// SP and HTAB as legal field-value bytes while net/http trims them in
+	// transit. Only this case catches that normalization collision.
+	case strings.TrimSpace(token) != token:
+		return "", fmt.Errorf("%s has leading or trailing whitespace: HTTP strips it in transit, so the value on the wire is not the value configured (check the quoting in .env)", envVar)
+	case !httpguts.ValidHeaderFieldValue(token):
+		return "", fmt.Errorf("%s contains a character that cannot appear in an HTTP header value", envVar)
+	}
+	return token, nil
+}
+
 // PaymentsTokenEnv is the credential that opens the payments service's internal
 // surface — every charge, void, refund and partial refund.
 //

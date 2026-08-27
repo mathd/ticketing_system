@@ -356,3 +356,87 @@ func TestRequiredCredentialHonoursThePerCallFloor(t *testing.T) {
 		t.Fatalf("the error does not state the floor the caller passed: %q", err)
 	}
 }
+
+// TKT-253. OptionalCredential is the entry point for a credential whose ABSENCE is a
+// legitimate configuration rather than a misconfiguration. STRIPE_SECRET_KEY is the
+// motivating case: unset (or the non-secret literal `fake`) selects the offline fake
+// PSP, which is how every local run and the entire gate work (ADR-032). Passing such a
+// credential to RequiredCredential would refuse the empty value outright and break them.
+//
+// What it still applies is the TRANSPORT hygiene, and for a reason specific to this
+// credential: payments sends the Stripe secret through req.SetBasicAuth
+// (services/payments/internal/psp/stripe.go:201), so it becomes an Authorization header
+// value. A padded or untransmittable value is therefore the same defect here as anywhere
+// else RequiredCredential guards.
+//
+// What it deliberately does NOT apply is CredentialMinBytes. A length floor on a
+// credential STRIPE issues and we do not control could refuse a working deployment,
+// which is worse than the failure it would prevent.
+func TestOptionalCredentialAcceptsTheAbsentAndSentinelConfigurations(t *testing.T) {
+	// Unset. The env var is not set at all — the offline default.
+	if got, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake"); err != nil || got != "" {
+		t.Fatalf("an unset optional credential is a legal configuration: got %q, %v", got, err)
+	}
+
+	// The sentinel arrives through this path on every default stack:
+	// compose.yaml:288 is `STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-fake}`. It is not a
+	// secret and never reaches an Authorization header, because the selector drops it.
+	t.Setenv("TEST_OPTIONAL_CREDENTIAL", "fake")
+	if got, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake"); err != nil || got != "fake" {
+		t.Fatalf("the sentinel must pass through unchanged: got %q, %v", got, err)
+	}
+}
+
+// A real value is returned byte-for-byte: the caller compares and transmits it, so any
+// normalisation here would make the configured value and the wire value differ, which is
+// the exact class of bug RequiredCredential's whitespace case exists to prevent.
+func TestOptionalCredentialReturnsARealValueUnchanged(t *testing.T) {
+	const value = "sk_test_51H8xQ2eZvKYlo2C0abcdefgh"
+	t.Setenv("TEST_OPTIONAL_CREDENTIAL", value)
+	got, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake")
+	if err != nil {
+		t.Fatalf("rejected a header-safe value: %v", err)
+	}
+	if got != value {
+		t.Fatalf("value altered at load: %q -> %q", value, got)
+	}
+}
+
+// The transport predicates, and the redaction rule (ADR-012 §TKT-202) applied to their
+// diagnostics. Each fixture carries a distinctive body so the assertion can pin the
+// ABSENCE of the secret part rather than the absence of the whole string — an error
+// echoing all but one character of a key would pass the weaker check.
+func TestOptionalCredentialRejectsValuesHTTPWouldChangeWithoutEchoingThem(t *testing.T) {
+	for name, value := range map[string]string{
+		"leading whitespace":  " sk_test_LEADINGBODY",
+		"trailing whitespace": "sk_test_TRAILINGBODY ",
+		"newline":             "sk_test_NEWLINEBODY\n",
+		"control byte":        "sk_test_CONTROLBODY\x01",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TEST_OPTIONAL_CREDENTIAL", value)
+			_, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake")
+			if err == nil {
+				t.Fatalf("%q must be refused: it is not the value that would reach the wire", value)
+			}
+			if !strings.Contains(err.Error(), "TEST_OPTIONAL_CREDENTIAL") {
+				t.Fatalf("the error must name the variable an operator set: %q", err)
+			}
+			// The body is the secret part. The error may name the variable; it may not
+			// reproduce any of the value.
+			if strings.Contains(err.Error(), "BODY") {
+				t.Fatalf("the error echoes the supplied credential: %q", err)
+			}
+		})
+	}
+}
+
+// The floor is the one check OptionalCredential must NOT inherit. A short value is a
+// legitimate configuration for a credential whose format we do not control, and refusing
+// it would refuse a working deployment.
+func TestOptionalCredentialAppliesNoLengthFloor(t *testing.T) {
+	t.Setenv("TEST_OPTIONAL_CREDENTIAL", "x")
+	if _, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake"); err != nil {
+		t.Fatalf("OptionalCredential must apply no length floor: %v", err)
+	}
+}

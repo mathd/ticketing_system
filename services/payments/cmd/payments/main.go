@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -133,6 +134,30 @@ func verifyConcurrentAppend() error {
 	return nil
 }
 
+// pspFromEnv reads STRIPE_SECRET_KEY and resolves the provider. It exists as a named
+// function rather than two lines inside run() so the CREDENTIAL POLICY is testable:
+// run() opens a database and cannot be unit-tested, and a mutation that swaps the call
+// below for runtimecfg.RequiredCredential compiles and passes every other test in this
+// package while breaking every deployment that does not configure Stripe — which is
+// every local run and the entire gate (TKT-253).
+//
+// OptionalCredential, NOT RequiredCredential: an unset STRIPE_SECRET_KEY is a
+// LEGITIMATE configuration here — it selects the offline fake PSP (ADR-032 §provider
+// selection). RequiredCredential refuses "" outright by design.
+//
+// The policy is stated here rather than inferred, following journalKeyMinBytes above
+// (ADR-059's precedent: a per-credential policy belongs where a reader will find it).
+// "fake" is the sentinel because compose.yaml:288 defaults the variable to it. No
+// length floor: the key's format is Stripe's to change, and a bound we invent could
+// refuse a WORKING deployment — worse than the failure it would prevent.
+func pspFromEnv() (psp.PSP, time.Duration, error) {
+	key, err := runtimecfg.OptionalCredential("STRIPE_SECRET_KEY", "fake")
+	if err != nil {
+		return nil, 0, err
+	}
+	return pspForKey(key)
+}
+
 // pspForKey selects the payment provider from STRIPE_SECRET_KEY, fail-fast like
 // signingConfig (ADR-032): unset or the explicit "fake" sentinel selects the fake (the
 // offline default — the gate never talks to Stripe), a test-mode secret key selects the
@@ -145,6 +170,29 @@ func pspForKey(key string) (psp.PSP, time.Duration, error) {
 		// the replayed token), so the status-replay contract is unbounded: retention 0.
 		return psp.NewFake(), 0, nil
 	case strings.HasPrefix(key, "sk_test_"):
+		// TKT-253: the prefix alone used to be the whole check, so the literal
+		// "sk_test_" built a real adapter pointed at api.stripe.com and the service
+		// started cleanly — the error surfacing only when a charge reached Stripe.
+		//
+		// TWO INDEPENDENT REFUSALS, kept as two statements with two messages so each
+		// is separately deletable and each has its own test (AGENTS.md: a guard with
+		// N predicates needs N tests). Folding them into one condition would make the
+		// empty case unreachable through the whitespace check and vice versa.
+		body := strings.TrimPrefix(key, "sk_test_")
+		if body == "" {
+			return nil, 0, errors.New("STRIPE_SECRET_KEY is the bare sk_test_ prefix with no key after it")
+		}
+		// ContainsFunc, not TrimSpace: an INTERIOR space is exactly as broken as a
+		// padded one and a trim-based check would admit it. Stripe's own keys carry
+		// no whitespace, so this rejects a quoting mistake in a deploy config — and
+		// claims nothing else. It asserts NOTHING about Stripe's alphabet, length,
+		// checksum or future format: a bound invented for a credential Stripe issues
+		// and we do not control could refuse a WORKING deployment, which is worse
+		// than the failure it prevents. A truncated-but-plausible key still starts
+		// here and still fails at the first charge, exactly as before.
+		if strings.ContainsFunc(body, unicode.IsSpace) {
+			return nil, 0, errors.New("STRIPE_SECRET_KEY contains whitespace after the sk_test_ prefix")
+		}
 		// Stripe retains idempotency keys ~24h; past that a same-key replay mints a NEW
 		// PaymentIntent, so status replay is bounded (ADR-032 §Status/replay amendment).
 		return psp.NewStripe(key, "https://api.stripe.com", nil), 24 * time.Hour, nil
@@ -327,7 +375,7 @@ func run() error {
 		return err
 	}
 	logJournalSigningKey(ctx, log, keys)
-	provider, providerRetention, err := pspForKey(os.Getenv("STRIPE_SECRET_KEY"))
+	provider, providerRetention, err := pspFromEnv()
 	if err != nil {
 		return err
 	}
