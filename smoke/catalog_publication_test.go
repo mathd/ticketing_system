@@ -1484,7 +1484,14 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	suffixBytes := make([]byte, 4)
 	_, _ = rand.Read(suffixBytes)
 	suffix := hex.EncodeToString(suffixBytes)
-	const hoursTier = "public, max-age=3600, s-maxage=3600" // ADR-004
+	// Two tiers since TKT-141: the by-id geometry read caches an immutable
+	// published version (ADR-029) and keeps the hours tier, while the two LIST
+	// reads cache membership — which this very test mutates by editing the map —
+	// and take the minutes tier.
+	const (
+		hoursTier   = "public, max-age=3600, s-maxage=3600" // ADR-004, by-id geometry
+		minutesTier = "public, max-age=300, s-maxage=300"   // ADR-004, list reads
+	)
 
 	venue := created(t, catalog+"/venues", map[string]any{
 		"name": "Versioning Hall " + suffix, "ga_capacity": 100,
@@ -1609,8 +1616,8 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("versions: %d %s", code, body)
 	}
-	if got := hdr.Get("Cache-Control"); got != hoursTier {
-		t.Fatalf("versions cache tier %q, want %q", got, hoursTier)
+	if got := hdr.Get("Cache-Control"); got != minutesTier {
+		t.Fatalf("versions cache tier %q, want %q", got, minutesTier)
 	}
 	var history struct {
 		CurrentVersion int32 `json:"current_version"`
@@ -1643,8 +1650,8 @@ func TestSeatMapVersioningReadsAndEdit(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("venue seat maps: %d %s", code, body)
 	}
-	if got := hdr.Get("Cache-Control"); got != hoursTier {
-		t.Fatalf("venue seat maps cache tier %q, want %q", got, hoursTier)
+	if got := hdr.Get("Cache-Control"); got != minutesTier {
+		t.Fatalf("venue seat maps cache tier %q, want %q", got, minutesTier)
 	}
 	var list struct {
 		SeatMaps []struct {
