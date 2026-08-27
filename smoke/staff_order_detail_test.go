@@ -42,6 +42,18 @@ func getStaffOrderDetail(t *testing.T, order, org, header, token string) (int, [
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
+	// Through the suite's chokepoint, like every other direct-service call. Two things
+	// depend on it and neither is optional: the response is CONTRACT-VALIDATED against
+	// commerce's OpenAPI (so a body that drifts from the schema fails here rather than in
+	// a client months later), and the 200 is recorded for the coverage gate, which fails
+	// the suite when a documented 2xx operation has no happy path driving it. A
+	// hand-rolled client that skips this passes its own assertions and leaves the
+	// operation looking untested — which is exactly what it would be.
+	if service := directService(url); service != "" {
+		if err := checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, out); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
 	return resp.StatusCode, out
 }
 
