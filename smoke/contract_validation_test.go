@@ -227,10 +227,13 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001", byGateway},
 		// TKT-155 moved price resolution onto catalog's internal surface; the new
 		// path is refused at the edge like its siblings. The RETIRED public path is
-		// asserted separately in TestTheRetiredPublicPriceResolutionPathIsGone —
-		// it is refused by chi rather than by a contract validator, so it cannot
-		// carry this table's body, and weakening the table to fit it would cost
-		// every other row its provenance.
+		// NOT asserted here: this table's fixtures are fixed all-zero UUIDs, which
+		// is right for proving which layer refuses an internal path and fatal for
+		// proving a public route is gone — a restored route handed a ticket type
+		// that does not exist answers 404 from the store, and every assertion here
+		// would stay green while the exposure was back. It lives in
+		// TestReserveUsesRuleResolvedPriceAndPinsTheQuote, against a seeded and
+		// priced ticket type that a restored route would really resolve.
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution", byGateway},
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
 		{http.MethodPost, "/api/payments/internal/facts", byGateway},
@@ -374,48 +377,5 @@ func TestConcurrentPostValidatesAndRecordsCoverage(t *testing.T) {
 	if !recorded {
 		t.Fatalf("a goroutine-issued request did not reach the contract chokepoint: %q not recorded by this call. "+
 			"postWithKeyAsync must validate through validateServiceResponseAsync (TKT-95).", op)
-	}
-}
-
-// TestTheRetiredPublicPriceResolutionPathIsGone is TKT-155's exposure assertion
-// at the gateway: the request an internet caller actually had, on the path they
-// actually had it on.
-//
-// Separate from TestGatewayDeniesGenericInternalRoutes because the refusal comes
-// from a different layer and therefore cannot make the same claim. Catalog wraps
-// only contract.ResponseValidator (server.go, ADR-028) — it has no REQUEST
-// validator — so a path absent from its spec is 404'd by chi with the generic
-// "404 page not found", not by a contract validator with a body naming the
-// contract. Inventory's retired transitions in that table can assert the
-// contract body precisely because inventory does wrap RequestValidator; copying
-// their expectation here asserts a mechanism catalog does not run.
-//
-// So the body cannot prove provenance here, and this test does not pretend it
-// can. What it proves is the thing that matters and is falsifiable: the response
-// is not the resolution. A 200 fails it, and so does any body carrying the
-// resolved amount — which is the actual disclosure, and which no 404 from any
-// layer can contain.
-//
-// Mutation: revert the path move in openapi.yaml and this returns 200 with the
-// full candidates payload.
-func TestTheRetiredPublicPriceResolutionPathIsGone(t *testing.T) {
-	const retired = "/api/catalog/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution"
-
-	response, err := (&http.Client{}).Get(gatewayURL + retired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	body, _ := io.ReadAll(response.Body)
-
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("the retired public price-resolution path answered %d, want 404; body=%s",
-			response.StatusCode, body)
-	}
-	// The disclosure itself, asserted independently of the status: `candidates`
-	// is the field that carried an organizer's unannounced future prices, and no
-	// legitimate 404 from any layer mentions it.
-	if strings.Contains(string(body), "candidates") || strings.Contains(string(body), "resolved_price") {
-		t.Fatalf("the retired public path is still returning a price resolution: %s", body)
 	}
 }
