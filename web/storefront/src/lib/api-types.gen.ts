@@ -680,7 +680,7 @@ export interface paths {
         };
         /**
          * A venue's seat-map summaries (status-driven cache tier)
-         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when the list is non-empty and every map is published; no-store for a draft-bearing, mixed, or empty list. Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
+         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Cache tier follows the payload's statuses (TKT-107): the ADR-004 minutes tier (public, max-age=300, s-maxage=300) only when the list is non-empty and every map is published; no-store for a draft-bearing, mixed, or empty list. The minutes rather than hours tier because what this response caches is list MEMBERSHIP, which authoring a seat map changes — unlike a published version, which is immutable (TKT-141). Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
          */
         get: operations["listVenueSeatMaps"];
         put?: never;
@@ -720,7 +720,7 @@ export interface paths {
         };
         /**
          * A seat map family's version history (status-driven cache tier, TKT-105)
-         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when every version listed is published, no-store as soon as one is a draft. Catalog-owned; the back office does not keep a version store of its own.
+         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Cache tier follows the payload's statuses (TKT-107): the ADR-004 minutes tier (public, max-age=300, s-maxage=300) only when every version listed is published, no-store as soon as one is a draft. The minutes rather than hours tier because what this response caches is family MEMBERSHIP, which an ADR-029 edit changes by inserting a published successor — unlike a single published version, which is immutable (TKT-141). Catalog-owned; the back office does not keep a version store of its own.
          */
         get: operations["listSeatMapVersions"];
         put?: never;
