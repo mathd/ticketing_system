@@ -1665,8 +1665,6 @@ export interface components {
     };
     requestBodies: never;
     headers: {
-        /** @description ADR-004 volatility tier, explicit on every public read */
-        CacheControl: string;
         /**
          * @description Seconds this answer has already spent in catalog's in-memory public-read cache (TKT-206, ADR-045), rounded up. Required, and 0 on a cache miss.
          *     It exists so two staleness budgets cannot stack. Cache-Control declares these responses publicly cacheable for five minutes, and the storefront's SSR cache starts every entry it fetches at age zero — so without Age, a catalog entry already 299 seconds old would be granted another 300 by Astro, giving a buyer ten minutes of staleness against a tier that promises five. Age is RFC 9111's mechanism for exactly this, and it is the only one available here: varying Cache-Control by remaining freshness is what the storefront middleware does for pages, but ADR-028 validates this response header against its declaration, so the tier is a fixed value.
@@ -1679,9 +1677,15 @@ export interface components {
         PriceResolutionCacheControl: "no-store";
         /**
          * @description Always the ADR-004 minutes tier. Single-valued and required, so the ADR-028 response validator turns any other value into a 500 and the cross-service tier audit (shared/go/cachetier) can check the committed value rather than take it on trust.
-         *     Distinct from the free-form `CacheControl` component above, which is `type: string` with no enum and therefore commits nothing. That one is TKT-204's bounded legacy exception, closed to new operations and tracked for removal by TKT-209 — a new read joins this component instead.
+         *     Since TKT-209 every catalog public read declares its tier this way. The free-form `CacheControl` component this replaced was `type: string` with no enum and committed nothing, so the validator had nothing to check and TKT-204 had to carry a named allowlist of the operations using it; a new read joins this component, or the hours one below.
          */
         MinutesCacheControl: "public, max-age=300, s-maxage=300";
+        /**
+         * @description Always the ADR-004 hours tier. The sibling of `MinutesCacheControl` for the one public read whose data is long-lived: `listPublicVenues`, since venue geometry changes on a scale of months (ADR-004 rule 1).
+         *     Single-valued and required for the same reasons: the ADR-028 response validator turns any other value — and a missing header — into a 500 with the payload withheld, and the cross-service tier audit (shared/go/cachetier) can check the committed value rather than take it on trust.
+         *     Distinct from `SeatMapCacheControl`, which also carries this tier but conditionally: a seat-map response earns the hours tier only when every map in it is published, and takes no-store otherwise (TKT-107). This component is unconditional, so the two cannot share a declaration.
+         */
+        HoursCacheControl: "public, max-age=3600, s-maxage=3600";
         /** @description Always no-store — ADR-004's "never" tier. An authentication response is never shared-cacheable: it is computed from a submitted credential and says whether that credential is good. Single-valued and required so the ADR-028 response validator turns any other value into a 500. */
         NeverCacheControl: "no-store";
     };
@@ -2771,7 +2775,7 @@ export interface operations {
             /** @description Published events, localized */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
                     Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
@@ -2801,7 +2805,7 @@ export interface operations {
             /** @description Published event detail, localized */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
                     Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
@@ -2831,7 +2835,7 @@ export interface operations {
             /** @description Published season detail, localized */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
                     Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
@@ -2861,7 +2865,7 @@ export interface operations {
             /** @description Published festival detail, localized */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["MinutesCacheControl"];
                     Age: components["headers"]["PublicReadAge"];
                     [name: string]: unknown;
                 };
@@ -2889,7 +2893,7 @@ export interface operations {
             /** @description The organizer's venues */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["CacheControl"];
+                    "Cache-Control": components["headers"]["HoursCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {
