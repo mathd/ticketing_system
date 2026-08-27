@@ -81,9 +81,28 @@ type StaffOrderDetail struct {
 // never enters the query, so there is nothing for a later refactor to accidentally map.
 // Buyer contact is exposed at /internal/buyers/{id}/delivery-email, to the service that
 // must send mail, and nowhere else (ADR-003).
+// ONE SNAPSHOT, and that is not tidiness (ai-review). The order's refund COUNTERS and the
+// refund ROWS are two sources that CompleteOrderRefund advances together, inside one
+// transaction (refunds.go: it updates order_refunds and orders' refunded_amount /
+// refunded_quantity / refund_status before a single Commit). Two autocommit reads can
+// straddle that commit and return the OLD counters beside a NEWLY completed refund — a
+// response that says "1250 refunded" next to a row saying two refunds have settled.
+//
+// That is worse here than a stale read usually is, because this endpoint exists to tell a
+// staff member what has already happened to an order before they decide what to do next,
+// and the two halves disagreeing is precisely the confusion it was built to end. So: one
+// REPEATABLE READ transaction, read-only, and both queries see the same instant.
 func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID) (StaffOrderDetail, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return StaffOrderDetail{}, err
+	}
+	// Read-only: nothing to lose by rolling back, and a deferred rollback is what makes
+	// every early return below safe.
+	defer func() { _ = tx.Rollback() }()
+
 	d := StaffOrderDetail{OrderID: order, OrganizerID: org}
-	if err := db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 		SELECT o.status,
 		       r.ticket_type_id, r.quantity, r.unit_amount, r.face_value_amount, r.total_amount, r.currency,
 		       o.refund_status, o.refunded_quantity, o.refunded_amount
@@ -106,7 +125,7 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 	// scoped above. order_refunds carries its own organizer_id, so the predicate is
 	// available and costs nothing — and a read whose two halves are scoped by different
 	// arguments is one refactor away from disagreeing.
-	rows, err := db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id, status, quantity, amount, currency, idempotency_key, actor, created_at, completed_at
 		FROM order_refunds
 		WHERE organizer_id=$1 AND order_id=$2
@@ -131,6 +150,11 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 		d.Refunds = append(d.Refunds, f)
 	}
 	if err := rows.Err(); err != nil {
+		return StaffOrderDetail{}, err
+	}
+	// Closed before the deferred rollback so the rows are drained while the snapshot is
+	// still open; the rollback then ends a transaction that wrote nothing.
+	if err := rows.Close(); err != nil {
 		return StaffOrderDetail{}, err
 	}
 	return d, nil

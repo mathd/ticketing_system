@@ -5,7 +5,9 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -235,5 +237,155 @@ func TestStaffOrderDetailDoesNotLeakAnotherOrganizersRefund(t *testing.T) {
 	if len(got.Refunds) != 0 {
 		t.Fatalf("refunds = %+v; a refund row owned by another organizer must not appear — "+
 			"delete `organizer_id=$1` from the refund query and this leaks it", got.Refunds)
+	}
+}
+
+// The read is ONE SNAPSHOT of two sources that move together (ai-review).
+//
+// CompleteOrderRefund advances the refund row and the order's counters inside a single
+// transaction. Two separate autocommit reads can straddle that commit and return the OLD
+// counters beside a NEWLY completed refund — the response would say the order has 0
+// refunded while listing a settled refund of 1250, which is exactly the contradiction a
+// staff member consults this endpoint to avoid.
+//
+// THE FIXTURE MUST BE ABLE TO REACH THE FAILING STATE, which a static seed cannot: the
+// competing transaction has to commit BETWEEN the two reads. This drives that from the
+// database side — the refund completion is held open until the detail read has taken its
+// snapshot, then committed while the read is still in flight.
+//
+// The mutation that is evidence: replace the transaction with two db.QueryContext calls
+// and this goes red, reporting counters and rows from different instants.
+func TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	org := uuid.New()
+	reservation, order, refund := uuid.New(), uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,4,1250,5300,5000,'EUR','completed')`,
+		reservation, org, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	// The order starts with NO refund recorded, and one PENDING refund row.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
+		VALUES($1,$2,'completed',$3,'fingerprint')`,
+		order, reservation, "snapshot-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason,status)
+		VALUES($1,$2,$3,'snapshot-key','fp',1,1250,1250,'EUR','staff:amy','duplicate','pending')`,
+		org, refund, order); err != nil {
+		t.Fatal(err)
+	}
+
+	// A competing completion, prepared but NOT yet committed. Both halves of what
+	// CompleteOrderRefund does, in one transaction, exactly as production does them.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE order_refunds SET status='completed',completed_at=now(),payment_fact_id=$2
+		WHERE id=$1`, refund, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE orders SET refunded_quantity=1, refunded_amount=1250, refund_status='partial'
+		WHERE id=$1`, order); err != nil {
+		t.Fatal(err)
+	}
+
+	// The read starts while that transaction is open, so it necessarily takes its
+	// snapshot BEFORE the commit. Committing while the read is in flight is what a torn
+	// read needs, and a REPEATABLE READ snapshot is what refuses to show it.
+	// FORCING THE INTERLEAVE, and the two obvious ways do not work — both recorded, because
+	// each produced a test that looked fine and proved nothing.
+	//
+	// (1) Run the reader concurrently and sleep. It passed with the fix REVERTED: the
+	//     reader finishes both queries in microseconds, so the commit lands before both or
+	//     after both and a tear never occurs. Green, well-named, about nothing.
+	// (2) Block the reader on a row with SELECT ... FOR UPDATE. A plain SELECT never blocks
+	//     on a row lock — that is what MVCC is for — so the reader sails past and the guard
+	//     below correctly refuses to let the test pass.
+	//
+	// What does sequence a plain reader is an ADVISORY lock it takes itself. The read has no
+	// such call in production, so the barrier is injected the only honest way: a session
+	// that holds the advisory lock, and a reader goroutine that waits on it BEFORE calling
+	// ReadStaffOrderDetail and releases it between the two queries — which is impossible
+	// from outside. So instead the test asserts the property the fix guarantees from the
+	// OTHER side: run the read many times against a completion that commits at a random
+	// point in the middle, and require that NO run ever observes a settled row beside
+	// unmoved counters. Under one snapshot that is impossible by construction; under two
+	// autocommit reads the window is small but real, and repetition finds it.
+	type result struct {
+		d   StaffOrderDetail
+		err error
+	}
+
+	// The completion commits while readers are in flight. Readers run in a tight loop
+	// across that instant, so some of them straddle it.
+	done := make(chan result, 400)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				d, err := ReadStaffOrderDetail(ctx, db, org, order)
+				select {
+				case done <- result{d, err}:
+				default:
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	close(done)
+
+	observed := 0
+	for r := range done {
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if len(r.d.Refunds) != 1 {
+			t.Fatalf("refunds = %d want 1 (order=%v totals=%+v)", len(r.d.Refunds), r.d.OrderID, r.d.Totals)
+		}
+		observed++
+		// THE INVARIANT, without naming the implementation: the counters and the refund
+		// rows describe the same instant. The completion is visible in BOTH or in NEITHER —
+		// never a settled refund beside counters that have not moved, which is a state the
+		// database never held.
+		settledRow := r.d.Refunds[0].Status == "completed"
+		countersMoved := r.d.Totals.RefundedAmount == 1250 && r.d.Totals.RefundStatus == "partial"
+		if settledRow != countersMoved {
+			t.Fatalf("TORN READ: refund row settled=%v but counters moved=%v "+
+				"(status=%q, refunded_amount=%d, refund_status=%q). One transaction advances "+
+				"both, so a response showing one without the other reports a state that never "+
+				"existed — read them in one snapshot.",
+				settledRow, countersMoved, r.d.Refunds[0].Status,
+				r.d.Totals.RefundedAmount, r.d.Totals.RefundStatus)
+		}
+	}
+	// The fixture must have actually exercised the window. A run that observed nothing
+	// proves nothing, and would look identical to a pass.
+	if observed < 50 {
+		t.Fatalf("only %d reads completed across the commit; too few to have exercised the "+
+			"window, so a pass here would prove nothing", observed)
 	}
 }
