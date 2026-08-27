@@ -1,0 +1,239 @@
+//go:build smoke
+
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"testing"
+
+	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// The staff order read (TKT-201), against real Postgres.
+//
+// These live at the STORE tier and not one layer up, because the thing worth proving is a
+// SQL predicate. An assertion at the handler tier would run against whatever the store
+// returned and pass just as happily with `AND r.organizer_id=$2` deleted — it would prove
+// the handler and the store agree, which is not the claim.
+
+// TestStaffOrderDetailScopesByTheReservationsOrganizer is COS 3, at the tier the scoping
+// happens.
+//
+// THE MUTATION THAT IS EVIDENCE: delete `AND r.organizer_id=$2` from ReadStaffOrderDetail
+// and the second read below returns organizer B's order to organizer A.
+//
+// The positive read is asserted FIRST and in this same function, deliberately. A
+// cross-organizer miss on this join is a MISSING row, not a substituted one — o.reservation_id
+// is a FK to reservations' primary key, so the join is many-to-one and a wrong organizer
+// yields zero rows. That makes ErrNoRows a weak signal on its own: a store that always
+// failed, a fixture that never seeded, and a correctly scoped read are indistinguishable by
+// the negative alone. Proving the exact row IS readable by its owner, immediately before
+// asking for it as someone else, is what makes the negative mean something.
+func TestStaffOrderDetailScopesByTheReservationsOrganizer(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	owner := uuid.New()
+	stranger := uuid.New()
+	reservation, order, ticketType := uuid.New(), uuid.New(), uuid.New()
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,4,1250,5300,5000,'EUR','completed')`,
+		reservation, owner, uuid.New(), uuid.New(), ticketType, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
+		VALUES($1,$2,'completed',$3,'fingerprint')`,
+		order, reservation, "detail-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner CAN read it, and reads exactly the seeded row. Without this the negative
+	// below proves nothing.
+	got, err := ReadStaffOrderDetail(ctx, db, owner, order)
+	if err != nil {
+		t.Fatalf("owner read: %v", err)
+	}
+	if got.Line.Quantity != 4 || got.Line.UnitAmount != 1250 ||
+		got.Line.FaceValue != 5000 || got.Line.TotalAmount != 5300 || got.Line.Currency != "EUR" {
+		t.Fatalf("owner read = %+v; want the seeded line (qty 4, unit 1250, face 5000, total 5300, EUR)", got.Line)
+	}
+	if got.Line.TicketTypeID != ticketType {
+		t.Errorf("ticket type = %v want %v", got.Line.TicketTypeID, ticketType)
+	}
+
+	// The same order, asked for by someone else. Missing, not substituted, not empty.
+	if _, err := ReadStaffOrderDetail(ctx, db, stranger, order); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cross-organizer read err = %v want sql.ErrNoRows: delete `AND r.organizer_id=$2` "+
+			"and this returns another tenant's order", err)
+	}
+}
+
+// The money projection, asserted against values derived from the seed rather than read
+// back from a run.
+//
+// passed_on_fees is the assertion that matters: it is the only DERIVED number in the
+// response, and the invariant is that it is the exact integer difference between what the
+// buyer paid and the face value — never a rounded share, and never a float (ADR-001).
+func TestStaffOrderDetailReportsMoneyAsExactIntegers(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	org := uuid.New()
+	reservation, order := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,3,1100,3450,3300,'CAD','completed')`,
+		reservation, org, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
+		VALUES($1,$2,'completed',$3,'fingerprint')`,
+		order, reservation, "money-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadStaffOrderDetail(ctx, db, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 3450 gross, 3300 face -> 150 passed on. Stated from the seed, not observed.
+	if got.Totals.TotalAmount != 3450 || got.Totals.FaceValue != 3300 || got.Totals.PassedOnFees != 150 {
+		t.Errorf("totals = %+v; want total 3450, face 3300, fees 150", got.Totals)
+	}
+	if got.Totals.Currency != "CAD" {
+		t.Errorf("currency = %q want CAD — it must come from the reservation, not a default", got.Totals.Currency)
+	}
+	// An order nobody has refunded reports a zero position, not an absent one.
+	if got.Totals.RefundStatus != "none" || got.Totals.RefundedAmount != 0 || got.Totals.RefundedQuantity != 0 {
+		t.Errorf("unrefunded order totals = %+v; want refund_status none and zero amounts", got.Totals)
+	}
+	if len(got.Refunds) != 0 {
+		t.Errorf("refunds = %v; want an empty slice on an order with none", got.Refunds)
+	}
+	if got.Refunds == nil {
+		t.Error("refunds is nil; it must marshal as [] rather than null, so a client can tell " +
+			"'no refunds' from 'the field is missing'")
+	}
+}
+
+// Pending refunds are RETURNED, and that is the whole reason this read retires
+// unresolved-refunds.ts.
+//
+// A refund whose request timed out may still have moved money, and the page's only safe
+// next step is replaying the SAME idempotency key. A read that answered with completed
+// refunds only would leave exactly that case invisible and the module would still be
+// needed — so this asserts the pending row is present WITH its key, not merely that some
+// refunds came back.
+//
+// Every seed here is load-bearing: delete the pending row and the ordering and
+// pending-visibility assertions both fail; delete the completed row and the two-status
+// assertion fails; change either created_at and the ordering assertion fails.
+func TestStaffOrderDetailReturnsPendingRefundsWithTheirIdempotencyKeys(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	org := uuid.New()
+	reservation, order := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,4,1250,5300,5000,'EUR','completed')`,
+		reservation, org, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,refund_status,refunded_quantity,refunded_amount)
+		VALUES($1,$2,'completed',$3,'fingerprint','partial',1,1250)`,
+		order, reservation, "refunded-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+
+	older, newer := uuid.New(), uuid.New()
+	// Completed first in time, so a correct ORDER BY created_at puts it first and the
+	// assertion below can tell ordering from insertion order.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason,status,completed_at,payment_fact_id,created_at)
+		VALUES($1,$2,$3,'key-settled','fp',1,1250,1250,'EUR','staff:amy','duplicate','completed',now(),$4,now() - interval '1 hour')`,
+		org, older, order, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason,status,created_at)
+		VALUES($1,$2,$3,'key-in-flight','fp',1,1250,1250,'EUR','staff:bo','goodwill','pending',now())`,
+		org, newer, order); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadStaffOrderDetail(ctx, db, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Refunds) != 2 {
+		t.Fatalf("refunds = %d want 2 (one completed, one PENDING): a completed-only read "+
+			"leaves the in-flight key invisible, which is the case this read exists to answer", len(got.Refunds))
+	}
+	if got.Refunds[0].RefundID != older || got.Refunds[1].RefundID != newer {
+		t.Errorf("refunds are not oldest-first: got %v then %v", got.Refunds[0].RefundID, got.Refunds[1].RefundID)
+	}
+	if got.Refunds[0].Status != "completed" || got.Refunds[0].IdempotencyKey != "key-settled" ||
+		got.Refunds[0].Actor != "staff:amy" || got.Refunds[0].CompletedAt == nil {
+		t.Errorf("settled refund = %+v; want completed, key-settled, staff:amy, a completion time", got.Refunds[0])
+	}
+	if got.Refunds[1].Status != "pending" || got.Refunds[1].IdempotencyKey != "key-in-flight" ||
+		got.Refunds[1].Actor != "staff:bo" {
+		t.Errorf("in-flight refund = %+v; want pending, key-in-flight, staff:bo", got.Refunds[1])
+	}
+	if got.Refunds[1].CompletedAt != nil {
+		t.Errorf("a PENDING refund reports completed_at = %v; the table's CHECK ties completion "+
+			"to the status, and a caller reading a time here would believe money had settled",
+			got.Refunds[1].CompletedAt)
+	}
+	// The order's own counters, which are a different source from the refund rows.
+	if got.Totals.RefundStatus != "partial" || got.Totals.RefundedAmount != 1250 || got.Totals.RefundedQuantity != 1 {
+		t.Errorf("totals = %+v; want partial / 1250 / 1 from the order's counters", got.Totals)
+	}
+}
+
+// A refund belonging to ANOTHER organizer on the same order id must not appear.
+//
+// Separate from the scoping test above because it exercises a SECOND predicate: the
+// refund query has its own `organizer_id=$1`, and a guard with N predicates needs N tests.
+// The first test passes with this one deleted — it never seeds a foreign refund — so
+// deleting `WHERE organizer_id=$1` from the refund query is a mutation only this catches.
+func TestStaffOrderDetailDoesNotLeakAnotherOrganizersRefund(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	org, other := uuid.New(), uuid.New()
+	reservation, order := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,4,1250,5300,5000,'EUR','completed')`,
+		reservation, org, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
+		VALUES($1,$2,'completed',$3,'fingerprint')`,
+		order, reservation, "leak-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	// order_refunds carries organizer_id of its own and does not constrain it against the
+	// reservation, so this row is writable and would be returned by an unscoped read.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason,status)
+		VALUES($1,$2,$3,'not-yours','fp',1,1250,1250,'EUR','staff:elsewhere','other tenant','pending')`,
+		other, uuid.New(), order); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadStaffOrderDetail(ctx, db, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Refunds) != 0 {
+		t.Fatalf("refunds = %+v; a refund row owned by another organizer must not appear — "+
+			"delete `organizer_id=$1` from the refund query and this leaks it", got.Refunds)
+	}
+}

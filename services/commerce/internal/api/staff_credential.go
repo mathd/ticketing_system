@@ -11,8 +11,12 @@ import (
 // Distinct from X-Internal-Token on purpose. That one value opens every
 // service's internal surface, and TKT-191 deliberately withheld it from the
 // back office so an internet-facing SSR process could not spend it. This one
-// opens exactly one operation — the staff refund — and the enumeration in
-// staff_credential_test.go is what keeps that true.
+// opens three — the staff refund, the void that reverses a comped order
+// (TKT-171), and the staff order read (TKT-201) — and the enumeration in
+// staff_credential_test.go is what keeps the set from growing unnoticed.
+//
+// Each addition is a deliberate widening of what an internet-facing SSR process
+// can spend, so each one is argued in its own ticket rather than inherited.
 const staffWriteHeader = "X-Commerce-Staff-Write-Token"
 
 // WithStaffWriteCredential supplies the back office's credential.

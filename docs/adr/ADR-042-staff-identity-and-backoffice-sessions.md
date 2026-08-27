@@ -172,6 +172,27 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
   Exposure while it was open was theoretical (`organizers` held one row), which is exactly why it was
   easy to leave open; ADR-002 requires the tenant id from day one so this is not retrofitted under
   pressure.
+- **`COMMERCE_STAFF_WRITE_TOKEN` is not organizer-bound, and commerce cannot make it so today.**
+  Noted by TKT-201, which added a third operation behind it (the staff order read) and therefore had
+  to say what the credential does and does not prove. It authenticates the **deputy** — the
+  back-office process — and carries no tenancy. Every operation behind it takes `organizer_id` from
+  the request: the refund and void from the body, the order read from a query parameter. The back
+  office supplies it from its authenticated session, but commerce cannot *verify* that, so a holder
+  of the token can name any organizer.
+
+  This is the same gap the catalog bullet above records as **closed**, still open on commerce, and
+  the asymmetry is worth stating plainly rather than leaving a reader to infer it from two bullets.
+  Catalog closed it with the signed organizer assertion (TKT-245, ADR-058) — but that assertion is
+  minted and verified with `organizerAssertionKey`, which is **catalog-only** by construction, and
+  catalog's `main.go` refuses to start when it equals either shared token. Closing it for commerce
+  therefore means a cross-service key decision — a shared assertion key, a commerce-minted
+  equivalent, or an assertion service — and that is a decision, not an implementation detail.
+
+  **Not closed by TKT-201, and deliberately so:** that ticket added an operation to an existing
+  authenticated seam and would have had to invent a credential design to do better. The exposure is
+  unchanged by it — the read exposes the same tenant's data the refund already moves money in — and
+  `organizers` still holds one row, which is exactly what made the catalog version easy to leave
+  open too. Whoever needs a second organizer needs this first.
 - **Anything already inside the Compose network** can address the back-office container directly and
   forge `X-Forwarded-*`, or address catalog directly and skip the gateway entirely.
 - **Anyone holding `INTERNAL_SERVICE_TOKEN`** already has every service's internal surface; nothing
