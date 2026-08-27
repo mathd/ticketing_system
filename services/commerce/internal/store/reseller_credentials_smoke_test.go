@@ -245,3 +245,133 @@ func TestAReplacementIsIssuedWhileTheOriginalStillWorks(t *testing.T) {
 		t.Fatalf("the replacement stopped working when its predecessor was revoked: %v", err)
 	}
 }
+
+// The operator's listing answers for ONE organizer, and the failure it must catch
+// is an EXTRA row rather than a missing one (TKT-276).
+//
+// That decides the fixture: a cross-organizer leak is invisible to a fixture
+// holding a single organizer, because every row it could return is a row that
+// belongs in the answer. So two organizers are seeded, each with credentials, and
+// the assertion is on the exact set of ids — not on a count, and not on "every
+// returned row belongs to A", which a query returning a strict subset would also
+// satisfy.
+//
+// At the store tier because the scope IS the WHERE clause, per this file's header.
+// Delete `WHERE organizer_id = $1` from ListResellerCredentials and THIS test goes
+// red with three rows instead of two.
+//
+// Revoked rows are included on purpose: the question an operator asks after a leak
+// is "which credential did we revoke, and when", so a listing that hid them would
+// answer the wrong question. The test pins that too, in both directions.
+func TestListResellerCredentialsIsScopedToOneOrganizerAndKeepsRevokedRows(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	orgA, orgB := uuid.New(), uuid.New()
+	resellerA, resellerB := uuid.New(), uuid.New()
+
+	// A foreign row seeded BEFORE org A's, so both created_at directions carry a
+	// neighbour. Without it every foreign row is newer than every row in the answer,
+	// and a predicate leaking only OLDER foreign rows would be unrepresentable
+	// (ai-review pass 2) — the same blind spot as the live-only fixture one pass
+	// earlier, along a different axis.
+	neighbourOldest, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other-0", "Other org oldest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	live, _, err := EnrolResellerCredential(ctx, db, orgA, resellerA, "reseller-acme", "ACME live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, _, err := EnrolResellerCredential(ctx, db, orgA, resellerA, "reseller-acme-2", "ACME retired")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The neighbours, and there are TWO of them for a reason that a first version of
+	// this test got wrong (ai-review). Seeding only a LIVE neighbour makes a whole
+	// class of scope defect unrepresentable: a predicate like
+	// `WHERE organizer_id = $1 OR revoked_at IS NOT NULL` leaks every revoked
+	// credential in the table across every tenant, and this test stayed GREEN under
+	// exactly that mutation — its only cross-organizer row was live, so there was no
+	// revoked foreign row for the leak to return. The fixture must be able to
+	// represent the leak on BOTH sides of the revoked/live split, or it is only
+	// testing the half it happens to seed.
+	neighbourLive, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other", "Other org live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighbourRetired, _, err := EnrolResellerCredential(ctx, db, orgB, resellerB, "reseller-other-2", "Other org retired")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeResellerCredential(ctx, db, retired.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RevokeResellerCredential(ctx, db, neighbourRetired.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ListResellerCredentials(ctx, db, orgA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := make(map[uuid.UUID]ResellerCredential, len(got))
+	for _, c := range got {
+		switch c.ID {
+		case neighbourLive.ID:
+			t.Fatal("the listing returned another organizer's LIVE credential: the scope predicate is gone")
+		case neighbourRetired.ID:
+			t.Fatal("the listing returned another organizer's REVOKED credential: the scope predicate does not hold for revoked rows")
+		case neighbourOldest.ID:
+			t.Fatal("the listing returned another organizer's OLDER credential: the scope predicate does not hold across created_at")
+		}
+		byID[c.ID] = c
+	}
+	if len(got) != 2 {
+		t.Fatalf("listing returned %d credentials, want exactly the 2 belonging to this organizer: %+v", len(got), got)
+	}
+	if _, ok := byID[live.ID]; !ok {
+		t.Fatal("the live credential is missing from its own organizer's listing")
+	}
+	retiredRow, ok := byID[retired.ID]
+	if !ok {
+		t.Fatal("the revoked credential is missing: an operator reconciling after a leak needs to see it")
+	}
+
+	// Revoked state is what tells an operator whether a credential still sells.
+	if retiredRow.RevokedAt == nil {
+		t.Fatal("the revoked credential lists a nil revoked_at, so it reads as live")
+	}
+	if liveRow := byID[live.ID]; liveRow.RevokedAt != nil {
+		t.Fatalf("the live credential lists revoked_at %v, so it reads as retired", *liveRow.RevokedAt)
+	}
+	// The scope the credential carries must be the scope asked for.
+	for _, c := range got {
+		if c.OrganizerID != orgA {
+			t.Fatalf("credential %s carries organizer %s, want %s", c.ID, c.OrganizerID, orgA)
+		}
+	}
+
+	// NEWEST FIRST, and this is a contract rather than a cosmetic detail: the smoke
+	// path takes the FIRST row for a reseller id (`head -1`) as the credential it just
+	// enrolled, so an ordering regression would hand it an older row. Nothing else
+	// pinned `ORDER BY created_at DESC` — reversing or deleting it survived every
+	// other assertion here, because membership and count do not depend on order
+	// (ai-review pass 2).
+	if len(got) >= 2 {
+		for i := 1; i < len(got); i++ {
+			if got[i].CreatedAt.After(got[i-1].CreatedAt) {
+				t.Fatalf("listing is not newest-first: row %d (%s) was created after row %d (%s); "+
+					"the smoke path's head -1 would select an older credential",
+					i, got[i].CreatedAt, i-1, got[i-1].CreatedAt)
+			}
+		}
+		// The seeded order is known, so assert the actual expected row is first rather
+		// than only that the sequence is monotonic — a query returning one row would
+		// satisfy monotonicity vacuously.
+		if got[0].ID != retired.ID {
+			t.Fatalf("newest credential first: got %s, want the most recently enrolled %s", got[0].ID, retired.ID)
+		}
+	}
+}

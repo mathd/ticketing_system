@@ -324,6 +324,57 @@ if [ -z "$SMOKE_PARTNER_TOKEN" ]; then
 fi
 export SMOKE_PARTNER_TOKEN SMOKE_PARTNER_CHANNEL SMOKE_PARTNER_RESELLER_ID
 
+# TKT-276: the operator path end to end, through the REAL CLI — enrol, list, take the
+# id from the listing, revoke it, and see the revocation in a re-list. That id round
+# trip is the point: revoke-reseller takes a credential id, and before list-resellers
+# there was no supported way to obtain one after the one-time token print.
+#
+# A THROWAWAY credential, deliberately not the one above: SMOKE_PARTNER_TOKEN is
+# consumed by four downstream suites (partner_reserve, partner_api,
+# channel_registry_lookup), and revoking it here would 401 all of them.
+SMOKE_THROWAWAY_RESELLER_ID="00000000-0000-0000-0000-000000000276"
+SMOKE_THROWAWAY_TOKEN=$(compose exec -T commerce /app enrol-reseller \
+  00000000-0000-0000-0000-000000000001 "$SMOKE_THROWAWAY_RESELLER_ID" \
+  "reseller-smoke-revoke" "smoke throwaway" 2>/dev/null | tr -d '\r')
+if [ -z "$SMOKE_THROWAWAY_TOKEN" ]; then
+  echo "smoke: could not enrol the throwaway reseller credential" >&2
+  exit 1
+fi
+SMOKE_RESELLER_LISTING=$(compose exec -T commerce /app list-resellers \
+  00000000-0000-0000-0000-000000000001 2>/dev/null | tr -d '\r')
+# Assert the listing found the row BEFORE asserting the token is absent from it. An
+# empty or failed listing trivially satisfies "the token does not appear", so without
+# this the redaction check would pass while proving nothing.
+SMOKE_THROWAWAY_CRED_ID=$(printf '%s\n' "$SMOKE_RESELLER_LISTING" \
+  | grep " reseller_id=$SMOKE_THROWAWAY_RESELLER_ID " | sed -n 's/^id=\([^ ]*\).*/\1/p' | head -1)
+if [ -z "$SMOKE_THROWAWAY_CRED_ID" ]; then
+  echo "smoke: list-resellers did not list the credential just enrolled — the operator has no path from enrol to revoke" >&2
+  exit 1
+fi
+# The listing must never carry token material. It selects no token column, so this
+# asserts that property at the boundary the value would actually cross on its way out.
+if printf '%s\n' "$SMOKE_RESELLER_LISTING" | grep -qF "$SMOKE_THROWAWAY_TOKEN"; then
+  echo "smoke: list-resellers printed the credential token" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$SMOKE_RESELLER_LISTING" | grep -q "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=<none>"; then
+  echo "smoke: a live credential must list revoked_at=<none> before it is revoked" >&2
+  exit 1
+fi
+compose exec -T commerce /app revoke-reseller "$SMOKE_THROWAWAY_CRED_ID" >/dev/null 2>&1 || {
+  echo "smoke: revoke-reseller refused the id taken from list-resellers" >&2; exit 1; }
+# Anchored at line start, and asserted POSITIVELY. Two reasons, both of which make
+# an unanchored `grep ... | grep -qv` a check that can pass while the row is live:
+# `id=<uuid> ` is also a substring of `reseller_id=<uuid> `, so the match can select a
+# second row; and `grep -v` over several lines succeeds when ANY line lacks the pattern,
+# so a neighbouring revoked row would satisfy it. Match the one row, require a real
+# timestamp in revoked_at.
+if ! compose exec -T commerce /app list-resellers 00000000-0000-0000-0000-000000000001 2>/dev/null \
+  | tr -d '\r' | grep -Eq "^id=$SMOKE_THROWAWAY_CRED_ID .*revoked_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"; then
+  echo "smoke: the revoked credential still lists revoked_at=<none>, so an operator cannot see the revocation" >&2
+  exit 1
+fi
+
 cd "$ROOT/smoke"
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
