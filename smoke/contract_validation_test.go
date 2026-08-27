@@ -225,6 +225,14 @@ func TestGatewayDeniesGenericInternalRoutes(t *testing.T) {
 		wantBody string
 	}{
 		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001", byGateway},
+		// TKT-155 moved price resolution onto catalog's internal surface. Both
+		// halves are asserted, and they are different controls: the new path is
+		// refused at the EDGE, while the old public path is refused by catalog's
+		// own contract because the operation no longer exists there. The second is
+		// the one that proves the exposure is closed rather than merely relocated
+		// — same shape as the retired inventory transitions below.
+		{http.MethodGet, "/api/catalog/internal/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution", byGateway},
+		{http.MethodGet, "/api/catalog/ticket-types/00000000-0000-0000-0000-000000000001/price-resolution", byServiceContract},
 		{http.MethodGet, "/api/commerce/internal/buyers/00000000-0000-0000-0000-000000000001/delivery-email", byGateway},
 		{http.MethodPost, "/api/payments/internal/facts", byGateway},
 		{http.MethodPost, "/api/inventory/internal/slots/00000000-0000-0000-0000-000000000001/capacity-adjustments", byGateway},
