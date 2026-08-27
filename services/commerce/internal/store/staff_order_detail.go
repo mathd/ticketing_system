@@ -92,35 +92,45 @@ type StaffOrderDetail struct {
 // staff member what has already happened to an order before they decide what to do next,
 // and the two halves disagreeing is precisely the confusion it was built to end. So: one
 // REPEATABLE READ transaction, read-only, and both queries see the same instant.
-// betweenStaffOrderDetailQueries is a test-only seam, nil in production.
+// staffOrderDetailProbe is a test-only seam, nil in production, modelled on payments'
+// verifyProbe (TKT-254) — the same problem, already solved and reviewed in this repo.
 //
-// It exists because the consistency this function promises cannot be tested any other
-// way. The failure it guards is a competing transaction committing BETWEEN the two
-// queries, and that interleave is not reachable from outside: both queries complete in
-// microseconds, so a test that merely runs them concurrently observes the commit before
-// both or after both and never the tear. A plain SELECT cannot be blocked with a row lock
-// either — MVCC readers do not wait — so there is no way to stall the reader from the
-// database side.
+// It exists because the consistency this function promises cannot be tested from outside.
+// The failure it guards is a competing transaction committing BETWEEN the two queries, and
+// both complete in microseconds, so a test that merely runs them concurrently sees the
+// commit before both or after both and never the tear. A plain SELECT cannot be stalled
+// with a row lock either — MVCC readers do not wait.
 //
-// Deliberately BETWEEN the queries rather than at the start: that is the only instant at
-// which the two isolation levels differ. Under one snapshot the second query still sees
-// the first query's instant; under two autocommit reads it sees a newer one.
+// EACH CALLBACK CARRIES WHAT ITS QUERY ACTUALLY READ. That is the whole design, and three
+// weaker versions were executed and passed while the guarantee was gone (ai-review passes
+// 2-4):
 //
-// IT REPORTS WHAT THE CODE OBSERVED, and takes the transaction rather than nothing, which
-// is the difference between a test about this function and a test about its
-// instrumentation (ai-review pass 3). A bare `func()` proves only that a callback ran, so
-// a COORDINATED reversion passes it: delete the transaction AND move the call below both
-// queries, and a test asserting "consistent, and pre-commit" sees two pre-commit values
-// and goes green while the mechanism is gone.
+//   - eight goroutines racing a commit: probabilistic, and green on a fast database.
+//   - a bare `func()`: proves a callback ran. Delete the transaction AND move the call
+//     below both queries — green.
+//   - `func(tx *sql.Tx)` with the TEST querying through the handle: the probe became the
+//     transaction's FIRST statement whenever the counters query was reverted to `db`, so
+//     it ESTABLISHED the snapshot it claimed to verify. Reverting only that query — green.
 //
-// Handing it `tx` closes that. The seam re-reads the counters THROUGH THE SAME HANDLE the
-// second query will use, so the value it reports is the one the code is about to read
-// with — not a fact about the probe. Delete the transaction and the argument is nil and
-// the test says so; move the call below both queries and the reported value no longer
-// precedes the refund read, so the ordering assertion fails.
-var betweenStaffOrderDetailQueries func(tx *sql.Tx)
+// Passing the VALUES closes all three, because they are produced by the statements under
+// test rather than beside them. A test can then assert that what the refunds query saw
+// agrees with what the counters query saw, and no edit to the instrumentation can fake
+// that agreement — only reading both from one snapshot can.
+type staffOrderDetailProbe struct {
+	// afterCounters carries the order's refund position as the FIRST query read it.
+	afterCounters func(refundedAmount int64, refundStatus string)
+	// afterRefunds carries the refund rows as the SECOND query read them.
+	afterRefunds func(refunds []StaffOrderRefund)
+}
 
 func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID) (StaffOrderDetail, error) {
+	return readStaffOrderDetail(ctx, db, org, order, nil)
+}
+
+// readStaffOrderDetail is ReadStaffOrderDetail with the probe seam above. Production
+// passes nil and pays nothing; only TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds
+// passes a probe, because the interleaving it needs cannot be constructed from outside.
+func readStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID, probe *staffOrderDetailProbe) (StaffOrderDetail, error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return StaffOrderDetail{}, err
@@ -149,8 +159,8 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 	d.Totals.PassedOnFees = d.Line.TotalAmount - d.Line.FaceValue
 	d.Totals.Currency = d.Line.Currency
 
-	if betweenStaffOrderDetailQueries != nil {
-		betweenStaffOrderDetailQueries(tx)
+	if probe != nil && probe.afterCounters != nil {
+		probe.afterCounters(d.Totals.RefundedAmount, d.Totals.RefundStatus)
 	}
 
 	// Scoped by organizer here TOO, rather than trusting that the order was already
@@ -183,6 +193,9 @@ func ReadStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID)
 	}
 	if err := rows.Err(); err != nil {
 		return StaffOrderDetail{}, err
+	}
+	if probe != nil && probe.afterRefunds != nil {
+		probe.afterRefunds(d.Refunds)
 	}
 	return d, nil
 }

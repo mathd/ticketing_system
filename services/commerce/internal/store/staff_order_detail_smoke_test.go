@@ -323,39 +323,54 @@ func TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds(t *testing.T) {
 	// and waits; the completion commits; the reader proceeds to its second query. Under one
 	// snapshot the second query still sees the first's instant. Under two autocommit reads
 	// it sees a newer one — and the response reports a state the database never held.
+	// EACH QUERY REPORTS WHAT IT READ, on payments' verifyProbe pattern (TKT-254) — the
+	// same problem, already solved and reviewed in this repo. Three weaker seams were
+	// executed first and all three passed while the guarantee was gone; the shapes and why
+	// are on staffOrderDetailProbe. The short version: a probe that reports the DATA cannot
+	// be satisfied by moving or rewriting the probe, because the values come from the
+	// statements under test.
 	snapshotTaken := make(chan struct{})
 	commitDone := make(chan struct{})
-	// What the CODE observed, captured through the handle it will use for its second query
-	// — not a note that the probe fired (ai-review pass 3). A bare callback is satisfied by
-	// a COORDINATED reversion: delete the transaction AND move the call below both queries,
-	// and every assertion on the returned value still passes while the mechanism is gone.
-	// Reading the counters through `tx` here is what makes that impossible.
-	var seamAmount int64
-	var seamStatus string
-	var seamErr error
-	var seamSawTx bool
-	betweenStaffOrderDetailQueries = func(tx *sql.Tx) {
-		seamSawTx = tx != nil
-		if tx != nil {
-			seamErr = tx.QueryRowContext(ctx,
-				`SELECT refunded_amount, refund_status FROM orders WHERE id=$1`, order).
-				Scan(&seamAmount, &seamStatus)
-		}
-		close(snapshotTaken)
-		<-commitDone
-	}
-	t.Cleanup(func() { betweenStaffOrderDetailQueries = nil })
-	// Released on EVERY exit path, once. Without this a t.Fatal after the seam has fired
-	// leaves the reader blocked inside production code holding a transaction and a
-	// connection; clearing the variable in Cleanup cannot release that invocation.
+	readerExited := make(chan struct{})
+
+	var countersAmount int64
+	var countersStatus string
+	var countersFired bool
+	var refundsSeen []StaffOrderRefund
+	var refundsFired bool
+	// Whether the competing commit had already been released when the refunds query ran.
+	// It must have been: that is the window this test exists to open.
+	var refundsSawCommitAlreadyDone bool
 	commitReleased := false
+
+	probe := &staffOrderDetailProbe{
+		afterCounters: func(amount int64, status string) {
+			countersFired, countersAmount, countersStatus = true, amount, status
+			// The window: the competing completion commits while the reader is parked
+			// here, so it lands strictly between the two queries.
+			close(snapshotTaken)
+			<-commitDone
+		},
+		afterRefunds: func(refunds []StaffOrderRefund) {
+			refundsFired = true
+			refundsSawCommitAlreadyDone = commitReleased
+			refundsSeen = append([]StaffOrderRefund(nil), refunds...)
+		},
+	}
+
+	// Released once on EVERY exit path, and the reader is JOINED before teardown. Without
+	// the join, a Fatal after the seam fires lets cleanup cancel the context and close the
+	// database while the reader is still using both (ai-review pass 4).
 	releaseReader := func() {
 		if !commitReleased {
 			commitReleased = true
 			close(commitDone)
 		}
 	}
-	t.Cleanup(releaseReader)
+	t.Cleanup(func() {
+		releaseReader()
+		<-readerExited
+	})
 
 	type result struct {
 		d   StaffOrderDetail
@@ -363,17 +378,14 @@ func TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		d, err := ReadStaffOrderDetail(ctx, db, org, order)
+		defer close(readerExited)
+		d, err := readStaffOrderDetail(ctx, db, org, order, probe)
 		done <- result{d, err}
 	}()
 
-	// The reader has run its counters query and is parked. Commit the completion now, so it
-	// lands strictly between the two queries.
-	//
-	// Selected against the reader RETURNING, not just waited on: if its first query errors
-	// the seam never fires, and a bare `<-snapshotTaken` would block until the context
-	// expires and then report a timeout — hiding the real error behind a hang. A test that
-	// fails slowly and says the wrong thing is barely better than one that does not fail.
+	// Selected against the reader RETURNING: if its first query errors the seam never
+	// fires, and a bare receive would block until the context expired and then report a
+	// timeout, hiding the real error behind a hang.
 	select {
 	case <-snapshotTaken:
 	case r := <-done:
@@ -384,7 +396,7 @@ func TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds(t *testing.T) {
 			"the interleave this test needs did not happen, so a pass would prove nothing")
 	}
 	if err := tx.Commit(); err != nil {
-		t.Fatal(err) // releaseReader runs via Cleanup, so the reader is not stranded.
+		t.Fatal(err) // Cleanup releases and joins the reader.
 	}
 	releaseReader()
 
@@ -392,53 +404,56 @@ func TestStaffOrderDetailReadsOneSnapshotOfCountersAndRefunds(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if len(r.d.Refunds) != 1 {
-		t.Fatalf("refunds = %d want 1", len(r.d.Refunds))
+
+	// Preconditions. Each guards a way this test could pass while observing nothing, which
+	// is the failure mode this test is itself about.
+	if !countersFired || !refundsFired {
+		t.Fatalf("probes did not both fire (counters=%v refunds=%v); the seam did not run "+
+			"where this test needs it", countersFired, refundsFired)
 	}
-	// THE INVARIANT, without naming the implementation: the counters and the refund rows
-	// describe the same instant. One transaction advances both, so the completion is
-	// visible in BOTH or in NEITHER — a settled refund beside counters that have not moved
-	// is a state the database never held.
-	settledRow := r.d.Refunds[0].Status == "completed"
-	countersMoved := r.d.Totals.RefundedAmount == 1250 && r.d.Totals.RefundStatus == "partial"
-	if settledRow != countersMoved {
-		t.Fatalf("TORN READ: refund row settled=%v but counters moved=%v "+
-			"(status=%q, refunded_amount=%d, refund_status=%q). The completion committed "+
-			"between the two queries, and only a single snapshot can refuse to show half of it.",
-			settledRow, countersMoved, r.d.Refunds[0].Status,
-			r.d.Totals.RefundedAmount, r.d.Totals.RefundStatus)
+	if len(refundsSeen) != 1 {
+		t.Fatalf("the refunds query read %d rows, want 1; the fixture did not construct "+
+			"the race", len(refundsSeen))
 	}
-	// And the snapshot must be the PRE-commit one specifically. Without this a read that
-	// somehow saw both halves of the commit would also pass — consistent, but not the
-	// instant this reader started at, and the assertion would be about consistency in
-	// general rather than about this snapshot.
-	if settledRow {
-		t.Errorf("the read observed the completion that committed AFTER its snapshot was " +
-			"taken; a repeatable-read reader must see the instant it started at")
+	// THE WINDOW WAS ACTUALLY OPEN. Without this the test passes vacuously whenever the
+	// barrier stops being between the two queries: the completion then commits before both
+	// or after both, nothing is torn, and a consistent read proves nothing about snapshots.
+	// Moving afterCounters below the refunds query is exactly that edit, and it is caught
+	// here rather than by the consistency assertion, which it would satisfy honestly.
+	if !refundsSawCommitAlreadyDone {
+		t.Fatal("the refunds query ran BEFORE the competing completion was released, so the " +
+			"commit never landed between the two queries; this run exercised no window and " +
+			"a pass would prove nothing about reading one snapshot")
 	}
 
-	// THE ASSERTIONS THAT DEFEAT A COORDINATED REVERSION. Everything above is about the
-	// RETURNED value; these are about what the CODE observed, through the handle it used.
-	if seamErr != nil {
-		t.Fatalf("re-reading the counters through the read's own transaction: %v", seamErr)
+	// THE INVARIANT, stated without naming the implementation: the two queries describe the
+	// same instant. One transaction advances the counters and the refund row together, so
+	// the completion is visible to BOTH queries or to NEITHER — a settled row read by the
+	// second query beside unmoved counters read by the first is a state the database never
+	// held.
+	//
+	// Asserted on what each QUERY read, not on the returned struct: that is what a
+	// coordinated reversion cannot fake.
+	settledRow := refundsSeen[0].Status == "completed"
+	countersMoved := countersAmount == 1250 && countersStatus == "partial"
+	if settledRow != countersMoved {
+		t.Fatalf("TORN READ: the refunds query saw settled=%v (status=%q) while the counters "+
+			"query saw moved=%v (refunded_amount=%d, refund_status=%q). The completion "+
+			"committed between them, and only one snapshot can refuse to show half of it.",
+			settledRow, refundsSeen[0].Status, countersMoved, countersAmount, countersStatus)
 	}
-	if !seamSawTx {
-		t.Fatal("the read reached its second query with no transaction: its two queries run " +
-			"in separate snapshots, whatever the returned values happen to show")
+	// And specifically the PRE-commit instant: the reader started before the commit, so a
+	// repeatable-read snapshot must still show the state it started at.
+	if settledRow || countersMoved {
+		t.Errorf("the read observed a completion that committed AFTER its snapshot was taken "+
+			"(row settled=%v, counters moved=%v)", settledRow, countersMoved)
 	}
-	// The handle the code is about to read refunds with still sees the PRE-commit counters.
-	// Stated where it cannot be satisfied by moving the probe: had this call been made
-	// after both queries, the commit would already be visible here.
-	if seamAmount != 0 || seamStatus != "none" {
-		t.Errorf("the read's own transaction saw refunded_amount=%d refund_status=%q between "+
-			"its queries, but the completion had not committed at that point; the handle is "+
-			"not holding one snapshot", seamAmount, seamStatus)
+	// The returned response is the same read, so it cannot disagree with either query.
+	if r.d.Totals.RefundedAmount != countersAmount || r.d.Totals.RefundStatus != countersStatus {
+		t.Errorf("the response reports refunded_amount=%d/%q but the counters query read "+
+			"%d/%q", r.d.Totals.RefundedAmount, r.d.Totals.RefundStatus, countersAmount, countersStatus)
 	}
-	// And the response agrees with what the handle reported, so neither can be right by
-	// accident.
-	if r.d.Totals.RefundedAmount != seamAmount || r.d.Totals.RefundStatus != seamStatus {
-		t.Errorf("the response reports refunded_amount=%d/%q but the read's own transaction "+
-			"observed %d/%q; those must be the same read",
-			r.d.Totals.RefundedAmount, r.d.Totals.RefundStatus, seamAmount, seamStatus)
+	if len(r.d.Refunds) != 1 || r.d.Refunds[0].Status != refundsSeen[0].Status {
+		t.Errorf("the response's refund rows disagree with what the refunds query read")
 	}
 }
