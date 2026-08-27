@@ -1,89 +1,124 @@
-# Local tracker — repo-contained backend (no Jira)
+# Local tracker — vault-backed backend (no Jira)
 
-A first-class **backend**, not a demo hack: tickets are JSON files in the repo, rendered by a live
-HTML board. Use it for projects without Jira (internal tools, small mandates, demos). Client
-mandates with Jira keep the Jira backend; same skill, same rules, same board — only the storage
-adapter changes.
+A first-class **backend**, not a demo hack: tickets are notes in a Fast Note Sync (FNS) vault,
+rendered by a live HTML board. Use it for projects without Jira (internal tools, small mandates,
+demos). Client mandates with Jira keep the Jira backend; same skill, same rules, same board — only
+the storage adapter changes.
 
 ## When
 `config.tracker == "local"` in `.claude/sdlc.config.json`, the user asks for the local/fake
 board or a demo, or Jira isn't available yet. Say which backend you're driving at the start of a run.
 
-## Architecture — state lives on a dedicated branch
+## Architecture — state lives in an FNS vault
 
-**Ticket state is metadata about the work, not the work.** Like Jira, it must be orthogonal to
-feature branches:
+**Ticket state is metadata about the work, not the work.** Like Jira, it is orthogonal to feature
+branches — it simply lives outside git entirely now.
 
-- **Tooling on the default branch:** `.sdlc/{config.json, board.html, server.py}`.
-- **State on the `sdlc-state` branch (only):** `.sdlc/tickets/<KEY>.json` — one file per ticket.
-  Feature branches and PRs never contain ticket-state changes.
-- **Why:** a ticket's lifecycle straddles its own PR (Backlog→Planning happen before the branch,
-  PO Review→Done after the merge), the default branch is protected (every label swap would need a
-  PR), and a single-writer state branch makes merge conflicts impossible by construction.
-- Every transition = one commit on `sdlc-state` (`chore(<KEY>): Building → PO Review`) — a free
-  audit trail; the `kind=metrics` durations come from this log (`git log -- .sdlc/tickets/KEY.json`).
-- **Never merge `sdlc-state` into the default branch.** Push it to share state with the team.
-- **State commits never trigger CI:** auto-commits carry `[skip ci]` (honored by GitHub Actions,
-  GitLab, CircleCI). Belt-and-suspenders for new repos: scope workflow triggers to the default
-  branch (`on: push: branches: [main]`) rather than bare `on: push`.
+- **Tooling:** its own repo, `~/sources/sdlc-board` (`board.html`, `server.py`, `vault.py`,
+  `fnsclient.py`, `translog.py`, `boardconfig.py`). **Not** in this repo, and no longer under
+  `.sdlc/`.
+- **State in the vault:** `tickets/<KEY>.md` — one note per ticket, frontmatter plus body.
+  `archive/<KEY>.md` once archived. Feature branches and PRs never contain ticket state.
+- **Timing:** `_log/transitions.md` in the vault, one append-only line per transition. This is the
+  only timing source; `kind=metrics` durations come from it, **not** from `git log` any more.
+- **Board config:** `_board/config.md` in the vault carries the status list, transversal statuses
+  and WIP limits. The board renders its columns from it, so the skill's rules and the board's
+  columns cannot drift.
 
-`server.py` self-bootstraps everything with **plain `git worktree`** (no extra tooling): on start it
-creates the `sdlc-state` branch (tracking origin's if present) and a worktree at
-`../<repo>.sdlc-state`, then serves and writes tickets there.
+> **This replaced a git-backed board** (state on an `sdlc-state` branch, `.sdlc/server.py`, timing
+> from `git log`). If you find instructions describing that, they are stale. `sdlc-state` still
+> exists as a **read-only archive**, refreshed by a scheduled `vault.py pull`; nothing in the live
+> path reads it, and you must never write to it.
 
 ```
-python3 .sdlc/server.py      # background; board on http://localhost:8787/board.html
+cd ~/sources/sdlc-board
+FNS_API=http://10.99.0.31:9000 FNS_VAULT=sdlc FNS_CLIENT=sdlcBoard \
+  FNS_TOKEN=$(cat ~/.config/sdlc-board/token) python3 server.py 8787
+# board on http://localhost:8787/board.html
 ```
 
-Endpoints: `GET /board` (assembled config + tickets, each with `_rev`) · `POST /ticket` (upsert one
-ticket file, auto-committed) · `POST /archive` (move all Done tickets to `.sdlc/tickets/archive/`,
-one commit — no UI over the archive; read/grep the files directly). Requires git ≥ 2.5.
+Endpoints: `GET /board` (config + tickets, each with `_since`) · `GET /history?key=K` ·
+`GET /metrics` · `GET /vaults` · `POST /ticket` (compare-and-swap one ticket) ·
+`POST /archive` (move Done tickets to `archive/`; `?before=YYYY-MM-DD` for a cutoff).
 
-**Optimistic concurrency:** every ticket from `GET /board` carries `_rev` (content hash). POST the
-object back *with* `_rev`: the server answers **409** if the ticket changed since your read — re-fetch
-`/board`, re-apply your change, retry. Always read-then-write; never POST from a stale copy. If bootstrap fails with "already checked out", someone has the
-state branch checked out in another worktree — point them back to their normal branch.
+All routes take an optional `?vault=<name>`; omit it for the default vault.
+
+**Optimistic concurrency — `_rev` is the status you are moving FROM.** It is no longer a content
+hash. The server re-reads the note, checks that field still holds `_rev`, and writes; it answers
+**409** with both values if someone moved the ticket first — re-fetch `/board`, re-apply, retry.
+`_rev` is **required**: a write without it is refused with 400, precisely so a stale write cannot
+silently clobber. Always read-then-write.
 
 ## Mutating tickets — one write path
 
-**Prefer `POST /ticket`** (curl) — validation + atomic write + auto-commit in one step:
+**`POST /ticket`** is the only write path for a ticket that already exists (creation is different —
+see § Substrate swap). Send **only the fields you are changing** plus `key`, `_rev` **and `status`** —
+not the whole ticket object. `status` is required on every write even when it is not changing: omit it
+and the server answers `400 status must be a string`, which reads like a payload bug rather than a
+missing field.
 
 ```bash
 curl -s -X POST http://localhost:8787/ticket -H 'Content-Type: application/json' -d @- <<'EOF'
-{ ...full ticket object... }
+{"key":"TKT-42","status":"Planning","_rev":"Ready","role":"implement","model":"claude-opus-5","effort":"high"}
 EOF
 ```
 
-**Markdown bodies are shell-hostile.** Comment bodies full of backticks/`$( )` get command-substituted
-the moment they pass through a double-quoted shell string (e.g. inline `python3 -c "…"`) — the write
-"succeeds" with a corrupted body. Build the payload in a **script file** (python via `urllib`, or a
-`.json` file POSTed with `curl -d @file`); the single-quoted `<<'EOF'` heredoc above is safe, but only
-as long as the JSON itself is written literally, not assembled from interpolated shell variables.
+- **Writable fields:** `status`, `labels`, `assignee`, `pr`, `classification`, `parent`, `type`.
+  Anything else you send is ignored — deliberately. `summary`, `description`, `readiness` and
+  `context` are authored in Obsidian or at shaping time, and a board write must never carry a stale
+  copy of them back over a fresher one.
+- **Comments are append-only.** Send `comments: [{stage,kind,body}]` with the new comment; the
+  server merges by identity, so an existing comment is never duplicated and never deleted. You do
+  not need to send the existing ones.
+- **`role` / `model` / `effort`** identify the actor and land in `_log/transitions.md`. Set
+  `role` to your pipeline role (`plan`, `implement`, `ai-review`, …); the browser sends
+  `role=human`. The server cannot infer these — if you omit them the transition is logged as
+  `human`.
+- **Status must exist** in the vault's `_board/config.md`. A typo is refused with 400 and the
+  allowed list, rather than persisting into a state no column renders.
 
-Fallback (server down): edit `../<repo>.sdlc-state/.sdlc/tickets/<KEY>.json` directly, then
-`git -C ../<repo>.sdlc-state add -A && git -C ../<repo>.sdlc-state commit -m "chore(<KEY>): <what>"`.
-Never edit ticket files in the main checkout — they don't exist there.
+**Markdown bodies are shell-hostile.** Comment bodies full of backticks/`$( )` get
+command-substituted the moment they pass through a double-quoted shell string (e.g. inline
+`python3 -c "…"`) — the write "succeeds" with a corrupted body. Build the payload in a **script
+file** (python via `urllib`, or a `.json` file POSTed with `curl -d @file`); the single-quoted
+`<<'EOF'` heredoc above is safe, but only as long as the JSON itself is written literally, not
+assembled from interpolated shell variables.
+
+**Fallback (server down):** use `vault.py` against the vault directly, or edit the note in
+Obsidian. Never write to the `sdlc-state` worktree — it is a generated archive, and a scheduled
+pull will overwrite whatever you put there.
+
+```sh
+cd ~/sources/sdlc-board
+python3 vault.py pull            # refresh the git archive from the vault (read-only direction)
+python3 vault.py log KEY FROM TO --role human   # repair a transition line the server failed to write
+```
+
+`vault.py log` is a **repair tool only**. Agents must not use it: you set `role`/`model`/`effort` on
+`POST /ticket` and the server logs the transition for you, so appending separately double-logs it.
 
 ## Substrate swap
 Same labels, same markers, same invariants, same gates as the Jira backend — only storage changes.
 
 | Jira backend | Local backend |
 |---|---|
-| `createJiraIssue` | POST a new ticket — `{key,type,summary,status:"Backlog",labels:[],assignee:null,pr:null,comments:[]}`; next key = max existing + 1 |
-| `editJiraIssue` (labels/assignee) | POST the ticket with edited fields (keep the one-pipeline-label invariant) |
-| `transitionJiraIssue` | POST with new `status` |
-| `addCommentToJiraIssue` | POST with `{stage,kind,body}` appended to `comments` (append-only) |
-| `createIssueLink` | `links: [{type:"blocks", key}]` on the ticket |
-| entity-property context-mémo | a `context` object on the ticket (same payload) |
+| `createJiraIssue` | **Not `POST /ticket`** — that is a compare-and-swap over an existing note and refuses one that does not exist (`cannot read tickets/<KEY>.md`), with or without `_rev`. Create the note directly, reusing the board's own renderer so the format cannot drift: import `note_from_ticket` + `put_note` from `vault.py` (env: `FNS_API`, `FNS_VAULT`, `FNS_CLIENT`, `FNS_TOKEN`), render `{key,type,summary,description,status:"Backlog",labels:[],assignee:null,pr:null,comments:[]}` and `put_note(f"tickets/{key}.md", …)`. Next key = max existing + 1. Then drive it with `POST /ticket` as usual. (TKT-209 needed this for a follow-up ticket; the old row said to POST it and that does not work.) |
+| `editJiraIssue` (labels/assignee) | POST `{key, _rev, labels}` (keep the one-pipeline-label invariant) |
+| `transitionJiraIssue` | POST `{key, _rev:<current status>, status:<new>}` |
+| `addCommentToJiraIssue` | POST `{key, _rev, comments:[{stage,kind,body}]}` (append-only, merged by identity) |
+| `createIssueLink` | `links: [{type:"blocks", key}]` — authored in the note, not a board write |
+| entity-property context-mémo | a `context` object on the ticket — authored in the note, not a board write |
 | git / gh / codex | **real** — branch, PR, codex review as in the Jira flow (set `pr` on the ticket). In pure demo runs, simulate and narrate |
 
-The board polls `/board` (~1.5s) — every mutation appears live. Drag-and-drop enforces the workflow
-graph and writes via the same `POST /ticket`.
+The board polls `/board` (~1.5s) — every mutation appears live, including one made in Obsidian.
+Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`.
 
 ## Movement
 - **Chat-driven (primary)** — the agent narrates and posts mutations per the skill's rules.
 - **Drag (human gates)** — a human dragging a card = the human transition (Gate 1–4). Drag changes
   **only `status`**; labels and comments remain the agent's job.
+- **Gate buttons** — the ⛔ buttons in the ticket modal do apply the gate's label and comment
+  changes. A drag does not: it moves the status only.
 
 ## The one-ticket run (identical to Jira mode)
 
@@ -110,11 +145,17 @@ graph and writes via the same `POST /ticket`.
 
 ## Rules
 - Same invariants as Jira mode: one pipeline label in flight, stop at `needs:human`, thread = memory.
-- State only on `sdlc-state`; never bundle ticket state into a feature branch or PR.
-- **Reset a demo:** `git -C ../<repo>.sdlc-state revert` or `git -C ../<repo>.sdlc-state reset --hard <sha>`
-  on the state branch — git is the undo, and it never touches code branches.
+- State lives in the vault. Never write ticket state into a feature branch, a PR, or the
+  `sdlc-state` worktree.
+- **Always send `_rev`** and treat a 409 as a real conflict: re-read, re-apply, retry. Never retry
+  by dropping `_rev`.
+- **Reset a demo:** restore the notes from the `sdlc-state` archive with
+  `python3 vault.py migrate --force`, or use Obsidian's file history. Note that `migrate` without
+  `--force` refuses to touch a populated vault, on purpose.
 
 ## Bootstrapping a new project
-Copy `.sdlc/{config.json, board.html, server.py}` into the repo, edit `config.json` (project name,
-statuses, `state.branch`), set `"tracker": "local"` in `.claude/sdlc.config.json`, start the server
-(it creates the state branch + worktree), POST the first tickets.
+Clone `~/sources/sdlc-board` once per machine. Create the project's vault in FNS, add it to the
+API token's vault allowlist, write `_board/config.md` (schema, project name, statuses, transversal,
+wip), set `"tracker": "local"` in `.claude/sdlc.config.json`, start the server, POST the first
+tickets. One board install serves several projects — `?vault=` selects between them and the
+switcher appears once there is more than one.
