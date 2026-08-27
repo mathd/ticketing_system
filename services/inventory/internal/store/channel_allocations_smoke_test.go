@@ -1162,3 +1162,43 @@ func allocationSetsEqual(a, b map[string]int32) bool {
 	}
 	return true
 }
+
+// The refusal must not strand what it refuses (ai-review, [high]).
+//
+// This endpoint ADMITTED seated allocations before TKT-176, and this store is the only
+// writer of channel_allocations. So a pool that already holds legacy rows must still have
+// a way out, or the guard converts a silent divergence into a permanent one: the public
+// availability read keeps subtracting an allocation that the seated claim path ignores —
+// the exact disagreement the refusal exists to end — and nothing short of hand-editing
+// the database can clear it.
+//
+// An empty replace is that way out, and it does not weaken the invariant. The rule is
+// that a seated pool must not CARRY allocations; an empty set satisfies it. Refusing to
+// ADD while allowing to CLEAR moves towards the invariant from either starting state.
+//
+// The empty replace is an ordinary success, so it bumps the revision like any other:
+// a reader holding the old value has read a set that a writer has since replaced.
+func TestAnEmptyReplaceClearsLegacyAllocationsFromASeatedPool(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot, _ := provisionedSeated(t, ctx, st, 10)
+
+	// The legacy state, seeded the only way it can now arise: directly, or by a write
+	// that predates the guard.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_allocations(pool_id, channel_code, cap)
+		VALUES ($1, 'legacy', 4)`, slot); err != nil {
+		t.Fatal(err)
+	}
+	before := currentRevision(t, ctx, st, org, slot)
+
+	if _, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{}, &before); err != nil {
+		t.Fatalf("empty replace on a seated pool: %v; a seated pool holding legacy rows "+
+			"must be repairable through the only writer of the table", err)
+	}
+	if got := allocationRows(t, ctx, st, slot); len(got) != 0 {
+		t.Errorf("allocation set after an empty replace = %v want empty", got)
+	}
+	if after := currentRevision(t, ctx, st, org, slot); after != before+1 {
+		t.Errorf("revision after a successful empty replace = %d want %d", after, before+1)
+	}
+}

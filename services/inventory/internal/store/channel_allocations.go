@@ -234,7 +234,17 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	// and its revision exactly as it found them; a refusal that still burned a revision
 	// would go on to break TKT-250's stale-write protection for every other operator
 	// holding a form on this slot.
-	if kind == "seated" {
+	//
+	// EXCEPT an empty set, which is how an existing one gets REMOVED (ai-review). The
+	// invariant is that a seated pool must not CARRY allocations, and an empty replace
+	// satisfies it rather than violating it. Refusing it would make the guard
+	// unrepairable: the endpoint admitted seated allocations before this change, this
+	// store is the only writer of the table, and a pool holding legacy rows would be
+	// stuck reporting channel-adjusted public availability against a claim path that
+	// ignores the allocation — the exact divergence the refusal exists to end — with no
+	// way to fix it short of hand-editing the database. Refusing to add, while allowing
+	// to clear, is monotonic towards the invariant from either starting state.
+	if kind == "seated" && len(allocs) > 0 {
 		return nil, fmt.Errorf("channel allocations are not supported on seated pools: %w", ErrPoolKindMismatch)
 	}
 	if total > int64(capacity) {
