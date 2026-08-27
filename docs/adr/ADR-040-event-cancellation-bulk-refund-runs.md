@@ -235,12 +235,26 @@ but was not recorded still blocks the seat's return, and a replay resumes it.
 other two flags true. It is **not** reported `refunded`: that would tell an operator money went back to
 a buyer when none did. This is what the three independent flags on `CancellationOutcome` were for.
 
+**Eligibility is NOTHING WAS CAPTURED, not "the face was zero".** `reservations.unit_amount` is the
+FACE value, and `total = face + passed_on` (commerce migration 0014) — so a ticket priced at 0 carrying
+a fixed **passed-on fee** has `unit_amount = 0` and a real, captured `total_amount`. A void that tested
+the face alone would return that order's tickets and seat and **keep the buyer's fee**. Both numbers are
+therefore read under the order row lock, and a void requires both to be zero.
+
+**What such an order does instead — the owner's decision of 2026-08-27.** It is **refused**: by the
+void (money was captured) and by the refund (`ErrRefundNoMoney`, since its unit is 0). It therefore
+reports `failed/no_captured_money` and stays visible. Option 1 of three, and the most reversible: a
+void that returned fees would be a money path, which is precisely what a void exists to avoid, and
+keeping the fees would leave the buyer paying for an event that will not happen. **What a
+comped-with-fees sale should do on cancellation is a real open question and is deliberately not
+answered here** — a narrower, honestly-reported gap is better than reversing it wrongly.
+
 **`no_captured_money` still exists, and now means something narrower.** The branch condition was
-`UnitAmount <= 0`; it is now split. `== 0` is a comped order and is voided. `< 0` is not a comped order
-— it is corrupt data, unreachable through any supported write (`CHECK (unit_amount >= 0)`) — and stays
-`failed/no_captured_money`, because silently voiding it would hide the corruption behind a
-successful-looking reversal. Both branches are asserted, so the split is a decision rather than an
-accident of a comparison operator.
+`UnitAmount <= 0`; it is now `UnitAmount == 0 && TotalAmount == 0` for the void, with everything else
+falling through. Three shapes reach the failure: a zero face with captured fees (above), a negative
+unit amount (corrupt data, unreachable through any supported write), and a genuine no-money order that
+is not comped. Each is asserted, so the split is a decision rather than an accident of a comparison
+operator.
 
 **Access keeps its `refunded` lifecycle event, deliberately.** A void does not introduce a `voided`
 event type. `refunded` is a lifecycle event **type** with a golden canonical form — changing the
@@ -249,6 +263,22 @@ treats `refunded` and `exchanged` as the entitlement-revocation set). Its meanin
 ticket's entitlement was revoked*, which is exactly true of a comped void. **The money distinction
 lives in commerce, where the money is.** The naming mismatch is accepted and recorded here so it reads
 as a decision rather than an oversight.
+
+**A void and an exchange exclude each other, in BOTH directions.** `BindOrderVoid` refuses an order
+that already has an exchange, and `BindOrderExchange` refuses one that already has a void. The second
+half is not a restatement of the first: a void leaves the order `completed` and writes no
+`order_refunds` row, so the exchange path's existing refund-count guard cannot see it. Without it,
+void-then-exchange binds cleanly and the order carries two independent reversals with different
+downstream operation ids — duplicate capacity returns, and an exchange of tickets whose source was
+already voided. Both directions take the same order row lock, so exactly one can win a race.
+
+**A second caller ADOPTS an existing void rather than conflicting with it.** Unlike a refund, a void has
+no parameters to disagree about: its identity is the order and its quantity comes from the reservation.
+Actor and reason are a label on the operation, not part of it. So when staff void an order by hand and
+the event is then cancelled, the run reaches the same id and drives the same operation, keeping the
+first binder's attribution — they are the one who decided to reverse it. Conflicting on attribution
+would defeat the deterministic id entirely: it made a staff-bound void unrepairable by the run that
+held the correct id for its outstanding capacity leg.
 
 **Not covered by this amendment:** a back-office UI for the void (the staff surface is the credentialed
 `/internal/` API), and partial reversal of a comped order — a void is whole-order by construction.

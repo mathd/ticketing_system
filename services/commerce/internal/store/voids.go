@@ -113,12 +113,13 @@ func BindOrderVoid(ctx context.Context, db *sql.DB, in VoidRequest) (OrderVoid, 
 		hold    uuid.UUID
 		soldQty int32
 		unit    int64
+		total   int64
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT o.status, r.hold_id, r.quantity, r.unit_amount
+		SELECT o.status, r.hold_id, r.quantity, r.unit_amount, r.total_amount
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.OrderID, in.OrganizerID).
-		Scan(&status, &hold, &soldQty, &unit); err != nil {
+		Scan(&status, &hold, &soldQty, &unit, &total); err != nil {
 		return OrderVoid{}, err
 	}
 
@@ -129,11 +130,30 @@ func BindOrderVoid(ctx context.Context, db *sql.DB, in VoidRequest) (OrderVoid, 
 		return OrderVoid{}, err
 	}
 	if found {
-		// A reused identity with a different actor/reason is a conflict, not a
-		// silent replay of somebody else's void — same rule as refundFingerprint.
-		if existing.fingerprint != fingerprint {
-			return OrderVoid{}, ErrRefundConflict
-		}
+		// An existing void is ADOPTED, whoever bound it — the second caller drives
+		// the same operation and keeps the FIRST caller's attribution.
+		//
+		// Deliberately unlike BindOrderRefund, which conflicts on a differing
+		// fingerprint, and the difference is a fact about the two operations rather
+		// than an inconsistency. A refund is PARAMETERISED — quantity, and therefore
+		// amount — so two requests under one id can genuinely mean different things
+		// and one of them must lose. A void has no parameters at all: its identity is
+		// the order, its quantity comes from the reservation, and every caller
+		// reaching this id is asking for the one whole-order reversal of that order.
+		// Actor and reason are a LABEL on that operation, not part of it.
+		//
+		// Conflicting on them broke the case the deterministic id exists for
+		// (ai-review F3): a staff void records human attribution, the cancellation
+		// runner submits `system:event-cancellation`, so a staff-bound void made
+		// every later run fail the fingerprint, retry to the attempt limit and report
+		// permanent failure — unable to repair an outstanding capacity leg it was
+		// holding the correct id for.
+		//
+		// The first binder's attribution is kept because it is the true record of who
+		// initiated the reversal; the run adopting it did not decide to void, it
+		// found the decision already made. The fingerprint column stays: it is what
+		// makes this adoption visible as a deliberate choice rather than an absent
+		// check, and the store test asserts the original attribution survives.
 		out := existing.void
 		out.OrganizerID, out.HoldID = in.OrganizerID, hold
 		return out, tx.Commit()
@@ -153,11 +173,27 @@ func BindOrderVoid(ctx context.Context, db *sql.DB, in VoidRequest) (OrderVoid, 
 	if exchanges > 0 {
 		return OrderVoid{}, ErrOrderNotVoidable
 	}
-	// The predicate that makes this path a void rather than a refund. Strictly
-	// zero, not `<= 0`: a NEGATIVE unit amount is not a comped order, it is
-	// corrupt data, and silently reversing it would hide the corruption behind a
-	// successful-looking void.
-	if unit != 0 {
+	// The predicate that makes this path a void rather than a refund: NOTHING WAS
+	// CAPTURED. Both numbers, and the second is the one that matters.
+	//
+	// `unit_amount` is the FACE value, not what the buyer was charged: migration
+	// 0014 establishes `total = face + passed_on`, so a ticket priced at 0 carrying
+	// a fixed passed-on fee has `unit_amount = 0` and a real, captured
+	// `total_amount`. Testing the face alone would void such an order's tickets,
+	// return its capacity, and keep the buyer's fee — which is why the owner's
+	// answer to it (2026-08-27) was to REFUSE, not to reverse it partially: a void
+	// that returned fees would be a money path, and staying off the money path is
+	// the whole reason a void exists rather than a zero-amount refund.
+	//
+	// Strictly `!= 0` on both, not `> 0`: a NEGATIVE amount is not a comped order,
+	// it is corrupt data, and silently reversing it would hide the corruption
+	// behind a successful-looking void.
+	//
+	// Such an order is now refused here AND by BindOrderRefund (its unit is 0, so
+	// ErrRefundNoMoney), so it reports as `no_captured_money` and stays visible.
+	// That is a narrower, honestly-reported gap than reversing it wrongly, and
+	// closing it is a separate decision about what a comped-with-fees sale means.
+	if unit != 0 || total != 0 {
 		return OrderVoid{}, ErrVoidHasMoney
 	}
 	// Whole-order, from the reservation. Never from the request.

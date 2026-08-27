@@ -71,10 +71,26 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	// here (TKT-171 is about REVERSING a comped order, not about creating one).
 	//
 	// What this ticket needs is an order in the state a comped order occupies —
-	// completed, with tickets issued, holding capacity, and unit_amount 0 — which
-	// is exactly what the cancellation runner encounters. That state is what is
-	// built here. The reversal path reads unit_amount under the order row lock, so
-	// this fixture exercises the same predicate a genuinely comped order would.
+	// completed, with tickets issued, holding capacity, and NOTHING CAPTURED —
+	// which is exactly what the cancellation runner encounters. That state is what
+	// is built here. The reversal reads both money columns under the order row
+	// lock, so this fixture exercises the same predicate a genuinely comped order
+	// would.
+	//
+	// ONE HONEST LIMITATION, stated because the first version of this test hid it.
+	// A PSP charge for the original purchase still exists behind this order; only
+	// commerce's columns are zeroed. So this test proves the void does not write
+	// commerce money — no refund row, no refund fact, an untouched projection — and
+	// it does NOT prove anything about the provider, because the fixture's provider
+	// state is a lie the fixture told.
+	//
+	// That distinction is load-bearing: an earlier version asserted "no refund
+	// occurred" against exactly this fixture and thereby demonstrated a CHARGED
+	// order being voided without reimbursement while calling it success (ai-review
+	// F1). The guard that now makes that impossible — a void requires
+	// total_amount 0, so an order with captured fees is refused — is proven at the
+	// store and runner tiers, where the state can be built without lying about a
+	// provider. See TestBindOrderVoidRefusesAZeroFaceOrderThatCapturedFees.
 	com0, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatal(err)

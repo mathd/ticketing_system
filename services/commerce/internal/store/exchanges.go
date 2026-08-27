@@ -277,6 +277,23 @@ func BindOrderExchange(ctx context.Context, db *sql.DB, in ExchangeRequest) (Exc
 	if refunds > 0 {
 		return Exchange{}, ErrOrderNotExchangeable
 	}
+	// Or by a VOID (TKT-171). The reciprocal of BindOrderVoid's exchange check, and
+	// it is NOT redundant with the refund count above: a void leaves the order
+	// `completed` and writes no order_refunds row, so without this an exchange
+	// binds cleanly after a void and the order carries two independent reversals
+	// with different downstream operation ids — duplicate capacity returns, and an
+	// exchange of tickets whose source was already voided.
+	//
+	// Both directions take this same order row lock, so exactly one of the two can
+	// win a race. Adding only the void's half was a one-directional guard, which is
+	// the shape a single-direction test cannot see (ai-review F2).
+	var voids int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, in.SourceOrderID).Scan(&voids); err != nil {
+		return Exchange{}, err
+	}
+	if voids > 0 {
+		return Exchange{}, ErrOrderNotExchangeable
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO order_exchanges(organizer_id,id,source_order_id,target_ticket_type_id,idempotency_key,request_fingerprint,quantity,source_total,source_gross_total,currency,actor,reason)

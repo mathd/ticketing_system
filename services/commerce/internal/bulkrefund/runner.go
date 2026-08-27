@@ -421,7 +421,7 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 			RefundedQuantity: state.RefundedQuantity, RefundedAmount: state.RefundedAmount,
 		})
 	}
-	if state.UnitAmount == 0 {
+	if state.UnitAmount == 0 && state.TotalAmount == 0 {
 		// A comped order. It has no money leg, so it cannot be refunded — but it
 		// still admits and still holds a seat, so it must still be REVERSED
 		// (TKT-171). Route it to the void, which discharges the same two downstream
@@ -433,11 +433,21 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		// reversal.
 		return plan{void: true}
 	}
-	if state.UnitAmount < 0 {
-		// Unreachable through any supported write — reservations.unit_amount is
-		// CHECK(unit_amount >= 0) — and reported rather than assumed away, because
-		// the only way to get here is data this service did not write.
-		return decidedPlan(failure("no_captured_money", "order has a negative unit amount"))
+	if state.UnitAmount <= 0 {
+		// Two shapes reach here, and neither is voidable.
+		//
+		// A zero FACE with a captured TOTAL is a comped ticket carrying a passed-on
+		// fee — real money the buyer paid. The void refuses it (it is not a
+		// no-money reversal) and so does the refund (its unit is 0), so it reports
+		// here and stays visible. That is the owner's decision of 2026-08-27:
+		// refuse rather than reverse it partially, because a void that returned
+		// fees would be a money path, which is the thing a void exists to avoid.
+		// What such an order's cancellation SHOULD do is a separate decision.
+		//
+		// A NEGATIVE unit amount is corrupt data — unreachable through any
+		// supported write, since reservations.unit_amount is CHECK(unit_amount >= 0)
+		// — and is reported rather than assumed away.
+		return decidedPlan(failure("no_captured_money", "order has no refundable unit amount"))
 	}
 	// Fixed BEFORE the provider call: recomputing it afterwards reads a different
 	// remainder, which would change the refund's request fingerprint and turn a resume

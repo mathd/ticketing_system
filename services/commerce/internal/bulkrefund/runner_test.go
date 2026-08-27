@@ -240,11 +240,27 @@ func work(order uuid.UUID) store.CancellationWork {
 	}
 }
 
+// completedOrder builds a COHERENT order state: total = quantity × unit, which is
+// what a sale with no passed-on fees produces. Coherent on purpose — the void's
+// eligibility turns on BOTH numbers since ai-review F1, so a helper that left
+// TotalAmount at its zero value would make every paid fixture look like it
+// captured nothing and route it to the void.
+//
+// compedWithFees below is the incoherent-looking-but-real case that must NOT be
+// voided; it is built explicitly so the difference is visible at the call site.
 func completedOrder(sold int32, unit int64) store.OrderCancellationState {
 	return store.OrderCancellationState{
-		SoldQuantity: sold, UnitAmount: unit, Currency: "EUR",
+		SoldQuantity: sold, UnitAmount: unit, TotalAmount: int64(sold) * unit, Currency: "EUR",
 		OrderStatus: "completed", RefundStatus: "none",
 	}
+}
+
+// compedWithFees is a zero-FACE order that nonetheless captured money — a comped
+// ticket carrying a passed-on fee (`total = face + passed_on`, migration 0014).
+func compedWithFees(sold int32, total int64) store.OrderCancellationState {
+	s := completedOrder(sold, 0)
+	s.TotalAmount = total
+	return s
 }
 
 func runnerFor(f *fakeStore, r *fakeRefunder) *Runner {
@@ -386,29 +402,48 @@ func TestZeroPriceOrderIsVoidedNotRefunded(t *testing.T) {
 	}
 }
 
-// The other side of the branch: a NEGATIVE unit amount is not a comped order, it
-// is corrupt data, and it must NOT be silently voided.
+// The other side of the branch: two shapes that are NOT comped orders and must not
+// be voided, each with its own case because each would be admitted by a different
+// sloppy predicate.
 //
-// Without this the branch could be written `<= 0` and every test above would still
-// pass — which is exactly how a void would come to reverse an order whose price
-// nobody can explain, reporting success.
-func TestNegativeUnitAmountIsReportedNotVoided(t *testing.T) {
-	f := newFakeStore()
-	order := uuid.New()
-	f.orders[order] = &fakeOrder{state: completedOrder(1, -100)}
-	f.work = append(f.work, work(order))
-	r := newFakeRefunder(f)
-	runnerFor(f, r).RunOnce(context.Background())
+// Without these the branch could be written on UnitAmount alone, or as `<= 0`, and
+// every test above would still pass — which is exactly how a void comes to reverse
+// an order that captured money, reporting success.
+func TestNonCompedOrdersAreReportedNotVoided(t *testing.T) {
+	for name, tc := range map[string]struct {
+		state store.OrderCancellationState
+		why   string
+	}{
+		// ai-review F1. Face 0, total 600: a comped ticket with a passed-on fee.
+		// Real money the buyer paid. Voiding it would return the tickets and the
+		// seat and keep the fee. Delete `&& state.TotalAmount == 0` from the void
+		// branch and this is the case that goes red.
+		"zero face with captured fees": {compedWithFees(2, 600),
+			"a zero FACE with a captured TOTAL is not a comped order"},
+		// Corrupt data — unreachable through any supported write. Voiding it would
+		// hide the corruption behind a successful-looking reversal.
+		"negative unit amount": {completedOrder(1, -100),
+			"corrupt data must not be reversed as though it were comped"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeStore()
+			order := uuid.New()
+			f.orders[order] = &fakeOrder{state: tc.state}
+			f.work = append(f.work, work(order))
+			r := newFakeRefunder(f)
+			runnerFor(f, r).RunOnce(context.Background())
 
-	got := f.final[order]
-	if got.Outcome != "failed" || got.FailureCode != "no_captured_money" {
-		t.Fatalf("negative-price order = %+v, want failed/no_captured_money", got)
-	}
-	if f.orders[order].voidCalls != 0 {
-		t.Fatal("corrupt data must not be reversed as though it were comped")
-	}
-	if f.orders[order].moved != 0 {
-		t.Fatal("a negative-price order must not reach the provider")
+			got := f.final[order]
+			if got.Outcome != "failed" || got.FailureCode != "no_captured_money" {
+				t.Fatalf("%s: outcome = %+v, want failed/no_captured_money", tc.why, got)
+			}
+			if f.orders[order].voidCalls != 0 {
+				t.Fatalf("%s: it was voided anyway", tc.why)
+			}
+			if f.orders[order].moved != 0 {
+				t.Fatalf("%s: it reached the provider", tc.why)
+			}
+		})
 	}
 }
 

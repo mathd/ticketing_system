@@ -96,19 +96,59 @@ func TestBindOrderVoidReplaysAcrossDifferentRequestKeys(t *testing.T) {
 	}
 }
 
-// A reused identity with DIFFERENT attribution is a conflict, not a silent replay
-// of somebody else's void — the same rule refundFingerprint enforces.
-func TestBindOrderVoidRefusesAConflictingFingerprint(t *testing.T) {
+// A second caller with DIFFERENT attribution ADOPTS the existing void rather than
+// conflicting with it — the case the deterministic id exists for.
+//
+// This is the staff-then-cancellation-run sequence: staff void an order by hand,
+// the event is then cancelled, and the run reaches the same id carrying
+// `system:event-cancellation`. Conflicting there made the run retry to its attempt
+// limit and report permanent failure — unable to repair an outstanding capacity
+// leg it held the correct id for (ai-review F3).
+//
+// Unlike a refund, a void has no parameters to disagree about: its quantity comes
+// from the reservation and its identity is the order. Actor and reason are a label
+// on the operation, not part of it — so the FIRST binder's attribution survives,
+// because they are the one who decided to reverse it.
+func TestBindOrderVoidIsAdoptedByASecondCaller(t *testing.T) {
 	db, ctx := outboxDB(t)
-	c, _ := seedCompleted(t, db, ctx, "void-conflict", 1, 0)
+	c, _ := seedCompleted(t, db, ctx, "void-adopt", 1, 0)
 
-	if _, err := BindOrderVoid(ctx, db, voidRequest(c, "first")); err != nil {
-		t.Fatalf("first bind: %v", err)
+	staff := voidRequest(c, "staff-key")
+	staff.Actor, staff.Reason = "support@example.test", "customer request"
+	first, err := BindOrderVoid(ctx, db, staff)
+	if err != nil {
+		t.Fatalf("staff bind: %v", err)
 	}
-	in := voidRequest(c, "second")
-	in.Reason = "a different reason entirely"
-	if _, err := BindOrderVoid(ctx, db, in); !errors.Is(err, ErrRefundConflict) {
-		t.Fatalf("err = %v, want ErrRefundConflict", err)
+	// Discharge one leg only, so the adopting caller has something to repair —
+	// which is the whole reason adoption matters rather than being tidier.
+	if err := MarkVoidTicketsVoided(ctx, db, c.OrganizerID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	run := voidRequest(c, "cancel:run:1")
+	run.Actor, run.Reason = "system:event-cancellation", "event cancelled"
+	adopted, err := BindOrderVoid(ctx, db, run)
+	if err != nil {
+		t.Fatalf("the cancellation run must ADOPT a staff-bound void, not conflict: %v", err)
+	}
+	if adopted.ID != first.ID {
+		t.Fatalf("adopted a different void (%v vs %v)", adopted.ID, first.ID)
+	}
+	// The progress it must be able to resume.
+	if !adopted.TicketsVoided || adopted.CapacityReturned {
+		t.Fatalf("the adopting caller must see the real progress: %+v", adopted)
+	}
+	// The first binder's attribution survives: they decided to reverse it, the run
+	// found the decision already made.
+	if adopted.Actor != "support@example.test" || adopted.Reason != "customer request" {
+		t.Fatalf("adoption must keep the original attribution, got %q/%q", adopted.Actor, adopted.Reason)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("order_voids rows = %d, want exactly 1", rows)
 	}
 }
 
@@ -125,6 +165,44 @@ func TestBindOrderVoidRefusesAPaidOrder(t *testing.T) {
 	_, err := BindOrderVoid(ctx, db, voidRequest(c, "void-paid-1"))
 	if !errors.Is(err, ErrVoidHasMoney) {
 		t.Fatalf("err = %v, want ErrVoidHasMoney", err)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("a refused void wrote %d rows", rows)
+	}
+}
+
+// THE FINDING (ai-review F1): a zero-FACE order can still have CAPTURED money,
+// and it must not be voidable.
+//
+// `unit_amount` is the face value; migration 0014 establishes `total = face +
+// passed_on`. So a ticket priced at 0 carrying a fixed passed-on fee has
+// `unit_amount = 0` and a real charged total. Voiding it would return the tickets
+// and the seat and keep the buyer's fee.
+//
+// The fixture is the point: it passes EVERY other predicate — completed,
+// unexchanged, right organizer, unit_amount 0 — so the only thing it can fail on
+// is the total. Delete `|| total != 0` and this is the single test that goes red.
+// The original version of this ticket had exactly that gap, and its smoke test
+// demonstrated the defect while asserting success.
+func TestBindOrderVoidRefusesAZeroFaceOrderThatCapturedFees(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "void-face-zero-fees", 2, 0)
+	// A comped ticket with a passed-on fee: face 0, total 600 — money the buyer
+	// really paid. Written directly because no supported path produces one today
+	// (TKT-285), and the point is what the GUARD does with the state, not how the
+	// state arises.
+	if _, err := db.ExecContext(ctx, `UPDATE reservations SET total_amount=600
+		WHERE id=$1`, c.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := BindOrderVoid(ctx, db, voidRequest(c, "void-fees-1"))
+	if !errors.Is(err, ErrVoidHasMoney) {
+		t.Fatalf("err = %v, want ErrVoidHasMoney — a zero FACE with a captured TOTAL is not a comped order", err)
 	}
 	var rows int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {

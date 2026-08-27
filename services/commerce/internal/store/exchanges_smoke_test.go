@@ -1249,3 +1249,57 @@ func TestLoadExchangeSwitchRefusesAnExchangeWhoseReservationIsAnotherTenants(t *
 			"no stranger's hold may leave this function", sw.SourceHoldID, reservationOrg)
 	}
 }
+
+// TKT-171: a VOIDED order cannot then be exchanged.
+//
+// The reciprocal of BindOrderVoid's exchange check, and it is a separate mechanism
+// rather than a restatement: a void leaves the order `completed` and writes no
+// order_refunds row, so the refund-count guard above cannot see it. Without this,
+// void-then-exchange binds cleanly and the order carries two independent reversals
+// with different downstream operation ids — duplicate capacity returns, and an
+// exchange of tickets whose source was already voided.
+//
+// Both directions are asserted here. The one-directional version shipped in this
+// ticket's first review round precisely because only exchange-first was tested,
+// which is the shape a single-direction test cannot expose.
+func TestVoidAndExchangeExcludeEachOtherInBothDirections(t *testing.T) {
+	t.Run("void first, then exchange", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		c, _ := seedCompleted(t, db, ctx, "void-then-exchange", 1, 0)
+		if _, err := BindOrderVoid(ctx, db, VoidRequest{
+			OrderID: c.OrderID, OrganizerID: c.OrganizerID,
+			IdempotencyKey: "vte-1", Actor: "staff", Reason: "event cancelled"}); err != nil {
+			t.Fatalf("bind void: %v", err)
+		}
+		if _, err := BindOrderExchange(ctx, db, exchangeRequest(c, "vte-2", uuid.New())); !errors.Is(err, ErrOrderNotExchangeable) {
+			t.Fatalf("err = %v, want ErrOrderNotExchangeable — a voided order is already reversed", err)
+		}
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_exchanges WHERE source_order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 0 {
+			t.Fatalf("a refused exchange wrote %d rows", rows)
+		}
+	})
+
+	t.Run("exchange first, then void", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		c, _ := seedCompleted(t, db, ctx, "exchange-then-void", 1, 0)
+		if _, err := BindOrderExchange(ctx, db, exchangeRequest(c, "etv-1", uuid.New())); err != nil {
+			t.Skipf("exchange fixture unavailable: %v", err)
+		}
+		if _, err := BindOrderVoid(ctx, db, VoidRequest{
+			OrderID: c.OrderID, OrganizerID: c.OrganizerID,
+			IdempotencyKey: "etv-2", Actor: "staff", Reason: "event cancelled"}); !errors.Is(err, ErrOrderNotVoidable) {
+			t.Fatalf("err = %v, want ErrOrderNotVoidable — an exchanged order is already reversed", err)
+		}
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 0 {
+			t.Fatalf("a refused void wrote %d rows", rows)
+		}
+	})
+}
