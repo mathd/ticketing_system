@@ -76,6 +76,28 @@ func (s stubRefunder) Refund(_ context.Context, in store.RefundRequest) (refunds
 
 func (s stubRefunder) DriveReversal(_ context.Context, r store.Refund) store.Refund { return r }
 
+// Void is the comped reversal (TKT-171). It binds a real order_voids row through
+// the real store, so this smoke stub exercises the actual bind — including its
+// guards — rather than asserting against a shape it made up. It moves NO money
+// projection, which is the point: the order's refunded_* columns must be
+// untouched by a void.
+func (s stubRefunder) Void(_ context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	v, err := store.BindOrderVoid(s.ctx, s.db, in)
+	if err != nil {
+		return refunds.VoidResult{}, err
+	}
+	// The driver's two legs have no downstream to call here, so record both
+	// obligations as discharged the way a successful drive would.
+	if err := store.MarkVoidTicketsVoided(s.ctx, s.db, in.OrganizerID, v.ID); err != nil {
+		return refunds.VoidResult{}, err
+	}
+	if err := store.MarkVoidCapacityReturned(s.ctx, s.db, in.OrganizerID, v.ID); err != nil {
+		return refunds.VoidResult{}, err
+	}
+	v.TicketsVoided, v.CapacityReturned = true, true
+	return refunds.VoidResult{Void: v}, nil
+}
+
 func TestRunnerDrainsARealBook(t *testing.T) {
 	db, ctx := runnerDB(t)
 	org, slot := uuid.New(), uuid.New()
