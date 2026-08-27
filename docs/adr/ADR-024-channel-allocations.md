@@ -175,8 +175,16 @@ We adopt allocation rows with derived usage. Specifics:
   *whose* deadline it is: a sales window or an allocation release is a **policy boundary** the
   system applies to itself, and the honest answer is the current instant. A hold's TTL is a
   **promise already made to a buyer**, and charging that buyer for the lock wait their request
-  spent queueing would break it. Grant and admission therefore point the same way — both protect
-  the hold against the wait — which is why the rule below is the read-side mirror of the grant.
+  spent queueing would break it.
+  **The admission case is not uniform, and this says so rather than averaging it.** `Transition`
+  and the replays are mechanically independent — they reach `expired()` by different routes (see
+  below) and either could move without the other — so they hold the same clock for *different*
+  strengths of reason. For `Transition` the argument is strong and is the money-path one: refusing
+  a finalize that queued behind an on-sale loses a sale that was about to complete. For the replays
+  it is weaker, and the residual recorded below is what it costs. **Uniformity here is the status
+  quo kept deliberately, not a derivation** — a ticket that moves replay admission to decision time
+  while leaving `Transition` alone is arguing against this paragraph, not against the whole rule,
+  and the residual below is the case for it.
     - **Grants — `clock_timestamp()`.** Buyer hold TTLs (`clock_timestamp()+ttl`) on all five
       creation paths: GA `CreateHold`, operational conversion, group-reservation draw-down, and
       both seated paths (explicit selection and best-available). Every grant transaction takes
@@ -222,12 +230,21 @@ We adopt allocation rows with derived usage. Specifics:
       buyer then sees is not a live hold: commerce passes inventory's `expires_at`/`server_time`
       pair straight through, `server_time` is the advancing `clock_timestamp()` taken *after* the
       lock wait, and the storefront's countdown is `max(0, expires_at - server_time)` — so the
-      reservation renders with a **zero countdown and reports itself expired immediately**.
-      Meanwhile `liveClaims` — which is on `now()` in the *next* transaction, and so sees the
-      elapsed TTL — no longer counts it, and the stock is resellable to someone else. So the
-      admitted hold is not merely stale: it is a success response over inventory that has already
-      been released. The alternative was refusing in-flight finalizes on a money path, and that is
-      the trade being accepted. `sweepExpired` and every capacity read are unchanged by this rule.
+      buyer's remaining time is **zero on arrival**. What they actually see is worse than an
+      immediate expiry notice: `HoldPicker` sets the "held" status unconditionally on a successful
+      reserve, while the countdown and the checkout form render only when `remaining > 0`, so the
+      page reads as *held* with no timer and no way to pay until a tick flips it to expired. And
+      because the reserve idempotency key is derived from the terms and is stable while they do not
+      change, pressing Reserve again **replays the same dead hold** and reproduces the same
+      response; the buyer cannot get a fresh hold for the same seats without changing the terms or
+      reloading. Meanwhile `liveClaims` — on `now()` in the *next* transaction, so it sees the
+      elapsed TTL — no longer counts the claim, and the stock is resellable to someone else. The
+      admitted hold is therefore not merely stale: it is a success response over inventory that has
+      already been released, with a retry path that returns it again.
+      **This is the weakest part of the rule and is recorded as such, not blessed.** The storefront
+      behaviour above is a defect of its own — a zero-duration reservation should enter the expired
+      state synchronously and rotate its key — and it is not fixed here because this ticket changes
+      no code. `sweepExpired` and every capacity read are unchanged by this rule.
       **Pinned by test, in the manner of ADR-021's rollback-gap test — but unevenly, and the gap
       is named rather than papered over.** Both live in
       `services/inventory/internal/store/buyer_ttl_clock_smoke_test.go`.
