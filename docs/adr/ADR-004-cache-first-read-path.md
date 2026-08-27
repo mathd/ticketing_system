@@ -45,7 +45,7 @@ High-contention on-sales are a core v1 requirement (brief). Correct atomic claim
 
 We design the read path cache-first, on three rules:
 
-1. **Every public read endpoint declares a TTL tiered by data volatility.** Responses carry explicit `Cache-Control`/`s-maxage` (CDN-ready even though v1 is local) and are cacheable by construction: no session-varying content on public reads, buyer-specific data on separate endpoints. Indicative tiers — venue geometry: hours; **published** seat-map geometry: hours, **draft-bearing, mixed or empty** seat-map responses: never cached (TKT-107 amendment); event lists & event detail: minutes; price display: ~1 min; remaining capacity/availability level: seconds; hold/order/scan state: **never cached**.
+1. **Every public read endpoint declares a TTL tiered by data volatility.** Responses carry explicit `Cache-Control`/`s-maxage` (CDN-ready even though v1 is local) and are cacheable by construction: no session-varying content on public reads, buyer-specific data on separate endpoints. Indicative tiers — venue geometry: hours; **published** seat-map geometry: hours, **all-published seat-map LIST reads**: minutes (TKT-141 amendment), **draft-bearing, mixed or empty** seat-map responses: never cached (TKT-107 amendment); event lists & event detail: minutes; price display: ~1 min; remaining capacity/availability level: seconds; hold/order/scan state: **never cached**.
 2. **Hot events are served from memory.** Services keep in-memory read structures (availability counters, event snapshots) for designated hot events — refreshed/invalidated from the write path, so buyer-facing reads during an on-sale do not touch the database. The write path (claims, ADR-002) is never served from cache.
 3. **Frontends are call-frugal.** Storefront pages consume few, aggregated endpoints (one call per page view, not per widget); each response's TTL drives the client refresh cadence (e.g. availability re-polled every few seconds, event detail not re-fetched at all). No polling faster than the endpoint's TTL.
 
@@ -222,6 +222,8 @@ fix and it is not one.**
    the hours tier for the only reads that use it, on a judgement no second model reviewed. A future
    cache deployment must invalidate the venue and family URLs on authoring writes, or the list tier
    must be demoted. Tracked as TKT-141.
+   **→ CLOSED by the TKT-141 amendment below (2026-08-27): the two list reads were demoted to the
+   minutes tier. This paragraph is retained as the record of what was accepted and for how long.**
 
 **Still true, unchanged by this amendment:** no CDN or shared cache exists anywhere in the stack, so
 this change has **no observable runtime effect today** beyond the emitted header. That is the point —
@@ -290,10 +292,68 @@ audit's coverage list (`wantDeclarations`) is unchanged: it keys on `<service>/<
 so swapping which component a response references does not move coverage.
 
 **Out of scope, deliberately.** Which tier each read is *on* is untouched — this pins today's
-assignments rather than re-deciding them; TKT-141 still owns the question of whether the venue list
-should be demoted. Inventory is already closed and unchanged. And the storefront's **page** tier
+assignments rather than re-deciding them; TKT-141 owned the question of whether the venue list should
+be demoted, and answered it in the amendment below. Inventory is already closed and unchanged. And the storefront's **page** tier
 (`web/storefront/src/lib/page-tier.ts`) is a separate mechanism computed in Astro from page data — it
 is not a catalog response header and this amendment does not touch it.
+
+## Amendment (2026-08-27, TKT-141) — the two seat-map LIST reads drop to the minutes tier
+
+The TKT-107 amendment split the seat-map tier on publication status and, in its limit 2, accepted a
+second staleness it did not fix: an **all-published list** was served on the hours tier, so a seat map
+authored a minute later stayed invisible for up to an hour. This amendment withdraws that acceptance.
+
+**What changed.** Two reads move from the hours tier to the **minutes tier** (`cachetier.Minutes`,
+already registered — no fifth tier):
+
+| Read | Before | After |
+|---|---|---|
+| `GET /public/venues/{venueId}/seat-maps` | hours when all-published | **minutes** when all-published |
+| `GET /public/seat-maps/{id}/versions` | hours when all-published | **minutes** when all-published |
+| `GET /public/seat-maps/{id}` (geometry) | hours when published | **hours** — unchanged |
+
+The fail-closed half of TKT-107's rule is untouched on all three: an empty list, or any draft-bearing
+member, is still `no-store`, and one response still carries its least-cacheable member's tier.
+
+**Why the by-id read keeps the hours tier — the distinction this amendment rests on.** The two cases
+look alike and are not. The by-id read caches **one published version**, and ADR-029 makes a published
+version immutable: an edit produces a *new* version rather than mutating the old one, so an hour-long
+claim about that payload is honest. A list read caches **membership**, and no decision anywhere makes
+membership immutable — authoring a seat map, or the very ADR-029 edit that keeps the by-id read honest,
+changes the list a second after it was cached. Demoting all three would have been the easy symmetry and
+would have thrown away a correct hours tier; keeping all three was the status quo this ticket exists to
+end.
+
+**Why minutes rather than `no-store`.** `no-store` is stricter than the problem requires: membership is
+slow-moving organizer configuration, and five minutes of it costs a newly-authored map a short delay in
+a list, not a wrong answer to a money or admission decision. Minutes is also what catalog's other public
+list reads already declare, so this adds no new claim to defend. Escalating to `no-store` later remains
+available; it is the more reversible direction.
+
+**This is a contract change, not a constant change (ADR-009 + ADR-028).** Since the TKT-209 amendment
+each catalog public read commits its tier as an enum-valued response-header component, enforced at
+runtime — the response validator turns an undeclared value into a 500 with the payload withheld. So
+emitting the minutes tier required widening the contract first. `SeatMapCacheControl` was **split**:
+
+- `SeatMapCacheControl` — `no-store` | hours — now referenced by `getPublicSeatMapGeometry` only.
+- `SeatMapListCacheControl` — `no-store` | minutes — referenced by the two list operations.
+
+Splitting rather than widening one component is what keeps the demotion from leaking: a single
+three-value component would have let the by-id read declare minutes, and the by-id read is precisely
+the one that must not.
+
+**Known gap, not closed here and pinned by a test.** Neither seat-map component declares
+`required: true`, unlike every other Cache-Control component in this contract, so a handler emitting
+*no* Cache-Control passes validation on all three reads. The enum binds the value when one is present —
+which is what this amendment needed — but presence is unbound. It predates this change
+(`SeatMapCacheControl` has been unrequired since TKT-107) and closing it is a behaviour change to three
+operations with its own failure mode. Per ADR-021's rule it is pinned by
+`TestSeatMapCacheControlIsNotRequired`, which asserts the gap is **present**; if that test ever fails,
+the gap was closed — update this paragraph and delete the test rather than repairing it.
+
+**Still unobservable today.** No CDN or shared cache exists anywhere in the stack, so nothing yet reads
+either header. This is the correctness of the claim the contract makes, not a live defect — and, as the
+TKT-128 amendment argued, a tier is cheap to correct before a cache honors it and expensive after.
 
 ## References
 
@@ -314,3 +374,8 @@ is not a catalog response header and this amendment does not touch it.
   (`TestSeatMapReadCacheTierByStatus`); [ADR-029](./ADR-029-seat-identity-pinning-contract.md)
   (published-version immutability), [ADR-028](./ADR-028-response-drift-fail-closed.md),
   [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) (name the adversary)
+- Amendment (TKT-141) evidence — `services/catalog/api/openapi.yaml`
+  (`SeatMapCacheControl` / `SeatMapListCacheControl`), `services/catalog/internal/api/server.go`
+  (`cacheControlForSeatMapGeometry`, `cacheControlForSeatMapList`),
+  `services/catalog/internal/api/cache_tier_test.go` (contract-tier rows +
+  `TestSeatMapCacheControlIsNotRequired`, the pinned gap)

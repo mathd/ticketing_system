@@ -680,7 +680,7 @@ export interface paths {
         };
         /**
          * A venue's seat-map summaries (status-driven cache tier)
-         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when the list is non-empty and every map is published; no-store for a draft-bearing, mixed, or empty list. Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
+         * @description The seat maps authored under a venue — summaries only, no geometry — for the back-office venue page (US-019). Cache tier follows the payload's statuses (TKT-107): the ADR-004 minutes tier (public, max-age=300, s-maxage=300) only when the list is non-empty and every map is published; no-store for a draft-bearing, mixed, or empty list. The minutes rather than hours tier because what this response caches is list MEMBERSHIP, which authoring a seat map changes — unlike a published version, which is immutable (TKT-141). Scoped to the venue, backed by seat_maps_by_venue (ADR-019).
          */
         get: operations["listVenueSeatMaps"];
         put?: never;
@@ -720,7 +720,7 @@ export interface paths {
         };
         /**
          * A seat map family's version history (status-driven cache tier, TKT-105)
-         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Cache tier follows the payload's statuses (TKT-107): the ADR-004 hours tier (public, max-age=3600, s-maxage=3600) only when every version listed is published, no-store as soon as one is a draft. Catalog-owned; the back office does not keep a version store of its own.
+         * @description Every version of the seat-map family that seatMapId belongs to (any version resolves the family), newest first, each carrying its published_at. current_version is the highest published version — the one an edit targets — and is absent for a draft-only family. Cache tier follows the payload's statuses (TKT-107): the ADR-004 minutes tier (public, max-age=300, s-maxage=300) only when every version listed is published, no-store as soon as one is a draft. The minutes rather than hours tier because what this response caches is family MEMBERSHIP, which an ADR-029 edit changes by inserting a published successor — unlike a single published version, which is immutable (TKT-141). Catalog-owned; the back office does not keep a version store of its own.
          */
         get: operations["listSeatMapVersions"];
         put?: never;
@@ -1671,8 +1671,10 @@ export interface components {
          *     Bounded by the tier itself: an entry older than max-age is not served.
          */
         PublicReadAge: number;
-        /** @description ADR-004 volatility tier for a seat-map read, driven by the payload's statuses (TKT-107): the hours tier only when the response is non-empty and every seat map in it is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
+        /** @description ADR-004 volatility tier for the BY-ID seat-map geometry read, driven by the payload's status (TKT-107): the hours tier when the map is published, otherwise no-store. Draft geometry is mutable, so an hour of shared-cache lifetime would make an authoring write look lost; a published version is immutable (ADR-029), which is what makes the hours branch correct — and that immutability is why this read KEPT the hours tier when TKT-141 demoted the two list reads to SeatMapListCacheControl. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
         SeatMapCacheControl: "no-store" | "public, max-age=3600, s-maxage=3600";
+        /** @description ADR-004 volatility tier for the two seat-map LIST reads (TKT-141): the minutes tier when the response is non-empty and every seat map in it is published, otherwise no-store. One response carries one header, so a list takes its least-cacheable member's tier, and an empty list fails closed. Deliberately a SHORTER tier than the by-id read's. The by-id read caches an immutable published version (ADR-029), which is an honest hour-long claim; a list caches MEMBERSHIP, and membership is not immutable — authoring a seat map, or an ADR-029 edit inserting a published successor, changes the list a second after it was cached. TKT-107 accepted that staleness and recorded it in ADR-004; this component is where it is withdrawn. The enum is enforced at runtime, not only by the gate: catalog's ADR-028 response validator checks response headers and turns a third value into a 500 with the payload withheld. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is not access control. */
+        SeatMapListCacheControl: "no-store" | "public, max-age=300, s-maxage=300";
         /** @description Always no-store. A resolved price feeds a money decision (ADR-004's "never" tier), and once TKT-152 adds effective windows the response's correctness expires at a known instant — caching it past that instant would sell at a stale price. Single-valued and required so the ADR-028 response validator turns any other value into a 500. That binds the header's first field value; an appended second value is not caught (see ADR-004's TKT-209 amendment). */
         PriceResolutionCacheControl: "no-store";
         /**
@@ -2920,7 +2922,7 @@ export interface operations {
             /** @description The venue's seat maps */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapListCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -2972,7 +2974,7 @@ export interface operations {
             /** @description The family's versions, newest first */
             200: {
                 headers: {
-                    "Cache-Control": components["headers"]["SeatMapCacheControl"];
+                    "Cache-Control": components["headers"]["SeatMapListCacheControl"];
                     [name: string]: unknown;
                 };
                 content: {

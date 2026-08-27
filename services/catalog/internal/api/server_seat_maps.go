@@ -132,7 +132,8 @@ func editInput(organizerID uuid.UUID, seatMapID SeatMapId, in SeatMapEdit) store
 
 // ListSeatMapVersions is the TKT-105 version-history read (COS-3): the family's
 // versions newest-first, current_version = highest published. Status-driven cache
-// tier (cacheControlForSeatMaps, TKT-107), catalog-owned.
+// tier (cacheControlForSeatMapList: minutes when all-published, TKT-107 +
+// TKT-141), catalog-owned.
 func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
 	versions, err := s.store.ListSeatMapVersions(r.Context(), seatMapId)
 	if err != nil {
@@ -148,7 +149,7 @@ func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, sea
 			out.CurrentVersion = &cv
 		}
 	}
-	w.Header().Set("Cache-Control", cacheControlForSeatMaps(versions...))
+	w.Header().Set("Cache-Control", cacheControlForSeatMapList(versions...))
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -287,7 +288,7 @@ func (s *Server) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request
 			Id: sec.ID, Name: sec.Name, Position: sec.Position, Rows: &rows,
 		})
 	}
-	w.Header().Set("Cache-Control", cacheControlForSeatMaps(g.Map))
+	w.Header().Set("Cache-Control", cacheControlForSeatMapGeometry(g.Map))
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -301,6 +302,6 @@ func (s *Server) ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venue
 	for _, m := range maps {
 		out.SeatMaps = append(out.SeatMaps, seatMapPayload(m))
 	}
-	w.Header().Set("Cache-Control", cacheControlForSeatMaps(maps...))
+	w.Header().Set("Cache-Control", cacheControlForSeatMapList(maps...))
 	writeJSON(w, http.StatusOK, out)
 }

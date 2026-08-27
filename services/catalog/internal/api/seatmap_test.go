@@ -451,7 +451,17 @@ func addDraftSuccessor(t *testing.T, e *env, anyVersionID openapi_types.UUID) {
 // authoring write look lost; published versions are immutable by ADR-029, which
 // is what makes the hours branch correct rather than merely inherited.
 func TestSeatMapReadCacheTierByStatus(t *testing.T) {
-	const hoursTier = "public, max-age=3600, s-maxage=3600" // ADR-004
+	// Two tiers, two literals. TKT-141 split them: list MEMBERSHIP is mutable
+	// (authoring a map, or an ADR-029 edit inserting a published successor,
+	// changes the list), so an hours tier on a list promises something untrue;
+	// a single published version genuinely is immutable, so the by-id read keeps
+	// it. Written out rather than read from CacheControlPublicVenueReads /
+	// CacheControlPublicReads on purpose: an expectation derived from the
+	// implementation pins whatever the code does, not the rule (TKT-239).
+	const (
+		hoursTier   = "public, max-age=3600, s-maxage=3600" // ADR-004, by-id geometry
+		minutesTier = "public, max-age=300, s-maxage=300"   // ADR-004, list reads
+	)
 
 	// -- GET /public/seat-maps/{id} : one map, so draft or published, never mixed --
 	t.Run("geometry/published", func(t *testing.T) {
@@ -497,8 +507,8 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		if len(out.SeatMaps) != 2 {
 			t.Fatalf("fixture must list 2 maps, got %d", len(out.SeatMaps))
 		}
-		if cc := rec.Header().Get("Cache-Control"); cc != hoursTier {
-			t.Fatalf("all-published list must keep the hours tier, got %q", cc)
+		if cc := rec.Header().Get("Cache-Control"); cc != minutesTier {
+			t.Fatalf("all-published list must take the minutes tier, got %q", cc)
 		}
 	})
 	t.Run("venue-list/mixed", func(t *testing.T) {
@@ -569,6 +579,25 @@ func TestSeatMapReadCacheTierByStatus(t *testing.T) {
 		}
 		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 			t.Fatalf("a draft version must make the whole history no-store, got %q", cc)
+		}
+	})
+	// The all-published history is the SECOND list read TKT-141 demotes, and it
+	// gets its own case here rather than relying on the venue-list case above:
+	// the two reads call the tier rule through different handlers, so one
+	// assertion could not see a regression that moved only the other.
+	t.Run("versions/published-only", func(t *testing.T) {
+		e := newEnv(t)
+		m := seedPublishedMap(t, e, seedVenue(t, e, "Hall"), "Floor")
+		rec := e.do("GET", "/public/seat-maps/"+m.Id.String()+"/versions", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("versions: %d %s", rec.Code, rec.Body.String())
+		}
+		out := decode[SeatMapVersionHistory](t, rec)
+		if len(out.Versions) != 1 || out.Versions[0].Status != "published" {
+			t.Fatalf("fixture must be one published version, got %+v", out)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != minutesTier {
+			t.Fatalf("all-published history must take the minutes tier, got %q", cc)
 		}
 	})
 }
