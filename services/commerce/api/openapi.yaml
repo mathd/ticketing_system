@@ -394,6 +394,38 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/voids:
+    post:
+      operationId: voidOrder
+      summary: Staff reversal of a COMPED (zero-price) completed order — tickets and capacity, no money
+      # TKT-171. A comped order has no money leg, so it cannot be refunded:
+      # BindOrderRefund refuses unit <= 0 because no provider issues a zero-amount
+      # refund and pretending one happened would fabricate a money fact (ADR-003).
+      # Before this it therefore got no reversal AT ALL — a cancelled event's comped
+      # orders kept admitting and kept their seats.
+      #
+      # A distinct operation rather than a mode of the refund, per the owner's
+      # decision. Visible in the shapes: the request carries NO quantity, amount or
+      # currency (the quantity is whole-order, read from the reservation under the
+      # order row lock), and the response reports no money. A caller cannot instruct
+      # a zero-amount refund here because there is nothing on the wire to instruct
+      # it with.
+      #
+      # The two downstream obligations are the same two a refund has, discharged by
+      # the same ordered driver: tickets are voided BEFORE capacity is returned
+      # (ADR-038 Section 1 — freeing the seat while the ticket still admits is the
+      # one sequence that can oversell). They are reported independently because an
+      # outstanding obligation is a real state a replay retries.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VoidCreate'}}}}
+      responses:
+        '200': {description: Voided (or replay), content: {application/json: {schema: {$ref: '#/components/schemas/OrderVoid'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        # Includes the routing answer: an order WITH captured money is refused here
+        # and must go through the refund instead.
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/orders/{id}/exchanges:
     post:
       operationId: exchangeOrder
@@ -1030,6 +1062,37 @@ components:
         it is gone rather than caveated. TKT-222 still owns the real fix for the
         rest of this endpoint: an authenticated, ownership-scoped read that 404s
         on mismatch, the way listCustomerOrders already does.
+    VoidCreate:
+      type: object
+      # additionalProperties: false is load-bearing here, not boilerplate. It is what
+      # makes a quantity, amount, unit_amount or currency on this request a 400 from
+      # the validator rather than a field the handler has to remember to ignore
+      # (TKT-171). The quantity is whole-order and comes from the reservation under
+      # the order row lock; a client that cannot state one cannot forge one.
+      additionalProperties: false
+      required: [organizer_id, actor, reason]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        # Staff attribution, as on RefundCreate: an operation that stops a ticket
+        # admitting cannot be less attributable than one that moves money.
+        actor: {type: string, minLength: 1, maxLength: 200}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    OrderVoid:
+      type: object
+      additionalProperties: false
+      # No amount, no currency, no refund_status, no payment fact — a void moves
+      # tickets and capacity and never money, and there is deliberately nowhere here
+      # to report otherwise.
+      required: [void_id, order_id, quantity, tickets_voided, capacity_returned, replay]
+      properties:
+        void_id: {type: string, format: uuid}
+        order_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1}
+        # Reported independently, and honestly: a void whose tickets are void but
+        # whose seat has not come back is a real state that a replay retries.
+        tickets_voided: {type: boolean}
+        capacity_returned: {type: boolean}
+        replay: {type: boolean}
     RefundCreate:
       type: object
       additionalProperties: false

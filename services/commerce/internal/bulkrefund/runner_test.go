@@ -24,6 +24,9 @@ type fakeOrder struct {
 	state        store.OrderCancellationState
 	refunded     bool // a cancellation refund has been bound for this order
 	moved        int  // how many times money ACTUALLY moved — the double-refund detector
+	voided       bool // a comped void has been bound for this order (TKT-171)
+	voidCalls    int  // how many times Void was called — the double-void detector
+	voidRefuse   error
 	refuse       error
 	failVoid     bool
 	failCapacity bool
@@ -205,6 +208,31 @@ func (f *fakeRefunder) Refund(_ context.Context, in store.RefundRequest) (refund
 
 func (f *fakeRefunder) DriveReversal(_ context.Context, r store.Refund) store.Refund { return r }
 
+// Void is the comped reversal (TKT-171). It records that it ran and, critically,
+// NEVER touches `moved` — so the double-refund detector every money assertion in
+// this file already rests on doubles as the proof that a void moved no money.
+func (f *fakeRefunder) Void(_ context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	f.keys[in.OrderID] = append(f.keys[in.OrderID], in.IdempotencyKey)
+	o, ok := f.store.orders[in.OrderID]
+	if !ok {
+		return refunds.VoidResult{}, errors.New("no such order")
+	}
+	if o.voidRefuse != nil {
+		return refunds.VoidResult{}, o.voidRefuse
+	}
+	replay := o.voided
+	o.voided = true
+	o.voidCalls++
+	return refunds.VoidResult{
+		Void: store.OrderVoid{
+			ID: store.VoidID(in.OrganizerID, in.OrderID), OrderID: in.OrderID,
+			OrganizerID: in.OrganizerID, Quantity: o.state.SoldQuantity,
+			TicketsVoided: true, CapacityReturned: true,
+		},
+		Replay: replay,
+	}, nil
+}
+
 func work(order uuid.UUID) store.CancellationWork {
 	return store.CancellationWork{
 		OrganizerID: uuid.New(), RunID: uuid.New(), OrderID: order,
@@ -313,9 +341,20 @@ func TestMoneyBackWithOutstandingReversalIsNotASuccess(t *testing.T) {
 	}
 }
 
-// A5: a zero-price (comped) order has no money leg to refund. It is recorded visibly
-// rather than skipped, because it also receives no reversal at all.
-func TestZeroPriceOrderIsRecordedRatherThanSkipped(t *testing.T) {
+// TKT-171: a zero-price (comped) order has no money leg to refund — and is
+// REVERSED anyway, through the void.
+//
+// This test used to assert `failed/no_captured_money`, which was the honest report
+// of a real gap: the order got no reversal at all, so its tickets kept admitting
+// and its seat stayed sold. That gap is what TKT-171 closes, so the assertion is
+// reconciled here rather than deleted — a deleted test would have left nothing
+// saying what a comped order in a cancellation run is supposed to do.
+//
+// `moved` is the file's existing double-refund detector, and it does the second
+// job here: a void that reached the provider would move it. Zero is the assertion
+// that a void moves no money, and it is derived from the rule ("a void moves
+// tickets and capacity and never money") rather than from what the code did.
+func TestZeroPriceOrderIsVoidedNotRefunded(t *testing.T) {
 	f := newFakeStore()
 	order := uuid.New()
 	f.orders[order] = &fakeOrder{state: completedOrder(1, 0)}
@@ -324,11 +363,77 @@ func TestZeroPriceOrderIsRecordedRatherThanSkipped(t *testing.T) {
 	runnerFor(f, r).RunOnce(context.Background())
 
 	got := f.final[order]
-	if got.Outcome != "failed" || got.FailureCode != "no_captured_money" {
-		t.Fatalf("comped order = %+v, want failed/no_captured_money", got)
+	if got.Outcome != "voided" {
+		t.Fatalf("comped order = %+v, want outcome voided", got)
+	}
+	// The three flags separately, because that is the whole reason the outcome
+	// carries three of them: `voided` is a COMPLETE reversal that moved no money,
+	// and reporting it as `refunded` would tell an operator money went back.
+	if got.MoneyRefunded {
+		t.Error("a void must not report money as refunded")
+	}
+	if !got.TicketsVoided {
+		t.Error("a void must void the tickets — that is the half that stops admission")
+	}
+	if !got.CapacityReturned {
+		t.Error("a void must return the capacity — that is the half that gives the seat back")
 	}
 	if f.orders[order].moved != 0 {
 		t.Fatal("a zero-price order must not reach the provider")
+	}
+	if f.orders[order].voidCalls != 1 {
+		t.Fatalf("void calls = %d, want exactly 1", f.orders[order].voidCalls)
+	}
+}
+
+// The other side of the branch: a NEGATIVE unit amount is not a comped order, it
+// is corrupt data, and it must NOT be silently voided.
+//
+// Without this the branch could be written `<= 0` and every test above would still
+// pass — which is exactly how a void would come to reverse an order whose price
+// nobody can explain, reporting success.
+func TestNegativeUnitAmountIsReportedNotVoided(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, -100)}
+	f.work = append(f.work, work(order))
+	r := newFakeRefunder(f)
+	runnerFor(f, r).RunOnce(context.Background())
+
+	got := f.final[order]
+	if got.Outcome != "failed" || got.FailureCode != "no_captured_money" {
+		t.Fatalf("negative-price order = %+v, want failed/no_captured_money", got)
+	}
+	if f.orders[order].voidCalls != 0 {
+		t.Fatal("corrupt data must not be reversed as though it were comped")
+	}
+	if f.orders[order].moved != 0 {
+		t.Fatal("a negative-price order must not reach the provider")
+	}
+}
+
+// A paid order must still take the REFUND path. Without this, routing everything
+// through the void would pass every comped assertion above.
+func TestPaidOrderStillTakesTheRefundPath(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(2, 1500)}
+	f.work = append(f.work, work(order))
+	r := newFakeRefunder(f)
+	runnerFor(f, r).RunOnce(context.Background())
+
+	got := f.final[order]
+	if got.Outcome != "refunded" {
+		t.Fatalf("paid order = %+v, want outcome refunded", got)
+	}
+	if !got.MoneyRefunded {
+		t.Error("a paid order's reversal moves money and must report it")
+	}
+	if f.orders[order].moved != 1 {
+		t.Fatalf("money movements = %d, want exactly 1", f.orders[order].moved)
+	}
+	if f.orders[order].voidCalls != 0 {
+		t.Fatal("a paid order must not be voided — it has money to return")
 	}
 }
 
@@ -409,6 +514,10 @@ func (c *cancelAfter) Refund(ctx context.Context, in store.RefundRequest) (refun
 
 func (c *cancelAfter) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
 	return c.inner.DriveReversal(ctx, r)
+}
+
+func (c *cancelAfter) Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	return c.inner.Void(ctx, in)
 }
 
 // AC 6: the claim is batch-bounded, and the runner keeps claiming until the book is drained
@@ -685,6 +794,10 @@ func (c *cancelAfterSuccess) Refund(ctx context.Context, in store.RefundRequest)
 
 func (c *cancelAfterSuccess) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
 	return c.inner.DriveReversal(ctx, r)
+}
+
+func (c *cancelAfterSuccess) Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	return c.inner.Void(ctx, in)
 }
 
 // A second run whose FIRST attempt was interrupted must still report already_refunded when it

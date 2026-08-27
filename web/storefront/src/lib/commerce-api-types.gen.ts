@@ -291,6 +291,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/orders/{id}/voids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Staff reversal of a COMPED (zero-price) completed order — tickets and capacity, no money */
+        post: operations["voidOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/orders/{id}/exchanges": {
         parameters: {
             query?: never;
@@ -628,6 +645,22 @@ export interface components {
             /** Format: uuid */
             order_id: string;
             status: string;
+        };
+        VoidCreate: {
+            /** Format: uuid */
+            organizer_id: string;
+            actor: string;
+            reason: string;
+        };
+        OrderVoid: {
+            /** Format: uuid */
+            void_id: string;
+            /** Format: uuid */
+            order_id: string;
+            quantity: number;
+            tickets_voided: boolean;
+            capacity_returned: boolean;
+            replay: boolean;
         };
         RefundCreate: {
             /** Format: uuid */
@@ -1352,6 +1385,38 @@ export interface operations {
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
             503: components["responses"]["Error"];
+        };
+    };
+    voidOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidCreate"];
+            };
+        };
+        responses: {
+            /** @description Voided (or replay) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderVoid"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     exchangeOrder: {
