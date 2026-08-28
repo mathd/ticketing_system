@@ -192,10 +192,13 @@ func (s *Server) redeliver(ctx context.Context, org, order uuid.UUID, key string
 	if err != nil {
 		return redeliveryResult{}, err
 	}
-	if claim.Replay {
-		return redeliveryResult{OrderID: claim.OrderID, TicketCount: len(claim.Tickets), Replay: true}, nil
-	}
-	for _, tk := range claim.Tickets {
+	// A replay is a RESUME, not a no-op. Returning success here because the key was
+	// seen before would report the whole order delivered on a request that died after
+	// its first ticket — the claim commits before any send, so outstanding rows are a
+	// state the system genuinely reaches (ai-review F2). Only the tickets the
+	// transport has not accepted are sent, under their ORIGINAL message ids, so a
+	// transport that deduplicates on message id cannot deliver twice.
+	for _, tk := range claim.Outstanding() {
 		email, err := s.addresses.DeliveryEmail(ctx, tk.BuyerID)
 		if err != nil {
 			return redeliveryResult{}, err
@@ -207,5 +210,5 @@ func (s *Server) redeliver(ctx context.Context, org, order uuid.UUID, key string
 			return redeliveryResult{}, err
 		}
 	}
-	return redeliveryResult{OrderID: claim.OrderID, TicketCount: len(claim.Tickets)}, nil
+	return redeliveryResult{OrderID: claim.OrderID, TicketCount: len(claim.Tickets), Replay: claim.Replay}, nil
 }

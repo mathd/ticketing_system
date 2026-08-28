@@ -13,9 +13,14 @@
 // nothing public maps one to the other (see lib/order-console.ts). Both fields
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
-import { loadOrderConsole, parseLookup, parseRedelivery, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
+import { loadOrderConsole, parseLookup, parseRedelivery, parseRefund, unresolvedRefund, type RedeliveryInput, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/commerce';
 import { redeliverOrderTickets, type Redelivery } from '../lib/access';
+import {
+  clearUnresolvedRedelivery,
+  noteUnresolvedRedelivery,
+  unresolvedRedeliveryFor,
+} from '../lib/unresolved-redeliveries';
 import {
   clearUnresolvedRefund,
   noteUnresolvedRefund,
@@ -57,6 +62,10 @@ let submitted = { order_id: '', ticket_ref: '', quantity: '', reason: '' };
 // has not said so. While this is set the page offers only the retry, never a new
 // refund. Null when there is nothing outstanding.
 let unresolved: RefundInput | null = null;
+// The resend still hanging over this order: access may have handed some or all of its
+// tickets to the transport without telling us. While this is set the page offers the
+// ORIGINAL key, which access resumes rather than re-sends (ai-review F1).
+let unresolvedResend: RedeliveryInput | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -142,8 +151,15 @@ if (Astro.request.method === 'POST') {
         organizerId: staff.organizerId,
         idempotencyKey: parsed.value.idempotencyKey,
       });
+      // Provenance comes from the SERVER, never the browser: the key that may have
+      // partially executed is the one this process sent, and a form field claiming to
+      // name it is not evidence of anything.
+      const outstandingResend = unresolvedRedeliveryFor(staff.organizerId, parsed.value.orderId);
       if (outcome.ok) {
         action = { kind: 'redelivered', redelivery: outcome.value };
+        // Access answered, so the request is settled either way — a fresh send or a
+        // resumed replay both mean there is nothing left hanging.
+        clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
       } else {
         action = {
           kind: 'redelivery-refused',
@@ -155,7 +171,16 @@ if (Astro.request.method === 'POST') {
           ambiguous: outcome.kind === 'ambiguous',
         };
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
+        if (outcome.kind === 'ambiguous') {
+          // Keep the FIRST unsettled key, not this attempt's: only the original can
+          // resume the work access may have half-done.
+          noteUnresolvedRedelivery(staff.organizerId, outstandingResend ?? parsed.value);
+        } else {
+          // A decided refusal means access did nothing, so nothing is outstanding.
+          clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
+        }
       }
+      unresolvedResend = unresolvedRedeliveryFor(staff.organizerId, parsed.value.orderId) ?? null;
     }
   }
 
@@ -171,6 +196,10 @@ if (Astro.request.method === 'POST') {
       // again") is the one that offers a freshly keyed refund form.
       if (lookup.value.orderId) {
         unresolved = unresolvedRefundFor(staff.organizerId, lookup.value.orderId) ?? null;
+        // A plain lookup must surface an outstanding RESEND too — otherwise the
+        // simplest recovery from an ambiguous result ("look it up again") is the one
+        // that offers a freshly keyed form, which is a second request.
+        unresolvedResend = unresolvedRedeliveryFor(staff.organizerId, lookup.value.orderId) ?? null;
       }
     }
   } else if (!refunding && !resending) {
@@ -212,7 +241,12 @@ const refundForm =
  */
 const resendForm =
   view?.order?.ok === true && view.order.value.status === 'completed'
-    ? { idempotencyKey: randomUUID() }
+    ? // An outstanding key is REUSED, not replaced. Access treats a repeat of the same
+      // key as a resume: it finishes whatever it did not send and re-sends nothing it
+      // already did. A fresh key here would be a second request — it would send every
+      // ticket again and burn another slot of the per-order bound, while the page's own
+      // copy told the operator it was replaying (ai-review F1).
+      { idempotencyKey: unresolvedResend?.idempotencyKey ?? randomUUID(), resuming: unresolvedResend !== null }
     : null;
 ---
 
@@ -456,13 +490,29 @@ const resendForm =
           console mail ticket capabilities to anyone — the owner refused that on
           2026-08-26, and the refusal is enforced by the field not existing
           rather than by validating what it contains. */}
-      <h2>Re-send this order's tickets</h2>
-      <p class="muted">
-        Sends the ticket links again to the address already on file. Use this when the original
-        mail was lost or filed as spam. Each resend is recorded against the order, and an order
-        can be re-sent a limited number of times per day.
-      </p>
-      <button type="submit">Re-send to the address on file</button>
+      {resendForm.resuming ? (
+        <>
+          <h2>Finish the resend that did not confirm</h2>
+          <p>
+            The last resend did not confirm, so some of this order's tickets may already have
+            gone out. Submitting this replays the <strong>same</strong> request: access finishes
+            whatever it did not send and sends nothing it already did. It does not count as a
+            second resend.
+          </p>
+        </>
+      ) : (
+        <>
+          <h2>Re-send this order's tickets</h2>
+          <p class="muted">
+            Sends the ticket links again to the address already on file. Use this when the
+            original mail was lost or filed as spam. Each resend is recorded against the order,
+            and an order can be re-sent a limited number of times per day.
+          </p>
+        </>
+      )}
+      <button type="submit">
+        {resendForm.resuming ? 'Retry the same resend' : 'Re-send to the address on file'}
+      </button>
     </form>
   )}
 </Layout>

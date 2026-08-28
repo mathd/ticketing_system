@@ -75,16 +75,43 @@ type RedeliveryTicket struct {
 	BuyerID       uuid.UUID
 	GuestOrderRef uuid.UUID
 	MessageID     uuid.UUID
+	// Accepted is true once the transport took this ticket's message AND the trail
+	// recorded it — the two happen in MarkRedelivered under one transaction, so a
+	// row is accepted or it is outstanding, never half.
+	//
+	// It exists because a claim COMMITS before the first send: a request that fails
+	// partway leaves attempt rows with nothing sent against them, and a replay that
+	// did not distinguish those would report the whole order delivered when some of
+	// it never left (ai-review F2).
+	Accepted bool
 }
 
 // RedeliveryClaim is one claimed redelivery request.
 type RedeliveryClaim struct {
 	OrderID uuid.UUID
 	Tickets []RedeliveryTicket
-	// Replay is true when this key had already claimed this order and the rows
-	// below are the ones it claimed the first time. Nothing was written, and the
-	// caller must NOT send again.
+	// Replay is true when this key had already claimed this order. The caller must
+	// still send every ticket whose Accepted is false: a replay is a RESUME, not a
+	// no-op, because the claim commits before any send and a request that died
+	// partway left outstanding rows behind (ai-review F2).
+	//
+	// Replay therefore says "this key is not new", not "there is nothing to do".
 	Replay bool
+}
+
+// Outstanding returns the tickets this claim still owes the transport.
+//
+// A claim with none outstanding is genuinely complete; one with some is a partial
+// send being resumed. The caller re-sends under the SAME derived message ids, so a
+// transport that deduplicates on message id will not deliver twice.
+func (c RedeliveryClaim) Outstanding() []RedeliveryTicket {
+	var out []RedeliveryTicket
+	for _, t := range c.Tickets {
+		if !t.Accepted {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // redeliveryEventID derives the lifecycle event id for one (request, ticket) pair.
@@ -214,8 +241,9 @@ func loadRedeliveryAttempts(ctx context.Context, tx *sql.Tx, org uuid.UUID, key 
 	out := make([]RedeliveryTicket, 0, len(all))
 	for _, t := range all {
 		var msg uuid.UUID
-		err := tx.QueryRowContext(ctx, `SELECT message_id FROM redelivery_attempts WHERE organizer_id=$1 AND idempotency_key=$2 AND ticket_id=$3`,
-			org, key, t.TicketID).Scan(&msg)
+		var accepted sql.NullTime
+		err := tx.QueryRowContext(ctx, `SELECT message_id, accepted_at FROM redelivery_attempts WHERE organizer_id=$1 AND idempotency_key=$2 AND ticket_id=$3`,
+			org, key, t.TicketID).Scan(&msg, &accepted)
 		if errors.Is(err, sql.ErrNoRows) {
 			// The request row exists without this ticket's attempt row. Both are
 			// written in one transaction, so this means the order gained a ticket
@@ -227,6 +255,10 @@ func loadRedeliveryAttempts(ctx context.Context, tx *sql.Tx, org uuid.UUID, key 
 			return nil, err
 		}
 		t.MessageID = msg
+		// accepted_at IS NULL means the transport never took this one, or took it and
+		// the process died before the trail recorded it. Either way it is outstanding
+		// and the caller must send it again under this same message id.
+		t.Accepted = accepted.Valid
 		out = append(out, t)
 	}
 	return out, nil

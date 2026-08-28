@@ -368,3 +368,82 @@ func TestRedeliveryIsScopedToTheOrganizer(t *testing.T) {
 		t.Fatalf("the victim's ticket gained %d redelivered events from another organizer's request", n)
 	}
 }
+
+// ai-review F2, at the tier the mechanism lives at.
+//
+// A claim COMMITS before the caller sends anything, so a request that dies partway
+// leaves attempt rows with nothing sent against them. The replay must report those as
+// OUTSTANDING — if it reported them accepted, the caller would return 200 for an order
+// whose tickets never left, permanently.
+//
+// This is a store-tier test because the mechanism is a SQL read of accepted_at. The
+// API-tier tests assert the handler resends what it is told is outstanding; only this
+// one proves the store tells it the truth. Asserting it against a Go fake would prove
+// the fake and the handler agree, and nothing else.
+func TestAReplayReportsUnacceptedAttemptsAsOutstanding(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	order, sorted, _ := issueOrder(t, ctx, st, org, 2)
+	const key = "key-partial-send"
+
+	first, err := st.ClaimRedelivery(ctx, org, order, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(first.Outstanding()); n != 2 {
+		t.Fatalf("a fresh claim reports %d outstanding, want both tickets (2): nothing has "+
+			"been sent yet", n)
+	}
+
+	// The caller sends ONE ticket and dies — the partial state F2 describes.
+	var sent RedeliveryTicket
+	for _, tk := range first.Tickets {
+		if tk.TicketID == sorted[0] {
+			sent = tk
+		}
+	}
+	if err := st.MarkRedelivered(ctx, org, key, sent.TicketID, sent.MessageID); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := st.ClaimRedelivery(ctx, org, order, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.Replay {
+		t.Fatal("the retry was not recognised as the same request")
+	}
+	outstanding := replay.Outstanding()
+	if len(outstanding) != 1 {
+		t.Fatalf("the replay reports %d tickets outstanding, want exactly the 1 that was "+
+			"never sent — reporting 0 tells the caller a half-sent order is complete, and "+
+			"the unsent ticket never leaves", len(outstanding))
+	}
+	if outstanding[0].TicketID == sent.TicketID {
+		t.Fatal("the replay reports the ALREADY-SENT ticket as outstanding and the unsent " +
+			"one as done: the accepted_at read is inverted")
+	}
+	// And the resume reuses the original message id, which is what lets a deduplicating
+	// transport avoid a second delivery.
+	for _, tk := range first.Tickets {
+		for _, r := range replay.Tickets {
+			if r.TicketID == tk.TicketID && r.MessageID != tk.MessageID {
+				t.Fatalf("ticket %s was re-minted a new message id on replay", tk.TicketID)
+			}
+		}
+	}
+
+	// Finishing the job clears it: nothing outstanding once both are accepted.
+	if err := st.MarkRedelivered(ctx, org, key, outstanding[0].TicketID, outstanding[0].MessageID); err != nil {
+		t.Fatal(err)
+	}
+	done, err := st.ClaimRedelivery(ctx, org, order, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(done.Outstanding()); n != 0 {
+		t.Fatalf("a fully accepted request still reports %d outstanding", n)
+	}
+}
