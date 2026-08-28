@@ -23,13 +23,15 @@
 
 // The credentials this process holds, each with what it opens — used both for the
 // "is it set" message and for the pairwise comparison below. TKT-244 added the third
-// (inventory, ADR-057); a list rather than three hand-written comparisons because with
-// three values there are three pairs, and the pair a hand-written check forgets is
-// exactly the one that collapses silently.
+// (inventory, ADR-057) and TKT-203 the fourth (access, ADR-068); a list rather than
+// hand-written comparisons because the pair count grows quadratically — four values is
+// six pairs — and the pair a hand-written check forgets is exactly the one that
+// collapses silently.
 const CREDENTIALS = [
   ['CATALOG_STAFF_WRITE_TOKEN', 'the back office cannot write to catalog'],
   ['COMMERCE_STAFF_WRITE_TOKEN', 'the back office cannot refund'],
   ['INVENTORY_STAFF_WRITE_TOKEN', 'the back office cannot edit channel allocations'],
+  ['ACCESS_STAFF_WRITE_TOKEN', "the back office cannot re-send an order's tickets"],
 ];
 
 // The same floor runtimecfg.CredentialMinBytes applies to these credentials on the
@@ -81,7 +83,8 @@ export function assertCredentialSeparation(env = process.env) {
         throw new Error(
           `${a} must not equal ${b}: they exist to have different blast radii — ` +
             'one authors catalog content, one moves money, one configures inventory ' +
-            'capacity — and identical values collapse that boundary while looking configured.',
+            "capacity, one re-sends an order's tickets — and identical values collapse " +
+            'that boundary while looking configured.',
         );
       }
     }

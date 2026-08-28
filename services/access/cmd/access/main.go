@@ -25,6 +25,7 @@ import (
 
 	apispec "ticketing/services/access/api"
 	accessapi "ticketing/services/access/internal/api"
+	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/consumer"
 	"ticketing/services/access/internal/lifecyclejob"
 	accessstore "ticketing/services/access/internal/store"
@@ -35,6 +36,11 @@ import (
 )
 
 const serviceName = "access"
+
+// staffWriteTokenEnv carries the back office's access credential (TKT-203, ADR-068).
+// It opens exactly one operation — the staff redelivery of a completed order's
+// tickets — and nothing else on this service's internal surface.
+const staffWriteTokenEnv = "ACCESS_STAFF_WRITE_TOKEN"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -231,6 +237,30 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// The back office's access credential (TKT-203, ADR-068). Required, because a
+	// service that starts without it would refuse every redelivery at request time
+	// with a 404 that looks like a routing mistake rather than a missing secret —
+	// and the operator would be debugging the back office, not the config.
+	staffWriteToken, err := runtimecfg.RequiredCredential(staffWriteTokenEnv, "", runtimecfg.CredentialMinBytes)
+	if err != nil {
+		return err
+	}
+	// Refuse to start when the two credentials are equal. They exist to have
+	// different blast radii — this one re-sends one order's tickets, the shared one
+	// opens every service's internal surface — and identical values collapse that
+	// boundary while looking configured. Neither value is echoed.
+	//
+	// Comparing raw strings is sound because RequiredCredential has already refused
+	// every value HTTP would normalize, edge whitespace above all: " s " and "s" are
+	// one credential on the wire while differing here. Same check, same reasoning, as
+	// inventory's (ADR-057).
+	if staffWriteToken == token {
+		return errors.New(staffWriteTokenEnv + " must not equal INTERNAL_SERVICE_TOKEN: " +
+			"they exist to have different blast radii — one re-sends a single order's " +
+			"tickets, the other opens every internal operation in every service — and " +
+			"identical values collapse that boundary while looking configured")
+	}
 	verifier, err := ticket.NewVerifier(os.Getenv("ACCESS_QR_PUBLIC_KEYS"), os.Getenv("ACCESS_QR_KID"))
 	if err != nil {
 		return err
@@ -313,7 +343,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, os.Getenv("PUBLIC_BASE_URL"), consumer.NewLogMailer(log), log, consumerOptions)
+	publicURL := os.Getenv("PUBLIC_BASE_URL")
+	mailer := consumer.NewLogMailer(log)
+	cons := consumer.New(js, st, signer, obs.Client(), commerceURL, token, publicURL, mailer, log, consumerOptions)
 	// One slot per producer below. At capacity 1 the second consumer to fail
 	// blocks on the send, and its error — which may be a genuine failure, not a
 	// shutdown cancellation — is never observable by awaitShutdown (ai-review R1).
@@ -371,7 +403,12 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
-	r.Mount("/", accessapi.New(st, verifier, token).WithQRLinkKey(qrLinkKey).WithFeedCursorKey(feedCursorKey).Router(log, validateResponses))
+	r.Mount("/", accessapi.New(st, verifier, token).
+		WithQRLinkKey(qrLinkKey).
+		WithFeedCursorKey(feedCursorKey).
+		WithStaffWriteCredential(staffWriteToken).
+		WithRedelivery(delivery.CommerceAddressBook{Client: obs.Client(), BaseURL: commerceURL, Token: token}, mailer, publicURL).
+		Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

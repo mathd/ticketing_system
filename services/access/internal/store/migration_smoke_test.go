@@ -296,13 +296,17 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	// 0010 added the voided-ticket feed index (TKT-162). Pinned rather than
+	// 0011 added staff-triggered redelivery (TKT-203). Pinned rather than
 	// derived: this assertion exists so that adding a migration is a decision
-	// someone states here, not a number that drifts. Stating it — 0010 creates
-	// tickets_organizer_feed_idx so the feed's tenant filter is index-backed
-	// (ADR-019); it adds no column, no constraint and no data, so nothing above
-	// this line changes meaning.
-	if err != nil || current != 10 || target != 10 {
+	// someone states here, not a number that drifts. Stating it — 0011 widens the
+	// event_type CHECK to admit `redelivered` and adds redelivery_requests /
+	// redelivery_attempts. It deliberately leaves the singleton partial index
+	// alone, so `delivered` stays once-per-ticket and this test's assertions about
+	// the upgraded history are untouched; it adds no column to lifecycle_events and
+	// changes no canonical bytes (ADR-021), so nothing above this line changes
+	// meaning. (0010 before it created tickets_organizer_feed_idx for the
+	// voided-ticket feed's tenant filter, ADR-019.)
+	if err != nil || current != 11 || target != 11 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 

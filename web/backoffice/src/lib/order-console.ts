@@ -163,3 +163,38 @@ export function unresolvedRefund(
   // A decided refusal to a first attempt: nothing moved.
   return null;
 }
+
+/**
+ * What the resend form is allowed to contribute (TKT-203).
+ *
+ * TWO FIELDS, and the shortness is the point. Note what is NOT here: no
+ * recipient, no address, no email, no guest reference. The destination is the
+ * one on file, resolved inside access from the ticket's buyer — there is no
+ * field for it because a field for it is the fraud surface the owner's decision
+ * refuses (2026-08-26), and a field that is validated is still a field.
+ *
+ * `organizer_id` is absent for the same reason it is absent from the refund
+ * parser: it comes from the session. A browser that could name the organizer
+ * could resend another tenant's order.
+ */
+export type RedeliveryInput = {
+  orderId: string;
+  idempotencyKey: string;
+};
+
+export function parseRedelivery(
+  field: (name: string) => string,
+): { ok: true; value: RedeliveryInput } | { ok: false; message: string } {
+  const orderId = field('order_id').trim();
+  if (!UUID.test(orderId)) {
+    return { ok: false, message: 'That order id is not a valid identifier.' };
+  }
+  // Minted server-side when the form rendered. Its absence means this submission
+  // cannot be made idempotent, and a resend that cannot be replayed safely is one
+  // a double-click performs twice.
+  const idempotencyKey = field('idempotency_key').trim();
+  if (!UUID.test(idempotencyKey)) {
+    return { ok: false, message: 'This form is stale — try the lookup again.' };
+  }
+  return { ok: true, value: { orderId, idempotencyKey } };
+}
