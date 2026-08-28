@@ -16,7 +16,7 @@ This is a **testbed**, not a client engagement. The point is to evaluate AI-assi
 development on a **non-trivial** application by:
 - authoring specs and PRDs from the owner's domain knowledge, and
 - trying **different AI / development flows** to plan and build the system (e.g. the `sdlc-ticket`
-  skill and board in `.sdlc/`).
+  skill and its board).
 
 Optimize for learning how well a given flow produces a real system — not for shipping the fastest
 possible MVP. When a flow or process choice is being exercised, follow it faithfully so the
@@ -212,10 +212,16 @@ experiment stays valid.
   (see `registry.bindingPath` in `.claude/sdlc.config.json`; template in `docs/adr/[template].md`).
 - **Documentation is 100% in-repo** — no Confluence or external wiki. PRDs and briefs in
   `docs/product/`, ADRs in `docs/adr/`, learnings in `docs/LEARNINGS.md` + `docs/learnings/`,
-  ticket context on the `.sdlc/` board; see `docs/README.md` for the rest. Anything the
+  ticket context on the sdlc board; see `docs/README.md` for the rest. Anything the
   sdlc-ticket skill would send to a wiki goes to `docs/` instead.
-- The `sdlc-ticket` skill and the git-derived board (`.sdlc/`) are the default workflow scaffolding
-  for planning and tracking work here.
+- The `sdlc-ticket` skill and its board are the default workflow scaffolding for planning and
+  tracking work here. **Ticket state is not in this repo.** It lives as one note per ticket in a
+  Fast Note Sync vault, served by the board in `~/sources/sdlc-board` (`python3 server.py 8787`);
+  read and write it through that server's HTTP API, per
+  `.claude/skills/sdlc-ticket/references/local-tracker.md`. The `.sdlc/` directory here is a
+  **superseded rollback stub** — its `server.py`, `board.html` and `config.json` are no longer the
+  source of truth and must not be run. The `sdlc-state` branch is likewise a **read-only archive**
+  refreshed by a scheduled pull; never write to it.
 - **Changing a domain event's payload, or consuming one? Read [ADR-017](docs/adr/ADR-017-domain-event-schema-evolution.md) first.**
   Bump on **consumer semantics**, not parse compatibility — the dangerous payload deserializes fine
   (§3). And a consumer must **dispatch on `schema` before decoding `data`** (§5b′): a bump exists
