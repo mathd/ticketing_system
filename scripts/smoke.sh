@@ -572,6 +572,29 @@ compose exec -T payments /app verify-journal
 # that committed it) verifies CLEAN and is not tested here as a failure — it is a
 # known, accepted gap until TKT-11, pinned by
 # TestVerifyLifecycleAcceptsACoordinatedRollback in the store suite.
+#
+# ACCESS STAYS LIVE THROUGH THIS BLOCK, and that is a decision, not an oversight
+# (TKT-261). Do not "fix" it by stopping the writer:
+#
+#   - Stopping access is not available. These verify-lifecycle calls `compose exec`
+#     into the access container, so `compose stop access` makes the block unrunnable.
+#     (This differs from the payments journal block above, which CAN stop commerce
+#     because commerce is a different container from the one it execs into.)
+#   - Quieting the checkpointer would not help. The checkpointer writes
+#     lifecycle_checkpoints and lifecycle_head_changes; it never calls
+#     appendLifecycle. The append path has TEN production call sites —
+#     postgres.go ×4, reconcile.go ×3, exchanges.go, refunds.go, scan.go — reached
+#     by HTTP handlers and by the access-ticket-issuer JetStream consumer. Anything
+#     that quiets only the ticker leaves the general case open.
+#   - ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL is not a lever either: scripts/stack-env.sh
+#     assigns it unconditionally, so an env prefix is overwritten.
+#
+# THE RESIDUAL, stated plainly: the race is open. A writer can still commit between
+# the backup and the restore below, and lifecycle_head_changes is not restored by this
+# block at all. What TKT-261 added is OBSERVABILITY, not quiescence — the round-trip
+# checks below make a recurrence say "the restore did not round-trip" instead of
+# failing later with a false integrity finding. The run still fails; it fails
+# honestly. Nothing here changes what verify-lifecycle proves.
 compose exec -T access /app verify-lifecycle
 
 psql_access() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d access -c "$1" >/dev/null; }
@@ -612,6 +635,75 @@ psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM
 psql_access "UPDATE lifecycle_checkpoints SET root=decode(repeat('22',32),'hex');"
 expect_lifecycle_failure "checkpoint root"
 psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
+
+# TKT-261: prove the restore actually round-tripped, BEFORE the final verify-lifecycle
+# and before the backups are dropped below.
+#
+# Access stays live through this whole block -- deliberately, per the ticket's decision:
+# no barrier, no `compose stop`, no interval manipulation. Stopping access is not even
+# available here, because access is the container the verify-lifecycle calls `compose
+# exec` into. So a writer CAN commit between the backup above and this point, and the
+# restore then discards whatever it added to the backed-up tables.
+#
+# That is TKT-254's shape, and on this block it misreports as TAMPERING rather than as a
+# flake: lifecycle_events is NOT backed up while lifecycle_event_integrity IS, so a
+# window append leaves an events row whose integrity row the restore removed, and
+# verify-lifecycle runs with RequireCoverage:true. The trail is reported broken about a
+# writer that did nothing wrong.
+#
+# These checks do not CLOSE that race -- they make it name itself. A recurrence fails
+# here, saying the restore did not round-trip, instead of failing later with a false
+# integrity finding that sends someone hunting a corruption bug that does not exist.
+#
+# One transaction, because the race is between statements: an append landing after the
+# integrity restore but before the head restore leaves new rows paired with an old head.
+# Integrity before heads, matching appendLifecycle's own lock order.
+#
+# THREE DIFFERENT COMPARISONS, because the restore is not uniform:
+#   - lifecycle_event_integrity and lifecycle_heads are TRUNCATE + INSERT ... SELECT, so
+#     they must match their backup exactly, both directions.
+#   - lifecycle_checkpoints is restored by UPDATE on `root` ALONE (see the note above),
+#     so a checkpoint row the live checkpointer added during the window is expected and
+#     is NOT a restore failure. Only backup rows must still be present with their
+#     original root. A full-table equality here would be a guard firing on something it
+#     does not guard -- a red gate with no defect behind it, which is worse than the
+#     flake (TKT-254).
+psql_access "BEGIN;
+DO \$tkt261\$
+DECLARE events_count bigint; integrity_count bigint;
+BEGIN
+  IF EXISTS (
+    (TABLE lifecycle_event_integrity EXCEPT ALL TABLE lifecycle_event_integrity_smoke_backup)
+    UNION ALL
+    (TABLE lifecycle_event_integrity_smoke_backup EXCEPT ALL TABLE lifecycle_event_integrity)
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_event_integrity -- a writer committed inside the backup/restore window. Investigate THIS restore, not the trail: verify-lifecycle output after a failed restore is not evidence of corruption.';
+  END IF;
+  IF EXISTS (
+    (TABLE lifecycle_heads EXCEPT ALL TABLE lifecycle_heads_smoke_backup)
+    UNION ALL
+    (TABLE lifecycle_heads_smoke_backup EXCEPT ALL TABLE lifecycle_heads)
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a writer committed inside the backup/restore window. Investigate THIS restore, not the trail.';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_checkpoints_smoke_backup b
+    LEFT JOIN lifecycle_checkpoints c ON c.checkpoint_id=b.checkpoint_id
+    WHERE c.checkpoint_id IS NULL OR c.root IS DISTINCT FROM b.root
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints roots -- the UPDATE restore left a backed-up checkpoint missing or with a different root. Investigate THIS restore, not the trail.';
+  END IF;
+  SELECT count(*) INTO events_count FROM lifecycle_events;
+  SELECT count(*) INTO integrity_count FROM lifecycle_event_integrity;
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_events e
+    WHERE NOT EXISTS (SELECT 1 FROM lifecycle_event_integrity i WHERE i.event_id=e.id)
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip coverage -- lifecycle_events=%, lifecycle_event_integrity=%. An event survives with no integrity row, which is what a window append leaves behind: lifecycle_events has no backup, so the restore cannot undo it. verify-lifecycle would report this as tampering; the race belongs to this block, not to the writer.', events_count, integrity_count;
+  END IF;
+END
+\$tkt261\$;
+COMMIT;"
 
 psql_access "ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER;
             ALTER TABLE lifecycle_heads ENABLE TRIGGER USER;
