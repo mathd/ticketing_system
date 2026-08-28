@@ -632,7 +632,13 @@ psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM
 # Restored by UPDATE, not TRUNCATE: lifecycle_head_changes carries a foreign key
 # to this table, so TRUNCATE ... CASCADE would take the checkpoint's own leaves
 # with it and "restore" into an empty trail that verifies for the wrong reason.
-psql_access "UPDATE lifecycle_checkpoints SET root=decode(repeat('22',32),'hex');"
+# TKT-261: scoped to the BACKED-UP checkpoint ids. Unscoped, this corrupted every
+# checkpoint including any the live checkpointer inserted after the backup — and the
+# restore below only covers backup ids, so such a row was corrupted and then never
+# restored, failing the final verify-lifecycle for a reason this block caused. That
+# is the same misdiagnosis the round-trip checks exist to prevent, so the corruption
+# must not be able to reach a row the restore cannot reach (ai-review [high]).
+psql_access "UPDATE lifecycle_checkpoints c SET root=decode(repeat('22',32),'hex') FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
 expect_lifecycle_failure "checkpoint root"
 psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
 
@@ -659,32 +665,48 @@ psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_check
 # integrity restore but before the head restore leaves new rows paired with an old head.
 # Integrity before heads, matching appendLifecycle's own lock order.
 #
-# THREE DIFFERENT COMPARISONS, because the restore is not uniform:
-#   - lifecycle_event_integrity and lifecycle_heads are TRUNCATE + INSERT ... SELECT, so
-#     they must match their backup exactly, both directions.
-#   - lifecycle_checkpoints is restored by UPDATE on `root` ALONE (see the note above),
-#     so a checkpoint row the live checkpointer added during the window is expected and
-#     is NOT a restore failure. Only backup rows must still be present with their
-#     original root. A full-table equality here would be a guard firing on something it
-#     does not guard -- a red gate with no defect behind it, which is worse than the
-#     flake (TKT-254).
+# EVERY CHECK ASKS ONE QUESTION: did the backed-up rows survive the restore intact?
+# NONE of them demands that the tables be unchanged, and that distinction is the whole
+# design (ai-review [high] -- the first version got it wrong).
+#
+# A healthy append during this block writes its event, integrity row and head IN ONE
+# TRANSACTION (appendLifecycle), so it leaves a COHERENT state: nothing was lost, and
+# the restore had nothing to undo. Bidirectional equality against a pre-window snapshot
+# would fire on exactly that -- failing CI on legitimate access activity while reporting
+# a restore failure that never happened. READ COMMITTED makes it worse, not better: each
+# statement takes a fresh snapshot, so an append landing between two comparisons can trip
+# one and not the other. A guard that fires on something it does not guard is a red gate
+# with no defect behind it, which is worse than the flake (TKT-254).
+#
+# So each check tolerates a coherent appended suffix and asserts only survival:
+#   - lifecycle_event_integrity: every backed-up row still present and byte-identical.
+#     New rows are an append, not an injury.
+#   - lifecycle_heads: every backed-up ticket still has a head, and that head has not
+#     REGRESSED below its backed-up sequence. A head that advanced is an append; a head
+#     that went backwards is the restore undoing a writer.
+#   - lifecycle_checkpoints: restored by UPDATE on `root` ALONE (see the note above), so
+#     only backup rows must still carry their original root. A checkpoint the live
+#     checkpointer added is expected.
+#   - coverage: no lifecycle_events row without an integrity row. This is the one that
+#     catches the window-append shape, and it stays clean under a healthy append because
+#     appendLifecycle writes both in one transaction.
 psql_access "BEGIN;
 DO \$tkt261\$
 DECLARE events_count bigint; integrity_count bigint;
 BEGIN
   IF EXISTS (
-    (TABLE lifecycle_event_integrity EXCEPT ALL TABLE lifecycle_event_integrity_smoke_backup)
-    UNION ALL
-    (TABLE lifecycle_event_integrity_smoke_backup EXCEPT ALL TABLE lifecycle_event_integrity)
+    SELECT 1 FROM lifecycle_event_integrity_smoke_backup b
+    LEFT JOIN lifecycle_event_integrity i ON i.event_id=b.event_id
+    WHERE i.event_id IS NULL OR i IS DISTINCT FROM b
   ) THEN
-    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_event_integrity -- a writer committed inside the backup/restore window. Investigate THIS restore, not the trail: verify-lifecycle output after a failed restore is not evidence of corruption.';
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_event_integrity -- a backed-up integrity row is missing or altered. Investigate THIS restore, not the trail: verify-lifecycle output after a failed restore is not evidence of corruption.';
   END IF;
   IF EXISTS (
-    (TABLE lifecycle_heads EXCEPT ALL TABLE lifecycle_heads_smoke_backup)
-    UNION ALL
-    (TABLE lifecycle_heads_smoke_backup EXCEPT ALL TABLE lifecycle_heads)
+    SELECT 1 FROM lifecycle_heads_smoke_backup b
+    LEFT JOIN lifecycle_heads h ON h.ticket_id=b.ticket_id
+    WHERE h.ticket_id IS NULL OR h.last_sequence < b.last_sequence
   ) THEN
-    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a writer committed inside the backup/restore window. Investigate THIS restore, not the trail.';
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a backed-up head is missing or REGRESSED below its backed-up sequence. Investigate THIS restore, not the trail.';
   END IF;
   IF EXISTS (
     SELECT 1 FROM lifecycle_checkpoints_smoke_backup b
