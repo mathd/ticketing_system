@@ -572,6 +572,29 @@ compose exec -T payments /app verify-journal
 # that committed it) verifies CLEAN and is not tested here as a failure — it is a
 # known, accepted gap until TKT-11, pinned by
 # TestVerifyLifecycleAcceptsACoordinatedRollback in the store suite.
+#
+# ACCESS STAYS LIVE THROUGH THIS BLOCK, and that is a decision, not an oversight
+# (TKT-261). Do not "fix" it by stopping the writer:
+#
+#   - Stopping access is not available. These verify-lifecycle calls `compose exec`
+#     into the access container, so `compose stop access` makes the block unrunnable.
+#     (This differs from the payments journal block above, which CAN stop commerce
+#     because commerce is a different container from the one it execs into.)
+#   - Quieting the checkpointer would not help. The checkpointer writes
+#     lifecycle_checkpoints and lifecycle_head_changes; it never calls
+#     appendLifecycle. The append path has TEN production call sites —
+#     postgres.go ×4, reconcile.go ×3, exchanges.go, refunds.go, scan.go — reached
+#     by HTTP handlers and by the access-ticket-issuer JetStream consumer. Anything
+#     that quiets only the ticker leaves the general case open.
+#   - ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL is not a lever either: scripts/stack-env.sh
+#     assigns it unconditionally, so an env prefix is overwritten.
+#
+# THE RESIDUAL, stated plainly: the race is open. A writer can still commit between
+# the backup and the restore below, and lifecycle_head_changes is not restored by this
+# block at all. What TKT-261 added is OBSERVABILITY, not quiescence — the round-trip
+# checks below make a recurrence say "the restore did not round-trip" instead of
+# failing later with a false integrity finding. The run still fails; it fails
+# honestly. Nothing here changes what verify-lifecycle proves.
 compose exec -T access /app verify-lifecycle
 
 psql_access() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d access -c "$1" >/dev/null; }
@@ -609,9 +632,144 @@ psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM
 # Restored by UPDATE, not TRUNCATE: lifecycle_head_changes carries a foreign key
 # to this table, so TRUNCATE ... CASCADE would take the checkpoint's own leaves
 # with it and "restore" into an empty trail that verifies for the wrong reason.
-psql_access "UPDATE lifecycle_checkpoints SET root=decode(repeat('22',32),'hex');"
+# TKT-261: scoped to the BACKED-UP checkpoint ids. Unscoped, this corrupted every
+# checkpoint including any the live checkpointer inserted after the backup — and the
+# restore below only covers backup ids, so such a row was corrupted and then never
+# restored, failing the final verify-lifecycle for a reason this block caused. That
+# is the same misdiagnosis the round-trip checks exist to prevent, so the corruption
+# must not be able to reach a row the restore cannot reach (ai-review [high]).
+psql_access "UPDATE lifecycle_checkpoints c SET root=decode(repeat('22',32),'hex') FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
 expect_lifecycle_failure "checkpoint root"
 psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
+
+# TKT-261: prove the restore actually round-tripped, BEFORE the final verify-lifecycle
+# and before the backups are dropped below.
+#
+# Access stays live through this whole block -- deliberately, per the ticket's decision:
+# no barrier, no `compose stop`, no interval manipulation. Stopping access is not even
+# available here, because access is the container the verify-lifecycle calls `compose
+# exec` into. So a writer CAN commit between the backup above and this point, and the
+# restore then discards whatever it added to the backed-up tables.
+#
+# That is TKT-254's shape, and on this block it misreports as TAMPERING rather than as a
+# flake: lifecycle_events is NOT backed up while lifecycle_event_integrity IS, so a
+# window append leaves an events row whose integrity row the restore removed, and
+# verify-lifecycle runs with RequireCoverage:true. The trail is reported broken about a
+# writer that did nothing wrong.
+#
+# These checks do not CLOSE that race -- they make it name itself. A recurrence fails
+# here, saying the restore did not round-trip, instead of failing later with a false
+# integrity finding that sends someone hunting a corruption bug that does not exist.
+#
+# One transaction, because the race is between statements: an append landing after the
+# integrity restore but before the head restore leaves new rows paired with an old head.
+# Integrity before heads, matching appendLifecycle's own lock order.
+#
+# EVERY CHECK ASKS ONE QUESTION: did the backed-up rows survive the restore intact?
+# NONE of them demands that the tables be unchanged, and that distinction is the whole
+# design (ai-review [high] -- the first version got it wrong).
+#
+# A healthy append during this block writes its event, integrity row and head IN ONE
+# TRANSACTION (appendLifecycle), so it leaves a COHERENT state: nothing was lost, and
+# the restore had nothing to undo. Bidirectional equality against a pre-window snapshot
+# would fire on exactly that -- failing CI on legitimate access activity while reporting
+# a restore failure that never happened. READ COMMITTED makes it worse, not better: each
+# statement takes a fresh snapshot, so an append landing between two comparisons can trip
+# one and not the other. A guard that fires on something it does not guard is a red gate
+# with no defect behind it, which is worse than the flake (TKT-254).
+#
+# So each check tolerates a coherent appended suffix and asserts only survival:
+#   - lifecycle_event_integrity: every backed-up row still present and byte-identical.
+#     New rows are an append, not an injury.
+#   - lifecycle_heads, in TWO parts. Survival: every backed-up ticket still has a head
+#     that has not REGRESSED below its backed-up sequence. Coherence: every head agrees
+#     with its own integrity chain. The second is not redundant -- the restores are
+#     separate statements, so an append landing BETWEEN them keeps its integrity row and
+#     loses its head to the backup, and the restored head equals the backup, so survival
+#     alone passes while the chain is broken (ai-review pass 2).
+#   - lifecycle_checkpoints: restored by UPDATE on `root` ALONE (see the note above), so
+#     only backup rows must still carry their original root. A checkpoint the live
+#     checkpointer added is expected.
+#   - coverage: no lifecycle_events row without an integrity row. This catches ONE
+#     window-append shape -- an append surviving the integrity restore's TRUNCATE -- and
+#     it stays clean under a healthy append because appendLifecycle writes both in one
+#     transaction. It does NOT catch the between-restores split; the coherence check
+#     above does.
+psql_access "BEGIN;
+DO \$tkt261\$
+DECLARE events_count bigint; integrity_count bigint;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_event_integrity_smoke_backup b
+    LEFT JOIN lifecycle_event_integrity i ON i.event_id=b.event_id
+    WHERE i.event_id IS NULL OR i IS DISTINCT FROM b
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_event_integrity -- a backed-up integrity row is missing or altered. Investigate THIS restore, not the trail: verify-lifecycle output after a failed restore is not evidence of corruption.';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_heads_smoke_backup b
+    LEFT JOIN lifecycle_heads h ON h.ticket_id=b.ticket_id
+    WHERE h.ticket_id IS NULL OR h.last_sequence < b.last_sequence
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a backed-up head is missing or REGRESSED below its backed-up sequence. Investigate THIS restore, not the trail.';
+  END IF;
+  -- HEAD/CHAIN COHERENCE. Survival alone is not enough (ai-review pass 2, [high]):
+  -- the integrity restore and the head restore are SEPARATE statements, so an append
+  -- committing between them keeps its integrity row (written after the integrity
+  -- restore, and permitted above as a suffix) while its advanced head is overwritten
+  -- by the backup. The restored head EQUALS the backup, so the regression check above
+  -- passes -- and the chain is broken. verify-lifecycle then reports tampering, which
+  -- is the exact misdiagnosis this block exists to prevent.
+  --
+  -- So assert the head agrees with the chain it heads: for every ticket with integrity
+  -- rows, a head must exist and its last_sequence must equal that ticket''s highest
+  -- integrity sequence. A fully committed suffix keeps them equal; a suffix whose head
+  -- the restore erased does not.
+  IF EXISTS (
+    SELECT 1 FROM (
+      SELECT ticket_id, MAX(sequence) AS seq FROM lifecycle_event_integrity GROUP BY ticket_id
+    ) top
+    LEFT JOIN lifecycle_heads h ON h.ticket_id=top.ticket_id
+    WHERE h.ticket_id IS NULL OR h.last_sequence <> top.seq
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a head disagrees with its own integrity chain, which is what an append committing BETWEEN the integrity restore and the head restore leaves behind. Investigate THIS restore, not the trail.';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_checkpoints_smoke_backup b
+    LEFT JOIN lifecycle_checkpoints c ON c.checkpoint_id=b.checkpoint_id
+    WHERE c.checkpoint_id IS NULL OR c.root IS DISTINCT FROM b.root
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints roots -- the UPDATE restore left a backed-up checkpoint missing or with a different root. Investigate THIS restore, not the trail.';
+  END IF;
+  -- CHECKPOINT CHAIN COHERENCE (ai-review pass 3, [high]). The checks above look only
+  -- at backed-up ids, which leaves one shape open: while a backed-up root is corrupt,
+  -- the live checkpointer can read that corrupt value as previous_root and commit a
+  -- SUCCESSOR. The restore repairs the predecessor and never touches the successor, so
+  -- every check above passes and verify-lifecycle reports a broken link as tampering.
+  --
+  -- Reachability is narrow -- CheckpointOrganizer skips its regression comparison only
+  -- when the in-process observed sequence is 0 (lifecycle_checkpoint.go:161), which in
+  -- this script means an organizer this access process has not yet checkpointed -- but
+  -- narrow is not closed, and a guard that names its own damage costs one join.
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_checkpoints c
+    JOIN lifecycle_checkpoints prev
+      ON prev.organizer_id=c.organizer_id AND prev.sequence=c.sequence-1
+    WHERE c.previous_root IS DISTINCT FROM prev.root
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints -- a checkpoint previous_root disagrees with its predecessor root, which is what a checkpoint committed while this block held a root corrupt leaves behind. Investigate THIS restore, not the trail.';
+  END IF;
+  SELECT count(*) INTO events_count FROM lifecycle_events;
+  SELECT count(*) INTO integrity_count FROM lifecycle_event_integrity;
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_events e
+    WHERE NOT EXISTS (SELECT 1 FROM lifecycle_event_integrity i WHERE i.event_id=e.id)
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip coverage -- lifecycle_events=%, lifecycle_event_integrity=%. An event survives with no integrity row, which is what a window append leaves behind: lifecycle_events has no backup, so the restore cannot undo it. verify-lifecycle would report this as tampering; the race belongs to this block, not to the writer.', events_count, integrity_count;
+  END IF;
+END
+\$tkt261\$;
+COMMIT;"
 
 psql_access "ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER;
             ALTER TABLE lifecycle_heads ENABLE TRIGGER USER;
