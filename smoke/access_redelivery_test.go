@@ -42,6 +42,20 @@ func redeliver(t *testing.T, orderID, key, token string) (int, string) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
+	// Through the validation chokepoint, exactly as internalRequest does. Two things
+	// depend on it and neither is optional: the response is checked against the
+	// contract (ADR-028 — a status or shape this operation does not declare is a
+	// defect, not a detail), and the operation is recorded as covered.
+	//
+	// A raw Do() here would have skipped both. The suite's own coverage gate caught it
+	// — "documented 2xx operations with no smoke happy-path coverage" — which is the
+	// raw-helper hole coverage_test.go's header describes, reproduced by writing a new
+	// helper that looked like the ones around it.
+	if service := directService(url); service != "" {
+		if err := checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, body); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
 	return resp.StatusCode, string(body)
 }
 
