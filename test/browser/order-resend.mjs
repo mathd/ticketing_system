@@ -161,28 +161,47 @@ try {
     sql(PG, 'access', `SELECT order_id::text FROM redelivery_requests WHERE order_id='${orderId}'`) === orderId,
   );
 
-  // COS-7 through a real double submit. The page mints a NEW key per rendered form, so
-  // a second click on a freshly rendered form is a second deliberate send — the
-  // double-click case is the SAME key submitted twice, which is what going back to the
-  // already-rendered form does.
-  await page.goBack({ waitUntil: 'domcontentloaded' });
-  const staleForm = page.locator("form.refund:has(h2:text(\"Re-send this order's tickets\"))");
-  if ((await staleForm.count()) === 1) {
-    const staleKey = await staleForm.locator('input[name="idempotency_key"]').inputValue();
-    if (staleKey === key) {
-      await submitForm(page, staleForm.getByRole('button', { name: 'Re-send to the address on file' }));
-      check(
-        'resubmitting the same key sent nothing further',
-        countAccess(`redelivery_attempts WHERE ticket_id IN (${ticketList})`) === ticketIds.length,
-      );
-      check(
-        'resubmitting the same key appended no further trail events',
-        countAccess(
-          `lifecycle_events WHERE event_type='redelivered' AND ticket_id IN (${ticketList})`,
-        ) === ticketIds.length,
-      );
-    }
-  }
+  // COS-7 through a real double submit of ONE key.
+  //
+  // Not page.goBack(): the console sets Cache-Control: no-store (ADR-004's "never"
+  // tier), so the POST result cannot be re-fetched from cache and goBack fails with
+  // ERR_CACHE_MISS. That is the page behaving correctly, and the first run of this spec
+  // crashed on it.
+  //
+  // Instead, re-render the form and REPLACE its key with the one already used. The page
+  // mints a fresh key per rendered form — which is right, a deliberate second resend
+  // should be a second request — so the double-click case is specifically the same key
+  // arriving twice, and forcing that is the only way to submit it from a browser.
+  await page.goto(PATH, { waitUntil: 'domcontentloaded' });
+  await page.fill('#order_id', orderId);
+  await submitForm(page, page.getByRole('button', { name: 'Look it up' }));
+
+  const againForm = page.locator("form.refund:has(h2:text(\"Re-send this order's tickets\"))");
+  const freshKey = await againForm.locator('input[name="idempotency_key"]').inputValue();
+  check('a re-rendered resend form mints a NEW key', freshKey !== key, freshKey);
+
+  await againForm
+    .locator('input[name="idempotency_key"]')
+    .evaluate((el, value) => {
+      el.value = value;
+    }, key);
+  await submitForm(page, againForm.getByRole('button', { name: 'Re-send to the address on file' }));
+
+  check(
+    'the page reports the second submit of one key as a replay',
+    (await page.locator('.refund-result').innerText()).includes('replayed it rather than sending again'),
+    await page.locator('.refund-result').innerText(),
+  );
+  check(
+    'resubmitting the same key sent nothing further',
+    countAccess(`redelivery_attempts WHERE ticket_id IN (${ticketList})`) === ticketIds.length,
+  );
+  check(
+    'resubmitting the same key appended no further trail events',
+    countAccess(
+      `lifecycle_events WHERE event_type='redelivered' AND ticket_id IN (${ticketList})`,
+    ) === ticketIds.length,
+  );
 } finally {
   await browser.close();
 }
