@@ -140,22 +140,38 @@ func TestFeedAbuseTelemetryNamesTheDeviceAnOperatorWouldRevoke(t *testing.T) {
 
 	// The log carries the device identity. This is the operator's signal and the
 	// one sink that must not be lossy.
+	//
+	// Two SEPARATE assertions over the log, and the separation is the point
+	// (ai-review F2). Checking the token only inside the abuse.request line
+	// would leave a leak from any OTHER emitter — the request logger, the auth
+	// path, a future middleware — green, and the requirement is that the token
+	// reaches NO log line. So: find the identity in its own record, and check
+	// the absence across every line the request produced.
 	retry(t, 20*time.Second, func() error {
 		out, err := dockerRun(ctx, "compose", "-p", project, "logs", "--no-color", "access")
 		if err != nil {
 			return fmt.Errorf("compose logs access: %v: %s", err, out)
 		}
+		var found bool
 		for _, line := range strings.Split(out, "\n") {
 			if strings.Contains(line, `"msg":"abuse.request"`) && strings.Contains(line, deviceID) {
-				// COS 3, asserted on the real binary's real output: the token
-				// never accompanies the id it identifies.
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("no abuse.request record naming device %s in the access log yet", deviceID)
+		}
+		// Global absence, over the WHOLE log rather than one selected record.
+		// Not a retry condition: a leak does not become un-leaked by waiting.
+		if strings.Contains(out, scannerToken()) {
+			for _, line := range strings.Split(out, "\n") {
 				if strings.Contains(line, scannerToken()) {
 					t.Fatalf("the scanner token reached the access log: %s", line)
 				}
-				return nil
 			}
 		}
-		return fmt.Errorf("no abuse.request record naming device %s in the access log yet", deviceID)
+		return nil
 	})
 
 	// And the aggregate counter reached Prometheus, which proves ObserveMetrics

@@ -139,13 +139,11 @@ func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
 	}
 	organizer := identity.OrganizerID
 
-	// TKT-272. Emitted HERE — after authentication, before any validation — so
-	// that every authenticated poll is counted whatever the outcome. This route
-	// is deliberately not rate limited (ADR-066): revocation is the control, it
-	// takes a device id, and a poller hammering the route with malformed
-	// cursors is still a poller. Telemetry that counted only the requests this
-	// handler goes on to serve would be blind to the cheapest way to abuse it.
-	s.telemetry.observeFeedPoll(r.Context(), identity.DeviceID)
+	// The abuse record for this poll was already emitted during authentication
+	// (see authenticateScannerDevice, TKT-272 / ai-review F1). Deliberately NOT
+	// emitted again here: authentication runs before parameter validation, so
+	// emitting in the handler would both miss the schema-refused polls and
+	// double-count the ones that get this far.
 
 	limit := store.VoidedFeedPageLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {

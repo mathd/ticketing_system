@@ -386,6 +386,25 @@ func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3f
 		return errors.New("unauthorized")
 	}
 	s.devices.TouchScannerDevice(ctx, device.ID)
+
+	// TKT-272 (ai-review F1). Emitted HERE rather than in the handler, because
+	// authentication runs BEFORE parameter validation: a request whose `limit`
+	// fails the contract's schema is refused by the validator, yet it has
+	// already reached AuthenticateScannerDevice (a SELECT) and
+	// TouchScannerDevice (an UPDATE). Emitting from the handler left exactly
+	// that request — the cheapest one to send — invisible to the telemetry
+	// whose whole job is to name the device an operator should revoke.
+	// Confirmed by execution, not inference: a probe sent `limit=abc` and
+	// observed status=400 with the device touched once.
+	//
+	// Scoped to the feed operation by the ROUTE the validator resolved, not by
+	// a path string: the router has already matched, so this cannot drift with
+	// spelling, case or encoding the way a path comparison would (ADR-012's
+	// rule about keying on route identity applies to the redaction direction;
+	// here the resolved route IS the identity, and it is not client-spellable).
+	if isVoidedFeedOperation(input.RequestValidationInput) {
+		s.telemetry.observeFeedPoll(ctx, device.ID)
+	}
 	// Hand the device's organizer to the handler. Resolving a device and then
 	// discarding what it is enrolled FOR is what made enrolment platform-wide.
 	if slot, ok := input.RequestValidationInput.Request.Context().Value(scannerOrganizerKey{}).(*scannerIdentity); ok && slot != nil {
@@ -396,6 +415,22 @@ func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3f
 		*slot = scannerIdentity{OrganizerID: device.OrganizerID, DeviceID: device.ID}
 	}
 	return nil
+}
+
+// voidedFeedOperationID is the contract's operationId for the polling surface.
+// Matched on the RESOLVED route rather than the request path, so it identifies
+// the operation the router actually selected.
+const voidedFeedOperationID = "listVoidedTickets"
+
+// isVoidedFeedOperation answers whether the validator resolved this request to
+// the voided-ticket feed. Fails closed to "no": an unresolved route is not this
+// operation, and over-emitting on every scan would put a per-admission write
+// path behind a telemetry call it does not need.
+func isVoidedFeedOperation(input *openapi3filter.RequestValidationInput) bool {
+	if input == nil || input.Route == nil || input.Route.Operation == nil {
+		return false
+	}
+	return input.Route.Operation.OperationID == voidedFeedOperationID
 }
 
 // scannerIdentity is what the request validator resolved from the device token:

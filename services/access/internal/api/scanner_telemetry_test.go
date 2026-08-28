@@ -165,57 +165,97 @@ func TestFeedTelemetryNamesTheAuthenticatedDevice(t *testing.T) {
 	}
 }
 
-// A1 (plan-review), CORRECTED BY THE RED TEST. The amendment said "every
-// authenticated request emits one record whatever the outcome". That is not
-// achievable from the handler, and the failing test is what established it:
-// `limit` is schema-bounded in the contract (openapi.yaml: integer, 1..100), so
-// `limit=abc` and `limit=999999` are refused by the request validator BEFORE
-// the handler runs. No handler, no emit — and moving the emit into the
-// validator would mean emitting from a layer shared by every route in the
-// service, which is far beyond this ticket.
+// ai-review F1. Authentication runs BEFORE parameter validation, and it both
+// SELECTs the device and UPDATEs its last_seen_at. So the cheapest abusive
+// request there is — one whose `limit` fails the contract's schema — used to
+// cost two database operations and emit nothing at all, because the emit lived
+// in the handler and the handler never ran. That is the exact inverse of this
+// telemetry's purpose.
 //
-// The honest boundary, which is what this test now pins: every request that
-// REACHES THE HANDLER emits exactly one record, including the ones the handler
-// itself refuses. `cursor` is both the case that matters and the one an abusive
-// poller would actually use — it is a free-form string in the contract
-// (minLength 1, maxLength 400), so a garbage cursor passes schema validation,
-// reaches the handler, and is refused there.
+// The emit now sits in authenticateScannerDevice, scoped to the resolved feed
+// operation. This test is the one that distinguishes the two placements: it is
+// GREEN with the emit at the auth boundary and RED with it in the handler.
 //
-// The residual is recorded in ADR-066 rather than hidden: a caller sending
-// schema-invalid requests is refused at the contract layer and is NOT counted.
-// That caller also never reaches the database, which is the cost this telemetry
-// exists to make visible.
-func TestFeedTelemetryEmitsOnRefusedRequestsToo(t *testing.T) {
-	for name, target := range map[string]string{
-		"bad cursor":      "/scans/voided-tickets?cursor=not-a-cursor",
-		"unsigned cursor": "/scans/voided-tickets?cursor=eyJ2IjoxfQ",
-		"tampered cursor": "/scans/voided-tickets?cursor=abc.def",
+// The `limit` cases are the load-bearing ones — they never reach the handler.
+// The cursor cases do reach it, and are kept to pin that the move did not
+// introduce double-counting.
+func TestFeedTelemetryCountsPollsRefusedByTheContract(t *testing.T) {
+	for name, tc := range map[string]struct {
+		target         string
+		reachesHandler bool
+	}{
+		"schema-invalid limit": {"/scans/voided-tickets?limit=abc", false},
+		"out-of-range limit":   {"/scans/voided-tickets?limit=999999", false},
+		"garbage cursor":       {"/scans/voided-tickets?cursor=not-a-cursor", true},
+		"tampered cursor":      {"/scans/voided-tickets?cursor=abc.def", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newTelemetryHarness(t)
 
-			// The precondition, asserted rather than assumed: if these stopped
-			// being refusals the test would silently become a duplicate of the
-			// happy-path one above.
-			if code := h.poll(t, target).Code; code != http.StatusBadRequest {
-				t.Fatalf("%s = %d, want 400 — this test is about the REFUSAL path", name, code)
+			// Asserted rather than assumed: if these stopped being refusals the
+			// test would quietly become a duplicate of the happy path.
+			if code := h.poll(t, tc.target).Code; code != http.StatusBadRequest {
+				t.Fatalf("%s = %d, want 400 — this test is about REFUSED polls", name, code)
 			}
-			if n := len(h.abuseRecords(t)); n != 1 {
-				t.Fatalf("a refused poll emitted %d records, want 1 — an abusive poller sending junk is still abusive", n)
+
+			// Exactly one, whichever side of validation refused it. One
+			// authenticated poll is one record: no misses, no double-count.
+			records := h.abuseRecords(t)
+			if len(records) != 1 {
+				t.Fatalf("%s emitted %d records, want exactly 1 (reaches handler: %v)", name, len(records), tc.reachesHandler)
+			}
+			if got := records[0]["subject_id"]; got != h.device.String() {
+				t.Fatalf("subject_id = %v, want the authenticated device %s", got, h.device)
 			}
 			if total, _ := h.counterValue(t); total != 1 {
-				t.Fatalf("counter = %d after one refused poll, want 1", total)
+				t.Fatalf("%s: counter = %d, want 1", name, total)
 			}
 		})
 	}
 }
 
-// A2/A3 (plan-review) + the ticket's COS 3, asserted at all three sinks.
+// The emit is scoped to the FEED operation, and this is the test that proves the
+// scoping does something.
 //
-// The token is filled into EVERY position the harness can put it, because
-// TKT-202's 576-arrangement sweep passed while the defect was live: it put a
-// harmless placeholder in the position that leaked. The literal is distinctive
-// so a substring search is exact.
+// Three operations share the ScannerDeviceToken scheme — scanTicket,
+// reconcileScans and listVoidedTickets — and the emit lives in the shared
+// authentication path. Without the operation check, every turnstile admission
+// would emit a record claiming the feed surface was polled, burying the signal
+// this ticket exists to produce under ordinary door traffic.
+//
+// Found by mutation: replacing the scoping condition with `true` left the whole
+// suite green, so the mechanism was live but unobserved. This is that missing
+// observation.
+func TestScannerTelemetryIsScopedToTheFeedOperation(t *testing.T) {
+	h := newTelemetryHarness(t)
+
+	// An authenticated request on a DIFFERENT operation sharing the same
+	// security scheme. It is refused on the credential, which happens after
+	// authentication — so the emit path was certainly reached.
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(scannerDeviceHeader, testDeviceToken)
+	h.router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /scans = %d, want 422 (refused on the credential, i.e. past authentication)", recorder.Code)
+	}
+	if n := len(h.abuseRecords(t)); n != 0 {
+		t.Fatalf("a scan on /scans emitted %d feed-surface records, want 0 — feed telemetry must not fire on every door admission", n)
+	}
+	if total, _ := h.counterValue(t); total != 0 {
+		t.Fatalf("a scan on /scans incremented the feed counter to %d, want 0", total)
+	}
+
+	// Non-vacuity: the same harness DOES emit for the feed operation, so the
+	// zeroes above are scoping rather than a broken fixture.
+	h.poll(t, "/scans/voided-tickets?cursor=not-a-cursor")
+	if n := len(h.abuseRecords(t)); n != 1 {
+		t.Fatalf("the feed itself emitted %d records, want 1 — the zeroes above would prove nothing", n)
+	}
+}
+
 func TestFeedTelemetryNeverEmitsTheDeviceToken(t *testing.T) {
 	h := newTelemetryHarness(t)
 	h.poll(t, "/scans/voided-tickets?cursor=not-a-cursor")

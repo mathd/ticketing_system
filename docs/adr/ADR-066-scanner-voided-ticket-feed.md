@@ -204,8 +204,10 @@ wrong scan.
   package's own doc names what a Limiter does not bound — a distributed caller, a caller who waits
   out the window, and anything at all after a restart — and revocation is unbounded by none of
   those. (3) The per-request cost is a bounded, organizer-scoped, indexed keyset read with a hard
-  page cap of 100 and no write amplification, so a refused request would not be cheaper than a
-  served one.
+  page cap of 100, so it does not carry the write amplification that made a Postgres-backed limiter
+  the wrong shape for the credential-free surfaces — the counters `ratelimit` deliberately keeps out
+  of Postgres. (The device `last_seen_at` touch on the authentication path is a separate, smaller
+  cost; see the bullet on it below.)
 - **Name the adversary for the polling decision (ADR-021).** An **enrolled** device may poll this
   feed as fast as it likes, without bound, until an operator revokes it. Nothing throttles it, and
   no sentence in this repo should say this route is rate limited. What makes that residual
@@ -217,14 +219,22 @@ wrong scan.
   sampler must not decide whether an operator can see an abusive device, and spans leave the
   process for a collector this repo does not control). The token itself never appears in any of
   the three (ADR-012 § TKT-202).
-- **What the abuse counter does NOT count, stated rather than discovered later.** The record is
-  emitted from the feed handler, and the request validator runs before it: a request whose `limit`
-  fails the contract's schema (integer, 1..100) is refused at the contract layer and is never
-  counted. A garbage `cursor` *is* counted, because `cursor` is a free-form string in the contract
-  and so reaches the handler. The gap is deliberate rather than unnoticed — emitting from the
-  validator would mean emitting from a layer every route in this service shares — and it is small in
-  the direction that matters: a caller refused by the contract never reaches the database, which is
-  the cost this telemetry exists to expose.
+- **The record is emitted at AUTHENTICATION, not in the handler, and the difference is not
+  cosmetic.** Authentication runs *before* parameter validation, and it both reads the device row
+  and writes `last_seen_at`. So a request whose `limit` fails the contract's schema — the cheapest
+  abusive request there is — already costs a SELECT and an UPDATE by the time the validator refuses
+  it. An emit in the handler would never see that request, leaving the highest-frequency, lowest-cost
+  abuse invisible to the telemetry whose entire job is to name the device to revoke. Emitting from
+  the authentication path, scoped to the resolved `listVoidedTickets` operation, counts every
+  authenticated poll of this feed whatever refuses it and wherever. (Found by adversarial review and
+  confirmed by execution, after a first implementation emitted from the handler.)
+- **The per-request cost above is the cost of a SERVED poll, and a refused one is not free.** Every
+  authenticated request to any scan route performs the device lookup and a best-effort
+  `UPDATE scanner_devices SET last_seen_at`, before any parameter is validated. That write is small,
+  unindexed on the updated column and confined to one row per device, but it is a write, and a
+  determined enrolled poller does cause row churn on its own row. It is bounded by the same control
+  as everything else here: revoke the device. Stated so the "no write amplification" reasoning above
+  is read as being about the feed's *query* path, which is what it describes.
 - **Name the adversary (ADR-021).** This constrains a caller who does not hold an enrolled device's
   token, and one enrolled device from reading another organizer's revocations. It constrains **nobody
   with write access to the access database**, who can enrol their own device — the same trust
