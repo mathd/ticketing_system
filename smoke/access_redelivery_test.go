@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Staff-triggered redelivery, end to end (TKT-203, ADR-068).
@@ -58,6 +59,34 @@ func countAccessRows(t *testing.T, ctx context.Context, query string, args ...an
 	return n
 }
 
+// settledFixture is consoleFixture plus the wait its callers here need.
+//
+// consoleFixture returns as soon as the ticket bundle is NON-EMPTY, and issuance
+// delivers ticket by ticket — so a two-ticket order can be read back with one ticket
+// and one delivery recorded. Every assertion in this file is "one per ticket", which is
+// wrong against a half-issued order in BOTH directions: it would fail a correct resend,
+// and it would pass a resend that covered only the tickets that happened to exist yet.
+//
+// The first run of this file failed exactly that way. It is a race in the precondition,
+// not a defect in the resend, and the fix belongs here rather than in a retry wrapped
+// around the assertions — those must read a settled state once, not converge onto one.
+func settledFixture(t *testing.T, ctx context.Context, suffix string, want int) (string, []string) {
+	t.Helper()
+	orderID, _, ticketIDs, _ := consoleFixture(t, suffix)
+	if len(ticketIDs) != want {
+		t.Fatalf("fixture produced %d tickets, want %d", len(ticketIDs), want)
+	}
+	retry(t, 30*time.Second, func() error {
+		if n := countAccessRows(t, ctx,
+			`SELECT count(*) FROM lifecycle_events WHERE event_type='delivered' AND ticket_id = ANY($1)`,
+			ticketIDs); n != want {
+			return fmt.Errorf("%d of %d tickets delivered so far", n, want)
+		}
+		return nil
+	})
+	return orderID, ticketIDs
+}
+
 func staffRedeliveryToken(t *testing.T) string {
 	t.Helper()
 	token := os.Getenv("SMOKE_ACCESS_STAFF_WRITE_TOKEN")
@@ -71,21 +100,11 @@ func staffRedeliveryToken(t *testing.T) string {
 func TestStaffRedeliveryResendsEveryTicketAndRecordsEachSend(t *testing.T) {
 	ctx := context.Background()
 	staff := staffRedeliveryToken(t)
-	orderID, _, ticketIDs, _ := consoleFixture(t, "redelivery")
-	if len(ticketIDs) == 0 {
-		t.Fatal("fixture produced no tickets")
-	}
-
-	// The tickets were delivered by issuance, so each carries a `delivered` event.
-	// That is the state a resend exists to serve and the state PendingDeliveries
-	// excludes — asserted so the fixture's relevance is a fact of the run rather than
-	// an assumption about it.
-	delivered := countAccessRows(t, ctx,
-		`SELECT count(*) FROM lifecycle_events WHERE event_type='delivered' AND ticket_id = ANY($1)`, ticketIDs)
-	if delivered != len(ticketIDs) {
-		t.Fatalf("fixture has %d delivered events for %d tickets, so this run would not be "+
-			"exercising the already-delivered case the ticket is about", delivered, len(ticketIDs))
-	}
+	// Two tickets, because a one-ticket fixture cannot tell "one per ticket" from
+	// "one per order" — and every count below is a per-ticket claim.
+	const tickets = 2
+	orderID, ticketIDs := settledFixture(t, ctx, "redelivery", tickets)
+	delivered := tickets
 
 	code, body := redeliver(t, orderID, "smoke-redelivery-"+orderID, staff)
 	if code != 200 {
@@ -151,7 +170,7 @@ func TestStaffRedeliveryResendsEveryTicketAndRecordsEachSend(t *testing.T) {
 func TestStaffRedeliveryReplaysOneKeyRatherThanSendingTwice(t *testing.T) {
 	ctx := context.Background()
 	staff := staffRedeliveryToken(t)
-	orderID, _, ticketIDs, _ := consoleFixture(t, "redelivery-replay")
+	orderID, ticketIDs := settledFixture(t, ctx, "redelivery-replay", 2)
 	key := "smoke-replay-" + orderID
 
 	if code, body := redeliver(t, orderID, key, staff); code != 200 {
@@ -193,7 +212,7 @@ func TestStaffRedeliveryReplaysOneKeyRatherThanSendingTwice(t *testing.T) {
 // the power to re-emit ticket capabilities. That is executed here rather than argued.
 func TestStaffRedeliveryRefusesEveryOtherCredential(t *testing.T) {
 	ctx := context.Background()
-	orderID, _, ticketIDs, _ := consoleFixture(t, "redelivery-auth")
+	orderID, ticketIDs := settledFixture(t, ctx, "redelivery-auth", 2)
 	for _, c := range []struct{ name, token string }{
 		{"no credential", ""},
 		{"a wrong value", "not-the-credential-0f3d1c9a8b7e6f5d4c3b"},
