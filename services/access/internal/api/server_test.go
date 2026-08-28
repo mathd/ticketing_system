@@ -38,14 +38,21 @@ type fakeDevices struct {
 	// organizer: a random value makes every scan a mismatch, so a fixture that
 	// generated one could never construct the allowed case.
 	organizer uuid.UUID
-	touched   int
+	// id is the device's own identity, and it is a field for the SAME reason
+	// organizer is one — an argument that was available one line up and simply
+	// not applied to it (TKT-272). Returning uuid.New() per call meant no test
+	// could assert that the device a request authenticated AS is the device the
+	// telemetry names: every comparison was against a value the fixture had
+	// already thrown away. Zero means "let enrolled() pick one".
+	id      uuid.UUID
+	touched int
 }
 
 func (f *fakeDevices) AuthenticateScannerDevice(_ context.Context, token string) (store.ScannerDevice, error) {
 	if token == "" || token != f.token {
 		return store.ScannerDevice{}, store.ErrScannerDeviceUnknown
 	}
-	return store.ScannerDevice{ID: uuid.New(), OrganizerID: f.organizer, Label: "gate"}, nil
+	return store.ScannerDevice{ID: f.id, OrganizerID: f.organizer, Label: "gate"}, nil
 }
 
 func (f *fakeDevices) TouchScannerDevice(context.Context, uuid.UUID) { f.touched++ }
@@ -53,7 +60,7 @@ func (f *fakeDevices) TouchScannerDevice(context.Context, uuid.UUID) { f.touched
 // enrolled builds a server whose scan routes accept testDeviceToken, for the
 // organizer the device is paired to.
 func enrolled(s *Server, organizer ...uuid.UUID) *Server {
-	device := &fakeDevices{token: testDeviceToken, organizer: uuid.New()}
+	device := &fakeDevices{token: testDeviceToken, organizer: uuid.New(), id: uuid.New()}
 	if len(organizer) > 0 {
 		device.organizer = organizer[0]
 	}

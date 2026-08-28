@@ -192,10 +192,39 @@ wrong scan.
   organizer's voided set is large enough that the sort dominates; not before.
 - **This ticket closes no gate behaviour on its own.** A feed nothing consumes stops no admission.
   TKT-271 is where the hole actually closes.
-- **Polling is a new traffic profile, and access has no rate limiting.** `/scans` is one request per
-  physical admission; a feed invites one every N seconds per device. `shared/go/ratelimit` is
-  in-process and per-replica, so it would be a weak answer. **Accepted for now, stated rather than
-  unnoticed**, and tracked as a follow-up.
+- **Polling is a new traffic profile, and access is deliberately not rate limited (TKT-272).**
+  `/scans` is one request per physical admission; a feed invites one every N seconds per device.
+  The decision is **no limiter** — not "not yet", and this supersedes the provisional acceptance
+  this bullet previously recorded. **Targeted device revocation is the control**:
+  `access revoke-scanner <device-id>` is idempotent, permanent, and the authentication query
+  filters `revoked_at IS NULL`, so a revoked device stops at the door on its next request.
+  Three reasons, in the order they decide it. (1) `shared/go/ratelimit` exists for the
+  *credential-free* surfaces — commerce's customer operations (ADR-051) and catalog's back-office
+  login (ADR-055/ADR-042); this route is device-authenticated, so it is not one of them. (2) That
+  package's own doc names what a Limiter does not bound — a distributed caller, a caller who waits
+  out the window, and anything at all after a restart — and revocation is unbounded by none of
+  those. (3) The per-request cost is a bounded, organizer-scoped, indexed keyset read with a hard
+  page cap of 100 and no write amplification, so a refused request would not be cheaper than a
+  served one.
+- **Name the adversary for the polling decision (ADR-021).** An **enrolled** device may poll this
+  feed as fast as it likes, without bound, until an operator revokes it. Nothing throttles it, and
+  no sentence in this repo should say this route is rate limited. What makes that residual
+  survivable is that the abusive device is *identifiable*: every authenticated request to the feed
+  emits one `abuse.request` record carrying the device's UUID, which is the input
+  `access revoke-scanner` takes. Telemetry here is **visibility, not containment** — it makes the
+  control usable by an operator, and refuses nothing on its own. The device UUID travels in logs;
+  it is deliberately kept off metric labels (unbounded cardinality) and off span attributes (a
+  sampler must not decide whether an operator can see an abusive device, and spans leave the
+  process for a collector this repo does not control). The token itself never appears in any of
+  the three (ADR-012 § TKT-202).
+- **What the abuse counter does NOT count, stated rather than discovered later.** The record is
+  emitted from the feed handler, and the request validator runs before it: a request whose `limit`
+  fails the contract's schema (integer, 1..100) is refused at the contract layer and is never
+  counted. A garbage `cursor` *is* counted, because `cursor` is a free-form string in the contract
+  and so reaches the handler. The gap is deliberate rather than unnoticed — emitting from the
+  validator would mean emitting from a layer every route in this service shares — and it is small in
+  the direction that matters: a caller refused by the contract never reaches the database, which is
+  the cost this telemetry exists to expose.
 - **Name the adversary (ADR-021).** This constrains a caller who does not hold an enrolled device's
   token, and one enrolled device from reading another organizer's revocations. It constrains **nobody
   with write access to the access database**, who can enrol their own device — the same trust

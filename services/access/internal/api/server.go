@@ -45,8 +45,13 @@ type Server struct {
 	// devices resolves scanner enrolment (ai-review S1). Nil means "cannot
 	// check", which the authentication func treats as REFUSE — a server that
 	// cannot verify enrolment must not admit everyone.
-	devices  scannerDeviceStore
-	verifier *ticket.Verifier
+	devices scannerDeviceStore
+
+	// telemetry records authenticated polls of the deliberately-unlimited feed
+	// surface (TKT-272). Nil is a working server that simply emits nothing —
+	// observability must never be able to refuse a scan.
+	telemetry *scannerTelemetry
+	verifier  *ticket.Verifier
 	// token authenticates service-to-service callers. Access had no inbound internal
 	// surface before TKT-157 — it only ever used this token outbound, from its
 	// consumer — so the whole auth path here is new.
@@ -144,6 +149,15 @@ func (s *Server) WithScannerDevices(devices scannerDeviceStore) *Server {
 	s.devices = devices
 	return s
 }
+
+// WithScannerTelemetry injects the abuse-telemetry emitter for the polling
+// surface (TKT-272). Production wires it in main so the counter reaches the
+// real meter; a Server without it serves identically and emits nothing.
+func (s *Server) WithScannerTelemetry(t *scannerTelemetry) *Server {
+	s.telemetry = t
+	return s
+}
+
 // registerRoutes mounts every operation on a bare router.
 //
 // Extracted from Router so the credential enumeration in staff_credential_test.go can
@@ -222,7 +236,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	// installed outside the validator because the validator runs before any
 	// middleware the chi router could carry.
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		validated.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), scannerOrganizerKey{}, new(uuid.UUID))))
+		validated.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), scannerOrganizerKey{}, new(scannerIdentity))))
 	})
 }
 func write(w http.ResponseWriter, code int, v any) {
@@ -374,13 +388,29 @@ func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3f
 	s.devices.TouchScannerDevice(ctx, device.ID)
 	// Hand the device's organizer to the handler. Resolving a device and then
 	// discarding what it is enrolled FOR is what made enrolment platform-wide.
-	if slot, ok := input.RequestValidationInput.Request.Context().Value(scannerOrganizerKey{}).(*uuid.UUID); ok && slot != nil {
-		*slot = device.OrganizerID
+	if slot, ok := input.RequestValidationInput.Request.Context().Value(scannerOrganizerKey{}).(*scannerIdentity); ok && slot != nil {
+		// Both, together. The device id used to be resolved here and discarded,
+		// which left the only input to `access revoke-scanner` unreachable from
+		// a handler (TKT-272). One struct rather than a second context key: two
+		// keys can drift out of step, and these two facts come from one row.
+		*slot = scannerIdentity{OrganizerID: device.OrganizerID, DeviceID: device.ID}
 	}
 	return nil
 }
 
-// scannerOrganizerKey carries the authenticated device's organizer from the
+// scannerIdentity is what the request validator resolved from the device token:
+// the organizer the device is enrolled for, and the device's own id.
+//
+// The device id is here because revocation is the control on the polling
+// surface (ADR-066, TKT-272) and it takes a device id, so telemetry that cannot
+// name the device cannot feed the only control there is. It is the AUTHENTICATED
+// id — nothing client-submitted ever reaches this struct.
+type scannerIdentity struct {
+	OrganizerID uuid.UUID
+	DeviceID    uuid.UUID
+}
+
+// scannerOrganizerKey carries the authenticated device's identity from the
 // request validator to the handler.
 //
 // The value behind it is a POINTER to a slot rather than the organizer itself,
@@ -426,9 +456,24 @@ func scannerScopeAllows(ctx context.Context, organizer uuid.UUID) bool {
 // caller to pass it straight to a query, which is a whole-table read of every
 // organizer's revocations.
 func scannerOrganizer(ctx context.Context) (uuid.UUID, bool) {
-	slot, ok := ctx.Value(scannerOrganizerKey{}).(*uuid.UUID)
-	if !ok || slot == nil || *slot == uuid.Nil {
+	id, ok := scannerIdentityFrom(ctx)
+	if !ok {
 		return uuid.Nil, false
+	}
+	return id.OrganizerID, true
+}
+
+// scannerIdentityFrom returns the authenticated device's identity.
+//
+// Fail-closed on the ORGANIZER, matching what scannerOrganizer has always
+// promised: a zero organizer means the validator never resolved a device, and
+// every caller treats that as "refuse". The device id is not part of that
+// condition — it is telemetry, and a missing id must never turn a valid scan
+// into a refusal.
+func scannerIdentityFrom(ctx context.Context) (scannerIdentity, bool) {
+	slot, ok := ctx.Value(scannerOrganizerKey{}).(*scannerIdentity)
+	if !ok || slot == nil || slot.OrganizerID == uuid.Nil {
+		return scannerIdentity{}, false
 	}
 	return *slot, true
 }

@@ -25,8 +25,8 @@ import (
 
 	apispec "ticketing/services/access/api"
 	accessapi "ticketing/services/access/internal/api"
-	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/consumer"
+	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/lifecyclejob"
 	accessstore "ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
@@ -403,10 +403,19 @@ func run() error {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(apispec.Spec)
 	}))
+	// TKT-272. The voided-ticket feed is deliberately not rate limited
+	// (ADR-066); targeted device revocation is the control, and it takes a
+	// device id. This is what puts that id in front of an operator.
+	scannerTelemetry, err := accessapi.NewScannerTelemetry(log, otel.Meter("ticketing/access/scanner"))
+	if err != nil {
+		return fmt.Errorf("scanner telemetry metrics: %w", err)
+	}
+
 	r.Mount("/", accessapi.New(st, verifier, token).
 		WithQRLinkKey(qrLinkKey).
 		WithFeedCursorKey(feedCursorKey).
 		WithStaffWriteCredential(staffWriteToken).
+		WithScannerTelemetry(scannerTelemetry).
 		WithRedelivery(delivery.CommerceAddressBook{Client: obs.Client(), BaseURL: commerceURL, Token: token}, mailer, publicURL).
 		Router(log, validateResponses))
 
