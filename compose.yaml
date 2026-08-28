@@ -366,6 +366,12 @@ services:
       # fresh, not that a credential admits at a gate.
       ACCESS_TICKET_LINK_KEY: ${ACCESS_TICKET_LINK_KEY:?no default is shipped - run 'make up' once to generate a local credential}
       ACCESS_FEED_CURSOR_KEY: ${ACCESS_FEED_CURSOR_KEY:?no default is shipped - run 'make up' once to generate a local credential}
+      # The back office's ticket-resend credential (TKT-203, ADR-068). Accepted on
+      # exactly one operation — POST /internal/orders/{id}/redeliveries — and access
+      # refuses to start when it equals INTERNAL_SERVICE_TOKEN, because two
+      # credentials with different blast radii are only two credentials if they hold
+      # different values.
+      ACCESS_STAFF_WRITE_TOKEN: ${ACCESS_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
       # Comma-separated access-qr/<kid>=raw-base64-public-key entries.
       ACCESS_QR_PUBLIC_KEYS: ${ACCESS_QR_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
       # Lifecycle trail signing (ADR-021 §D4). Distinct key MATERIAL from the QR
@@ -472,6 +478,21 @@ services:
       # and this is a public-facing SSR process.
       INVENTORY_URL: http://inventory:8080
       INVENTORY_STAFF_WRITE_TOKEN: ${INVENTORY_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # The ticket resend (TKT-203). Direct to access, in-network, for the same reason
+      # as the three above: the operation lives under /internal/, which the gateway
+      # edge-denies by construction (ADR-002). Note the back office ALSO reads access
+      # through the gateway (the ticket bundle, TKT-193) — that one is a public route,
+      # this one is not, and the split is deliberate rather than an inconsistency.
+      #
+      # A NEW CREDENTIAL, on ADR-057's reasoning rather than ADR-053's: the back office
+      # holds NOTHING for access, so reusing its commerce or catalog token would grant
+      # power across a service boundary and turn one of those compromises into the
+      # ability to re-emit ticket capabilities. Access accepts it on exactly ONE
+      # operation (ADR-068), enforced by a route table in the guard itself. Still
+      # deliberately NOT INTERNAL_SERVICE_TOKEN: that one value opens every service's
+      # internal surface, and this is a public-facing SSR process.
+      ACCESS_URL: http://access:8080
+      ACCESS_STAFF_WRITE_TOKEN: ${ACCESS_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
     healthcheck:
       # base:'/admin' means Astro serves healthz at /admin/healthz; the probe
       # hits the container directly (pre-gateway), so it targets the base path.

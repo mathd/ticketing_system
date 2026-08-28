@@ -79,6 +79,52 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/redeliveries:
+    post:
+      operationId: redeliverOrderTickets
+      summary: Re-send a completed order's tickets to the address on file (internal; back office only)
+      # TKT-203 / ADR-068. A staff member re-sends a completed order's tickets when the
+      # original mail was lost or spam-filed.
+      #
+      # THE DESTINATION IS NOT IN THIS OPERATION, and its absence is the security
+      # property rather than an omission. Access resolves the address from each ticket's
+      # buyer through commerce's internal delivery-email read, at send time. There is no
+      # recipient field to validate because a validated recipient field is still a
+      # recipient field: an operator-typed address would turn the back office into a
+      # relay emitting ticket capabilities to arbitrary recipients, and refusing that is
+      # the owner's decision this operation implements (2026-08-26).
+      #
+      # Keyed on the ORDER id, never on guest_order_ref. That reference is a live
+      # bearer capability (ADR-012) and the request logger runs before the router, so a
+      # capability in the path is a capability in the log whatever the route does.
+      #
+      # Auth is INLINE, not a `security:` stanza (ADR-043): a declared scheme guards a
+      # service's public contract, an inline check guards its internal surface, and the
+      # refusal is 404 so it is indistinguishable from the gateway's own edge deny on
+      # the same path (ADR-002). Accepts X-Access-Staff-Write-Token, and the shared
+      # X-Internal-Token that every service-to-service caller already holds.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketRedeliveryCreate'}
+      responses:
+        '200': {description: Tickets re-sent (or replay of an earlier request), content: {application/json: {schema: {$ref: '#/components/schemas/TicketRedelivery'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        # The order has reached its per-order redelivery bound (ADR-068). Declared
+        # because ADR-028's response validation is fail-closed: an undeclared status is
+        # rewritten to 500, which would report a deliberate refusal as an outage.
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        # Issuance is asynchronous, so a resend can outrun it: "this order has no
+        # tickets" is usually "not yet", never "no such order". Same reasoning, same
+        # status, as the refund route above.
+        '503': {$ref: '#/components/responses/Error'}
   /scans/voided-tickets:
     get:
       # The revocation feed an offline scanner pulls so it can refuse a voided
@@ -183,10 +229,35 @@ components:
         wrong is a phone walking out of the venue, not a secret expiring.
   parameters:
     Ref: {name: ref, in: path, required: true, schema: {type: string, format: uuid}}
+    Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    # Spelled exactly as commerce spells it (services/commerce/api/openapi.yaml), so
+    # one header does not acquire two shapes across the estate.
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
   responses:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
     Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    TicketRedeliveryCreate:
+      type: object
+      additionalProperties: false
+      required: [organizer_id]
+      properties:
+        # The SCOPE, not the authority: the credential proves the caller is the back
+        # office, and the organizer narrows which order it may reach. The back office
+        # supplies it from its authenticated session, never from browser input — the
+        # same shape, and the same residual, as commerce's staff order read (ADR-042).
+        organizer_id: {type: string, format: uuid}
+    TicketRedelivery:
+      type: object
+      additionalProperties: false
+      required: [order_id, ticket_count, replay]
+      properties:
+        order_id: {type: string, format: uuid}
+        # A count, not the tickets. The caller already renders the order's ticket
+        # bundle from its own read; what it must never receive from this operation is
+        # the buyer's address or a capability link, so neither is representable here.
+        ticket_count: {type: integer, minimum: 1, maximum: 50}
+        replay: {type: boolean}
     TicketRefundCreate:
       type: object
       additionalProperties: false

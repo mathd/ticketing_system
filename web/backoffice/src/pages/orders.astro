@@ -13,8 +13,9 @@
 // nothing public maps one to the other (see lib/order-console.ts). Both fields
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
-import { loadOrderConsole, parseLookup, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
+import { loadOrderConsole, parseLookup, parseRedelivery, parseRefund, unresolvedRefund, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/commerce';
+import { redeliverOrderTickets, type Redelivery } from '../lib/access';
 import {
   clearUnresolvedRefund,
   noteUnresolvedRefund,
@@ -42,7 +43,9 @@ type Action =
   | { kind: 'none' }
   | { kind: 'lookup-refused'; message: string }
   | { kind: 'refunded'; refund: Refund }
-  | { kind: 'refund-refused'; message: string; ambiguous: boolean };
+  | { kind: 'refund-refused'; message: string; ambiguous: boolean }
+  | { kind: 'redelivered'; redelivery: Redelivery }
+  | { kind: 'redelivery-refused'; message: string; ambiguous: boolean };
 
 let action: Action = { kind: 'none' };
 let view: ConsoleView | null = null;
@@ -59,6 +62,7 @@ if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
   const field = (name: string) => String(form.get(name) ?? '');
   const refunding = field('_action') === 'refund';
+  const resending = field('_action') === 'resend';
   submitted = {
     order_id: field('order_id'),
     ticket_ref: field('ticket_ref'),
@@ -126,12 +130,41 @@ if (Astro.request.method === 'POST') {
     }
   }
 
+  if (resending) {
+    const parsed = parseRedelivery(field);
+    if (!parsed.ok) {
+      action = { kind: 'redelivery-refused', message: parsed.message, ambiguous: false };
+    } else {
+      const outcome = await redeliverOrderTickets({
+        orderId: parsed.value.orderId,
+        // From the session, never the form. A browser that could name the
+        // organizer could resend another tenant's order.
+        organizerId: staff.organizerId,
+        idempotencyKey: parsed.value.idempotencyKey,
+      });
+      if (outcome.ok) {
+        action = { kind: 'redelivered', redelivery: outcome.value };
+      } else {
+        action = {
+          kind: 'redelivery-refused',
+          message: outcome.message,
+          // Only an ambiguous result may have sent mail. A decided refusal —
+          // not-found, not-yet, too-many, refused — did not, and telling the
+          // operator "this may have gone out" about one of those would stop them
+          // retrying something they should retry.
+          ambiguous: outcome.kind === 'ambiguous',
+        };
+        Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
+      }
+    }
+  }
+
   // 2. Load the view, so the page shows what it is talking about either way.
   const lookup = parseLookup(submitted.order_id, submitted.ticket_ref);
   if (lookup.ok) {
     lookedUp = lookup.value;
     view = await loadOrderConsole(lookup.value);
-    if (!refunding) {
+    if (!refunding && !resending) {
       Astro.response.status = view.status;
       // A plain lookup must surface an outstanding refund too — otherwise the
       // simplest possible recovery from an ambiguous result ("look it up
@@ -140,7 +173,7 @@ if (Astro.request.method === 'POST') {
         unresolved = unresolvedRefundFor(staff.organizerId, lookup.value.orderId) ?? null;
       }
     }
-  } else if (!refunding) {
+  } else if (!refunding && !resending) {
     action = { kind: 'lookup-refused', message: lookup.message };
   }
 }
@@ -157,6 +190,29 @@ if (Astro.request.method === 'POST') {
 const refundForm =
   view?.order?.ok === true && view.order.value.status === 'completed' && !unresolved
     ? { idempotencyKey: randomUUID(), quantity: submitted.quantity, reason: submitted.reason }
+    : null;
+
+/**
+ * Whether a resend may be offered, and with what key.
+ *
+ * Gated on the same "there is a completed order here" condition as the refund
+ * form, and for the same reason: an order the console could not load is one this
+ * page cannot describe, and offering an action against it would be offering to
+ * act on a guess.
+ *
+ * Deliberately NOT gated on `unresolved`, unlike the refund. That flag exists
+ * because commerce may have MOVED MONEY without telling us; a resend has no such
+ * hazard — its worst ambiguous case is one extra mail to the address already on
+ * file. Blocking it while a refund is outstanding would withhold the recovery
+ * action during exactly the incident where an agent most needs it.
+ *
+ * The key is minted HERE, per rendered form. Two concurrent submits of one form
+ * carry the same key and access replays the second, while a deliberate second
+ * resend gets a new form and a new key — which the per-order bound then counts.
+ */
+const resendForm =
+  view?.order?.ok === true && view.order.value.status === 'completed'
+    ? { idempotencyKey: randomUUID() }
     : null;
 ---
 
@@ -326,6 +382,46 @@ const refundForm =
     </form>
   )}
 
+  {(action.kind === 'redelivered' || action.kind === 'redelivery-refused') && (
+    <section class="refund-result">
+      <h2>Re-send tickets</h2>
+      {action.kind === 'redelivered' && (
+        <>
+          {/* Access's OWN count, not the number of tickets this page happens to
+              have rendered: on a replay it is the original request's. */}
+          <p>
+            {action.redelivery.replay
+              ? 'This resend had already been sent — access replayed it rather than sending again.'
+              : 'Handed to the mail transport.'}{' '}
+            <strong>{action.redelivery.ticketCount}</strong> ticket(s), to the address already on
+            file for this order.
+          </p>
+          {/* The address is deliberately not shown. This console has no read for
+              it (ADR-042 keeps the back office out of commerce's buyer record),
+              and the resend response carries a count precisely so that staying
+              true does not require holding the buyer's contact details. */}
+          <p class="muted">
+            The destination is the address on file and cannot be changed here. A customer who can
+            no longer receive mail at that address needs their contact record corrected, which is
+            not something this console can do.
+          </p>
+        </>
+      )}
+      {action.kind === 'redelivery-refused' && (
+        <>
+          <p class="error">{action.message}</p>
+          {action.ambiguous && (
+            <p>
+              Access did not confirm the outcome, so the mail <strong>may</strong> have gone out.
+              Submitting the same form again replays the same request rather than sending a second
+              time.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  )}
+
   {refundForm && (
     <form method="post" action="" class="refund">
       <input type="hidden" name="_action" value="refund" />
@@ -347,6 +443,28 @@ const refundForm =
   )}
 
   <p><a href={import.meta.env.BASE_URL.replace(/\/$/, '')}>Back to venues</a></p>
+
+  {resendForm && (
+    <form method="post" action="" class="refund">
+      <input type="hidden" name="_action" value="resend" />
+      <input type="hidden" name="order_id" value={lookedUp.orderId} />
+      <input type="hidden" name="ticket_ref" value={lookedUp.ref ?? ''} />
+      <input type="hidden" name="idempotency_key" value={resendForm.idempotencyKey} />
+      {/* There is NO recipient field here, and there must never be one. The
+          destination is the address on file, resolved inside access from the
+          ticket's buyer. A field an operator could type into would let this
+          console mail ticket capabilities to anyone — the owner refused that on
+          2026-08-26, and the refusal is enforced by the field not existing
+          rather than by validating what it contains. */}
+      <h2>Re-send this order's tickets</h2>
+      <p class="muted">
+        Sends the ticket links again to the address already on file. Use this when the original
+        mail was lost or filed as spam. Each resend is recorded against the order, and an order
+        can be re-sent a limited number of times per day.
+      </p>
+      <button type="submit">Re-send to the address on file</button>
+    </form>
+  )}
 </Layout>
 
 <style>

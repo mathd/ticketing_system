@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // One file for all three service clients (catalog.ts, commerce.ts, access.ts):
 // they share these fixtures, and the response-validation rules they exercise
 // live in one place (upstream.ts).
-import { getOrderTickets } from '../src/lib/access';
+import { getOrderTickets, redeliverOrderTickets } from '../src/lib/access';
 import {
   addSeatMapRow,
   addSeatMapSeat,
@@ -57,6 +57,7 @@ beforeEach(() => {
   process.env.COMMERCE_STAFF_WRITE_TOKEN = 'commerce-test-credential';
   // TKT-244. A THIRD distinct value, for the same reason.
   process.env.INVENTORY_STAFF_WRITE_TOKEN = 'inventory-test-credential';
+  process.env.ACCESS_STAFF_WRITE_TOKEN = 'access-test-credential';
 });
 
 afterEach(() => {
@@ -64,6 +65,7 @@ afterEach(() => {
   delete process.env.CATALOG_STAFF_WRITE_TOKEN;
   delete process.env.COMMERCE_STAFF_WRITE_TOKEN;
   delete process.env.INVENTORY_STAFF_WRITE_TOKEN;
+  delete process.env.ACCESS_STAFF_WRITE_TOKEN;
 });
 
 describe('getVenues', () => {
@@ -914,5 +916,125 @@ describe('catalog create idempotency (TKT-200)', () => {
     expect(sent?.get('X-Catalog-Staff-Write-Token')).toBe('test-credential');
     expect(sent?.get('X-Catalog-Organizer-Assertion')).toBe(TEST_ASSERTION);
     expect(sent?.get('Idempotency-Key')).toBe('k');
+  });
+});
+
+// TKT-203 / ADR-068. The resend goes DIRECT to access, not through the gateway: the
+// operation lives under /internal/, which the gateway edge-denies by construction. Note
+// the back office ALSO reads access through the gateway (the ticket bundle above) — that
+// one is a public route, this one is not.
+describe('ticket resend client', () => {
+  const ORDER = 'abcdef01-2345-4678-89ab-cdef01234567';
+  const OTHER = 'deadbeef-1234-4567-89ab-cdef01234567';
+  const OK = { order_id: ORDER, ticket_count: 2, replay: false };
+
+  it('sends the resend direct to access with the staff credential', async () => {
+    const calls = spyFetch(OK, 200);
+    const got = await redeliverOrderTickets({
+      orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'key-1',
+    });
+
+    expect(got).toMatchObject({ ok: true, value: { ticketCount: 2, replay: false } });
+    // ACCESS_URL is unset in the suite, so this is the client's own default — what a
+    // developer running `pnpm dev` outside compose gets.
+    expect(calls[0].url).toBe(`http://localhost:8084/internal/orders/${ORDER}/redeliveries`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].headers['X-Access-Staff-Write-Token']).toBe('access-test-credential');
+    expect(calls[0].headers['Idempotency-Key']).toBe('key-1');
+    // Never the shared internal token, which the back office does not hold.
+    expect(calls[0].headers['X-Internal-Token']).toBeUndefined();
+  });
+
+  // COS-2, and the assertion this whole ticket turns on. The request must not carry a
+  // recipient AT ALL — not an unused one, not an empty one, not one the server would
+  // ignore. A field that exists is a field a future edit can start trusting.
+  //
+  // Asserted on the SERIALIZED body, not the typed object: a field added under another
+  // name still passes a shape check written against the type, and it is the bytes on the
+  // wire that would carry an address.
+  it('sends no recipient of any kind in the request', async () => {
+    const calls = spyFetch(OK, 200);
+    await redeliverOrderTickets({
+      orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'key-1',
+    });
+
+    expect(calls[0].body).toEqual({ organizer_id: 'org-1' });
+    const serialized = JSON.stringify(calls[0].body);
+    for (const forbidden of ['email', 'mail', 'address', 'recipient', 'to', 'guest', 'ref']) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  // COS-6. Even if access answered with an address — a future contract change, a
+  // misconfigured build, a compromised service — this client must not hand it upward.
+  // Asserted at the boundary the value would cross, on the serialized result.
+  it('does not surface a buyer address even when access sends one', async () => {
+    spyFetch({ ...OK, email: 'buyer@example.test', ticket_link: 'https://x/en/tickets/abc' }, 200);
+    const got = await redeliverOrderTickets({
+      orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'key-1',
+    });
+
+    expect(got).toEqual({ ok: true, value: { orderId: ORDER, ticketCount: 2, replay: false } });
+    const serialized = JSON.stringify(got);
+    expect(serialized).not.toContain('buyer@example.test');
+    expect(serialized).not.toContain('en/tickets/abc');
+  });
+
+  // Each refusal calls for a DIFFERENT operator action, so each gets its own kind. A
+  // single "refused" would tell an agent to give up on a 503 that means "try again in a
+  // moment", and to retry a 429 that means "not today".
+  it.each([
+    [404, 'not-found'],
+    [503, 'not-yet'],
+    [429, 'too-many'],
+    [409, 'refused'],
+    [400, 'refused'],
+    [500, 'ambiguous'],
+    [502, 'ambiguous'],
+  ])('maps %i to %s', async (status, kind) => {
+    spyFetch({ error: 'no' }, status);
+    await expect(
+      redeliverOrderTickets({ orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'k' }),
+    ).resolves.toMatchObject({ ok: false, kind });
+  });
+
+  it('reports a replay as a replay rather than a fresh send', async () => {
+    spyFetch({ ...OK, replay: true }, 200);
+    await expect(
+      redeliverOrderTickets({ orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'k' }),
+    ).resolves.toMatchObject({ ok: true, value: { replay: true } });
+  });
+
+  // A response about a DIFFERENT order is refused rather than rendered: the page would
+  // otherwise say "re-sent" under the heading of the order the operator typed.
+  it('refuses a response about a different order', async () => {
+    spyFetch({ ...OK, order_id: OTHER }, 200);
+    await expect(
+      redeliverOrderTickets({ orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'k' }),
+    ).resolves.toMatchObject({ ok: false, kind: 'ambiguous' });
+  });
+
+  // A 200 that says nothing was sent is not a success. Rendering "re-sent 0 tickets"
+  // would report an action that did not happen.
+  it.each([
+    ['a zero count', { ...OK, ticket_count: 0 }],
+    ['a missing count', { order_id: ORDER, replay: false }],
+    ['a missing replay flag', { order_id: ORDER, ticket_count: 1 }],
+  ])('treats %s as ambiguous rather than a send', async (_name, body) => {
+    spyFetch(body, 200);
+    await expect(
+      redeliverOrderTickets({ orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'k' }),
+    ).resolves.toMatchObject({ ok: false, kind: 'ambiguous' });
+  });
+
+  // A missing credential is a CONFIGURATION defect, not an upstream outage. Reporting it
+  // as ambiguous would tell the operator to retry a request that can never succeed, and
+  // the message must name the variable so the fix is obvious.
+  it('fails loudly, naming the variable, when the credential is unset', async () => {
+    delete process.env.ACCESS_STAFF_WRITE_TOKEN;
+    spyFetch(OK, 200);
+    await expect(
+      redeliverOrderTickets({ orderId: ORDER, organizerId: 'org-1', idempotencyKey: 'k' }),
+    ).rejects.toThrow('ACCESS_STAFF_WRITE_TOKEN');
   });
 });

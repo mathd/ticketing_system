@@ -11,10 +11,15 @@ import { assertCredentialSeparation } from '../credentials.mjs';
 // neither is ever given the other's. Set both to one value and every service
 // starts happily while an internet-facing process holds a single bearer token
 // that both authors catalog content and moves money.
-// TKT-244 extends the rule to a THIRD credential (inventory, ADR-057). Pairwise
-// rather than "all distinct" as a set: with three values there are three pairs, and
-// a check that only compared the newest against one of the others would let the
-// other collapse silently.
+// TKT-244 extends the rule to a THIRD credential (inventory, ADR-057) and TKT-203 to
+// a FOURTH (access, ADR-068). Pairwise rather than "all distinct" as a set: the pair
+// count grows quadratically — four values is six pairs — and a check that only
+// compared the newest against one of the others would let the other collapse silently.
+//
+// The pair cases below are DERIVED from the credential list rather than written out,
+// because a hand-written list is exactly what the rule above warns about: the pair
+// someone forgets to add is the one that collapses in silence. Adding a fifth
+// credential to `ok` extends the coverage automatically.
 describe('the back office refuses collapsed credentials at startup', () => {
   // Every fixture is >= 32 bytes because TKT-252 gave these credentials a length
   // floor (ADR-059). They were lengthened rather than replaced: each still says
@@ -23,13 +28,18 @@ describe('the back office refuses collapsed credentials at startup', () => {
     CATALOG_STAFF_WRITE_TOKEN: 'catalog-value-0f3d1c9a8b7e6f5d4c3b',
     COMMERCE_STAFF_WRITE_TOKEN: 'commerce-value-0f3d1c9a8b7e6f5d4c3b',
     INVENTORY_STAFF_WRITE_TOKEN: 'inventory-value-0f3d1c9a8b7e6f5d4c3b',
+    ACCESS_STAFF_WRITE_TOKEN: 'access-value-0f3d1c9a8b7e6f5d4c3b',
   };
+
+  const NAMES = Object.keys(ok);
+  // Every unordered pair of credential names.
+  const PAIRS = NAMES.flatMap((a, i) => NAMES.slice(i + 1).map((b) => [a, b] as const));
 
   // A collapsed value must still clear the length floor, or the test would be
   // refused for its LENGTH and never reach the pairwise comparison it exists for.
   const SAME = 'same-collapsed-value-0f3d1c9a8b7e6f';
 
-  it('accepts three different credentials', () => {
+  it('accepts four different credentials', () => {
     expect(() => assertCredentialSeparation(ok)).not.toThrow();
   });
 
@@ -40,7 +50,7 @@ describe('the back office refuses collapsed credentials at startup', () => {
   // Asserted from BOTH sides of the boundary: one byte under must fail and exactly
   // 32 must pass. A test that only tried a very short value would pass just as
   // happily against a floor of 4.
-  it.each(['CATALOG_STAFF_WRITE_TOKEN', 'COMMERCE_STAFF_WRITE_TOKEN', 'INVENTORY_STAFF_WRITE_TOKEN'])(
+  it.each(NAMES)(
     'refuses a %s below the shared floor, and accepts one exactly at it',
     (name) => {
       const under = 'x'.repeat(31);
@@ -91,36 +101,30 @@ describe('the back office refuses collapsed credentials at startup', () => {
   });
 
   // Every pair, so no single collapse can hide behind another pair being distinct.
-  it.each([
-    ['catalog/commerce', { ...ok, CATALOG_STAFF_WRITE_TOKEN: SAME, COMMERCE_STAFF_WRITE_TOKEN: SAME }],
-    ['catalog/inventory', { ...ok, CATALOG_STAFF_WRITE_TOKEN: SAME, INVENTORY_STAFF_WRITE_TOKEN: SAME }],
-    ['commerce/inventory', { ...ok, COMMERCE_STAFF_WRITE_TOKEN: SAME, INVENTORY_STAFF_WRITE_TOKEN: SAME }],
-    ['all three', {
-      CATALOG_STAFF_WRITE_TOKEN: SAME,
-      COMMERCE_STAFF_WRITE_TOKEN: SAME,
-      INVENTORY_STAFF_WRITE_TOKEN: SAME,
-    }],
-  ])('refuses identical credentials: %s', (_name, env) => {
-    expect(() => assertCredentialSeparation(env)).toThrow(/must not equal/);
+  it.each(PAIRS)('refuses identical credentials: %s/%s', (a, b) => {
+    expect(() => assertCredentialSeparation({ ...ok, [a]: SAME, [b]: SAME })).toThrow(
+      /must not equal/,
+    );
+  });
+
+  it('refuses every credential collapsed onto one value', () => {
+    const all = Object.fromEntries(NAMES.map((n) => [n, SAME]));
+    expect(() => assertCredentialSeparation(all)).toThrow(/must not equal/);
   });
 
   // The error must not echo the value it is complaining about — this runs at
   // startup and its message lands in container logs.
-  it.each([
-    ['catalog/commerce', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, COMMERCE_STAFF_WRITE_TOKEN: s })],
-    ['catalog/inventory', (s: string) => ({ ...ok, CATALOG_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
-    ['commerce/inventory', (s: string) => ({ ...ok, COMMERCE_STAFF_WRITE_TOKEN: s, INVENTORY_STAFF_WRITE_TOKEN: s })],
   // Same capture-then-assert shape as the length case below, and for the same
   // reason: this test previously put expect.unreachable() inside the try and its
   // assertions inside the catch, which meant it stayed green with the equality
   // check deleted — the catch swallowed the assertion error and `not.toContain`
   // passed against that. Pre-existing (TKT-194), found while fixing the identical
   // flaw this ticket introduced, and fixed here because it is the same three lines.
-  ])('does not echo the credential: %s', (_name, build) => {
+  it.each(PAIRS)('does not echo the credential: %s/%s', (a, b) => {
     const secret = 'a-real-looking-credential-value-0f3d1c9a';
     let caught: unknown;
     try {
-      assertCredentialSeparation(build(secret));
+      assertCredentialSeparation({ ...ok, [a]: secret, [b]: secret });
     } catch (e) {
       caught = e;
     }
@@ -130,12 +134,11 @@ describe('the back office refuses collapsed credentials at startup', () => {
     expect(message).not.toContain(secret);
   });
 
-  it.each([
-    ['catalog', { COMMERCE_STAFF_WRITE_TOKEN: ok.COMMERCE_STAFF_WRITE_TOKEN, INVENTORY_STAFF_WRITE_TOKEN: ok.INVENTORY_STAFF_WRITE_TOKEN }, /CATALOG_STAFF_WRITE_TOKEN/],
-    ['commerce', { CATALOG_STAFF_WRITE_TOKEN: ok.CATALOG_STAFF_WRITE_TOKEN, INVENTORY_STAFF_WRITE_TOKEN: ok.INVENTORY_STAFF_WRITE_TOKEN }, /COMMERCE_STAFF_WRITE_TOKEN/],
-    ['inventory', { CATALOG_STAFF_WRITE_TOKEN: ok.CATALOG_STAFF_WRITE_TOKEN, COMMERCE_STAFF_WRITE_TOKEN: ok.COMMERCE_STAFF_WRITE_TOKEN }, /INVENTORY_STAFF_WRITE_TOKEN/],
-  ])('refuses a missing %s credential, naming it', (_name, env, want) => {
-    expect(() => assertCredentialSeparation(env)).toThrow(want);
+  // Each credential, omitted in turn — derived, so a new one is covered on arrival.
+  it.each(NAMES)('refuses a missing %s credential, naming it', (name) => {
+    const without = { ...ok };
+    delete (without as Record<string, string>)[name];
+    expect(() => assertCredentialSeparation(without)).toThrow(new RegExp(name));
   });
 });
 
@@ -152,7 +155,17 @@ describe('the entrypoint refuses to start', () => {
   const CATALOG = 'catalog-value-0f3d1c9a8b7e6f5d4c3b';
   const COMMERCE = 'commerce-value-0f3d1c9a8b7e6f5d4c3b';
   const INVENTORY = 'inventory-value-0f3d1c9a8b7e6f5d4c3b';
+  const ACCESS = 'access-value-0f3d1c9a8b7e6f5d4c3b';
   const SAME = 'same-collapsed-value-0f3d1c9a8b7e6f';
+  // The credentials NOT under test in a given case, so each case sets only what it
+  // is about. A case that left one unset would be refused for the omission and never
+  // reach the collapse it exists to prove.
+  const complete = {
+    CATALOG_STAFF_WRITE_TOKEN: CATALOG,
+    COMMERCE_STAFF_WRITE_TOKEN: COMMERCE,
+    INVENTORY_STAFF_WRITE_TOKEN: INVENTORY,
+    ACCESS_STAFF_WRITE_TOKEN: ACCESS,
+  };
 
   const start = fileURLToPath(new URL('../start.mjs', import.meta.url));
   const run = (env: Record<string, string>) =>
@@ -163,11 +176,7 @@ describe('the entrypoint refuses to start', () => {
     });
 
   it('exits non-zero when two credentials are identical', () => {
-    const got = run({
-      CATALOG_STAFF_WRITE_TOKEN: SAME,
-      COMMERCE_STAFF_WRITE_TOKEN: SAME,
-      INVENTORY_STAFF_WRITE_TOKEN: INVENTORY,
-    });
+    const got = run({ ...complete, CATALOG_STAFF_WRITE_TOKEN: SAME, COMMERCE_STAFF_WRITE_TOKEN: SAME });
     expect(got.status).toBe(1);
     expect(got.stderr).toMatch(/refusing to start/);
     expect(got.stderr).toMatch(/must not equal/);
@@ -178,22 +187,25 @@ describe('the entrypoint refuses to start', () => {
   // a value read lazily by a module under dist/ would be checked after the server is
   // already listening, which is the failure ai-review pass 2 caught for the first two.
   it('exits non-zero when the inventory credential collapses onto another', () => {
-    const got = run({
-      CATALOG_STAFF_WRITE_TOKEN: CATALOG,
-      COMMERCE_STAFF_WRITE_TOKEN: SAME,
-      INVENTORY_STAFF_WRITE_TOKEN: SAME,
-    });
+    const got = run({ ...complete, COMMERCE_STAFF_WRITE_TOKEN: SAME, INVENTORY_STAFF_WRITE_TOKEN: SAME });
     expect(got.status).toBe(1);
     expect(got.stderr).toMatch(/must not equal/);
     expect(got.stderr).not.toContain(SAME);
   });
 
-  it.each([
-    ['commerce', { CATALOG_STAFF_WRITE_TOKEN: CATALOG, COMMERCE_STAFF_WRITE_TOKEN: '', INVENTORY_STAFF_WRITE_TOKEN: INVENTORY }, /COMMERCE_STAFF_WRITE_TOKEN/],
-    ['inventory', { CATALOG_STAFF_WRITE_TOKEN: CATALOG, COMMERCE_STAFF_WRITE_TOKEN: COMMERCE, INVENTORY_STAFF_WRITE_TOKEN: '' }, /INVENTORY_STAFF_WRITE_TOKEN/],
-  ])('exits non-zero when the %s credential is missing', (_name, env, want) => {
-    const got = run(env);
+  // TKT-203: the fourth credential joins the entrypoint check too, for the same reason
+  // the third did — a value checked only by a module under dist/ would be checked after
+  // the server is already listening.
+  it('exits non-zero when the access credential collapses onto another', () => {
+    const got = run({ ...complete, CATALOG_STAFF_WRITE_TOKEN: SAME, ACCESS_STAFF_WRITE_TOKEN: SAME });
     expect(got.status).toBe(1);
-    expect(got.stderr).toMatch(want);
+    expect(got.stderr).toMatch(/must not equal/);
+    expect(got.stderr).not.toContain(SAME);
+  });
+
+  it.each(Object.keys(complete))('exits non-zero when %s is missing', (name) => {
+    const got = run({ ...complete, [name]: '' });
+    expect(got.status).toBe(1);
+    expect(got.stderr).toMatch(new RegExp(name));
   });
 });

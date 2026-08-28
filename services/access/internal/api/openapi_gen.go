@@ -173,6 +173,18 @@ type TicketBundle struct {
 	Tickets  []Ticket           `json:"tickets"`
 }
 
+// TicketRedelivery defines model for TicketRedelivery.
+type TicketRedelivery struct {
+	OrderId     openapi_types.UUID `json:"order_id"`
+	Replay      bool               `json:"replay"`
+	TicketCount int                `json:"ticket_count"`
+}
+
+// TicketRedeliveryCreate defines model for TicketRedeliveryCreate.
+type TicketRedeliveryCreate struct {
+	OrganizerId openapi_types.UUID `json:"organizer_id"`
+}
+
 // TicketRefund defines model for TicketRefund.
 type TicketRefund struct {
 	Replay    bool                 `json:"replay"`
@@ -192,11 +204,22 @@ type VoidedTicketFeed struct {
 	TicketIds  []openapi_types.UUID `json:"ticket_ids"`
 }
 
+// Id defines model for Id.
+type Id = openapi_types.UUID
+
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
+
 // Ref defines model for Ref.
 type Ref = openapi_types.UUID
 
 // scannerDeviceTokenContextKey is the context key for ScannerDeviceToken security scheme
 type scannerDeviceTokenContextKey string
+
+// RedeliverOrderTicketsParams defines parameters for RedeliverOrderTickets.
+type RedeliverOrderTicketsParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
 
 // GetTicketQRParams defines parameters for GetTicketQR.
 type GetTicketQRParams struct {
@@ -213,6 +236,9 @@ type ListVoidedTicketsParams struct {
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 	Limit  *int    `form:"limit,omitempty" json:"limit,omitempty"`
 }
+
+// RedeliverOrderTicketsJSONRequestBody defines body for RedeliverOrderTickets for application/json ContentType.
+type RedeliverOrderTicketsJSONRequestBody = TicketRedeliveryCreate
 
 // RefundTicketsJSONRequestBody defines body for RefundTickets for application/json ContentType.
 type RefundTicketsJSONRequestBody = TicketRefundCreate

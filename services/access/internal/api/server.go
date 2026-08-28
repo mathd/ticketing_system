@@ -16,6 +16,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	apispec "ticketing/services/access/api"
+	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/contract"
@@ -59,6 +60,29 @@ type Server struct {
 	// now is the clock seam. Tests inject one; production leaves it nil and gets
 	// time.Now. Without it every expiry test is a sleep.
 	now func() time.Time
+	// staffWriteToken is the back office's access credential (TKT-203, ADR-068).
+	// Empty means unconfigured, which the guard treats as REFUSE — see
+	// staffOrInternal in redeliveries.go.
+	staffWriteToken string
+	// The staff redelivery route's two outbound ports. Nil means "cannot send",
+	// which redeliver treats as refuse: a server that cannot reach the transport
+	// must not report success for mail nobody sent.
+	addresses delivery.AddressBook
+	mailer    delivery.Mailer
+	// publicURL is the origin the guest capability link is built on. Held here so
+	// the resend builds the SAME link issuance does, through delivery.TicketLink.
+	publicURL string
+}
+
+// WithRedelivery supplies the staff redelivery route's outbound ports: the buyer
+// address lookup, the transport, and the origin the capability link is built on.
+//
+// One option for all three, deliberately: a server holding two of them cannot send,
+// and three separate setters would let a call site configure a partial path that
+// looks wired and refuses at request time.
+func (s *Server) WithRedelivery(addresses delivery.AddressBook, mailer delivery.Mailer, publicURL string) *Server {
+	s.addresses, s.mailer, s.publicURL = addresses, mailer, publicURL
+	return s
 }
 
 // WithQRLinkKey supplies the HMAC key for signed QR image links. An option rather
@@ -113,8 +137,13 @@ func (s *Server) WithScannerDevices(devices scannerDeviceStore) *Server {
 	s.devices = devices
 	return s
 }
-func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
-	r := chi.NewRouter()
+// registerRoutes mounts every operation on a bare router.
+//
+// Extracted from Router so the credential enumeration in staff_credential_test.go can
+// walk the ROUTER ITSELF rather than a hand-maintained list — a list cannot detect the
+// drift it exists to catch (ADR-057, following commerce and inventory). Router is the
+// only production caller.
+func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		w.Header().Set("Cache-Control", "public, max-age=300, s-maxage=300")
@@ -126,6 +155,12 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/scans/reconciliations", s.reconcile)
 	r.Get("/scans/voided-tickets", s.voidedTickets)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
+	r.Post("/internal/orders/{id}/redeliveries", s.redeliverOrderTickets)
+}
+
+func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
+	r := chi.NewRouter()
+	s.registerRoutes(r)
 	validated, err := contract.RequestValidatorWithSecurity(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
 		// A refused scanner device (ai-review S1). It arrives here rather than from
 		// a handler because the contract DECLARES the requirement and the validator
