@@ -194,9 +194,9 @@ as closed.
 ## References
 
 - TKT-203 (this ticket), TKT-194 (the order console's refund), TKT-201 (the staff order read)
-- [ADR-012](./ADR-012-ticket-issuance-lifecycle-and-qr-boundary.md) — the guest retrieval capability, and its § TKT-202 redaction amendment
+- [ADR-012](./ADR-012-ticket-issuance-and-qr-credentials.md) — the guest retrieval capability, and its § TKT-202 redaction amendment
 - [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) — the append path, and name the adversary
-- [ADR-025](./ADR-025-repeatable-admission-occurrences.md) — §D1/§D3, repeatable event types
+- [ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md) — §D1/§D3, repeatable event types
 - [ADR-043](./ADR-043-where-a-service-auth-guard-lives.md) — contract operation vs internal route
 - [ADR-053](./ADR-053-channel-operator-read-credential.md) — the same question, answered the other way, and why
 - [ADR-057](./ADR-057-inventory-staff-write-credential.md) — the controlling precedent
