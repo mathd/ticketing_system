@@ -186,6 +186,24 @@ as closed.
       compare at startup — six pairs now, which is why that comparison and its test are derived from
       a list rather than written out.
     - Capability widening is accepted rather than solved (§ What this costs).
+    - **Two concurrent resumes of one key can both send.** The claim's ticket locks are
+      released at commit, which is before the caller sends anything, so two simultaneous
+      requests under the same key can observe the same outstanding set. Both send under the
+      SAME derived message ids, so a deduplicating transport delivers once — and this
+      platform has no such transport, which is why the requirement sits in § What this costs
+      rather than being claimed as satisfied. Neither can double-count the bound or
+      double-write the trail. The alternative, holding the ticket locks across an outbound
+      HTTP call and a transport hand-off, would let a slow mail provider block the gate's
+      redemption path on the same rows. Second reviewer's recommendation was a durable
+      per-attempt lease with expiry; that is the right shape and it is **not this ticket's**,
+      because it is a new concurrency mechanism rather than a fix to one.
+    - **The back office's unsettled-key store is in-memory**, like the refund store beside it
+      and the session store beside that. A restart, a second replica, or the one-hour expiry
+      loses the key while access still holds the unsettled attempt rows; the operator's
+      recourse is then a fresh resend, which costs one slot of the bound and one extra mail
+      to the address already on file. That is a worse outcome than the durable version and
+      not a wrong one. Making it durable is the same work as ADR-042's equivalent note for
+      refunds and belongs with it.
 - **Revisit when:** a real mail sender lands (ADR-050) and "delivered" can mean something stronger;
   an organizer identity access can verify exists; or a second consumer needs this operation — two
   callers on a route-specific allowance is the point at which the allowance should become a

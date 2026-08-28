@@ -72,6 +72,9 @@ type Server struct {
 	// publicURL is the origin the guest capability link is built on. Held here so
 	// the resend builds the SAME link issuance does, through delivery.TicketLink.
 	publicURL string
+	// redeliveries is the resend's store port (see redeliveries.go). Nil means the
+	// route refuses, like every other unwired dependency here.
+	redeliveries redeliveryStore
 }
 
 // WithRedelivery supplies the staff redelivery route's outbound ports: the buyer
@@ -124,6 +127,10 @@ func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server
 	// both — a guard that looks present and fails open on the way to failing hard.
 	if st != nil {
 		s.devices = st
+		// Same typed-nil guard as devices above, and for the same reason: a typed nil
+		// in an interface is not nil, so an unguarded assignment would pass a != nil
+		// check and then panic inside the handler.
+		s.redeliveries = st
 	}
 	if len(token) > 0 {
 		s.token = token[0]

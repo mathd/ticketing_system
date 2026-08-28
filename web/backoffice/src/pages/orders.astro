@@ -155,11 +155,22 @@ if (Astro.request.method === 'POST') {
       // partially executed is the one this process sent, and a form field claiming to
       // name it is not evidence of anything.
       const outstandingResend = unresolvedRedeliveryFor(staff.organizerId, parsed.value.orderId);
+      // Clear ONLY when this response settled the key that was outstanding. A stale
+      // tab or a back-button submit carries an older key, and clearing on its outcome
+      // would discard the entry for a request access has NOT settled — stranding the
+      // partially-executed one and letting the next render mint a fresh key
+      // (ai-review pass 2). Nothing outstanding at all is the ordinary case and
+      // clears nothing.
+      const settledTheOutstandingKey =
+        outstandingResend === undefined ||
+        outstandingResend.idempotencyKey === parsed.value.idempotencyKey;
       if (outcome.ok) {
         action = { kind: 'redelivered', redelivery: outcome.value };
-        // Access answered, so the request is settled either way — a fresh send or a
-        // resumed replay both mean there is nothing left hanging.
-        clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
+        // Access answered about THIS key — a fresh send or a resumed replay both mean
+        // nothing is left hanging for it.
+        if (settledTheOutstandingKey) {
+          clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
+        }
       } else {
         action = {
           kind: 'redelivery-refused',
@@ -175,8 +186,10 @@ if (Astro.request.method === 'POST') {
           // Keep the FIRST unsettled key, not this attempt's: only the original can
           // resume the work access may have half-done.
           noteUnresolvedRedelivery(staff.organizerId, outstandingResend ?? parsed.value);
-        } else {
-          // A decided refusal means access did nothing, so nothing is outstanding.
+        } else if (settledTheOutstandingKey) {
+          // A decided refusal means access did nothing under THIS key. Only that
+          // clears it — a refusal of some other key says nothing about the one still
+          // outstanding.
           clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
         }
       }

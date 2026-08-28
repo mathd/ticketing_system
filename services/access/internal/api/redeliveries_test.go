@@ -91,12 +91,14 @@ type fakeRedeliveryStore struct {
 	claimErr error
 	markErr  func(ticketID uuid.UUID) error
 	marks    int
+	order    uuid.UUID
 }
 
-func (f *fakeRedeliveryStore) claim() (store.RedeliveryClaim, error) {
+func (f *fakeRedeliveryStore) ClaimRedelivery(_ context.Context, _, order uuid.UUID, _ string) (store.RedeliveryClaim, error) {
 	if f.claimErr != nil {
 		return store.RedeliveryClaim{}, f.claimErr
 	}
+	f.order = order
 	replay := f.claimed
 	f.claimed = true
 	out := make([]store.RedeliveryTicket, len(f.tickets))
@@ -104,10 +106,10 @@ func (f *fakeRedeliveryStore) claim() (store.RedeliveryClaim, error) {
 	for i := range out {
 		out[i].Accepted = f.accepted[out[i].TicketID]
 	}
-	return store.RedeliveryClaim{OrderID: uuid.Nil, Tickets: out, Replay: replay}, nil
+	return store.RedeliveryClaim{OrderID: order, Tickets: out, Replay: replay}, nil
 }
 
-func (f *fakeRedeliveryStore) mark(ticketID uuid.UUID) error {
+func (f *fakeRedeliveryStore) MarkRedelivered(_ context.Context, _ uuid.UUID, _ string, ticketID, _ uuid.UUID) error {
 	if f.markErr != nil {
 		if err := f.markErr(ticketID); err != nil {
 			return err
@@ -118,28 +120,18 @@ func (f *fakeRedeliveryStore) mark(ticketID uuid.UUID) error {
 	return nil
 }
 
-// redeliverWith drives the same three-step sequence redeliver() runs, against the fake.
-// It exists because redeliver is a method on Server bound to *store.Postgres; the
-// sequence — claim, send only what is outstanding, mark after the transport takes it —
-// is the contract under test, and it is reproduced here rather than mocked away.
+// redeliverWith drives the REAL handler — Server.redeliver — against the fake store and
+// a counting mailer.
+//
+// The first version of this helper reproduced the handler's claim/send/mark sequence
+// instead of calling it, and ai-review pass 2 was right that this made every assertion
+// below a fact about the TEST: reverting the shipped handler to return early on a replay,
+// or to iterate claim.Tickets instead of Outstanding(), left them all green. The
+// assertions are worth something only if the code under test is the code that ships.
 func redeliverWith(f *fakeRedeliveryStore, m *countingMailer, a staticAddressBook, publicURL string) (int, bool, error) {
-	claim, err := f.claim()
-	if err != nil {
-		return 0, false, err
-	}
-	for _, tk := range claim.Outstanding() {
-		email, err := a.DeliveryEmail(context.Background(), tk.BuyerID)
-		if err != nil {
-			return 0, false, err
-		}
-		if err := m.Send(context.Background(), tk.MessageID, email, publicURL+"/en/tickets/"+tk.GuestOrderRef.String()); err != nil {
-			return 0, false, err
-		}
-		if err := f.mark(tk.TicketID); err != nil {
-			return 0, false, err
-		}
-	}
-	return len(claim.Tickets), claim.Replay, nil
+	s := New(nil, nil).WithRedeliveryStore(f).WithRedelivery(a, m, publicURL)
+	out, err := s.redeliver(context.Background(), uuid.New(), uuid.New(), "the-key")
+	return out.TicketCount, out.Replay, err
 }
 
 func twoTickets() *fakeRedeliveryStore {

@@ -155,6 +155,31 @@ func (s *Server) redeliverOrderTickets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// redeliveryStore is the two store operations the resend drives.
+//
+// An interface for the same reason scannerDeviceStore is one, and with the same caveat:
+// it is NOT where the guarantee lives. The row-level guarantees — the attempt table's
+// uniqueness, the per-order bound, the accepted_at read that makes a replay a resume,
+// the signed chain — are SQL, and they are asserted against real PostgreSQL in the store
+// tier. A fake enforcing them in Go would prove the fake and the handler agree.
+//
+// What it buys is the one thing no database assertion can make: a test that drives the
+// REAL handler and watches the transport. Before this existed, the API tests reproduced
+// the handler's send loop and asserted against their own copy — so reverting the shipped
+// handler to return early on a replay left them green (ai-review pass 2). A test whose
+// assertions are facts about the test is not a test of the contract.
+type redeliveryStore interface {
+	ClaimRedelivery(ctx context.Context, org, order uuid.UUID, key string) (store.RedeliveryClaim, error)
+	MarkRedelivered(ctx context.Context, org uuid.UUID, key string, ticketID, messageID uuid.UUID) error
+}
+
+// WithRedeliveryStore replaces the redelivery store port. Tests only: production passes
+// the *store.Postgres to New and gets it from there.
+func (s *Server) WithRedeliveryStore(rs redeliveryStore) *Server {
+	s.redeliveries = rs
+	return s
+}
+
 // redeliveryResult is what the handler reports. A count, never the tickets.
 type redeliveryResult struct {
 	OrderID     uuid.UUID
@@ -182,13 +207,13 @@ type redeliveryResult struct {
 // That is a requirement ON the transport, and this repo's only transport is a logger
 // (see the delivery package) — so it is written down, not claimed as closed.
 func (s *Server) redeliver(ctx context.Context, org, order uuid.UUID, key string) (redeliveryResult, error) {
-	if s.addresses == nil || s.mailer == nil {
+	if s.addresses == nil || s.mailer == nil || s.redeliveries == nil {
 		// Fail closed. A server built without a transport must refuse rather than
 		// report success for mail nobody sent — the shape authenticateScannerDevice
 		// already uses for a missing enrolment port.
 		return redeliveryResult{}, errors.New("redelivery is not configured")
 	}
-	claim, err := s.st.ClaimRedelivery(ctx, org, order, key)
+	claim, err := s.redeliveries.ClaimRedelivery(ctx, org, order, key)
 	if err != nil {
 		return redeliveryResult{}, err
 	}
@@ -206,7 +231,7 @@ func (s *Server) redeliver(ctx context.Context, org, order uuid.UUID, key string
 		if err := s.mailer.Send(ctx, tk.MessageID, email, delivery.TicketLink(s.publicURL, tk.GuestOrderRef)); err != nil {
 			return redeliveryResult{}, err
 		}
-		if err := s.st.MarkRedelivered(ctx, org, key, tk.TicketID, tk.MessageID); err != nil {
+		if err := s.redeliveries.MarkRedelivered(ctx, org, key, tk.TicketID, tk.MessageID); err != nil {
 			return redeliveryResult{}, err
 		}
 	}

@@ -131,11 +131,34 @@ func redeliveryMessageID(organizer uuid.UUID, key string, ticketID uuid.UUID) uu
 }
 
 // ClaimRedelivery binds an idempotency key to an order, enforces the per-order bound
-// and returns the tickets to resend with a fresh message id each.
+// and returns the order's tickets with the message id each one is to be sent under.
+//
+// On a FIRST claim those ids are minted here; on a replay they are read back from the
+// attempt rows, so a resume re-sends under the id the first attempt used. Stated
+// because the reverse — a fresh id per attempt — would defeat the transport-level
+// deduplication the crash window depends on.
 //
 // It does NOT append lifecycle events: the send has not happened yet, and a trail
 // that recorded a delivery before the transport accepted it would claim something
 // untrue. MarkRedelivered closes that loop afterwards, per ticket.
+//
+// CONCURRENCY, stated rather than implied. The ticket locks taken below are released
+// when this transaction commits — which is BEFORE the caller sends anything. So two
+// simultaneous requests under the SAME key can both observe the same outstanding set
+// and both send it. What that costs is bounded and deliberate:
+//
+//   - Both send under the SAME derived message ids, so a transport that deduplicates
+//     on message id delivers once. This repo has no such transport (ADR-050), which is
+//     why the requirement is recorded there rather than claimed as satisfied here.
+//   - Neither can double-count the bound: the request row's primary key admits one
+//     claim per (organizer, key), so the loser of the INSERT race takes the replay path.
+//   - Neither can double-write the trail: MarkRedelivered settles idempotency under the
+//     ticket row lock and appends at most once per (request, ticket).
+//
+// Holding a lock across the send instead was rejected: the send is an outbound HTTP
+// call to commerce plus a transport hand-off, and holding a row lock on every ticket of
+// an order across that turns a slow mail provider into a blocked scan path — the tickets
+// locked here are the same rows the gate's redemption path locks.
 func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, key string) (RedeliveryClaim, error) {
 	if key == "" {
 		return RedeliveryClaim{}, errors.New("idempotency key is required")
