@@ -681,15 +681,20 @@ psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_check
 # So each check tolerates a coherent appended suffix and asserts only survival:
 #   - lifecycle_event_integrity: every backed-up row still present and byte-identical.
 #     New rows are an append, not an injury.
-#   - lifecycle_heads: every backed-up ticket still has a head, and that head has not
-#     REGRESSED below its backed-up sequence. A head that advanced is an append; a head
-#     that went backwards is the restore undoing a writer.
+#   - lifecycle_heads, in TWO parts. Survival: every backed-up ticket still has a head
+#     that has not REGRESSED below its backed-up sequence. Coherence: every head agrees
+#     with its own integrity chain. The second is not redundant -- the restores are
+#     separate statements, so an append landing BETWEEN them keeps its integrity row and
+#     loses its head to the backup, and the restored head equals the backup, so survival
+#     alone passes while the chain is broken (ai-review pass 2).
 #   - lifecycle_checkpoints: restored by UPDATE on `root` ALONE (see the note above), so
 #     only backup rows must still carry their original root. A checkpoint the live
 #     checkpointer added is expected.
-#   - coverage: no lifecycle_events row without an integrity row. This is the one that
-#     catches the window-append shape, and it stays clean under a healthy append because
-#     appendLifecycle writes both in one transaction.
+#   - coverage: no lifecycle_events row without an integrity row. This catches ONE
+#     window-append shape -- an append surviving the integrity restore's TRUNCATE -- and
+#     it stays clean under a healthy append because appendLifecycle writes both in one
+#     transaction. It does NOT catch the between-restores split; the coherence check
+#     above does.
 psql_access "BEGIN;
 DO \$tkt261\$
 DECLARE events_count bigint; integrity_count bigint;
@@ -707,6 +712,27 @@ BEGIN
     WHERE h.ticket_id IS NULL OR h.last_sequence < b.last_sequence
   ) THEN
     RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a backed-up head is missing or REGRESSED below its backed-up sequence. Investigate THIS restore, not the trail.';
+  END IF;
+  -- HEAD/CHAIN COHERENCE. Survival alone is not enough (ai-review pass 2, [high]):
+  -- the integrity restore and the head restore are SEPARATE statements, so an append
+  -- committing between them keeps its integrity row (written after the integrity
+  -- restore, and permitted above as a suffix) while its advanced head is overwritten
+  -- by the backup. The restored head EQUALS the backup, so the regression check above
+  -- passes -- and the chain is broken. verify-lifecycle then reports tampering, which
+  -- is the exact misdiagnosis this block exists to prevent.
+  --
+  -- So assert the head agrees with the chain it heads: for every ticket with integrity
+  -- rows, a head must exist and its last_sequence must equal that ticket''s highest
+  -- integrity sequence. A fully committed suffix keeps them equal; a suffix whose head
+  -- the restore erased does not.
+  IF EXISTS (
+    SELECT 1 FROM (
+      SELECT ticket_id, MAX(sequence) AS seq FROM lifecycle_event_integrity GROUP BY ticket_id
+    ) top
+    LEFT JOIN lifecycle_heads h ON h.ticket_id=top.ticket_id
+    WHERE h.ticket_id IS NULL OR h.last_sequence <> top.seq
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a head disagrees with its own integrity chain, which is what an append committing BETWEEN the integrity restore and the head restore leaves behind. Investigate THIS restore, not the trail.';
   END IF;
   IF EXISTS (
     SELECT 1 FROM lifecycle_checkpoints_smoke_backup b
