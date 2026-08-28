@@ -39,11 +39,20 @@ const ticketIds = [randomUUID(), randomUUID()];
 
 provisionAdmin(CATALOG, identifier, password);
 
-// The commerce half: a completed order, so the console renders and offers the form.
+// A distinctive address, so the COS-6 assertions below prove an ABSENCE that could
+// actually have been present. A fixture with no buyer row at all would make the resend
+// fail (commerce 404s on the address lookup) and the "no address on the page" check pass
+// for the wrong reason — which is how the first run of this spec went.
+const buyerEmail = `resend-buyer-${stamp}@example.test`;
+
+// The commerce half: a completed order with a real buyer record, so the console renders,
+// offers the form, and access can resolve the address the way it does in production.
 sql(
   PG,
   'commerce',
-  `INSERT INTO reservations
+  `INSERT INTO buyer_pii (buyer_id, name, email)
+   VALUES ('${buyerId}', 'Resend Buyer', '${buyerEmail}');
+   INSERT INTO reservations
      (id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id, quantity,
       unit_amount, total_amount, face_value_amount, currency, status)
    VALUES
@@ -141,7 +150,13 @@ try {
   // COS-6 at the boundary the value would cross on its way to a human: the buyer's
   // address must not appear on the rendered page, nor a capability link.
   const html = await page.content();
-  check('the rendered page shows no buyer address', !/[\w.+-]+@[\w-]+\.[\w.]+/.test(await page.locator('.refund-result').innerText()));
+  // The SEEDED address specifically, not a generic email-shaped pattern: the value that
+  // must not appear is the one the resend actually resolved and handed to the transport.
+  check('the rendered page shows no buyer address', !html.includes(buyerEmail));
+  check(
+    'the resend result shows nothing email-shaped at all',
+    !/[\w.+-]+@[\w-]+\.[\w.]+/.test(await page.locator('.refund-result').innerText()),
+  );
   check('the rendered page shows no ticket capability link', !html.includes('/en/tickets/'));
   check('the rendered page does not leak the guest reference', !html.includes(guestRef));
 
