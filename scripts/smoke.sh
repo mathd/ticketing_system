@@ -741,6 +741,24 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints roots -- the UPDATE restore left a backed-up checkpoint missing or with a different root. Investigate THIS restore, not the trail.';
   END IF;
+  -- CHECKPOINT CHAIN COHERENCE (ai-review pass 3, [high]). The checks above look only
+  -- at backed-up ids, which leaves one shape open: while a backed-up root is corrupt,
+  -- the live checkpointer can read that corrupt value as previous_root and commit a
+  -- SUCCESSOR. The restore repairs the predecessor and never touches the successor, so
+  -- every check above passes and verify-lifecycle reports a broken link as tampering.
+  --
+  -- Reachability is narrow -- CheckpointOrganizer skips its regression comparison only
+  -- when the in-process observed sequence is 0 (lifecycle_checkpoint.go:161), which in
+  -- this script means an organizer this access process has not yet checkpointed -- but
+  -- narrow is not closed, and a guard that names its own damage costs one join.
+  IF EXISTS (
+    SELECT 1 FROM lifecycle_checkpoints c
+    JOIN lifecycle_checkpoints prev
+      ON prev.organizer_id=c.organizer_id AND prev.sequence=c.sequence-1
+    WHERE c.previous_root IS DISTINCT FROM prev.root
+  ) THEN
+    RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints -- a checkpoint previous_root disagrees with its predecessor root, which is what a checkpoint committed while this block held a root corrupt leaves behind. Investigate THIS restore, not the trail.';
+  END IF;
   SELECT count(*) INTO events_count FROM lifecycle_events;
   SELECT count(*) INTO integrity_count FROM lifecycle_event_integrity;
   IF EXISTS (
