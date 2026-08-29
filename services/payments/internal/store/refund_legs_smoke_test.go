@@ -504,10 +504,14 @@ func TestRefundLegCeilingHoldsAgainstOverflow(t *testing.T) {
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-1", first, "EUR"); err != nil {
 		t.Fatalf("bind within capture: %v", err)
 	}
-	// 11 is one more than the 10 that remain: refused because it breaks the rule, and the
-	// smallest amount that does. MaxInt64 is refused for the same reason, and is additionally
-	// the amount whose unchecked sum wraps negative.
-	for _, amount := range []int64{11, math.MaxInt64} {
+	// Several amounts, spread across the range rather than clustered at the bound, so an
+	// implementation special-casing the largest values does not survive. 11 is one more than
+	// the 10 that remain — the smallest amount that breaks the rule, and small enough that
+	// its sum does NOT overflow, so it is refused by the ceiling itself. The rest do
+	// overflow, and 12 is the smallest of those: added to a bound total of MaxInt64-10 it
+	// lands on MaxInt64+2. Every one of them breaks the same rule and must get the same
+	// answer, whether or not the arithmetic wrapped on the way to it.
+	for _, amount := range []int64{11, 12, 1250, math.MaxInt64 / 2, math.MaxInt64 - 1, math.MaxInt64} {
 		if _, err := j.BindRefundLeg(ctx, org, key, "refund-2", amount, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
 			t.Fatalf("bind %d over a capture with 10 remaining: err = %v, want ErrRefundExceedsCapture", amount, err)
 		}

@@ -27,6 +27,13 @@ import (
 var errAmountOverflow = errors.New("amount arithmetic overflows int64")
 
 func checkedAddMoney(a, b int64) (int64, error) {
+	// `a < 0` is load-bearing; `b < 0` is not, and saying so is the point of this comment.
+	// For any negative b, `math.MaxInt64-b` below itself overflows to a negative number, so
+	// `a > that` holds for every non-negative a and the overflow branch already refuses the
+	// pair. No input exists for which the `b < 0` clause changes the answer — it is kept as
+	// a statement of the precondition, matching the sentinel's meaning, and NOT as a guard
+	// anything relies on. Its inertness was measured, not assumed: dropping it leaves the
+	// boundary tests green, while dropping `a < 0` turns them red.
 	if a < 0 || b < 0 {
 		return 0, errAmountOverflow
 	}

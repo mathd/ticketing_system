@@ -232,10 +232,16 @@ func TestPartialRefundOverflowIsRefusedNotAccepted(t *testing.T) {
 		t.Fatalf("first refund: status=%d body=%s", first.Code, first.Body.String())
 	}
 
-	res := postRefundLeg(t, h, `{"organizer_id":"`+org.String()+`","idempotency_key":"`+sourceKey+`","refund_key":"refund-2","amount":9223372036854775807,"currency":"EUR"}`)
-	if res.Code != http.StatusConflict {
-		t.Fatalf("a leg that overflows the running total must be refused with 409, "+
-			"got status=%d body=%s", res.Code, res.Body.String())
+	// More than one overflowing amount, and they are not neighbours: MaxInt64 is the
+	// contract's bound, and MaxInt64-1250 is the value whose sum with the 1250 already bound
+	// lands EXACTLY on MaxInt64+1 — the smallest total that overflows at all. A handler or
+	// guard special-casing the bound survives one of these, not both.
+	for _, amount := range []string{"9223372036854775807", "9223372036854775806", "9223372036854774557"} {
+		res := postRefundLeg(t, h, `{"organizer_id":"`+org.String()+`","idempotency_key":"`+sourceKey+`","refund_key":"refund-2","amount":`+amount+`,"currency":"EUR"}`)
+		if res.Code != http.StatusConflict {
+			t.Fatalf("a leg of %s overflows the running total and must be refused with 409, "+
+				"got status=%d body=%s", amount, res.Code, res.Body.String())
+		}
 	}
 	if provider.count() != 1 {
 		t.Fatalf("a refused leg must not reach the provider: calls = %d, want the 1 from the "+

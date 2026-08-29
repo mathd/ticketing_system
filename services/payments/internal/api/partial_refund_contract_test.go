@@ -18,6 +18,7 @@ package api
 // value is the only assertion at this tier that can distinguish.
 
 import (
+	"bytes"
 	"math"
 	"testing"
 
@@ -51,19 +52,32 @@ func TestPartialRefundAmountDeclaresItsBounds(t *testing.T) {
 		t.Fatal("amount declares no maximum, so the contract states no upper bound for the " +
 			"one caller-supplied money value payments accepts")
 	}
-	// Compared in float64 space, and deliberately so. kin-openapi stores a schema bound as
-	// float64, and MaxInt64 is NOT exactly representable there — it rounds to 2^63, whose
-	// conversion back to int64 overflows to MinInt64. So the obvious int64(*Max) comparison
-	// is not merely imprecise, it reports the bound as negative. `float64(math.MaxInt64)`
-	// performs the identical rounding, which makes this an exact comparison of the two
-	// values after the same conversion, and any other declared maximum — the Money cap
-	// included, which IS exactly representable — differs from it.
-	if got := *amount.Value.Max; got != float64(math.MaxInt64) {
-		t.Errorf("amount maximum = %.0f, want %.0f (int64's own bound).\n"+
+	// The VALUE is asserted against the spec's own bytes, not against the parsed schema.
+	//
+	// kin-openapi stores a bound as float64, and MaxInt64 is not representable there: it,
+	// MaxInt64-1 and MaxInt64+1 all round to the same 2^63. So a float64 comparison passes
+	// for three different declarations, two of them wrong — MaxInt64-1 refuses a legitimate
+	// full refund at the bound, and MaxInt64+1 promises a value the int64 decoder rejects
+	// with a 400. Converting back to int64 is worse still: 2^63 overflows and the bound
+	// reports as MinInt64. The parsed schema simply cannot answer this question, so the
+	// question is asked of the source text, where the integer is exact.
+	//
+	// Found by the TKT-297 ai-review. The first version of this test compared in float64
+	// space and carried a comment claiming every other maximum differed from it — green,
+	// well-named, and blessing two wrong contracts.
+	const wantMax = "maximum: 9223372036854775807"
+	if !bytes.Contains(apispec.Spec, []byte(wantMax)) {
+		t.Errorf("the served spec does not declare %q for the partial-refund amount.\n"+
 			"It is deliberately NOT catalog's Money cap of 9007199254740991: commerce composes "+
 			"an order total with a checkedAdd that bounds at int64, and pins that a "+
 			"large-but-representable total must still sell, so a capture may exceed 2^53-1. A "+
 			"refund is a subset of a capture, so the JS-safe cap would refuse honest refunds of "+
-			"large orders.", got, float64(math.MaxInt64))
+			"large orders.", wantMax)
+	}
+	// And the bound the parser hands every consumer is the one the text declares — the two
+	// assertions together are what make this about the contract rather than about a string
+	// that happens to appear somewhere in the document.
+	if got := *amount.Value.Max; got != float64(math.MaxInt64) {
+		t.Errorf("parsed amount maximum = %.0f, want the int64 bound", got)
 	}
 }
