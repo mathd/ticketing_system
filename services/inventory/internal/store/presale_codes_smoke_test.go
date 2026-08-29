@@ -349,11 +349,11 @@ func TestEveryInvalidPresaleCodeRefusesIdentically(t *testing.T) {
 	}
 
 	causes := map[string]string{
-		"no code at all":         "",
-		"unknown code":           "NEVER-ISSUED",
+		"no code at all":          "",
+		"unknown code":            "NEVER-ISSUED",
 		"code of another channel": "OTHER-CHANNEL",
-		"exhausted code":         "SPENT",
-		"out-of-window code":     "EXPIRED",
+		"exhausted code":          "SPENT",
+		"out-of-window code":      "EXPIRED",
 	}
 	for name, code := range causes {
 		t.Run(name, func(t *testing.T) {
@@ -391,7 +391,7 @@ func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	// a test update: every idempotency record in every database stops replaying and
 	// every in-flight retry re-executes.
 	const (
-		goldenBare       = "bbb9368991be6cd401b4876d78a07bbb1ebcb18be9c90abe45a98102c11a4510"
+		goldenBare        = "bbb9368991be6cd401b4876d78a07bbb1ebcb18be9c90abe45a98102c11a4510"
 		goldenWithChannel = "27ba9d12ad92b46f7f200784cd338b843fdbc10d8ffd779578a74de579a6af23"
 	)
 	org := uuid.MustParse("11111111-1111-1111-1111-111111111111")
@@ -711,5 +711,83 @@ func TestRedemptionCountIsIndexBacked(t *testing.T) {
 	}
 	if strings.Contains(plan, "Seq Scan on claims") {
 		t.Fatalf("the redemption count sequentially scans claims:\n%s", plan)
+	}
+}
+
+// Retrying a hold that presented a code to an UNGATED channel must REPLAY, not
+// refuse (TKT-296 D1).
+//
+// CreateHold computed the fingerprint twice, at two points in the same function:
+// the replay comparison used the raw presaleCode, while the stored value was
+// computed AFTER `presaleCode = ""` cleared it for an ungated allocation. So the
+// first request stored a code-less fingerprint, and an identical retry compared a
+// code-BEARING one, mismatched, and got ErrIdempotency — a leaked hold plus a
+// failed checkout retry, on the buyer path. PlaceGroupReservation never had this:
+// it computes fp once, pre-clear.
+//
+// WHAT A FAILURE LOOKS LIKE IN THE RESULT SET, which is what the assertions are
+// built from: a wrong comparison does not return a foreign row and does not
+// duplicate one. It returns NO row and a 409, so `replay` false or a non-nil
+// error is the shape to assert — not "the write was refused".
+//
+// MUTATION that proves this test can fail: move the fingerprint computation at
+// store.go:473 back after the clear at :589-594 (or recompute the insert value
+// post-clear). The retry then returns ErrIdempotency and this test goes red. It
+// was observed red against unmodified store.go before the fix landed.
+func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 6}})
+
+	const key = "ungated-retry"
+	const code = "NOT-A-REAL-CODE"
+
+	first, replayed, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", key,
+		WithPresaleCode(code))
+	if err != nil {
+		t.Fatalf("the first code-bearing hold against an ungated channel was refused: %v", err)
+	}
+	if replayed {
+		t.Fatal("the FIRST request reported itself a replay")
+	}
+
+	// Byte-identical retry: same key, same terms, same code.
+	second, replayed, err := st.CreateHold(ctx, org, slot, uuid.Nil, 1, 0, "", "presale", key,
+		WithPresaleCode(code))
+	if err != nil {
+		t.Fatalf("the retry was refused instead of replaying: %v\n"+
+			"This is TKT-296 D1: the replay comparison and the stored fingerprint "+
+			"disagree about whether an ignored presale code is part of the request "+
+			"identity. A buyer retrying checkout gets a 409 and the first hold leaks.", err)
+	}
+	if !replayed {
+		t.Fatal("the retry created a second claim instead of replaying the first")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("the retry returned a DIFFERENT claim: first %s, retry %s", first.ID, second.ID)
+	}
+
+	// The retry must not have created a row. Counting is the assertion that
+	// distinguishes "replayed" from "quietly sold twice".
+	var claims int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, key).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 1 {
+		t.Fatalf("expected exactly 1 claim for the retried key, found %d", claims)
+	}
+
+	// The ignored code is still not recorded — the fix changes the fingerprint's
+	// INPUT, never what is persisted.
+	var cited *string
+	if err := db.QueryRowContext(ctx,
+		`SELECT presale_code FROM claims WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, key).Scan(&cited); err != nil {
+		t.Fatal(err)
+	}
+	if cited != nil {
+		t.Fatalf("an ungated allocation recorded the ignored code %q", *cited)
 	}
 }

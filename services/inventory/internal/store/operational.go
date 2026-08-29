@@ -181,11 +181,11 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 		return OperationalHold{}, false, ErrUnavailable
 	}
 	h := OperationalHold{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Purpose: purpose, Label: label, Status: "held"}
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,operational_purpose,operational_label)
-		VALUES($1,$2,$3,$4,'held',NULL,$5,$6,'operational',$7,$8) RETURNING now()`,
-		h.ID, org, slot, qty, "op-place:"+key, fp, purpose, label).Scan(&h.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,operational_purpose,operational_label,staff_scope)
+		VALUES($1,$2,$3,$4,'held',NULL,$5,$6,'operational',$7,$8,true) RETURNING now()`,
+		h.ID, org, slot, qty, key, fp, purpose, label).Scan(&h.ServerTime)
 	if err != nil {
-		return OperationalHold{}, false, err
+		return OperationalHold{}, false, idempotencyConflict(err)
 	}
 	if err = appendHistory(ctx, tx, org, h.ID, nil, "place", actor, reason, qty, qty, "held", &key, &fp); err != nil {
 		return OperationalHold{}, false, err
@@ -337,11 +337,11 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, 
 	// RETURNING moves with it: server_time is the buyer's reference for the countdown
 	// (expires_at - server_time), so a transaction-start server_time would overstate the
 	// remaining time by exactly the wait. TKT-148; ADR-024's clock split.
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer') RETURNING expires_at,clock_timestamp()`,
-		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), "convert:"+id.String()+":"+key, fp).Scan(&child.ExpiresAt, &child.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,staff_scope)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',true) RETURNING expires_at,clock_timestamp()`,
+		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fp).Scan(&child.ExpiresAt, &child.ServerTime)
 	if err != nil {
-		return ConvertResult{}, false, err
+		return ConvertResult{}, false, idempotencyConflict(err)
 	}
 	status, remaining := "held", c.Quantity-qty
 	if qty == c.Quantity {

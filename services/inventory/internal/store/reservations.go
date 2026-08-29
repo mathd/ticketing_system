@@ -206,11 +206,11 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	// NOT (ADR-064). consumingClaims counts a live source AND its live children, so
 	// a code cited on both would have the same units counted twice and a code capped
 	// at 10 would exhaust at 5. The redemption happened here, once.
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code)
-		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,'')) RETURNING expires_at,now()`,
-		h.ID, org, slot, qty, expiresAt, "grp-place:"+key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code,staff_scope)
+		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,''),true) RETURNING expires_at,now()`,
+		h.ID, org, slot, qty, expiresAt, key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
 	if err != nil {
-		return GroupReservation{}, false, err
+		return GroupReservation{}, false, idempotencyConflict(err)
 	}
 	if err = appendHistory(ctx, tx, org, h.ID, nil, "reserve", actor, reason, qty, qty, "held", &key, &fp); err != nil {
 		return GroupReservation{}, false, err
@@ -320,11 +320,11 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	// RETURNING moves with it: server_time is the buyer's reference for the countdown
 	// (expires_at - server_time), so a transaction-start server_time would overstate the
 	// remaining time by exactly the wait. TKT-148; ADR-024's clock split.
-	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,'')) RETURNING expires_at,clock_timestamp()`,
-		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), "grp-draw:"+id.String()+":"+key, fp, channel, sourcePresaleCode).Scan(&child.ExpiresAt, &child.ServerTime)
+	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,staff_scope)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),true) RETURNING expires_at,clock_timestamp()`,
+		child.ID, org, pool, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fp, channel, sourcePresaleCode).Scan(&child.ExpiresAt, &child.ServerTime)
 	if err != nil {
-		return ConvertResult{}, false, err
+		return ConvertResult{}, false, idempotencyConflict(err)
 	}
 	status, remaining := "held", c.Quantity-qty
 	if qty == c.Quantity {
