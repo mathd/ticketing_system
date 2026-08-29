@@ -124,7 +124,17 @@ func (j *Journal) BindRefundLeg(ctx context.Context, org uuid.UUID, sourceKey, r
 	if err := tx.QueryRowContext(ctx, `SELECT sum(amount) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, sourceKey).Scan(&bound); err != nil {
 		return RefundLeg{}, err
 	}
-	if bound.Int64+amount > captured.Int64 {
+	// Checked, because `amount` is the one caller-supplied money value on this path and
+	// nothing between the wire and here bounds it from above: the handler refuses only
+	// `<= 0`, the contract's maximum is int64's own, and the column's CHECK is `amount > 0`.
+	// Unchecked, `bound.Int64+amount` wraps NEGATIVE for a large enough amount and this
+	// comparison then reads false — so the ceiling admits precisely the legs it exists to
+	// refuse. An overflowing total is over the capture by construction (both operands are
+	// non-negative and captured fits in int64), so it takes the same refusal rather than a
+	// distinct error: the caller asked to refund more than was taken, and the size of the
+	// nonsense is not a different answer. The handler maps this sentinel to 409.
+	total, err := checkedAddMoney(bound.Int64, amount)
+	if err != nil || total > captured.Int64 {
 		return RefundLeg{}, ErrRefundExceedsCapture
 	}
 

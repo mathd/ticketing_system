@@ -207,3 +207,64 @@ func TestPartialRefundRequiresInternalToken(t *testing.T) {
 		t.Fatal("an unauthorized request must not reach the provider")
 	}
 }
+
+// A leg whose amount would overflow the running total is refused at the endpoint as a
+// CONFLICT, and never reaches the provider (TKT-297).
+//
+// The store test proves the ceiling holds; this proves the refusal survives the trip out.
+// Both halves matter and neither implies the other. Unchecked, the addition wraps negative
+// and the leg is ACCEPTED — 200, a provider refund for more money than was captured, and a
+// payment.refunded fact to match. And a fix that refuses with any error other than
+// ErrRefundExceedsCapture would be answered 500 by the handler's classifier rather than
+// 409, turning a caller error into an apparent payments fault — which is why the status is
+// asserted and not merely "not 200".
+//
+// The amount is MaxInt64, the largest value the contract admits: at the boundary rather
+// than beyond it, so this exercises the store's guard and not the decoder's. A value above
+// MaxInt64 fails to unmarshal into the int64 field and is answered 400 by decode() with or
+// without any of this ticket's changes.
+func TestPartialRefundOverflowIsRefusedNotAccepted(t *testing.T) {
+	org, sourceKey := uuid.New(), "leg-overflow"
+	h, provider := refundServer(t, org, sourceKey, 2500)
+
+	first := postRefundLeg(t, h, `{"organizer_id":"`+org.String()+`","idempotency_key":"`+sourceKey+`","refund_key":"refund-1","amount":1250,"currency":"EUR"}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first refund: status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	// Three amounts that each break the rule, reaching it by two different routes. MaxInt64
+	// and MaxInt64-1 overflow the running total, so the unchecked addition wraps and admits
+	// them. MaxInt64-1250 does NOT overflow — added to the 1250 already bound it lands
+	// exactly on MaxInt64 — so it is refused by the ceiling comparison itself, over a
+	// capture of 2500. Both routes must give the same answer, and a guard special-casing the
+	// largest values satisfies neither all three nor the pair that wraps.
+	for _, amount := range []string{"9223372036854775807", "9223372036854775806", "9223372036854774557"} {
+		res := postRefundLeg(t, h, `{"organizer_id":"`+org.String()+`","idempotency_key":"`+sourceKey+`","refund_key":"refund-2","amount":`+amount+`,"currency":"EUR"}`)
+		if res.Code != http.StatusConflict {
+			t.Fatalf("a leg of %s overflows the running total and must be refused with 409, "+
+				"got status=%d body=%s", amount, res.Code, res.Body.String())
+		}
+	}
+	if provider.count() != 1 {
+		t.Fatalf("a refused leg must not reach the provider: calls = %d, want the 1 from the "+
+			"legitimate leg", provider.count())
+	}
+
+	// The rule, read back: only the legitimate leg was committed, and no compensating fact
+	// was appended for the refused one.
+	db, ctx := refundDB(t)
+	var total sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT sum(amount) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, sourceKey).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total.Int64 != 1250 {
+		t.Fatalf("bound legs total %d, want only the legitimate 1250", total.Int64)
+	}
+	var facts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM journal_entries WHERE organizer_id=$1 AND fact_type='payment.refunded'`, org).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 1 {
+		t.Fatalf("payment.refunded facts = %d, want 1", facts)
+	}
+}

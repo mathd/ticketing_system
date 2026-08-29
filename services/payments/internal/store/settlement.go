@@ -124,7 +124,7 @@ func BuildSettlementEntries(plan SettlementPlan, capturedAmount int64) ([]Settle
 	}
 
 	entries := make([]SettlementEntry, 0, len(plan.Fees)+1)
-	var feeTotal, passedOnSeen, absorbedSeen int64
+	var passedOnSeen, absorbedSeen int64
 
 	for _, f := range plan.Fees {
 		if f.Currency != plan.Currency {
@@ -152,7 +152,6 @@ func BuildSettlementEntries(plan SettlementPlan, capturedAmount int64) ([]Settle
 				Kind: EntryFee, FeeCode: f.FeeCode, Incidence: f.Incidence,
 				Amount: f.Amount, Currency: f.Currency,
 			})
-			feeTotal += f.Amount
 			switch f.Incidence {
 			case "passed_on":
 				passedOnSeen += f.Amount
@@ -185,7 +184,6 @@ func BuildSettlementEntries(plan SettlementPlan, capturedAmount int64) ([]Settle
 				Amount: p.Amount, Currency: f.Currency,
 			})
 		}
-		feeTotal += f.Amount
 		switch f.Incidence {
 		case "passed_on":
 			passedOnSeen += f.Amount

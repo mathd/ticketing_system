@@ -370,7 +370,21 @@ components:
         organizer_id: {type: string, format: uuid}
         idempotency_key: {type: string, minLength: 1, maxLength: 200}
         refund_key: {type: string, minLength: 1, maxLength: 200}
-        amount: {type: integer, format: int64, minimum: 1}
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          # int64's own bound, NOT catalog's Money cap of 9007199254740991.
+          # A capture may legitimately exceed 2^53-1: commerce composes an order
+          # total with checkedAdd, which bounds at int64, and its tests pin that a
+          # large-but-representable total must still sell. A refund is a subset of
+          # a capture, so the JS-safe cap would refuse honest refunds of large
+          # orders. Do not "tidy" this to the Money cap.
+          # This is a DECLARATION of payments' bound for consumers and generated
+          # clients — it is not the refusal that protects the ceiling. That is the
+          # checked addition in store.BindRefundLeg, which refuses any leg taking
+          # the cumulative total past the captured amount.
+          maximum: 9223372036854775807
         currency: {type: string, pattern: '^[A-Z]{3}$'}
     PSPPartialRefundResult:
       type: object
