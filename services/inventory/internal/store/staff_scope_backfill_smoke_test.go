@@ -93,52 +93,76 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 
 	// The four pre-fix staff shapes, written exactly as the old code wrote them:
 	// a DECORATED key, and claim_history carrying the action that identifies them.
+	// Two SOURCES and two CHILDREN, seeded as the real writers would leave them.
+	//
+	// FIDELITY MATTERS HERE and a first version of this test got it wrong (ai-review
+	// pass 2): it left both sources 'held' with quantity_after 1 after a full convert,
+	// and gave the children no ticket_type_id/unit_amount/currency. Those states are
+	// unreachable -- ConvertOperational sets the source 'released' with remaining 0
+	// when qty == c.Quantity (operational.go), and both child writers always populate
+	// the money columns. A backfill wrongly narrowed to status='held' or to
+	// ticket_type_id IS NULL would have passed against impossible rows while missing
+	// every real released claim.
+	//
+	// So: opHold is FULLY converted (released, remaining 0) and groupRes is PARTIALLY
+	// drawn down (still held, quantity decremented), covering both branches.
 	opHold, groupRes := uuid.New(), uuid.New()
 	convertChild, drawChild := uuid.New(), uuid.New()
 	publicHold, resellerHold := uuid.New(), uuid.New()
-	reseller := uuid.New()
+	reseller, ticketType := uuid.New(), uuid.New()
 
-	seed := func(id uuid.UUID, kind, key string, extra string, args ...any) {
-		t.Helper()
-		base := `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind` + extra
-		if _, err := db.ExecContext(ctx, base, append([]any{id, org, slot, 1, key, "fp-" + key, kind}, args...)...); err != nil {
-			t.Fatalf("seeding %s: %v", key, err)
+	// Source 1: an operational hold, fully converted -> released, quantity 0.
+	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,operational_purpose,operational_label)
+		VALUES($1,$2,$3,2,'released',NULL,'op-place:K1','fp-k1','operational','house','row A')`, opHold, org, slot); err != nil {
+		t.Fatal(err)
+	}
+	// Source 2: a group reservation, partially drawn down -> still held, decremented.
+	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reservation_counterparty)
+		VALUES($1,$2,$3,8,'held',now()+interval '1 hour','grp-place:K2','fp-k2','reservation','School Group')`, groupRes, org, slot); err != nil {
+		t.Fatal(err)
+	}
+	// The two CHILDREN: claim_kind='buyer' by design, and fully shaped -- the money
+	// columns the real writers always populate.
+	for _, c := range []struct {
+		id  uuid.UUID
+		key string
+	}{
+		{convertChild, "convert:" + opHold.String() + ":K3"},
+		{drawChild, "grp-draw:" + groupRes.String() + ":K4"},
+	} {
+		if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+			VALUES($1,$2,$3,$4,2,4500,'EUR','held',now()+interval '10 min',$5,$6,'buyer')`,
+			c.id, org, slot, ticketType, c.key, "fp-"+c.key); err != nil {
+			t.Fatalf("seeding child %s: %v", c.key, err)
 		}
 	}
-	// operational hold: claim_kind='operational', needs purpose+label, no expiry.
-	seed(opHold, "operational", "op-place:K1",
-		`,operational_purpose,operational_label) VALUES($1,$2,$3,$4,'held',NULL,$5,$6,$7,'house','row A')`)
-	// group reservation: claim_kind='reservation', needs counterparty and an expiry.
-	seed(groupRes, "reservation", "grp-place:K2",
-		`,reservation_counterparty) VALUES($1,$2,$3,$4,'held',now()+interval '1 hour',$5,$6,$7,'School Group')`)
-	// convert + draw_down CHILDREN: claim_kind='buyer' BY DESIGN. This is the trap.
-	seed(convertChild, "buyer", "convert:"+opHold.String()+":K3",
-		`) VALUES($1,$2,$3,$4,'held',now()+interval '10 min',$5,$6,$7)`)
-	seed(drawChild, "buyer", "grp-draw:"+groupRes.String()+":K4",
-		`) VALUES($1,$2,$3,$4,'held',now()+interval '10 min',$5,$6,$7)`)
 	// CONTROLS that must stay NULL: an ordinary public buyer hold, and a reseller one.
-	seed(publicHold, "buyer", "PUBLIC-K5",
-		`) VALUES($1,$2,$3,$4,'held',now()+interval '10 min',$5,$6,$7)`)
-	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reseller_scope)
-		VALUES($1,$2,$3,1,'held',now()+interval '10 min','RESELLER-K6','fp-r','buyer',$4)`, resellerHold, org, slot, reseller); err != nil {
+	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
+		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','PUBLIC-K5','fp-k5','buyer')`, publicHold, org, slot, ticketType); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reseller_scope)
+		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','RESELLER-K6','fp-k6','buyer',$5)`, resellerHold, org, slot, ticketType, reseller); err != nil {
 		t.Fatal(err)
 	}
 
-	// claim_history is what the backfill classifies from. The children are reached
-	// through related_claim_id, which is the whole reason claim_kind cannot be used.
-	hist := func(claim uuid.UUID, related *uuid.UUID, action string) {
+	// claim_history is what the backfill classifies from, and the quantity_after /
+	// status_after values match what each writer actually records.
+	hist := func(claim uuid.UUID, related *uuid.UUID, action string, qty, after int, status string) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,claim_id,related_claim_id,action,actor,reason,quantity,quantity_after,status_after)
-			VALUES($1,$2,$3,$4,$5,'ops@example.test','seed',1,1,'held')`,
-			uuid.New(), org, claim, related, action); err != nil {
+			VALUES($1,$2,$3,$4,$5,'ops@example.test','seed',$6,$7,$8)`,
+			uuid.New(), org, claim, related, action, qty, after, status); err != nil {
 			t.Fatalf("seeding history %s: %v", action, err)
 		}
 	}
-	hist(opHold, nil, "place")
-	hist(groupRes, nil, "reserve")
-	hist(opHold, &convertChild, "convert")
-	hist(groupRes, &drawChild, "draw_down")
-	hist(publicHold, nil, "create")
+	hist(opHold, nil, "place", 2, 2, "held")
+	hist(groupRes, nil, "reserve", 8, 8, "held")
+	// Full convert: source released, nothing remaining.
+	hist(opHold, &convertChild, "convert", 2, 0, "released")
+	// Partial draw-down: source still held, decremented.
+	hist(groupRes, &drawChild, "draw_down", 2, 6, "held")
+	hist(publicHold, nil, "create", 1, 1, "held")
 
 	// Now the migration under test.
 	if _, err = provider.UpTo(ctx, 19); err != nil {
