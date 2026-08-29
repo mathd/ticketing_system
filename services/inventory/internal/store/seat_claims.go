@@ -710,7 +710,7 @@ func (p *Postgres) CreateSeatHold(ctx context.Context, org, slot, ticketType uui
 	// CreateHold uses, and the compiler will not remind anyone: that is what this
 	// comment is for.
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,clock_timestamp(),now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
-		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
+		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL AND staff_scope IS NULL`, org, key).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if existingFP != fp {
@@ -1585,7 +1585,7 @@ func (p *Postgres) CreateBestAvailableSeatHold(ctx context.Context, org, slot, t
 	var existing Claim
 	var existingFP string
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,expires_at,clock_timestamp(),now(),request_fingerprint,COALESCE(ticket_type_id,'00000000-0000-0000-0000-000000000000'::uuid),COALESCE(unit_amount,0),COALESCE(currency,'')
-		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL`, org, key).
+		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NULL AND staff_scope IS NULL`, org, key).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &existingFP, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
 		if existingFP != fp {

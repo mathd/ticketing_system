@@ -152,9 +152,9 @@ type Claim struct {
 	//
 	// Zero on a fresh grant, where the two coincide by construction.
 	snapshotTime time.Time
-	Kind         string     `json:"-"`
-	Purpose      string     `json:"-"`
-	Label        string     `json:"-"`
+	Kind         string `json:"-"`
+	Purpose      string `json:"-"`
+	Label        string `json:"-"`
 }
 
 // liveClaims is the single predicate deciding which claims count against capacity:
@@ -467,10 +467,30 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// = NULL is unknown, which would find nothing and place a second hold on every
 	// public retry. The lookup and the uniqueness must agree exactly or a replay
 	// becomes a duplicate claim.
-	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3`, org, key, resellerScope(o.reseller)).
+	// ONE fingerprint for this request, computed HERE — before the requiresCode
+	// normalisation at "an ungated allocation ignores the code" below clears
+	// presaleCode. Both the replay comparison and the INSERT use this value.
+	//
+	// Computing it twice is what TKT-296 D1 was: the comparison ran before the
+	// clear and saw the code, the INSERT ran after and did not, so a first request
+	// stored code-less bytes and its own identical retry compared code-bearing ones
+	// and was refused as key reuse — a leaked hold plus a failed checkout retry, on
+	// the buyer path. PlaceGroupReservation never had the bug because it already
+	// computes fp once, pre-clear (reservations.go:51-55).
+	//
+	// The FORMAT is untouched: fingerprint() still appends channel and code only
+	// when non-empty, so every code-less record in every database keeps its exact
+	// bytes (TestFingerprintStaysByteIdenticalWithoutAPresaleCode). Only requests
+	// that actually carry a code against an ungated channel change, and only
+	// forward: a row written before this change stored code-less bytes, so its
+	// retry still mismatches until its TTL expires. That is today's behaviour, not
+	// a regression this introduces.
+	requestFP := fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller)
+
+	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3 AND staff_scope IS NULL`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller) {
+		if fp != requestFP {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -653,14 +673,36 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// the split and the argument that the two clocks cannot combine into an oversell --
 	// clock_timestamp() >= now(), so this can only move an expiry later.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,reseller_scope)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,clock_timestamp()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller), channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'held',clock_timestamp()+$8::interval,$9,$10,'buyer',NULLIF($11,''),NULLIF($12,''),$13) RETURNING expires_at,clock_timestamp()`, c.ID, org, slot, ticketType, qty, unitAmount, currency, p.ttl.String(), key, requestFP, channel, presaleCode, resellerScope(o.reseller)).Scan(&c.ExpiresAt, &c.ServerTime)
 	if err != nil {
-		return Claim{}, false, err
+		return Claim{}, false, idempotencyConflict(err)
 	}
 	if err = appendHistory(ctx, tx, org, c.ID, nil, "create", "buyer", "public_hold", qty, qty, "held", nil, nil); err != nil {
 		return Claim{}, false, err
 	}
 	return c, false, p.commitAvailability(tx, slot)
+}
+
+// idempotencyConflict maps a unique violation on any of the three claim idempotency
+// namespaces to ErrIdempotency, which the API answers as 409.
+//
+// Without it a losing race returns the raw pgconn error, problem()'s default branch
+// turns it into an unmapped 500, and the caller cannot tell "you reused a key" from
+// "inventory is broken". That was TKT-296 D2's user-visible symptom: a public caller
+// occupying a staff key made every later staff operation with that key 500 forever.
+// The registry check upstream catches the ordinary case; this covers the race that
+// slips between the check and the INSERT, and any path that never checked at all.
+func idempotencyConflict(err error) error {
+	for _, idx := range []string{
+		"claims_public_idempotency",
+		"claims_staff_idempotency",
+		"claims_reseller_idempotency",
+	} {
+		if isUniqueViolation(err, idx) {
+			return ErrIdempotency
+		}
+	}
+	return err
 }
 
 func (p *Postgres) Transition(ctx context.Context, org, id uuid.UUID, target string) (Claim, error) {
