@@ -37,6 +37,11 @@ import (
 //     claim_kind='buyer' exactly as the real writers do.
 //   - change either UPDATE to key on claim_kind -> the children go red while the
 //     first two stay green, which is the failure this test exists to expose.
+//
+// One fingerprint per operation key, shared by a claim row and its history row --
+// mirroring the writers, which compute fp once and pass it to both.
+func fingerprintFor(key string) string { return "fp-" + key }
+
 func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 	dsn := os.Getenv("INVENTORY_MIGRATION_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -108,41 +113,50 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 	// drawn down (still held, quantity decremented), covering both branches.
 	opHold, groupRes := uuid.New(), uuid.New()
 	convertChild, drawChild := uuid.New(), uuid.New()
-	publicHold, resellerHold := uuid.New(), uuid.New()
+	publicHold, resellerHold, resellerChild := uuid.New(), uuid.New(), uuid.New()
 	reseller, ticketType := uuid.New(), uuid.New()
 
 	// Source 1: an operational hold, fully converted -> released, quantity 0.
 	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,operational_purpose,operational_label)
-		VALUES($1,$2,$3,2,'released',NULL,'op-place:K1','fp-k1','operational','house','row A')`, opHold, org, slot); err != nil {
+		VALUES($1,$2,$3,2,'released',NULL,'op-place:K1','fp-K1','operational','house','row A')`, opHold, org, slot); err != nil {
 		t.Fatal(err)
 	}
 	// Source 2: a group reservation, partially drawn down -> still held, decremented.
 	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reservation_counterparty)
-		VALUES($1,$2,$3,8,'held',now()+interval '1 hour','grp-place:K2','fp-k2','reservation','School Group')`, groupRes, org, slot); err != nil {
+		VALUES($1,$2,$3,8,'held',now()+interval '1 hour','grp-place:K2','fp-K2','reservation','School Group')`, groupRes, org, slot); err != nil {
 		t.Fatal(err)
 	}
 	// The two CHILDREN: claim_kind='buyer' by design, and fully shaped -- the money
 	// columns the real writers always populate.
 	for _, c := range []struct {
-		id  uuid.UUID
-		key string
+		id    uuid.UUID
+		key   string
+		fpKey string
 	}{
-		{convertChild, "convert:" + opHold.String() + ":K3"},
-		{drawChild, "grp-draw:" + groupRes.String() + ":K4"},
+		{convertChild, "convert:" + opHold.String() + ":K3", "K3"},
+		{drawChild, "grp-draw:" + groupRes.String() + ":K4", "K4"},
 	} {
 		if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
 			VALUES($1,$2,$3,$4,2,4500,'EUR','held',now()+interval '10 min',$5,$6,'buyer')`,
-			c.id, org, slot, ticketType, c.key, "fp-"+c.key); err != nil {
+			c.id, org, slot, ticketType, c.key, fingerprintFor(c.fpKey)); err != nil {
 			t.Fatalf("seeding child %s: %v", c.key, err)
 		}
 	}
 	// CONTROLS that must stay NULL: an ordinary public buyer hold, and a reseller one.
 	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind)
-		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','PUBLIC-K5','fp-k5','buyer')`, publicHold, org, slot, ticketType); err != nil {
+		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','PUBLIC-K5','fp-K5','buyer')`, publicHold, org, slot, ticketType); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reseller_scope)
-		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','RESELLER-K6','fp-k6','buyer',$5)`, resellerHold, org, slot, ticketType, reseller); err != nil {
+		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','RESELLER-K6','fp-K6','buyer',$5)`, resellerHold, org, slot, ticketType, reseller); err != nil {
+		t.Fatal(err)
+	}
+	// A SECOND reseller control, reachable ONLY through the convert/draw_down branch
+	// (its history names it via related_claim_id). Without it, deleting the reseller
+	// predicate from just that UPDATE leaves this test green -- the first control
+	// only exercises the place/reserve branch (ai-review pass 4).
+	if _, err = db.ExecContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reseller_scope)
+		VALUES($1,$2,$3,$4,1,4500,'EUR','held',now()+interval '10 min','RESELLER-K7','fp-K7','buyer',$5)`, resellerChild, org, slot, ticketType, reseller); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,7 +171,10 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 		t.Helper()
 		var fp *string
 		if key != nil {
-			v := "fp-" + *key
+			// The SAME value the claim row carries. All four staff writers compute one
+			// fp and pass it to both the INSERT and appendHistory, so a claim whose
+			// history fingerprint differs is a state none of them can produce.
+			v := fingerprintFor(*key)
 			fp = &v
 		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,claim_id,related_claim_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint)
@@ -184,6 +201,8 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 	// `c.reseller_scope IS NULL` from both UPDATEs leaves this row untouched and the
 	// test still passes. With it, the row is only excluded BY that predicate.
 	hist(resellerHold, nil, "reserve", 1, 1, "held", strp("K6"))
+	// ...and one that would match the SECOND branch, via related_claim_id.
+	hist(resellerHold, &resellerChild, "draw_down", 1, 0, "released", strp("K7"))
 
 	// Now the migration under test.
 	if _, err = provider.UpTo(ctx, 19); err != nil {
@@ -220,7 +239,8 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 	staff("the CONVERT child, claim_kind='buyer' (action=convert, via related_claim_id)", convertChild)
 	staff("the DRAW_DOWN child, claim_kind='buyer' (action=draw_down, via related_claim_id)", drawChild)
 	public("the ordinary public buyer hold", publicHold)
-	public("the reseller-scoped hold", resellerHold)
+	public("the reseller-scoped hold (guards the place/reserve branch)", resellerHold)
+	public("the reseller-scoped CHILD (guards the convert/draw_down branch)", resellerChild)
 
 	// The backfill sets SCOPE only. Rewriting a historical key would change which
 	// row an in-flight retry finds, which is the one thing this migration must not do.
