@@ -72,15 +72,15 @@ func TestPartialRefundAmountDeclaresItsBounds(t *testing.T) {
 	// So the text is SCOPED to this property before it is matched: the maximum must be the
 	// one declared inside PSPPartialRefund's own `amount` block, not merely present
 	// somewhere in the file.
-	const wantMax = "maximum: 9223372036854775807"
+	const wantMax = "9223372036854775807"
 	block := partialRefundAmountBlock(t)
-	if !bytes.Contains(block, []byte(wantMax)) {
-		t.Errorf("PSPPartialRefund.amount does not declare %q. The block reads:\n%s\n\n"+
+	if got := declaredMaximumIn(block); got != wantMax {
+		t.Errorf("PSPPartialRefund.amount declares maximum %q, want %q. The block reads:\n%s\n\n"+
 			"It is deliberately NOT catalog's Money cap of 9007199254740991: commerce composes "+
 			"an order total with a checkedAdd that bounds at int64, and pins that a "+
 			"large-but-representable total must still sell, so a capture may exceed 2^53-1. A "+
 			"refund is a subset of a capture, so the JS-safe cap would refuse honest refunds of "+
-			"large orders.", wantMax, block)
+			"large orders.", got, wantMax, block)
 	}
 	// And the bound the parser hands every consumer is the one the text declares — the two
 	// assertions together are what make this about the contract rather than about a string
@@ -130,6 +130,30 @@ func amountBlockIn(spec []byte) ([]byte, error) {
 		amount = amount[:end+1]
 	}
 	return amount, nil
+}
+
+// declaredMaximumIn returns the value of the block's own `maximum:` key, or "" if it
+// declares none.
+//
+// Comments are stripped first, and the key is matched as a key at the start of a line
+// rather than as a substring. Both matter, and the ai-review found them by naming the
+// mutant that beat the earlier version: the property declares the wrong bound while the
+// right literal sits in a COMMENT inside the very same block, so a substring search over
+// the block text is satisfied. Scoping to the property was necessary and not sufficient;
+// what the assertion needs is the declared value, not the presence of a string.
+func declaredMaximumIn(block []byte) string {
+	for _, line := range bytes.Split(block, []byte("\n")) {
+		if i := bytes.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = bytes.TrimSpace(line)
+		const key = "maximum:"
+		if !bytes.HasPrefix(line, []byte(key)) {
+			continue
+		}
+		return string(bytes.TrimSpace(line[len(key):]))
+	}
+	return ""
 }
 
 // nextSiblingAt reports the offset of the next line indented exactly n spaces followed by a
@@ -193,12 +217,40 @@ func TestPartialRefundAmountBlockIsScopedToTheProperty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("locate the amount block in the mutant: %v", err)
 	}
-	if bytes.Contains(got, []byte("maximum: 9223372036854775807")) {
-		t.Errorf("a maximum declared OUTSIDE PSPPartialRefund.amount satisfied the scoped "+
-			"lookup, so the assertion is document-wide and the wrong-bound mutant survives.\n"+
-			"block:\n%s", got)
+	if v := declaredMaximumIn(got); v != "9223372036854775806" {
+		t.Errorf("declared maximum = %q, want the property's OWN wrong bound "+
+			"9223372036854775806 — a maximum declared elsewhere in the document was picked "+
+			"up instead.\nblock:\n%s", v, got)
 	}
-	if !bytes.Contains(got, []byte("maximum: 9223372036854775806")) {
-		t.Errorf("the block did not capture the property's OWN maximum.\nblock:\n%s", got)
+
+	// The decoy the ai-review named after the scoping landed: the property declares the
+	// wrong bound while the RIGHT literal sits in a comment inside the very same block. The
+	// block scoping cannot help here, so the assertion must read the declared value rather
+	// than search the text.
+	inBlockDecoy := []byte(`components:
+  schemas:
+    PSPPartialRefund:
+      type: object
+      properties:
+        amount:
+          type: integer
+          # the intended bound is maximum: 9223372036854775807
+          maximum: 9223372036854775806
+        currency: {type: string}
+`)
+	got, err = amountBlockIn(inBlockDecoy)
+	if err != nil {
+		t.Fatalf("locate the amount block in the in-block decoy: %v", err)
+	}
+	if v := declaredMaximumIn(got); v != "9223372036854775806" {
+		t.Errorf("declared maximum = %q, want 9223372036854775806 — a literal in a COMMENT "+
+			"inside the block was read as the declaration, so the wrong-bound mutant "+
+			"survives.\nblock:\n%s", v, got)
+	}
+
+	// And the honest case still reads correctly, so the comment-stripping cannot pass by
+	// simply finding nothing.
+	if v := declaredMaximumIn(partialRefundAmountBlock(t)); v != "9223372036854775807" {
+		t.Errorf("the real spec's declared maximum read as %q", v)
 	}
 }
