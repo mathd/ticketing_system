@@ -299,14 +299,25 @@ provision_staff "$SMOKE_FINANCE_IDENTIFIER"   "$SMOKE_FINANCE_PASSWORD"   financ
 # one gate per run exactly as an operator would — through the CLI, reading the
 # token off its output. It is printed once and never recoverable, which is the
 # property being exercised as much as it is a constraint on this script.
-SMOKE_SCANNER_TOKEN=$(compose exec -T access /app enrol-scanner \
-  00000000-0000-0000-0000-000000000001 "smoke gate" \
-  | sed -n 's/^  X-Scanner-Token: //p' | tr -d '\r')
+# TKT-272 reads the DEVICE ID off the same output. The abuse telemetry names
+# the device an operator would revoke, so the test needs the identity the
+# enrolment actually created — inferring it from the token is impossible by
+# design (the token is stored hashed).
+scanner_enrolment=$(compose exec -T access /app enrol-scanner \
+  00000000-0000-0000-0000-000000000001 "smoke gate")
+SMOKE_SCANNER_TOKEN=$(printf '%s' "$scanner_enrolment" | sed -n 's/^  X-Scanner-Token: //p' | tr -d '\r')
+SMOKE_SCANNER_DEVICE_ID=$(printf '%s' "$scanner_enrolment" \
+  | sed -n 's/^access enrol-scanner: device \([0-9a-f-]*\) .*/\1/p' | tr -d '\r')
 if [ -z "$SMOKE_SCANNER_TOKEN" ]; then
   echo "smoke: could not enrol a scanner device — every scan would 401" >&2
   exit 1
 fi
+if [ -z "$SMOKE_SCANNER_DEVICE_ID" ]; then
+  echo "smoke: enrolled a device but could not read its id — TKT-272's telemetry assertion needs it" >&2
+  exit 1
+fi
 export SMOKE_SCANNER_TOKEN
+export SMOKE_SCANNER_DEVICE_ID
 
 # TKT-240: enrol one reseller through the REAL CLI, the same path an operator
 # follows. The token is printed once on stdout (everything else goes to stderr)

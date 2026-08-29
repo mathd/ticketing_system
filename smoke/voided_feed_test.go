@@ -3,9 +3,14 @@
 package smoke_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,4 +106,85 @@ func TestVoidedTicketFeedRefusesAnUnenrolledScanner(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The abuse telemetry, through the running stack (TKT-272).
+//
+// This is the WIRING test, and the distinction is the whole point of it. The
+// unit tests in services/access/internal/api prove the emitter emits; deleting
+// `WithScannerTelemetry(...)` from main.go leaves every one of them green,
+// because they build their own Server. That is exactly TKT-202's F3/F7 finding
+// — a test that proves the component while the component is not installed. So
+// this one asserts against the REAL binary's output: the access container's log,
+// and the metric the real meter exported.
+//
+// It asserts on the device id captured at enrolment rather than one derived
+// from the request, because the operator's path is
+// `abuse.request` record -> device id -> `access revoke-scanner <id>`, and a
+// test that inferred the id from the request would prove the round trip without
+// proving the identity is the enrolled one.
+func TestFeedAbuseTelemetryNamesTheDeviceAnOperatorWouldRevoke(t *testing.T) {
+	deviceID := os.Getenv("SMOKE_SCANNER_DEVICE_ID")
+	if deviceID == "" {
+		t.Fatal("SMOKE_SCANNER_DEVICE_ID is unset — scripts/smoke.sh must export the enrolled device id")
+	}
+
+	url := gatewayURL + "/api/access/scans/voided-tickets"
+	code, _ := get(t, url, map[string]string{"X-Scanner-Token": scannerToken()})
+	if code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", url, code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The log carries the device identity. This is the operator's signal and the
+	// one sink that must not be lossy.
+	//
+	// Two SEPARATE assertions over the log, and the separation is the point
+	// (ai-review F2). Checking the token only inside the abuse.request line
+	// would leave a leak from any OTHER emitter — the request logger, the auth
+	// path, a future middleware — green, and the requirement is that the token
+	// reaches NO log line. So: find the identity in its own record, and check
+	// the absence across every line the request produced.
+	retry(t, 20*time.Second, func() error {
+		out, err := dockerRun(ctx, "compose", "-p", project, "logs", "--no-color", "access")
+		if err != nil {
+			return fmt.Errorf("compose logs access: %v: %s", err, out)
+		}
+		var found bool
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, `"msg":"abuse.request"`) && strings.Contains(line, deviceID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("no abuse.request record naming device %s in the access log yet", deviceID)
+		}
+		// Global absence, over the WHOLE log rather than one selected record.
+		// Not a retry condition: a leak does not become un-leaked by waiting.
+		if strings.Contains(out, scannerToken()) {
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, scannerToken()) {
+					t.Fatalf("the scanner token reached the access log: %s", line)
+				}
+			}
+		}
+		return nil
+	})
+
+	// And the aggregate counter reached Prometheus, which proves ObserveMetrics
+	// ran on the real meter rather than a test one.
+	retry(t, 30*time.Second, func() error {
+		query := neturl.QueryEscape(`access_abuse_requests_total{service_name="access"}`)
+		code, body := get(t, promURL+"/api/v1/query?query="+query, nil)
+		if code != http.StatusOK || !strings.Contains(string(body), `"result":[{`) {
+			return fmt.Errorf("abuse counter not exported yet: %d %s", code, body)
+		}
+		if strings.Contains(string(body), scannerToken()) {
+			return fmt.Errorf("the scanner token appears in exported metrics: %s", body)
+		}
+		return nil
+	})
 }

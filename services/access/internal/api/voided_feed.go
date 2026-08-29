@@ -129,7 +129,7 @@ func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
 	// is no organizer parameter on this operation, which is what stops a caller
 	// choosing whose revocations to read — a check on a submitted value would
 	// leave the trust boundary in the client.
-	organizer, ok := scannerOrganizer(r.Context())
+	identity, ok := scannerIdentityFrom(r.Context())
 	if !ok {
 		// Fails closed. An empty feed would be the wrong answer twice over here:
 		// it reads as "nothing is revoked", which is precisely the belief that
@@ -137,6 +137,13 @@ func (s *Server) voidedTickets(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnauthorized, map[string]string{"error": "scanner device is not enrolled"})
 		return
 	}
+	organizer := identity.OrganizerID
+
+	// The abuse record for this poll was already emitted during authentication
+	// (see authenticateScannerDevice, TKT-272 / ai-review F1). Deliberately NOT
+	// emitted again here: authentication runs before parameter validation, so
+	// emitting in the handler would both miss the schema-refused polls and
+	// double-count the ones that get this far.
 
 	limit := store.VoidedFeedPageLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
