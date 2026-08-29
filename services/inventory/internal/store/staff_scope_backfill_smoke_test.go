@@ -148,21 +148,42 @@ func TestMigration0019BackfillsHistoricalStaffClaims(t *testing.T) {
 
 	// claim_history is what the backfill classifies from, and the quantity_after /
 	// status_after values match what each writer actually records.
-	hist := func(claim uuid.UUID, related *uuid.UUID, action string, qty, after int, status string) {
+	// key and fingerprint are NOT optional here: all four staff writers call
+	// appendHistory with &key, &fp (operational.go, reservations.go), so no real
+	// staff history row has them NULL. Seeding NULL would let a backfill mutant
+	// keyed on `h.idempotency_key IS NOT NULL` pass while skipping every real row.
+	// The public `create` history is the one that genuinely passes nil, nil.
+	hist := func(claim uuid.UUID, related *uuid.UUID, action string, qty, after int, status string, key *string) {
 		t.Helper()
-		if _, err := db.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,claim_id,related_claim_id,action,actor,reason,quantity,quantity_after,status_after)
-			VALUES($1,$2,$3,$4,$5,'ops@example.test','seed',$6,$7,$8)`,
-			uuid.New(), org, claim, related, action, qty, after, status); err != nil {
+		var fp *string
+		if key != nil {
+			v := "fp-" + *key
+			fp = &v
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO claim_history(id,organizer_id,claim_id,related_claim_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint)
+			VALUES($1,$2,$3,$4,$5,'ops@example.test','seed',$6,$7,$8,$9,$10)`,
+			uuid.New(), org, claim, related, action, qty, after, status, key, fp); err != nil {
 			t.Fatalf("seeding history %s: %v", action, err)
 		}
 	}
-	hist(opHold, nil, "place", 2, 2, "held")
-	hist(groupRes, nil, "reserve", 8, 8, "held")
+	strp := func(v string) *string { return &v }
+	// The arithmetic must close, or the seeds describe two different reservations.
+	// groupRes is stored holding 8 AFTER a draw-down of 2, so it was reserved at 10.
+	// A backfill mutant requiring h.quantity = c.quantity would otherwise pass here
+	// while skipping every real partially-depleted source.
+	hist(opHold, nil, "place", 2, 2, "held", strp("K1"))
+	hist(groupRes, nil, "reserve", 10, 10, "held", strp("K2"))
 	// Full convert: source released, nothing remaining.
-	hist(opHold, &convertChild, "convert", 2, 0, "released")
-	// Partial draw-down: source still held, decremented.
-	hist(groupRes, &drawChild, "draw_down", 2, 6, "held")
-	hist(publicHold, nil, "create", 1, 1, "held")
+	hist(opHold, &convertChild, "convert", 2, 0, "released", strp("K3"))
+	// Partial draw-down: 2 drawn from 10 leaves the stored 8, source still held.
+	hist(groupRes, &drawChild, "draw_down", 2, 8, "held", strp("K4"))
+	// The public buyer path passes nil, nil to appendHistory -- seeded faithfully.
+	hist(publicHold, nil, "create", 1, 1, "held", nil)
+	// The reseller control needs a history row that WOULD match a backfill branch,
+	// or the reseller_scope predicate is never exercised: without this, deleting
+	// `c.reseller_scope IS NULL` from both UPDATEs leaves this row untouched and the
+	// test still passes. With it, the row is only excluded BY that predicate.
+	hist(resellerHold, nil, "reserve", 1, 1, "held", strp("K6"))
 
 	// Now the migration under test.
 	if _, err = provider.UpTo(ctx, 19); err != nil {
