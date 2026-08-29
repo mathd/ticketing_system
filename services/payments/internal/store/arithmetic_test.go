@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"math"
+	"math/big"
 	"testing"
 )
 
@@ -53,18 +54,25 @@ func TestCheckedAddMoneyRefusesExactlyWhatOverflows(t *testing.T) {
 
 // The same contract as a property, over values the table cannot enumerate.
 //
-// This is what refuses an implementation that special-cases the table's inputs: the oracle
-// is computed in a wider type, so it states the rule independently of how the helper
-// decides. The pairs sweep both sides of the boundary at several magnitudes rather than
-// only at MaxInt64, so a guard that fires only for the largest amounts is caught.
+// The oracle is big.Int arithmetic, which is genuinely independent of the helper: it forms
+// the true mathematical sum and compares it with MaxInt64, rather than asking whether it
+// would fit. The distinction is the whole value of this test and the first version got it
+// wrong — the oracle read `a > math.MaxInt64-b`, character for character the production
+// predicate, so a shared mistake in that expression would have been blessed by both sides
+// agreeing (caught by the TKT-297 ai-review). The pairs sweep both sides of the boundary at
+// several magnitudes rather than only at MaxInt64, so a guard that fires only for the
+// largest amounts is caught.
 func TestCheckedAddMoneyAgreesWithTheRuleAtEveryMagnitude(t *testing.T) {
+	maxInt64 := new(big.Int).SetInt64(math.MaxInt64)
 	interesting := []int64{0, 1, 2, 1250, 2500, 1 << 31, 1 << 53, math.MaxInt64/2 - 1,
 		math.MaxInt64 / 2, math.MaxInt64/2 + 1, math.MaxInt64 - 2, math.MaxInt64 - 1, math.MaxInt64}
 	for _, a := range interesting {
 		for _, b := range interesting {
-			// The rule, expressed without reusing the helper's own comparison: the true
-			// sum fits precisely when b is no larger than the room left above a.
-			wantFail := a > math.MaxInt64-b
+			// The true sum, formed in arbitrary precision so it cannot itself overflow,
+			// then compared with the bound. No int64 arithmetic is involved in deciding
+			// what the answer should be.
+			sum := new(big.Int).Add(new(big.Int).SetInt64(a), new(big.Int).SetInt64(b))
+			wantFail := sum.Cmp(maxInt64) > 0
 			got, err := checkedAddMoney(a, b)
 			if wantFail {
 				if !errors.Is(err, errAmountOverflow) {
@@ -74,10 +82,10 @@ func TestCheckedAddMoneyAgreesWithTheRuleAtEveryMagnitude(t *testing.T) {
 				continue
 			}
 			if err != nil {
-				t.Fatalf("checkedAddMoney(%d, %d) = %v, want %d — the true sum fits", a, b, err, a+b)
+				t.Fatalf("checkedAddMoney(%d, %d) = %v, want %s — the true sum fits", a, b, err, sum)
 			}
-			if got != a+b {
-				t.Fatalf("checkedAddMoney(%d, %d) = %d, want %d", a, b, got, a+b)
+			if !sum.IsInt64() || got != sum.Int64() {
+				t.Fatalf("checkedAddMoney(%d, %d) = %d, want %s", a, b, got, sum)
 			}
 		}
 	}

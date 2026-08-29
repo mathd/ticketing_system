@@ -232,10 +232,12 @@ func TestPartialRefundOverflowIsRefusedNotAccepted(t *testing.T) {
 		t.Fatalf("first refund: status=%d body=%s", first.Code, first.Body.String())
 	}
 
-	// More than one overflowing amount, and they are not neighbours: MaxInt64 is the
-	// contract's bound, and MaxInt64-1250 is the value whose sum with the 1250 already bound
-	// lands EXACTLY on MaxInt64+1 — the smallest total that overflows at all. A handler or
-	// guard special-casing the bound survives one of these, not both.
+	// Three amounts that each break the rule, reaching it by two different routes. MaxInt64
+	// and MaxInt64-1 overflow the running total, so the unchecked addition wraps and admits
+	// them. MaxInt64-1250 does NOT overflow — added to the 1250 already bound it lands
+	// exactly on MaxInt64 — so it is refused by the ceiling comparison itself, over a
+	// capture of 2500. Both routes must give the same answer, and a guard special-casing the
+	// largest values satisfies neither all three nor the pair that wraps.
 	for _, amount := range []string{"9223372036854775807", "9223372036854775806", "9223372036854774557"} {
 		res := postRefundLeg(t, h, `{"organizer_id":"`+org.String()+`","idempotency_key":"`+sourceKey+`","refund_key":"refund-2","amount":`+amount+`,"currency":"EUR"}`)
 		if res.Code != http.StatusConflict {
