@@ -38,4 +38,4 @@ same one.
 ## Evidence
 
 - `scripts/smoke.sh` — the catalog and commerce blocks, and their comments explaining the removal
-- TKT-60 `kind=metrics` on the `.sdlc/` board — where the stranding was found
+- TKT-60 `kind=metrics` on the sdlc board — where the stranding was found
