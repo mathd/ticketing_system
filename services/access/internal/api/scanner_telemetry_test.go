@@ -40,6 +40,9 @@ type telemetryHarness struct {
 	reader *sdkmetric.ManualReader
 	spans  *tracetest.InMemoryExporter
 	device uuid.UUID
+	// devices is kept so a test can assert a request actually REACHED
+	// authentication, rather than passing because it was refused earlier.
+	devices *fakeDevices
 }
 
 func newTelemetryHarness(t *testing.T) *telemetryHarness {
@@ -73,7 +76,7 @@ func newTelemetryHarness(t *testing.T) *telemetryHarness {
 
 	return &telemetryHarness{
 		router: obs.MiddlewareWithTracerProvider("access", tp, inner),
-		logs:   logs, reader: reader, spans: spans, device: device,
+		logs:   logs, reader: reader, spans: spans, device: device, devices: devices,
 	}
 }
 
@@ -217,43 +220,77 @@ func TestFeedTelemetryCountsPollsRefusedByTheContract(t *testing.T) {
 // The emit is scoped to the FEED operation, and this is the test that proves the
 // scoping does something.
 //
-// Three operations share the ScannerDeviceToken scheme — scanTicket,
+// THREE operations share the ScannerDeviceToken scheme — scanTicket,
 // reconcileScans and listVoidedTickets — and the emit lives in the shared
 // authentication path. Without the operation check, every turnstile admission
-// would emit a record claiming the feed surface was polled, burying the signal
-// this ticket exists to produce under ordinary door traffic.
+// and every offline reconciliation batch would emit a record claiming the feed
+// surface was polled, burying the signal this ticket exists to produce under
+// ordinary door traffic.
+//
+// Every non-feed operation gets its own case, because one negative case does
+// not prove exclusivity: a predicate as wrong as `OperationID != "scanTicket"`
+// would satisfy a test whose only negative was scanTicket, while emitting on
+// reconciliations (ai-review second pass). One case per operation, and each
+// asserts it actually REACHED authentication — otherwise a case that 404s
+// before the auth func would pass by never running the code under test.
 //
 // Found by mutation: replacing the scoping condition with `true` left the whole
-// suite green, so the mechanism was live but unobserved. This is that missing
-// observation.
+// suite green, so the mechanism was live but unobserved.
 func TestScannerTelemetryIsScopedToTheFeedOperation(t *testing.T) {
-	h := newTelemetryHarness(t)
+	for name, tc := range map[string]struct {
+		method, target, body string
+		wantCode             int
+	}{
+		// Refused on the credential, which is AFTER authentication.
+		"scanTicket": {
+			http.MethodPost, "/scans",
+			`{"qr_payload":"not-a-ticket"}`,
+			http.StatusUnprocessableEntity,
+		},
+		// A batch entry never fails the whole sync, so this answers 200 with a
+		// per-item rejection — also well past authentication.
+		"reconcileScans": {
+			http.MethodPost, "/scans/reconciliations",
+			`{"occurrences":[{"qr_payload":"not-a-ticket","occurrence_id":"` + uuid.NewString() + `","occurred_at":"2026-07-17T09:00:00Z"}]}`,
+			http.StatusOK,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newTelemetryHarness(t)
 
-	// An authenticated request on a DIFFERENT operation sharing the same
-	// security scheme. It is refused on the credential, which happens after
-	// authentication — so the emit path was certainly reached.
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(scannerDeviceHeader, testDeviceToken)
-	h.router.ServeHTTP(recorder, request)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(tc.method, tc.target, bytes.NewBufferString(tc.body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(scannerDeviceHeader, testDeviceToken)
+			h.router.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("POST /scans = %d, want 422 (refused on the credential, i.e. past authentication)", recorder.Code)
-	}
-	if n := len(h.abuseRecords(t)); n != 0 {
-		t.Fatalf("a scan on /scans emitted %d feed-surface records, want 0 — feed telemetry must not fire on every door admission", n)
-	}
-	if total, _ := h.counterValue(t); total != 0 {
-		t.Fatalf("a scan on /scans incremented the feed counter to %d, want 0", total)
+			if recorder.Code != tc.wantCode {
+				t.Fatalf("%s %s = %d, want %d", tc.method, tc.target, recorder.Code, tc.wantCode)
+			}
+			// The case reached authentication. Without this a case that was
+			// refused earlier — a 404, a contract rejection — would pass while
+			// never executing the emit path at all.
+			if h.devices.touched == 0 {
+				t.Fatalf("%s never reached authentication, so it cannot show the scoping", name)
+			}
+			if n := len(h.abuseRecords(t)); n != 0 {
+				t.Fatalf("%s emitted %d feed-surface records, want 0 — feed telemetry must fire for the feed alone", name, n)
+			}
+			if total, _ := h.counterValue(t); total != 0 {
+				t.Fatalf("%s incremented the feed counter to %d, want 0", name, total)
+			}
+		})
 	}
 
 	// Non-vacuity: the same harness DOES emit for the feed operation, so the
-	// zeroes above are scoping rather than a broken fixture.
-	h.poll(t, "/scans/voided-tickets?cursor=not-a-cursor")
-	if n := len(h.abuseRecords(t)); n != 1 {
-		t.Fatalf("the feed itself emitted %d records, want 1 — the zeroes above would prove nothing", n)
-	}
+	// zeroes above are scoping rather than a fixture that emits nothing ever.
+	t.Run("the feed itself still emits", func(t *testing.T) {
+		h := newTelemetryHarness(t)
+		h.poll(t, "/scans/voided-tickets?cursor=not-a-cursor")
+		if n := len(h.abuseRecords(t)); n != 1 {
+			t.Fatalf("the feed emitted %d records, want 1 — the zeroes above would prove nothing", n)
+		}
+	})
 }
 
 func TestFeedTelemetryNeverEmitsTheDeviceToken(t *testing.T) {
