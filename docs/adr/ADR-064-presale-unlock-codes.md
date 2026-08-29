@@ -1,9 +1,13 @@
-# ADR-064 — Presale unlock codes
+# ADR-064: Presale unlock codes
 
-- **Status:** Accepted
-- **Date:** 2026-08-10
-- **Ticket:** TKT-239 (epic TKT-17, US-CH5)
-- **Supersedes:** nothing. **Extends:** ADR-024 (channel allocations), ADR-054 (sales windows).
+Date: 2026-08-10
+
+## Status
+
+Accepted (TKT-239; epic TKT-17, US-CH5)
+
+Supersedes nothing. Extends [ADR-024](./ADR-024-channel-allocations.md) (channel allocations) and
+[ADR-054](./ADR-054-per-channel-sales-windows.md) (sales windows).
 
 ## Context
 

@@ -1,6 +1,7 @@
 # Testing
 
-The gate is `make check` = **dep-drift → build-list-lag → lint → test → build → smoke**; CI runs exactly the same target
+The gate is `make check` = **deps → generate-drift → dep-drift → build-list-lag → workflow-trigger
+checks (security, hermetic) → ADR numbering → markdown links → lint → test → build → smoke**; CI runs exactly the same target
 (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
 §Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
 browser evidence on UI stories).
@@ -59,8 +60,8 @@ the gateway, plus named infra assertions:
 
 The reproducible browser check is `scripts/verify-checkout-browser.py` against a running seeded
 stack. It verifies checkout success, guest-ticket QR retrieval, pasted credential acceptance,
-duplicate rejection, and retriable decline; evidence lives in `docs/verification/checkout/`,
-`docs/verification/ticket-delivery/`, and `docs/verification/gate-scan/`.
+duplicate rejection, and retriable decline; evidence lives in `docs/verification/checkout/` and
+`docs/verification/ticket-delivery/`.
 
 ## The gate self-test
 

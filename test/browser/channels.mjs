@@ -23,36 +23,18 @@
 // Run via `make browser` (or ./scripts/browser.sh), which owns the stack and
 // sets BASE, POSTGRES_CONTAINER and CATALOG_CONTAINER.
 
-import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { provisionAdmin, resultRecorder } from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const CATALOG = process.env.CATALOG_CONTAINER;
 if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset — run through ./scripts/browser.sh');
 
-const results = [];
-let failed = false;
-
-function check(name, ok, detail = '') {
-  results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
-  if (!ok) failed = true;
-}
-
 // browser.sh provisions no staff account (smoke.sh does, for its own suite), so
-// this spec makes its own. The password goes in on STDIN and never onto a
-// command line, matching smoke.sh's provision_staff.
-function provisionAdmin(identifier, password) {
-  execFileSync(
-    'docker',
-    [
-      'exec', '-i', CATALOG, '/app', 'provision-staff',
-      '--organizer-id', '00000000-0000-0000-0000-000000000001',
-      '--identifier', identifier,
-      '--role', 'admin',
-    ],
-    { input: password, encoding: 'utf8' },
-  );
-}
+// this spec makes its own, through the shared helper. The password goes in on
+// STDIN and never onto a command line, matching smoke.sh's provision_staff.
+const recorder = resultRecorder('channels');
+const { check } = recorder;
 
 const stamp = Date.now();
 const identifier = `channels-${stamp}@example.test`;
@@ -62,7 +44,7 @@ const password = 'correct horse battery staple';
 // passes on a clean database is a test that will be quietly disabled.
 const code = `pos-${stamp}`;
 
-provisionAdmin(identifier, password);
+provisionAdmin(CATALOG, identifier, password);
 
 const browser = await chromium.launch({ channel: 'chrome' });
 
@@ -199,9 +181,7 @@ try {
   );
 } finally {
   await browser.close();
-  console.log(results.join('\n'));
-}
-
-if (failed) {
-  process.exitCode = 1;
+  if (!recorder.finish()) {
+    process.exitCode = 1;
+  }
 }

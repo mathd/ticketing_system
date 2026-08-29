@@ -27,8 +27,13 @@
 // Run via `make browser` (or ./scripts/browser.sh), which owns the stack and sets BASE,
 // POSTGRES_CONTAINER and CATALOG_CONTAINER.
 
-import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import {
+  ORGANIZER,
+  provisionAdmin as provisionAdminIn,
+  resultRecorder,
+  sql as sqlIn,
+} from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const PG = process.env.POSTGRES_CONTAINER;
@@ -36,37 +41,16 @@ const CATALOG = process.env.CATALOG_CONTAINER;
 if (!PG) throw new Error('POSTGRES_CONTAINER is unset — run through ./scripts/browser.sh');
 if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset — run through ./scripts/browser.sh');
 
-const ORGANIZER = '00000000-0000-0000-0000-000000000001';
-const results = [];
-let failed = false;
+const recorder = resultRecorder('slot-allocations');
+const { check } = recorder;
 
-function check(name, ok, detail = '') {
-  results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
-  if (!ok) failed = true;
-}
-
-function sql(db, statement) {
-  return execFileSync(
-    'docker',
-    ['exec', '-i', PG, 'psql', '-U', 'postgres', '-d', db, '-tAqc', statement],
-    { encoding: 'utf8' },
-  ).trim();
-}
+// The shared helpers take the container explicitly; this spec talks to one Postgres
+// and one catalog throughout, so bind them once rather than at every call site.
+const sql = (db, statement) => sqlIn(PG, db, statement);
 
 // browser.sh provisions no staff account (smoke.sh does, for its own suite), so this
 // spec makes its own. The password goes in on STDIN and never onto a command line.
-function provisionAdmin(identifier, password) {
-  execFileSync(
-    'docker',
-    [
-      'exec', '-i', CATALOG, '/app', 'provision-staff',
-      '--organizer-id', ORGANIZER,
-      '--identifier', identifier,
-      '--role', 'admin',
-    ],
-    { input: password, encoding: 'utf8' },
-  );
-}
+const provisionAdmin = (identifier, password) => provisionAdminIn(CATALOG, identifier, password);
 
 const stamp = Date.now();
 const identifier = `slot-allocations-${stamp}@example.test`;
@@ -367,9 +351,6 @@ try {
   }
 }
 
-console.log(results.join('\n'));
-if (failed) {
-  console.error('slot-allocations: FAILED');
+if (!recorder.finish()) {
   process.exit(1);
 }
-console.log('slot-allocations: OK');

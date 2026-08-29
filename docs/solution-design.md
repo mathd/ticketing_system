@@ -17,7 +17,7 @@ capabilities from the existing backlog rather than changing the platform stack.
 | Area | Current design |
 |---|---|
 | Services | Five Go services—Catalog, Inventory, Commerce, Payments, Access—behind a thin Go gateway (ADR-002) |
-| Frontends | Astro SSR/React Storefront and React/Vite Scanner (ADR-006) |
+| Frontends | Astro SSR/React Storefront, Astro SSR Back Office behind `/admin/` with role-gated staff sessions (ADR-006/042), and React/Vite Scanner |
 | Persistence | PostgreSQL 18.4, one database and role per service (ADR-007) |
 | Events | NATS JetStream `PLATFORM` stream; versioned identifier-only domain events (ADR-007/009) |
 | Contracts | Hand-maintained OpenAPI specifications validated against requests/responses (ADR-009) |

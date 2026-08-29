@@ -33,8 +33,13 @@
 // Run via `make browser` (or ./scripts/browser.sh), which owns the stack and
 // sets BASE, POSTGRES_CONTAINER and CATALOG_CONTAINER.
 
-import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import {
+  ORGANIZER,
+  provisionAdmin as provisionAdminIn,
+  resultRecorder,
+  sql,
+} from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const CATALOG = process.env.CATALOG_CONTAINER;
@@ -42,38 +47,18 @@ const POSTGRES = process.env.POSTGRES_CONTAINER;
 if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset — run through ./scripts/browser.sh');
 if (!POSTGRES) throw new Error('POSTGRES_CONTAINER is unset — run through ./scripts/browser.sh');
 
-const SEEDED_ORGANIZER = '00000000-0000-0000-0000-000000000001';
+// The organizer browser.sh seeds. Named for what it MEANS here: the assertions below
+// turn on this id never reaching the page, so the name carries the intent.
+const SEEDED_ORGANIZER = ORGANIZER;
 
-const results = [];
-let failed = false;
+const recorder = resultRecorder('organizer-assertion browser spec');
+const { check } = recorder;
 
-function check(name, ok, detail = '') {
-  results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
-  if (!ok) failed = true;
-}
-
-function provisionAdmin(identifier, password) {
-  execFileSync(
-    'docker',
-    [
-      'exec', '-i', CATALOG, '/app', 'provision-staff',
-      '--organizer-id', SEEDED_ORGANIZER,
-      '--identifier', identifier,
-      '--role', 'admin',
-    ],
-    { input: password, encoding: 'utf8' },
-  );
-}
+const provisionAdmin = (identifier, password) => provisionAdminIn(CATALOG, identifier, password);
 
 // Read the row the write left behind. The rendered page is the client's account
 // of what happened; this is the database's.
-function catalogQuery(sql) {
-  return execFileSync(
-    'docker',
-    ['exec', '-i', POSTGRES, 'psql', '-U', 'postgres', '-d', 'catalog', '-tAqc', sql],
-    { encoding: 'utf8' },
-  ).trim();
-}
+const catalogQuery = (statement) => sql(POSTGRES, 'catalog', statement);
 
 const stamp = Date.now();
 const identifier = `assertion-${stamp}@example.test`;
@@ -197,9 +182,6 @@ try {
   await browser.close();
 }
 
-console.log(results.join('\n'));
-if (failed) {
-  console.error('\norganizer-assertion browser spec FAILED');
+if (!recorder.finish()) {
   process.exit(1);
 }
-console.log('\norganizer-assertion browser spec passed');

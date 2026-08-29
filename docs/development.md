@@ -31,8 +31,9 @@ Run `make up` again. The smoke harness is independent: `scripts/smoke.sh` genera
 credential per invocation, so CI needs no secret.
 
 Go code is a `go.work` workspace: one module per service + `gateway`, `shared/go`, `smoke`.
-TS code is a pnpm workspace: the Astro 7 SSR/React storefront in `web/storefront` and the
-React/Vite scanner in `web/scanner` (ADR-006).
+TS code is a pnpm workspace: the Astro 7 SSR/React storefront in `web/storefront`, the Astro 7 SSR
+back office in `web/backoffice` (served under `/admin/`, ADR-042), and the React/Vite scanner in
+`web/scanner` (ADR-006).
 
 ## Testing model
 
