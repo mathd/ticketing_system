@@ -5,17 +5,23 @@ One stack file at the repo root (`compose.yaml`, project `ticketing`):
 | Service | Image / build | Notes |
 |---|---|---|
 | postgres | `postgres:18.4-bookworm` (digest-pinned) | init script creates 5 DBs + roles, CONNECT revoked cross-service (ADR-007) |
-| nats | `nats:2.14.3-alpine3.22` (digest-pinned), `-js -sd /data` | file-backed JetStream on a named volume; monitoring on 8222 |
+| nats | `nats:2.14.4-alpine3.22` (digest-pinned), `-js -sd /data` | file-backed JetStream on a named volume; monitoring on 8222 |
 | nats-init | `natsio/nats-box:0.19.7` (digest-pinned, one-shot) | provisions the `PLATFORM` stream at stack init (ADR-007) |
-| lgtm | `grafana/otel-lgtm:0.29.0` (digest-pinned) | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
+| lgtm | `grafana/otel-lgtm:0.30.0` (digest-pinned) | collector + Tempo + Loki + Prometheus + Grafana (:3000) |
+| `<svc>`-migrate | `build/go.Dockerfile`, `command: ["migrate"]` | one per Go service, from the `x-migrate-job` anchor; each service waits on its own with `service_completed_successfully` (ADR-022) |
+| access-lifecycle-backfill | `build/go.Dockerfile` (one-shot) | runs after `access-migrate`; backfills the lifecycle trail |
 | catalog…access | `build/go.Dockerfile` (arg `PKG`) | distroless static; healthcheck = `/app healthcheck` subcommand (no shell in image) |
 | gateway | `build/go.Dockerfile` | only published app port (:8080) |
 | storefront | `web/storefront/Dockerfile` | Astro 7 SSR standalone build on Node, `/healthz` |
+| backoffice | `web/backoffice/Dockerfile` | Astro 7 SSR back-office shell behind `/admin/` (ADR-006); root build context for the pnpm lockfile |
 | scanner | `web/scanner/Dockerfile` | pnpm build stage → nginx under `/scanner/`, `/healthz` |
 
 Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,
 `GRAFANA_PORT`, `PROM_PORT`, `OTLP_PORT`) — published infra ports bind to `127.0.0.1` only; that's how `make smoke` runs an isolated copy
-(project `ticketing-smoke`, ports 18080/15432/14222/13000/19090/14318) beside your dev stack.
+beside your dev stack. `scripts/stack-env.sh` derives a per-worktree **slot** (0–39) from the
+checkout path and shifts both the project name (`ticketing-<stack>-<slot>`) and every port by it
+(gateway `18080+slot`, postgres `15432+slot`, and so on), so two worktrees can smoke at once. Slot 0
+gives the familiar `ticketing-smoke-0` / 18080; do not assume those literals in scripts.
 
 Gotchas already paid for:
 

@@ -25,7 +25,7 @@ Then:
 ## Local gate
 
 ```bash
-make check                 # lint + test + build + smoke — exactly what CI runs
+make check                 # drift + contract checks, then lint + test + build + smoke — exactly what CI runs
 ```
 
 `make smoke` boots an isolated copy of the stack (compose project `ticketing-smoke`,
@@ -43,7 +43,7 @@ Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.
 | `web/storefront` | Astro 7 SSR storefront with React components (ADR-006) |
 | `web/backoffice` | Astro 7 SSR staff back office with role-gated sessions (ADR-042) |
 | `web/scanner` | React/Vite gate scanner served under `/scanner/` |
-| `shared/go/` | shared kernel: healthz contract + observability (`httpx`, `obs`) |
+| `shared/go/` | shared kernel: health, observability, cache tier, rate limiting, mail, event envelope and durable-consumer packages; additions require an ADR |
 | `smoke/` | black-box integration suite through the gateway |
 | `docs/` | PRD, ADRs, architecture, conventions |
 
