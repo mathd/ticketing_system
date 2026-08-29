@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -470,5 +471,59 @@ func TestLegacyCompletedRefundLegSurvivesMigration(t *testing.T) {
 	// confirmed it. 1250 of 2500 spent leaves 1250.
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-new", 1251, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
 		t.Fatalf("a legacy completed leg must still hold its allowance, got %v", err)
+	}
+}
+
+// The ceiling must hold for every amount the column admits, not only for the small ones.
+//
+// Asserted against the RULE — for any captured charge, the total committed to all its refund
+// legs must never exceed the amount captured — rather than against what the code does with a
+// large number. That distinction is the whole point of the test: `bound + amount` wraps modulo
+// 2^64 for a large enough `amount`, so the sum turns negative, compares below the capture and
+// the ceiling admits a leg for more money than was ever taken. Nothing downstream catches it —
+// the CHECK on payment_refund_legs is only `amount > 0`, and the fake provider echoes whatever
+// it is handed.
+//
+// Two assertions, because the sentinel alone does not state the rule. A fix that returns
+// ErrRefundExceedsCapture and still inserts the row satisfies the first and breaks the second,
+// so the sum is read back from the database: what must not happen is the leg being COMMITTED,
+// and the error is only how that refusal is reported.
+//
+// The fixture seeds a capture no charge path would produce. That is deliberate and does not
+// weaken it: the guard's obligation is to every row the table admits, and captured_amount is a
+// bigint bounded only by `captured_amount >= 0`, so MaxInt64 is inside the store's contract
+// even though commerce would never compose one.
+func TestRefundLegCeilingHoldsAgainstOverflow(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-overflow"
+	seedCaptured(t, db, ctx, org, key, math.MaxInt64)
+
+	// One leg takes all but a sliver, so any further leg above that sliver breaks the rule.
+	const first = int64(math.MaxInt64) - 10
+	if _, err := j.BindRefundLeg(ctx, org, key, "refund-1", first, "EUR"); err != nil {
+		t.Fatalf("bind within capture: %v", err)
+	}
+	// 11 is one more than the 10 that remain: refused because it breaks the rule, and the
+	// smallest amount that does. MaxInt64 is refused for the same reason, and is additionally
+	// the amount whose unchecked sum wraps negative.
+	for _, amount := range []int64{11, math.MaxInt64} {
+		if _, err := j.BindRefundLeg(ctx, org, key, "refund-2", amount, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
+			t.Fatalf("bind %d over a capture with 10 remaining: err = %v, want ErrRefundExceedsCapture", amount, err)
+		}
+	}
+	// Exactly the remainder still fits — the ceiling is a ceiling, not a margin, at this
+	// magnitude as much as at the small ones TestBindRefundLegRejectsOverCapture covers.
+	if _, err := j.BindRefundLeg(ctx, org, key, "refund-2", 10, "EUR"); err != nil {
+		t.Fatalf("bind exact remainder: %v", err)
+	}
+
+	// The rule, read back from the table: no refused leg was committed.
+	var total sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT sum(amount) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, key).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total.Int64 != math.MaxInt64 {
+		t.Fatalf("bound legs total %d, want exactly the captured %d", total.Int64, int64(math.MaxInt64))
 	}
 }
