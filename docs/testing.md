@@ -1,7 +1,7 @@
 # Testing
 
-The gate is `make check` = **generate-drift → dep-drift → build-list-lag → workflow-trigger checks
-(security, hermetic) → ADR numbering → markdown links → lint → test → build → smoke**; CI runs exactly the same target
+The gate is `make check` = **deps → generate-drift → dep-drift → build-list-lag → workflow-trigger
+checks (security, hermetic) → ADR numbering → markdown links → lint → test → build → smoke**; CI runs exactly the same target
 (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
 §Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
 browser evidence on UI stories).

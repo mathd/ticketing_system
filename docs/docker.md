@@ -18,10 +18,12 @@ One stack file at the repo root (`compose.yaml`, project `ticketing`):
 
 Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,
 `GRAFANA_PORT`, `PROM_PORT`, `OTLP_PORT`) — published infra ports bind to `127.0.0.1` only; that's how `make smoke` runs an isolated copy
-beside your dev stack. `scripts/stack-env.sh` derives a per-worktree **slot** (0–39) from the
-checkout path and shifts both the project name (`ticketing-<stack>-<slot>`) and every port by it
-(gateway `18080+slot`, postgres `15432+slot`, and so on), so two worktrees can smoke at once. Slot 0
-gives the familiar `ticketing-smoke-0` / 18080; do not assume those literals in scripts.
+beside your dev stack. `scripts/stack-env.sh` derives a **slot** as `cksum("$ROOT/$STACK") % 40` —
+from the checkout path *and* the stack name, so the smoke and browser stacks in one worktree
+normally land on different slots — then shifts both the project name (`ticketing-<stack>-<slot>`)
+and every port by it (gateway `18080+slot`, postgres `15432+slot`, and so on). Two worktrees can
+therefore smoke at once. Do not assume the literals `ticketing-smoke` or 18080 in scripts; read the
+exported values instead.
 
 Gotchas already paid for:
 

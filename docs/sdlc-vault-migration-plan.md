@@ -1,5 +1,10 @@
 # Plan: move the SDLC board from git to a Fast Note Sync vault
 
+> **Historical record — this migration shipped.** Ticket state now lives in an FNS vault served by
+> `~/sources/sdlc-board`, and `.sdlc/` is a superseded rollback stub that must not be run (AGENTS.md).
+> Kept for the reasoning behind the move, not as live instructions. Retained under `docs/` in
+> TKT-312, having sat untracked inside the stub it replaced.
+
 Implementation plan. Replaces the `sdlc-state` git branch as the board's source of truth with a
 Fast Note Sync (FNS) vault, keeps a local per-dev board server, and adds a multi-project vault
 switcher.
@@ -7,7 +12,10 @@ switcher.
 Every protocol claim carries a source reference. Claims marked *unverified* were not executed
 against a running server; confirm them before relying on them.
 
-Background and trade-offs: `.sdlc/vault-exploration.md`.
+The companion exploration note this plan was drafted alongside was a working file and was never
+committed to this repository, so the trade-off discussion behind these choices is not recoverable
+here. §1 records the goal and what was ruled out of scope; the decisions themselves are visible in
+the plan's own sections.
 
 ---
 
