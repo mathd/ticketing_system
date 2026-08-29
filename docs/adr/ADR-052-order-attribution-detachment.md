@@ -20,7 +20,7 @@ The proof of ownership is the order reference **alone**, and that was deliberate
 checkout email to match would refuse a buyer who later signed up with a different address, which is
 common and unfixable by them. The cost of that trade is that anyone holding a reference can take an
 order permanently — and references **did** leak: every service logged them via the URL path
-([TKT-202](../../.sdlc/), **closed**), which ADR-049 records as the cause rather than a coincidence.
+(TKT-202, **closed**), which ADR-049 records as the cause rather than a coincidence.
 TKT-202 closed the in-repo emitters — the request log, the contract-drift log and the OTel span
 attribute. It does **not** retroactively unleak references already written to retained logs, and it
 bounds only readers of this platform's telemetry (ADR-021: name the adversary). References that
