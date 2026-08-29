@@ -8,7 +8,9 @@ working agreement; accepted ADRs bind architectural choices.
 - Product briefs and PRDs: `docs/product/`
 - Architecture decisions: `docs/adr/`
 - Current topology and ownership: `docs/architecture.md`
-- Ticket state and delivery context: the git-derived `.sdlc/` board
+- Ticket state and delivery context: the sdlc board (`~/sources/sdlc-board`), backed by a Fast
+  Note Sync vault — not this repo. The `.sdlc/` directory here is a superseded rollback stub and
+  must not be run.
 - API behavior: `services/*/api/openapi.yaml` plus implementation conformance tests
 - Dependencies and executable versions: manifests, lockfiles, Dockerfiles, Compose, and workflows
 

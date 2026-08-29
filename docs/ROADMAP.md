@@ -1,8 +1,9 @@
 # Roadmap
 
-This is the capability-level view. The git-derived board in [`.sdlc/`](../.sdlc/) is the source
-for ticket status and the next Gate 1 choice. Unchecked acceptance boxes in the PRD preserve the
-planning baseline; they are not a second completion tracker.
+This is the capability-level view. Ticket state is not in this repo: it lives as one note per
+ticket in a Fast Note Sync vault, served by the board in `~/sources/sdlc-board`, and that board is
+the source for ticket status and the next Gate 1 choice. Unchecked acceptance boxes in the PRD
+preserve the planning baseline; they are not a second completion tracker.
 
 ## Completed
 

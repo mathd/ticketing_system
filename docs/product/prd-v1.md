@@ -3,8 +3,9 @@
 Companion to [brief.md](./brief.md). This PRD covers v1 at two altitudes: a **capability map**
 (one epic each on the board, COS on the epic, decomposed into stories only when prioritized) and
 **Milestone 1 fully decomposed** (US-001…US-006, the walking skeleton). Its checkboxes preserve the
-planning baseline rather than live delivery status; use the [git-derived board](../../.sdlc/) for
-ticket state and [the roadmap](../ROADMAP.md) for the current capability summary.
+planning baseline rather than live delivery status; use the sdlc board (`~/sources/sdlc-board`,
+backed by a Fast Note Sync vault) for ticket state and [the roadmap](../ROADMAP.md) for the current
+capability summary.
 
 The problem, personas, outcome, non-goals and success metric are in the brief. In two sentences: rebuild a full-breadth event ticketing platform (seated shows, festivals, outdoor parks with lodging, four sales channels, append-only money/ticket audit trails, split fees) as a Go-microservices + TypeScript system, single-organizer first but tenant-aware. Milestone 1 is the thinnest end-to-end slice across the real service boundaries: create an event → buy a GA ticket through the fake PSP → scan it at the gate.
 

@@ -23,7 +23,7 @@ hook enforces this convention; review and focused commits do.
 
 ## Branch names
 
-The `.sdlc` workflow creates ticket-prefixed branches from `main`:
+The project workflow creates ticket-prefixed branches from `main`:
 
 ```text
 TKT-<number>-short-description
