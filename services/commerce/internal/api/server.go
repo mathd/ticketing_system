@@ -27,7 +27,6 @@ import (
 	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
-	"ticketing/shared/fakepsp"
 	"ticketing/shared/httpx"
 )
 
@@ -1545,7 +1544,18 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" || !strings.Contains(in.Email, "@") || !fakepsp.ValidToken(in.PaymentToken) {
+	// The payment token is OPAQUE here (ADR-032, ADR-069). Commerce checks that one was
+	// supplied and forwards it verbatim; whether a provider will accept it is payments'
+	// question, and payments already answers it in provider-neutral terms — the fake wraps
+	// an unknown token in the port-level psp.ErrInvalidToken and the charge handler returns
+	// 400 "invalid payment token" (payments/internal/api/server.go:361).
+	//
+	// This used to call fakepsp.ValidToken, so checkout accepted exactly the four tokens of
+	// the LOCAL SIMULATOR and no Stripe PaymentMethod reference could survive it. That made
+	// commerce stricter than its own published contract, which declares
+	// `payment_token: {type: string, minLength: 1}` and no vocabulary at all.
+	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" ||
+		!strings.Contains(in.Email, "@") || strings.TrimSpace(in.PaymentToken) == "" {
 		write(w, 400, map[string]string{"error": "invalid checkout"})
 		return
 	}
@@ -1705,6 +1715,26 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	if problemCode, message, active := paymentOutcomeProblem(code); active {
 		write(w, problemCode, map[string]any{"order_id": order, "status": "payment_in_progress", "error": message})
+		return
+	}
+	// Payments REFUSED the request itself (TKT-301, ADR-069). Since commerce stopped
+	// judging the token, this is where an unusable one surfaces — payments answers a
+	// provider-neutral 400 "invalid payment token", and a Stripe adapter maps its own "no
+	// such payment method" onto the same status.
+	//
+	// It is answered as the permanent refusal it is. Left to fall through, a 400 matched no
+	// arm below and reached the confirm call, and the request came back 202
+	// `payment_unknown` — an order parked for a recovery runner to retry, over a token that
+	// will be just as invalid every time. That is a recovery queue filling with requests
+	// that can never succeed, and it hides a caller error behind an operational one.
+	//
+	// The hold is deliberately NOT released and the order is NOT marked terminally failed:
+	// that is the 402/408 path's behaviour for a provider that DECLINED, and this is not a
+	// decline — nothing was submitted to a provider at all. Leaving the reservation live
+	// lets the caller retry with a usable token, which is what the smoke suite has always
+	// asserted for a rejected token.
+	if code == http.StatusBadRequest {
+		write(w, http.StatusBadRequest, map[string]any{"order_id": order, "error": "invalid payment token"})
 		return
 	}
 	if code == 402 || code == 408 {

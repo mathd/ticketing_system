@@ -19,6 +19,20 @@ import (
 	"ticketing/shared/httpx"
 )
 
+// ErrUpgradeNeedsInstrument reports an exchange whose delta the buyer owes, for which no
+// payment instrument exists to charge (TKT-301, ADR-069).
+//
+// This is a PERMANENT refusal, and that is why it is its own error rather than one more
+// settlement failure. The upgrade arm used to submit the local simulator's approve token,
+// `"fake-ok"`, so the charge succeeded by construction of the fake and no buyer instrument
+// was ever collected. Against a real provider that literal is not a token, so upgrades
+// would have silently stopped charging anyone the moment one was configured.
+//
+// Collecting an instrument for an exchange is a product slice this ticket does not build.
+// Refusing makes the gap visible and is the reversible choice: an upgrade that cannot be
+// charged is not settled, rather than settled against money that never moved.
+var ErrUpgradeNeedsInstrument = errors.New("exchange upgrade requires a payment instrument")
+
 // Exchanges (TKT-158, ADR-039). Staff-facing and internal, 404 on a bad token like every
 // other commerce staff operation.
 //
@@ -34,6 +48,14 @@ type exchangeRequest struct {
 	TargetTicketTypeID uuid.UUID `json:"target_ticket_type_id"`
 	Actor              string    `json:"actor"`
 	Reason             string    `json:"reason"`
+	// PaymentToken is the buyer's instrument, required only for an UPGRADE — the one
+	// exchange shape where the buyer owes money (TKT-301, ADR-069). Opaque here exactly as
+	// on checkout: forwarded verbatim, judged by payments.
+	//
+	// Absent is the common and correct case: a downgrade refunds against the original
+	// charge and an equal exchange moves no money. An upgrade without one is refused, not
+	// charged against a literal.
+	PaymentToken string `json:"payment_token,omitempty"`
 }
 
 // exchangeProblem maps a store error onto a status the contract declares. Separate from
@@ -158,7 +180,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 			write(w, code, map[string]string{"error": message})
 			return
 		}
-		s.completeExchangeFromBasis(w, r, ex, true)
+		s.completeExchangeFromBasis(w, r, ex, true, in.PaymentToken)
 		return
 	}
 
@@ -278,7 +300,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		ex.TargetTotal, ex.DeltaAmount, ex.BasisRecorded = persisted.TargetTotal, persisted.DeltaAmount, true
 	}
 
-	s.completeExchangeFromBasis(w, r, ex, false)
+	s.completeExchangeFromBasis(w, r, ex, false, in.PaymentToken)
 }
 
 // completeExchangeFromBasis is everything after the basis is durable: the representability
@@ -310,7 +332,12 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 // identical from here either way, which is exactly why it is a parameter rather than a
 // derivation — a resume reporting `replay: false` would tell an operator reconciling a
 // charged-but-unsettled exchange that they were looking at a fresh one.
-func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Request, ex commercestore.Exchange, replay bool) {
+// paymentToken is the buyer's instrument for an upgrade, carried in from the request. It
+// travels as an argument rather than on the exchange row because it is a per-REQUEST
+// credential, not durable exchange state: a resume must re-supply it, exactly as the
+// original request did, and persisting a payment instrument alongside an exchange would be
+// storing a credential this ticket has no mandate to store.
+func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Request, ex commercestore.Exchange, replay bool, paymentToken string) {
 	// Prove the whole exchange is REPRESENTABLE before ANYTHING becomes hard to
 	// undo (ai-review passes 3 and 4). The carried fee is added to the target to
 	// produce the replacement's gross, and an unrepresentable sum has no good
@@ -367,7 +394,15 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 		slog.Default().ErrorContext(r.Context(), "mark exchange settling",
 			"exchange_id", ex.ID, "err", err)
 	}
-	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount); err != nil {
+	if err := s.settleExchangeDelta(r, ex, ex.DeltaAmount, paymentToken); err != nil {
+		// By TYPE, not by position. A permanent refusal and a transient provider failure
+		// reach this line identically, and answering both 502 tells a caller to retry
+		// something that can never succeed; answering both 409 hides a real outage behind
+		// a permanent-refusal signal.
+		if errors.Is(err, ErrUpgradeNeedsInstrument) {
+			write(w, http.StatusConflict, map[string]string{"error": ErrUpgradeNeedsInstrument.Error()})
+			return
+		}
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
 	}
@@ -561,7 +596,7 @@ func (s *Server) holdExchangeTarget(r *http.Request, exchangeID, org, ticketType
 // settleExchangeDelta moves exactly the difference, once. Upgrade charges it, downgrade
 // refunds it through the partial-refund leg against the ORIGINAL charge, and an equal
 // exchange calls nobody.
-func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange, delta int64) error {
+func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange, delta int64, paymentToken string) error {
 	switch {
 	case delta == 0:
 		return nil
@@ -574,10 +609,22 @@ func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange,
 		// A settlement plan is required because payments refuses a captured fact
 		// with no attribution (ADR-048); "no fees" is an attribution, not an
 		// absence of one.
+		// An upgrade is the one exchange shape the buyer owes money on, so it is the one
+		// that needs an instrument. Without one there is nothing to charge, and this arm
+		// used to supply the local simulator's approve token as a literal — so no buyer
+		// instrument was ever collected and the charge succeeded only because the fake
+		// accepts what it is handed. Against a real provider that literal is not a token
+		// and upgrades would silently stop charging anyone.
+		//
+		// Refused rather than invented, at the point the instrument is needed.
+		if strings.TrimSpace(paymentToken) == "" {
+			return fmt.Errorf("%w (exchange %s, delta %d %s)",
+				ErrUpgradeNeedsInstrument, ex.ID, delta, ex.Currency)
+		}
 		code, _, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/charges",
 			"exchange-charge:"+ex.ID.String(), map[string]any{
 				"order_id": ex.SourceOrderID, "organizer_id": ex.OrganizerID, "buyer_id": ex.BuyerID,
-				"amount": delta, "currency": ex.Currency, "payment_token": "fake-ok",
+				"amount": delta, "currency": ex.Currency, "payment_token": paymentToken,
 				"settlement": map[string]any{
 					"face_value": delta, "passed_on": 0, "absorbed": 0,
 					"total_amount": delta, "currency": ex.Currency, "fees": []any{},
@@ -843,7 +890,6 @@ func (s *Server) exchangeTicketsSwitched(w http.ResponseWriter, r *http.Request)
 	}
 	write(w, http.StatusOK, map[string]any{"exchange_id": ex.ID, "tickets_exchanged": true, "capacity_returned": true})
 }
-
 
 // repricingChannel decides which channel, if any, prices an exchange TARGET.
 //

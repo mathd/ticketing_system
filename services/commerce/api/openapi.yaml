@@ -1311,6 +1311,19 @@ components:
         target_ticket_type_id: {type: string, format: uuid}
         actor: {type: string, minLength: 1, maxLength: 200}
         reason: {type: string, minLength: 1, maxLength: 500}
+        payment_token:
+          # The buyer's payment instrument, required ONLY when the exchange is an upgrade
+          # the buyer owes money on (TKT-301, ADR-069). Opaque here exactly as it is on
+          # checkout: commerce forwards it and payments alone judges it.
+          #
+          # Optional because most exchanges need no instrument — a downgrade refunds
+          # against the ORIGINAL charge and an equal exchange moves no money. An upgrade
+          # submitted without one is refused 409 rather than charged: before this field
+          # existed the upgrade arm supplied the local simulator's approve token as a
+          # literal, so no buyer instrument was ever collected and the charge succeeded
+          # only because the fake accepts anything it is handed.
+          type: string
+          minLength: 1
     Exchange:
       type: object
       additionalProperties: false

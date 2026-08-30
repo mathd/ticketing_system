@@ -18,7 +18,6 @@ import (
 	"github.com/google/uuid"
 
 	commercestore "ticketing/services/commerce/internal/store"
-	"ticketing/shared/fakepsp"
 )
 
 func TestPaymentFailureResponse(t *testing.T) {
@@ -111,12 +110,6 @@ func TestPersistenceReadProblem(t *testing.T) {
 	}
 	if code, message := persistenceReadProblem(errors.New("database unavailable")); code != http.StatusServiceUnavailable || message != "temporarily unavailable" {
 		t.Fatalf("database mapping = %d %q", code, message)
-	}
-}
-
-func TestCheckoutRejectsUnknownPaymentToken(t *testing.T) {
-	if fakepsp.ValidToken("not-a-token") {
-		t.Fatal("unknown token accepted")
 	}
 }
 
