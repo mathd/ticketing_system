@@ -43,6 +43,13 @@ echo "$STACK: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nat
 # One credential per invocation (TKT-83): generated here so the isolated
 # stack never depends on a developer's .env or shell (the export takes
 # precedence over compose's .env lookup) and CI needs no secret.
+#
+# Every credential below gets its OWN /dev/urandom read. Deliberately NOT numbered:
+# these comments used to count them ("a FOURTH independent read"), and the count went
+# stale the first time a draw was inserted in the middle — TKT-245's landed at the
+# third position and left a FOURTH, a FIFTH and a second FIFTH behind it (TKT-304).
+# The ordinal was never the point. "Its own read, not a copy" is the invariant, and it
+# survives an insertion; a number does not.
 SMOKE_INTERNAL_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_INTERNAL_TOKEN
 export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
@@ -68,15 +75,15 @@ export CATALOG_ORGANIZER_ASSERTION_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"
 SMOKE_COMMERCE_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_COMMERCE_STAFF_WRITE_TOKEN
 export COMMERCE_STAFF_WRITE_TOKEN="$SMOKE_COMMERCE_STAFF_WRITE_TOKEN"
-# TKT-221: the customer checkout assertion key. A FOURTH independent /dev/urandom
-# read, not a copy — commerce refuses to start when it equals either other
-# credential, and a run where one value served two would pass while proving
-# nothing about the separation those refusals exist to enforce.
+# TKT-221: the customer checkout assertion key. Its own /dev/urandom read, not a
+# copy — commerce refuses to start when it equals either other credential, and a run
+# where one value served two would pass while proving nothing about the separation
+# those refusals exist to enforce.
 SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY
 export COMMERCE_CUSTOMER_ASSERTION_KEY="$SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"
 # TKT-244 / ADR-057: inventory's staff-write credential, for the back office's
-# channel-allocation editor. A FIFTH independent /dev/urandom read, not a copy —
+# channel-allocation editor. Its own /dev/urandom read, not a copy —
 # inventory refuses to start when this equals INTERNAL_SERVICE_TOKEN, and the back
 # office refuses to boot when it equals either credential it already holds. Deriving
 # one from another here would make the smoke suite the one place those guards are
@@ -85,7 +92,7 @@ SMOKE_INVENTORY_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_INVENTORY_STAFF_WRITE_TOKEN
 export INVENTORY_STAFF_WRITE_TOKEN="$SMOKE_INVENTORY_STAFF_WRITE_TOKEN"
 # TKT-203 / ADR-068: access's staff-write credential, for the back office's ticket
-# resend. A SIXTH independent /dev/urandom read, for the same reason the fifth is
+# resend. Its own /dev/urandom read, for the same reason every credential above has
 # one — access refuses to start when this equals INTERNAL_SERVICE_TOKEN, and the
 # back office refuses to boot when it equals any credential it already holds.
 # Deriving one from another here would make the smoke suite the one place those
@@ -109,7 +116,7 @@ for role in CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
 done
 unset password
 
-# ai-review S8: payments' own credential. A FIFTH independent /dev/urandom read —
+# ai-review S8: payments' own credential. Its own /dev/urandom read —
 # commerce refuses to start when it equals any of its other three, so deriving it
 # from one of them here would make the smoke suite the one place that guard is
 # never exercised honestly.

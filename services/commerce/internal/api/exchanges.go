@@ -234,7 +234,25 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	targetTotal := resolution.total(src.Quantity)
 	if resolution.ResolvedPrice.Currency != src.Currency {
-		write(w, http.StatusConflict, map[string]string{"error": "exchange target is priced in a different currency"})
+		// SHADOWED TODAY, and kept deliberately (TKT-304). `resolution` has already been
+		// through validate(), which refuses any resolved price that is not EUR
+		// (catalog_pricing.go, "commerce sells in EUR only"), and every reservation's
+		// currency is written from a validated resolution — so both sides are EUR by
+		// construction and this comparison cannot currently be true. It is not dead code:
+		// EUR-only is commerce's own limitation, tracked for removal by TKT-10, and this
+		// is what stops an exchange from crossing currencies the day it lifts. Deleting a
+		// money-path guard because another file's temporary limitation shadows it is how
+		// the gap reopens unnoticed. TestAnExchangeRefusesATargetPricedInAnotherCurrency
+		// exercises it by seeding the SOURCE in another currency — the one side validate()
+		// does not police, and the state TKT-10 will make reachable through catalog.
+		//
+		// Through exchangeProblem rather than an inline literal, so
+		// ErrExchangeCurrencyMismatch keeps a producer: TKT-304 deleted
+		// store.ValidateExchangeTarget, which was the only other code that returned it,
+		// and without this the mapping above would be unreachable while its table test
+		// went on asserting a status nothing could produce.
+		code, message := exchangeProblem(commercestore.ErrExchangeCurrencyMismatch)
+		write(w, code, map[string]string{"error": message})
 		return
 	}
 	// An upgrade with no instrument is refused HERE, where the delta first becomes known

@@ -39,11 +39,6 @@ type ClaimedReversal struct {
 	Attempts int
 }
 
-// Outstanding reports whether either obligation was still owed when the row was claimed.
-func (c ClaimedReversal) Outstanding() bool {
-	return !c.Refund.TicketsVoided || !c.Refund.CapacityReturned
-}
-
 // Progress is deliberately NOT a method here. It was, comparing the claimant's before/after
 // values, and that was wrong: nothing outside the runner respects this lease — the staff
 // refund endpoint and the cancellation runner drive the same reversal whenever they like —

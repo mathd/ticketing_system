@@ -656,9 +656,10 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		// conflict shares the status.
 		writeJSON(w, http.StatusConflict, Error{Error: "idempotency key reused with different terms"})
 	case errors.Is(err, store.ErrSeatIdentityNotFound):
-		// Defensive: never let this store sentinel fall through to 500. No HTTP
-		// path triggers it today (PinSeat is store-only), but if one does, it is a
-		// conflict against the current published version, not a missing resource.
+		// Reached through POST /internal/seat-maps/{id}/pins (TKT-80), where
+		// inventory pins a seat-hold's seats and the batch is refused whole if any
+		// identity is absent from the current published version. A conflict against
+		// that version, not a missing resource — and never a 500.
 		writeJSON(w, http.StatusConflict, Error{Error: "seat identity is not present in the current published version"})
 	default:
 		s.log.ErrorContext(r.Context(), "store error", "err", err)

@@ -141,11 +141,16 @@ func (p *Postgres) VoidedTickets(ctx context.Context, organizer uuid.UUID, after
 		// very request and drop it from the first page a scanner ever pulls — the
 		// one page that must be complete.
 		//
-		// The CEILING is p.now(), and that is a different decision from the
-		// sentinel above rather than an inconsistency. It is the snapshot boundary:
-		// everything at or before it belongs to this walk, everything after it
-		// belongs to the next pull. Reading it here — once, on the first page — is
-		// what makes the walk consistent.
+		// There is no ceiling, and its absence is a decision (TKT-162). One was
+		// added to make the walk's consistency look deliberate and turned out to be
+		// unreachable: the walk is strictly descending, so the cursor is always at
+		// or below any ceiling taken from page one, which makes the keyset predicate
+		// strictly stronger. No input could make the ceiling change a result, so it
+		// was deleted rather than kept beside a test that could not fail. The keyset
+		// predicate alone is the whole consistency argument — a void created DURING
+		// the walk is newer than the cursor and is excluded by it, and deferred to
+		// the next pull. voided_feed_smoke_test.go carries the full history,
+		// including the one case ADR-066 §4b accepts as uncovered.
 		after = VoidedCursor{
 			OccurredAt: time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
 			EventID:    uuid.Max,

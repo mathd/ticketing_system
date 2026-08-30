@@ -1,11 +1,19 @@
-// Package delivery carries the one act both the issuance consumer and the staff
-// redelivery route perform: resolve a buyer's address from commerce, hand the
-// capability link to the transport, and record that it was accepted.
+// Package delivery carries what the staff redelivery route does: resolve a buyer's
+// address from commerce, hand the capability link to the transport, and record that
+// it was accepted.
 //
-// It exists because the two callers must not drift. The consumer's `deliver` and a
-// resend build the SAME link from the SAME guest reference and resolve the SAME
-// address from the SAME commerce route — two copies would be two places to get the
-// capability URL's shape wrong, and only one of them is exercised by a checkout.
+// IT DOES NOT YET SERVE ISSUANCE, and the comment here used to claim otherwise —
+// that both callers resolved through this package "because the two callers must not
+// drift". They do not. The issuance consumer keeps its own address lookup
+// (consumer.go, `email`) and builds its own link inline, and the two link builders
+// have ALREADY drifted: TicketLink trims a trailing slash from the public URL and
+// the consumer's concatenation does not, so a configured URL ending in "/" yields
+// two different capability URLs for the same order.
+//
+// Routing the consumer through this package is a behaviour change and is not this
+// package's to make unilaterally; it needs its own ticket. Until then the honest
+// statement is the one above — a reader who knows the copies exist can check both,
+// which is exactly what a reader told they cannot drift will not do.
 package delivery
 
 import (
@@ -75,10 +83,12 @@ func (a CommerceAddressBook) DeliveryEmail(ctx context.Context, buyerID uuid.UUI
 
 // TicketLink builds the guest retrieval URL for one order reference.
 //
-// ONE definition, used by issuance and by resend. The value in it is a live bearer
-// capability (ADR-012): anyone holding this URL can retrieve the tickets, nothing
-// revokes it, and every send widens the set of holders. It must not be logged, echoed
-// in a response, or rendered on a staff console.
+// Used by the staff resend path. The issuance consumer builds its own (see the package
+// comment on the trailing-slash divergence between them).
+//
+// The value in it is a live bearer capability (ADR-012): anyone holding this URL can
+// retrieve the tickets, nothing revokes it, and every send widens the set of holders.
+// It must not be logged, echoed in a response, or rendered on a staff console.
 func TicketLink(publicURL string, ref uuid.UUID) string {
 	return strings.TrimSuffix(publicURL, "/") + "/en/tickets/" + ref.String()
 }

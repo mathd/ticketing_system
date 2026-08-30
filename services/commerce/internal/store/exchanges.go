@@ -158,18 +158,6 @@ func ExchangeSoldFactID(id uuid.UUID) uuid.UUID {
 // It is a product question carved out of TKT-6 with its own ticket.
 func ExchangeDelta(sourceTotal, targetTotal int64) int64 { return targetTotal - sourceTotal }
 
-// ValidateExchangeTarget refuses a target the exchange cannot settle against. Currency is
-// the one that matters: there is no FX inside an order.
-func ValidateExchangeTarget(ex Exchange, targetTotal int64, currency string) error {
-	if currency != ex.Currency {
-		return ErrExchangeCurrencyMismatch
-	}
-	if targetTotal < 0 {
-		return errors.New("exchange target total must not be negative")
-	}
-	return nil
-}
-
 // ExchangeSource is the source line, read WITHOUT binding anything.
 type ExchangeSource struct {
 	ReservationID, HoldID, BuyerID, SlotID uuid.UUID

@@ -157,6 +157,17 @@ type exchangeFixture struct {
 }
 
 func seedExchangeSource(t *testing.T, db *sql.DB, ctx context.Context, key string, quantity int32, unit int64) exchangeFixture {
+	return seedExchangeSourceIn(t, db, ctx, key, quantity, unit, "EUR")
+}
+
+// seedExchangeSourceIn seeds the source reservation in an explicit currency.
+//
+// Only the currency-mismatch test passes anything but EUR, and it has to write the row
+// directly because NO production path can produce one: every reservation's currency comes
+// from a price resolution, and validate() refuses a resolution that is not EUR. That is
+// precisely the state TKT-10 will make reachable, so constructing it by hand is how the
+// guard gets tested before then — not a fixture cheating past a check.
+func seedExchangeSourceIn(t *testing.T, db *sql.DB, ctx context.Context, key string, quantity int32, unit int64, currency string) exchangeFixture {
 	t.Helper()
 	f := exchangeFixture{
 		organizer: uuid.New(), order: uuid.New(), reservation: uuid.New(), buyer: uuid.New(),
@@ -167,8 +178,8 @@ func seedExchangeSource(t *testing.T, db *sql.DB, ctx context.Context, key strin
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,
 		                         unit_amount,total_amount,face_value_amount,currency,status)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,'EUR','completed')`,
-		f.reservation, f.organizer, uuid.New(), f.slot, f.sourceType, f.buyer, quantity, unit, total); err != nil {
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,'completed')`,
+		f.reservation, f.organizer, uuid.New(), f.slot, f.sourceType, f.buyer, quantity, unit, total, currency); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -197,13 +208,16 @@ func seedExchangeSource(t *testing.T, db *sql.DB, ctx context.Context, key strin
 // priceBody is a PriceResolution catalog would answer with. `validate` refuses anything it
 // cannot fully trust, so this has to be a real one: matching organizer, a performance id, a
 // currency shared by base and resolved, and exactly one of winner / fallback_reason.
-func priceBody(f exchangeFixture, unit int64) string {
+func priceBody(f exchangeFixture, unit int64, currency string) string {
+	if currency == "" {
+		currency = "EUR"
+	}
 	return fmt.Sprintf(`{"resolver_version":1,"evaluated_at":"2026-08-17T10:00:00Z",
 		"organizer_id":%q,"performance_id":%q,
-		"base_price":{"amount":%d,"currency":"EUR"},
-		"resolved_price":{"amount":%d,"currency":"EUR"},
+		"base_price":{"amount":%d,"currency":%q},
+		"resolved_price":{"amount":%d,"currency":%q},
 		"winner":null,"fallback_reason":"no_eligible_rule","channel_code":null}`,
-		f.organizer, f.slot, unit, unit)
+		f.organizer, f.slot, unit, currency, unit, currency)
 }
 
 // holdOf extracts the hold id from an inventory URL of the form
@@ -245,6 +259,11 @@ type stubPolicy struct {
 	catalogUnit atomic.Int64
 	// catalogDown makes catalog 500 — the "catalog unavailable" case.
 	catalogDown atomic.Bool
+	// catalogCurrency overrides the currency catalog prices the TARGET in. Empty means
+	// EUR, which is what every source order here is seeded with. Set it to drive the
+	// currency refusal (TKT-304): there is no FX inside an order, so a target priced in
+	// another currency must be refused before anything durable exists.
+	catalogCurrency atomic.Value
 	// factsFail makes payments refuse the journal call, which is the handler's 503 branch
 	// and therefore the interruption: charged, not settled.
 	factsFail atomic.Bool
@@ -370,7 +389,8 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(priceBody(f, policy.catalogUnit.Load())))
+		currency, _ := policy.catalogCurrency.Load().(string)
+		_, _ = w.Write([]byte(priceBody(f, policy.catalogUnit.Load(), currency)))
 	})
 
 	// One inventory stub for three operations, distinguished by path. The HOLD counter is
@@ -592,6 +612,87 @@ func interruptAfterTheMoneyMoved(t *testing.T, s *exchangeStack, ctx context.Con
 			"the money must actually have moved for the resume to be the thing under test", got)
 	}
 	policy.factsFail.Store(false)
+}
+
+// A non-EUR catalog answer is an UNUSABLE RESOLUTION, refused before pricing.
+//
+// This is not AC3 and must not be read as it (ai-review [medium]): it pins commerce's own
+// EUR-only limitation, which lives in priceResolution.validate and fires on the catalog
+// answer long before any exchange logic. The exact message matters — this handler has
+// several distinct 500s ("persist exchange", "load exchange"), so asserting the status
+// alone would let an unrelated failure satisfy it.
+func TestAnExchangeRefusesANonEURResolution(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "exch-nonEUR-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1000)
+	policy.catalogCurrency.Store("USD")
+	s := exchangeStackFor(t, db, f, policy)
+
+	holdsBefore := s.inventory.count("holds")
+
+	code, out := s.exchange(t, f, "exch-nonEUR-1")
+	if code != http.StatusInternalServerError || out["error"] != "price resolution unusable" {
+		t.Fatalf("a USD resolution answered %d %v, want 500 \"price resolution unusable\" — "+
+			"validate() refuses a non-EUR resolved price before anything prices against it", code, out)
+	}
+	if s.exchangeRowExists(t, ctx, f.organizer, "exch-nonEUR-1") {
+		t.Error("the refusal bound an exchange row: a refusal that wedges the thing it refuses is not a refusal")
+	}
+	if got := s.inventory.count("holds"); got != holdsBefore {
+		t.Errorf("the refusal took %d holds (was %d): no capacity for a target that cannot settle",
+			got-holdsBefore, holdsBefore)
+	}
+}
+
+// AC3: currencies must match. There is no FX inside an order (PRD; TKT-10 owns
+// multi-currency), so a target priced in a currency other than the SOURCE's is refused
+// 409, and the refusal lands before anything durable exists.
+//
+// This assertion used to live in the store, against ValidateExchangeTarget — a helper with
+// no production caller, which TKT-304 deleted. It sits at the handler tier now because that
+// is where the comparison is.
+//
+// THE SOURCE IS SEEDED IN USD, and that is the whole design of this test. The obvious
+// fixture — a USD answer from catalog — cannot reach the comparison: validate() refuses a
+// non-EUR resolution first (the test above pins that). Driving the mismatch therefore means
+// varying the side validate() does not police, so the source is USD and catalog answers the
+// EUR it is willing to answer. No production path can create that reservation today; TKT-10
+// is what will. Writing the row by hand is how the guard is exercised before then.
+//
+// Three assertions, each failing for a different edit. The STATUS and exact MESSAGE pin the
+// wire contract and prove the exchangeProblem wiring is live — TKT-304 deleted the sentinel's
+// only other producer, so without the wiring the mapping would be unreachable. The absent
+// exchange ROW pins "before anything durable": binding first would leave the order
+// permanently unexchangeable, since the one-per-order index blocks a corrected attempt.
+// Zero HOLDS pins that no capacity was claimed for a target that was never going to settle.
+func TestAnExchangeRefusesATargetPricedInAnotherCurrency(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSourceIn(t, db, ctx, "exch-currency-src", 2, 1000, "USD")
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1000) // an EVEN exchange, so only the currency can refuse it
+	s := exchangeStackFor(t, db, f, policy)
+
+	holdsBefore := s.inventory.count("holds")
+
+	code, out := s.exchange(t, f, "exch-currency-1")
+	if code != http.StatusConflict {
+		t.Fatalf("an EUR target against a USD order answered %d %v, want 409 — an exchange "+
+			"must never cross currencies: there is no FX inside an order", code, out)
+	}
+	if out["error"] != "exchange target is priced in a different currency" {
+		t.Errorf("error = %v, want the declared currency-mismatch message. The handler routes "+
+			"this refusal through exchangeProblem, so the message is the mapping's, not a "+
+			"literal — a different string means the wiring was undone", out["error"])
+	}
+	if s.exchangeRowExists(t, ctx, f.organizer, "exch-currency-1") {
+		t.Error("the refusal bound an exchange row. A refusal that wedges the thing it refuses " +
+			"is not a refusal: the one-per-order index would block a corrected attempt")
+	}
+	if got := s.inventory.count("holds"); got != holdsBefore {
+		t.Errorf("the refusal took %d holds (was %d): no capacity may be claimed for a target "+
+			"that cannot settle", got-holdsBefore, holdsBefore)
+	}
 }
 
 // COS 1 — a charged-but-unsettled exchange resumes from the persisted basis.

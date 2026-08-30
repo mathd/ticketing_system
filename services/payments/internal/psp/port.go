@@ -46,11 +46,6 @@ const (
 	Refunded Outcome = "refunded"
 )
 
-// ErrNotImplemented is returned by an implementation for a port operation a given slice
-// has not wired yet. Slice 1 wires only Authorize (the charge path); Capture/Void/Refund/
-// Status exist on the interface but the fake returns this until their slices land.
-var ErrNotImplemented = errors.New("psp: operation not implemented")
-
 // ErrInvalidToken reports a payment token/method the provider cannot accept. It is a
 // port-level sentinel so the handler checks a PSP concept, not a fake-specific one: the
 // fake wraps fakepsp.ErrUnknownToken with it, and a future Stripe adapter maps its own
@@ -260,18 +255,18 @@ type StatusRequest struct {
 	PaymentToken   string // original opaque payment-method ref, for the replay body
 }
 
-// PSP is the provider-agnostic port. TKT-114/S2 wires the compensation/status surface
-// (Capture/Void/Refund/Status) for the Stripe adapter; the fake implements them too.
-// An implementation that has not wired an operation returns ErrNotImplemented.
+// PSP is the provider-agnostic port. Every operation is wired by both implementations:
+// TKT-114/S2 added the compensation/status surface (Capture/Void/Refund/Status) to the
+// Stripe adapter, and the fake implements it too.
 type PSP interface {
 	// Authorize submits a charge. For the immediate-capture flow it authorizes and captures
 	// in one step, reflected in the Result (Authorized && Captured on success).
 	Authorize(ctx context.Context, req AuthorizeRequest) (Result, error)
-	// Capture captures a prior authorization. Unwired in Slice 1.
+	// Capture captures a prior authorization. Wired by both the fake and the Stripe adapter (TKT-114/S2).
 	Capture(ctx context.Context, providerRef string, amount int64, currency string) (Result, error)
-	// Void cancels an uncaptured authorization. Unwired in Slice 1.
+	// Void cancels an uncaptured authorization. Wired by both the fake and the Stripe adapter (TKT-114/S2).
 	Void(ctx context.Context, providerRef, idempotencyKey string) (Result, error)
-	// Refund refunds a captured charge. Unwired in Slice 1.
+	// Refund refunds a captured charge. Wired by both the fake and the Stripe adapter (TKT-114/S2).
 	Refund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, error)
 	// Status retrieves the provider's current view of an operation, resolving via ProviderRef
 	// when known or replaying the original create under the same IdempotencyKey when it was
