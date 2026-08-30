@@ -436,17 +436,26 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 // from the trace: it only ever hands back what this same occurrence already
 // got, so it is safe on the degraded path too.
 func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID, direction AdmissionEventType) (bool, RedeemResult, error) {
-	// Bound to the direction being requested, exactly as replayAdmissionOccurrence binds
-	// it (scan.go). Without this an occurrence recorded as an EXIT replays as an accepted
-	// ENTRY: submit an entry carrying an exit's occurrence id and the gate opens on a
-	// replay that never admitted anyone. Confirmed by running it (TKT-299 ai-review).
+	// Bound to the direction being requested. Without this an occurrence recorded as an
+	// EXIT replays as an accepted ENTRY: submit an entry carrying an exit's occurrence id
+	// and the gate opens on a replay that never admitted anyone (TKT-299 ai-review).
+	//
+	// DELIBERATELY NOT `replayAdmissionOccurrence`'s matcher, though it is one line away
+	// from it. That one accepts `duplicate_admit` as an entry, and it is right to: it
+	// serves the pass path, where a duplicate_admit is a physical entry that consumed
+	// allowance. THIS helper hands its result back as the gate's decision, and a
+	// `duplicate_admit` is a REFUSED entry — its original outcome was a conflict recording,
+	// not an acceptance this result shape can honestly replay. Copying the sibling verbatim
+	// made a refused duplicate replay as `Accepted: true` and opened the gate; caught by
+	// the second ai-review pass, after the first had asked for exactly this direction
+	// binding. The two matchers differ because the two questions differ.
 	//
 	// A live degraded admission stays UN-directioned — see the non-null arm below.
 	matches := func(stored string) bool {
 		if direction == AdmissionExit {
 			return stored == string(AdmissionExit)
 		}
-		return stored == string(AdmissionEntry) || stored == "redeemed" || stored == string(AdmissionDuplicateAdmit)
+		return stored == string(AdmissionEntry) || stored == "redeemed"
 	}
 	var storedTicket uuid.UUID
 	var storedType string

@@ -1604,3 +1604,64 @@ func TestReconcileAfterADegradedAdmissionIsAConflict(t *testing.T) {
 			"on top of the integrity alarm the degraded admission already owed", n, degradedAlarms+1)
 	}
 }
+
+// A `duplicate_admit` occurrence must never replay as an accepted admission (TKT-299
+// ai-review, second pass).
+//
+// Reconciliation appends `duplicate_admit` with the scanner's own occurrence id when an
+// offline occurrence arrives for a ticket that was already admitted: the record says "this
+// scan was refused". Retrying that same occurrence at a live gate must not come back
+// `Accepted: true` — the API reads that as permission to open the door, and nobody was ever
+// admitted on it.
+//
+// The regression this pins is specific and was self-inflicted. Binding the replay to a
+// direction (the previous review round's fix) was done by copying the matcher from
+// `replayAdmissionOccurrence`, which accepts `duplicate_admit` as an entry — correctly, for
+// the pass path, where a refused duplicate is still a physical entry that consumed
+// allowance. On THIS path the result becomes the gate's decision, so the two matchers must
+// differ. Both chain states are covered because the healthy path and the degraded path
+// reach the replay through different callers.
+func TestDuplicateAdmitOccurrenceNeverReplaysAsAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		break_ bool
+	}{
+		{name: "healthy chain"},
+		{name: "broken chain", break_: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			db := migratedDB(t, ctx)
+			st := New(db, testConfig(t))
+			s := issueTicket(t, ctx, st, uuid.New())
+
+			if _, err := st.Redeem(ctx, occurrenceRedeemInput(s, uuid.New())); err != nil {
+				t.Fatal(err)
+			}
+			// A late offline occurrence for an already-admitted ticket: recorded as a
+			// refused duplicate, carrying the scanner's occurrence id.
+			dup := uuid.New()
+			res, err := st.ReconcileAdmission(ctx, s.reconcileInput(dup, deviceTime().Add(5*time.Minute)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != ReconcileConflict {
+				t.Fatalf("fixture: reconcile outcome = %v, want %v", res.Outcome, ReconcileConflict)
+			}
+			if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE id=$1 AND event_type='duplicate_admit'`, dup); n != 1 {
+				t.Fatalf("fixture: duplicate_admit rows for the occurrence = %d, want 1", n)
+			}
+			if tc.break_ {
+				corruptChain(t, ctx, db, s.ticketID)
+			}
+
+			out, err := st.Redeem(ctx, occurrenceRedeemInput(s, dup))
+			if err == nil && out.Accepted {
+				t.Fatalf("a REFUSED duplicate replayed as an accepted admission (decision=%q): "+
+					"its original outcome was a conflict recording, and the gate must not open "+
+					"on it", out.Decision)
+			}
+		})
+	}
+}
