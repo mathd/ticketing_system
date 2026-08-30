@@ -243,7 +243,8 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		// is what stops an exchange from crossing currencies the day it lifts. Deleting a
 		// money-path guard because another file's temporary limitation shadows it is how
 		// the gap reopens unnoticed. TestAnExchangeRefusesATargetPricedInAnotherCurrency
-		// pins the ordering, and going red is how you learn the guard became load-bearing.
+		// exercises it by seeding the SOURCE in another currency — the one side validate()
+		// does not police, and the state TKT-10 will make reachable through catalog.
 		//
 		// Through exchangeProblem rather than an inline literal, so
 		// ErrExchangeCurrencyMismatch keeps a producer: TKT-304 deleted
