@@ -1656,11 +1656,32 @@ func TestDuplicateAdmitOccurrenceNeverReplaysAsAccepted(t *testing.T) {
 				corruptChain(t, ctx, db, s.ticketID)
 			}
 
+			// Asserted to the EXACT outcome, not merely "not accepted". A test satisfied by
+			// any error blesses whatever the code happens to do — including an unrelated
+			// failure — and the third ai-review pass caught this assertion doing exactly
+			// that in its first form.
+			//
+			// The outcome pinned here is `origin/main`'s, unchanged by this ticket: a
+			// duplicate_admit occurrence is answered ErrOccurrenceCollision, which the API
+			// maps to 422. That is a deliberate pre-existing choice, documented at the
+			// switch this ticket replaced — "its original outcome was a conflict recording,
+			// not an acceptance this result shape can honestly replay". Whether a distinct
+			// non-accepted decision would serve a scanner better is a real question and
+			// TKT-299 does not own it; what this test guarantees is that the answer never
+			// silently becomes "accepted".
 			out, err := st.Redeem(ctx, occurrenceRedeemInput(s, dup))
-			if err == nil && out.Accepted {
+			if !errors.Is(err, ErrOccurrenceCollision) {
+				t.Fatalf("err = %v, want ErrOccurrenceCollision — a REFUSED duplicate must not "+
+					"replay as an admission, and must fail for THAT reason rather than any other",
+					err)
+			}
+			if out.Accepted {
 				t.Fatalf("a REFUSED duplicate replayed as an accepted admission (decision=%q): "+
 					"its original outcome was a conflict recording, and the gate must not open "+
 					"on it", out.Decision)
+			}
+			if out.Decision != "" || out.Replayed || !out.OccurredAt.IsZero() {
+				t.Fatalf("a refused replay must return the zero result, got %+v", out)
 			}
 		})
 	}
