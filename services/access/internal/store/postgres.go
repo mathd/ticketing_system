@@ -461,22 +461,26 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 		return false, RedeemResult{}, err
 	}
 
-	var quarantinedTicket uuid.UUID
-	var admittedAt, occurredAt sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT ticket_id,admitted_at,occurred_at FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1`, occ).
-		Scan(&quarantinedTicket, &admittedAt, &occurredAt)
-	if err == nil {
-		if quarantinedTicket != ticketID {
+	row, found, err := quarantinedOccurrence(ctx, tx, occ)
+	if err != nil {
+		return false, RedeemResult{}, err
+	}
+	if found {
+		if row.TicketID != ticketID {
 			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
-		at := occurredAt.Time
-		if admittedAt.Valid {
-			at = admittedAt.Time
+		// The two kinds of quarantine row do not replay the same way (TKT-299). A row
+		// with admitted_at SET is a §D6 degraded admission — someone was let through on
+		// a chain that did not verify — and replays as such, un-directioned, because
+		// §D3's identity rule extends to degraded admissions. A row with admitted_at
+		// NULL is reconciliation RECORDING an occurrence that already happened offline;
+		// nothing was decided, so replaying it as a degraded admission would claim a §D6
+		// event that never occurred. This helper used to ignore the distinction and
+		// label both degraded, while its two siblings drew it correctly.
+		if row.AdmittedAt.Valid {
+			return true, RedeemResult{Accepted: true, Decision: DecisionAdmittedDegraded, OccurredAt: row.AdmittedAt.Time, Replayed: true}, nil
 		}
-		return true, RedeemResult{Accepted: true, Decision: DecisionAdmittedDegraded, OccurredAt: at, Replayed: true}, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, RedeemResult{}, err
+		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: row.OccurredAt.Time, Replayed: true}, nil
 	}
 	return false, RedeemResult{}, nil
 }

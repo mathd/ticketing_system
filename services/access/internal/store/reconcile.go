@@ -185,9 +185,21 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		return ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: ReconcileRecorded, OccurredAt: occurredAt, SkewFlagged: skewFlagged}, nil
 	}
 
-	var redeemedAt time.Time
-	err = tx.QueryRowContext(ctx, `SELECT occurred_at FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, in.TicketID).Scan(&redeemedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	// The prior-admission question is asked of the UNION, not the trail (ADR-025 §D2,
+	// TKT-299). A §D6 degraded admission leaves NO lifecycle event — it is recorded only
+	// on the quarantine side — so a trail-only lookup found nothing, concluded "no prior
+	// admission", and appended a fresh `redeemed` for a holder who had already walked
+	// through the door. The singleton index does not catch it precisely because there was
+	// no `redeemed` row to collide with: one person, two admission records, no conflict
+	// alarm for the second.
+	//
+	// Note this asks only whether an admission HAPPENED, not when. The previous query
+	// scanned occurred_at and never read it; only the not-found branch was ever load-bearing.
+	admitted, err := ticketAdmittedUnion(ctx, tx, in.TicketID)
+	if err != nil {
+		return ReconcileResult{}, err
+	}
+	if !admitted {
 		// No prior admission: this occurrence IS the redemption, with the
 		// scanner's id and the device-claimed time (§D3/§D5).
 		occurredAt, appendErr := p.appendLifecycle(ctx, tx, appendInput{
@@ -268,14 +280,13 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		}
 		return ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: ReconcileRecorded, OccurredAt: occurredAt, SkewFlagged: skewFlagged}, nil
 	}
-	if err != nil {
-		return ReconcileResult{}, err
-	}
 
-	// The trace already holds a different admission and this ticket is
+	// The UNION already holds a different admission and this ticket is
 	// single-entry: the offline admit is a conflict (ADR-025 §D6). Append
 	// duplicate_admit — visibility, not judgment on which admission was
-	// "real" — and owe the conflict alarm.
+	// "real" — and owe the conflict alarm. "Union" and not "trace": the prior
+	// admission may be a quarantine-side degraded one with no lifecycle event
+	// at all, and that case reaches here now (TKT-299).
 	occurredAt, err := p.appendLifecycle(ctx, tx, appendInput{
 		TicketID: in.TicketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
 		EventID: in.OccurrenceID, Type: string(AdmissionDuplicateAdmit), OccurredAt: in.OccurredAt,

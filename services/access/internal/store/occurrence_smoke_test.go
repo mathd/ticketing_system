@@ -1477,3 +1477,130 @@ func TestReconcileExchangedAlarmAndAppendCommitTogether(t *testing.T) {
 		t.Fatalf("%d exchanged rows, want 1 — a rolled-back reconcile must not disturb it", n)
 	}
 }
+
+// A reconciliation-learned occurrence replays as ACCEPTED, not as a degraded admission
+// (TKT-299).
+//
+// The two kinds of quarantine row mean different things and only one of them records a
+// live admission decision:
+//
+//   - `admitted_at` SET — ADR-021 §D6 let someone through on a chain that did not verify.
+//   - `admitted_at` NULL — reconciliation recorded that an occurrence physically happened
+//     offline. ADR-025 §D2: reconciliation is *recording, not deciding*. Nothing was
+//     admitted; the row exists because the broken chain refused an append.
+//
+// `replayByOccurrence` never read `event_type` and labelled BOTH `DecisionAdmittedDegraded`,
+// while its two siblings (`replayAdmissionOccurrence`, `reconcileReplay`) distinguish them.
+// Three near-identical helpers, one of them wrong.
+//
+// Impact is honestly internal today: accepted responses do not carry `Decision` on the wire,
+// so nothing external changed. It matters because the label is what any later caller or
+// operator view would branch on, and because a degraded admission is a §D6 event that owes
+// an alarm — a fact this row is not.
+func TestReconciledOccurrenceReplaysAcceptedNotDegraded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+	genuine := genuineHash(t, ctx, db, s.ticketID)
+
+	// Offline occurrence reconciled while the chain is broken: recorded quarantine-side
+	// with admitted_at NULL, because appending onto an unverified predecessor would poison
+	// the chain.
+	corruptChain(t, ctx, db, s.ticketID)
+	occ := uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(occ, deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture, asserted rather than assumed: exactly one quarantine row, and its
+	// admitted_at is NULL. If reconciliation ever started setting it, this test would still
+	// pass while testing the other case entirely.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NULL`, s.ticketID); n != 1 {
+		t.Fatalf("reconciliation-learned rows with a NULL admitted_at = %d, want 1 — the fixture does not hold", n)
+	}
+
+	repairChain(t, ctx, db, s.ticketID, genuine)
+	retry, err := st.Redeem(ctx, occurrenceRedeemInput(s, occ))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retry.Accepted || !retry.Replayed {
+		t.Fatalf("retry = %+v, want the reconciled occurrence replayed", retry)
+	}
+	if retry.Decision != DecisionAccepted {
+		t.Fatalf("decision = %q, want %q: nobody was admitted on a broken chain here — "+
+			"reconciliation RECORDED an occurrence that already happened (ADR-025 §D2), and "+
+			"labelling it a degraded admission claims a §D6 event that never occurred",
+			retry.Decision, DecisionAccepted)
+	}
+}
+
+// Reconciliation's prior-admission check must consult the UNION too (TKT-299).
+//
+// ADR-025 §D2 says admission history is the union of the trace and the quarantine record,
+// and that *admission decisions* — not only readers — must consult it. Reconciliation's
+// "has this ticket already been admitted?" lookup read `lifecycle_events` alone, so a prior
+// §D6 degraded admission was invisible to it.
+//
+// The consequence is not a caught error: the singleton index on `redeemed` never fires,
+// because the degraded admission left NO `redeemed` row to collide with. Reconciliation
+// therefore concluded "no prior admission", appended a fresh `redeemed`, and returned
+// `recorded`. One physical person, admitted once at the gate and once again in the record,
+// with no conflict alarm raised for the second.
+//
+// The rule this asserts, stated without naming the implementation: a ticket admitted once —
+// by ANY route the system records — and then reconciled for a DIFFERENT occurrence has a
+// conflict, and the second occurrence is recorded as a refused duplicate, never as the
+// redemption. The expected values below come from that sentence, not from a run.
+func TestReconcileAfterADegradedAdmissionIsAConflict(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+	s := issueTicket(t, ctx, st, uuid.New())
+	genuine := genuineHash(t, ctx, db, s.ticketID)
+
+	// The holder goes through the door on a chain that does not verify: ADR-021 §D6 admits
+	// once, recorded ONLY on the quarantine side.
+	corruptChain(t, ctx, db, s.ticketID)
+	first, err := st.Redeem(ctx, occurrenceRedeemInput(s, uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Accepted || first.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("fixture: first scan = %+v, want a degraded admission", first)
+	}
+	repairChain(t, ctx, db, s.ticketID, genuine)
+
+	// The fixture, asserted: the admission exists only in quarantine, so a trail-only
+	// lookup is genuinely blind to it here.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); n != 0 {
+		t.Fatalf("trail redemptions = %d, want 0 — the fixture does not exercise the union", n)
+	}
+	degradedAlarms := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`)
+
+	// A DIFFERENT occurrence arrives from an offline scanner.
+	result, err := st.ReconcileAdmission(ctx, s.reconcileInput(uuid.New(), deviceTime().Add(5*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != ReconcileConflict {
+		t.Fatalf("outcome = %v, want %v: the holder was already admitted (quarantine-side), so a "+
+			"second physical occurrence is a conflict — recording it as the redemption gives one "+
+			"person two admissions and no alarm", result.Outcome, ReconcileConflict)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='redeemed'`, s.ticketID); n != 0 {
+		t.Fatalf("redeemed events = %d, want 0: the redemption already happened at the gate and "+
+			"lives in quarantine; reconciliation must not mint a second admission record", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type='duplicate_admit'`, s.ticketID); n != 1 {
+		t.Fatalf("duplicate_admit events = %d, want 1: the second occurrence is a refused duplicate", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`); n != degradedAlarms+1 {
+		t.Fatalf("alarms = %d, want %d: one physical conflict owes exactly one conflict alarm, "+
+			"on top of the integrity alarm the degraded admission already owed", n, degradedAlarms+1)
+	}
+}

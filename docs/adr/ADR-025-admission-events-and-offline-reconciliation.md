@@ -113,6 +113,35 @@ conflicts. Together every physical admission that Access learns about is represe
    (`services/access/internal/store/postgres.go`), so a ticket quarantine-admitted under a
    verifier bug would be admitted a *second* time once the chain verifies clean again — a
    pre-existing gap this ADR names and hands to a follow-up ticket, not new scope here.
+
+   **Who the consumers are (TKT-299).** "Both readers and admission decisions" was left to
+   inference, and two of the four consumers were reading the trace alone. Naming them, so the
+   next reader does not have to work it out: the live single-entry scan
+   (`redeemSingle`), pass policy fact construction (`admissionFacts`), **reconciliation's
+   prior-admission check** (`ReconcileAdmission`), and **`SwitchExchange`'s source-ticket
+   admission guard** (`ticketAdmitted`). The last two were the ones reading half the union.
+   The exchange guard voided a ticket its holder had already entered on and issued a fresh
+   unredeemed replacement — the double admission that guard exists to prevent — and
+   reconciliation concluded "no prior admission" and minted a second admission record for one
+   physical person, with no conflict alarm. Neither was caught by the `redeemed` singleton
+   index, because a degraded admission leaves no `redeemed` row to collide with. One
+   definition now answers the ticket-level question for all four
+   (`services/access/internal/store/admission.go`).
+
+   Two distinctions that definition must keep, both load-bearing and both easy to lose.
+   First, `duplicate_admit` records a **refused** entry, so it does not make a ticket
+   "admitted" for an admission *decision*: counting it would deny an exchange to someone whose
+   second scan was correctly turned away, punishing them for our own denial. Note this is
+   narrower than "it is never evidence of anything" — `admissionFacts` deliberately consumes a
+   `duplicate_admit` as a physical entry when deriving **pass allowance**, because the person
+   did walk in. The two questions differ and the code must not merge them: *was a decision
+   already made?* is not *how many entries has this pass used?* Second, a quarantine row with
+   `admitted_at` **NULL** is reconciliation *recording* an occurrence that already happened
+   offline, not a §D6 admission decision; only a non-null `admitted_at` is an admission.
+
+   Scope, per [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md): the union is
+   **honest-writer consistency, not tamper-evidence**. A writer with database access can
+   insert or delete quarantine rows at will, and nothing here constrains that.
 3. **Occurrence identity.** Every physical gate decision gets a gate-generated UUIDv4
    **occurrence id**, durably persisted by the scanner before the gate opens or the request is
    sent. Transport retries reuse it; a distinct physical decision gets a new one. The lifecycle
