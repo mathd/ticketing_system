@@ -112,14 +112,23 @@ its idempotency key and needs no new instrument, and an equal exchange moves no 
     - **Exchange upgrades are refused in practice**, because nothing collects a buyer instrument for
       one. This ADR does not close that gap; it stops the gap from being silent. Collecting an
       instrument is a product slice and needs its own ticket.
-    - **An invalid token is now TERMINAL for that reservation.** It fails later — in payments,
-      after commerce has claimed the order and finalized the hold — and by then the order's request
-      fingerprint includes the token, so a retry carrying a corrected one is a different fingerprint
-      and is refused as a conflict. The refusal therefore releases the hold and fails the order,
-      exactly as a decline does, rather than stranding a reservation nobody can complete. Before this
-      ticket a caller could retry the same reservation with a different token and succeed; that was
-      only ever possible because commerce refused the token itself before claiming anything. The
-      gateway smoke suite asserted the old behaviour and now asserts the new one.
+    - **An invalid token spends the reservation.** It fails later — in payments, after commerce has
+      claimed the order and finalized the hold — and by then the order's request fingerprint includes
+      the token, so a retry carrying a corrected one is a different fingerprint and is refused as a
+      conflict. The refusal releases the hold, so the capacity returns, and the buyer starts a clean
+      checkout. Before this ticket a caller could retry the same reservation with a different token
+      and succeed; that was only possible because commerce refused the token itself before claiming
+      anything, and against a real provider it could never have held. The gateway smoke suite
+      asserted the old behaviour and now asserts the new one.
+    - **The order carries no terminal outcome for this case, deliberately.** Every value
+      `terminal_outcome` admits would be false: `declined` and `timeout` are provider answers and no
+      provider saw the token, while `not_attempted` means payments bound no charge — payments binds
+      the operation *before* it validates. Recording `declined` would also make the idempotent replay
+      answer 402 to a request that first answered 400, and would tell every consumer of that status
+      that a payment was refused by a provider that never received one. The replay therefore answers
+      400 again, consistently. **This is a gap, not a resolution:** an invalid instrument has no
+      status of its own, so an operator reading the order sees `created` with a released hold. Giving
+      it one is a migration plus a contract change and belongs to its own ticket.
 
 ## What this does NOT decide
 

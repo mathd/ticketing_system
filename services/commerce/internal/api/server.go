@@ -1722,33 +1722,27 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	// provider-neutral 400 "invalid payment token", and a Stripe adapter maps its own "no
 	// such payment method" onto the same status.
 	//
-	// TERMINAL, exactly like the decline below it, and for the same reason: by this point
-	// the order is claimed under a fingerprint that includes the token, the hold is
-	// finalized and `order.created` is journalled. A retry carrying a corrected token is a
-	// different fingerprint and is refused as a conflict, so leaving the row live would
-	// strand a reservation nobody can complete. Releasing the hold and failing the order
-	// returns the capacity and lets the buyer start a clean checkout.
+	// The hold is RELEASED, so the capacity comes back, but the order is deliberately NOT
+	// marked with a terminal outcome. Every value `terminal_outcome` admits would be a lie:
+	// `declined` and `timeout` are provider answers and no provider ever saw this token,
+	// and `not_attempted` means payments bound no charge — payments binds the operation
+	// BEFORE it validates. Recording a decline would also make the idempotent replay answer
+	// 402 for a request that first answered 400, and would tell every consumer of that
+	// status a provider refused a payment it never received. Giving this its own status is
+	// a migration and a contract change, which is a bigger decision than this ticket owns;
+	// ADR-069 records the gap.
 	//
-	// Left to fall through it was worse than either: a 400 matched no arm, reached the
-	// confirm call, and answered 202 `payment_unknown` — an order parked for a recovery
+	// Left to fall through it was worse than either: a 400 matched no arm below, reached
+	// the confirm call, and answered 202 `payment_unknown` — an order parked for a recovery
 	// runner to retry a token that will be just as invalid every time.
 	//
-	// The body carries no order_id. The checkout contract's Error schema is
-	// `additionalProperties: false`, so an extra field is rewritten to a 500 by ADR-028's
-	// response validator — which is how the gate caught this.
+	// The body carries no order_id: the checkout Error schema is `additionalProperties:
+	// false`, so an extra field is rewritten to a 500 by ADR-028's response validator.
 	if code == http.StatusBadRequest {
 		releaseCode, _, releaseErr := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 		if releaseErr != nil || releaseCode != 200 {
-			write(w, 202, map[string]any{"order_id": order, "status": "release_pending"})
-			return
-		}
-		if err := s.markTerminalFailure(r.Context(), x.ID, order, "declined"); err != nil {
-			write(w, 500, map[string]string{"error": "persist failure"})
-			return
-		}
-		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
-			write(w, 503, map[string]string{"error": "journal unavailable"})
-			return
+			slog.Default().WarnContext(r.Context(), "release after invalid payment token",
+				"order_id", order, "status", releaseCode, "err", releaseErr)
 		}
 		write(w, http.StatusBadRequest, map[string]string{"error": "invalid payment token"})
 		return

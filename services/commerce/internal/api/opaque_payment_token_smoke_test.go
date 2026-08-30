@@ -323,9 +323,33 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT status FROM orders WHERE reservation_id=$1`, reservation).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "declined" {
-		t.Fatalf("order status = %q, want %q: a refused token is terminal, not parked for a "+
-			"recovery runner to retry something permanently invalid", status, "declined")
+	// NOT "declined", and not any other terminal outcome. Every value the column admits
+	// would be a lie here: `declined`/`timeout` are provider answers and no provider saw
+	// this token; `not_attempted` means payments bound no charge, and payments binds before
+	// it validates. Recording a decline would also make the idempotent REPLAY answer 402 to
+	// a request that first answered 400.
+	if status == "declined" || status == "timeout" {
+		t.Fatalf("order status = %q: a token the provider never saw must not be recorded as a "+
+			"provider decision — the replay would then answer 402 to a request that answered 400",
+			status)
+	}
+	if status == "payment_unknown" {
+		t.Fatalf("order status = %q: a refused token must not park the order for recovery to "+
+			"retry something permanently invalid", status)
+	}
+
+	// AND THE REPLAY AGREES. One idempotent request must not answer 400 once and something
+	// else the next time — recording a decline would have made the second answer 402, for a
+	// provider decision that never happened.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/reservations/"+reservation.String()+"/checkout",
+		strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", req.Header.Get("Idempotency-Key"))
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("replay status = %d, want 400 — the same request must get the same "+
+			"classification. body=%s", rec2.Code, rec2.Body.String())
 	}
 }
 
@@ -380,3 +404,4 @@ func TestOnlyAnUpgradeNeedsAnInstrument(t *testing.T) {
 		})
 	}
 }
+
