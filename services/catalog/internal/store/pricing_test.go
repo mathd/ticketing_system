@@ -789,11 +789,12 @@ func TestSelectPricingRuleChannelAxis(t *testing.T) {
 // A foreign channel's rule is ABSENT from provenance, not reported as a loser.
 //
 // This is the disclosure decision, and it is the one place price resolution
-// deliberately diverges from reporting everything it considered. `price-resolution`
-// is PUBLIC — the gateway proxies it to the internet — so reporting other
-// channels' rules would publish which channels carry bespoke pricing and at what
-// amounts. TKT-155 already tracks this array over-disclosing; this must not
-// widen it.
+// deliberately diverges from reporting everything it considered. `candidates`
+// reports every CONSIDERED rule, so reporting other channels' would publish which
+// channels carry bespoke pricing and at what amounts. TKT-155 moved the operation
+// behind the /internal/ prefix guard, which narrowed the audience to services
+// holding the internal credential — it did NOT remove the reason to withhold, and
+// ADR-046's TKT-155 amendment says so explicitly. This must not widen.
 //
 // Asserted separately from the truth table because the table asserts what the
 // losers ARE, and this asserts what they must NOT contain — a distinction the
@@ -828,7 +829,8 @@ func TestSelectPricingRuleHidesOtherChannelsEntirely(t *testing.T) {
 			for _, c := range got.Candidates {
 				if c.Rule.ID == tc.foreign.ID {
 					t.Fatalf("a foreign channel's rule appears in candidates as %q — "+
-						"this publishes the channel price matrix on a PUBLIC endpoint (ADR-046 §4, TKT-155)", c.Reason)
+						"this publishes the channel price matrix to every holder of the internal "+
+						"credential (ADR-046 §4, TKT-155)", c.Reason)
 				}
 			}
 		})

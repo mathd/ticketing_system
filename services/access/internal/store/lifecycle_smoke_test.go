@@ -16,6 +16,30 @@ import (
 	"ticketing/services/access/internal/lifecycle"
 )
 
+// persistedMode reads the organizer's posture straight from the row production writes.
+//
+// TKT-304 deleted `Postgres.Mode`, whose only callers were these tests — a production
+// accessor kept alive by its own test suite. Reading the table directly is what the
+// assertions were always about, and it is STRICTER in one way that matters: `Postgres.Mode`
+// mapped `sql.ErrNoRows` to `ModeNormal`, so a test asserting `ModeNormal` would have passed
+// against a row that was never written at all. This fails instead. Do not "tidy" that
+// default back in.
+func persistedMode(t *testing.T, ctx context.Context, db *sql.DB, organizerID uuid.UUID) Mode {
+	t.Helper()
+	var mode string
+	err := db.QueryRowContext(ctx,
+		`SELECT mode FROM lifecycle_integrity_organizer_state WHERE organizer_id=$1`,
+		organizerID).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("no organizer posture row for %s: production never wrote one, and treating "+
+			"that as the default posture is how an unwritten flip reads as a passing test", organizerID)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Mode(mode)
+}
+
 type seeded struct {
 	ticketID uuid.UUID
 	id       TicketIdentity
@@ -435,10 +459,7 @@ func TestThresholdFlipsOrganizerToOperatorControlled(t *testing.T) {
 			t.Fatalf("corrupt ticket %d = %+v, want a degraded admission", i, r)
 		}
 	}
-	mode, err := st.Mode(ctx, organizerID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mode := persistedMode(t, ctx, db, organizerID)
 	if mode != ModeOperatorDeny {
 		t.Fatalf("organizer mode = %q after crossing the threshold, want %q: above this rate 'our bug' stops being the likely story", mode, ModeOperatorDeny)
 	}
@@ -607,10 +628,7 @@ func TestConcurrentCorruptScansConvergeOnOperatorControl(t *testing.T) {
 	if _, err := st.Redeem(ctx, extra.redeemInput()); err != nil {
 		t.Fatal(err)
 	}
-	mode, err := st.Mode(ctx, organizerID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mode := persistedMode(t, ctx, db, organizerID)
 	if mode != ModeOperatorDeny {
 		t.Fatalf("organizer mode = %q after %d corrupt tickets; the threshold never converged", mode, len(tickets)+1)
 	}
@@ -640,10 +658,7 @@ func TestSystemFlipNeverOverwritesAnOperatorDecision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mode, err := st.Mode(ctx, organizerID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mode := persistedMode(t, ctx, db, organizerID)
 	if mode != ModeOperatorAdmit {
 		t.Fatalf("the system reverted a human's %q decision to %q; §D6 makes that choice the operator's", ModeOperatorAdmit, mode)
 	}

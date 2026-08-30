@@ -45,11 +45,6 @@ type ClaimedExchangeReversal struct {
 	Attempts int
 }
 
-// Outstanding reports whether either obligation was still owed when the row was claimed.
-func (c ClaimedExchangeReversal) Outstanding() bool {
-	return !c.Exchange.TicketsExchanged || !c.Exchange.CapacityReturned
-}
-
 // ClaimOutstandingExchangeReversals leases settled exchanges still owing an obligation,
 // oldest due first.
 //

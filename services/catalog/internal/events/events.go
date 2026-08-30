@@ -315,6 +315,15 @@ func (p *JetStream) publishPerformancePublished(ctx context.Context, perf store.
 // id from EventID. The backfill path shares the body via
 // performancePublishedEnvelopeWithID so the schema fork and re_entry population
 // can never drift between the two.
+//
+// RETAINED DELIBERATELY despite having no production caller — publishing goes
+// through publishPerformancePublished, which calls the WithID form directly. This
+// is the seam the wire-compat golden tests hold (wire_compat_test.go), and those
+// literals are what make the live-publish envelope byte-stable across changes
+// (ADR-017). Inlining it into its sibling would leave the golden test asserting
+// bytes no named function produces, which weakens the proof without failing
+// anything. A cleanup pass that deletes by "no production caller" gets this one
+// wrong: for a golden seam the test IS the caller that matters.
 func performancePublishedEnvelope(perf store.Performance, occurred time.Time) ([]byte, error) {
 	return performancePublishedEnvelopeWithID(perf, occurred, EventID(perf))
 }

@@ -568,16 +568,3 @@ func (p *Postgres) SetMode(ctx context.Context, organizerID uuid.UUID, mode Mode
 		organizerID, string(mode), p.now(), by)
 	return err
 }
-
-// Mode reads an organizer's current posture.
-func (p *Postgres) Mode(ctx context.Context, organizerID uuid.UUID) (Mode, error) {
-	var mode string
-	err := p.db.QueryRowContext(ctx, `SELECT mode FROM lifecycle_integrity_organizer_state WHERE organizer_id=$1`, organizerID).Scan(&mode)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ModeNormal, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return Mode(mode), nil
-}

@@ -265,11 +265,14 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// filter. Both orderings are load-bearing and neither is stylistic (TKT-237).
 	//
 	// A rule belonging to another channel must be ABSENT from provenance, not
-	// reported as a loser: returning it would publish which channels carry
-	// bespoke pricing, and at what amounts, on a route the gateway proxies to
-	// the internet. (ADR-046 §4 argues this for fees, where the endpoint is
-	// /internal/; here the audience is the internet, so the reason is strictly
-	// stronger. TKT-155 already tracks this array over-disclosing.)
+	// reported as a loser: `candidates` reports every CONSIDERED rule, so
+	// returning a foreign channel's would publish which channels carry bespoke
+	// pricing and at what amounts. (ADR-046 §4 argues this for fees; TKT-155
+	// moved price resolution onto the same /internal/ surface, so the two reads
+	// now share one audience — every service holding the internal credential.
+	// Sharing a trust boundary is not the same as having no reason to withhold,
+	// and ADR-046's TKT-155 amendment keeps the conduct unchanged for exactly
+	// that reason: the justification narrowed, the filter did not.)
 	//
 	// BEFORE THE WINDOW, because filtering after it would classify a foreign
 	// channel's expired rule as `outside_window_past` and report it — leaking
@@ -282,10 +285,11 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// misconfigured and should fail loudly rather than lie in wait. Mirroring
 	// that here was wrong, because the two resolvers do not fail the same way: a
 	// currency mismatch aborts the WHOLE resolution with an error, so one
-	// misconfigured `pos` rule made every `reseller` and every public request
-	// return 500. That is a cross-channel outage — one channel's bad
-	// configuration taking down every other channel's sales — and, on a public
-	// endpoint, an oracle for the existence of a rule the filter exists to hide.
+	// misconfigured `pos` rule made every `reseller` and every channel-less
+	// request return 500. That is a cross-channel outage — one channel's bad
+	// configuration taking down every other channel's sales — and an oracle,
+	// to every credential holder, for the existence of a rule the filter above
+	// exists to hide.
 	//
 	// The cost of the correct order, stated: a misconfigured rule on a channel
 	// nobody is currently buying through stays silent until a sale arrives on

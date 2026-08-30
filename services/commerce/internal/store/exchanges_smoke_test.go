@@ -164,22 +164,10 @@ func TestExchangeDeltaIsSignedAndDerivedFromPersistedAmounts(t *testing.T) {
 	}
 }
 
-// AC3: currencies must match. No FX inside an order (PRD / TKT-10), and the refusal must
-// land before anything downstream is touched.
-func TestSettleExchangeRefusesCurrencyMismatch(t *testing.T) {
-	db, ctx := outboxDB(t)
-	c, _ := seedCompleted(t, db, ctx, "exch-currency", 2, 1000)
-	ex, err := BindOrderExchange(ctx, db, exchangeRequest(c, "x-1", uuid.New()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateExchangeTarget(ex, 2000, "USD"); !errors.Is(err, ErrExchangeCurrencyMismatch) {
-		t.Fatalf("err = %v, want ErrExchangeCurrencyMismatch", err)
-	}
-	if err := ValidateExchangeTarget(ex, 2000, "EUR"); err != nil {
-		t.Fatalf("matching currency must pass: %v", err)
-	}
-}
+// AC3's currency refusal moved to the API tier in TKT-304, as
+// TestAnExchangeRefusesATargetPricedInAnotherCurrency. The store test that stood here
+// exercised ValidateExchangeTarget, a helper no production path ever called; the handler
+// is where the comparison actually happens, so that is where the assertion belongs.
 
 // AC4's settlement half: the exchange records its own progress, once. A replayed
 // completion must not move it twice, and `switch_pending` must be distinguishable from
