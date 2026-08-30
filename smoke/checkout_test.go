@@ -396,12 +396,12 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if invalidCode, invalidBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", invalidTokenRequest); invalidCode != http.StatusBadRequest {
 		t.Fatalf("invalid payment token %d %s", invalidCode, invalidBody)
 	}
-	// TERMINAL, since TKT-301. Commerce no longer judges the token, so a refusal now comes
-	// from PAYMENTS — after the order is claimed under a fingerprint that includes the
-	// token, the hold is finalized and `order.created` is journalled. A retry carrying a
-	// corrected token is a different fingerprint and is refused as a conflict, so the
-	// refusal releases the hold and fails the order exactly as a decline does. The capacity
-	// comes back; the buyer starts a clean checkout.
+	// The reservation is SPENT, since TKT-301. Commerce no longer judges the token, so a
+	// refusal now comes from PAYMENTS — after the order is claimed under a request
+	// fingerprint that includes the token, the hold is finalized and `order.created` is
+	// journalled. A retry carrying a corrected token is a different fingerprint and is
+	// refused as a conflict. The refusal releases the hold, so the capacity comes back and
+	// the buyer starts a clean checkout.
 	//
 	// This assertion used to expect 200 for that retry, which was only ever true because
 	// commerce refused the token itself before claiming anything (ADR-069).
