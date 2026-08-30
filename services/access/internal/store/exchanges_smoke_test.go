@@ -419,6 +419,94 @@ func TestAdmissionCheckCoversBothVocabularies(t *testing.T) {
 	}
 }
 
+// A DEGRADED admission counts. ADR-025 §D2: authoritative admission history is the union
+// of the lifecycle trace and the quarantine record, and *admission decisions* — not only
+// readers — must consult it. A §D6 degraded admission exists ONLY as
+// `lifecycle_integrity_quarantine.admitted_at`; there is no lifecycle event, because
+// appending onto an unverified predecessor would poison the chain.
+//
+// So a guard that reads the trail alone sees an unadmitted ticket, voids it, and issues a
+// fresh UNREDEEMED replacement. The holder already went through the door on the old one.
+// That is the double admission ErrSourceTicketsAlreadyAdmitted exists to prevent, and it
+// is invisible to every test that admits through the trail — which is what both tests
+// above do, and why both stayed green while this was live.
+func TestSwitchExchangeRefusesAQuarantineOnlyAdmittedSourceTicket(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, seeds := issueOrder(t, ctx, st, org, 2)
+	// issueOrder returns the id slice SORTED and the seeds in creation order, so the two
+	// do not line up. Everything below is keyed off the seed that is actually redeemed.
+	admitted := seeds[0].ticketID
+
+	// The holder goes through the door on a ticket whose chain does not verify. ADR-021
+	// §D6 admits once and records it on the quarantine side.
+	corruptChain(t, ctx, db, admitted)
+	result, err := st.Redeem(ctx, seeds[0].redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("the degraded admission must be accepted and labelled %q: accepted=%t decision=%q",
+			DecisionAdmittedDegraded, result.Accepted, result.Decision)
+	}
+
+	// The precondition this test rests on, asserted rather than assumed: the admission
+	// exists ONLY on the quarantine side. If a future change to the degraded path started
+	// writing a lifecycle event, the refusal below would still happen and would prove
+	// nothing about the union — the test would pass for a reason it never observed.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, admitted); n != 1 {
+		t.Fatalf("quarantine admission rows = %d, want exactly 1 — the fixture does not hold", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','entry')`, admitted); n != 0 {
+		t.Fatalf("trail admission events = %d, want 0 — this ticket must be admitted ONLY on "+
+			"the quarantine side, or the test does not exercise the union", n)
+	}
+
+	err = st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 2),
+	})
+	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
+		t.Fatalf("err = %v, want ErrSourceTicketsAlreadyAdmitted — a degraded admission is an "+
+			"admission (ADR-025 §D2)", err)
+	}
+	// Refused whole: no replacement credential exists to admit a second time, and no
+	// source ticket was voided.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='exchanged'`); n != 0 {
+		t.Fatalf("a refused switch voided %d source tickets", n)
+	}
+}
+
+// The positive control for the test above, and it is not decoration: without it, a
+// ticketAdmitted that answered "admitted" for EVERY ticket would satisfy every assertion
+// there. This proves the guard still distinguishes.
+func TestSwitchExchangeStillSwitchesAQuarantinedButUnadmittedTicket(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, seeds := issueOrder(t, ctx, st, org, 1)
+	quarantined := seeds[0].ticketID
+
+	// A broken chain with NO admission of any kind. The ticket is quarantine-adjacent —
+	// its chain does not verify — but nobody has gone through a door on it, so the
+	// exchange must proceed. A predicate keyed on "is there a quarantine row" rather than
+	// on "was there an admission" fails here.
+	corruptChain(t, ctx, db, quarantined)
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, quarantined); n != 0 {
+		t.Fatalf("quarantine admission rows = %d, want 0 — nobody has been admitted", n)
+	}
+
+	if err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 1),
+	}); err != nil {
+		t.Fatalf("an unadmitted ticket must still exchange, corrupt chain or not: %v", err)
+	}
+}
+
 // appendLifecycleForTest appends one event through the real append path, so the chain and
 // its coverage stay verifiable. A direct INSERT would read as tampering.
 func (p *Postgres) appendLifecycleForTest(ctx context.Context, ticketID, orderID, org uuid.UUID, eventType string) (uuid.UUID, error) {
@@ -440,4 +528,56 @@ func (p *Postgres) appendLifecycleForTest(ctx context.Context, ticketID, orderID
 		return uuid.Nil, err
 	}
 	return eventID, tx.Commit()
+}
+
+// The same guard, reached the way production reaches it: nobody hand-writes a quarantine
+// row. Someone walks through an OFFLINE gate, the scanner syncs later, and Access records
+// the occurrence quarantine-side because the chain happens not to verify — `admitted_at`
+// NULL, `event_type` 'redeemed'.
+//
+// The first version of this ticket's fix keyed the quarantine arm on `admitted_at IS NOT
+// NULL`, which reads that row as "nobody was admitted". So the guard was still blind — to
+// offline admissions instead of degraded ones — and the exchange still issued a fresh
+// unredeemed replacement for a holder already inside. The ai-review named it and running it
+// confirmed it.
+//
+// The whole fixture is built by production writers (ReconcileAdmission, the real chain
+// helpers), which is what makes it evidence about a reachable state rather than about a row
+// a test invented.
+func TestSwitchExchangeRefusesATicketAdmittedOfflineThenReconciled(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, seeds := issueOrder(t, ctx, st, org, 1)
+	s := seeds[0]
+	genuine := genuineHash(t, ctx, db, s.ticketID)
+
+	corruptChain(t, ctx, db, s.ticketID)
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(uuid.New(), deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	repairChain(t, ctx, db, s.ticketID, genuine)
+
+	// The fixture, asserted: the admission is quarantine-side, unadmitted_at, and there is
+	// no trail event — so a predicate reading either the trail or admitted_at alone is
+	// genuinely blind here.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NULL AND event_type='redeemed'`, s.ticketID); n != 1 {
+		t.Fatalf("reconciliation-learned admission rows = %d, want 1 — the fixture does not hold", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','entry')`, s.ticketID); n != 0 {
+		t.Fatalf("trail admission events = %d, want 0", n)
+	}
+
+	err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 1),
+	})
+	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
+		t.Fatalf("err = %v, want ErrSourceTicketsAlreadyAdmitted — the holder walked through an "+
+			"offline gate; exchanging gives them a second unredeemed credential", err)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='exchanged'`); n != 0 {
+		t.Fatalf("a refused switch voided %d source tickets", n)
+	}
 }

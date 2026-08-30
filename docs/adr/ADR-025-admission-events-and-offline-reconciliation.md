@@ -113,6 +113,50 @@ conflicts. Together every physical admission that Access learns about is represe
    (`services/access/internal/store/postgres.go`), so a ticket quarantine-admitted under a
    verifier bug would be admitted a *second* time once the chain verifies clean again — a
    pre-existing gap this ADR names and hands to a follow-up ticket, not new scope here.
+
+   **Who the consumers are, and what each one asks (TKT-299).** "Both readers and admission
+   decisions" was left to inference, and two consumers were reading the trace alone. They do
+   not all ask the same question, which is why they do not all share one query:
+
+   - **`SwitchExchange`'s source-ticket guard** (`ticketAdmitted`) and **reconciliation's
+     prior-admission check** (`ReconcileAdmission`) ask *"has anyone been admitted on this
+     ticket, by any route?"* Both were reading the trace alone. The exchange guard voided a
+     ticket its holder had already entered on and issued a fresh unredeemed replacement — the
+     double admission that guard exists to prevent — and reconciliation concluded "no prior
+     admission" and minted a second admission record for one physical person, with no conflict
+     alarm. Neither was caught by the `redeemed` singleton index, because an admission
+     recorded quarantine-side leaves no `redeemed` row to collide with. These two now share
+     one definition (`services/access/internal/store/admission.go`).
+   - **`redeemSingle`** asks something narrower — *"has this ticket already taken its ONE §D6
+     degraded admission?"* — and so it deliberately keys on `admitted_at IS NOT NULL` alone.
+     A reconciliation-learned record must not turn a verified live scan into a denial.
+   - **`admissionFacts`** asks *"what has physically happened on this pass?"*, and needs the
+     facts themselves rather than a boolean, including `duplicate_admit` (see below).
+
+   Three questions, three queries, one shared storage shape. The mistake to avoid is assuming
+   the first question's answer serves the other two.
+
+   Two distinctions that definition must keep, both load-bearing and both easy to lose.
+   First, `duplicate_admit` marks an occurrence the record treats as a **conflict** rather than
+   as this ticket's admission — reconciliation appends it for an offline occurrence arriving
+   after the ticket was already admitted; a live denial appends nothing at all. It therefore
+   does not make a ticket "admitted" for an admission *decision*: counting it would deny an
+   exchange to someone whose second scan was correctly turned away. That is narrower than "it
+   is never evidence of anything" — `admissionFacts` deliberately consumes a `duplicate_admit`
+   as a physical entry when deriving **pass allowance**, because the person did walk in.
+
+   Second, and this is the distinction that produced the incomplete first fix: on the
+   quarantine side, **`admitted_at` says who decided, not whether anyone entered.** A row with
+   `admitted_at` set is Access admitting under §D6 on a chain that did not verify. A row with
+   `admitted_at` NULL and an admitting `event_type` is an **offline gate's admission**, learned
+   later — the person is just as inside. So an admission *decision* must key on the
+   `event_type`, and a predicate keyed on `admitted_at IS NOT NULL` silently excludes every
+   offline admission. Only `redeemSingle`, asking its narrower §D6-specific question, may key
+   on `admitted_at`.
+
+   Scope, per [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md): the union is
+   **honest-writer consistency, not tamper-evidence**. A writer with database access can
+   insert or delete quarantine rows at will, and nothing here constrains that.
 3. **Occurrence identity.** Every physical gate decision gets a gate-generated UUIDv4
    **occurrence id**, durably persisted by the scanner before the gate opens or the request is
    sent. Transport retries reuse it; a distinct physical decision gets a new one. The lifecycle
