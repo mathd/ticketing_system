@@ -83,9 +83,15 @@ Three details of that refusal are load-bearing:
   here: a permanent refusal answered as "unresolved" invites a retry loop against something that can
   never succeed. Equally, answering every settlement failure `409` would hide a real outage behind a
   permanent-refusal signal.
-- **It happens where the instrument is needed**, inside the settlement arm — not before the target
-  hold. Refusing earlier would make the charged-then-wedged state unreachable through the forward
-  path, and that state is precisely what ADR-067's operator unwind exists for.
+- **It happens BEFORE anything durable exists** — as soon as the target price resolves and the delta
+  is known, ahead of the target hold, the exchange bind, the basis and `settling_at`. The settlement
+  arm refuses too, and that copy is the backstop rather than the primary. An earlier draft of this
+  ADR had it the other way round, arguing that refusing early would make ADR-067's charged-then-wedged
+  state unreachable; that argument was wrong twice over. A request carrying a token still traverses
+  the whole settlement path, so the state stays reachable — and refusing only at settlement meant the
+  hold was taken and finalized, the row bound and the source order blocked from another exchange or
+  refund, inside ADR-067's own grace window, by a request that was always going to be refused. A
+  refusal that wedges the thing it refuses is not a refusal.
 - **The token travels as a per-request argument, never on the exchange row.** A resume re-supplies it
   exactly as the original request did. Persisting a payment instrument beside an exchange would be
   storing a credential, which is a different decision with a different adversary.

@@ -237,6 +237,20 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusConflict, map[string]string{"error": "exchange target is priced in a different currency"})
 		return
 	}
+	// An upgrade with no instrument is refused HERE, where the delta first becomes known
+	// and nothing durable exists yet (TKT-301, ADR-069) — the same principle the comment
+	// below states for the target hold. The settlement arm refuses too, and that one is the
+	// backstop rather than the primary: reaching it means the hold has been taken and
+	// finalized, the exchange row bound, the basis recorded and `settling_at` set, so the
+	// source order is blocked from another exchange or refund by a request that was always
+	// going to be refused. A refusal that wedges the thing it refuses is not a refusal.
+	//
+	// This is the ONE refusal in this handler that can be decided from the request alone,
+	// which is why it can come this early; every other one needs the target resolved.
+	if commercestore.ExchangeDelta(src.Total, targetTotal) > 0 && strings.TrimSpace(in.PaymentToken) == "" {
+		write(w, http.StatusConflict, map[string]string{"error": ErrUpgradeNeedsInstrument.Error()})
+		return
+	}
 
 	// THE TARGET HOLD, still before anything durable (ai-review pass 2, P2-1). Taking it
 	// after the bind meant a sold-out target left an exchange row behind and locked the

@@ -200,6 +200,25 @@ func TestAnExchangeUpgradeIsRefusedRatherThanChargedAgainstAFakeToken(t *testing
 		t.Fatalf("payments received %d charge submissions, want 0: a refused upgrade must not "+
 			"reach the provider at all", got)
 	}
+
+	// AND IT LEAVES NOTHING BEHIND. This is the half a status-only assertion misses, and it
+	// was a real defect: refusing at settlement alone meant the target hold was taken and
+	// finalized, the exchange row bound, the basis recorded and `settling_at` set before
+	// the 409 — so the source order was blocked from another exchange or refund, inside
+	// ADR-067's settling grace window, by a request that was always going to be refused.
+	// A refusal that wedges the thing it refuses is not a refusal.
+	if n := countExchangeRows(t, ctx, db, f.organizer); n != 0 {
+		t.Fatalf("order_exchanges rows = %d, want 0: a refused upgrade must bind nothing", n)
+	}
+}
+
+func countExchangeRows(t *testing.T, ctx context.Context, db *sql.DB, org uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_exchanges WHERE organizer_id=$1`, org).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // The complement, and it is what stops the refusal above from being satisfied by simply
@@ -307,5 +326,57 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 	if status != "declined" {
 		t.Fatalf("order status = %q, want %q: a refused token is terminal, not parked for a "+
 			"recovery runner to retry something permanently invalid", status, "declined")
+	}
+}
+
+
+// The token is OPTIONAL, and only an upgrade needs it (TKT-301, ADR-069).
+//
+// The shared exchange helper supplies one to every request, which is convenient and hides
+// exactly one regression: a handler that required a token for ALL exchanges would satisfy
+// the entire pre-existing suite while contradicting both the OpenAPI declaration (the field
+// is optional) and this ADR. These two post WITHOUT one.
+//
+// A downgrade refunds against the ORIGINAL charge by its idempotency key and an equal
+// exchange moves no money, so neither has anything to charge and neither may be refused for
+// lacking an instrument.
+func TestOnlyAnUpgradeNeedsAnInstrument(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		unit int64 // source is 2 × 1000 = 2000
+	}{
+		{name: "a downgrade refunds against the original charge", unit: 600},
+		{name: "an equal exchange moves no money", unit: 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedExchangeSource(t, db, ctx, "no-instrument-"+uuid.NewString(), 2, 1000)
+			policy := &stubPolicy{}
+			policy.catalogUnit.Store(tc.unit)
+			s := exchangeStackFor(t, db, f, policy)
+
+			reqBody := fmt.Sprintf(`{"organizer_id":%q,"target_ticket_type_id":%q,
+				"actor":"support@example.test","reason":"wrong ticket type"}`, f.organizer, f.targetType)
+			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+f.order.String()+"/exchanges",
+				strings.NewReader(reqBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Internal-Token", s.token)
+			req.Header.Set("Idempotency-Key", "no-instrument-1")
+			rec := httptest.NewRecorder()
+			s.handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: this exchange owes the buyer nothing, so it needs "+
+					"no instrument. body=%s", rec.Code, rec.Body.String())
+			}
+			// And it never charged: the refund leg addresses the original payment, and an
+			// equal exchange calls nobody.
+			if got := s.payments.count("charge-submissions"); got != 0 {
+				t.Fatalf("charge submissions = %d, want 0", got)
+			}
+			if n := countExchangeRows(t, ctx, db, f.organizer); n != 1 {
+				t.Fatalf("order_exchanges rows = %d, want 1 — the exchange must have settled", n)
+			}
+		})
 	}
 }
