@@ -813,3 +813,40 @@ func TestPassReconcileExchangedTicketRecordsFactWithoutConflictAlarm(t *testing.
 			"are derived and revisable (§D2); an alarm minted above the pass split would be neither", n)
 	}
 }
+
+// An occurrence recorded as an EXIT must not replay as an accepted ENTRY (TKT-299
+// ai-review).
+//
+// The degraded replay path resolved an occurrence id without binding it to the direction
+// being requested, so submitting an entry that carried an exit's occurrence id returned an
+// accepted replay — the gate opens on the strength of an occurrence that admitted nobody.
+// Its sibling `replayAdmissionOccurrence` bound the direction correctly all along; this is
+// the third copy of one rule disagreeing with the other two.
+//
+// Reachable through production writers only: reconcile a pass exit while the chain is
+// broken, which records it quarantine-side, then scan an entry under the same occurrence id
+// while the chain is still broken so the degraded path handles it.
+func TestDegradedReplayWillNotTurnAnExitIntoAnEntry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	s := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi"})
+
+	corruptChain(t, ctx, db, s.ticketID)
+	occ := uuid.New()
+	exit := s.reconcileInput(occ, deviceTime())
+	exit.Type = AdmissionExit
+	if _, err := st.ReconcileAdmission(ctx, exit); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1 AND event_type='exit' AND admitted_at IS NULL`, occ); n != 1 {
+		t.Fatalf("quarantined exit rows = %d, want 1 — the fixture does not hold", n)
+	}
+
+	_, err := st.Scan(ctx, scanInput(s, occ, AdmissionEntry, deviceTime()))
+	if !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("err = %v, want ErrOccurrenceCollision: an entry carrying an EXIT's occurrence "+
+			"id must not replay as an accepted admission — leaving is not entering", err)
+	}
+}

@@ -28,7 +28,10 @@ import (
 //     each caller maps it onto its own result type with its own direction semantics.
 //
 // TKT-299's defect was entirely in the first; the drift it also fixes was entirely in the
-// second. What is shared is the STORAGE SHAPE — which tables hold admission evidence, and
+// second. Two callers share the ticket-level predicate below — the exchange guard and
+// reconciliation's prior-admission check. `redeemSingle` deliberately does NOT: it asks the
+// narrower "has this ticket taken its one §D6 degraded admission?", so it keys on
+// `admitted_at` alone. Three questions, one storage shape. What is shared is the STORAGE SHAPE — which tables hold admission evidence, and
 // which quarantine rows count as an admission rather than a recording. What is not shared
 // is the verdict. The three occurrence callers deliberately keep their own wrappers.
 //
@@ -58,9 +61,11 @@ type admissionEvidence struct {
 // Two types deliberately do NOT:
 //
 //   - `exit` is the other half of the pass stream, and leaving is not entering.
-//   - `duplicate_admit` records a REFUSED entry, so it does not make a ticket "admitted"
-//     for an admission DECISION: counting it would refuse an exchange to someone whose
-//     second scan was correctly turned away, punishing them for our own denial.
+//   - `duplicate_admit` marks an occurrence the record treats as a CONFLICT rather than as
+//     this ticket's admission — reconciliation appends it for an offline occurrence that
+//     arrived after the ticket was already admitted, and a live denial appends nothing at
+//     all. Counting it would refuse an exchange to someone whose second scan was correctly
+//     turned away, punishing them for our own denial.
 //
 // That second exclusion is narrower than it looks, and the narrowness is the point.
 // `admissionFacts` (scan.go) deliberately DOES consume a `duplicate_admit` as a physical
@@ -74,6 +79,24 @@ var admittingEventTypes = []string{"redeemed", "entry"}
 //
 // This is the single definition every ADMISSION DECISION consults. Deleting either arm
 // below is a live defect, and both arms are pinned by tests that fail without them.
+// The quarantine arm keys on WHAT WAS RECORDED, not on who decided it. Both kinds of
+// quarantine row are evidence that a person went through a door:
+//
+//   - `admitted_at` SET — Access itself let them through, under §D6, on a chain that did
+//     not verify. `event_type` may be absent on these rows; the admission is the fact.
+//   - `admitted_at` NULL with an admitting `event_type` — an OFFLINE gate let them
+//     through and Access learned of it later, while the chain happened to be broken.
+//     ADR-025 §D2: "reconciliation of admissions that already physically happened is
+//     recording, not deciding" — the person is already inside either way.
+//
+// An earlier version of this predicate keyed on `admitted_at IS NOT NULL`, reading the
+// second kind as "nothing was admitted". That is the same defect this file exists to fix,
+// one step further out: the exchange guard was still blind, just to offline admissions
+// instead of degraded ones. Confirmed by running it — a ticket someone entered on at an
+// offline gate was exchanged into a fresh unredeemed replacement (TKT-299 ai-review).
+//
+// A quarantined `exit` is still excluded, by the same `admittingEventTypes` filter the
+// trail arm uses: leaving is not entering.
 func ticketAdmittedUnion(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (bool, error) {
 	var admitted bool
 	err := tx.QueryRowContext(ctx, `
@@ -82,7 +105,7 @@ func ticketAdmittedUnion(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (b
 			WHERE ticket_id=$1 AND event_type = ANY($2)
 			UNION ALL
 			SELECT 1 FROM lifecycle_integrity_quarantine
-			WHERE ticket_id=$1 AND admitted_at IS NOT NULL
+			WHERE ticket_id=$1 AND (admitted_at IS NOT NULL OR event_type = ANY($2))
 		)`, ticketID, admittingEventTypes).Scan(&admitted)
 	return admitted, err
 }

@@ -34,6 +34,10 @@ func TestTicketAdmittedUnionCountsEachVocabularyCorrectly(t *testing.T) {
 		// live degraded admission or a reconciliation-learned occurrence.
 		quarantine bool
 		admitted   bool
+		// quarantineType is the event_type on the seeded quarantine row. Only meaningful
+		// when admitted is false: a live degraded admission is recorded as the admission
+		// itself, not as a typed occurrence.
+		quarantineType string
 		want       bool
 		why        string
 	}{
@@ -65,16 +69,25 @@ func TestTicketAdmittedUnionCountsEachVocabularyCorrectly(t *testing.T) {
 				"ALLOWANCE, because the person did walk in; that is a different question.)",
 		},
 		"a degraded admission, quarantine-side only": {
-			quarantine: true, admitted: true,
+			quarantine: true, admitted: true, quarantineType: "redeemed",
 			want: true,
 			why: "ADR-021 §D6 admits once on a broken chain and records it ONLY on the quarantine " +
 				"side; this is the case the exchange guard was blind to (TKT-299)",
 		},
-		"a reconciliation-learned occurrence": {
-			quarantine: true, admitted: false,
+		"an offline admission learned by reconciliation": {
+			quarantine: true, admitted: false, quarantineType: "redeemed",
+			want: true,
+			why: "a NULL admitted_at row with an admitting event_type is an OFFLINE gate's " +
+				"admission that Access learned about later. The person is already inside — " +
+				"ADR-025 §D2 calls this recording an admission that already physically happened. " +
+				"Keying on admitted_at instead of event_type reads it as 'nobody was admitted', " +
+				"which is how the exchange guard stayed blind after its first fix (TKT-299 ai-review)",
+		},
+		"an offline EXIT learned by reconciliation": {
+			quarantine: true, admitted: false, quarantineType: "exit",
 			want: false,
-			why: "a NULL admitted_at row records that an occurrence physically happened offline. " +
-				"ADR-025 §D2: reconciliation is recording, not deciding — nothing was admitted here",
+			why: "the quarantine side carries exits too, and leaving is not entering — the " +
+				"complement that stops the arm above from being 'any quarantine row counts'",
 		},
 		"a redemption and a later refused duplicate": {
 			trail: []string{"redeemed", "duplicate_admit"},
@@ -101,8 +114,8 @@ func TestTicketAdmittedUnionCountsEachVocabularyCorrectly(t *testing.T) {
 				}
 				if _, err := db.ExecContext(ctx, `
 					INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at,occurrence_id,occurred_at,event_type)
-					VALUES($1,$2,'test fixture',$3,$4,$5,'redeemed')`,
-					ticketID, org, admittedAt, uuid.New(), occurredAt); err != nil {
+					VALUES($1,$2,'test fixture',$3,$4,$5,$6)`,
+					ticketID, org, admittedAt, uuid.New(), occurredAt, tc.quarantineType); err != nil {
 					t.Fatalf("seed quarantine row: %v", err)
 				}
 			}

@@ -343,14 +343,14 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
 		// degradedScan commits the transaction itself: the quarantine record and
 		// the owed alarm must land whatever this scan decides.
-		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, chainErr)
+		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, AdmissionEntry, chainErr)
 	}
 
 	// Occurrence identity resolves before any quarantine denial (ADR-025 §D3
 	// binding order): a lost-response retry must get its original result back,
 	// never a second-scan escalation.
 	if in.OccurrenceID != uuid.Nil {
-		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, in.TicketID, in.OccurrenceID)
+		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, in.TicketID, in.OccurrenceID, AdmissionEntry)
 		if replayErr != nil {
 			return RedeemResult{}, replayErr
 		}
@@ -435,7 +435,19 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 // union of both, ADR-025 §D2). This is pure identity equality, never a decision
 // from the trace: it only ever hands back what this same occurrence already
 // got, so it is safe on the degraded path too.
-func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID) (bool, RedeemResult, error) {
+func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID, occ uuid.UUID, direction AdmissionEventType) (bool, RedeemResult, error) {
+	// Bound to the direction being requested, exactly as replayAdmissionOccurrence binds
+	// it (scan.go). Without this an occurrence recorded as an EXIT replays as an accepted
+	// ENTRY: submit an entry carrying an exit's occurrence id and the gate opens on a
+	// replay that never admitted anyone. Confirmed by running it (TKT-299 ai-review).
+	//
+	// A live degraded admission stays UN-directioned — see the non-null arm below.
+	matches := func(stored string) bool {
+		if direction == AdmissionExit {
+			return stored == string(AdmissionExit)
+		}
+		return stored == string(AdmissionEntry) || stored == "redeemed" || stored == string(AdmissionDuplicateAdmit)
+	}
 	var storedTicket uuid.UUID
 	var storedType string
 	var storedAt time.Time
@@ -448,14 +460,10 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 		// for pass events too (ai-review G4). A duplicate_admit stays a
 		// collision: its original outcome was a conflict recording, not an
 		// acceptance this result shape can honestly replay.
-		switch {
-		case storedTicket != ticketID:
-			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
-		case storedType == "redeemed", storedType == string(AdmissionEntry), storedType == string(AdmissionExit):
-			return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
-		default:
+		if storedTicket != ticketID || !matches(storedType) {
 			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
+		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: storedAt, Replayed: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, RedeemResult{}, err
@@ -479,6 +487,9 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 		// label both degraded, while its two siblings drew it correctly.
 		if row.AdmittedAt.Valid {
 			return true, RedeemResult{Accepted: true, Decision: DecisionAdmittedDegraded, OccurredAt: row.AdmittedAt.Time, Replayed: true}, nil
+		}
+		if !matches(row.EventType) {
+			return false, RedeemResult{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 		}
 		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: row.OccurredAt.Time, Replayed: true}, nil
 	}

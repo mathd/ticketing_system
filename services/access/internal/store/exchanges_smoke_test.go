@@ -529,3 +529,55 @@ func (p *Postgres) appendLifecycleForTest(ctx context.Context, ticketID, orderID
 	}
 	return eventID, tx.Commit()
 }
+
+// The same guard, reached the way production reaches it: nobody hand-writes a quarantine
+// row. Someone walks through an OFFLINE gate, the scanner syncs later, and Access records
+// the occurrence quarantine-side because the chain happens not to verify — `admitted_at`
+// NULL, `event_type` 'redeemed'.
+//
+// The first version of this ticket's fix keyed the quarantine arm on `admitted_at IS NOT
+// NULL`, which reads that row as "nobody was admitted". So the guard was still blind — to
+// offline admissions instead of degraded ones — and the exchange still issued a fresh
+// unredeemed replacement for a holder already inside. The ai-review named it and running it
+// confirmed it.
+//
+// The whole fixture is built by production writers (ReconcileAdmission, the real chain
+// helpers), which is what makes it evidence about a reachable state rather than about a row
+// a test invented.
+func TestSwitchExchangeRefusesATicketAdmittedOfflineThenReconciled(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, seeds := issueOrder(t, ctx, st, org, 1)
+	s := seeds[0]
+	genuine := genuineHash(t, ctx, db, s.ticketID)
+
+	corruptChain(t, ctx, db, s.ticketID)
+	if _, err := st.ReconcileAdmission(ctx, s.reconcileInput(uuid.New(), deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	repairChain(t, ctx, db, s.ticketID, genuine)
+
+	// The fixture, asserted: the admission is quarantine-side, unadmitted_at, and there is
+	// no trail event — so a predicate reading either the trail or admitted_at alone is
+	// genuinely blind here.
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NULL AND event_type='redeemed'`, s.ticketID); n != 1 {
+		t.Fatalf("reconciliation-learned admission rows = %d, want 1 — the fixture does not hold", n)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','entry')`, s.ticketID); n != 0 {
+		t.Fatalf("trail admission events = %d, want 0", n)
+	}
+
+	err := st.SwitchExchange(ctx, SwitchExchangeInput{
+		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
+		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 1),
+	})
+	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
+		t.Fatalf("err = %v, want ErrSourceTicketsAlreadyAdmitted — the holder walked through an "+
+			"offline gate; exchanging gives them a second unredeemed credential", err)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='exchanged'`); n != 0 {
+		t.Fatalf("a refused switch voided %d source tickets", n)
+	}
+}

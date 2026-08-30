@@ -146,7 +146,7 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 			}
 			return result, nil
 		}
-		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, chainErr)
+		return p.degradedScan(ctx, tx, in.TicketID, id, in.OccurrenceID, direction, chainErr)
 	}
 
 	// Occurrence replay before any denial (§D3 binding order), bound to the

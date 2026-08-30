@@ -423,7 +423,7 @@ func organizerMode(ctx context.Context, tx *sql.Tx, organizerID uuid.UUID) (Mode
 // the degraded admission is recorded only in the quarantine table, which is
 // append-only for exactly this reason and is explicitly not cryptographic
 // evidence.
-func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity, occurrenceID uuid.UUID, cause error) (RedeemResult, error) {
+func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity, occurrenceID uuid.UUID, direction AdmissionEventType, cause error) (RedeemResult, error) {
 	reason := cause.Error()
 	now := p.now()
 
@@ -434,7 +434,7 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 	// retry of a redemption recorded while the chain was healthy would take a
 	// fresh degraded admission here and double-record one physical occurrence.
 	if occurrenceID != uuid.Nil {
-		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, ticketID, occurrenceID)
+		replayed, result, replayErr := p.replayByOccurrence(ctx, tx, ticketID, occurrenceID, direction)
 		if replayErr != nil {
 			return RedeemResult{}, replayErr
 		}
