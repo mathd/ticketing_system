@@ -106,10 +106,14 @@ its idempotency key and needs no new instrument, and an equal exchange moves no 
     - **Exchange upgrades are refused in practice**, because nothing collects a buyer instrument for
       one. This ADR does not close that gap; it stops the gap from being silent. Collecting an
       instrument is a product slice and needs its own ticket.
-    - An invalid token now fails later — in payments, after commerce has created the order and
-      finalized the hold, rather than in commerce before either. Commerce's handling of payments' 400
-      is unchanged by this ticket; whether that path should also release the hold and fail the order
-      is a separate question this ADR deliberately does not answer.
+    - **An invalid token is now TERMINAL for that reservation.** It fails later — in payments,
+      after commerce has claimed the order and finalized the hold — and by then the order's request
+      fingerprint includes the token, so a retry carrying a corrected one is a different fingerprint
+      and is refused as a conflict. The refusal therefore releases the hold and fails the order,
+      exactly as a decline does, rather than stranding a reservation nobody can complete. Before this
+      ticket a caller could retry the same reservation with a different token and succeed; that was
+      only ever possible because commerce refused the token itself before claiming anything. The
+      gateway smoke suite asserted the old behaviour and now asserts the new one.
 
 ## What this does NOT decide
 
@@ -123,7 +127,9 @@ Stated explicitly, because a reader could otherwise take "upgrades are handled" 
   moved real money in the fake's terms only; if a deployment carries such rows, ADR-067 governs
   operator handling and this ADR adds nothing.
 - **Payments' behaviour on an invalid token.** It already answers 400 and binds an operation; that
-  operation's terminal state is payments' question, not commerce's, and is out of scope here.
+  operation's terminal state is payments' question, not commerce's, and is out of scope here. Note
+  the consequence: commerce fails its order and releases the capacity, while payments keeps an
+  unresolved operation for a charge that never reached a provider.
 
 Per [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s discipline: nothing here is a
 tamper-evidence claim. This is a boundary and a refusal, both enforced by ordinary code that a writer

@@ -1722,19 +1722,35 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 	// provider-neutral 400 "invalid payment token", and a Stripe adapter maps its own "no
 	// such payment method" onto the same status.
 	//
-	// It is answered as the permanent refusal it is. Left to fall through, a 400 matched no
-	// arm below and reached the confirm call, and the request came back 202
-	// `payment_unknown` — an order parked for a recovery runner to retry, over a token that
-	// will be just as invalid every time. That is a recovery queue filling with requests
-	// that can never succeed, and it hides a caller error behind an operational one.
+	// TERMINAL, exactly like the decline below it, and for the same reason: by this point
+	// the order is claimed under a fingerprint that includes the token, the hold is
+	// finalized and `order.created` is journalled. A retry carrying a corrected token is a
+	// different fingerprint and is refused as a conflict, so leaving the row live would
+	// strand a reservation nobody can complete. Releasing the hold and failing the order
+	// returns the capacity and lets the buyer start a clean checkout.
 	//
-	// The hold is deliberately NOT released and the order is NOT marked terminally failed:
-	// that is the 402/408 path's behaviour for a provider that DECLINED, and this is not a
-	// decline — nothing was submitted to a provider at all. Leaving the reservation live
-	// lets the caller retry with a usable token, which is what the smoke suite has always
-	// asserted for a rejected token.
+	// Left to fall through it was worse than either: a 400 matched no arm, reached the
+	// confirm call, and answered 202 `payment_unknown` — an order parked for a recovery
+	// runner to retry a token that will be just as invalid every time.
+	//
+	// The body carries no order_id. The checkout contract's Error schema is
+	// `additionalProperties: false`, so an extra field is rewritten to a 500 by ADR-028's
+	// response validator — which is how the gate caught this.
 	if code == http.StatusBadRequest {
-		write(w, http.StatusBadRequest, map[string]any{"order_id": order, "error": "invalid payment token"})
+		releaseCode, _, releaseErr := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/release?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+		if releaseErr != nil || releaseCode != 200 {
+			write(w, 202, map[string]any{"order_id": order, "status": "release_pending"})
+			return
+		}
+		if err := s.markTerminalFailure(r.Context(), x.ID, order, "declined"); err != nil {
+			write(w, 500, map[string]string{"error": "persist failure"})
+			return
+		}
+		if err := s.fact(r.Context(), x, order, "order.failed"); err != nil {
+			write(w, 503, map[string]string{"error": "journal unavailable"})
+			return
+		}
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid payment token"})
 		return
 	}
 	if code == 402 || code == 408 {

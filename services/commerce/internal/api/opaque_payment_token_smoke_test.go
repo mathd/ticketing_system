@@ -262,6 +262,9 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 	})
 	inventory := newCountingStub(t, func(c *countingStub, w http.ResponseWriter, r *http.Request) {
 		c.hit("inventory")
+		if strings.Contains(r.URL.Path, "/release") {
+			c.hit("release")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -287,13 +290,22 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 	if got := payments.count("charges"); got != 1 {
 		t.Fatalf("payments received %d charge requests, want 1", got)
 	}
-	// The order is not parked and not terminally failed: nothing reached a provider, so the
-	// reservation stays retryable with a usable token.
+	// The capacity comes back. A refusal that failed the order without releasing the hold
+	// would strand the seats until the hold expired on its own.
+	if got := inventory.count("release"); got != 1 {
+		t.Fatalf("inventory releases = %d, want 1: a refused token must return the capacity", got)
+	}
+	// TERMINAL, like a decline. By this point the order is claimed under a fingerprint that
+	// INCLUDES the token, the hold is finalized and order.created is journalled — so a
+	// retry with a corrected token is a different fingerprint and is refused as a conflict.
+	// Leaving the row live would strand a reservation nobody can complete, so the refusal
+	// fails it and releases the capacity.
 	var status string
 	if err := db.QueryRowContext(ctx, `SELECT status FROM orders WHERE reservation_id=$1`, reservation).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status == "payment_unknown" {
-		t.Fatalf("order status = %q: a refused token must not park the order for recovery", status)
+	if status != "declined" {
+		t.Fatalf("order status = %q, want %q: a refused token is terminal, not parked for a "+
+			"recovery runner to retry something permanently invalid", status, "declined")
 	}
 }
