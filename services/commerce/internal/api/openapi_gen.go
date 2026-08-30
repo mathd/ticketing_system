@@ -428,6 +428,7 @@ type ExchangeStatus string
 type ExchangeCreate struct {
 	Actor              string             `json:"actor"`
 	OrganizerId        openapi_types.UUID `json:"organizer_id"`
+	PaymentToken       *string            `json:"payment_token,omitempty"`
 	Reason             string             `json:"reason"`
 	TargetTicketTypeId openapi_types.UUID `json:"target_ticket_type_id"`
 }

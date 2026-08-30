@@ -14,8 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-
-	"ticketing/shared/fakepsp"
 )
 
 // TKT-280. One durable state, two paths, two contradictory answers.
@@ -63,12 +61,14 @@ func TestParkedReleasePendingGetsTheSameAnswerFromBothPaths(t *testing.T) {
 			db, ctx := exchangeAPIDB(t)
 			f := seedExchangeSource(t, db, ctx, "parked-answer-"+tc.name+"-"+uuid.NewString(), 1, 2500)
 
-			// fakepsp.TokenSuccess, not an invented literal: checkout rejects an unknown
-			// token with 400 "invalid checkout" BEFORE it ever reaches claimOrder, so a
-			// made-up token makes the replay path unreachable and the comparison vacuous.
-			// The first run of this test did exactly that — both cases went red with
-			// path B returning 400, which is the fixture failing, not the defect showing.
-			const name, email, token = "Parked Buyer", "parked@example.test", fakepsp.TokenSuccess
+			// Any non-empty token reaches claimOrder now (TKT-301): commerce treats the
+			// payment token as opaque and payments alone judges it. This used to need
+			// fakepsp.TokenSuccess, because checkout refused anything outside the local
+			// simulator's vocabulary with 400 "invalid checkout" before claimOrder was
+			// reached — which made a made-up token render the replay path unreachable and
+			// the comparison vacuous. What still matters is that the token is NON-EMPTY;
+			// that is the one thing commerce still refuses on its own.
+			const name, email, token = "Parked Buyer", "parked@example.test", "pm_parked_instrument"
 			fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s",
 				f.reservation, name, strings.ToLower(email), token))))
 			key := "checkout-" + tc.name + "-" + uuid.NewString()
@@ -221,7 +221,7 @@ func TestCheckoutConsultsTheParkedTruthWhenItsGuardedWriteLoses(t *testing.T) {
 	db, ctx := exchangeAPIDB(t)
 	f := seedExchangeSource(t, db, ctx, "wiring-"+uuid.NewString(), 1, 2500)
 
-	const name, email, token = "Racing Buyer", "racing@example.test", fakepsp.TokenSuccess
+	const name, email, token = "Racing Buyer", "racing@example.test", "pm_racing_instrument"
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s",
 		f.reservation, name, strings.ToLower(email), token))))
 	key := "checkout-wiring-" + uuid.NewString()

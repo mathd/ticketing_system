@@ -1,0 +1,159 @@
+# ADR-069: The payment token is opaque to commerce, and an exchange upgrade needs a real one
+
+Date: 2026-08-30
+
+## Status
+
+Accepted (TKT-301; decided under the autonomous gates of that run, recorded on the ticket).
+
+Enforces [ADR-032](./ADR-032-stripe-behind-the-psp-port.md) rather than amending it: ADR-032 already
+put provider semantics behind payments' port, and this records that a *different service* had
+foreclosed it. Touches the exchange lifecycle governed by
+[ADR-063](./ADR-063-exchange-reversal-reconciliation.md) and
+[ADR-067](./ADR-067-wedged-exchange-operator-unwind.md), and neither changes.
+
+## Context
+
+ADR-032 decided that provider semantics live behind payments' PSP port. Payments implements that
+faithfully: `AuthorizeRequest.PaymentToken` is documented as an opaque provider reference ("for the
+fake PSP it is one of the fakepsp tokens; for Stripe it is a PaymentMethod/PaymentIntent reference"),
+the fake wraps an unrecognised token in the **port-level** `psp.ErrInvalidToken`, and the charge
+handler answers a provider-neutral `400 {"error": "invalid payment token"}` — with a comment saying
+the wording is deliberate so a Stripe adapter can map "no such payment method" onto it. Payments
+builds a real Stripe adapter when a test key is configured.
+
+Two things in **commerce** made that unreachable.
+
+**1. Public checkout judged the token itself.** `POST /reservations/{id}/checkout` called
+`fakepsp.ValidToken`, importing `shared/go/fakepsp` — the local simulator's package — and refusing
+anything outside its four values (`fake-ok`, `fake-decline`, `fake-timeout`, `fake-auth-hold`) with
+its own `400 "invalid checkout"`. No Stripe PaymentMethod reference could survive it. Notably this
+made commerce **stricter than commerce's own published contract**, which declares
+`payment_token: {type: string, minLength: 1}` and no vocabulary at all.
+
+**2. Exchange upgrades charged a literal.** `settleExchangeDelta`'s `delta > 0` arm submitted
+`"payment_token": "fake-ok"`. The consequence is worth stating plainly rather than as a coupling
+problem: **no buyer payment instrument was collected for an upgrade anywhere in the flow.** The
+charge "succeeded" because the simulator accepts what it is handed. Against a real provider the
+literal is not a token, so upgrades would have silently stopped charging anyone the moment one was
+configured — and unlike the mail fake's equivalent gap, which is loudly logged and ADR-recorded,
+this one was written down nowhere.
+
+Both are one decision applied at two call sites. The checkout half also answers the question the
+upgrade half raises: if the token is opaque and buyer-supplied, where does an upgrade's instrument
+come from?
+
+## Possible Solutions
+
+- **Option 1 — Leave it; treat the fake vocabulary as the system's token vocabulary.**
+    - Pros: no work; every existing test and smoke flow untouched.
+    - Cons: ADR-032 is decided and this contradicts it. The failure is silent and arrives at the
+      worst moment — the day a real key is configured, checkout refuses every real token and upgrades
+      charge nobody. Neither failure is visible before then.
+- **Option 2 — Commerce validates "real" tokens too (a prefix or shape rule).**
+    - Pros: keeps a local guard; superficially provider-aware.
+    - Cons: provider semantics under a different name. Every provider spells its references
+      differently and they change; commerce would encode a second, drifting copy of a rule payments
+      already owns. It also re-breaks the same boundary it is meant to fix.
+- **Option 3 (chosen) — Commerce forwards the token opaquely; an upgrade carries its own
+  instrument, and is refused without one.**
+    - Pros: restores ADR-032's boundary exactly. Payments already refuses unknown tokens in
+      provider-neutral terms, so the judge exists and simply stops being pre-empted. The upgrade gap
+      becomes visible and refused instead of silently uncharged.
+    - Cons: an upgrade now needs a caller to supply an instrument, and no UI collects one — so in
+      practice upgrades are refused until a product slice builds that. The refusal is the honest form
+      of a gap that already existed.
+
+## Decision
+
+**Commerce treats `payment_token` as opaque.** Checkout validates only that one is present and
+non-empty — presence is not a provider question — and forwards it verbatim. Payments alone decides
+whether a provider will accept it. No `shared/go/fakepsp` import remains anywhere in commerce, and no
+payment-token literal remains in its production code.
+
+**An exchange upgrade carries its own instrument.** `ExchangeCreate` gains an optional
+`payment_token`, required in exactly one case: a positive delta, the only exchange shape where the
+buyer owes money. Absent it, the upgrade is **refused** with `409` and
+`ErrUpgradeNeedsInstrument` — never charged against a token commerce invented.
+
+Three details of that refusal are load-bearing:
+
+- **It is mapped by error type, not by position.** `settleExchangeDelta`'s failures otherwise answer
+  `502 "exchange settlement unresolved"`, which is correct for transient provider trouble and wrong
+  here: a permanent refusal answered as "unresolved" invites a retry loop against something that can
+  never succeed. Equally, answering every settlement failure `409` would hide a real outage behind a
+  permanent-refusal signal.
+- **It happens BEFORE anything durable exists** — as soon as the target price resolves and the delta
+  is known, ahead of the target hold, the exchange bind, the basis and `settling_at`. The settlement
+  arm refuses too, and that copy is the backstop rather than the primary. An earlier draft of this
+  ADR had it the other way round, arguing that refusing early would make ADR-067's charged-then-wedged
+  state unreachable; that argument was wrong twice over. A request carrying a token still traverses
+  the whole settlement path, so the state stays reachable — and refusing only at settlement meant the
+  hold was taken and finalized, the row bound and the source order blocked from another exchange or
+  refund, inside ADR-067's own grace window, by a request that was always going to be refused. A
+  refusal that wedges the thing it refuses is not a refusal.
+- **The token travels as a per-request argument, never on the exchange row.** A resume re-supplies it
+  exactly as the original request did. Persisting a payment instrument beside an exchange would be
+  storing a credential, which is a different decision with a different adversary.
+
+Downgrades and equal exchanges are untouched: a downgrade refunds against the **original** charge by
+its idempotency key and needs no new instrument, and an equal exchange moves no money.
+
+## Consequences
+
+- **Positive:**
+    - ADR-032's provider neutrality is reachable again. A Stripe PaymentMethod reference now survives
+      checkout, and the refusal a bad token gets is payments' provider-neutral one.
+    - Commerce no longer contradicts its own contract, which always declared the token opaque.
+    - The upgrade gap is visible. An upgrade that cannot be charged is refused, not settled against
+      money that never moved.
+    - `shared/go/fakepsp` is once again a payments-only detail.
+- **Negative:**
+    - **Exchange upgrades are refused in practice**, because nothing collects a buyer instrument for
+      one. This ADR does not close that gap; it stops the gap from being silent. Collecting an
+      instrument is a product slice and needs its own ticket.
+    - **An invalid token spends the reservation.** It fails later — in payments, after commerce has
+      claimed the order and finalized the hold — and by then the order's request fingerprint includes
+      the token, so a retry carrying a corrected one is a different fingerprint and is refused as a
+      conflict. The refusal releases the hold, so the capacity returns, and the buyer starts a clean
+      checkout. Before this ticket a caller could retry the same reservation with a different token
+      and succeed; that was only possible because commerce refused the token itself before claiming
+      anything, and against a real provider it could never have held. The gateway smoke suite
+      asserted the old behaviour and now asserts the new one.
+    - **The order carries no terminal outcome for this case, deliberately.** Every value
+      `terminal_outcome` admits would be false: `declined` and `timeout` are provider answers and no
+      provider saw the token, while `not_attempted` means payments bound no charge — payments binds
+      the operation *before* it validates. Recording `declined` would also make the idempotent replay
+      answer 402 to a request that first answered 400, and would tell every consumer of that status
+      that a payment was refused by a provider that never received one. The replay therefore answers
+      400 again, consistently. **This is a gap, not a resolution:** an invalid instrument has no
+      status of its own, so an operator reading the order sees `created` with a released hold. Giving
+      it one is a migration plus a contract change and belongs to its own ticket.
+
+## What this does NOT decide
+
+Stated explicitly, because a reader could otherwise take "upgrades are handled" from the above:
+
+- **Buyer instrument collection for exchanges.** No UI, API surface or stored-instrument mechanism is
+  introduced. Until one exists, every upgrade is refused.
+- **Real-PSP upgrade charging end to end.** Never exercised; the fake remains the offline provider
+  and only the *judge* moved.
+- **Compensation for exchanges charged against the old literal.** Rows settled before this change
+  moved real money in the fake's terms only; if a deployment carries such rows, ADR-067 governs
+  operator handling and this ADR adds nothing.
+- **Payments' behaviour on an invalid token.** It already answers 400 and binds an operation; that
+  operation's terminal state is payments' question, not commerce's, and is out of scope here. Note
+  the consequence: commerce fails its order and releases the capacity, while payments keeps an
+  unresolved operation for a charge that never reached a provider.
+
+Per [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s discipline: nothing here is a
+tamper-evidence claim. This is a boundary and a refusal, both enforced by ordinary code that a writer
+with database or deployment access can change.
+
+## References
+
+- TKT-301 (architecture finding R1, code finding R9 of the 2026-08-28 review)
+- [ADR-032](./ADR-032-stripe-behind-the-psp-port.md) — the port and the opaque-token rule this enforces
+- [ADR-039](./ADR-039-exchange-settles-the-difference.md) — exchange settlement, whose upgrade arm changes
+- [ADR-063](./ADR-063-exchange-reversal-reconciliation.md), [ADR-067](./ADR-067-wedged-exchange-operator-unwind.md) — the exchange lifecycle, unchanged
+- [ADR-048](./ADR-048-settlement-ledger.md) — why the delta charge still carries a settlement plan

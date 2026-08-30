@@ -322,7 +322,10 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// UPGRADE: exactly the difference is charged, once.
 	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
 		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
-			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+			"actor": "coverage@example.test", "reason": "upgrade",
+			// An upgrade is the one exchange the buyer owes money on, so it carries an
+			// instrument (TKT-301, ADR-069). Opaque to commerce; the fake judges it.
+			"payment_token": "fake-ok"}); code != http.StatusOK {
 		t.Fatalf("upgrade exchange: %d %s", code, body)
 	}
 	var upgraded struct {
@@ -357,7 +360,10 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// The replay must not settle again.
 	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
 		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
-			"actor": "coverage@example.test", "reason": "upgrade"}); code != http.StatusOK {
+			"actor": "coverage@example.test", "reason": "upgrade",
+			// An upgrade is the one exchange the buyer owes money on, so it carries an
+			// instrument (TKT-301, ADR-069). Opaque to commerce; the fake judges it.
+			"payment_token": "fake-ok"}); code != http.StatusOK {
 		t.Fatalf("upgrade exchange replay: %d %s", code, body)
 	}
 	var upgradeReplay struct {
@@ -379,7 +385,10 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := poll(30*time.Second, 250*time.Millisecond, func() error {
 		code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
 			map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
-				"actor": "coverage@example.test", "reason": "upgrade"})
+				"actor": "coverage@example.test", "reason": "upgrade",
+			// An upgrade is the one exchange the buyer owes money on, so it carries an
+			// instrument (TKT-301, ADR-069). Opaque to commerce; the fake judges it.
+			"payment_token": "fake-ok"})
 		if code != http.StatusOK {
 			return fmt.Errorf("exchange state: %d %s", code, body)
 		}

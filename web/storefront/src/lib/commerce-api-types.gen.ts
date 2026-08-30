@@ -788,6 +788,7 @@ export interface components {
             target_ticket_type_id: string;
             actor: string;
             reason: string;
+            payment_token?: string;
         };
         Exchange: {
             /** Format: uuid */

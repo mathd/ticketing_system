@@ -72,6 +72,8 @@ type countingStub struct {
 
 	mu     sync.Mutex
 	counts map[string]int
+	// chargeToken is the payment token of the most recent charge submission (TKT-301).
+	chargeToken string
 	// onCharge runs INSIDE the charge handler, before it answers. It is how a test observes
 	// durable state at the instant the provider is being called rather than afterwards —
 	// "the marker was set by the end" is also true of a handler that marks too late.
@@ -83,6 +85,20 @@ func (c *countingStub) hit(name string) int {
 	defer c.mu.Unlock()
 	c.counts[name]++
 	return c.counts[name]
+}
+
+// noteChargeToken records the payment token of the most recent charge, so a test can assert
+// commerce FORWARDED the caller's instrument rather than substituting one (TKT-301).
+func (c *countingStub) noteChargeToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.chargeToken = token
+}
+
+func (c *countingStub) lastChargeToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.chargeToken
 }
 
 func (c *countingStub) count(name string) int {
@@ -429,6 +445,7 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			// `payment_operations`' PK is (organizer, idempotency_key, ...), so a repeat
 			// under one key is answered from the record and never reaches the PSP.
 			c.hit("charge-submissions")
+			c.noteChargeToken(bodyField(r, "payment_token"))
 			if c.hit("charge-key:"+r.Header.Get("Idempotency-Key")) == 1 {
 				c.hit("charge-movements")
 			}
@@ -500,8 +517,13 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 // fingerprint and is refused as a conflict, never resumed.
 func (s *exchangeStack) exchange(t *testing.T, f exchangeFixture, key string) (int, map[string]any) {
 	t.Helper()
+	// An opaque instrument, supplied because an UPGRADE needs one (TKT-301). Deliberately
+	// not a fakepsp constant: commerce must not know any provider's vocabulary, and the
+	// payments stub these tests drive judges nothing. Downgrade and equal-delta cases carry
+	// it harmlessly — only the upgrade arm reads it.
 	body := fmt.Sprintf(`{"organizer_id":%q,"target_ticket_type_id":%q,
-		"actor":"support@example.test","reason":"wrong ticket type"}`, f.organizer, f.targetType)
+		"actor":"support@example.test","reason":"wrong ticket type","payment_token":"pm_exchange_instrument"}`,
+		f.organizer, f.targetType)
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+f.order.String()+"/exchanges",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

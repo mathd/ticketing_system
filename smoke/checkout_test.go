@@ -396,10 +396,17 @@ func TestCheckoutSuccessDeclineAndRecovery(t *testing.T) {
 	if invalidCode, invalidBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", invalidTokenRequest); invalidCode != http.StatusBadRequest {
 		t.Fatalf("invalid payment token %d %s", invalidCode, invalidBody)
 	}
-	// Validation happens before finalization, so the original live hold can
-	// still be completed with a valid token.
-	if validCode, validBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", map[string]any{"reservation_id": invalidTokenReservation["reservation_id"], "name": "Buyer Invalid", "email": "invalid@example.test", "payment_token": "fake-ok"}); validCode != http.StatusOK {
-		t.Fatalf("valid retry after invalid token %d %s", validCode, validBody)
+	// The reservation is SPENT, since TKT-301. Commerce no longer judges the token, so a
+	// refusal now comes from PAYMENTS — after the order is claimed under a request
+	// fingerprint that includes the token, the hold is finalized and `order.created` is
+	// journalled. A retry carrying a corrected token is a different fingerprint and is
+	// refused as a conflict. The refusal releases the hold, so the capacity comes back and
+	// the buyer starts a clean checkout.
+	//
+	// This assertion used to expect 200 for that retry, which was only ever true because
+	// commerce refused the token itself before claiming anything (ADR-069).
+	if retryCode, retryBody := postWithKey(t, gatewayURL+"/api/commerce/orders", "order-invalid-token", map[string]any{"reservation_id": invalidTokenReservation["reservation_id"], "name": "Buyer Invalid", "email": "invalid@example.test", "payment_token": "fake-ok"}); retryCode != http.StatusConflict {
+		t.Fatalf("retry after invalid token %d %s, want 409 — the refusal is terminal", retryCode, retryBody)
 	}
 
 	_, concurrentTicketType := setupCheckoutOffer(t, "same-key-race")
