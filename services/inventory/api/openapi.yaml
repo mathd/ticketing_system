@@ -178,6 +178,13 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        # TKT-305. This operation used to answer 404 for EVERY store failure, so the
+        # absence of a 500 here was consistent with a handler that could not produce
+        # one -- and both were wrong together. A lookup that could not run is not a
+        # claim that does not exist, and the caller (an exchange's seated-source
+        # refusal) must be able to tell them apart. The 23 sibling operations that can
+        # touch the database already declare it.
+        '500': {$ref: '#/components/responses/Error'}
   /internal/holds/{id}/refund-capacity:
     post:
       operationId: returnRefundedCapacity
