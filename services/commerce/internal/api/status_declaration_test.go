@@ -5,8 +5,9 @@ package api
 // services/inventory/internal/api/status_declaration_test.go — read that file first; this
 // one differs only in what commerce's helpers guarantee.
 //
-// The short version: the invariant is "every status a handler CAN WRITE is declared", not
-// "every operation declares 500". Commerce is where that distinction was first shown to
+// The short version: the invariant is "every status this audit can DERIVE a handler writes is
+// declared" — a sound SUBSET of "every status it can write" (the difference is the blind spots
+// below, and it is real: a helper's conditional arms are out of scope). Not. Commerce is where that distinction was first shown to
 // matter: a naive port of the payments 500-class test flags `getOrder` and
 // `getDeliveryEmail` here, and BOTH ARE CORRECT — they answer 503, not 500, because
 // `persistenceReadProblem` returns exactly {404,503}, and both declare it. A check that asks
@@ -117,7 +118,7 @@ func emittedOn(r statusaudit.Route, pkg *statusaudit.Package) []int {
 	return out
 }
 
-func TestCommerceHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
+func TestCommerceHandlerStatusFloorIsDeclared(t *testing.T) {
 	routes, pkg, doc := commerceAudit(t)
 	var diffs []statusaudit.Diff
 	for _, r := range routes {
@@ -129,7 +130,12 @@ func TestCommerceHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
 		t.Fatalf("these commerce handlers can write a status their operation does not declare. "+
 			"ADR-028's response validator fails closed on one, rewriting it into a generic 500 "+
 			"carrying \"response violates OpenAPI contract\" — so the caller cannot see what the "+
-			"handler meant. Declare the status (never relax the validator):\n%s", report)
+			"handler meant. Declare the status (never relax the validator).\n\n"+
+			"NOTE ON WHAT A PASS MEANS: this checks the derived FLOOR, not every status a handler "+
+			"can write — a helper's conditional arms are out of scope by design (see the blind "+
+			"spots at the top of "+
+			"services/inventory/internal/api/status_declaration_test.go). A green run is not a "+
+			"proof that no undeclared status exists.\n%s", report)
 	}
 }
 

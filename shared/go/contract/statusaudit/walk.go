@@ -116,31 +116,81 @@ func (p *Package) Routes(documented func(method, path string) bool) []Route {
 		return nil
 	}
 	var out []Route
-	ast.Inspect(p.Register.Body, func(n ast.Node) bool {
+	// `r.Group(func(r chi.Router) { r.Use(mw); r.Post(…) })` — the middleware writes
+	// responses for every route inside the group, so a route's handler chain is
+	// [its group's middleware…, its own handlers]. Missing this is not hypothetical:
+	// commerce's two groups apply `limitCheckoutSource`/`limitSource`, which answer 429
+	// before the handler runs. Without collecting them the audit never derives that 429 —
+	// it would be green on those routes for the wrong reason, which is the same vacuous
+	// pass an empty status set gives (TKT-278 ai-review).
+	collect(p.Register.Body, nil, documented, &out)
+	return out
+}
+
+// collect walks one router scope. `inherited` are the middleware handler names in force from
+// enclosing groups.
+func collect(body ast.Node, inherited []string, documented func(method, path string) bool, out *[]Route) {
+	// Two passes over THIS scope's statements: middleware first, because `r.Use` may be
+	// written after a route in the same block and still applies to it.
+	var mw []string
+	mw = append(mw, inherited...)
+	forEachRouterCall(body, func(name string, call *ast.CallExpr) {
+		if name == "Use" {
+			for _, a := range call.Args {
+				mw = append(mw, handlerNames(a)...)
+			}
+		}
+	})
+	forEachRouterCall(body, func(name string, call *ast.CallExpr) {
+		// A nested scope: recurse with this scope's middleware in force. `Route` takes a
+		// path prefix plus the closure; `Group` takes the closure alone.
+		if (name == "Group" || name == "Route") && len(call.Args) > 0 {
+			if fn, ok := call.Args[len(call.Args)-1].(*ast.FuncLit); ok {
+				collect(fn.Body, mw, documented, out)
+			}
+			return
+		}
+		method := strings.ToUpper(name)
+		if !isHTTPMethod(method) || len(call.Args) != 2 {
+			return
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return
+		}
+		path, err := strconv.Unquote(lit.Value)
+		if err != nil || !documented(method, path) {
+			return
+		}
+		handlers := append(append([]string{}, mw...), handlerNames(call.Args[1])...)
+		*out = append(*out, Route{Method: method, Path: path, Handlers: handlers})
+	})
+}
+
+// forEachRouterCall visits every `r.X(…)` in a scope WITHOUT descending into a nested
+// router closure — those are walked by `collect`'s own recursion, with the right middleware
+// in force. Descending here instead would attribute an inner group's routes to the outer
+// scope and lose the inner `r.Use`.
+func forEachRouterCall(body ast.Node, fn func(name string, call *ast.CallExpr)) {
+	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) != 2 {
+		if !ok {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}
-		method := strings.ToUpper(sel.Sel.Name)
-		if !isHTTPMethod(method) {
+		if ident, ok := sel.X.(*ast.Ident); !ok || ident.Name != "r" {
 			return true
 		}
-		lit, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return true
-		}
-		path, err := strconv.Unquote(lit.Value)
-		if err != nil || !documented(method, path) {
-			return true
-		}
-		out = append(out, Route{Method: method, Path: path, Handlers: handlerNames(call.Args[1])})
-		return true
+		fn(sel.Sel.Name, call)
+		// Do NOT descend into a nested router closure here: `collect` recurses into it
+		// itself, with that scope's own `r.Use` in force. Descending from here would
+		// attribute the inner group's routes to the outer scope and lose its middleware.
+		name := sel.Sel.Name
+		return name != "Group" && name != "Route"
 	})
-	return out
 }
 
 // handlerNames returns every `s.X` named in a handler argument, outermost first. It covers
@@ -232,6 +282,25 @@ func statusesIn(body *ast.BlockStmt, cfg Config) []int {
 				out = append(out, v)
 			} else if ident, ok := call.Args[0].(*ast.Ident); ok {
 				statusVars[ident.Name] = true
+			}
+			return true
+		}
+		// `w.Write(payload)` with no preceding WriteHeader sends an IMPLICIT 200 — net/http
+		// writes the header on the first body write. Access's `qr` handler is the case:
+		// it streams a PNG with `_, _ = w.Write(image)` and never names a success status,
+		// so without this its derived set contains only its error codes. That is worse than
+		// an empty set, because the vacuity guard cannot see it: the set is non-empty, so
+		// deleting the operation's 200 declaration left the audit GREEN (executed, TKT-278
+		// ai-review [medium]).
+		//
+		// Attributed to the ResponseWriter identifier rather than any `Write`: the receiver
+		// must be the handler's `w`, or every bytes.Buffer and strings.Builder in a body
+		// would contribute a phantom 200.
+		if name == "Write" && len(call.Args) == 1 {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "w" {
+					out = append(out, http.StatusOK)
+				}
 			}
 			return true
 		}

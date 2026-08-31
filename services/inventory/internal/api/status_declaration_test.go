@@ -13,6 +13,14 @@ package api
 // build is "every status a handler CAN WRITE is declared", not "every operation declares
 // 500".
 //
+// WHAT THIS FILE ACTUALLY DELIVERS IS A SOUND SUBSET OF THAT, and the gap is stated in full
+// under THE BLIND SPOTS below. The test is named for the FLOOR rather than for the ticket's
+// wording precisely so a green run is not read as the stronger claim: a helper's conditional
+// arms are out of scope, so deleting a declaration only that arm reaches — inventory's 404,
+// say — stays green. That is a limitation, not a defect, and the remedy is NOT to widen the
+// floors (measured below: it makes the audit useless) but to reach for the sharper
+// per-status instrument where one exists, as catalog's lifecycle_notfound_test.go is for 404.
+//
 // So discovery runs over the Go SOURCE and the document is only ever CHECKED, never used to
 // derive the expected set — the same discipline, and much of the same machinery, as
 // catalog's 404 invariant (lifecycle_notfound_test.go, TKT-178), whose comment states the
@@ -110,7 +118,7 @@ func inventoryAudit(t *testing.T) ([]statusaudit.Route, *statusaudit.Package, *o
 	return routes, pkg, doc
 }
 
-func TestInventoryHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
+func TestInventoryHandlerStatusFloorIsDeclared(t *testing.T) {
 	routes, pkg, doc := inventoryAudit(t)
 	var diffs []statusaudit.Diff
 	for _, r := range routes {
@@ -122,7 +130,12 @@ func TestInventoryHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
 		t.Fatalf("these inventory handlers can write a status their operation does not declare. "+
 			"ADR-028's response validator fails closed on one, rewriting it into a generic 500 "+
 			"carrying \"response violates OpenAPI contract\" — so the caller cannot see what the "+
-			"handler meant. Declare the status (never relax the validator):\n%s", report)
+			"handler meant. Declare the status (never relax the validator).\n\n"+
+			"NOTE ON WHAT A PASS MEANS: this checks the derived FLOOR, not every status a handler "+
+			"can write — a helper's conditional arms are out of scope by design (see the blind "+
+			"spots at the top of "+
+			"services/inventory/internal/api/status_declaration_test.go). A green run is not a "+
+			"proof that no undeclared status exists.\n%s", report)
 	}
 }
 

@@ -5,8 +5,9 @@ package api
 // services/inventory/internal/api/status_declaration_test.go — read that file first; this
 // one differs only in what access's helpers guarantee.
 //
-// The short version: the invariant is "every status a handler CAN WRITE is declared", not
-// "every operation declares 500", because the latter is answerable from the document and
+// The short version: the invariant is "every status this audit can DERIVE a handler writes is
+// declared" — a sound SUBSET of "every status it can write" (the difference is the blind spots
+// below, and it is real: a helper's conditional arms are out of scope). Not, because the latter is answerable from the document and
 // therefore measures the spec against itself. Discovery runs over Go source; the document is
 // only ever checked. Under ADR-028 an undeclared status is failed closed into a generic 500
 // carrying "response violates OpenAPI contract", which hides the real cause during an outage.
@@ -62,7 +63,7 @@ func accessAudit(t *testing.T) ([]statusaudit.Route, *statusaudit.Package, *open
 	return routes, pkg, doc
 }
 
-func TestAccessHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
+func TestAccessHandlerStatusFloorIsDeclared(t *testing.T) {
 	routes, pkg, doc := accessAudit(t)
 	var diffs []statusaudit.Diff
 	for _, r := range routes {
@@ -74,7 +75,12 @@ func TestAccessHandlersOnlyWriteDeclaredStatuses(t *testing.T) {
 		t.Fatalf("these access handlers can write a status their operation does not declare. "+
 			"ADR-028's response validator fails closed on one, rewriting it into a generic 500 "+
 			"carrying \"response violates OpenAPI contract\" — so the caller cannot see what the "+
-			"handler meant. Declare the status (never relax the validator):\n%s", report)
+			"handler meant. Declare the status (never relax the validator).\n\n"+
+			"NOTE ON WHAT A PASS MEANS: this checks the derived FLOOR, not every status a handler "+
+			"can write — a helper's conditional arms are out of scope by design (see the blind "+
+			"spots at the top of "+
+			"services/inventory/internal/api/status_declaration_test.go). A green run is not a "+
+			"proof that no undeclared status exists.\n%s", report)
 	}
 }
 
