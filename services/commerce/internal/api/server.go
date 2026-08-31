@@ -1404,35 +1404,30 @@ func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, x r
 	// input, and keeps the parked answer identical to the replay branch's by routing to
 	// the same arm rather than by writing a second copy of the same body.
 	//
-	// SCOPED TO release_pending, and the scope is a match to the replay branch rather
-	// than a claim that no other status can be parked. It can: ClaimStuckOrders admits
-	// created, payment_unknown, confirmation_pending, release_pending and
-	// reconciliation_required (store/recovery.go), and ReleaseStuckOrder parks on
-	// attempt exhaustion with NO status predicate (`WHERE id=$1 AND recovery_claim_id=$2`),
-	// so a parked created/payment_unknown/confirmation_pending row is reachable and still
-	// receives the optimistic 202 here.
+	// SCOPED TO release_pending, and the scope is now EXHAUSTIVE rather than a match to
+	// one branch (TKT-292 closed the rest). ClaimStuckOrders admits five statuses and
+	// ReleaseStuckOrder parks with no status predicate at all
+	// (`WHERE id=$1 AND recovery_claim_id=$2`), so any of the five can carry the marker —
+	// but only release_pending can carry it HERE:
 	//
-	// The two paths agree across the whole vocabulary, which is this function's contract:
-	// the replay branch also reads recoveryParked exactly once, inside its own
-	// release_pending branch (see below), so it answers those three statuses
-	// optimistically too.
+	//   - created / payment_unknown / confirmation_pending — cannot reach this function
+	//     parked, because they cannot reach it at all. Every call site is gated on a
+	//     guarded write having matched ZERO rows against
+	//     `status IN ('created','payment_unknown','confirmation_pending')`, which is
+	//     precisely the set classifyRecovered returns recoveredOptimistic for. Reaching
+	//     here means the status is outside that set. A parked one is refused far upstream,
+	//     before any side effect, by the guard in checkout (search TKT-292 there).
+	//   - reconciliation_required — already classifies as recoveredReconciling, marker or
+	//     not, so the normalisation below would be a no-op for it.
 	//
-	// DO NOT READ THAT AS "the parked case is handled". It is not, and the gap is worse
-	// than a wrong status code (second ai-review pass, [high] — verified against
-	// origin/main, where it PRE-DATES this change and is neither introduced nor widened
-	// here). A parked created/payment_unknown/confirmation_pending order falls past every
-	// branch above and RESUMES ORCHESTRATION: buyer PII, the order.created fact, the
-	// inventory finalize and the payments charge. And its guarded UPDATE then matches one
-	// row — confirmation_pending IS in that predicate, unlike release_pending — so
-	// answerRecovered is never reached and the buyer is told 202 about an order no worker
-	// will ever advance. Re-entering the money path for a row awaiting a human is the
-	// real defect there; the status code is a symptom.
+	// That leaves release_pending, which is what this line handles. Do NOT "complete" it
+	// by adding the optimistic class: that branch would be unreachable by construction,
+	// and it would be wrong if it ever fired — every call site here sits downstream of a
+	// submitted charge, where the honest answer is "a charge is in flight and its outcome
+	// is unknown" (the optimistic 202 a `false` return preserves), not "a human must act".
 	//
-	// Closing it means refusing parked resumable states BEFORE the orchestration above,
-	// not extending this normalisation, and it changes what a buyer is told on three
-	// statuses this ticket was scoped to leave alone. Tracked as its own ticket rather
-	// than absorbed here. TKT-145 owns the neighbouring product question (what 202 should
-	// promise for release_pending); this is a separate, narrower defect.
+	// The two paths still agree across the whole vocabulary, which is this function's
+	// contract; TestParkedReleasePendingGetsTheSameAnswerFromBothPaths pins it.
 	if class == recoveredPending && recoveryParked.Valid {
 		class = recoveredReconciling
 	}
@@ -1472,10 +1467,21 @@ func (s *Server) answerRecovered(ctx context.Context, w http.ResponseWriter, x r
 		write(w, 202, map[string]any{"order_id": order, "status": status})
 		return true
 	case recoveredReconciling:
-		write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": status})
+		writeAwaitingReconciliation(w, order, status)
 		return true
 	}
 	return false
+}
+
+// writeAwaitingReconciliation is the one answer a buyer gets about an order nothing will
+// advance without a human — whether it is parked (recovery_parked_at set) or sitting in
+// `reconciliation_required`. Both mean the same thing to a buyer, so they say the same
+// thing, and saying it in one place is what stops the four call sites from drifting apart
+// (TKT-280 was born from exactly that drift, one branch fixed and its twin left behind).
+// TestParkedReleasePendingGetsTheSameAnswerFromBothPaths pins the literal from two of them.
+func writeAwaitingReconciliation(w http.ResponseWriter, order uuid.UUID, status string) {
+	write(w, http.StatusConflict, map[string]any{
+		"error": "order awaiting payment reconciliation", "order_id": order, "status": status})
 }
 
 // The answer a checkout owes a buyer when the recovery runner won the race for its order.
@@ -1665,7 +1671,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		// pick it up again. Parked means a human must act — the same thing
 		// reconciliation_required tells buyers, so it gets the same answer.
 		if recoveryParked {
-			write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": orderStatus})
+			writeAwaitingReconciliation(w, order, orderStatus)
 			return
 		}
 		write(w, 202, map[string]any{"order_id": order, "status": orderStatus})
@@ -1675,7 +1681,40 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		// Captured money mid-compensation (or awaiting a human). Neither completed nor
 		// terminally failed — falling through would re-drive a checkout whose money is
 		// being reconciled. The distinct message is the buyer-facing state.
-		write(w, 409, map[string]any{"error": "order awaiting payment reconciliation", "order_id": order, "status": orderStatus})
+		writeAwaitingReconciliation(w, order, orderStatus)
+		return
+	}
+	// PARKED, and past every replay branch: this order is about to RESUME (TKT-292). Only
+	// `created`, `payment_unknown` and `confirmation_pending` reach here — the other two
+	// statuses ClaimStuckOrders admits return above — and all three resume orchestration:
+	// buyer PII, the order.created fact, the inventory finalize and the payments charge.
+	//
+	// Parked means ReleaseStuckOrder exhausted its attempts and set recovery_parked_at,
+	// and ClaimStuckOrders excludes parked rows, so nothing will ever reconcile whatever
+	// that charge does. Re-entering the money path for a row awaiting a human is the
+	// defect; the 202 it used to answer was only the symptom. The guarded UPDATE further
+	// down MATCHES these three statuses — unlike release_pending — so answerRecovered was
+	// never even reached and the buyer was told 202 about an order no worker will advance.
+	//
+	// POSITION, NOT A STATUS LIST, and the position is the contract: everything above has
+	// returned, so anything still here is by definition about to resume. A list would
+	// duplicate ClaimStuckOrders' vocabulary in a second place and go stale silently; this
+	// fails closed for any future parkable status that has no earlier replay branch.
+	//
+	// It sits before the buyer_pii write and before s.fact(order.created) deliberately, not
+	// merely before the charge: ADR-003 says the journal records what happened, and an
+	// aborted resume did not create an order.
+	//
+	// NOT ALSO NORMALISED IN answerRecovered, and that absence is load-bearing rather than
+	// an oversight. Every answerRecovered call site is gated on a guarded write having
+	// matched ZERO rows against `status IN ('created','payment_unknown','confirmation_pending')`
+	// — which is exactly the set classifyRecovered maps to recoveredOptimistic. So a parked
+	// row in one of these three statuses cannot reach that function at all, and a branch
+	// there would be unreachable by construction. It would also be wrong if it fired: every
+	// call site is downstream of a submitted charge, where "a charge is in flight, outcome
+	// unknown" is the honest answer and "awaiting reconciliation" is not.
+	if recoveryParked {
+		writeAwaitingReconciliation(w, order, orderStatus)
 		return
 	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
