@@ -143,17 +143,23 @@ func NewCatalogResolver(baseURL, credential string, client *http.Client) *Catalo
 // inventory with no way to notice. The asymmetry decides it.
 //
 // WHAT THIS COSTS, named because MaxDeliver is -1 and an unbounded retry is exactly the
-// shape TKT-307 set out to remove (ai-review [medium]). For SCHEMA 1 nothing changes: the
-// old `e.Schema == 1 ||` condition already NAKed an unusable body for ever. For SCHEMA 5
-// it is a real change — that path terminated an unusable body and now retries it, which
-// is the trade above applied consistently rather than by accident of which arm ran.
+// shape TKT-307 set out to remove (ai-review [medium]).
 //
-// The residual is genuine: a catalog persistently answering 200 with an unreadable body
-// parks one ack-pending slot per affected publication, with no readiness signal and no
-// bound. It is strictly smaller than the loss it prevents and strictly larger than zero.
-// A bounded policy — N attempts, then a durable quarantine row and an alert — is the real
-// answer and is a design decision beyond this ticket. TKT-317 carries it alongside the
-// archive-disposition gap it shares a cause with.
+// SCOPE, corrected after a second pass caught the first version of this comment claiming
+// a schema-5 change: this function has exactly two callers — schema-1 publication
+// resolution and closure handling. Schema 5 never reaches it (it resolves geometry via
+// SeatMapAdjacency, whose ErrGeometryInvalid/errResolveUnavailable split is the one
+// described above and is untouched here). So NO caller's disposition changes: schema 1's
+// unusable bodies were already NAKed for ever by the old `e.Schema == 1 ||` condition,
+// and closure already retried every non-404. What changes is that the reason is now
+// named instead of inferred from the schema.
+//
+// The residual is genuine and pre-existing: a catalog persistently answering 200 with an
+// unreadable body parks one ack-pending slot per affected publication, with no readiness
+// signal and no bound. It is strictly smaller than the loss it prevents and strictly
+// larger than zero. A bounded policy — N attempts, then a durable quarantine row and an
+// alert — is the real answer and is a design decision beyond this ticket. TKT-317 carries
+// it alongside the archive-disposition gap it shares a cause with.
 func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID) (PublishedPerformance, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/internal/performances/"+id.String(), nil)
 	if err != nil {

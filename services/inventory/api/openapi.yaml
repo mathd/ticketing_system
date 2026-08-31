@@ -462,8 +462,11 @@ components:
         channel:
           type: string
           description: >
-            The offending allocation's raw channel code, present only on
-            `allocation_cap_below_consumption` (TKT-244). Verbatim and opaque:
+            The offending allocation's raw channel code, present on the two
+            per-row allocation refusals — `allocation_cap_below_consumption`
+            (TKT-244) and `allocation_window_reversed` (TKT-307). Both name a
+            row the operator must fix, which is what distinguishes them from
+            the whole-set refusals that carry no channel. Verbatim and opaque:
             channel codes are never normalized or case-folded (ADR-024), so this
             matches a submitted code byte for byte and can be used to find the
             row it belongs to.

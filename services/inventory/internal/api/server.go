@@ -217,10 +217,19 @@ func problem(w http.ResponseWriter, err error) {
 	// the pool cannot accept a well-formed set, a 400 says the set itself is malformed.
 	// The remedy differs — change a number versus fix a field.
 	case errors.Is(err, store.ErrAllocationWindowReversed):
-		e := belowConsumption(err)
-		write(w, http.StatusBadRequest, map[string]string{
-			"error": err.Error(), "code": "allocation_window_reversed", "channel": e.Channel(),
-		})
+		body := map[string]string{"error": err.Error(), "code": "allocation_window_reversed"}
+		// The channel is looked up defensively rather than assumed. Today every
+		// construction goes through store.AllocationWindowReversed, which always carries
+		// one — but store.ErrAllocationWindowReversed is an EXPORTED bare sentinel, and
+		// anything returning it directly would match this case while carrying no channel.
+		// `e.Channel()` on a nil interface panics, and a panic inside the function whose
+		// whole job is to turn store errors into honest statuses is the worst possible
+		// place for one. Omitting the field is the contract's own answer: `channel` is
+		// optional on Error, exactly as it is for the two refusals that name no row.
+		if e := belowConsumption(err); e != nil {
+			body["channel"] = e.Channel()
+		}
+		write(w, http.StatusBadRequest, body)
 		return
 	case belowConsumption(err) != nil:
 		e := belowConsumption(err)
