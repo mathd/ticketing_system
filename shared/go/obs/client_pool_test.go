@@ -189,21 +189,26 @@ func countingServer() (*atomic.Int64, *httptest.Server) {
 func TestAClientWithItsOwnTimeoutSharesThePool(t *testing.T) {
 	const perClient = 8
 
-	opened, srv := countingServer()
+	g := newGate()
+	opened, srv := gatedServer(g)
 	defer srv.Close()
 
-	// Warmed CONCURRENTLY, so the pool holds more idle connections than an untuned
-	// transport's MaxIdleConnsPerHost of 2. A sequential warm opens exactly one, which
-	// DefaultTransport can also hold — so the second client would reuse and the test
-	// would pass whether or not the pool is shared. Found by running that mutation.
+	// BURST ONE, held open until all of it has arrived, so exactly perClient
+	// connections exist and the pool afterwards holds all of them.
+	//
+	// Two earlier versions of this got it wrong. Sequential warming opens one
+	// connection, which DefaultTransport can hold too, so the second client reused it
+	// and the test passed whether or not the pool was shared. Merely concurrent is
+	// better and still not deterministic — the server answered immediately, so nothing
+	// forced overlap (ai-review pass 2 [medium]).
 	warm := Client()
-	var wg sync.WaitGroup
-	for i := 0; i < perClient; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); do(t, warm, srv.URL) }()
-	}
-	wg.Wait()
+	burst(t, warm, srv.URL, perClient, g)
 	afterWarm := opened.Load()
+	if afterWarm != int64(perClient) {
+		t.Fatalf("warm burst opened %d connections, want %d — the barrier did not hold them "+
+			"all in flight, so the idle pool below is not the size this test assumes",
+			afterWarm, perClient)
+	}
 
 	tighter := ClientWithTimeout(3 * time.Second)
 	if tighter.Timeout != 3*time.Second {
@@ -211,14 +216,15 @@ func TestAClientWithItsOwnTimeoutSharesThePool(t *testing.T) {
 			"deadline; commerce's recovery runner is deliberately tighter than ClientTimeout "+
 			"and its lease is sized against that number", tighter.Timeout)
 	}
-	// Also concurrent: the question is whether these find the warmed pool, and a
-	// sequential loop needs only one connection whatever pool it is looking at.
-	var wg2 sync.WaitGroup
-	for i := 0; i < perClient; i++ {
-		wg2.Add(1)
-		go func() { defer wg2.Done(); do(t, tighter, srv.URL) }()
-	}
-	wg2.Wait()
+
+	// BURST TWO, barriered for a reason the sequential version could not give:
+	// DefaultTransport still holds 2 idle connections per host, so a sequential loop
+	// reuses one and opens nothing — the mutation putting this client back on
+	// DefaultTransport PASSED that version. Only a burst wider than 2 separates them.
+	//
+	// On the shared transport the warmed pool holds perClient, so this opens none. On
+	// DefaultTransport it holds at most 2, so this opens at least perClient-2.
+	burst(t, tighter, srv.URL, perClient, g)
 
 	if total := opened.Load(); total != afterWarm {
 		t.Errorf("a client with its own timeout opened %d further connections (%d then %d): it "+
@@ -226,4 +232,66 @@ func TestAClientWithItsOwnTimeoutSharesThePool(t *testing.T) {
 			"obs.Client() because both resolved to http.DefaultTransport; tuning only one of "+
 			"them fragments that", total-afterWarm, afterWarm, total)
 	}
+}
+
+// gate holds every in-flight request until a burst of known width has arrived, then
+// releases them together. Re-armable, so one server can host several bursts — which
+// matters because the point of the second burst is that it meets the pool the FIRST
+// one left behind.
+type gate struct {
+	mu      sync.Mutex
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func newGate() *gate {
+	return &gate{arrived: make(chan struct{}, 1024), release: make(chan struct{})}
+}
+
+// wait is called from the handler: announce arrival, then block until released.
+func (g *gate) wait() {
+	g.mu.Lock()
+	arrived, release := g.arrived, g.release
+	g.mu.Unlock()
+	arrived <- struct{}{}
+	<-release
+}
+
+// openFor blocks until n requests are in flight, then releases them and re-arms.
+func (g *gate) openFor(n int) {
+	for i := 0; i < n; i++ {
+		<-g.arrived
+	}
+	g.mu.Lock()
+	close(g.release)
+	g.release = make(chan struct{})
+	g.mu.Unlock()
+}
+
+// burst fires n concurrent requests and holds them all in flight before releasing.
+func burst(t *testing.T, c *http.Client, url string, n int, g *gate) {
+	t.Helper()
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); do(t, c, url) }()
+	}
+	g.openFor(n)
+	wg.Wait()
+}
+
+// gatedServer counts accepted connections and routes every request through the gate.
+func gatedServer(g *gate) (*atomic.Int64, *httptest.Server) {
+	opened := new(atomic.Int64)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		g.wait()
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			opened.Add(1)
+		}
+	}
+	srv.Start()
+	return opened, srv
 }

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -99,8 +98,8 @@ func TestClientHasBoundedTimeout(t *testing.T) {
 	}
 }
 
-// TKT-308: the SHARED transport still RECORDS a client span, even though it is now
-// built at package init rather than per call.
+// TKT-308: the SHARED transport resolves its tracer PER REQUEST, so it still records a
+// client span despite being built at package init.
 //
 // This is the risk that came with making the transport package-level, and it fails
 // silently: if otelhttp captured a tracer provider at construction, a transport built
@@ -108,36 +107,39 @@ func TestClientHasBoundedTimeout(t *testing.T) {
 // lifetime and every client span would vanish. Nothing errors — there are simply no
 // traces, which is what you discover during an incident.
 //
-// ASSERTS A RECORDED SPAN, not a propagated header, and the difference is the whole
-// point (ai-review [high]). The first version of this test checked only that a
-// traceparent reached the server — and a transport bound to a NO-OP tracer still
-// injects that header from the parent context while recording nothing. It would have
-// stayed green through the exact failure it was written to catch: adding
-// otelhttp.WithTracerProvider(noop) to the package-level construction.
+// ASSERTS A RECORDED SPAN, not a propagated header (ai-review pass 1 [high]). The first
+// version checked only that a traceparent reached the server — and a transport bound to
+// a NO-OP tracer still injects that header from the parent context while recording
+// nothing, so it would have stayed green through the exact failure it was written to
+// catch.
 //
-// Safe today because otelhttp resolves the tracer per request (transport.go: `tracer
-// := t.tracer`, nil unless WithTracerProvider was passed, then falling back to
-// otel.GetTracerProvider()). That is a property of a DEPENDENCY, which is why it is
-// pinned rather than trusted.
+// AND IT TOUCHES NO GLOBAL STATE (ai-review pass 2 [medium]). The second version
+// installed a provider with otel.SetTracerProvider and restored the previous one in
+// cleanup — which cannot work: OTel's initial global provider is a delegating proxy
+// whose delegate is set ONCE and permanently, so "restoring" it leaves every later
+// caller routed at the shut-down test provider. That made the package's tracing tests
+// order-dependent and the cleanup comment false.
+//
+// Instead the provider arrives the way otelhttp's other resolution path supplies it:
+// from the SPAN IN THE REQUEST CONTEXT (transport.go — `tracer := t.tracer`, nil unless
+// WithTracerProvider was passed, then `newTracer(span.TracerProvider())`). That is the
+// same per-request resolution the global fallback uses, so pinning it pins the property
+// that matters, and adding otelhttp.WithTracerProvider to the package-level
+// construction still turns this red — which is the failure being guarded.
 func TestSharedTransportRecordsAClientSpanAfterPackageInit(t *testing.T) {
-	// Installed GLOBALLY and AFTER package init — the ordering the hazard is about.
-	// The transport already exists at this point; if it had captured a provider then,
-	// this exporter would never see anything.
 	exp := tracetest.NewInMemoryExporter()
 	tp := trace.NewTracerProvider(trace.WithSyncer(exp))
-	prev := otel.GetTracerProvider()
-	otel.SetTracerProvider(tp)
-	t.Cleanup(func() {
-		otel.SetTracerProvider(prev)
-		_ = tp.Shutdown(context.Background())
-	})
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	// A parent span from OUR provider, created long after the package-level transport
+	// was built — which is the ordering the hazard is about.
+	ctx, parent := tp.Tracer("test").Start(context.Background(), "caller")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +148,7 @@ func TestSharedTransportRecordsAClientSpanAfterPackageInit(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
+	parent.End()
 
 	var client int
 	for _, s := range exp.GetSpans() {

@@ -133,7 +133,25 @@ func Client() *http.Client {
 // So callers that need a different deadline take it from here rather than building a
 // client around DefaultTransport. A caller wanting a different TRANSPORT — a stub, a
 // custom dialer — should still build its own; this is only for the timeout.
+//
+// WHAT DELIBERATELY STAYS on its own client, enumerated because "did you get them all"
+// is the obvious question (ai-review pass 2): the health probes (`&http.Client{Timeout:
+// 2 * time.Second}` in each main) run in a separate process invocation and have no pool
+// to share; the one-shot CLI subcommands — inventory's `reconcile-pins`, commerce's
+// exchange-unwind — open a database, do one job and exit, so a shared idle pool buys
+// them nothing; and payments' Stripe client calls an EXTERNAL host, not an internal
+// service, which is a different pool with different sizing questions.
+// A non-positive duration is CLAMPED to ClientTimeout rather than honoured. net/http
+// reads a zero Timeout as "no deadline", which is precisely the unbounded hang
+// clientTimeout's comment exists to prevent — a stuck downstream holding a checkout
+// handler open past commerce's 2-minute recovery grace period. This is an exported
+// function on a shared package, so the zero value is reachable by a caller who never
+// read that comment (ai-review pass 2); refusing loudly is not an option in a
+// constructor with no error return, and silently unbounded is the worst of the three.
 func ClientWithTimeout(d time.Duration) *http.Client {
+	if d <= 0 {
+		d = clientTimeout
+	}
 	return &http.Client{
 		Timeout:   d,
 		Transport: crossServiceTransport,
