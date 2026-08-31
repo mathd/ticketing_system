@@ -27,7 +27,17 @@ func (s *Server) holdSeating(w http.ResponseWriter, r *http.Request) {
 	}
 	seated, err := s.st.ClaimIsSeated(r.Context(), org, id)
 	if err != nil {
-		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		// Through problem(), like every other handler here (TKT-305). This used to
+		// flatten EVERY store error to 404, which answers "no such claim" when the
+		// truth is "inventory could not look" — and the store already draws that line
+		// for us, returning ErrNotFound for no rows and the driver's error otherwise.
+		//
+		// It matters because of what consumes this: an exchange refuses a SEATED source
+		// before money moves. A 404 during an outage happens to fail safe today, since
+		// commerce reads it as "not seated" and proceeds — correct by accident, and one
+		// caller away from an exchange settling against a seated line on the strength of
+		// a fact nobody established.
+		problem(w, err)
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"hold_id": id, "seated": seated})

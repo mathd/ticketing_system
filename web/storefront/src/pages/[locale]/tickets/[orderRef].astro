@@ -9,7 +9,15 @@ if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404
 const orderRef = Astro.params.orderRef;
 if (!orderRef) return new Response('Not found', { status: 404 });
 const read = await getTicketBundle(orderRef);
-if (!read.ok) return new Response('Not found', { status: read.status });
+if (!read.ok) {
+  // Absent versus broken (TKT-305). `read.status` was already correct — getTicketBundle
+  // answers 503 for a timeout or an exhausted issuance wait — but the BODY was the
+  // 'Not found' literal on every branch, so a buyer mid-outage read that their tickets
+  // do not exist. They do; access could not be reached. Same split, same wording as the
+  // festival page, which is where this convention already lives.
+  if (read.status === 404) return new Response('Not found', { status: 404 });
+  return new Response('Service unavailable', { status: read.status });
+}
 const bundle = read.value;
 const t = UI_STRINGS[locale];
 

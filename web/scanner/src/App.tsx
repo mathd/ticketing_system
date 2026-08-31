@@ -5,7 +5,7 @@ import './index.css'
 type ScanOutcome =
   | { kind: 'accepted'; scannedAt: string; replay: boolean }
   | { kind: 'rejected'; reason: string; originalScanAt?: string }
-  | { kind: 'queued' }
+  | { kind: 'queued'; reached: boolean }
   | { kind: 'duplicate-response' }
 
 type BarcodeDetectorInstance = {
@@ -117,12 +117,23 @@ function App() {
     // (ADR-025 §D3): a retry reuses this record; a new scan mints a new one.
     const store = await storePromise
     const record = await store.mint(value.trim(), new Date().toISOString())
+    // Set the moment a response comes back, so the catch below can tell a server
+    // that answered badly from one that was never reached.
+    let reached = false
     try {
       const response = await fetch(scanURL, {
         method: 'POST',
         headers: scanHeaders(deviceToken),
         body: JSON.stringify({ qr_payload: record.qrPayload, occurrence_id: record.occurrenceId, occurred_at: record.occurredAt }),
       })
+      // Whether the server ANSWERED is decided here, before the body is parsed
+      // (TKT-305). A non-JSON error body — a gateway's 502 page, an access panic —
+      // makes response.json() throw, and that throw used to land in the offline
+      // catch below and tell gate staff "No connection" while access had in fact
+      // answered. The queue-and-retry behaviour is right either way and does not
+      // change; the message asserted a cause the code had not established, and
+      // "the network is down" sends staff to look at the wrong thing.
+      reached = true
       const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string; replay?: boolean } = await response.json()
       if (response.ok && result.decision === 'accepted') {
         // Actuation is keyed on OUR durable pending record, not on the
@@ -153,9 +164,11 @@ function App() {
         setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
       }
     } catch {
-      // Offline: the occurrence stays durably queued and reconciles on sync.
+      // Queued either way: the occurrence stays durably recorded and reconciles on
+      // sync, which is the fail-closed posture ADR-066 requires and is NOT what this
+      // ticket changes. Only the explanation differs — see `reached`.
       await store.markQueued(record.occurrenceId)
-      setOutcome({ kind: 'queued' })
+      setOutcome({ kind: 'queued', reached })
       await refreshQueued()
     } finally {
       setSubmitting(false)
@@ -383,7 +396,7 @@ function App() {
         </section>
       )}
       {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
-      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>No connection — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
+      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{outcome.reached ? 'The server answered but the reply could not be read' : 'No connection'} — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
       {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second entry.</p></section>}
     </main>
   )

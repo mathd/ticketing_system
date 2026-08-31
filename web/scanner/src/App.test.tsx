@@ -333,6 +333,48 @@ describe('device pairing', () => {
     expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
   })
 
+  // Absent versus broken, at the turnstile (TKT-305).
+  //
+  // A non-JSON error body — a gateway's 502 page, an access panic — makes
+  // response.json() throw, and that throw lands in the same catch a genuine network
+  // failure does. The scan was queued either way, correctly; the COPY said "No
+  // connection", telling gate staff the network is down when access had answered.
+  // At a venue that sends someone to check the wifi while the actual fault is
+  // upstream.
+  //
+  // The QUEUE BEHAVIOUR is deliberately unchanged and is asserted in both cases:
+  // ADR-066's fail-closed posture is not what this ticket touches, and a fix that
+  // stopped queueing would be far worse than the wrong message.
+  it('says the server answered badly, not "No connection", when the reply cannot be read', async () => {
+    // A 502 whose body is an HTML error page: reached the server, unreadable reply.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 }),
+    ))
+
+    render(<App />)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/the server answered but the reply could not be read/i)).toBeDefined()
+    expect(screen.queryByText(/No connection/i)).toBeNull()
+    // Still queued — the behaviour, unchanged.
+    expect(await screen.findByText(/offline scan/i)).toBeDefined()
+  })
+
+  it('still says "No connection" when the request never reached the server', async () => {
+    // fetch itself rejects: this is the case the old copy described correctly, and
+    // it must keep saying so — otherwise the fix has merely moved the wrong message.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    render(<App />)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/No connection/i)).toBeDefined()
+    expect(screen.queryByText(/the server answered/i)).toBeNull()
+    expect(await screen.findByText(/offline scan/i)).toBeDefined()
+  })
+
   it('treats a 401 as "pair the device", not as a rejected ticket, and keeps the scan queued', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 }),

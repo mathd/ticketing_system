@@ -115,18 +115,38 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadGateway, map[string]string{"error": "availability unavailable"})
 		return
 	}
+	// An answer commerce cannot read is a BROKEN UPSTREAM, never a sellout (TKT-305).
+	//
+	// This decode used to discard its error and fall through a nil pointer to
+	// `available = 0`, which is the one wrong answer this endpoint can give: a
+	// reseller polls it to decide whether to keep selling, reads 0, and backs off.
+	// An inventory outage then looks exactly like a sold-out show, and the partner
+	// stops selling seats that exist. 502 says "ask again"; `available: 0` says
+	// "stop", and only one of those is true when the upstream is broken. Same
+	// 502-on-undecodable idiom as server.go's "invalid inventory response".
+	//
+	// ONE CHECK, NOT TWO, and the nil test is the one that survives — deliberately.
+	// The obvious fix pairs `if json.Unmarshal(...) != nil` with a nil guard, and the
+	// first is then unreachable: encoding/json never leaves a pointer field populated
+	// on a body it rejected, so every input that errors ALSO arrives here nil. A
+	// mutation proved it — restoring the discarded error changed no test. A redundant
+	// guard beside a passing test reads as two defences and is one (AGENTS.md).
+	//
+	// This single test is strictly stronger than the decode check would have been: it
+	// refuses an unreadable body AND a well-formed one that omits the field, which is
+	// equally a broken answer since `available` is `required` on inventory's
+	// Availability schema. The `remaining` fallback that stood here is gone for the
+	// same reason — /slots/{id}/availability has no such field, so it could only ever
+	// have masked a malformed answer.
 	var upstream struct {
 		Available *int `json:"available"`
-		Remaining *int `json:"remaining"`
 	}
 	_ = json.Unmarshal(body, &upstream)
-	available := 0
-	switch {
-	case upstream.Available != nil:
-		available = *upstream.Available
-	case upstream.Remaining != nil:
-		available = *upstream.Remaining
+	if upstream.Available == nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
 	}
+	available := *upstream.Available
 	if available < 0 {
 		// The contract declares a minimum of 0 and ADR-028's response validation is
 		// fail-closed, so a negative would become a 500. Clamping is honest here:
