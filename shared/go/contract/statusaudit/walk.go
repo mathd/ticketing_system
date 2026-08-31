@@ -127,43 +127,48 @@ func (p *Package) Routes(documented func(method, path string) bool) []Route {
 	return out
 }
 
-// collect walks one router scope. `inherited` are the middleware handler names in force from
-// enclosing groups.
+// collect walks one router scope IN STATEMENT ORDER, carrying the middleware active at each
+// registration. `inherited` is what the enclosing scopes had in force when this scope was
+// created.
+//
+// STATEMENT ORDER IS NOT TIDINESS, IT IS CHI'S SEMANTICS (TKT-278 ai-review pass 2).
+// `Group` calls `With()`, which COPIES the parent's middleware slice at that moment — a
+// snapshot. A parent that creates a nested group and only then calls `r.Use` wraps its own
+// later routes with that middleware and does NOT wrap the group, which chi permits because
+// `Use` panics only once a route has been registered on the same mux, and creating a group
+// registers none. A two-pass collector that gathered every `r.Use` in a scope before walking
+// its groups would attribute that middleware to the nested routes, which is a status those
+// routes cannot write — and this audit's whole claim is to be a sound SUBSET.
 func collect(body ast.Node, inherited []string, documented func(method, path string) bool, out *[]Route) {
-	// Two passes over THIS scope's statements: middleware first, because `r.Use` may be
-	// written after a route in the same block and still applies to it.
-	var mw []string
-	mw = append(mw, inherited...)
+	mw := append([]string{}, inherited...)
 	forEachRouterCall(body, func(name string, call *ast.CallExpr) {
-		if name == "Use" {
+		switch {
+		case name == "Use":
 			for _, a := range call.Args {
 				mw = append(mw, handlerNames(a)...)
 			}
-		}
-	})
-	forEachRouterCall(body, func(name string, call *ast.CallExpr) {
-		// A nested scope: recurse with this scope's middleware in force. `Route` takes a
-		// path prefix plus the closure; `Group` takes the closure alone.
-		if (name == "Group" || name == "Route") && len(call.Args) > 0 {
+		case (name == "Group" || name == "Route") && len(call.Args) > 0:
+			// Snapshot: the child gets a COPY of what is in force right now, so a later
+			// `r.Use` in this scope cannot reach back into it.
 			if fn, ok := call.Args[len(call.Args)-1].(*ast.FuncLit); ok {
-				collect(fn.Body, mw, documented, out)
+				collect(fn.Body, append([]string{}, mw...), documented, out)
 			}
-			return
+		default:
+			method := strings.ToUpper(name)
+			if !isHTTPMethod(method) || len(call.Args) != 2 {
+				return
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return
+			}
+			path, err := strconv.Unquote(lit.Value)
+			if err != nil || !documented(method, path) {
+				return
+			}
+			handlers := append(append([]string{}, mw...), handlerNames(call.Args[1])...)
+			*out = append(*out, Route{Method: method, Path: path, Handlers: handlers})
 		}
-		method := strings.ToUpper(name)
-		if !isHTTPMethod(method) || len(call.Args) != 2 {
-			return
-		}
-		lit, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return
-		}
-		path, err := strconv.Unquote(lit.Value)
-		if err != nil || !documented(method, path) {
-			return
-		}
-		handlers := append(append([]string{}, mw...), handlerNames(call.Args[1])...)
-		*out = append(*out, Route{Method: method, Path: path, Handlers: handlers})
 	})
 }
 
