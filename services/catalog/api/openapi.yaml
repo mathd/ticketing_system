@@ -1790,6 +1790,7 @@ components:
         the payload withheld. That binds the header's first field value; an
         appended second value is not caught (see ADR-004's TKT-209 amendment). no-store closes the shared-cache vector only — it is
         not access control.
+      required: true
       schema:
         type: string
         enum:
@@ -1813,6 +1814,7 @@ components:
         first field value; an appended second value is not caught (see ADR-004's
         TKT-209 amendment). no-store closes the shared-cache vector only — it is
         not access control.
+      required: true
       schema:
         type: string
         enum:

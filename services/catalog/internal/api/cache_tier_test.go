@@ -77,12 +77,6 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 		marker string
 		// withAge is true for the four reads that also declare a required Age.
 		withAge bool
-		// skipOmit drops the third case for the seat-map reads, whose header
-		// components do not (yet) declare `required: true`. That is a REAL gap and
-		// it is pinned as its own test below rather than silently asserted here —
-		// running the case would fail for a reason TKT-141 deliberately did not
-		// take on (see TestSeatMapCacheControlIsNotRequired).
-		skipOmit bool
 	}{
 		{
 			name:     "listPublicEvents",
@@ -156,7 +150,6 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 			marker:   `"seat_maps"`,
 			other:    hours,
 			withAge:  false,
-			skipOmit: true,
 		},
 		{
 			name:     "listSeatMapVersions",
@@ -167,7 +160,6 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 			marker:   `"versions"`,
 			other:    hours,
 			withAge:  false,
-			skipOmit: true,
 		},
 		// The by-id read is in this table for the mutation the other two cannot
 		// see: its negative is MINUTES, so merging the two components back into
@@ -182,7 +174,6 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 			marker:   `"sections"`,
 			other:    minutes,
 			withAge:  false,
-			skipOmit: true,
 		},
 	} {
 		for _, tc := range []struct {
@@ -195,9 +186,6 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 			{name: "another registered tier fails closed", emitted: read.other, want: http.StatusInternalServerError},
 			{name: "a missing header fails closed", omit: true, want: http.StatusInternalServerError},
 		} {
-			if tc.omit && read.skipOmit {
-				continue
-			}
 			t.Run(read.name+"/"+tc.name, func(t *testing.T) {
 				r := chi.NewRouter()
 				r.Get(read.route, func(w http.ResponseWriter, _ *http.Request) {
@@ -316,65 +304,3 @@ const seatMapGeometryJSON = `{"map":{"id":"00000000-0000-0000-0000-000000000000"
 	`"venue_id":"00000000-0000-0000-0000-000000000000","name":"m","version":1,` +
 	`"status":"published","orphan_prevention_enabled":false,` +
 	`"created_at":"2026-01-01T00:00:00Z"},"sections":[]}`
-
-// TestSeatMapCacheControlIsNotRequired pins a KNOWN, OPEN gap, so the claim the
-// table above makes cannot quietly drift from the behaviour (ADR-021's rule: a
-// gap that is not this ticket's to close is pinned as a test asserting it is
-// PRESENT).
-//
-// Every other Cache-Control header component in this contract declares
-// `required: true` — PriceResolutionCacheControl, MinutesCacheControl,
-// HoursCacheControl, NeverCacheControl. The two seat-map components do not, so a
-// handler that emits NO Cache-Control at all passes response validation on these
-// three reads. The enum still binds the value when a value is present, which is
-// what TKT-141 needed and what the table above proves; presence is unbound.
-//
-// Not closed here on purpose. TKT-141's scope is the TIER the two list reads
-// declare, and adding `required` is a separate behaviour change to three
-// operations — including the by-id read this ticket deliberately leaves alone —
-// with its own failure mode (any code path that returns 200 without setting the
-// header becomes a 500). It predates this branch: `SeatMapCacheControl` has been
-// unrequired since TKT-107 created it, and TKT-209 required its own new
-// components without revisiting this one. Filed as an incidental.
-//
-// This test asserts the gap is STILL THERE. If it ever fails, someone added
-// `required: true` — good news: flip the three `skipOmit` rows above to exercise
-// the omit case and delete this test. Do not "repair" it.
-func TestSeatMapCacheControlIsNotRequired(t *testing.T) {
-	for _, tc := range []struct{ name, route, request, body string }{
-		{"listVenueSeatMaps", "/public/venues/{venueId}/seat-maps",
-			"/public/venues/" + uuid.NewString() + "/seat-maps", `{"seat_maps":[]}`},
-		{"listSeatMapVersions", "/public/seat-maps/{seatMapId}/versions",
-			"/public/seat-maps/" + uuid.NewString() + "/versions", `{"versions":[]}`},
-		{"getPublicSeatMapGeometry", "/public/seat-maps/{seatMapId}",
-			"/public/seat-maps/" + uuid.NewString(), seatMapGeometryJSON},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := chi.NewRouter()
-			r.Get(tc.route, func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				// No Cache-Control at all — the case the other components refuse.
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(tc.body))
-			})
-			h, err := contract.ResponseValidator(apispec.Spec, r, nil, true)
-			if err != nil {
-				t.Fatalf("ResponseValidator: %v", err)
-			}
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://catalog.local"+tc.request, nil))
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("the unrequired-header gap appears to be CLOSED for %s (got %d, want 200). "+
-					"If the seat-map Cache-Control components now declare `required: true`, that is good news: "+
-					"drop their skipOmit rows in TestPublicReadCacheTiersAreContractEnforced and delete this test.",
-					tc.name, rec.Code)
-			}
-			// The header really is absent — the part that makes this a gap rather
-			// than a validator quirk about empty values.
-			if got := rec.Result().Header.Values("Cache-Control"); len(got) != 0 {
-				t.Fatalf("%s: fixture must emit no Cache-Control, got %v", tc.name, got)
-			}
-		})
-	}
-}

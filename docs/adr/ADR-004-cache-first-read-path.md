@@ -342,14 +342,21 @@ Splitting rather than widening one component is what keeps the demotion from lea
 three-value component would have let the by-id read declare minutes, and the by-id read is precisely
 the one that must not.
 
-**Known gap, not closed here and pinned by a test.** Neither seat-map component declares
-`required: true`, unlike every other Cache-Control component in this contract, so a handler emitting
-*no* Cache-Control passes validation on all three reads. The enum binds the value when one is present —
-which is what this amendment needed — but presence is unbound. It predates this change
-(`SeatMapCacheControl` has been unrequired since TKT-107) and closing it is a behaviour change to three
-operations with its own failure mode. Per ADR-021's rule it is pinned by
-`TestSeatMapCacheControlIsNotRequired`, which asserts the gap is **present**; if that test ever fails,
-the gap was closed — update this paragraph and delete the test rather than repairing it.
+**That gap is now closed (TKT-284).** Both seat-map components declare `required: true`, like every
+other Cache-Control component in this contract, so a handler emitting *no* Cache-Control is refused
+on all three reads: `kin-openapi` reports the header missing, and ADR-028's wrap turns that into a
+500 with the payload withheld. Presence and value are both bound. The pin that recorded the gap,
+`TestSeatMapCacheControlIsNotRequired`, is deleted; what proves the rule now is the omit case of
+`TestPublicReadCacheTiersAreContractEnforced`, which runs for all three seat-map reads because the
+`skipOmit` field those rows carried is gone.
+
+Worth recording, because it makes the change smaller than it reads: no live path could have hit the
+new 500. `writeJSON` (`services/catalog/internal/api/server.go:606-613`) sets `Cache-Control` to
+`no-store` when nothing else has, and every exit in `server_seat_maps.go` goes through `writeJSON` or
+`writeStoreError`, which calls it too. A handler that forgot its tier would emit `no-store`, which
+both components admit. So this binds a claim the contract was making loosely, rather than changing
+what the service returns. The reason to bind it anyway is ADR-004 rule 1: a 200 with no
+`Cache-Control` is not "no tier", it is whatever a shared cache's heuristic freshness decides.
 
 **Still unobservable today.** No CDN or shared cache exists anywhere in the stack, so nothing yet reads
 either header. This is the correctness of the claim the contract makes, not a live defect — and, as the
@@ -377,5 +384,11 @@ TKT-128 amendment argued, a tier is cheap to correct before a cache honors it an
 - Amendment (TKT-141) evidence — `services/catalog/api/openapi.yaml`
   (`SeatMapCacheControl` / `SeatMapListCacheControl`), `services/catalog/internal/api/server.go`
   (`cacheControlForSeatMapGeometry`, `cacheControlForSeatMapList`),
-  `services/catalog/internal/api/cache_tier_test.go` (contract-tier rows +
-  `TestSeatMapCacheControlIsNotRequired`, the pinned gap)
+  `services/catalog/internal/api/cache_tier_test.go` (contract-tier rows; the pinned gap
+  `TestSeatMapCacheControlIsNotRequired` lived here until TKT-284 closed it)
+- Amendment (TKT-284) evidence — `services/catalog/api/openapi.yaml` (`required: true` on
+  `SeatMapCacheControl` and `SeatMapListCacheControl`),
+  `services/catalog/internal/api/cache_tier_test.go` (the three seat-map rows' omit case, which the
+  `skipOmit` field used to skip), `shared/go/contract/http.go` (`responseValidated`),
+  `services/catalog/internal/api/server.go` (`writeJSON`'s `no-store` default, which is why no live
+  path could reach the new refusal)
