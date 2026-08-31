@@ -101,6 +101,18 @@ func (c *countingStub) lastChargeToken() string {
 	return c.chargeToken
 }
 
+// reset forgets every count so far (TKT-292). A test whose fixture needs the real handler
+// to mint a row has to make one request BEFORE the one it is about; without a reset, its
+// "this request called nobody" assertion would be permanently red for the setup's calls,
+// and the tempting repair — asserting a delta instead of zero — is weaker: a delta is
+// satisfied by a second call to an endpoint the setup already touched.
+func (c *countingStub) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts = map[string]int{}
+	c.chargeToken = ""
+}
+
 func (c *countingStub) count(name string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
