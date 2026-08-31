@@ -145,6 +145,49 @@ describe('a refusal lands beside the field the operator must fix', () => {
     expect(errs.total).toBeUndefined();
   });
 
+  // TKT-307. The second per-row refusal, and the reason it needs its own case rather
+  // than the default branch: the default surfaces the message at FORM level, which
+  // reaches the operator but does not put it beside the window inputs they must fix —
+  // which is the entire reason the server carries a channel on this code.
+  it('puts a reversed-window refusal on the row the server named', () => {
+    const errs = allocationErrors(
+      {
+        code: 'allocation_window_reversed',
+        channel: 'presale',
+        error: 'channel "presale" has closes_at at or before opens_at',
+      },
+      [row({ channel: 'presale' }), row({ channel: 'reseller-acme' })],
+    );
+    expect(errs.rows).toHaveProperty('presale');
+    expect(errs.rows['presale']).toMatch(/window|closes|opens/i);
+    expect(errs.rows).not.toHaveProperty('reseller-acme');
+    expect(errs.form).toBeUndefined();
+    expect(errs.total).toBeUndefined();
+  });
+
+  // Same fallback as the below-consumption case. Worth its own test rather than trust
+  // in the copied shape: this is where a refusal gets silently dropped if the branch is
+  // written to return nothing when the channel is unknown.
+  it('falls back to form level when a reversed window names a channel not on the form', () => {
+    const errs = allocationErrors(
+      { code: 'allocation_window_reversed', channel: 'ghost-channel', error: 'window reversed' },
+      [row({ channel: 'presale' })],
+    );
+    expect(errs.form).toMatch(/ghost-channel/);
+    expect(errs.rows).toEqual({});
+  });
+
+  // The server can send this code with NO channel — the bare sentinel path in
+  // problem() omits the field rather than panicking. The message must still arrive.
+  it('surfaces a reversed-window refusal that names no channel', () => {
+    const errs = allocationErrors(
+      { code: 'allocation_window_reversed', error: 'allocation sales window closes at or before it opens' },
+      [row({ channel: 'presale' })],
+    );
+    expect(errs.form).toMatch(/closes at or before it opens/);
+    expect(errs.rows).toEqual({});
+  });
+
   // A code the client does not know about must not vanish: an unattributable refusal
   // still has to reach the operator, as a form-level message.
   it('surfaces an unrecognised refusal at form level rather than dropping it', () => {

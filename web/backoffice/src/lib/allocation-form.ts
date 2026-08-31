@@ -344,6 +344,37 @@ export function allocationErrors(
         : message;
       return errors;
     }
+    case 'allocation_window_reversed': {
+      // The one 400 in this switch: the submitted set is malformed rather than
+      // unacceptable, so the remedy is to fix a field and not to change a number
+      // (TKT-307).
+      //
+      // NOT REACHABLE FROM THIS SCREEN TODAY, and the case exists anyway. This editor
+      // does not expose opens_at/closes_at — it preserves them server-side precisely
+      // because a hidden input would be forgeable (see slots/[id].astro) — so an
+      // operator here cannot submit a reversed window. The refusal can still arrive:
+      // inventory validates every submitted row, and this form PUTs the whole set
+      // including boundaries it did not render. Without this case the message reaches
+      // the operator as an unattributed form-level string via `default`, which is
+      // survivable and vaguer than it needs to be.
+      //
+      // The row message is therefore written to be useful to an operator who cannot
+      // edit the field it names: it says what is wrong, not "fix this input".
+      //
+      // `channel` is OPTIONAL on this code even though it names a row — the server can
+      // answer from a bare sentinel — so the fallback below is the normal path, not an
+      // edge case, and dropping it would leave a rejected save with no explanation.
+      const channel = refusal.channel ?? '';
+      if (channel && rows.some((r) => r.channel === channel)) {
+        errors.rows[channel] =
+          'Inventory refused this channel’s sales window: it closes at or before it opens. This screen does not edit sales windows — the stored values need correcting at the source.';
+        return errors;
+      }
+      errors.form = channel
+        ? `Inventory refused: “${channel}” has a sales window that closes at or before it opens.`
+        : message;
+      return errors;
+    }
     case 'allocation_revision_mismatch':
       // Form-level, and phrased as an instruction rather than a diagnosis: no field the
       // operator can see is wrong, so highlighting one would send them to fix a value
