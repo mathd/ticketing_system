@@ -144,11 +144,20 @@ func SelectSplitSchedule(at time.Time, code string, channel *string, scopes Pric
 	// changing the signature and making fee resolution newly failable mid-loop, which
 	// is a behaviour change rather than an alignment.
 	//
-	// DEFERRED, NOT IMPOSSIBLE, and the distinction matters (ai-review). The caller
-	// could validate the loaded set once before its fee loop; SplitSelection could
-	// carry an invalid state; the load path could reject duplicates where it reads
-	// them. None of those is in TKT-306's scope, but calling it structural would
-	// suppress ADR-046 §7's revisit trigger on a MONEY-ALLOCATION path.
+	// DEFERRED, NOT IMPOSSIBLE, and the distinction matters (ai-review). A guard has
+	// to live HERE — the pure seam is the only place a duplicate SplitSchedule is
+	// representable — and it needs a way to report: a signature change, or an invalid
+	// state on SplitSelection that the caller converts. Both are behaviour changes to
+	// a money path and out of TKT-306's scope; neither is impossible.
+	//
+	// Validating in the CALLER does not work, which is worth knowing before someone
+	// tries it: loadSplitSchedules collapses rows by id, because repeated ids are how
+	// a multi-part schedule is stored — one row per part — so the caller never sees a
+	// duplicate to reject, and rejecting repeated ids at the loader would refuse every
+	// legitimate multi-part schedule.
+	//
+	// Calling this structural would suppress ADR-046 §7's revisit trigger on a
+	// MONEY-ALLOCATION path.
 	//
 	// WHAT HAPPENS TODAY, measured: two schedules sharing an id and tied on every
 	// ranking axis produce an ORDER-DEPENDENT winner — [a,b] and [b,a] return

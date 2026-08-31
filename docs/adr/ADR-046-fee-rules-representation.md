@@ -320,19 +320,38 @@ Where each resolver stands against it:
 (`fees_postgres.go`) runs it inside a loop over fees on a money path, which would make fee resolution
 newly failable mid-loop. That is a behaviour change, not an alignment, so TKT-306 left it alone.
 
-**DEFERRED, NOT IMPOSSIBLE — and the first version of this amendment said "structurally impossible",
-which was false** (TKT-306 ai-review). At least three designs avoid the signature change: the caller
-can validate the loaded schedule set once, before its fee loop; `SplitSelection` can carry an invalid
-state the caller converts; or the load path can reject duplicates where it reads them. Writing it off
-as structural suppresses §7's revisit trigger on a **money-allocation** path, which is the opposite
-of what recording it is for.
+**DEFERRED, NOT IMPOSSIBLE — and this paragraph took two review passes to get right**, which is
+itself worth recording. The first version said "structurally impossible", which was false. The second
+listed three designs, two of which **cannot observe the condition at all** (TKT-306 ai-review passes
+1 and 2).
+
+Where a guard CAN live, against the real code:
+
+- **Inside `SelectSplitSchedule`** — viable, and the only place the duplicate is representable. It
+  needs a way to report: either a signature change to `(SplitSelection, error)`, or an invalid state
+  on `SplitSelection` that the production caller converts. Both are behaviour changes to a money
+  path; neither is impossible.
+
+Where it cannot, and why — because the near-miss is instructive:
+
+- **Caller-side validation of the loaded set** does not work. `loadSplitSchedules` collapses rows
+  through a `byID` map, because **repeated ids are the normal representation of a multi-part
+  schedule** — one row per part. The caller receives at most one `SplitSchedule` per id, so there is
+  nothing left to detect.
+- **Loader-side rejection of repeated ids** fails for the same reason, in the other direction: it
+  would reject every legitimate multi-part schedule.
+
+Both would also leave the **pure seam** unguarded, and the pure seam is precisely where duplicate
+`SplitSchedule` values are currently constructible — which is the gap. Writing this off as structural
+suppresses §7's revisit trigger on a **money-allocation** path, which is the opposite of what
+recording it is for.
 
 **What is true today, measured rather than argued.** Two schedules sharing an id and tied on every
 ranking axis produce an **order-dependent winner**: feeding `[a, b]` and `[b, a]` returns different
 payees, and both duplicates are absent from `Candidates`, so the provenance does not even show the
-ambiguity. Unreachable through Postgres — `fee_split_schedules.id` is the primary key — exactly as
-for the other two resolvers, whose guards exist anyway *because* a pure seam should not rely on the
-storage layer's luck.
+ambiguity. Unreachable through Postgres — `split_schedules.id` is the primary key and the loader collapses its
+parts by id — exactly as for the other two resolvers, whose guards exist anyway *because* a pure seam
+should not rely on the storage layer's luck.
 
 So the honest statement is: **the price and fee comparators refuse this input; the split comparator
 silently picks one.** That asymmetry is a real gap, it sits on the payout path, and it is owed a
