@@ -191,7 +191,9 @@ func run() error {
 		ttl = parsed
 	}
 	st := store.New(db, ttl)
-	catalog := consumer.NewCatalogResolver(catalogURL, credential, &http.Client{Timeout: 5 * time.Second})
+	// obs.ClientWithTimeout so the consumer's catalog lookups share the tuned
+	// cross-service pool rather than carrying their own untuned one (TKT-308).
+	catalog := consumer.NewCatalogResolver(catalogURL, credential, obs.ClientWithTimeout(5*time.Second))
 	cons := consumer.New(js, st, catalog, log)
 	consumerErr := make(chan error, 1)
 	// Log at the PRODUCER (TKT-122) — see access's main for the full reasoning.

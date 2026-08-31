@@ -68,13 +68,93 @@ const clientTimeout = 30 * time.Second
 // track a change here; this can.
 const ClientTimeout = clientTimeout
 
+// crossServiceTransport is the pooled base transport under every cross-service call.
+//
+// http.DefaultTransport leaves MaxIdleConnsPerHost at the package default of 2
+// (net/http DefaultMaxIdleConnsPerHost), so past two concurrent requests to one
+// upstream a caller opens and discards a TCP connection per request. The gateway
+// already makes exactly this argument for its proxy transport, one hop earlier
+// (gateway/cmd/gateway/main.go) — and the same reasoning was never applied here,
+// where commerce calls inventory and payments on the CHECKOUT path, at the moment
+// concurrency is highest (TKT-308).
+//
+// The numbers are the gateway's, deliberately rather than independently derived:
+// two different ceilings on two hops of one request would be a number to reconcile
+// every time either moves, and nothing in the measurement argued for a different
+// one. If a load profile ever says otherwise, move both.
+//
+// PACKAGE-LEVEL rather than per Client() call. Two reasons, and the weaker one is
+// stated first because it is the one that sounds compelling and is not load-bearing
+// here: the idle pool lives in the transport, so a fresh transport per client is a
+// fresh empty pool, and a caller building a client per request would reuse nothing
+// however large the ceilings are. Every caller in this repo builds one at startup
+// and holds it (grep obs.Client()), so that failure is currently hypothetical.
+//
+// The reason that DOES bite today: callers build SEVERAL long-lived clients — access
+// makes one for its consumer and another for redelivery, commerce one for the API
+// server and more for its runners — all talking to the same handful of upstreams. A
+// transport each would give each its own pool and fragment the reuse this ticket
+// exists to create. One shared transport is also what the gateway's comment argues
+// for on its own hop: the pool is keyed per host, so upstreams already get
+// independent pools and a second transport only splits them.
+//
+// Cloned rather than built fresh so the dialer, TLS config and HTTP/2 setup stay
+// exactly as the standard library ships them; only the two idle ceilings move.
+var crossServiceTransport = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 100
+	t.MaxIdleConns = 500
+	return otelhttp.NewTransport(t, otelhttp.WithPropagators(propagator))
+}()
+
 // Client returns an http.Client that injects the W3C traceparent header
 // from the request context. All cross-service calls go through this.
+//
+// The client is cheap to construct and the transport under it is shared, so callers
+// may keep one or make one per call — connection reuse does not depend on which,
+// which was not true before TKT-308.
 func Client() *http.Client {
+	return ClientWithTimeout(clientTimeout)
+}
+
+// ClientWithTimeout is Client with a caller-chosen deadline, for the cross-service
+// callers that deliberately bound themselves tighter than ClientTimeout.
+//
+// It exists because of what TKT-308 nearly broke. Before that ticket every
+// cross-service client — the ones from Client() and the ones built as
+// `&http.Client{Timeout: …}` with a nil Transport — shared ONE pool, because both
+// resolved to http.DefaultTransport. Cloning the transport for Client() alone would
+// have split that: commerce's recovery runner and inventory's catalog resolver call
+// the same upstreams as their obs.Client() siblings, and would have kept their own
+// untuned, unshared connections while the tuned pool sat beside them (ai-review
+// [medium]). The measured improvement would have been real and the fragmentation
+// invisible.
+//
+// So callers that need a different deadline take it from here rather than building a
+// client around DefaultTransport. A caller wanting a different TRANSPORT — a stub, a
+// custom dialer — should still build its own; this is only for the timeout.
+//
+// WHAT DELIBERATELY STAYS on its own client, enumerated because "did you get them all"
+// is the obvious question (ai-review pass 2): the health probes (`&http.Client{Timeout:
+// 2 * time.Second}` in each main) run in a separate process invocation and have no pool
+// to share; the one-shot CLI subcommands — inventory's `reconcile-pins`, commerce's
+// exchange-unwind — open a database, do one job and exit, so a shared idle pool buys
+// them nothing; and payments' Stripe client calls an EXTERNAL host, not an internal
+// service, which is a different pool with different sizing questions.
+// A non-positive duration is CLAMPED to ClientTimeout rather than honoured. net/http
+// reads a zero Timeout as "no deadline", which is precisely the unbounded hang
+// clientTimeout's comment exists to prevent — a stuck downstream holding a checkout
+// handler open past commerce's 2-minute recovery grace period. This is an exported
+// function on a shared package, so the zero value is reachable by a caller who never
+// read that comment (ai-review pass 2); refusing loudly is not an option in a
+// constructor with no error return, and silently unbounded is the worst of the three.
+func ClientWithTimeout(d time.Duration) *http.Client {
+	if d <= 0 {
+		d = clientTimeout
+	}
 	return &http.Client{
-		Timeout: clientTimeout,
-		Transport: otelhttp.NewTransport(http.DefaultTransport,
-			otelhttp.WithPropagators(propagator)),
+		Timeout:   d,
+		Transport: crossServiceTransport,
 	}
 }
 
