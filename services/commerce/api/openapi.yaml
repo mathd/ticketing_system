@@ -29,6 +29,14 @@ paths:
         '202': {description: Recovery pending, content: {application/json: {schema: {$ref: '#/components/schemas/OrderPending'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '401': {description: 'The assertion is absent-but-malformed, forged or expired. NOT downgraded to a guest order: silently dropping a failed attribution would hide it from the buyer, who would then not find the purchase in their account.', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        # The reservation does not exist, or was never visible to this caller (TKT-278).
+        # `persistenceReadProblem` answers 404 for sql.ErrNoRows and checkout writes it as
+        # "reservation not found" — but the operation declared no 404, so ADR-028's
+        # response validator was rewriting it into a generic 500 carrying "response
+        # violates OpenAPI contract". Executed and confirmed before declaring it: a checkout
+        # against an unknown reservation_id returned exactly that 500. The buyer was told
+        # "we broke" for a request that was simply about something that is not there.
+        '404': {$ref: '#/components/responses/Error'}
         '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
         '408': {description: No-side-effect timeout, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
         '409': {description: Checkout conflict or payment in progress, content: {application/json: {schema: {$ref: '#/components/schemas/OrderConflict'}}}}
