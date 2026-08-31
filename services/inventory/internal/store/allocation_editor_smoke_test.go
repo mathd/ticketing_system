@@ -4,6 +4,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,4 +231,103 @@ func TestTheTwoAllocationRefusalsAreDistinguishableAndNameTheirChannel(t *testin
 		t.Errorf("channel=%q want %q — the refusal named a row that is not the violator",
 			named.Channel(), "reseller-acme")
 	}
+}
+
+// TKT-307: a reversed sales window is an operator's 400, not a 500.
+//
+// `ReplaceChannelAllocations` did no Go-side ordering check, so migration 0013's
+// `channel_allocations_window_order` CHECK surfaced through problem()'s default
+// branch as an unmapped pgx error — a 500 for a form the operator can fix, on the
+// same class of input for which `validatePresaleCode` exists explicitly "so the API
+// answers 400 rather than surfacing a constraint violation as a 500". The doctrine
+// was written down and not applied here.
+//
+// The DB CHECK stays as the backstop: this validates in Go so the message is useful,
+// not so the constraint can be dropped. The two must agree on the boundary, which is
+// why the equal-instants case is asserted — `opens_at < closes_at` is STRICT, so
+// equal timestamps violate the CHECK, and a Go guard using `After` rather than
+// `!Before` would pass them to the database and reproduce the 500 it exists to stop.
+func TestAReversedSalesWindowIsRefusedAsOperatorInputNotAsAServerFault(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+
+	opens := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	closes := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+
+	var named interface{ Channel() string }
+
+	for name, window := range map[string]struct{ opens, closes time.Time }{
+		"closes before it opens": {opens, closes},
+		// Equal instants are ALSO reversed as far as the CHECK is concerned, and this
+		// is the case a plausible-looking Go guard gets wrong.
+		"opens and closes at the same instant": {opens, opens},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, c := window.opens, window.closes
+			_, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{
+				{Channel: "presale", Cap: 10, OpensAt: &o, ClosesAt: &c},
+			}, nil)
+			if err == nil {
+				t.Fatal("a reversed window was accepted; migration 0013's CHECK says it is unrepresentable")
+			}
+			// The sentinel, which is the store's half of the classification. The API
+			// half — that problem() actually answers 400 and not something else — is
+			// asserted in api/allocation_refusal_test.go, and the split is deliberate
+			// rather than incidental: the first version of this fix wrapped
+			// ErrSeatSetInvalid to reach problem()'s existing 400 branch, this
+			// assertion passed, and the API still answered 409 because a nearer
+			// structural match claimed the error first (ai-review [high]). A store test
+			// cannot see a routing decision made one tier up. Assert the sentinel here;
+			// assert the status there.
+			if !errors.Is(err, ErrAllocationWindowReversed) {
+				t.Fatalf("got %v, want ErrAllocationWindowReversed. A window an operator "+
+					"typed backwards is their input to fix, and an unmapped error both "+
+					"hides the remedy and reports a server fault that did not happen", err)
+			}
+			// A 500 body is static ("internal error"); only a MAPPED error speaks its
+			// own text. So the field name reaches the operator only via this path.
+			if !strings.Contains(err.Error(), "opens_at") || !strings.Contains(err.Error(), "closes_at") {
+				t.Errorf("message %q names neither field; the editor has two timestamp "+
+					"inputs and the operator cannot tell which pair is wrong", err)
+			}
+			// Named, like every other per-row refusal in this file — the editor puts
+			// the message beside the offending row.
+			if !errors.As(err, &named) {
+				t.Fatal("the reversed-window refusal names no channel, so the editor cannot " +
+					"put it beside the row the operator must fix")
+			}
+			if named.Channel() != "presale" {
+				t.Errorf("channel=%q want %q", named.Channel(), "presale")
+			}
+		})
+	}
+
+	// The channel named is the OFFENDING row, not the first submitted.
+	o2, c2 := opens, closes
+	_, err := st.ReplaceChannelAllocations(ctx, org, slot, []ChannelAllocation{
+		{Channel: "presale", Cap: 10},
+		{Channel: "reseller-acme", Cap: 10, OpensAt: &o2, ClosesAt: &c2},
+	}, nil)
+	if !errors.As(err, &named) {
+		t.Fatalf("got %v, which names no channel", err)
+	}
+	if named.Channel() != "reseller-acme" {
+		t.Errorf("channel=%q want %q — the refusal named a row that is fine", named.Channel(), "reseller-acme")
+	}
+
+	// A WELL-ORDERED window still commits. Without this the fix could be "refuse every
+	// window", which satisfies every assertion above and breaks the feature.
+	good, later := opens, opens.Add(time.Hour)
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{
+		{Channel: "presale", Cap: 10, OpensAt: &good, ClosesAt: &later},
+	})
+	// And so do the unbounded forms: NULL on either side is "always open" / "never
+	// closes" (migration 0013), so a guard that refused a half-open window would break
+	// the common case of a channel that opens and never closes.
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{
+		{Channel: "presale", Cap: 10, OpensAt: &good},
+	})
+	mustReplace(t, ctx, st, org, slot, []ChannelAllocation{
+		{Channel: "presale", Cap: 10, ClosesAt: &later},
+	})
 }

@@ -204,6 +204,33 @@ func problem(w http.ResponseWriter, err error) {
 		// Names no channel: the sum is a property of the whole set.
 		write(w, 409, map[string]string{"error": err.Error(), "code": "allocation_caps_exceed_capacity"})
 		return
+	// BEFORE belowConsumption, and the ordering is load-bearing rather than tidy
+	// (TKT-307, ai-review [high]). belowConsumption matches on the STRUCTURAL
+	// interface{ Channel() string }, so it claims ANY refusal that names its channel —
+	// and every per-row allocation refusal must name one, or the editor cannot put the
+	// message beside the field. Placed after it, this case is unreachable and a reversed
+	// window answers 409 `allocation_cap_below_consumption`: the operator is sent to fix
+	// a cap that is fine while the backwards window stays. Any future per-row refusal
+	// needs the same placement.
+	//
+	// 400 rather than 409 because the two mean different things to the editor: a 409 says
+	// the pool cannot accept a well-formed set, a 400 says the set itself is malformed.
+	// The remedy differs — change a number versus fix a field.
+	case errors.Is(err, store.ErrAllocationWindowReversed):
+		body := map[string]string{"error": err.Error(), "code": "allocation_window_reversed"}
+		// The channel is looked up defensively rather than assumed. Today every
+		// construction goes through store.AllocationWindowReversed, which always carries
+		// one — but store.ErrAllocationWindowReversed is an EXPORTED bare sentinel, and
+		// anything returning it directly would match this case while carrying no channel.
+		// `e.Channel()` on a nil interface panics, and a panic inside the function whose
+		// whole job is to turn store errors into honest statuses is the worst possible
+		// place for one. Omitting the field is the contract's own answer: `channel` is
+		// optional on Error, exactly as it is for the two refusals that name no row.
+		if e := belowConsumption(err); e != nil {
+			body["channel"] = e.Channel()
+		}
+		write(w, http.StatusBadRequest, body)
+		return
 	case belowConsumption(err) != nil:
 		e := belowConsumption(err)
 		write(w, 409, map[string]string{

@@ -247,6 +247,29 @@ func (p *Postgres) ReplaceChannelAllocations(ctx context.Context, org, slot uuid
 	if kind == "seated" && len(allocs) > 0 {
 		return nil, fmt.Errorf("channel allocations are not supported on seated pools: %w", ErrPoolKindMismatch)
 	}
+	// Window ordering, in Go, BEFORE any consumption query or write (TKT-307).
+	//
+	// Migration 0013's channel_allocations_window_order CHECK makes a reversed window
+	// unrepresentable, and without this it surfaced as an unmapped pgx error that
+	// problem() answers 500 — a server fault reported for a form the operator typed
+	// backwards, with the remedy hidden behind a static body. validatePresaleCode
+	// states the rule for exactly this class of input; the allocation editor is a
+	// staff form and was not getting it. The CHECK stays as the backstop.
+	//
+	// !Before rather than After, matching the CHECK's STRICT `opens_at < closes_at`:
+	// equal instants violate it too, and a guard using After would hand them to the
+	// database and reproduce the 500 this exists to stop.
+	//
+	// A nil on either side is unbounded, not a violation — no open means always open,
+	// no close means never closes (migration 0013) — so only the both-present case is
+	// judged. AFTER the staleness and pool-kind checks, before the caps sum and every
+	// write, so a refused call leaves the set and its revision exactly as it found
+	// them (the same reasoning the pool-kind comment above sets out).
+	for _, a := range allocs {
+		if a.OpensAt != nil && a.ClosesAt != nil && !a.OpensAt.Before(*a.ClosesAt) {
+			return nil, AllocationWindowReversed(a.Channel)
+		}
+	}
 	if total > int64(capacity) {
 		return nil, ErrAllocationCapsExceedCapacity
 	}

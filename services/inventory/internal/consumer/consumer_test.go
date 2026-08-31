@@ -400,12 +400,20 @@ func TestInvalidKnownSchemaIsTerminatedAndStaysReady(t *testing.T) {
 	}
 }
 
-// Schema 1 resolves against catalog, so its failures are transient: retry, never terminate, and
-// never touch readiness. Unchanged by TKT-61; asserted because the call site was restructured.
+// Schema 1 resolves against catalog, so a failure to REACH catalog is transient: retry,
+// never terminate, and never touch readiness. Unchanged by TKT-61; asserted because the
+// call site was restructured.
+//
+// TKT-307 changed what this fixture must return, and the change is the point. The
+// handler used to retry on `e.Schema == 1`, so any error at all reproduced this
+// behaviour — which is exactly why deterministic schema-1 failures were parked for ever
+// too. It now keys on errResolveUnavailable, which CatalogResolver wraps around every
+// non-404 failure, so the fake must return what the real resolver returns. A fixture
+// still returning a bare error would be asserting a contract nothing implements.
 func TestSchema1ResolutionFailureIsRetriedAndStaysReady(t *testing.T) {
 	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
 	c := testConsumer()
-	c.resolver = fakeResolver{err: errors.New("catalog unreachable")}
+	c.resolver = fakeResolver{err: fmt.Errorf("%w: catalog unreachable", errResolveUnavailable)}
 	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, `{"id":`+uid+`,"schema":1,"data":{"performance_id":`+uid+`,"organizer_id":`+uid+`}}`))}
 
 	c.handle(context.Background(), msg)
@@ -751,5 +759,88 @@ func TestSchema5InvalidGeometryIsTerminated(t *testing.T) {
 	}
 	if len(st.seatProvisioned) != 0 {
 		t.Fatal("nothing may be provisioned from invalid geometry")
+	}
+}
+
+// TKT-307: schema-1's disposition is retry-vs-terminate, not "schema 1 always retries".
+//
+// `if e.Schema == 1 || errors.Is(err, errResolveUnavailable)` NAKed EVERY schema-1
+// provisionInput failure, including ones no retry can change. Each such event then held
+// one of 64 MaxAckPending slots for ever on a 5-second loop, with no readiness signal —
+// the shape the file's own ErrGeometryInvalid comment warns about ("retrying it changes
+// nothing, so the caller must terminate rather than park it for ever").
+//
+// The precedent for the ErrPerformanceNotFound case is in this same file: the CLOSURE
+// handler already acks a 404 as moot, because a slot that has since archived is never
+// coming back and the archived event owns the pool's terminal state. The publication path
+// parked the identical situation.
+//
+// One case per disposition, each asserting the OTHER two did not happen — a test that
+// only checked "not nak" would pass on a term where an ack is right, and the difference
+// between them is whether a real publication is silently lost.
+func TestSchema1DispositionsAreRetryTerminateOrMoot(t *testing.T) {
+	uid := `"6ba7b810-9dad-11d1-80b4-00c04fd430c8"`
+	body := `{"id":` + uid + `,"schema":1,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `}}`
+
+	for name, tc := range map[string]struct {
+		resolver fakeResolver
+		body     string
+		want     string // the one action that must appear
+		why      string
+	}{
+		// UNCHANGED, and asserted so the fix cannot be "terminate schema 1": catalog
+		// being unreachable is an outage, and terminating drops the publication for
+		// ever, leaving the slot with no inventory at all.
+		"catalog unreachable retries": {
+			resolver: fakeResolver{err: errResolveUnavailable},
+			body:     body, want: "nak-delay",
+			why: "a dependency outage is transient; terminating loses the publication permanently",
+		},
+		// NEW. The slot archived after this publication was emitted. Retrying asks a
+		// question catalog will keep answering the same way, for ever.
+		"an archived slot is moot": {
+			resolver: fakeResolver{err: ErrPerformanceNotFound},
+			body:     body, want: "ack",
+			why: "the closure handler already acks this exact case as moot; the archived event owns the terminal state",
+		},
+		// NEW. Catalog answered, and its answer contradicts the payload. No retry
+		// reconciles two sources that disagree.
+		"a catalog conflict terminates": {
+			resolver: fakeResolver{organizerID: uuid.MustParse("7c9e6679-7425-40de-944b-e07fc1f90ae7"), capacity: 10},
+			body:     body, want: "term",
+			why: "catalog answered and disagrees with the payload; retrying re-asks a settled question",
+		},
+		// NEW. Never reaches catalog at all — the payload is unusable on its face.
+		"missing identifiers terminate": {
+			resolver: fakeResolver{capacity: 10},
+			body:     `{"id":` + uid + `,"schema":1,"data":{"organizer_id":` + uid + `}}`,
+			want:     "term",
+			why:      "the payload is poison before any lookup; this failure does not depend on catalog at all",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := testConsumer()
+			c.resolver = tc.resolver
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tc.body))}
+
+			c.handle(context.Background(), msg)
+
+			if !slices.Contains(msg.actions, tc.want) {
+				t.Fatalf("actions = %v, want %q — %s", msg.actions, tc.want, tc.why)
+			}
+			for _, other := range []string{"ack", "term", "nak-delay"} {
+				if other != tc.want && slices.Contains(msg.actions, other) {
+					t.Errorf("actions = %v also contains %q; the three dispositions are "+
+						"mutually exclusive and mean different things to an operator",
+						msg.actions, other)
+				}
+			}
+			// None of these is version skew, so none may latch readiness. A terminated
+			// poison message must not take the consumer out of service.
+			if !c.Ready() {
+				t.Error("readiness latched false; only version SKEW may do that (ADR-017), " +
+					"and none of these cases is a future schema")
+			}
+		})
 	}
 }
