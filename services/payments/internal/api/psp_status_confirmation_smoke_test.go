@@ -237,12 +237,69 @@ func TestRefundSupersededStatusPublishesTheStoredRefundConfirmation(t *testing.T
 	if body["outcome"] != "refunded" {
 		t.Fatalf("outcome = %v, want refunded: %s", body["outcome"], rec.Body.String())
 	}
-	if got := body["confirmed_captured_amount"]; got != float64(refunded) {
-		t.Fatalf("confirmed_captured_amount = %v, want the REFUND's stored %d (not the capture's %d): %s",
-			got, refunded, captured, rec.Body.String())
+	// Under confirmed_REFUNDED_amount, not confirmed_captured_amount (ai-review [medium]).
+	// The two confirm opposite movements, and the schema defines the capture field as what
+	// the provider reported CAPTURING — publishing a refund's figure there would hand a
+	// reconciliation consumer refund evidence under a capture-evidence name with nothing in
+	// the payload to tell them apart.
+	if got := body["confirmed_refunded_amount"]; got != float64(refunded) {
+		t.Fatalf("confirmed_refunded_amount = %v, want the REFUND's stored %d: %s",
+			got, refunded, rec.Body.String())
+	}
+	if _, present := body["confirmed_captured_amount"]; present {
+		t.Fatalf("a refunded answer must NOT publish a capture confirmation (the capture was "+
+			"reversed, and %d is not what the provider captured): %s", captured, rec.Body.String())
 	}
 	if got := body["confirmed_currency"]; got != currency {
 		t.Fatalf("confirmed_currency = %v, want %q: %s", got, currency, rec.Body.String())
+	}
+}
+
+// The legacy half of COS4 (ai-review [medium]): a whole-refund compensation completed BEFORE
+// payments migration 0006 carries no confirmation and never can. Its superseding answer must
+// omit the key entirely rather than publish a zero — `confirmed_refunded_amount: 0` reads as
+// "the provider confirmed returning nothing", which is a claim about money, not an absence.
+//
+// This is the case the nil-check in confirmedCompensation exists for, and without a test the
+// check is an untested guarantee.
+func TestRefundSupersededStatusOmitsAMissingLegacyConfirmation(t *testing.T) {
+	db, ctx := refundDB(t)
+	org, key := uuid.New(), "status-refunded-legacy-"+uuid.NewString()
+	const captured, currency = 5600, "EUR"
+
+	seedUnresolvedCharge(t, db, ctx, org, key, "fake-ok", captured, currency)
+	if _, err := db.ExecContext(ctx, `
+		UPDATE payment_operations SET status='captured',fact_id=$3,provider_state='captured',
+		    authorized_amount=$4,captured_amount=$4,provider_state_at=now()
+		WHERE organizer_id=$1 AND idempotency_key=$2`,
+		org, key, uuid.New(), int64(captured)); err != nil {
+		t.Fatal(err)
+	}
+	// Completed, with confirmed_amount/confirmed_currency left NULL: the pre-0006 shape.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO payment_compensations(organizer_id,source_idempotency_key,kind,provider_idempotency_key,
+		                                  status,provider_ref,fact_id,amount,currency,completed_at)
+		VALUES($1,$2,'refund',$3,'refunded','re_legacy',$4,$5,$6,now())`,
+		org, key, "provkey-"+key, uuid.New(), int64(captured), currency); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := statusRequest(t, refundServerWithPSP(t, db, psp.NewFake()), org, key)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %s", rec.Body.String())
+	}
+	if body["outcome"] != "refunded" {
+		t.Fatalf("outcome = %v, want refunded: %s", body["outcome"], rec.Body.String())
+	}
+	if _, present := body["confirmed_refunded_amount"]; present {
+		t.Fatalf("a legacy refund has no confirmation and must publish none, got %s", rec.Body.String())
+	}
+	if _, present := body["confirmed_currency"]; present {
+		t.Fatalf("a legacy refund must publish no confirmed currency, got %s", rec.Body.String())
 	}
 }
 

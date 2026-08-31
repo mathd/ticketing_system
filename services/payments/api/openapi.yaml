@@ -419,6 +419,20 @@ components:
         # commerce's recovery runner decides whether to refund from it, and redefining it
         # would change when money moves in another service.
         confirmed_captured_amount: {type: integer, format: int64}
+        # What the PROVIDER reported RETURNING, for an operation a completed whole-refund
+        # compensation supersedes (TKT-298). A SEPARATE field rather than reusing
+        # confirmed_captured_amount, because the two confirm opposite movements: publishing
+        # a refund's figure under the capture's name hands a consumer refund evidence under
+        # a capture-evidence name, and nothing in the payload lets it tell which movement
+        # was confirmed. Same absence rule as its sibling — omitted for a compensation
+        # completed before payments migration 0006, and for a void, which moves no money
+        # and which CompleteCompensation refuses a confirmation on. An absent key means
+        # "never confirmed", never "confirmed zero".
+        #
+        # confirmed_currency is shared: at most one of the two amounts is ever present on a
+        # single answer, since the refunded branch returns before the resolved-operation
+        # branch can run.
+        confirmed_refunded_amount: {type: integer, format: int64}
         confirmed_currency: {type: string, pattern: '^[A-Z]{3}$'}
     OperationState:
       type: object

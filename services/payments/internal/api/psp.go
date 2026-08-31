@@ -54,8 +54,20 @@ func statusBody(result psp.Result, authorized, captured int64, currency string, 
 	// The provider's own figure, ADDITIVE and optional (TKT-257). Omitted when the
 	// operation carries no confirmation — a pre-0006 row, or one no provider ever
 	// confirmed — so an absent key means "never confirmed", never "confirmed zero".
+	//
+	// The KEY depends on which movement was confirmed (TKT-298, ai-review [medium]). A
+	// refunded answer's evidence is what the provider RETURNED, and publishing it under
+	// `confirmed_captured_amount` would hand a consumer refund evidence under a
+	// capture-evidence name — the schema defines that field as what the provider reported
+	// CAPTURING, and nothing else in the payload would let a reconciliation consumer tell
+	// the two apart. At most one is ever present: the refunded branch returns before the
+	// resolved-operation branch can run.
 	if confirmed != nil {
-		body["confirmed_captured_amount"] = confirmed.Amount
+		key := "confirmed_captured_amount"
+		if result.Outcome == psp.Refunded {
+			key = "confirmed_refunded_amount"
+		}
+		body[key] = confirmed.Amount
 		body["confirmed_currency"] = confirmed.Currency
 	}
 	return body
