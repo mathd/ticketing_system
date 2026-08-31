@@ -80,6 +80,17 @@ var (
 	// inventory's database, or who holds the shared internal token, can present or set
 	// any revision at all.
 	ErrAllocationRevisionMismatch = fmt.Errorf("%w: allocation set revision mismatch", ErrConflict)
+	// ErrAllocationWindowReversed: a submitted allocation's sales window closes at or
+	// before it opens (TKT-307). Migration 0013's channel_allocations_window_order CHECK
+	// makes that unrepresentable; this is the Go guard in front of it, so the API answers
+	// 400 with a message the operator can act on rather than surfacing the constraint
+	// violation as a 500.
+	//
+	// It does NOT wrap ErrUnavailable or ErrConflict the way the two refusals above do.
+	// Those are 409s — the submitted set is well-formed and the pool cannot accept it. A
+	// reversed window is malformed input, which is a different answer (400) and a
+	// different remedy: fix the field, not the number.
+	ErrAllocationWindowReversed = errors.New("allocation sales window closes at or before it opens")
 )
 
 // AllocationCapBelowConsumption is the refusal for a cap set below what that channel has
@@ -125,14 +136,23 @@ func (e allocationCapBelowConsumption) Channel() string { return e.channel }
 // possible writer, and a Go guard alone would make a reversed window merely unlikely
 // rather than unrepresentable.
 //
-// WRAPS ErrSeatSetInvalid, which is problem()'s only 400 branch. The name is a poor fit
-// for a sales window and the alternative was worse: a new sentinel needs its own case in
-// problem(), and adding one that no other caller returns is a wider change than this
-// ticket's "apply the rule you already wrote". Named badly and mapped correctly beats the
-// reverse.
+// It gets its OWN sentinel and its own case in problem(), and the first attempt at this
+// did neither — it wrapped ErrSeatSetInvalid to reach problem()'s existing 400 branch,
+// which looked like the smaller change and was wrong (ai-review [high]). problem()
+// matches `belowConsumption` on the STRUCTURAL interface{ Channel() string }, and it runs
+// FIRST, so any refusal that names its channel is claimed by that branch before its own.
+// The window refusal therefore answered 409 `allocation_cap_below_consumption` — telling
+// the operator a cap was too low when the real problem was a backwards window, which is a
+// worse failure than the 500 this ticket set out to fix. A store-tier test could not see
+// it: the error unwrapped to ErrSeatSetInvalid exactly as asserted, and the misrouting
+// happened one tier up.
 //
 // It CARRIES THE CHANNEL for the reason AllocationCapBelowConsumption does: the editor
 // submits a whole set and must put the message beside the row the operator has to fix.
+// Naming a channel is what puts it in belowConsumption's path, so the two facts are not
+// independent — every future per-row refusal needs its own case placed BEFORE that
+// branch, and TestAllocationRefusalsCarryAMachineReadableCodeAndTheOffendingChannel is
+// where that gets caught.
 func AllocationWindowReversed(channel string) error {
 	return allocationWindowReversed{channel: channel}
 }
@@ -143,11 +163,12 @@ func (e allocationWindowReversed) Error() string {
 	// Both field names, because the editor has two timestamp inputs and either could be
 	// the one that is wrong. The channel is operator-supplied and opaque (ADR-024), so
 	// it is quoted rather than interpolated bare.
-	return fmt.Sprintf("%v: channel %q has closes_at at or before opens_at", ErrSeatSetInvalid, e.channel)
+	return fmt.Sprintf("%v: channel %q has closes_at at or before opens_at", ErrAllocationWindowReversed, e.channel)
 }
 
-// Unwrap puts it on problem()'s 400 branch.
-func (e allocationWindowReversed) Unwrap() error { return ErrSeatSetInvalid }
+// Unwrap keeps errors.Is(err, ErrAllocationWindowReversed) true, the way the two
+// allocation refusals above unwrap to ErrUnavailable and ErrConflict.
+func (e allocationWindowReversed) Unwrap() error { return ErrAllocationWindowReversed }
 
 // Channel is the offending allocation's raw code, echoed verbatim to the client.
 func (e allocationWindowReversed) Channel() string { return e.channel }

@@ -65,6 +65,21 @@ func TestAllocationRefusalsCarryAMachineReadableCodeAndTheOffendingChannel(t *te
 			err:        fmt.Errorf("channel allocations are not supported on seated pools: %w", store.ErrPoolKindMismatch),
 			wantStatus: http.StatusConflict,
 		},
+		// TKT-307. A reversed sales window is the operator's INPUT, so 400 — the
+		// distinction the whole ticket is about. It belongs in this table and not in a
+		// store test, and that placement is the lesson: the store test asserted the
+		// error unwraps to ErrSeatSetInvalid and was green while problem() answered
+		// 409, because `belowConsumption` matches on the STRUCTURAL
+		// interface{ Channel() string } and runs first. Any refusal that names its
+		// channel — which every per-row refusal here must — passes through that branch
+		// before its own. Only a test at this tier can see it.
+		{
+			name:        "a reversed window is the operator's input, not a conflict",
+			err:         store.AllocationWindowReversed("presale"),
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "allocation_window_reversed",
+			wantChannel: "presale",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := httptest.NewRecorder()

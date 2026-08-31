@@ -270,13 +270,19 @@ func TestAReversedSalesWindowIsRefusedAsOperatorInputNotAsAServerFault(t *testin
 			if err == nil {
 				t.Fatal("a reversed window was accepted; migration 0013's CHECK says it is unrepresentable")
 			}
-			// The classification is the point. ErrSeatSetInvalid is problem()'s only
-			// 400 branch, so a refusal that does not unwrap to it is a 500 whatever
-			// else it says.
-			if !errors.Is(err, ErrSeatSetInvalid) {
-				t.Fatalf("got %v, which problem() maps to 500. A window an operator typed "+
-					"backwards is their input to fix, and answering 500 both hides the "+
-					"remedy and reports a server fault that did not happen", err)
+			// The sentinel, which is the store's half of the classification. The API
+			// half — that problem() actually answers 400 and not something else — is
+			// asserted in api/allocation_refusal_test.go, and the split is deliberate
+			// rather than incidental: the first version of this fix wrapped
+			// ErrSeatSetInvalid to reach problem()'s existing 400 branch, this
+			// assertion passed, and the API still answered 409 because a nearer
+			// structural match claimed the error first (ai-review [high]). A store test
+			// cannot see a routing decision made one tier up. Assert the sentinel here;
+			// assert the status there.
+			if !errors.Is(err, ErrAllocationWindowReversed) {
+				t.Fatalf("got %v, want ErrAllocationWindowReversed. A window an operator "+
+					"typed backwards is their input to fix, and an unmapped error both "+
+					"hides the remedy and reports a server fault that did not happen", err)
 			}
 			// A 500 body is static ("internal error"); only a MAPPED error speaks its
 			// own text. So the field name reaches the operator only via this path.

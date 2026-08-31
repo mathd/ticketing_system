@@ -404,6 +404,26 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		// terminating is merely the wrong word for the same outcome. This is exactly the
 		// call the CLOSURE handler already makes on this error (see handleClosure), and
 		// the two paths disagreeing about one catalog answer was the defect.
+		//
+		// WHY THIS CANNOT STRAND A REPUBLISHED SLOT, since acking a publication that did
+		// not provision is the obvious thing to worry about: catalog derives the event id
+		// from `performance.id + published_at` (events.EventID), so a republish is a
+		// DIFFERENT id. It is therefore not deduped by consumed_events and provisions
+		// normally. And this branch writes no consumed_events row at all — only a
+		// successful provision does — so the ack leaves nothing behind that a later event
+		// could collide with.
+		//
+		// WHAT IT DOES NOT FIX, stated so the word "moot" is not read as more than it is
+		// (ai-review [high]): no pool is created, so the ARCHIVE event that follows finds
+		// none and applyOffering NAKs it as "offering event precedes its pool", for ever.
+		// That is pre-existing and systemic rather than introduced here — before this
+		// change the publication ITSELF NAKed for ever on the same 404, so the archive was
+		// stranded either way, and handleClosure's identical "moot" ack (which this follows)
+		// has the same shape. What changes is which message occupies the slot, not whether
+		// one does. Closing it needs a durable cross-event disposition — a tombstone the
+		// archive can consume without a pool, or provisioning-then-archiving from the
+		// resolved state — which is a design decision beyond applying an existing rule.
+		// TKT-317 carries it.
 		if errors.Is(err, ErrPerformanceNotFound) {
 			c.log.Info("publication for a no-longer-published slot; skipping as moot",
 				"event_id", e.ID, "performance_id", e.Data.PerformanceID)
