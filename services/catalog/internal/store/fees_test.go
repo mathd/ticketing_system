@@ -464,6 +464,39 @@ func TestSelectFeeRulesDuplicateGuardIsChannelScoped(t *testing.T) {
 		}
 	}
 
+	// PRECEDENCE: a set that is BOTH duplicated and currency-misconfigured reports
+	// the DUPLICATE, which is where the guard has always sat relative to the currency
+	// check. TKT-306's first attempt moved the guard past it and silently flipped this
+	// to ErrFeeRuleCurrencyMismatch — a different error, which the API renders and logs
+	// differently (ai-review [medium]). Unreachable through Postgres, but the pure
+	// comparator is a supported seam and "alignment only" has to mean it.
+	{
+		bad := feeWithCurrency(fee(3, ScopeEvent, "service"), "USD")
+		dupBad := feeWithCurrency(fee(3, ScopeVenue, "service"), "USD")
+		_, err := SelectFeeRules(feeAt, FeeCandidates{
+			Currency: "EUR", Scopes: feeScopes, Channel: ptr("web"),
+			Rules: []FeeRule{bad, dupBad},
+		})
+		if !errors.Is(err, ErrDuplicateFeeRuleID) {
+			t.Fatalf("duplicated AND misconfigured = %v, want ErrDuplicateFeeRuleID — the "+
+				"determinism guard precedes the currency check and TKT-306 must not have "+
+				"reordered them", err)
+		}
+	}
+
+	// And the two remain independent: a currency mismatch with NO duplicate still
+	// reports the currency, so the assertion above pins precedence rather than
+	// accidentally disabling the currency check.
+	{
+		_, err := SelectFeeRules(feeAt, FeeCandidates{
+			Currency: "EUR", Scopes: feeScopes, Channel: ptr("web"),
+			Rules: []FeeRule{feeWithCurrency(fee(4, ScopeEvent, "service"), "USD")},
+		})
+		if !errors.Is(err, ErrFeeRuleCurrencyMismatch) {
+			t.Fatalf("misconfigured only = %v, want ErrFeeRuleCurrencyMismatch", err)
+		}
+	}
+
 	// A duplicate among rules that are channel-eligible but WINDOWED OUT still
 	// errors: those rules are reported in provenance, and two of them under one id
 	// is the same order-dependence the caller would read.

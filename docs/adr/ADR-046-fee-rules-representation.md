@@ -313,16 +313,34 @@ Where each resolver stands against it:
 |---|---|---|
 | `SelectPricingRule` | `ErrDuplicatePriceRuleID` | after the channel filter (narrowed by TKT-237) |
 | `SelectFeeRules` | `ErrDuplicateFeeRuleID` | after the channel filter (**moved there by TKT-306**; it ran before) |
-| `SelectSplitSchedule` | **none, structurally** | — |
+| `SelectSplitSchedule` | **none — deferred, see below** | — |
 
 `SelectSplitSchedule` returns a bare `SplitSelection` with no error, so it cannot carry this guard
-without changing its signature — and its one production caller (`fees_postgres.go`) runs it inside a
-loop over fees on a money path, which would make fee resolution newly failable mid-loop. That is a
-behaviour change, not an alignment, so TKT-306 left it alone. **Its absence is a structural
-consequence, not drift**, and this table is what stops a future reader reading it as the latter.
+*in the same shape* without changing its signature — and its one production caller
+(`fees_postgres.go`) runs it inside a loop over fees on a money path, which would make fee resolution
+newly failable mid-loop. That is a behaviour change, not an alignment, so TKT-306 left it alone.
+
+**DEFERRED, NOT IMPOSSIBLE — and the first version of this amendment said "structurally impossible",
+which was false** (TKT-306 ai-review). At least three designs avoid the signature change: the caller
+can validate the loaded schedule set once, before its fee loop; `SplitSelection` can carry an invalid
+state the caller converts; or the load path can reject duplicates where it reads them. Writing it off
+as structural suppresses §7's revisit trigger on a **money-allocation** path, which is the opposite
+of what recording it is for.
+
+**What is true today, measured rather than argued.** Two schedules sharing an id and tied on every
+ranking axis produce an **order-dependent winner**: feeding `[a, b]` and `[b, a]` returns different
+payees, and both duplicates are absent from `Candidates`, so the provenance does not even show the
+ambiguity. Unreachable through Postgres — `fee_split_schedules.id` is the primary key — exactly as
+for the other two resolvers, whose guards exist anyway *because* a pure seam should not rely on the
+storage layer's luck.
+
+So the honest statement is: **the price and fee comparators refuse this input; the split comparator
+silently picks one.** That asymmetry is a real gap, it sits on the payout path, and it is owed a
+decision along with the §7 revisit trigger it belongs to.
 
 The determinism guard is unreachable through Postgres in all three cases — id is the primary key.
-These are pure seams refusing to pretend the invariant holds by luck.
+The two that exist are pure seams refusing to pretend the invariant holds by luck; the third has not
+been written.
 
 ### 8. Precedence, in full
 

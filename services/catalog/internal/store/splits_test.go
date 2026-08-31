@@ -160,3 +160,59 @@ func windowSched(s SplitSchedule, from, until *time.Time) SplitSchedule {
 	s.EffectiveFrom, s.EffectiveUntil = from, until
 	return s
 }
+
+// TKT-306: the split comparator does NOT refuse duplicate ids, and the consequence is
+// pinned rather than described.
+//
+// Its two siblings do refuse them — ErrDuplicatePriceRuleID, ErrDuplicateFeeRuleID —
+// because the last tie-break is the id, so two rules sharing one are inseparable and the
+// winner depends on input order. This resolver returns a bare SplitSelection with no
+// error, so it carries no such guard.
+//
+// ADR-046 §7's TKT-306 amendment records that as DEFERRED, not impossible: the caller
+// could validate the loaded set before its fee loop, SplitSelection could carry an
+// invalid state, or the load path could reject duplicates. Calling it structural would
+// suppress the revisit trigger on a money-allocation path, which is exactly backwards.
+//
+// This test asserts the gap the way ADR-021's rollback-gap test does. **If it goes RED,
+// a guard has been added — update it to assert the refusal, do not delete it.** A deleted
+// gap test is indistinguishable from a gap nobody noticed.
+func TestSplitScheduleDuplicateIDsAreOrderDependent_Gap(t *testing.T) {
+	// Tied on EVERY ranking axis — same id, scope level, scope, priority, window — so
+	// nothing but input order separates them. Different payees make the winner
+	// observable; a fixture varying any ranked field would be decided by that field
+	// and would prove nothing about order.
+	withPayee := func(payee uuid.UUID) SplitSchedule {
+		s := sched(1, ScopeEvent, "service")
+		s.Parts = []SplitPart{{Payee: Payee{ID: payee}, ShareBps: 10000}}
+		return s
+	}
+	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	a, b := withPayee(first), withPayee(second)
+
+	ab := SelectSplitSchedule(feeAt, "service", nil, feeScopes, []SplitSchedule{a, b})
+	ba := SelectSplitSchedule(feeAt, "service", nil, feeScopes, []SplitSchedule{b, a})
+
+	if ab.Winner == nil || ba.Winner == nil {
+		t.Fatalf("no winner (ab=%v ba=%v) — the fixture stopped reaching the comparator", ab.Winner, ba.Winner)
+	}
+	gotAB, gotBA := ab.Winner.Parts[0].Payee.ID, ba.Winner.Parts[0].Payee.ID
+	if gotAB == gotBA {
+		t.Fatalf("both orderings paid %v: the comparator has become order-INDEPENDENT for "+
+			"duplicate ids. If a guard was added, assert the refusal here and close the "+
+			"ADR-046 §7 item; if the ranking changed, this gap may have closed by accident "+
+			"and that is worth understanding before deleting the test", gotAB)
+	}
+	if gotAB != first || gotBA != second {
+		t.Fatalf("orderings paid %v / %v, want %v / %v — the winner is still the first "+
+			"submitted, which is what makes this order-dependent", gotAB, gotBA, first, second)
+	}
+
+	// And the ambiguity is invisible in provenance: neither duplicate is reported as a
+	// loser, so a caller reading Candidates cannot tell this happened.
+	if len(ab.Candidates) != 0 {
+		t.Errorf("candidates = %d, want 0 — this test's claim is that the duplicate is "+
+			"NOT surfaced; if it now is, the gap is narrower than recorded", len(ab.Candidates))
+	}
+}

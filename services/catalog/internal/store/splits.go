@@ -144,13 +144,22 @@ func SelectSplitSchedule(at time.Time, code string, channel *string, scopes Pric
 	// changing the signature and making fee resolution newly failable mid-loop, which
 	// is a behaviour change rather than an alignment.
 	//
-	// What holds the invariant instead: id is the primary key, so duplicates are
-	// unreachable through Postgres — the same fact that makes the other two guards
-	// pure seams. The sort above is what makes the ANSWER order-independent given
-	// distinct ids, and that part is present.
+	// DEFERRED, NOT IMPOSSIBLE, and the distinction matters (ai-review). The caller
+	// could validate the loaded set once before its fee loop; SplitSelection could
+	// carry an invalid state; the load path could reject duplicates where it reads
+	// them. None of those is in TKT-306's scope, but calling it structural would
+	// suppress ADR-046 §7's revisit trigger on a MONEY-ALLOCATION path.
 	//
-	// If this ever needs the guard, the question is the signature, and ADR-046 §7's
-	// revisit trigger (a third rule kind — this one) is already owed a decision.
+	// WHAT HAPPENS TODAY, measured: two schedules sharing an id and tied on every
+	// ranking axis produce an ORDER-DEPENDENT winner — [a,b] and [b,a] return
+	// different payees — and both are absent from Candidates, so the provenance does
+	// not show the ambiguity either. The price and fee comparators refuse this input;
+	// this one silently picks one.
+	//
+	// What holds the invariant meanwhile: id is the primary key, so duplicates are
+	// unreachable through Postgres — the same fact that makes the other two guards
+	// pure seams, and the same reason those guards exist anyway. The sort above keeps
+	// the answer order-independent given DISTINCT ids, which is the part that is done.
 
 	eligible := make([]SplitSchedule, 0, len(scoped))
 	var windowLosers []LosingSplitSchedule
