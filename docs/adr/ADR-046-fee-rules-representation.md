@@ -288,6 +288,42 @@ the resemblance:
 A third rule kind gaining a channel axis is the point at which the duplication stops being cheaper
 than the abstraction. TKT-237 is the second, and the count is what the rule turns on.
 
+#### Amended by TKT-306 — the trigger HAS fired, and the determinism posture is now stated once
+
+**The third rule kind exists.** `SelectSplitSchedule` (`splits.go`) ranks split schedules on the same
+axes, with a channel axis. By §7's own test the duplication should now be revisited, and TKT-306 did
+not do it — that ticket's scope explicitly excluded de-duplicating, and a ticket whose subject is
+"the copies drifted apart" is the wrong place to merge them. **Recorded here so the next reader does
+not have to re-derive that the trigger fired.** The decision is owed; it is not made.
+
+What TKT-306 did do is align the copies it found drifting, and the rule they now share is stated
+here once instead of three times in code:
+
+> **The duplicate-id guard protects the determinism of the ANSWER, so it runs AFTER the channel
+> filter.** The last tie-break is the id, so two rules sharing one are inseparable and the winner
+> would depend on input order. A rule ineligible for the requested channel is dropped and never
+> ranks, so it cannot make the answer ambiguous — refusing on it would reject a resolution that has
+> exactly one correct result. Eligible duplicates still error, including ones that lost on their
+> window: those are still REPORTED in provenance, and two of them under one id is the same
+> order-dependence the caller reads.
+
+Where each resolver stands against it:
+
+| resolver | guard | position |
+|---|---|---|
+| `SelectPricingRule` | `ErrDuplicatePriceRuleID` | after the channel filter (narrowed by TKT-237) |
+| `SelectFeeRules` | `ErrDuplicateFeeRuleID` | after the channel filter (**moved there by TKT-306**; it ran before) |
+| `SelectSplitSchedule` | **none, structurally** | — |
+
+`SelectSplitSchedule` returns a bare `SplitSelection` with no error, so it cannot carry this guard
+without changing its signature — and its one production caller (`fees_postgres.go`) runs it inside a
+loop over fees on a money path, which would make fee resolution newly failable mid-loop. That is a
+behaviour change, not an alignment, so TKT-306 left it alone. **Its absence is a structural
+consequence, not drift**, and this table is what stops a future reader reading it as the latter.
+
+The determinism guard is unreachable through Postgres in all three cases — id is the primary key.
+These are pure seams refusing to pretend the invariant holds by luck.
+
 ### 8. Precedence, in full
 
 Filters first, then ranking. Getting this order wrong — in particular treating the forced partition

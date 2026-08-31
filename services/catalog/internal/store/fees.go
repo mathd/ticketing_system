@@ -229,14 +229,6 @@ func SelectFeeRules(at time.Time, in FeeCandidates) (FeeSelection, error) {
 	// came first, and that id is what the handler logs.
 	sort.Slice(scoped, func(i, j int) bool { return scoped[i].ID.String() < scoped[j].ID.String() })
 
-	seen := make(map[uuid.UUID]struct{}, len(scoped))
-	for _, r := range scoped {
-		if _, dup := seen[r.ID]; dup {
-			return FeeSelection{}, fmt.Errorf("%w: %s", ErrDuplicateFeeRuleID, r.ID)
-		}
-		seen[r.ID] = struct{}{}
-	}
-
 	// Step 1 — currency, before the window filter and before channel
 	// eligibility, on every scoped rule that is not already inert.
 	//
@@ -284,6 +276,47 @@ func SelectFeeRules(at time.Time, in FeeCandidates) (FeeSelection, error) {
 		default:
 			eligible = append(eligible, r)
 		}
+	}
+
+	// Determinism, AFTER the channel filter (TKT-306, aligning this resolver with
+	// the price resolver's TKT-237 narrowing).
+	//
+	// The guard protects the DETERMINISM OF THE ANSWER: the last tie-break is the
+	// id, so two rules sharing one are inseparable and the winner would depend on
+	// input order. A rule ineligible for the requested channel is dropped above and
+	// never ranks, so it cannot affect the answer — erroring on it would refuse a
+	// resolution that has exactly one correct result. Eligible duplicates still
+	// error, which is the case the guard was written for.
+	//
+	// This ran BEFORE the channel filter until TKT-306, which is the same defect
+	// TKT-237 had already fixed in pricing.go. The two resolvers are duplicated on
+	// purpose (ADR-046 §7) and the duplication is only honest while the copies say
+	// the same thing.
+	//
+	// It covers window losers as well as winners: a windowed-out rule is still
+	// REPORTED in provenance, and two rules under one id there is the same
+	// order-dependence wearing different clothes.
+	//
+	// Walked over `scoped` in its SORTED order rather than over `eligible` plus
+	// `windowLosers`, and that is not a style choice: windowLosers is a map keyed by
+	// fee code, so ranging it would make WHICH duplicate gets reported depend on Go's
+	// map iteration order — reintroducing, inside the guard, the exact
+	// nondeterminism the guard exists to refuse. `scoped` was sorted by id above,
+	// so this reports the same id every time.
+	//
+	// NOT moved past the currency check above, which is deliberately cross-channel
+	// for a reason of its own ("a rule misconfigured for another channel is still
+	// misconfigured"). Different guard, different question — the two orderings are
+	// independent and both are load-bearing.
+	seen := make(map[uuid.UUID]struct{}, len(scoped))
+	for _, r := range scoped {
+		if !feeChannelEligible(r, in.Channel) {
+			continue
+		}
+		if _, isDup := seen[r.ID]; isDup {
+			return FeeSelection{}, fmt.Errorf("%w: %s", ErrDuplicateFeeRuleID, r.ID)
+		}
+		seen[r.ID] = struct{}{}
 	}
 
 	// Partition by code. A code is CONSIDERED if any channel-eligible rule

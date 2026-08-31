@@ -215,3 +215,64 @@ func TestListSeatMapPinsBoundsThePage(t *testing.T) {
 		t.Fatalf("limit above MaxSeatMapPinPage (%d) must be rejected", MaxSeatMapPinPage)
 	}
 }
+
+// TKT-306: an unpin that matched NO family is distinguishable from one that found
+// nothing to release.
+//
+// Both are successes — an unpin is idempotent and neither leaves work undone — and the
+// old code returned bare nil for both. That erased the one case where the caller is
+// wrong about what it is releasing: a WRONG ORGANIZER for a real map. The release
+// reports success, the pins stay, and nothing notices until TKT-112's reconcile sweep
+// reports pins naming a claim nobody remembers.
+//
+// Three cases, because two would not separate the claim. "Wrong organizer" and "map that
+// does not exist" must BOTH give the sentinel — the resolving query keys on the pair, so
+// a fix that only handled a missing id would leave the motivating case silent. And a real
+// pair with nothing pinned must give nil, or the fix is "always return the sentinel",
+// which satisfies the other two and destroys the distinction it claims to add.
+func TestUnpinDistinguishesNoFamilyFromNothingToUnpin(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	v := enrichedTriple(ctx, t, st)
+
+	seats := []string{"Orchestra/A/1", "Orchestra/A/2"}
+
+	// A real map and organizer, nothing pinned: genuinely idempotent, nil.
+	if err := st.UnpinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v.ID,
+		SeatIdentities: seats, PinnedBy: "hold:none"}); err != nil {
+		t.Fatalf("unpin with nothing pinned: %v, want nil — the pins are already gone, "+
+			"which is exactly what the caller asked for", err)
+	}
+
+	// The motivating case: a REAL map, the WRONG organizer.
+	if err := st.UnpinSeats(ctx, BatchPinInput{OrganizerID: uuid.New(), SeatMapID: v.ID,
+		SeatIdentities: seats, PinnedBy: "hold:wrong-org"}); !errors.Is(err, ErrSeatMapFamilyNotFound) {
+		t.Fatalf("unpin with a foreign organizer = %v, want ErrSeatMapFamilyNotFound — "+
+			"answering nil reports a release that did not happen, and the pins survive "+
+			"until the reconcile sweep finds them", err)
+	}
+
+	// A map id that does not exist at all: same answer, same reason.
+	if err := st.UnpinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: uuid.New(),
+		SeatIdentities: seats, PinnedBy: "hold:ghost"}); !errors.Is(err, ErrSeatMapFamilyNotFound) {
+		t.Fatalf("unpin against an unknown map = %v, want ErrSeatMapFamilyNotFound", err)
+	}
+
+	// And the sentinel is not covering a REAL release: pin, unpin with the right pair,
+	// and the rows are gone with a nil error. Without this the distinction could be
+	// bought by breaking the operation.
+	if err := st.PinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v.ID,
+		SeatIdentities: seats, PinnedBy: "hold:real"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UnpinSeats(ctx, BatchPinInput{OrganizerID: seatMapOrg, SeatMapID: v.ID,
+		SeatIdentities: seats, PinnedBy: "hold:real"}); err != nil {
+		t.Fatalf("a real unpin = %v, want nil", err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM seat_map_pins WHERE pinned_by=$1`, "hold:real").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d pins remain after a real unpin, want 0", n)
+	}
+}

@@ -421,6 +421,67 @@ func TestSelectFeeRulesRefusesDuplicateIDs(t *testing.T) {
 	}
 }
 
+// TKT-306: the guard is NARROWED to channel-eligible rules, matching what TKT-237
+// did to the price resolver. The two comparators are duplicated on purpose
+// (ADR-046 §7), and the duplication is only honest while the copies say the same
+// thing — this one ran its guard BEFORE the channel filter until TKT-306.
+//
+// The rule: the guard protects the determinism of the ANSWER. A rule ineligible
+// for the requested channel is dropped and never ranks, so it cannot make the
+// answer ambiguous — refusing on it rejects a resolution with exactly one correct
+// result. Mirrors TestSelectPricingRuleDuplicateGuardIsChannelScoped.
+func TestSelectFeeRulesDuplicateGuardIsChannelScoped(t *testing.T) {
+	// Two rules sharing an id, both on a channel the request does not ask for.
+	// Neither can compete, so the answer is unambiguous and must be returned.
+	dup := func(scope ScopeLevel) FeeRule {
+		return feeWithChannel(fee(7, scope, "service"), "reseller")
+	}
+	live := fee(1, ScopeEvent, "service")
+
+	got, err := SelectFeeRules(feeAt, FeeCandidates{
+		Currency: "EUR", Scopes: feeScopes, Channel: ptr("web"),
+		Rules: []FeeRule{live, dup(ScopeEvent), dup(ScopeVenue)},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil — duplicates on a channel that cannot compete must "+
+			"not refuse a resolution whose answer is unambiguous", err)
+	}
+	// And the answer is the one the eligible rule gives, not merely "no error".
+	if len(got.Fees) != 1 || got.Fees[0].Winner == nil || got.Fees[0].Winner.ID != live.ID {
+		t.Fatalf("fees = %+v, want the single eligible rule %s to win", got.Fees, live.ID)
+	}
+
+	// Eligible duplicates still error, in both channel contexts — the case the
+	// guard was written for. Without this the fix could be "delete the guard".
+	for _, req := range []*string{ptr("web"), nil} {
+		_, err := SelectFeeRules(feeAt, FeeCandidates{
+			Currency: "EUR", Scopes: feeScopes, Channel: req,
+			Rules: []FeeRule{fee(9, ScopeEvent, "service"), fee(9, ScopeVenue, "service")},
+		})
+		if !errors.Is(err, ErrDuplicateFeeRuleID) {
+			t.Fatalf("channel=%v: err = %v, want ErrDuplicateFeeRuleID — eligible duplicates "+
+				"make the answer depend on input order", req, err)
+		}
+	}
+
+	// A duplicate among rules that are channel-eligible but WINDOWED OUT still
+	// errors: those rules are reported in provenance, and two of them under one id
+	// is the same order-dependence the caller would read.
+	past := func(scope ScopeLevel) FeeRule {
+		r := fee(5, scope, "service")
+		until := feeAt.Add(-time.Hour)
+		r.EffectiveUntil = &until
+		return r
+	}
+	if _, err := SelectFeeRules(feeAt, FeeCandidates{
+		Currency: "EUR", Scopes: feeScopes, Channel: ptr("web"),
+		Rules: []FeeRule{past(ScopeEvent), past(ScopeVenue)},
+	}); !errors.Is(err, ErrDuplicateFeeRuleID) {
+		t.Fatalf("err = %v, want ErrDuplicateFeeRuleID — a windowed-out duplicate is still "+
+			"reported, so it can still make the reported provenance order-dependent", err)
+	}
+}
+
 // A rule for another channel is not merely a loser — it is absent. Returning it
 // would publish one caller's channel fee matrix to every other caller.
 func TestSelectFeeRulesHidesOtherChannelsEntirely(t *testing.T) {

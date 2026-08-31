@@ -320,6 +320,10 @@ func SelectPricingRule(at time.Time, in PricingCandidates) (RuleSelection, error
 	// the answer — erroring on it would refuse a resolution that has exactly one
 	// correct result. Eligible duplicates still error, which is the case the
 	// guard was written for and the one a test pins.
+	//
+	// The fee resolver ran this BEFORE its channel filter until TKT-306, which moved
+	// it here. The rule the two now share is stated once in ADR-046 §7 (TKT-306
+	// amendment), with the reason the split resolver structurally cannot carry it.
 	seen := make(map[uuid.UUID]struct{}, len(scoped))
 	for _, r := range scoped {
 		if _, dup := seen[r.ID]; dup {

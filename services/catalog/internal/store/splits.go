@@ -133,6 +133,25 @@ func SelectSplitSchedule(at time.Time, code string, channel *string, scopes Pric
 
 	sort.Slice(scoped, func(i, j int) bool { return scoped[i].ID.String() < scoped[j].ID.String() })
 
+	// NO DUPLICATE-ID GUARD HERE, and that is structural rather than an omission
+	// (TKT-306; ADR-046 §7's TKT-306 amendment has the table).
+	//
+	// The price and fee resolvers refuse two rules sharing an id, because the last
+	// tie-break is the id and the winner would otherwise depend on input order. The
+	// same is true of this comparator — but this function returns a bare
+	// SplitSelection with no error, and its one production caller runs it INSIDE a
+	// loop over fees on a money path (fees_postgres.go). Adding the guard means
+	// changing the signature and making fee resolution newly failable mid-loop, which
+	// is a behaviour change rather than an alignment.
+	//
+	// What holds the invariant instead: id is the primary key, so duplicates are
+	// unreachable through Postgres — the same fact that makes the other two guards
+	// pure seams. The sort above is what makes the ANSWER order-independent given
+	// distinct ids, and that part is present.
+	//
+	// If this ever needs the guard, the question is the signature, and ADR-046 §7's
+	// revisit trigger (a third rule kind — this one) is already owed a decision.
+
 	eligible := make([]SplitSchedule, 0, len(scoped))
 	var windowLosers []LosingSplitSchedule
 	for _, s := range scoped {
