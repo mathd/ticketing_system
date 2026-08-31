@@ -68,6 +68,16 @@ func TestPartnerAvailabilityRefusesAnUndecodableInventoryBody(t *testing.T) {
 		"an HTML error page": `<html><body>502 Bad Gateway</body></html>`,
 		"a truncated body":   `{"slot_id":"x","avail`,
 		"a JSON array":       `[]`,
+		// The three below are TYPE errors, and they are the cases that matter most:
+		// encoding/json populates the field BEFORE it reports the error, so the nil
+		// guard alone lets them through. `a string` yields &0 — a fabricated sellout —
+		// and the duplicate-key cases yield &7, a number the upstream never asserted.
+		// The first version of this fix dropped the decode check believing these could
+		// not happen (ai-review [high]).
+		"a string where a number belongs": `{"available":"bad"}`,
+		"a duplicate key, valid then bad": `{"available":7,"available":"bad"}`,
+		"a duplicate key, bad then valid": `{"available":"bad","available":7}`,
+		"a float where an int belongs":    `{"available":1.5}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, out := availabilityAsPartner(t, http.StatusOK, body)
@@ -92,13 +102,10 @@ func TestPartnerAvailabilityRefusesAnUndecodableInventoryBody(t *testing.T) {
 // difference: both `{}` and `{"available":0}` produced `available: 0`, because the
 // field was decoded into a *int whose nil case defaulted to zero.
 //
-// This case is ALSO why the fix does not check the decode error separately. A
-// mutation established it: restoring `_ = json.Unmarshal(...)` changed no result
-// here, because encoding/json never leaves a pointer field populated on a body it
-// rejected — so every undecodable body arrives nil and the test above is really
-// exercising this same guard. Two checks would have read as two defences while one
-// was unreachable. The nil test alone covers both, and deleting it turns all four
-// assertions in this file red.
+// This case needs the NIL guard, and the type-error cases above need the DECODE
+// guard. Neither subsumes the other, which is the whole reason the handler carries
+// both — see its comment for the false argument that briefly removed one of them.
+// Each guard is mutation-checked separately below.
 func TestPartnerAvailabilityRefusesAnInventoryBodyMissingAvailable(t *testing.T) {
 	code, out := availabilityAsPartner(t, http.StatusOK, `{"slot_id":"00000000-0000-0000-0000-000000000009","capacity":100}`)
 	if code != http.StatusBadGateway {

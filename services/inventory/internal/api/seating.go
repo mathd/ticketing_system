@@ -37,6 +37,14 @@ func (s *Server) holdSeating(w http.ResponseWriter, r *http.Request) {
 		// commerce reads it as "not seated" and proceeds — correct by accident, and one
 		// caller away from an exchange settling against a seated line on the strength of
 		// a fact nobody established.
+		//
+		// WHY problem() IS SAFE HERE, since it can emit 409 and 400 that this operation
+		// does not declare: ClaimIsSeated returns only ErrNotFound or the driver's error,
+		// never any of the coded conflict sentinels, so the reachable set is exactly
+		// {404, 500} and the contract declares both. That is a property of the store
+		// function, not of problem() — a future ClaimIsSeated that returned, say,
+		// ErrConflict would produce an undeclared 409 and ADR-028's fail-closed validator
+		// would refuse the response. Widen the contract before widening that return.
 		problem(w, err)
 		return
 	}

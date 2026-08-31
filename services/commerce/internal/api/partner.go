@@ -125,23 +125,35 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 	// "stop", and only one of those is true when the upstream is broken. Same
 	// 502-on-undecodable idiom as server.go's "invalid inventory response".
 	//
-	// ONE CHECK, NOT TWO, and the nil test is the one that survives — deliberately.
-	// The obvious fix pairs `if json.Unmarshal(...) != nil` with a nil guard, and the
-	// first is then unreachable: encoding/json never leaves a pointer field populated
-	// on a body it rejected, so every input that errors ALSO arrives here nil. A
-	// mutation proved it — restoring the discarded error changed no test. A redundant
-	// guard beside a passing test reads as two defences and is one (AGENTS.md).
+	// BOTH CHECKS ARE LOAD-BEARING, and the reason is worth writing down because the
+	// first attempt at this fix dropped the decode error on an argument that is FALSE.
 	//
-	// This single test is strictly stronger than the decode check would have been: it
-	// refuses an unreadable body AND a well-formed one that omits the field, which is
-	// equally a broken answer since `available` is `required` on inventory's
-	// Availability schema. The `remaining` fallback that stood here is gone for the
-	// same reason — /slots/{id}/availability has no such field, so it could only ever
-	// have masked a malformed answer.
+	// The tempting claim is that encoding/json never leaves a pointer field populated
+	// on a body it rejects, making the error check unreachable behind the nil guard.
+	// That holds for syntax errors and nothing else. A TYPE error populates the field
+	// first and reports afterwards: `{"available":"bad"}` errors and leaves
+	// `Available = &0` — a 200 with `available: 0`, exactly the defect this fix exists
+	// to remove — and `{"available":7,"available":"bad"}` errors with `&7`, which is
+	// worse still, since it invents a number the upstream never asserted.
+	//
+	// So: refuse an unreadable body, THEN refuse a readable one that omits the field.
+	// Neither subsumes the other. (ai-review [high]; the first version was mutation-
+	// checked against syntax errors only, which is a harness that could not catch what
+	// it was hunting.)
 	var upstream struct {
 		Available *int `json:"available"`
 	}
-	_ = json.Unmarshal(body, &upstream)
+	if json.Unmarshal(body, &upstream) != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
+	}
+	// A DECODABLE body that omits the field is the same failure in a valid envelope.
+	// `available` is `required` on inventory's Availability schema, so its absence is a
+	// contract violation and not a slot with nothing left — and a *int left nil is
+	// indistinguishable from an explicit zero once it has been defaulted.
+	//
+	// The `remaining` fallback that stood here is gone: /slots/{id}/availability has no
+	// such field, so it could only ever have masked a malformed answer.
 	if upstream.Available == nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
 		return

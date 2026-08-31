@@ -361,6 +361,43 @@ describe('device pairing', () => {
     expect(await screen.findByText(/offline scan/i)).toBeDefined()
   })
 
+  // The third cause, and the one the first version of this fix got wrong (ai-review
+  // [medium]). The catch also covers store.actuate and refreshQueued, which run AFTER
+  // a perfectly good reply — so a failure there was reported as "the server answered
+  // badly", the same unsupported claim one step along. Blaming a device fault on the
+  // server is exactly as wrong as blaming it on the network.
+  it('blames this device, not the server, when the reply was fine and the local write failed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-30T20:00:00Z' }), { status: 200 }),
+    ))
+    // Break IndexedDB only for the write that happens AFTER the reply is parsed. The
+    // mint must still succeed — it runs before the request leaves (ADR-025 §D3), and a
+    // scan whose occurrence was never minted would fail for a different reason and
+    // prove nothing about this branch. So: let the mint through, fail the next one.
+    const realTransaction = IDBDatabase.prototype.transaction
+    let breakWrites = false
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof realTransaction>) {
+      if (breakWrites) throw new DOMException('device storage unavailable', 'InvalidStateError')
+      return realTransaction.apply(this, args)
+    })
+
+    render(<App />)
+    // Let the mount settle and the mint run, THEN break storage. Arming it earlier
+    // fails the mint, which is a different branch entirely — the occurrence must be
+    // durably committed before the request leaves (ADR-025 §D3), so a scan whose mint
+    // failed never reaches the code under test.
+    await screen.findByLabelText('Ticket credential')
+    const armAfterMint = new Promise<void>((resolve) => setTimeout(resolve, 0))
+    pasteCredential()
+    await armAfterMint
+    breakWrites = true
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/could not be recorded on this device/i)).toBeDefined()
+    expect(screen.queryByText(/No connection/i)).toBeNull()
+    expect(screen.queryByText(/the server answered/i)).toBeNull()
+  })
+
   it('still says "No connection" when the request never reached the server', async () => {
     // fetch itself rejects: this is the case the old copy described correctly, and
     // it must keep saying so — otherwise the fix has merely moved the wrong message.
