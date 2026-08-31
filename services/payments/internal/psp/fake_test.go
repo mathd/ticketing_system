@@ -221,23 +221,57 @@ func TestFakeAuthHoldAndDeterministicStatus(t *testing.T) {
 	}
 	// Status is deterministic on the replayed token — the same durable evidence the store
 	// carries in StatusRequest — never on hidden state.
-	statuses := map[string]Outcome{
-		fakepsp.TokenSuccess:  Captured,
-		fakepsp.TokenAuthHold: Authorized,
-		fakepsp.TokenDecline:  Declined,
-		fakepsp.TokenTimeout:  Timeout,
-		"":                    Unknown,
-	}
-	for token, wantOutcome := range statuses {
-		res, err := f.Status(ctx, StatusRequest{PaymentToken: token, IdempotencyKey: "idem-hold", Amount: 1250, Currency: "EUR"})
+	//
+	// THE CONFIRMATION IS ASSERTED IN BOTH DIRECTIONS (TKT-298), and that is the whole
+	// point of the second column. Until this ticket the loop checked only `Outcome`, so it
+	// stayed green whether or not `fake-ok` carried a confirmation — which is exactly how a
+	// `Captured` answer that `pspStatus` can never accept survived a table test named for
+	// the contract it was breaking. Asserting only the success token's confirmation would
+	// leave the same hole one step over: a blanket echo added to every branch would pass,
+	// and a `Declined` or `Timeout` carrying confirmed money is a claim that money moved on
+	// an outcome whose whole meaning is that none did.
+	for _, c := range []struct {
+		token       string
+		want        Outcome
+		wantConfirm bool
+	}{
+		// Captured is the ONE outcome that moves money, so it is the one that owes a
+		// figure. pspStatus refuses a Captured resolution whose confirmation does not
+		// Agrees (api/psp.go), and a nil confirmation never agrees — so without this the
+		// offline stack cannot resolve its own success token at all.
+		{fakepsp.TokenSuccess, Captured, true},
+		// Authorized money is held, not moved: ConfirmedMoney is the captured figure, and
+		// Result.Validate refuses one on an outcome that captured nothing.
+		{fakepsp.TokenAuthHold, Authorized, false},
+		{fakepsp.TokenDecline, Declined, false},
+		{fakepsp.TokenTimeout, Timeout, false},
+		// No token, no evidence, no resolution — and nothing to confirm.
+		{"", Unknown, false},
+	} {
+		const amount, currency = 1250, "EUR"
+		res, err := f.Status(ctx, StatusRequest{PaymentToken: c.token, IdempotencyKey: "idem-hold", Amount: amount, Currency: currency})
 		if err != nil {
-			t.Fatalf("Status(%q): %v", token, err)
+			t.Fatalf("Status(%q): %v", c.token, err)
 		}
-		if res.Outcome != wantOutcome {
-			t.Fatalf("Status(%q) = %+v, want outcome %q", token, res, wantOutcome)
+		if res.Outcome != c.want {
+			t.Fatalf("Status(%q) = %+v, want outcome %q", c.token, res, c.want)
 		}
 		if err := res.Validate(); err != nil {
-			t.Fatalf("Status(%q) produced invalid Result: %v", token, err)
+			t.Fatalf("Status(%q) produced invalid Result: %v", c.token, err)
+		}
+		if got := res.Confirmed != nil; got != c.wantConfirm {
+			t.Fatalf("Status(%q) carries confirmation=%v, want %v: %+v",
+				c.token, got, c.wantConfirm, res)
+		}
+		// The figure itself, not just its presence. The fake echoes the replayed request
+		// because that is what its Authorize, Capture and Refund all do — a simulator
+		// "moved" exactly what it was asked to. An echo can never DISAGREE, so this is
+		// regression cover; the divergence proofs live where a provider figure and the
+		// request can actually differ (divergentPSP in the api package, and the Stripe
+		// httptest stub in stripe_confirmed_test.go).
+		if c.wantConfirm && !res.Confirmed.Agrees(amount, currency) {
+			t.Fatalf("Status(%q) must confirm the replayed request %d %s, got %+v",
+				c.token, amount, currency, res.Confirmed)
 		}
 	}
 }

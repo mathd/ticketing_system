@@ -28,8 +28,13 @@ func (f *Fake) Authorize(_ context.Context, req AuthorizeRequest) (Result, error
 		// State the consequence plainly, because it is the reason this ticket existed: a
 		// fake that echoes CAN NEVER DISAGREE, so no fake-backed test can demonstrate the
 		// fail-closed guard. Every fake-backed assertion here is regression cover. The
-		// divergence proofs run through the Stripe adapter's httptest stub, which is the
-		// only seam in this repo where the provider's figure and the request can differ.
+		// divergence proofs run through the two seams where a provider's figure and the
+		// request really can differ: `divergentPSP`, the port-level stub the api package's
+		// provider_confirmation_smoke_test.go drives every write sink with, and the Stripe
+		// adapter's httptest stub in stripe_confirmed_test.go. An earlier version of this
+		// comment named the Stripe stub as the ONLY such seam; that was wrong when written,
+		// and TKT-298 relied on the true answer — the fake's Status now echoes too, which
+		// would have been a real loss of coverage had the claim been accurate.
 		return Result{Outcome: Captured, Captured: true, Authorized: true, TerminalNoSideEffect: false,
 			Confirmed: &ConfirmedMoney{Amount: req.Amount, Currency: req.Currency}}, nil
 	case fakepsp.TokenDecline:
@@ -71,19 +76,38 @@ func (f *Fake) Refund(_ context.Context, _, _ string, amount int64, currency str
 	return Result{Outcome: Refunded, Confirmed: &ConfirmedMoney{Amount: amount, Currency: currency}}, nil
 }
 
-// Status carries NO confirmation on any branch, deliberately: StatusRequest's Amount is the
-// stored REQUEST being replayed, not a provider answer, and echoing it back as a
-// confirmation would fabricate exactly the evidence TKT-257 removes. The fake has no
-// provider to ask, so it honestly confirms nothing.
-//
 // Status resolves an operation deterministically from the replayed token — the same
 // durable evidence the store carries in StatusRequest — mirroring Stripe's replay-under-
 // the-same-key contract without hidden state. An empty/unknown token stays Unknown: no
 // evidence, no resolution, and recovery never releases a claim on Unknown.
+//
+// The CAPTURED branch echoes the replayed request as its confirmation, exactly as
+// Authorize, Capture and Refund do (TKT-298). It used to carry none, on the argument that
+// echoing the stored request "would fabricate the evidence TKT-257 removes" — but that
+// argument condemns this fake's other three methods equally, and they are the ones that
+// are right: for a simulator, confirming the request IS the honest answer, because the
+// simulator moved exactly what it was asked to.
+//
+// Withholding it was not neutral, it was broken. pspStatus refuses any Captured resolution
+// whose confirmation does not Agrees (api/psp.go), and a nil confirmation never agrees, so
+// an operation left bound-unresolved by a crash on a fake-ok charge could NEVER be
+// status-resolved: payments answered 502 forever and commerce's runner parked the order
+// permanently. A Status that cannot resolve its own success token is not a conservative
+// Status, it is a false one — and this method's own doc line above promised otherwise.
+//
+// The other branches carry nothing, and that is not an oversight either: ConfirmedMoney is
+// the captured figure, and an authorization, a decline or a timeout moved no money for a
+// provider to confirm. Result.Validate enforces it.
+//
+// This costs no divergence coverage, which is the precondition that makes it safe. An echo
+// can never disagree, so no fake-backed test could ever have demonstrated the fail-closed
+// guard; the proofs run where a provider figure and the request really can differ —
+// divergentPSP in the api package, and the Stripe httptest stub in stripe_confirmed_test.go.
 func (f *Fake) Status(_ context.Context, req StatusRequest) (Result, error) {
 	switch req.PaymentToken {
 	case fakepsp.TokenSuccess:
-		return Result{Outcome: Captured, Captured: true, Authorized: true}, nil
+		return Result{Outcome: Captured, Captured: true, Authorized: true,
+			Confirmed: &ConfirmedMoney{Amount: req.Amount, Currency: req.Currency}}, nil
 	case fakepsp.TokenAuthHold:
 		return Result{Outcome: Authorized, Authorized: true}, nil
 	case fakepsp.TokenDecline:

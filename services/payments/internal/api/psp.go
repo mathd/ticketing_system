@@ -70,6 +70,18 @@ func confirmedCapture(op store.Operation) *store.ConfirmedCapture {
 	return &store.ConfirmedCapture{Amount: *op.ConfirmedCapturedAmount, Currency: op.ConfirmedCurrency}
 }
 
+// confirmedCompensation is the same projection for a completed compensation's stored
+// provider figure (TKT-298). nil stays nil for the same reason it does above: a void moves
+// no money and CompleteCompensation refuses a confirmation on one, and a refund completed
+// before migration 0006 has none — so an absent key means "never confirmed", never
+// "confirmed zero".
+func confirmedCompensation(c store.Compensation) *store.ConfirmedCapture {
+	if c.ConfirmedAmount == nil {
+		return nil
+	}
+	return &store.ConfirmedCapture{Amount: *c.ConfirmedAmount, Currency: c.ConfirmedCurrency}
+}
+
 // resolvedResult reconstructs the normalized result from a locally-resolved operation's
 // terminal status. Local durable evidence IS the answer for a completed operation — no
 // provider call, so the endpoint works identically for the fake and Stripe.
@@ -128,13 +140,26 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 	// after a refund/void, reporting "captured"/"authorized" with live amounts would tell
 	// the caller money is still held that has already been returned or released.
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "refund"); err == nil && found && comp.Completed {
-		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency, nil))
+		// The refund's OWN confirmed figure, not the operation's (TKT-298). This branch
+		// used to pass nil unconditionally, so the one caller with no other way to see what
+		// the provider returned for a recovery refund — commerce reads only this endpoint —
+		// never saw TKT-257's evidence here, while every other answered state publishes it.
+		//
+		// The compensation's figure is the right one: `confirmed_amount` is what the
+		// provider said it RETURNED, which is the money this answer is about. The
+		// operation's confirmation describes the capture that has since been reversed.
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency, confirmedCompensation(comp)))
 		return
 	} else if err != nil {
 		write(w, 500, map[string]string{"error": "lookup compensation"})
 		return
 	}
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "void"); err == nil && found && comp.Completed {
+		// nil here is deliberate and stays nil, unlike the refund branch above (TKT-298): a
+		// void moves no money, so there is no provider figure to publish. It is not merely
+		// absent by convention — CompleteCompensation REFUSES a confirmation on a void, so
+		// the column is guaranteed NULL and reading one would be reporting a value the
+		// store forbids writing.
 		write(w, 200, statusBody(psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, 0, 0, op.RequestCurrency, nil))
 		return
 	} else if err != nil {
