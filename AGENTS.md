@@ -97,6 +97,22 @@ experiment stays valid.
   PURE SEAM that accepts hand-built input, and the same argument would make the guard itself
   pointless. Evaluate a defence's changes at the seam it defends.
   ([a design space has no compiler](docs/learnings/2026-08-31-a-design-space-has-no-compiler.md))
+  **And a test has TWO independent properties — deterministic, and discriminating — so fixing one
+  routinely destroys the other.** TKT-308 took four versions of one fixture: a sequential warm was
+  stable and blind to the mutation; concurrent caught it and was racy; a barrier on the first burst
+  restored determinism and the mutation passed again; barriers on both finally did both. **Every
+  intermediate version looked finished**, because each correctly fixed the defect it addressed and
+  nobody re-checked the property that had been fine a moment earlier — the mutation confirms the one
+  you were just working on, and so does the repeat loop. **After any change to a FIXTURE, run both:
+  the mutation (break the mechanism, confirm red), then 6–8 unmutated runs.** Every time, even when
+  the change was "obviously" about only one of them. A test that has not flaked yet is not evidence
+  it is deterministic — where a fixture depends on scheduling, force the schedule. And **a new test
+  is a change that earns the same treatment as production code**: that ticket's two review passes
+  produced six findings and **none touched the four-line production change** — the change was
+  measured and checked, the tests were written plausibly. Two of the six were assertions written
+  *because* a hazard had been identified and unable to see it (a traceparent header proving a span; a
+  global provider "restored" when its delegate is set once).
+  ([deterministic or discriminating, but not both](docs/learnings/2026-08-31-deterministic-or-discriminating-but-not-both.md))
 - **A security claim is a hypothesis until it is executed.** Two consecutive adversarial passes
   rejected two different claims about one guard, both plausible, both written in good faith, both
   false; what settled it was running the sequence and watching it return 200 (TKT-236, ADR-053). When

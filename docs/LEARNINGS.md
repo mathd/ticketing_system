@@ -566,3 +566,23 @@ currency check on the grounds that the id is a primary key, but the guard exists
 comparator seam*, and the same PK argument would make the guard itself pointless. And the one claim that
 came out right first time was the one that was **run** rather than argued.
 [full note](learnings/2026-08-31-a-design-space-has-no-compiler.md)
+
+**2026-08-31 — TKT-308.** **Determinism and discrimination are separate test properties, and fixing one
+routinely destroys the other.** One test took four versions: a sequential warm was stable and blind to
+the mutation; concurrent caught it and was racy; a barrier on the first burst restored determinism and
+the mutation passed again (a sequential second burst reuses one of `DefaultTransport`'s two idle
+connections); barriers on both finally did both. **Every intermediate version looked finished**, because
+each was a correct fix for the defect it addressed and nobody re-checked the property that had been fine
+a moment earlier. After any change to a FIXTURE, run both — the mutation (break it, confirm red) and a
+6–8 run repeat loop — in that order, every time. Corollary: **a test that has not flaked yet is not
+evidence it is deterministic**; where a fixture depends on scheduling, force the schedule. Two of the
+same ticket's six findings were the same failure in tests written *because* a hazard had been
+identified — one asserted a traceparent header to prove a span was recorded (a no-op tracer injects the
+header and records nothing), the other mutated global OTel state it cannot restore (the initial provider
+is a proxy whose delegate is set once). **Six findings across two passes, zero on the four-line
+production change.** A new test is a change and earns the same treatment. Separately: **a correct
+measurement can sit beside a regression it does not measure** — tuning the shared client's transport
+genuinely improved connections 56→16 while also fragmenting a pool that `obs.Client()` and every
+nil-Transport client had been sharing by accident; when a change makes something private that was
+shared by default, enumerate what else was riding the default.
+[full note](learnings/2026-08-31-deterministic-or-discriminating-but-not-both.md)
