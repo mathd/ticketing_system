@@ -92,6 +92,24 @@ experiment stays valid.
   input for which the mechanism changes the output. Delete it — a dead mechanism with a green test
   beside it reads as a guarantee while the race it was meant to close stays open.
   ([the mechanism was inert](docs/learnings/2026-08-23-the-mechanism-was-inert-not-the-test.md))
+  **And "the mechanism does nothing" splits again — ask WHY it is unreachable before deleting it.**
+  Two situations produce the identical green mutation. TKT-162's ceiling was unreachable
+  *structurally*: a descending walk can never exceed a page-one ceiling, so no evolution of the
+  system makes it matter, and deleting it was right. TKT-304's exchange currency guard is
+  unreachable *contingently* — `validate()` refuses any non-EUR resolution first — but that is a
+  policy in **another file** which the code itself calls temporary, with TKT-10 tracking its removal.
+  Delete it and the day multi-currency ships an exchange settles across currencies with nothing
+  objecting. Ask: **is the thing making this unreachable a property of the algorithm, or a decision
+  someone plans to reverse?** Structural → delete. Contingent → keep, and *reach it in a test* by
+  varying the side the shadowing check does not police (seed the SOURCE row in the other currency —
+  the state the removal will create), because a kept guard with no reachable test is an untested
+  guarantee. Two corollaries: a test asserting the **currently observed** refusal pins the limitation
+  as the acceptance criterion and goes red looking like a regression the day the guard starts
+  working; and before deleting an exported symbol, "no callers" is necessary and **not sufficient** —
+  ask what it is the last *producer* of. `ValidateExchangeTarget` was dead, and was also the only
+  source of a sentinel whose mapping and table test its removal would have stranded, recreating this
+  exact defect one layer up.
+  ([inert for two different reasons](docs/learnings/2026-08-30-inert-for-two-different-reasons.md))
 - **A guard with N predicates needs N tests, and scoping a write means scoping its FAILURE path too.**
   Two shapes from one ticket (TKT-251), both invisible to a test that only asserts "the write was
   refused". *One:* when several predicates guard one operation, an earlier refusal **short-circuits**

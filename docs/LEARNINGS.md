@@ -496,3 +496,20 @@ never arrives?"* A guard with no exit is a lease with no expiry: something must 
 time out, or it must degrade to a weaker check, and past its bound it should **stop deciding** rather
 than start permitting.
 [full note](learnings/2026-08-23-the-guard-recreated-the-bug-it-prevented.md)
+
+**2026-08-30 — TKT-304.** A mechanism can be inert for **two different reasons, and only one of them
+means delete**. TKT-162's ceiling was unreachable *structurally* — a descending walk can never exceed
+a page-one ceiling, and no evolution of the system changes that. Commerce's exchange currency guard is
+unreachable *contingently*: `validate()` refuses any non-EUR resolution first, and every reservation's
+currency comes from a validated one — but that is a policy in another file which the code itself calls
+temporary, with TKT-10 tracking its removal. **The mutation looks identical in both cases**; delete the
+mechanism, everything stays green. Ask instead: *is the thing making this unreachable a property of the
+algorithm, or a decision someone plans to reverse?* Structural → delete. Contingent → keep, and reach it
+in a test by varying the side the shadowing check does not police (here: seed the SOURCE row in another
+currency, the state TKT-10 will create). Two corollaries the same ticket paid for: a test that asserts
+the *currently observed* refusal **pins the limitation as the acceptance criterion**, and goes red
+looking like a regression the day the guard starts working; and "no callers" is necessary but not
+sufficient before deleting an exported symbol — ask what it is the last *producer* of, because
+`ValidateExchangeTarget` was the only source of a sentinel whose mapping and table test would have been
+stranded by its removal.
+[full note](learnings/2026-08-30-inert-for-two-different-reasons.md)
