@@ -669,10 +669,57 @@ func (j *Journal) LookupOperation(ctx context.Context, org uuid.UUID, key string
 	return op, true, nil
 }
 
+// CompleteOperation records a charge's terminal result on its bound operation. The UPDATE
+// is guarded on `status IS NULL`, so it writes nothing whenever the row is already resolved
+// — and that has TWO causes needing OPPOSITE answers, which is why this re-reads rather
+// than either ignoring the miss or failing outright (TKT-298). Both siblings already do
+// this: see CompleteCompensation's zero-row branch below, and CompleteRefundLeg.
+//
+// Until TKT-298 this discarded the result entirely, collapsing both causes onto "success".
+// The charge handler then answered 200 with its own status while the row recorded another
+// outcome, or none — a lease-expired re-bind racing the original is the reachable path.
 func (j *Journal) CompleteOperation(ctx context.Context, org uuid.UUID, key, status string, factID uuid.UUID, prov ProviderResult) error {
-	_, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,confirmed_captured_amount=$10,confirmed_currency=NULLIF($11,''),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
-	return err
+	res, err := j.db.ExecContext(ctx, `UPDATE payment_operations SET status=$3,fact_id=$4,provider_payment_ref=NULLIF($5,''),provider_charge_ref=NULLIF($6,''),provider_state=NULLIF($7,''),authorized_amount=$8,captured_amount=$9,confirmed_captured_amount=$10,confirmed_currency=NULLIF($11,''),provider_state_at=now() WHERE organizer_id=$1 AND idempotency_key=$2 AND status IS NULL`, org, key, status, factID, prov.PaymentRef, prov.ChargeRef, prov.State, prov.AuthorizedAmount, prov.CapturedAmount, prov.confirmedAmountArg(), prov.ConfirmedCurrency)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// The BENIGN cause is a concurrent duplicate: two requests both pass the handler's
+		// replay short-circuit, both append the same deterministic fact (the journal
+		// dedupes them), and both arrive here. One wins on `status IS NULL`. The loser's
+		// work is DONE — same fact id, same provider operation — so answering "not
+		// completed" would turn a successful duplicate into a 500 and a pointless retry.
+		//
+		// The DANGEROUS cause is a row that is missing or still unresolved: the caller has
+		// appended a payment fact to an append-only journal and believes the money is
+		// durably recorded while nothing records it. That must stay an error.
+		existing, found, lookupErr := j.LookupOperation(ctx, org, key)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if !found || !existing.Resolved {
+			return ErrOperationNotCompleted
+		}
+		// Resolved, but by a DIFFERENT completion. Converging on a fact id we did not write
+		// would report someone else's result as this call's — the charge handler returns
+		// its own `status` to the buyer, so it would state an outcome the row contradicts.
+		if existing.FactID != factID {
+			return fmt.Errorf("%w: already completed under fact %s", ErrOperationNotCompleted, existing.FactID)
+		}
+		return nil
+	}
+	return nil
 }
+
+// ErrOperationNotCompleted reports a charge completion that wrote no row and could not be
+// explained as a benign duplicate — the operation is missing, still unresolved, or was
+// resolved under a different fact (TKT-298). The charge handler answers 500 on it, which is
+// correct: a retry is better than a 200 claiming a durability that does not exist.
+var ErrOperationNotCompleted = errors.New("payments: operation completion wrote no row")
 
 // RecordProviderState persists provider evidence learned by a Status resolution WITHOUT
 // touching the operation's terminal status/fact — those belong to the charge and recovery

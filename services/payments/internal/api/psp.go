@@ -54,8 +54,20 @@ func statusBody(result psp.Result, authorized, captured int64, currency string, 
 	// The provider's own figure, ADDITIVE and optional (TKT-257). Omitted when the
 	// operation carries no confirmation — a pre-0006 row, or one no provider ever
 	// confirmed — so an absent key means "never confirmed", never "confirmed zero".
+	//
+	// The KEY depends on which movement was confirmed (TKT-298, ai-review [medium]). A
+	// refunded answer's evidence is what the provider RETURNED, and publishing it under
+	// `confirmed_captured_amount` would hand a consumer refund evidence under a
+	// capture-evidence name — the schema defines that field as what the provider reported
+	// CAPTURING, and nothing else in the payload would let a reconciliation consumer tell
+	// the two apart. At most one is ever present: the refunded branch returns before the
+	// resolved-operation branch can run.
 	if confirmed != nil {
-		body["confirmed_captured_amount"] = confirmed.Amount
+		key := "confirmed_captured_amount"
+		if result.Outcome == psp.Refunded {
+			key = "confirmed_refunded_amount"
+		}
+		body[key] = confirmed.Amount
 		body["confirmed_currency"] = confirmed.Currency
 	}
 	return body
@@ -68,6 +80,18 @@ func confirmedCapture(op store.Operation) *store.ConfirmedCapture {
 		return nil
 	}
 	return &store.ConfirmedCapture{Amount: *op.ConfirmedCapturedAmount, Currency: op.ConfirmedCurrency}
+}
+
+// confirmedCompensation is the same projection for a completed compensation's stored
+// provider figure (TKT-298). nil stays nil for the same reason it does above: a void moves
+// no money and CompleteCompensation refuses a confirmation on one, and a refund completed
+// before migration 0006 has none — so an absent key means "never confirmed", never
+// "confirmed zero".
+func confirmedCompensation(c store.Compensation) *store.ConfirmedCapture {
+	if c.ConfirmedAmount == nil {
+		return nil
+	}
+	return &store.ConfirmedCapture{Amount: *c.ConfirmedAmount, Currency: c.ConfirmedCurrency}
 }
 
 // resolvedResult reconstructs the normalized result from a locally-resolved operation's
@@ -128,13 +152,26 @@ func (s *Server) pspStatus(w http.ResponseWriter, r *http.Request) {
 	// after a refund/void, reporting "captured"/"authorized" with live amounts would tell
 	// the caller money is still held that has already been returned or released.
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "refund"); err == nil && found && comp.Completed {
-		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency, nil))
+		// The refund's OWN confirmed figure, not the operation's (TKT-298). This branch
+		// used to pass nil unconditionally, so the one caller with no other way to see what
+		// the provider returned for a recovery refund — commerce reads only this endpoint —
+		// never saw TKT-257's evidence here, while every other answered state publishes it.
+		//
+		// The compensation's figure is the right one: `confirmed_amount` is what the
+		// provider said it RETURNED, which is the money this answer is about. The
+		// operation's confirmation describes the capture that has since been reversed.
+		write(w, 200, statusBody(psp.Result{Outcome: psp.Refunded}, 0, 0, op.RequestCurrency, confirmedCompensation(comp)))
 		return
 	} else if err != nil {
 		write(w, 500, map[string]string{"error": "lookup compensation"})
 		return
 	}
 	if comp, found, err := s.journal.LookupCompensation(r.Context(), org, key, "void"); err == nil && found && comp.Completed {
+		// nil here is deliberate and stays nil, unlike the refund branch above (TKT-298): a
+		// void moves no money, so there is no provider figure to publish. It is not merely
+		// absent by convention — CompleteCompensation REFUSES a confirmation on a void, so
+		// the column is guaranteed NULL and reading one would be reporting a value the
+		// store forbids writing.
 		write(w, 200, statusBody(psp.Result{Outcome: psp.Voided, TerminalNoSideEffect: true}, 0, 0, op.RequestCurrency, nil))
 		return
 	} else if err != nil {

@@ -264,6 +264,7 @@ type PSPStatus struct {
 	CapturedAmount          int64            `json:"captured_amount"`
 	ConfirmedCapturedAmount *int64           `json:"confirmed_captured_amount,omitempty"`
 	ConfirmedCurrency       *string          `json:"confirmed_currency,omitempty"`
+	ConfirmedRefundedAmount *int64           `json:"confirmed_refunded_amount,omitempty"`
 	Currency                string           `json:"currency"`
 	Outcome                 PSPStatusOutcome `json:"outcome"`
 	TerminalNoSideEffect    bool             `json:"terminal_no_side_effect"`

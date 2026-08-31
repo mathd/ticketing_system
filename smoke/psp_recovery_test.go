@@ -456,3 +456,118 @@ func TestCheckoutReplayAtParkedReleasePendingIsNotPending(t *testing.T) {
 		t.Fatalf("replay against a PARKED release_pending = %d %s, want 409 — 202 would promise progress no worker can make", code, body)
 	}
 }
+
+// TKT-298 COS1, composed. An operation left BOUND-UNRESOLVED by a crash on a `fake-ok`
+// charge resolves via status instead of 502ing forever, and its order does not park.
+//
+// WHY THIS TIER, given the payments-side answer is already pinned at the api tier
+// (psp_status_confirmation_smoke_test.go). What that test proves is that `pspStatus` returns
+// 200; what the ticket is about is that commerce's recovery runner then DRAINS the order.
+// Those are different claims and only the composed stack holds both: payments answers, the
+// real runner consumes the answer, and the order's terminal state and `recovery_parked_at`
+// are commerce's rows. A payments-only test would have been green while orders kept parking.
+//
+// THE GAP THIS DEMONSTRATES. Before this ticket `Fake.Status` returned Captured with NO
+// confirmation; `pspStatus` refuses any Captured resolution that does not Agrees, and a nil
+// confirmation never agrees — so payments answered 502 on every attempt, the runner treated
+// only a decoded 200 as evidence, and `ReleaseStuckOrder` parked the order once its attempts
+// ran out. The suite never saw it because no fixture built an unresolved fake-ok operation:
+// the two tests above use `fake-auth-hold`, whose Authorized answer needs no confirmation.
+//
+// STAGING THE CRASH. The bind must exist without the completion, which no live request
+// leaves behind for `fake-ok` (the charge succeeds and completes in one call). So the
+// operation row is written directly — bound, `status IS NULL`, no fact — which is exactly
+// what a payments crash between BindOperation and CompleteOperation leaves, and exactly the
+// row the recovery runner is built to resolve.
+func TestRecoveryResolvesAnUnresolvedFakeOKChargeInsteadOfParking(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, ticketType := setupCheckoutOffer(t, "pspfakeok")
+	reservation := reserveCheckout(t, ticketType, "psp-fakeok-reserve-"+uuid.NewString())
+	orderID := uuid.NewString()
+	chargeKey := "psp-fakeok-order-" + uuid.NewString()
+	const amount = 2500
+
+	// The crashed charge: bound under the order's idempotency key, carrying the durable
+	// request the status replay resolves against, and never completed.
+	pdb, err := pgx.Connect(ctx, dsn("payments", "payments"))
+	if err != nil {
+		t.Fatalf("connect payments db: %v", err)
+	}
+	defer func() { _ = pdb.Close(context.Background()) }()
+	if _, err := pdb.Exec(ctx, `
+		INSERT INTO payment_operations(organizer_id,idempotency_key,request_fingerprint,order_id,buyer_id,
+		                               request_amount,request_currency,payment_method_ref)
+		VALUES($1,$2,'smoke-crash-fp',$3,$4,$5,'EUR','fake-ok')`,
+		organizerID, chargeKey, orderID, reservation["buyer_id"], int64(amount)); err != nil {
+		t.Fatalf("stage crashed charge: %v", err)
+	}
+
+	// Prove the fixture reached the state it claims BEFORE relying on it: an operation that
+	// silently failed to insert, or that arrived already resolved, would make the assertions
+	// below pass for a reason that has nothing to do with this ticket.
+	var resolved bool
+	if err := pdb.QueryRow(ctx, `SELECT status IS NOT NULL FROM payment_operations
+		WHERE organizer_id=$1 AND idempotency_key=$2`, organizerID, chargeKey).Scan(&resolved); err != nil {
+		t.Fatalf("staged operation not found: %v", err)
+	}
+	if resolved {
+		t.Fatal("staged operation is already resolved; the crash state was not constructed")
+	}
+
+	// Commerce's side of the same crash: the order believes its payment is unknown, aged
+	// past the recovery grace period so the 2s runner claims it now.
+	cdb := commerceDB(t, ctx)
+	if _, err := cdb.Exec(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,updated_at)
+		VALUES($1,$2,'payment_unknown',$3,'smoke-crash-fp',now()-interval '10 minutes')`,
+		orderID, reservation["reservation_id"], chargeKey); err != nil {
+		t.Fatalf("stage crashed order: %v", err)
+	}
+
+	// The runner must DRAIN it. `completed` is the honest outcome: status proves the money
+	// was captured, the hold is still live, so the sale stands.
+	retry(t, 60*time.Second, func() error {
+		var status string
+		var parked *time.Time
+		if err := cdb.QueryRow(ctx, `SELECT status, recovery_parked_at FROM orders WHERE id=$1`,
+			orderID).Scan(&status, &parked); err != nil {
+			return err
+		}
+		// THE ASSERTION THE TICKET IS ABOUT. A parked row is the defect's signature: no
+		// worker will ever claim it again, so this can never become true later — fail now
+		// and say so rather than burning the deadline.
+		if parked != nil {
+			t.Fatalf("order parked at %s with status %q: recovery exhausted its attempts, which is "+
+				"what happens when payments cannot status-resolve a fake-ok charge", parked, status)
+		}
+		if status != "completed" {
+			return fmt.Errorf("order status = %q, want completed", status)
+		}
+		return nil
+	})
+
+	// And payments' durable evidence carries the provider's figure, not just the outcome —
+	// commerce reads only this endpoint, so an answer without it resolves the operation and
+	// still leaves the caller unable to see what was confirmed.
+	statusURL := paymentsURL + "/internal/psp/status?organizer_id=" + organizerID + "&idempotency_key=" + chargeKey
+	code, body := internalJSON(t, http.MethodGet, statusURL, "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("psp status = %d: %s", code, body)
+	}
+	var st struct {
+		Outcome           string `json:"outcome"`
+		Captured          bool   `json:"captured"`
+		ConfirmedAmount   *int64 `json:"confirmed_captured_amount"`
+		ConfirmedCurrency string `json:"confirmed_currency"`
+	}
+	if err := json.Unmarshal(body, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Outcome != "captured" || !st.Captured {
+		t.Fatalf("psp status = %+v, want captured", st)
+	}
+	if st.ConfirmedAmount == nil || *st.ConfirmedAmount != amount || st.ConfirmedCurrency != "EUR" {
+		t.Fatalf("psp status confirmation = (%v,%q), want (%d,EUR): the offline provider must "+
+			"confirm the money it simulated moving", st.ConfirmedAmount, st.ConfirmedCurrency, amount)
+	}
+}
