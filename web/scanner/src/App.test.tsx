@@ -333,6 +333,94 @@ describe('device pairing', () => {
     expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
   })
 
+  // Absent versus broken, at the turnstile (TKT-305).
+  //
+  // A non-JSON error body — a gateway's 502 page, an access panic — makes
+  // response.json() throw, and that throw lands in the same catch a genuine network
+  // failure does. The scan was queued either way, correctly; the COPY said "No
+  // connection", telling gate staff the network is down when access had answered.
+  // At a venue that sends someone to check the wifi while the actual fault is
+  // upstream.
+  //
+  // The QUEUE BEHAVIOUR is deliberately unchanged and is asserted in both cases:
+  // ADR-066's fail-closed posture is not what this ticket touches, and a fix that
+  // stopped queueing would be far worse than the wrong message.
+  it('says the server answered badly, not "No connection", when the reply cannot be read', async () => {
+    // A 502 whose body is an HTML error page: reached the server, unreadable reply.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 }),
+    ))
+
+    render(<App />)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/the server answered but the reply could not be read/i)).toBeDefined()
+    expect(screen.queryByText(/No connection/i)).toBeNull()
+    // Still queued — the behaviour, unchanged.
+    expect(await screen.findByText(/offline scan/i)).toBeDefined()
+  })
+
+  // The third cause, and the one the first version of this fix got wrong (ai-review
+  // [medium]). The catch also covers store.actuate and refreshQueued, which run AFTER
+  // a perfectly good reply — so a failure there was reported as "the server answered
+  // badly", the same unsupported claim one step along. Blaming a device fault on the
+  // server is exactly as wrong as blaming it on the network.
+  it('blames this device, not the server, when the reply was fine and the local write failed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-30T20:00:00Z' }), { status: 200 }),
+    ))
+    // Break IndexedDB only for the write that happens AFTER the reply is parsed. The
+    // mint must still succeed — it runs before the request leaves (ADR-025 §D3), and a
+    // scan whose occurrence was never minted would fail for a different reason and
+    // prove nothing about this branch. So: let the mint through, fail the next one.
+    // Break storage on the write that follows the MINT, deterministically.
+    //
+    // The mint must succeed: the occurrence is durably committed before the request
+    // leaves (ADR-025 §D3), and a scan whose mint failed takes a different path
+    // entirely and would prove nothing about this branch. Every later write —
+    // actuate on the accepted path, markQueued in the catch — is a `readwrite`.
+    //
+    // Counting READWRITE transactions is what makes this deterministic. An earlier
+    // version armed the failure after a setTimeout(0) and was genuinely flaky: it
+    // failed roughly one run in five, because whether the mint had opened its
+    // transaction by then depended on microtask scheduling. `readonly` reads (the
+    // queue-count refresh on mount) are irrelevant and deliberately not counted, so
+    // this does not depend on how many of those happen or when.
+    const realTransaction = IDBDatabase.prototype.transaction
+    let writes = 0
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof realTransaction>) {
+      if (args[1] === 'readwrite') {
+        writes += 1
+        // 1 is the mint; everything after it is what this test breaks.
+        if (writes > 1) throw new DOMException('device storage unavailable', 'InvalidStateError')
+      }
+      return realTransaction.apply(this, args)
+    })
+
+    render(<App />)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/could not be recorded on this device/i)).toBeDefined()
+    expect(screen.queryByText(/No connection/i)).toBeNull()
+    expect(screen.queryByText(/the server answered/i)).toBeNull()
+  })
+
+  it('still says "No connection" when the request never reached the server', async () => {
+    // fetch itself rejects: this is the case the old copy described correctly, and
+    // it must keep saying so — otherwise the fix has merely moved the wrong message.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    render(<App />)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText(/No connection/i)).toBeDefined()
+    expect(screen.queryByText(/the server answered/i)).toBeNull()
+    expect(await screen.findByText(/offline scan/i)).toBeDefined()
+  })
+
   it('treats a 401 as "pair the device", not as a rejected ticket, and keeps the scan queued', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 }),

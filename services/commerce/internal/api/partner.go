@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -115,24 +116,79 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadGateway, map[string]string{"error": "availability unavailable"})
 		return
 	}
+	// An answer commerce cannot read is a BROKEN UPSTREAM, never a sellout (TKT-305).
+	//
+	// This decode used to discard its error and fall through a nil pointer to
+	// `available = 0`, which is the one wrong answer this endpoint can give: a
+	// reseller polls it to decide whether to keep selling, reads 0, and backs off.
+	// An inventory outage then looks exactly like a sold-out show, and the partner
+	// stops selling seats that exist. 502 says "ask again"; `available: 0` says
+	// "stop", and only one of those is true when the upstream is broken. Same
+	// 502-on-undecodable idiom as server.go's "invalid inventory response".
+	//
+	// BOTH CHECKS ARE LOAD-BEARING, and the reason is worth writing down because the
+	// first attempt at this fix dropped the decode error on an argument that is FALSE.
+	//
+	// The tempting claim is that encoding/json never leaves a pointer field populated
+	// on a body it rejects, making the error check unreachable behind the nil guard.
+	// That holds for syntax errors and nothing else. A TYPE error populates the field
+	// first and reports afterwards: `{"available":"bad"}` errors and leaves
+	// `Available = &0` — a 200 with `available: 0`, exactly the defect this fix exists
+	// to remove — and `{"available":7,"available":"bad"}` errors with `&7`, which is
+	// worse still, since it invents a number the upstream never asserted.
+	//
+	// So: refuse an unreadable body, THEN refuse a readable one that omits the field.
+	// Neither subsumes the other. (ai-review [high]; the first version was mutation-
+	// checked against syntax errors only, which is a harness that could not catch what
+	// it was hunting.)
 	var upstream struct {
 		Available *int `json:"available"`
-		Remaining *int `json:"remaining"`
+		// Decoded so the answer can be checked against the QUESTION (ai-review pass 2).
+		// `slot_id` is required on inventory's Availability, and inventory reads the
+		// slot from a path parameter through a CACHE (availability.Read) — a cache keyed
+		// or invalidated wrongly is the realistic way another slot's figure arrives here
+		// looking perfectly well-formed. Republishing it under the requested slot's id
+		// would hand a reseller a number inventory never asserted about their slot, and
+		// no other guard in this handler could tell.
+		SlotID *string `json:"slot_id"`
 	}
-	_ = json.Unmarshal(body, &upstream)
-	available := 0
-	switch {
-	case upstream.Available != nil:
-		available = *upstream.Available
-	case upstream.Remaining != nil:
-		available = *upstream.Remaining
+	if json.Unmarshal(body, &upstream) != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
 	}
+	// A DECODABLE body that omits the field is the same failure in a valid envelope.
+	// `available` is `required` on inventory's Availability schema, so its absence is a
+	// contract violation and not a slot with nothing left — and a *int left nil is
+	// indistinguishable from an explicit zero once it has been defaulted.
+	//
+	// The `remaining` fallback that stood here is gone: /slots/{id}/availability has no
+	// such field, so it could only ever have masked a malformed answer.
+	if upstream.Available == nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
+	}
+	// A NEGATIVE is a broken answer, not an empty slot, so it is refused rather than
+	// clamped (ai-review pass 2). This used to read `available = 0` on the argument
+	// that "less than nothing available" and "nothing available" are the same fact to
+	// a seller. They are not the same fact about INVENTORY: a negative count means the
+	// upstream's arithmetic is wrong, and turning it into a sellout is the very
+	// substitution this ticket exists to stop — the reseller stops selling, and the
+	// one signal that something is broken has been rounded away.
+	//
+	// The clamp existed because commerce's OWN PartnerAvailability schema declares
+	// `minimum: 0`, so a negative would fail ADR-028's fail-closed response validation
+	// and surface as a 500. That reason survives — 502 is simply the honest status for
+	// it, and it is the one every other unusable-upstream branch here already uses.
+	// (Inventory's Availability declares no minimum, so nothing upstream prevents one.)
+	// The answer must be about the slot that was asked about.
+	if upstream.SlotID == nil || !strings.EqualFold(*upstream.SlotID, slot.String()) {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
+	}
+	available := *upstream.Available
 	if available < 0 {
-		// The contract declares a minimum of 0 and ADR-028's response validation is
-		// fail-closed, so a negative would become a 500. Clamping is honest here:
-		// "less than nothing is available" and "nothing is available" are the same
-		// fact to a seller.
-		available = 0
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
 	}
 	write(w, http.StatusOK, PartnerAvailability{
 		SlotId:      slot,

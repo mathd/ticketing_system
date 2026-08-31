@@ -5,8 +5,20 @@ import './index.css'
 type ScanOutcome =
   | { kind: 'accepted'; scannedAt: string; replay: boolean }
   | { kind: 'rejected'; reason: string; originalScanAt?: string }
-  | { kind: 'queued' }
+  | { kind: 'queued'; cause: 'offline' | 'unreadable' | 'local' }
   | { kind: 'duplicate-response' }
+
+// What the operator is told about a queued scan. Each string says only what the code
+// established (TKT-305): the old single message claimed "No connection" for all three,
+// including the case where the server answered and failed. The three read differently
+// on purpose — one sends staff to the network, one upstream, one to this device — and
+// the instruction that follows them ("saved on this device, admit per venue policy") is
+// the same in every case, because the queue behaviour is.
+const QUEUED_CAUSE = {
+  offline: 'No connection',
+  unreadable: 'The server answered but the reply could not be read',
+  local: 'The scan was sent but could not be recorded on this device',
+} as const
 
 type BarcodeDetectorInstance = {
   detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>
@@ -117,13 +129,38 @@ function App() {
     // (ADR-025 §D3): a retry reuses this record; a new scan mints a new one.
     const store = await storePromise
     const record = await store.mint(value.trim(), new Date().toISOString())
+    // Why the scan could not complete, for the operator (TKT-305). Three causes, and
+    // the UI may only assert one it actually established:
+    //
+    //   'offline'      the request never arrived — fetch itself rejected
+    //   'unreadable'   the server answered and the answer could not be parsed
+    //   'local'        the exchange succeeded and something on THIS DEVICE failed
+    //
+    // The old code collapsed all three into "No connection". A non-JSON error body —
+    // a gateway's 502 page, an access panic — makes response.json() throw and lands
+    // in the same catch a dead network does, so gate staff were told the network was
+    // down while access had answered and failed. At a venue that sends someone to
+    // check the wifi while the fault is upstream.
+    //
+    // 'local' is separated for the same reason 'unreadable' is (ai-review [medium]):
+    // the catch also covers store.actuate, store.markQueued and refreshQueued, so an
+    // IndexedDB failure after a perfectly good reply would otherwise report a server
+    // problem — the identical unsupported claim, one step along.
+    //
+    // The queue-and-retry behaviour is unchanged in all three cases (ADR-066).
+    let cause: 'offline' | 'unreadable' | 'local' = 'offline'
     try {
       const response = await fetch(scanURL, {
         method: 'POST',
         headers: scanHeaders(deviceToken),
         body: JSON.stringify({ qr_payload: record.qrPayload, occurrence_id: record.occurrenceId, occurred_at: record.occurredAt }),
       })
+      // The request arrived. Anything that throws from here to the end of the parse
+      // is the server's answer being unreadable, not the network being down.
+      cause = 'unreadable'
       const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string; replay?: boolean } = await response.json()
+      // Parsed. Anything that throws beyond this point is local to this device.
+      cause = 'local'
       if (response.ok && result.decision === 'accepted') {
         // Actuation is keyed on OUR durable pending record, not on the
         // response: mark-actuated-before-open, and a response for an
@@ -153,10 +190,42 @@ function App() {
         setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
       }
     } catch {
-      // Offline: the occurrence stays durably queued and reconciles on sync.
-      await store.markQueued(record.occurrenceId)
-      setOutcome({ kind: 'queued' })
-      await refreshQueued()
+      // Queued in every case: the occurrence stays durably recorded and reconciles on
+      // sync, which is the fail-closed posture ADR-066 requires and is NOT what this
+      // ticket changes. Only the explanation differs — see `cause`.
+      //
+      // The queue write is itself guarded, because on the 'local' path the thing that
+      // just failed IS this device's storage — so markQueued throws too, the exception
+      // escapes submitScan, and the operator gets NO screen at all. Found while testing
+      // the 'local' message (ai-review [medium]); a blank result with a person at the
+      // turnstile is worse than a wrongly-worded one.
+      //
+      // WHAT THIS COSTS, stated exactly, because the comfortable version of it is false
+      // (ai-review pass 2): the record is durable — mint commits before the request
+      // leaves (ADR-025 §D3) — but it is NOT recovered by the next sync. `queued()`
+      // filters on state === 'QUEUED', so a record still PENDING because markQueued
+      // failed is invisible to reconciliation. Swallowing here therefore trades a
+      // stranded record for a screen the operator can act on, and it is the right trade
+      // only because the alternative strands the SAME record and shows nothing.
+      //
+      // The real repair is a sweep that reconciles PENDING records too — a device whose
+      // storage is failing has bigger problems than one scan, and neither this catch nor
+      // a rethrow fixes that. TKT-315 carries the sync path's gaps.
+      try {
+        await store.markQueued(record.occurrenceId)
+      } catch {
+        // Deliberately swallowed: the screen below is the only thing left that can
+        // help the operator, and it must render.
+      }
+      setOutcome({ kind: 'queued', cause })
+      // Guarded for the same reason: this reads the queue, so on the 'local' path it
+      // throws as well, and an exception escaping here would still deny the operator
+      // the screen set on the line above.
+      try {
+        await refreshQueued()
+      } catch {
+        // The queued-count badge is a convenience; the outcome screen is not.
+      }
     } finally {
       setSubmitting(false)
     }
@@ -383,7 +452,7 @@ function App() {
         </section>
       )}
       {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
-      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>No connection — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
+      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{QUEUED_CAUSE[outcome.cause]} — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
       {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second entry.</p></section>}
     </main>
   )
