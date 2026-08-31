@@ -68,13 +68,55 @@ const clientTimeout = 30 * time.Second
 // track a change here; this can.
 const ClientTimeout = clientTimeout
 
+// crossServiceTransport is the pooled base transport under every cross-service call.
+//
+// http.DefaultTransport leaves MaxIdleConnsPerHost at the package default of 2
+// (net/http DefaultMaxIdleConnsPerHost), so past two concurrent requests to one
+// upstream a caller opens and discards a TCP connection per request. The gateway
+// already makes exactly this argument for its proxy transport, one hop earlier
+// (gateway/cmd/gateway/main.go) — and the same reasoning was never applied here,
+// where commerce calls inventory and payments on the CHECKOUT path, at the moment
+// concurrency is highest (TKT-308).
+//
+// The numbers are the gateway's, deliberately rather than independently derived:
+// two different ceilings on two hops of one request would be a number to reconcile
+// every time either moves, and nothing in the measurement argued for a different
+// one. If a load profile ever says otherwise, move both.
+//
+// PACKAGE-LEVEL rather than per Client() call. Two reasons, and the weaker one is
+// stated first because it is the one that sounds compelling and is not load-bearing
+// here: the idle pool lives in the transport, so a fresh transport per client is a
+// fresh empty pool, and a caller building a client per request would reuse nothing
+// however large the ceilings are. Every caller in this repo builds one at startup
+// and holds it (grep obs.Client()), so that failure is currently hypothetical.
+//
+// The reason that DOES bite today: callers build SEVERAL long-lived clients — access
+// makes one for its consumer and another for redelivery, commerce one for the API
+// server and more for its runners — all talking to the same handful of upstreams. A
+// transport each would give each its own pool and fragment the reuse this ticket
+// exists to create. One shared transport is also what the gateway's comment argues
+// for on its own hop: the pool is keyed per host, so upstreams already get
+// independent pools and a second transport only splits them.
+//
+// Cloned rather than built fresh so the dialer, TLS config and HTTP/2 setup stay
+// exactly as the standard library ships them; only the two idle ceilings move.
+var crossServiceTransport = func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 100
+	t.MaxIdleConns = 500
+	return otelhttp.NewTransport(t, otelhttp.WithPropagators(propagator))
+}()
+
 // Client returns an http.Client that injects the W3C traceparent header
 // from the request context. All cross-service calls go through this.
+//
+// The client is cheap to construct and the transport under it is shared, so callers
+// may keep one or make one per call — connection reuse does not depend on which,
+// which was not true before TKT-308.
 func Client() *http.Client {
 	return &http.Client{
-		Timeout: clientTimeout,
-		Transport: otelhttp.NewTransport(http.DefaultTransport,
-			otelhttp.WithPropagators(propagator)),
+		Timeout:   clientTimeout,
+		Transport: crossServiceTransport,
 	}
 }
 
