@@ -110,6 +110,21 @@ experiment stays valid.
   source of a sentinel whose mapping and table test its removal would have stranded, recreating this
   exact defect one layer up.
   ([inert for two different reasons](docs/learnings/2026-08-30-inert-for-two-different-reasons.md))
+  **And a THIRD reading: the mechanism is live and the MUTATION is blind.** Deleting a guard and
+  seeing green also happens when the input class that separates it from the guard beside it was never
+  generated. TKT-305 removed a `json.Unmarshal` error check as redundant behind a nil check, having
+  probed only JSON *syntax* errors — which do arrive nil. A *type* error populates the pointer before
+  reporting, so `{"available":"bad"}` shipped as `200 available:0` and `{"available":7,"available":"bad"}`
+  as `200 available:7`, a fabricated number worse than the original defect. **Two guards are redundant
+  only if they accept the same input class**, and writing down what each accepts settles it without
+  running anything. For any *malformed input must be refused* property, enumerate malformation
+  **classes** — syntax, type, absence, **identity** (a valid answer about something else), **range**
+  (valid and impossible, e.g. a negative count that was being clamped to zero and so reported as a
+  sellout) — not examples. Same family as the harness that ran 576 arrangements without the value it
+  hunted. **Corollary:** a second review pass finds false CLAIMS where the first found broken code —
+  all three of TKT-305's pass-2 findings were sentences written while fixing pass 1, and nothing gates
+  prose. Re-read every sentence added during a fix round and ask which function you actually opened.
+  ([a mutation your generator cannot reach](docs/learnings/2026-08-31-a-mutation-your-generator-cannot-reach.md))
 - **A guard with N predicates needs N tests, and scoping a write means scoping its FAILURE path too.**
   Two shapes from one ticket (TKT-251), both invisible to a test that only asserts "the write was
   refused". *One:* when several predicates guard one operation, an earlier refusal **short-circuits**

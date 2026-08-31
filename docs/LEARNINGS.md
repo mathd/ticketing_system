@@ -513,3 +513,20 @@ sufficient before deleting an exported symbol — ask what it is the last *produ
 `ValidateExchangeTarget` was the only source of a sentinel whose mapping and table test would have been
 stranded by its removal.
 [full note](learnings/2026-08-30-inert-for-two-different-reasons.md)
+
+**2026-08-31 — TKT-305.** A green mutation has a **third** reading past the two already here: the
+mechanism is live, the test is honest, and **the mutation is blind** because the input class that
+separates two guards was never generated. A decode guard was deleted after a mutation "proved" it
+redundant behind a nil guard — but the probe held only JSON *syntax* errors, which do arrive nil. A
+*type* error populates the pointer before reporting, so `{"available":"bad"}` shipped as
+`200 available:0` and `{"available":7,"available":"bad"}` as `200 available:7` — a fabricated number,
+worse than the original defect. The tell needs no run: two guards are redundant only if they accept
+the same input class, and writing down what each accepts shows they do not. For any *malformed input
+must be refused* property, enumerate malformation **classes** — syntax, type, absence, identity
+(a valid answer about something else), range (valid and impossible) — not examples; identity and
+range were both found only by an adversarial pass after the first three were green. Corollary from
+the same ticket: a second review pass found three defects and **all three were sentences written
+while fixing the first pass** — a durability claim the store does not provide, a schema constraint
+cited from the wrong service, and a fixture whose determinism was asserted rather than measured (it
+flaked 1 run in 5). Nothing gates prose.
+[full note](learnings/2026-08-31-a-mutation-your-generator-cannot-reach.md)
