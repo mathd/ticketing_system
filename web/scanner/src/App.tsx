@@ -197,11 +197,20 @@ function App() {
       // The queue write is itself guarded, because on the 'local' path the thing that
       // just failed IS this device's storage — so markQueued throws too, the exception
       // escapes submitScan, and the operator gets NO screen at all. Found while testing
-      // the 'local' message (ai-review [medium]); an unreadable outcome is worse than a
-      // wrongly-worded one, since staff are left with a blank result and a person at the
-      // turnstile. The occurrence was already minted and durably committed before the
-      // request left (ADR-025 §D3), so a failed markQueued does not lose it — the record
-      // stays pending and the next sync picks it up.
+      // the 'local' message (ai-review [medium]); a blank result with a person at the
+      // turnstile is worse than a wrongly-worded one.
+      //
+      // WHAT THIS COSTS, stated exactly, because the comfortable version of it is false
+      // (ai-review pass 2): the record is durable — mint commits before the request
+      // leaves (ADR-025 §D3) — but it is NOT recovered by the next sync. `queued()`
+      // filters on state === 'QUEUED', so a record still PENDING because markQueued
+      // failed is invisible to reconciliation. Swallowing here therefore trades a
+      // stranded record for a screen the operator can act on, and it is the right trade
+      // only because the alternative strands the SAME record and shows nothing.
+      //
+      // The real repair is a sweep that reconciles PENDING records too — a device whose
+      // storage is failing has bigger problems than one scan, and neither this catch nor
+      // a rethrow fixes that. TKT-315 carries the sync path's gaps.
       try {
         await store.markQueued(record.occurrenceId)
       } catch {

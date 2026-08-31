@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -142,6 +143,14 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 	// it was hunting.)
 	var upstream struct {
 		Available *int `json:"available"`
+		// Decoded so the answer can be checked against the QUESTION (ai-review pass 2).
+		// `slot_id` is required on inventory's Availability, and inventory reads the
+		// slot from a path parameter through a CACHE (availability.Read) — a cache keyed
+		// or invalidated wrongly is the realistic way another slot's figure arrives here
+		// looking perfectly well-formed. Republishing it under the requested slot's id
+		// would hand a reseller a number inventory never asserted about their slot, and
+		// no other guard in this handler could tell.
+		SlotID *string `json:"slot_id"`
 	}
 	if json.Unmarshal(body, &upstream) != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
@@ -158,13 +167,28 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
 		return
 	}
+	// A NEGATIVE is a broken answer, not an empty slot, so it is refused rather than
+	// clamped (ai-review pass 2). This used to read `available = 0` on the argument
+	// that "less than nothing available" and "nothing available" are the same fact to
+	// a seller. They are not the same fact about INVENTORY: a negative count means the
+	// upstream's arithmetic is wrong, and turning it into a sellout is the very
+	// substitution this ticket exists to stop — the reseller stops selling, and the
+	// one signal that something is broken has been rounded away.
+	//
+	// The clamp existed because commerce's OWN PartnerAvailability schema declares
+	// `minimum: 0`, so a negative would fail ADR-028's fail-closed response validation
+	// and surface as a 500. That reason survives — 502 is simply the honest status for
+	// it, and it is the one every other unusable-upstream branch here already uses.
+	// (Inventory's Availability declares no minimum, so nothing upstream prevents one.)
+	// The answer must be about the slot that was asked about.
+	if upstream.SlotID == nil || !strings.EqualFold(*upstream.SlotID, slot.String()) {
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
+	}
 	available := *upstream.Available
 	if available < 0 {
-		// The contract declares a minimum of 0 and ADR-028's response validation is
-		// fail-closed, so a negative would become a 500. Clamping is honest here:
-		// "less than nothing is available" and "nothing is available" are the same
-		// fact to a seller.
-		available = 0
+		write(w, http.StatusBadGateway, map[string]string{"error": "invalid inventory response"})
+		return
 	}
 	write(w, http.StatusOK, PartnerAvailability{
 		SlotId:      slot,

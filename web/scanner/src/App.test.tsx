@@ -374,23 +374,32 @@ describe('device pairing', () => {
     // mint must still succeed — it runs before the request leaves (ADR-025 §D3), and a
     // scan whose occurrence was never minted would fail for a different reason and
     // prove nothing about this branch. So: let the mint through, fail the next one.
+    // Break storage on the write that follows the MINT, deterministically.
+    //
+    // The mint must succeed: the occurrence is durably committed before the request
+    // leaves (ADR-025 §D3), and a scan whose mint failed takes a different path
+    // entirely and would prove nothing about this branch. Every later write —
+    // actuate on the accepted path, markQueued in the catch — is a `readwrite`.
+    //
+    // Counting READWRITE transactions is what makes this deterministic. An earlier
+    // version armed the failure after a setTimeout(0) and was genuinely flaky: it
+    // failed roughly one run in five, because whether the mint had opened its
+    // transaction by then depended on microtask scheduling. `readonly` reads (the
+    // queue-count refresh on mount) are irrelevant and deliberately not counted, so
+    // this does not depend on how many of those happen or when.
     const realTransaction = IDBDatabase.prototype.transaction
-    let breakWrites = false
+    let writes = 0
     vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof realTransaction>) {
-      if (breakWrites) throw new DOMException('device storage unavailable', 'InvalidStateError')
+      if (args[1] === 'readwrite') {
+        writes += 1
+        // 1 is the mint; everything after it is what this test breaks.
+        if (writes > 1) throw new DOMException('device storage unavailable', 'InvalidStateError')
+      }
       return realTransaction.apply(this, args)
     })
 
     render(<App />)
-    // Let the mount settle and the mint run, THEN break storage. Arming it earlier
-    // fails the mint, which is a different branch entirely — the occurrence must be
-    // durably committed before the request leaves (ADR-025 §D3), so a scan whose mint
-    // failed never reaches the code under test.
-    await screen.findByLabelText('Ticket credential')
-    const armAfterMint = new Promise<void>((resolve) => setTimeout(resolve, 0))
     pasteCredential()
-    await armAfterMint
-    breakWrites = true
 
     expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
     expect(await screen.findByText(/could not be recorded on this device/i)).toBeDefined()
