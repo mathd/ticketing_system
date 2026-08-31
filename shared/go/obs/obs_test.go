@@ -95,3 +95,50 @@ func TestClientHasBoundedTimeout(t *testing.T) {
 		t.Fatalf("timeout %s does not bound below the 2-minute recovery grace period", c.Timeout)
 	}
 }
+
+// TKT-308: the SHARED transport still traces, even though it is now built at package
+// init rather than per call.
+//
+// This is the risk that came with making the transport package-level, and it is the
+// kind that fails silently: if otelhttp captured a tracer provider at construction,
+// a transport built before Setup() installs the real one would hold a no-op provider
+// for the process lifetime and every client span would vanish. Nothing would fail —
+// there would simply be no traces, which is exactly the observability gap you notice
+// during an incident.
+//
+// It is safe because otelhttp resolves the tracer PER REQUEST (transport.go: `tracer
+// := t.tracer`, nil unless WithTracerProvider was passed, then falling back to
+// otel.GetTracerProvider() at RoundTrip time). We pass only WithPropagators, so
+// construction order does not matter.
+//
+// That is a property of a dependency, so it is pinned here rather than trusted: this
+// test fails if someone adds otelhttp.WithTracerProvider to the package-level
+// construction, or if the library starts resolving at construction time. Both would
+// reintroduce the ordering hazard invisibly.
+func TestSharedTransportStillPropagatesAfterPackageInit(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("traceparent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// A span established AFTER the package-level transport was constructed — which is
+	// the ordering the hazard is about.
+	ctx := startTestSpan(t)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := obs.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if !strings.HasPrefix(got, "00-") || len(strings.Split(got, "-")) != 4 {
+		t.Errorf("traceparent = %q, want a W3C traceparent. The shared transport is built at "+
+			"package init; if it captured a tracer provider then rather than resolving one per "+
+			"request, every client span made after Setup() would be dropped silently", got)
+	}
+}

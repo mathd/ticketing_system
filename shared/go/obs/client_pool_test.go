@@ -160,3 +160,4 @@ func do(t *testing.T, c *http.Client, url string) {
 	}
 	_ = resp.Body.Close()
 }
+
