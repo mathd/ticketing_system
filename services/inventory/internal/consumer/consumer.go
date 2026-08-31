@@ -397,12 +397,35 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 	}
 	input, err := c.provisionInput(ctx, e)
 	if err != nil {
+		// A schema-1 slot that is NO LONGER PUBLISHED is moot, not poison and not
+		// transient (TKT-307). Catalog answered, definitively: the slot archived after
+		// this publication was emitted, and the archived event later in the stream owns
+		// the pool's terminal state. Retrying re-asks a settled question for ever, and
+		// terminating is merely the wrong word for the same outcome. This is exactly the
+		// call the CLOSURE handler already makes on this error (see handleClosure), and
+		// the two paths disagreeing about one catalog answer was the defect.
+		if errors.Is(err, ErrPerformanceNotFound) {
+			c.log.Info("publication for a no-longer-published slot; skipping as moot",
+				"event_id", e.ID, "performance_id", e.Data.PerformanceID)
+			_ = msg.Ack()
+			return
+		}
 		// A CATALOG lookup failure is a dependency outage, not corrupt data, and the
 		// distinction is the difference between a retry and permanent loss. Schema 1
 		// and schema 5 both call catalog; terminating on a timeout would drop the
 		// publication for ever and leave the slot with no inventory at all
 		// (ai-review). Payload validation failures below are genuinely poison.
-		if e.Schema == 1 || errors.Is(err, errResolveUnavailable) {
+		//
+		// NARROWED from `e.Schema == 1 || …` (TKT-307). That swept EVERY schema-1
+		// failure into the retry branch, including ones that reach no dependency at all
+		// — missing identifiers (provisionInput's first guard) and "conflicts with
+		// catalog", which is catalog having answered and disagreed. Each such event held
+		// one of 64 MaxAckPending slots for ever on a five-second loop with no readiness
+		// signal, which is the shape ErrGeometryInvalid's comment in catalog.go warns
+		// about in the other direction. The condition now names the transient thing
+		// rather than the schema, so a deterministic schema-1 failure falls through to
+		// the poison branch below where it belongs.
+		if errors.Is(err, errResolveUnavailable) {
 			c.log.Error("resolve publication against catalog", "event_id", e.ID, "schema", e.Schema, "err", err)
 			_ = msg.NakWithDelay(5 * time.Second)
 			return

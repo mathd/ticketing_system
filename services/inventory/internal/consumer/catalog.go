@@ -125,22 +125,39 @@ func NewCatalogResolver(baseURL, credential string, client *http.Client) *Catalo
 	return &CatalogResolver{baseURL: strings.TrimRight(baseURL, "/"), credential: credential, client: client}
 }
 
+// PublishedPerformance answers "is this slot published, and with what capacity".
+//
+// EVERY failure that is not ErrPerformanceNotFound is wrapped in errResolveUnavailable
+// (TKT-307). Before that, only the schema-5 adjacency path wrapped anything, and the
+// publication handler compensated with `e.Schema == 1 ||` — retry the whole schema,
+// because the transient failures could not be told apart from the deterministic ones.
+// That is what parked poison for ever. The classification belongs HERE, where the reason
+// is known, not at the call site where only the schema is.
+//
+// The unusable-BODY cases are wrapped too, and that is a deliberate choice rather than an
+// oversight: a catalog that answers 200 with a body this cannot read is broken, and
+// whether it is broken transiently (a bad deploy, a proxy interposing) or permanently is
+// not knowable from here. ErrGeometryInvalid's comment above records that the first fix
+// for that pair terminated both and a blip deleted a publication. Retrying a permanently
+// bad answer costs an ack-pending slot; terminating a temporarily bad one loses a slot's
+// inventory with no way to notice. The asymmetry decides it.
 func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID) (PublishedPerformance, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/internal/performances/"+id.String(), nil)
 	if err != nil {
-		return PublishedPerformance{}, err
+		return PublishedPerformance{}, fmt.Errorf("%w: build catalog performance request: %v", errResolveUnavailable, err)
 	}
 	req.Header.Set("X-Internal-Token", r.credential)
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return PublishedPerformance{}, err
+		return PublishedPerformance{}, fmt.Errorf("%w: catalog performance lookup %s: %v", errResolveUnavailable, id, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// The ONE definitive answer: catalog was reached and says this slot is not published.
 	if resp.StatusCode == http.StatusNotFound {
 		return PublishedPerformance{}, fmt.Errorf("catalog performance lookup %s: %w", id, ErrPerformanceNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return PublishedPerformance{}, fmt.Errorf("catalog performance lookup: status %d", resp.StatusCode)
+		return PublishedPerformance{}, fmt.Errorf("%w: catalog performance lookup: status %d", errResolveUnavailable, resp.StatusCode)
 	}
 	var body struct {
 		OrganizerID     uuid.UUID  `json:"organizer_id"`
@@ -149,13 +166,13 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return PublishedPerformance{}, fmt.Errorf("decode catalog performance lookup: %w", err)
+		return PublishedPerformance{}, fmt.Errorf("%w: decode catalog performance lookup: %v", errResolveUnavailable, err)
 	}
 	if body.OrganizerID == uuid.Nil || body.Capacity <= 0 {
-		return PublishedPerformance{}, fmt.Errorf("invalid catalog performance lookup")
+		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog performance lookup", errResolveUnavailable)
 	}
 	if (body.CapacityGroupID == nil) != (body.SharedCapacity == nil) || body.SharedCapacity != nil && *body.SharedCapacity <= 0 {
-		return PublishedPerformance{}, fmt.Errorf("invalid catalog festival capacity lookup")
+		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog festival capacity lookup", errResolveUnavailable)
 	}
 	return PublishedPerformance{OrganizerID: body.OrganizerID, Capacity: body.Capacity, CapacityGroupID: body.CapacityGroupID, SharedCapacity: body.SharedCapacity}, nil
 }

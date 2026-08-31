@@ -111,6 +111,47 @@ func (e allocationCapBelowConsumption) Unwrap() error { return ErrConflict }
 // Channel is the offending allocation's raw code, echoed verbatim to the client.
 func (e allocationCapBelowConsumption) Channel() string { return e.channel }
 
+// AllocationWindowReversed is the refusal for a sales window whose close is not strictly
+// after its open (TKT-307).
+//
+// It exists so the API answers 400 rather than surfacing migration 0013's
+// `channel_allocations_window_order` CHECK as an unmapped pgx error, which problem()
+// classifies 500. That is the rule `validatePresaleCode` already states for the same
+// class of input ("so the API answers 400 rather than surfacing a constraint violation
+// as a 500"); the allocation editor is a staff form and was not getting it.
+//
+// The CHECK STAYS. This validates in Go so the operator gets a message they can act on,
+// not so the database stops being the arbiter — the store is not the table's only
+// possible writer, and a Go guard alone would make a reversed window merely unlikely
+// rather than unrepresentable.
+//
+// WRAPS ErrSeatSetInvalid, which is problem()'s only 400 branch. The name is a poor fit
+// for a sales window and the alternative was worse: a new sentinel needs its own case in
+// problem(), and adding one that no other caller returns is a wider change than this
+// ticket's "apply the rule you already wrote". Named badly and mapped correctly beats the
+// reverse.
+//
+// It CARRIES THE CHANNEL for the reason AllocationCapBelowConsumption does: the editor
+// submits a whole set and must put the message beside the row the operator has to fix.
+func AllocationWindowReversed(channel string) error {
+	return allocationWindowReversed{channel: channel}
+}
+
+type allocationWindowReversed struct{ channel string }
+
+func (e allocationWindowReversed) Error() string {
+	// Both field names, because the editor has two timestamp inputs and either could be
+	// the one that is wrong. The channel is operator-supplied and opaque (ADR-024), so
+	// it is quoted rather than interpolated bare.
+	return fmt.Sprintf("%v: channel %q has closes_at at or before opens_at", ErrSeatSetInvalid, e.channel)
+}
+
+// Unwrap puts it on problem()'s 400 branch.
+func (e allocationWindowReversed) Unwrap() error { return ErrSeatSetInvalid }
+
+// Channel is the offending allocation's raw code, echoed verbatim to the client.
+func (e allocationWindowReversed) Channel() string { return e.channel }
+
 func Migrate(ctx context.Context, db *sql.DB) error {
 	f, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
