@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"ticketing/shared/obs"
 )
@@ -96,37 +99,45 @@ func TestClientHasBoundedTimeout(t *testing.T) {
 	}
 }
 
-// TKT-308: the SHARED transport still traces, even though it is now built at package
-// init rather than per call.
+// TKT-308: the SHARED transport still RECORDS a client span, even though it is now
+// built at package init rather than per call.
 //
-// This is the risk that came with making the transport package-level, and it is the
-// kind that fails silently: if otelhttp captured a tracer provider at construction,
-// a transport built before Setup() installs the real one would hold a no-op provider
-// for the process lifetime and every client span would vanish. Nothing would fail —
-// there would simply be no traces, which is exactly the observability gap you notice
-// during an incident.
+// This is the risk that came with making the transport package-level, and it fails
+// silently: if otelhttp captured a tracer provider at construction, a transport built
+// before Setup() installs the real one would hold a no-op provider for the process
+// lifetime and every client span would vanish. Nothing errors — there are simply no
+// traces, which is what you discover during an incident.
 //
-// It is safe because otelhttp resolves the tracer PER REQUEST (transport.go: `tracer
+// ASSERTS A RECORDED SPAN, not a propagated header, and the difference is the whole
+// point (ai-review [high]). The first version of this test checked only that a
+// traceparent reached the server — and a transport bound to a NO-OP tracer still
+// injects that header from the parent context while recording nothing. It would have
+// stayed green through the exact failure it was written to catch: adding
+// otelhttp.WithTracerProvider(noop) to the package-level construction.
+//
+// Safe today because otelhttp resolves the tracer per request (transport.go: `tracer
 // := t.tracer`, nil unless WithTracerProvider was passed, then falling back to
-// otel.GetTracerProvider() at RoundTrip time). We pass only WithPropagators, so
-// construction order does not matter.
-//
-// That is a property of a dependency, so it is pinned here rather than trusted: this
-// test fails if someone adds otelhttp.WithTracerProvider to the package-level
-// construction, or if the library starts resolving at construction time. Both would
-// reintroduce the ordering hazard invisibly.
-func TestSharedTransportStillPropagatesAfterPackageInit(t *testing.T) {
-	var got string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("traceparent")
+// otel.GetTracerProvider()). That is a property of a DEPENDENCY, which is why it is
+// pinned rather than trusted.
+func TestSharedTransportRecordsAClientSpanAfterPackageInit(t *testing.T) {
+	// Installed GLOBALLY and AFTER package init — the ordering the hazard is about.
+	// The transport already exists at this point; if it had captured a provider then,
+	// this exporter would never see anything.
+	exp := tracetest.NewInMemoryExporter()
+	tp := trace.NewTracerProvider(trace.WithSyncer(exp))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		_ = tp.Shutdown(context.Background())
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	// A span established AFTER the package-level transport was constructed — which is
-	// the ordering the hazard is about.
-	ctx := startTestSpan(t)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,9 +147,16 @@ func TestSharedTransportStillPropagatesAfterPackageInit(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	if !strings.HasPrefix(got, "00-") || len(strings.Split(got, "-")) != 4 {
-		t.Errorf("traceparent = %q, want a W3C traceparent. The shared transport is built at "+
+	var client int
+	for _, s := range exp.GetSpans() {
+		if s.SpanKind == oteltrace.SpanKindClient {
+			client++
+		}
+	}
+	if client == 0 {
+		t.Errorf("the shared transport recorded no client span (%d spans total). It is built at "+
 			"package init; if it captured a tracer provider then rather than resolving one per "+
-			"request, every client span made after Setup() would be dropped silently", got)
+			"request, every client span made after Setup() would be dropped — silently, with "+
+			"header propagation still working and nothing failing", len(exp.GetSpans()))
 	}
 }

@@ -114,8 +114,28 @@ var crossServiceTransport = func() http.RoundTripper {
 // may keep one or make one per call — connection reuse does not depend on which,
 // which was not true before TKT-308.
 func Client() *http.Client {
+	return ClientWithTimeout(clientTimeout)
+}
+
+// ClientWithTimeout is Client with a caller-chosen deadline, for the cross-service
+// callers that deliberately bound themselves tighter than ClientTimeout.
+//
+// It exists because of what TKT-308 nearly broke. Before that ticket every
+// cross-service client — the ones from Client() and the ones built as
+// `&http.Client{Timeout: …}` with a nil Transport — shared ONE pool, because both
+// resolved to http.DefaultTransport. Cloning the transport for Client() alone would
+// have split that: commerce's recovery runner and inventory's catalog resolver call
+// the same upstreams as their obs.Client() siblings, and would have kept their own
+// untuned, unshared connections while the tuned pool sat beside them (ai-review
+// [medium]). The measured improvement would have been real and the fragmentation
+// invisible.
+//
+// So callers that need a different deadline take it from here rather than building a
+// client around DefaultTransport. A caller wanting a different TRANSPORT — a stub, a
+// custom dialer — should still build its own; this is only for the timeout.
+func ClientWithTimeout(d time.Duration) *http.Client {
 	return &http.Client{
-		Timeout:   clientTimeout,
+		Timeout:   d,
 		Transport: crossServiceTransport,
 	}
 }

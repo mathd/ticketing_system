@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TKT-308: the shared cross-service client REUSES connections under concurrency.
@@ -36,18 +37,15 @@ func TestClientReusesConnectionsUnderConcurrency(t *testing.T) {
 		rounds      = 4
 	)
 
-	var opened atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
 	// ConnState counts on the SERVER, which is the honest place: it observes the
 	// connections that actually arrived, not what the client believes it did.
-	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
-		if s == http.StateNew {
-			opened.Add(1)
-		}
-	}
+	//
+	// UNSTARTED, then Start(), because assigning Config.ConnState on a server that is
+	// already serving races net/http's accept loop reading it — confirmed with -race
+	// (ai-review [medium]). A test whose own measurement apparatus is racy is not
+	// measuring anything reliably.
+	opened, srv := countingServer()
+	defer srv.Close()
 
 	c := Client()
 	// Sequential rounds of a concurrent burst. One burst alone would open
@@ -112,16 +110,8 @@ func TestClientReusesConnectionsUnderConcurrency(t *testing.T) {
 func TestSeparateClientsShareTheConnectionPool(t *testing.T) {
 	const perClient = 8
 
-	var opened atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	opened, srv := countingServer()
 	defer srv.Close()
-	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
-		if s == http.StateNew {
-			opened.Add(1)
-		}
-	}
 
 	// Warm one client's worth of connections into the pool, sequentially so exactly
 	// one connection is needed, then let a DIFFERENT client do the same work. If the
@@ -161,3 +151,79 @@ func do(t *testing.T, c *http.Client, url string) {
 	_ = resp.Body.Close()
 }
 
+
+// countingServer is an httptest server that counts the connections it ACCEPTS.
+//
+// Built unstarted so ConnState is installed before the accept loop can read it; doing
+// it the other way round is a data race that -race catches (ai-review [medium]).
+func countingServer() (*atomic.Int64, *httptest.Server) {
+	opened := new(atomic.Int64)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			opened.Add(1)
+		}
+	}
+	srv.Start()
+	return opened, srv
+}
+
+// TKT-308: a caller with its OWN deadline still shares the pool.
+//
+// This is the boundary the fix nearly broke, and the one the two tests above cannot
+// see — both use Client(), so both passed on origin/main, where every cross-service
+// client resolved to http.DefaultTransport and shared a pool BY ACCIDENT.
+//
+// Cloning the transport for Client() alone would have split that accident apart:
+// commerce's recovery runner and inventory's catalog resolver call the same upstreams
+// as their Client() siblings and were built as `&http.Client{Timeout: …}` with a nil
+// Transport. They would have kept untuned, unshared connections while the tuned pool
+// sat beside them — the measured improvement real, the fragmentation invisible
+// (ai-review [medium]).
+//
+// So the assertion is that a differently-bounded client opens NOTHING new, and the
+// timeout is asserted too: sharing the pool must not silently hand a caller the
+// default deadline, which is the obvious way to "fix" this wrongly.
+func TestAClientWithItsOwnTimeoutSharesThePool(t *testing.T) {
+	const perClient = 8
+
+	opened, srv := countingServer()
+	defer srv.Close()
+
+	// Warmed CONCURRENTLY, so the pool holds more idle connections than an untuned
+	// transport's MaxIdleConnsPerHost of 2. A sequential warm opens exactly one, which
+	// DefaultTransport can also hold — so the second client would reuse and the test
+	// would pass whether or not the pool is shared. Found by running that mutation.
+	warm := Client()
+	var wg sync.WaitGroup
+	for i := 0; i < perClient; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); do(t, warm, srv.URL) }()
+	}
+	wg.Wait()
+	afterWarm := opened.Load()
+
+	tighter := ClientWithTimeout(3 * time.Second)
+	if tighter.Timeout != 3*time.Second {
+		t.Fatalf("timeout = %s, want 3s — sharing the pool must not override the caller's "+
+			"deadline; commerce's recovery runner is deliberately tighter than ClientTimeout "+
+			"and its lease is sized against that number", tighter.Timeout)
+	}
+	// Also concurrent: the question is whether these find the warmed pool, and a
+	// sequential loop needs only one connection whatever pool it is looking at.
+	var wg2 sync.WaitGroup
+	for i := 0; i < perClient; i++ {
+		wg2.Add(1)
+		go func() { defer wg2.Done(); do(t, tighter, srv.URL) }()
+	}
+	wg2.Wait()
+
+	if total := opened.Load(); total != afterWarm {
+		t.Errorf("a client with its own timeout opened %d further connections (%d then %d): it "+
+			"is not on the shared transport. Before TKT-308 these callers shared a pool with "+
+			"obs.Client() because both resolved to http.DefaultTransport; tuning only one of "+
+			"them fragments that", total-afterWarm, afterWarm, total)
+	}
+}

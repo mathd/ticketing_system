@@ -380,7 +380,13 @@ func run() error {
 	// shorter than its own batch.
 	const recoveryCallTimeout = 10 * time.Second
 	recoveryClients := recovery.HTTPClients{
-		Client:       &http.Client{Timeout: recoveryCallTimeout},
+		// obs.ClientWithTimeout, not a bare &http.Client, so this shares the tuned
+		// cross-service pool with the API server's client (TKT-308). Both call the same
+		// inventory and payments hosts; a nil Transport here would give the recovery
+		// runner its own untuned pool — which is what it had before that ticket, back
+		// when obs.Client() also resolved to DefaultTransport and the two shared by
+		// accident. Only the timeout differs, and it is deliberately tighter.
+		Client:       obs.ClientWithTimeout(recoveryCallTimeout),
 		InventoryURL: inventoryURL,
 		PaymentsURL:  paymentsURL,
 		Token:        token,
