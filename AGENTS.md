@@ -63,6 +63,25 @@ experiment stays valid.
   with the SQL predicate deleted, because the in-memory fake scopes in Go (TKT-236). Ask which layer
   actually enforces the thing, and put the assertion there — a green test one tier above the
   mechanism proves the fake and the handler agree, and nothing else.
+- **An error mapper matching on a STRUCTURAL interface claims every error that satisfies it — and the
+  tier that sees the misrouting is not the tier that made the error.** Two rules from one defect
+  (TKT-307). *One:* `problem()` matches `belowConsumption` on `interface{ Channel() string }` and runs
+  it first, so a new 400 refusal — which had to name its channel, as every per-row refusal must —
+  answered **409 with another failure's code**. That is worse than the 500 it replaced: a 500 says
+  something broke, a confident wrong 409 sends the operator to fix a field that is fine. Before adding
+  a sentinel, `git grep` the mapper for **shape** matches (`errors.As` on an anonymous interface), not
+  just the sentinels it names, and place the new case above every shape match it satisfies. *Two:* the
+  tier rule below splits in a way that is easy to satisfy and still miss. The *mechanism* was a DB
+  CHECK surfacing, so a store smoke test was right and was written and stayed green; the
+  *classification* is decided one tier up, where that test never runs. **When a COS names a status, a
+  response body, or what a client sees, assert it where that is decided** — however deep the mechanism
+  producing it lives. Corollary, same ticket: **an over-broad condition can be the only thing holding a
+  correctness property.** `if e.Schema == 1 || errors.Is(err, errResolveUnavailable)` read as laziness;
+  the first arm was the only thing making a real catalog outage retry, so narrowing it alone would have
+  terminated outages and permanently lost publications. Evaluate each arm's coverage separately, ask
+  what is reachable **only** through the arm you are deleting, and if that set is non-empty fix the
+  classification upstream before narrowing.
+  ([a structural match claims errors you never enumerated](docs/learnings/2026-08-31-a-structural-match-claims-errors-you-never-enumerated.md))
 - **A security claim is a hypothesis until it is executed.** Two consecutive adversarial passes
   rejected two different claims about one guard, both plausible, both written in good faith, both
   false; what settled it was running the sequence and watching it return 200 (TKT-236, ADR-053). When

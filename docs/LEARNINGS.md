@@ -530,3 +530,22 @@ while fixing the first pass** — a durability claim the store does not provide,
 cited from the wrong service, and a fixture whose determinism was asserted rather than measured (it
 flaked 1 run in 5). Nothing gates prose.
 [full note](learnings/2026-08-31-a-mutation-your-generator-cannot-reach.md)
+
+**2026-08-31 — TKT-307.** A **structural** match in an error mapper claims every error satisfying it,
+including ones written later. `problem()` matches `belowConsumption` on `interface{ Channel() string }`
+and runs it first, so a new 400 refusal — which had to name its channel, as every per-row refusal must
+— answered **409 with the wrong code**, worse than the 500 it replaced: a 500 says something broke, a
+confident wrong 409 sends the operator to fix a field that is fine. **Grep the mapper for structural
+matches** (`errors.As` on an anonymous interface) before adding a sentinel, not just for the sentinels
+it names. And the tier rule splits: the mechanism (a DB CHECK surfacing) needed a store smoke test,
+which was written and stayed green, while the **classification** is decided one tier up — when a COS
+names a status or a response body, assert it where that is decided, however deep the mechanism lives.
+Separately: **an over-broad condition can be the only thing holding a correctness property.**
+`if e.Schema == 1 || errors.Is(err, errResolveUnavailable)` looked like laziness; the first arm was the
+only thing making a real catalog outage retry, because the wrapping existed on one other path only, so
+narrowing it alone would have terminated outages and permanently lost publications. Evaluate each arm's
+coverage separately and ask what is reachable **only** through the arm being removed; if non-empty, fix
+the classification upstream first. Across three passes every finding after the first was a sentence
+written while fixing the previous one, clustered **one layer away** from the edited code — what another
+schema calls, what the UI renders, what the contract requires.
+[full note](learnings/2026-08-31-a-structural-match-claims-errors-you-never-enumerated.md)
