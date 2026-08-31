@@ -229,9 +229,44 @@ func SelectFeeRules(at time.Time, in FeeCandidates) (FeeSelection, error) {
 	// came first, and that id is what the handler logs.
 	sort.Slice(scoped, func(i, j int) bool { return scoped[i].ID.String() < scoped[j].ID.String() })
 
+	// Determinism, CHANNEL-SCOPED, and BEFORE the currency check (TKT-306).
+	//
+	// Two independent decisions live in this placement, and the first version of this
+	// change got the second one wrong.
+	//
+	// CHANNEL-SCOPED, aligning with the price resolver's TKT-237 narrowing. The guard
+	// protects the DETERMINISM OF THE ANSWER: the last tie-break is the id, so two
+	// rules sharing one are inseparable and the winner would depend on input order. A
+	// rule ineligible for the requested channel never ranks, so it cannot make the
+	// answer ambiguous — erroring on it would refuse a resolution that has exactly one
+	// correct result. Eligible duplicates still error, including ones that lost on
+	// their window: those are still REPORTED in provenance, and two of them under one
+	// id is the same order-dependence the caller reads.
+	//
+	// BEFORE THE CURRENCY CHECK, which is where it has always been, and moving it
+	// after would have changed which error a caller sees when a set is BOTH duplicated
+	// and misconfigured — from ErrDuplicateFeeRuleID to ErrFeeRuleCurrencyMismatch,
+	// which the API treats differently (ai-review [medium]). Unreachable through
+	// Postgres either way (fee_rules.id is the primary key and the query has no
+	// multiplicative join), but the pure comparator is a supported seam that accepts
+	// hand-built candidates, and "alignment only" has to mean it. Only the CHANNEL
+	// scoping changed.
+	//
+	// The channel predicate is therefore evaluated twice — here and in the eligibility
+	// loop below. That is deliberate: hoisting the filter above the currency check
+	// would stop currency being checked across channels, which fees.go does ON PURPOSE
+	// ("a rule misconfigured for another channel is still misconfigured", see below).
+	// Two guards, two questions, two orderings — both load-bearing.
+	//
+	// Walked over the SORTED `scoped` slice: `windowLosers` below is a map keyed by fee
+	// code, so ranging that would make WHICH duplicate is reported depend on Go's map
+	// iteration order — the exact nondeterminism this guard refuses.
 	seen := make(map[uuid.UUID]struct{}, len(scoped))
 	for _, r := range scoped {
-		if _, dup := seen[r.ID]; dup {
+		if !feeChannelEligible(r, in.Channel) {
+			continue
+		}
+		if _, isDup := seen[r.ID]; isDup {
 			return FeeSelection{}, fmt.Errorf("%w: %s", ErrDuplicateFeeRuleID, r.ID)
 		}
 		seen[r.ID] = struct{}{}

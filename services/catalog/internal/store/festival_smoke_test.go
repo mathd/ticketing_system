@@ -262,6 +262,23 @@ func TestGetPublishedFestivalOrdersDaysAcrossEventsChronologically(t *testing.T)
 	if agg.Performances[0].Performance.ID != firstDayID || agg.Performances[1].Performance.ID != secondDayID {
 		t.Fatalf("festival day order = %v", []uuid.UUID{agg.Performances[0].Performance.ID, agg.Performances[1].Performance.ID})
 	}
+
+	// TKT-306: each day carries ITS OWN event id, like the sibling aggregate builder
+	// (publicPerformances) has always done. It was left zero here, so a consumer read a
+	// nil UUID that looks populated rather than absent — harmless only while nothing
+	// reads it, which is a trap and not a design.
+	//
+	// Asserted PER ROW against two DIFFERENT events, which this fixture already seeds.
+	// A non-zero check would pass on any UUID, and a single-row check would pass on a
+	// hardcoded one — the two failure modes a "fix" here would actually have.
+	if got := agg.Performances[0].Performance.EventID; got != firstEventID {
+		t.Errorf("day 1 EventID = %v, want %v", got, firstEventID)
+	}
+	if got := agg.Performances[1].Performance.EventID; got != secondEventID {
+		t.Errorf("day 2 EventID = %v, want %v — the two days belong to different events, "+
+			"so a builder filling this from anything but the row gets one of them wrong",
+			got, secondEventID)
+	}
 }
 
 // seedPublishedFestival builds one festival owning a single sellable, published day

@@ -288,7 +288,7 @@ func (p *Postgres) GetPublishedSeason(ctx context.Context, id uuid.UUID) (Season
 // equality: it keeps its index under a generic plan as well as a custom one, which
 // TestGetPublishedFestivalIsIndexScoped asserts.
 const publishedFestivalPerformancesQuery = `
-	SELECT p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind,
+	SELECT p.id, ` + publicPerformancesStartsAt + `, p.timezone, p.kind, p.event_id,
 	       v.id, v.name, v.ga_capacity, v.created_at,
 	       t.id, t.name, t.price_amount, t.currency, t.created_at
 	FROM performances p
@@ -323,7 +323,7 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 			ttName   []byte
 		)
 		if err := rows.Scan(
-			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind,
+			&perf.ID, &startsAt, &perf.Timezone, &perf.Kind, &perf.EventID,
 			&venue.ID, &venue.Name, &venue.GACapacity, &venue.CreatedAt,
 			&tt.ID, &ttName, &tt.PriceAmount, &tt.Currency, &tt.CreatedAt,
 		); err != nil {
@@ -336,6 +336,14 @@ func (p *Postgres) GetPublishedFestival(ctx context.Context, id uuid.UUID) (Fest
 		perf.Status = "published"
 		perf.OrganizerID = festival.OrganizerID
 		perf.CapacityGroupID = &id
+		// EventID comes from the row (TKT-306). It was left ZERO here while
+		// publicPerformances filled it from the joined event, so a FestivalAggregate
+		// consumer reading it got a nil UUID that looks populated rather than absent.
+		// Harmless only for as long as nothing reads it — the festival payload does not
+		// (server_public_read.go) — which is a trap rather than a design. Scanned
+		// directly from performances.event_id: no join, and the column is already
+		// indexed (migration 0007), so ADR-019's scoping is unchanged and
+		// TestGetPublishedFestivalIsIndexScoped still holds.
 		perf.VenueID = venue.ID
 		venue.OrganizerID = festival.OrganizerID
 		tt.OrganizerID = festival.OrganizerID

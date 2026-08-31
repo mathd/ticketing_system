@@ -288,6 +288,79 @@ the resemblance:
 A third rule kind gaining a channel axis is the point at which the duplication stops being cheaper
 than the abstraction. TKT-237 is the second, and the count is what the rule turns on.
 
+#### Amended by TKT-306 — the trigger HAS fired, and the determinism posture is now stated once
+
+**The third rule kind exists.** `SelectSplitSchedule` (`splits.go`) ranks split schedules on the same
+axes, with a channel axis. By §7's own test the duplication should now be revisited, and TKT-306 did
+not do it — that ticket's scope explicitly excluded de-duplicating, and a ticket whose subject is
+"the copies drifted apart" is the wrong place to merge them. **Recorded here so the next reader does
+not have to re-derive that the trigger fired.** The decision is owed; it is not made.
+
+What TKT-306 did do is align the copies it found drifting, and the rule they now share is stated
+here once instead of three times in code:
+
+> **The duplicate-id guard protects the determinism of the ANSWER, so it runs AFTER the channel
+> filter.** The last tie-break is the id, so two rules sharing one are inseparable and the winner
+> would depend on input order. A rule ineligible for the requested channel is dropped and never
+> ranks, so it cannot make the answer ambiguous — refusing on it would reject a resolution that has
+> exactly one correct result. Eligible duplicates still error, including ones that lost on their
+> window: those are still REPORTED in provenance, and two of them under one id is the same
+> order-dependence the caller reads.
+
+Where each resolver stands against it:
+
+| resolver | guard | position |
+|---|---|---|
+| `SelectPricingRule` | `ErrDuplicatePriceRuleID` | after the channel filter (narrowed by TKT-237) |
+| `SelectFeeRules` | `ErrDuplicateFeeRuleID` | after the channel filter (**moved there by TKT-306**; it ran before) |
+| `SelectSplitSchedule` | **none — deferred, see below** | — |
+
+`SelectSplitSchedule` returns a bare `SplitSelection` with no error, so it cannot carry this guard
+*in the same shape* without changing its signature — and its one production caller
+(`fees_postgres.go`) runs it inside a loop over fees on a money path, which would make fee resolution
+newly failable mid-loop. That is a behaviour change, not an alignment, so TKT-306 left it alone.
+
+**DEFERRED, NOT IMPOSSIBLE — and this paragraph took two review passes to get right**, which is
+itself worth recording. The first version said "structurally impossible", which was false. The second
+listed three designs, two of which **cannot observe the condition at all** (TKT-306 ai-review passes
+1 and 2).
+
+Where a guard CAN live, against the real code:
+
+- **Inside `SelectSplitSchedule`** — viable, and the only place the duplicate is representable. It
+  needs a way to report: either a signature change to `(SplitSelection, error)`, or an invalid state
+  on `SplitSelection` that the production caller converts. Both are behaviour changes to a money
+  path; neither is impossible.
+
+Where it cannot, and why — because the near-miss is instructive:
+
+- **Caller-side validation of the loaded set** does not work. `loadSplitSchedules` collapses rows
+  through a `byID` map, because **repeated ids are the normal representation of a multi-part
+  schedule** — one row per part. The caller receives at most one `SplitSchedule` per id, so there is
+  nothing left to detect.
+- **Loader-side rejection of repeated ids** fails for the same reason, in the other direction: it
+  would reject every legitimate multi-part schedule.
+
+Both would also leave the **pure seam** unguarded, and the pure seam is precisely where duplicate
+`SplitSchedule` values are currently constructible — which is the gap. Writing this off as structural
+suppresses §7's revisit trigger on a **money-allocation** path, which is the opposite of what
+recording it is for.
+
+**What is true today, measured rather than argued.** Two schedules sharing an id and tied on every
+ranking axis produce an **order-dependent winner**: feeding `[a, b]` and `[b, a]` returns different
+payees, and both duplicates are absent from `Candidates`, so the provenance does not even show the
+ambiguity. Unreachable through Postgres — `split_schedules.id` is the primary key and the loader collapses its
+parts by id — exactly as for the other two resolvers, whose guards exist anyway *because* a pure seam
+should not rely on the storage layer's luck.
+
+So the honest statement is: **the price and fee comparators refuse this input; the split comparator
+silently picks one.** That asymmetry is a real gap, it sits on the payout path, and it is owed a
+decision along with the §7 revisit trigger it belongs to.
+
+The determinism guard is unreachable through Postgres in all three cases — id is the primary key.
+The two that exist are pure seams refusing to pretend the invariant holds by luck; the third has not
+been written.
+
 ### 8. Precedence, in full
 
 Filters first, then ranking. Getting this order wrong — in particular treating the forced partition

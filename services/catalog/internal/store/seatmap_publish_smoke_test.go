@@ -223,3 +223,64 @@ func TestPublishSeatMapCarriesOrphanPrevention(t *testing.T) {
 		t.Fatal("re-publish is idempotent and takes the same read path; it must not drop the setting")
 	}
 }
+
+// TKT-306 item 3, SPLIT OUT as TKT-318 and PINNED here.
+//
+// A seat map with NO SEATS publishes, and the resulting published version satisfies
+// CreatePerformance's seated check — producing a slot that can sell nothing. Contrast
+// ErrNotSellable, which gates performance publish on having a ticket type; the analogous
+// "no sellable offer" gate is absent from the seat-map lifecycle.
+//
+// THIS TEST ASSERTS THE GAP, deliberately, following ADR-021's rollback-gap pattern: the
+// alternative is a ticket that says "we noticed" in prose nobody greps. If it goes RED,
+// the gap has been closed — update it to assert the refusal and close TKT-318; do not
+// delete it.
+//
+// Why it was split rather than fixed here: it is the only item in TKT-306 that changes
+// behaviour rather than aligning copies, and WHERE the gate belongs is a real design
+// question with three candidate homes and different consequences each way — gating
+// PublishSeatMap makes an existing seatless published map unrepairable, gating
+// CreatePerformance leaves it publishable but unusable, gating EditSeatMap catches the
+// edit and not the initial publish.
+func TestASeatlessSeatMapStillPublishes_TKT318(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+
+	// A draft map with a section and a row but NO seats. Not the degenerate
+	// nothing-at-all case: a map that looks authored and sells nothing is the shape an
+	// operator actually produces, by deleting the last seat or stopping halfway.
+	m := seedDraftMap(ctx, t, st, "Seatless")
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSeatMapRow(ctx, SeatMapRowInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	published, _, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
+	if err != nil {
+		t.Fatalf("publishing a seatless map failed with %v.\n\n"+
+			"If this is a deliberate new refusal, the gap TKT-318 tracks is CLOSED: change "+
+			"this test to assert the refusal and close that ticket. Do not delete it.", err)
+	}
+	if published.Status != "published" {
+		t.Fatalf("status = %q, want published — see the message above", published.Status)
+	}
+
+	// And the geometry really is empty, so this is not passing for some other reason.
+	geo, err := st.GetSeatMapGeometry(ctx, published.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := 0
+	for _, s := range geo.Sections {
+		for _, r := range s.Rows {
+			seats += len(r.Seats)
+		}
+	}
+	if seats != 0 {
+		t.Fatalf("fixture seeded %d seats; this test is about a map with none", seats)
+	}
+}

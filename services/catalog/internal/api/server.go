@@ -583,9 +583,22 @@ func (s *Server) unpinSeats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.UnpinSeats(r.Context(), in); err != nil {
+	// ErrSeatMapFamilyNotFound is SUCCESS here, deliberately (TKT-306). An unpin is
+	// idempotent and there is nothing to release; the sentinel exists so the store can
+	// say WHICH nothing it found, not so this route starts refusing. Turning it into a
+	// 4xx would break inventory's reconcile sweep, which releases pins it may already
+	// have released, and would make a retry after a partial failure fail.
+	//
+	// It is logged rather than swallowed, because the case it distinguishes — a caller
+	// naming a map that does not exist, or one belonging to another organizer — is a
+	// caller bug that currently has no other symptom until TKT-112's sweep finds
+	// orphaned pins.
+	if err := s.store.UnpinSeats(r.Context(), in); err != nil && !errors.Is(err, store.ErrSeatMapFamilyNotFound) {
 		s.writeStoreError(w, r, err)
 		return
+	} else if err != nil {
+		s.log.WarnContext(r.Context(), "unpin matched no seat-map family",
+			"seat_map_id", in.SeatMapID, "organizer_id", in.OrganizerID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unpinned"})
 }

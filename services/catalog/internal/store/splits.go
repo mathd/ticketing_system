@@ -133,6 +133,43 @@ func SelectSplitSchedule(at time.Time, code string, channel *string, scopes Pric
 
 	sort.Slice(scoped, func(i, j int) bool { return scoped[i].ID.String() < scoped[j].ID.String() })
 
+	// NO DUPLICATE-ID GUARD HERE, and that is structural rather than an omission
+	// (TKT-306; ADR-046 §7's TKT-306 amendment has the table).
+	//
+	// The price and fee resolvers refuse two rules sharing an id, because the last
+	// tie-break is the id and the winner would otherwise depend on input order. The
+	// same is true of this comparator — but this function returns a bare
+	// SplitSelection with no error, and its one production caller runs it INSIDE a
+	// loop over fees on a money path (fees_postgres.go). Adding the guard means
+	// changing the signature and making fee resolution newly failable mid-loop, which
+	// is a behaviour change rather than an alignment.
+	//
+	// DEFERRED, NOT IMPOSSIBLE, and the distinction matters (ai-review). A guard has
+	// to live HERE — the pure seam is the only place a duplicate SplitSchedule is
+	// representable — and it needs a way to report: a signature change, or an invalid
+	// state on SplitSelection that the caller converts. Both are behaviour changes to
+	// a money path and out of TKT-306's scope; neither is impossible.
+	//
+	// Validating in the CALLER does not work, which is worth knowing before someone
+	// tries it: loadSplitSchedules collapses rows by id, because repeated ids are how
+	// a multi-part schedule is stored — one row per part — so the caller never sees a
+	// duplicate to reject, and rejecting repeated ids at the loader would refuse every
+	// legitimate multi-part schedule.
+	//
+	// Calling this structural would suppress ADR-046 §7's revisit trigger on a
+	// MONEY-ALLOCATION path.
+	//
+	// WHAT HAPPENS TODAY, measured: two schedules sharing an id and tied on every
+	// ranking axis produce an ORDER-DEPENDENT winner — [a,b] and [b,a] return
+	// different payees — and both are absent from Candidates, so the provenance does
+	// not show the ambiguity either. The price and fee comparators refuse this input;
+	// this one silently picks one.
+	//
+	// What holds the invariant meanwhile: id is the primary key, so duplicates are
+	// unreachable through Postgres — the same fact that makes the other two guards
+	// pure seams, and the same reason those guards exist anyway. The sort above keeps
+	// the answer order-independent given DISTINCT ids, which is the part that is done.
+
 	eligible := make([]SplitSchedule, 0, len(scoped))
 	var windowLosers []LosingSplitSchedule
 	for _, s := range scoped {

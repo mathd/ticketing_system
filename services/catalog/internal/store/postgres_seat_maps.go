@@ -335,8 +335,11 @@ func (p *Postgres) UnpinSeat(ctx context.Context, in PinSeatInput) error {
 		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
 		in.SeatMapID, in.OrganizerID).Scan(&family)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Unknown map/organizer: nothing to unpin, stay idempotent.
-		return nil
+		// Nothing to unpin — but SAY WHICH nothing (TKT-306). Still not an error to the
+		// caller (see the handler), and still idempotent; the sentinel exists so a
+		// caller that passed the wrong organizer for a real map can tell that apart
+		// from pins that were already released.
+		return ErrSeatMapFamilyNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("resolve seat-map family: %w", err)
@@ -417,7 +420,8 @@ func (p *Postgres) UnpinSeats(ctx context.Context, in BatchPinInput) error {
 		`SELECT map_family_id FROM seat_maps WHERE id = $1 AND organizer_id = $2`,
 		in.SeatMapID, in.OrganizerID).Scan(&family)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // unknown map/organizer: nothing to unpin, stay idempotent
+		// See UnpinSeat: distinguishable, not fatal (TKT-306).
+		return ErrSeatMapFamilyNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("resolve seat-map family: %w", err)

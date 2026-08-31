@@ -53,6 +53,22 @@ var (
 	// COS-2/3). The edit is hard-rejected — never silently applied — so a pinned
 	// identity always resolves in the current published version. See ADR-029.
 	ErrSeatMapEditOrphansPinned = errors.New("edit would orphan a pinned seat identity")
+	// ErrSeatMapFamilyNotFound reports an unpin whose (seat_map_id, organizer_id)
+	// resolved no family at all (TKT-306).
+	//
+	// It is NOT a failure and callers keep treating an unpin as successful when they
+	// see it — the operation is idempotent and there is genuinely nothing to unpin.
+	// What it adds is the DISTINCTION the previous bare `return nil` erased: "the pins
+	// were already gone" and "you named a map that does not exist, or one belonging to
+	// another organizer" are different facts, and only the second means the caller is
+	// confused about what it is releasing.
+	//
+	// The case that motivated it: an internal caller passing the WRONG organizer for a
+	// real map got `nil`, reported a successful release, and left the pins in place —
+	// discoverable only later, by TKT-112's reconcile sweep, as pins naming a claim
+	// nobody remembers. Answering nil there is not idempotency, it is a wrong answer
+	// that looks like the right one.
+	ErrSeatMapFamilyNotFound = errors.New("seat map family not found for this organizer")
 	// ErrSeatIdentityNotFound reports a PinSeat against an identity absent from
 	// the family's current published version (TKT-104). Symmetric with the edit
 	// rejection: an edit cannot drop a pinned seat, and a pin cannot reference a
@@ -573,9 +589,15 @@ type Store interface {
 	PinSeats(ctx context.Context, in BatchPinInput) error
 	// UnpinSeats clears a whole seat set atomically under the same family lock. Idempotent:
 	// absent pins are a no-op.
+	//
+	// Returns ErrSeatMapFamilyNotFound when the (seat_map_id, organizer_id) pair resolves
+	// no family (TKT-306). That is NOT a failure — nothing needed unpinning — and callers
+	// must keep treating the operation as successful. It exists so "the pins were already
+	// gone" and "you named a map that is not yours" stop being the same answer.
 	UnpinSeats(ctx context.Context, in BatchPinInput) error
 	// UnpinSeat clears a pin (sale cancelled / hold released), so a later edit may
-	// drop that seat. Idempotent: removing an absent pin is a no-op.
+	// drop that seat. Idempotent: removing an absent pin is a no-op. Same
+	// ErrSeatMapFamilyNotFound contract as UnpinSeats.
 	UnpinSeat(ctx context.Context, in PinSeatInput) error
 	// ListSeatMapPins returns one bounded page of pin rows, ordered by primary key,
 	// starting strictly after `after` (uuid.Nil for the first page). It is the read
