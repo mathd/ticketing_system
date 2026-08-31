@@ -64,25 +64,41 @@ func (s *Server) registerRoutes(r chi.Router) {
 	}
 }
 
-// The ORDERING case, which the fixture above cannot distinguish and no live spec reaches
-// (TKT-278 ai-review pass 2). chi's Group calls With(), which COPIES the parent's middleware
-// slice at that instant — so a parent that creates a group and only THEN calls r.Use wraps
-// its own later routes and not the group. chi permits this: Use panics only once a route has
-// been registered on the same mux, and creating a group registers none.
+// The ORDERING case, which the fixture above cannot distinguish and no live spec reaches.
 //
-// A collector that gathered every r.Use in a scope before walking its groups would attribute
-// `lateMW` to /early, which is a status that route cannot write — and this audit's whole
-// claim is to derive a sound SUBSET.
+// chi's Group calls With(), which COPIES the middleware in force at that instant — so a
+// scope that creates a group and only THEN calls r.Use wraps its own later routes and not
+// the group. A collector that gathered every r.Use in a scope before walking its groups
+// would attribute `lateMW` to /early, a status that route cannot write, breaking the sound-
+// subset property this audit rests on.
+//
+// NESTED INSIDE AN OUTER GROUP, and that is not cosmetic (ai-review pass 3). On the ROOT
+// mux the sequence is impossible: With() calls updateRouteHandler() when the mux is not
+// inline, which sets mx.handler, so the following r.Use panics with "all middlewares must be
+// defined before routes on a mux". A fixture pinning a sequence chi rejects would assert
+// behaviour that can never occur. Inside a Group the mux IS inline, no handler is built, and
+// the sequence is legal.
+//
+// EXECUTED RATHER THAN REASONED, against the chi this repo builds with, through a throwaway
+// probe:
+//
+//	ROOT Group-then-Use PANICS: chi: all middlewares must be defined before routes on a mux
+//	INLINE /early ran middleware: [earlyMW]
+//	INLINE /late  ran middleware: [earlyMW lateMW]
+//
+// The second and third lines are what this fixture asserts statically.
 func TestGroupSnapshotsMiddlewareAtCreation(t *testing.T) {
 	const src = `package p
 func (s *Server) registerRoutes(r chi.Router) {
-	r.Use(s.earlyMW)
 	r.Group(func(r chi.Router) {
-		r.Get("/early", s.early)
-	})
-	r.Use(s.lateMW)
-	r.Group(func(r chi.Router) {
-		r.Get("/late", s.late)
+		r.Use(s.earlyMW)
+		r.Group(func(r chi.Router) {
+			r.Get("/early", s.early)
+		})
+		r.Use(s.lateMW)
+		r.Group(func(r chi.Router) {
+			r.Get("/late", s.late)
+		})
 	})
 }`
 	file, err := parser.ParseFile(token.NewFileSet(), "x.go", src, 0)
@@ -101,7 +117,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		got[r.Path] = r.Handlers
 	}
 	want := map[string][]string{
-		// Created BEFORE lateMW was declared, so it never sees it.
+		// Created BEFORE lateMW was declared, so it never sees it — confirmed at runtime.
 		"/early": {"earlyMW", "early"},
 		// Created after, so it sees both.
 		"/late": {"earlyMW", "lateMW", "late"},
