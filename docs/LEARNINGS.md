@@ -549,3 +549,20 @@ the classification upstream first. Across three passes every finding after the f
 written while fixing the previous one, clustered **one layer away** from the edited code — what another
 schema calls, what the UI renders, what the contract requires.
 [full note](learnings/2026-08-31-a-structural-match-claims-errors-you-never-enumerated.md)
+
+**2026-08-31 — TKT-306.** **A design space has no compiler.** The false-claims pattern in the two notes
+above, in the version that ITERATES: one ADR paragraph took three attempts — "structurally impossible"
+→ "three designs avoid the signature change" → one viable design — and each was written specifically to
+fix the previous one's false claim. Two of the three proposed designs could not observe the condition at
+all, because `loadSplitSchedules` collapses rows by id (repeated ids are how a multi-part schedule is
+*stored*). The file was two greps away all three times. What makes this fail harder than an ordinary
+wrong comment: a comment about code has the code beside it, while a paragraph about **designs that do
+not exist** has nothing to contradict it — no compiler, no test, no mutation — so it reads as reasoning
+rather than assertion. **Prose about what COULD be built needs the same verification as code.** Two
+tells: the paragraph names a function you have not opened this session, or you are writing about a
+design space rather than a mechanism. Corollary from the same ticket: **"unreachable through the
+database" does not justify skipping a guard's semantics** — a duplicate-id guard was reordered past a
+currency check on the grounds that the id is a primary key, but the guard exists for the *pure
+comparator seam*, and the same PK argument would make the guard itself pointless. And the one claim that
+came out right first time was the one that was **run** rather than argued.
+[full note](learnings/2026-08-31-a-design-space-has-no-compiler.md)

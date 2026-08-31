@@ -82,6 +82,21 @@ experiment stays valid.
   what is reachable **only** through the arm you are deleting, and if that set is non-empty fix the
   classification upstream before narrowing.
   ([a structural match claims errors you never enumerated](docs/learnings/2026-08-31-a-structural-match-claims-errors-you-never-enumerated.md))
+  **And the false-claim habit ITERATES when you write about a DESIGN SPACE — prose about what could
+  be built needs the same verification as code.** TKT-306 took three attempts at one ADR paragraph
+  ("structurally impossible" → "three designs avoid the signature change" → one viable design), each
+  written to fix the previous one's false claim; two of the three proposed designs could not observe
+  the condition at all, because the loader collapses rows by id and repeated ids are how a multi-part
+  row is *stored*. A comment about code has the code beside it; a paragraph about designs that do not
+  exist has no compiler, no test and no adjacent line to contradict it, so it reads as reasoning
+  rather than assertion. **Two tells: the paragraph names a function you have not opened this
+  session, or you are describing a design space rather than a mechanism.** Verify each alternative
+  like a code change, or write that you have not checked. Corollary: **"unreachable through the
+  database" does not justify changing a guard's semantics** — the fee duplicate guard was reordered
+  past the currency check on the grounds that the id is a primary key, but the guard exists for the
+  PURE SEAM that accepts hand-built input, and the same argument would make the guard itself
+  pointless. Evaluate a defence's changes at the seam it defends.
+  ([a design space has no compiler](docs/learnings/2026-08-31-a-design-space-has-no-compiler.md))
 - **A security claim is a hypothesis until it is executed.** Two consecutive adversarial passes
   rejected two different claims about one guard, both plausible, both written in good faith, both
   false; what settled it was running the sequence and watching it return 200 (TKT-236, ADR-053). When
