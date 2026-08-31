@@ -1021,6 +1021,7 @@ export interface operations {
                     "application/json": components["schemas"]["OrderFailure"];
                 };
             };
+            404: components["responses"]["Error"];
             /** @description No-side-effect timeout */
             408: {
                 headers: {
