@@ -489,37 +489,64 @@ same thing to a buyer either way: no worker will advance this without a human. `
 excludes parked rows (`store/recovery.go:79`, and the claimable index in `0004`/`0005`), so that is
 a statement about the system, not a guess.
 
-### What bounds the wait
+### What ends the 202 — and what it is NOT
 
-**The attempt budget, not a timer on the status code.** `MaxRecoveryAttempts` is 10
-(`store/recovery.go:51`); `ReleaseStuckOrder` backs off exponentially to a five-minute ceiling and
-sets `recovery_parked_at` on the attempt that reaches the budget. So "202 forever" is really *202
-while the runner is still working*, and the runner gives up on a bound the code states. This is
-§Decision 1's *driven, not awaited* applied to the buyer's side: what advances the order is a
-scheduled pass, and what ends the 202 is that pass exhausting itself, not the passage of wall-clock
-time observed at the API.
+**What ends it is the attempt budget, and the budget counts attempts, not seconds.**
+`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). `ClaimStuckOrders` increments
+`recovery_attempts` when a pass **claims** the row (:84-92), and `ReleaseStuckOrder` sets
+`recovery_parked_at` on the release whose count has reached the budget, backing off exponentially to
+a five-minute ceiling in between. So "202 forever" is *202 while the runner is still working*, and
+the runner does give up.
 
-Adding an HTTP-level deadline would not improve on this. It would answer terminally while the
-runner still had attempts left — asserting an ending the system is still trying to avoid — and it
-would have to guess a bound the runner already knows exactly.
+**Be exact about what that bounds, because it is not the buyer's wait.** Ten attempts is a bound on
+*claimed re-drives that failed*, not on elapsed time. Nothing converts it into a deadline:
 
-### The residual, stated rather than hidden
+- The pass runs on a ticker whose period is configurable — `recoveryInterval()` reads
+  `RECOVERY_INTERVAL` and defaults to 30s (`cmd/commerce/main.go:549-559`).
+- A claim also waits on `recovery_next_attempt_at`, an exponential backoff, and on a
+  two-minute `updated_at` grace that keeps recovery off live checkouts (`store/recovery.go:79-84`).
+- Claims are taken in batches (`RECOVERY_BATCH`, default 16), so a backlog delays a given row.
+- A stopped, crash-looping or starved runner claims nothing, and therefore **consumes no attempts
+  at all**.
+
+Under normal operation this resolves in a small number of cycles. **There is no wall-clock bound,
+and this ADR does not claim one.**
+
+An HTTP-level deadline is therefore not simply redundant, and it should be evaluated on its own
+merits rather than dismissed here. What can be said against it is narrower: it answers *terminally*
+while the runner may still hold attempts, which asserts an ending the system is actively trying to
+avoid, and it reports a wedged runner as a declined payment. Whether a product-level deadline with
+some *other* buyer-facing wording is worth having is a question this ADR leaves open.
+
+### The residual, stated rather than hidden — and it is NOT observable today
 
 A runner permanently wedged **without** consuming attempts — stopped, crash-looping, or starved —
-would leave a buyer on 202 indefinitely. That is a **liveness** problem, and inventing a terminal
-status code does not fix it: it converts an accurate "still working" into an inaccurate "declined"
-while the order remains exactly as stuck. It is instrumented instead, and the split matters:
-`commerce.recovery.parked` counts parked orders **outside** `reconciliation_required` — *"a nonzero
-value is work waiting for a human"* — while `commerce.recovery.parked.reconciliation_required`
-counts the other exit separately, *"because the resolution differs in kind"*
-(`recovery/metrics.go`). Those two gauges are the two non-terminal exits above.
+leaves a buyer on 202 indefinitely. Inventing a terminal status code does not fix that: it converts
+an accurate "still working" into an inaccurate "declined" while the order stays exactly as stuck.
+
+**Nothing currently observes this state, and it would be wrong to imply otherwise.** The recovery
+gauges are fed by `ReadRecoveryBacklog`, whose query is scoped
+`WHERE recovery_parked_at IS NOT NULL` (`store/recovery.go:601-613`) — a wedged runner's orders are
+**unparked** by definition, so no gauge counts them. The two gauges also do not correspond to the
+two exits above: `commerce.recovery.parked` counts every parked order whose status is
+`IS DISTINCT FROM 'reconciliation_required'` and
+`commerce.recovery.parked.reconciliation_required` counts the rest, both aggregating across all five
+recoverable statuses rather than isolating `release_pending`.
+
+So the honest position is: **the exhaustion path is instrumented; the wedged-runner path is not.**
+Closing that gap means a metric over the age of the oldest *claimable, unparked* row — the thing that
+grows when nothing is draining — and an alert on it. That is not in this ticket's scope and is
+recorded here as an open item rather than left as an implied guarantee.
 
 ### What this amendment does not claim
 
 Per ADR-021's name-the-claim discipline, and because prose is not compiled:
 
 - **Not** that every 202 eventually becomes terminal. A wedged runner is the case above.
-- **Not** that any timer guarantees progress. Nothing here is time-based; the bound is a counter.
+- **Not** that the buyer's wait is bounded in wall-clock time. `MaxRecoveryAttempts` bounds failed
+  *claimed* re-drives; the schedule, the backoff, the batch size and whether the runner is running
+  at all sit between it and any elapsed-time figure.
+- **Not** that a wedged runner is observed. It is not — see the residual above.
 - **Not** that `terminal_outcome` proves the order failed. It proves **no capture**, and that is all
   it is read for here.
 - **Not** that the two paths agree by construction. They agree because
