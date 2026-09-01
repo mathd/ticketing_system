@@ -186,7 +186,7 @@ func TestTracePropagation(t *testing.T) {
 			if !strings.Contains(line, traceID) {
 				continue
 			}
-			switch logLineOrigin(line, project) {
+			switch logLineOrigin(line) {
 			case originGateway:
 				gw, classified = true, classified+1
 			case originService:
@@ -231,23 +231,24 @@ const (
 // Compose prefixes each line with `<project>-<service>-<replica>  | `. Anything
 // that does not parse is originUnknown, and the caller says so rather than
 // silently counting it.
-func logLineOrigin(line, project string) logOrigin {
+func logLineOrigin(line string) logOrigin {
 	name, _, found := strings.Cut(line, "|")
 	if !found {
 		return originUnknown
 	}
 	name = strings.TrimSpace(name)
-	rest, ok := strings.CutPrefix(name, project+"-")
-	if !ok {
-		return originUnknown
-	}
-	// `<service>-<replica>`, and the replica is what ENDS the name. Matching the
-	// service as a bare prefix is not enough: `<project>-catalog-sidecar-1`
-	// satisfies HasPrefix(name, project+"-catalog-") and would be counted as the
-	// catalog service. Cut at the LAST dash and require the remainder to equal a
-	// known service exactly. (This function's own test caught that; the case is
-	// still in it.)
-	svc, replica, ok := lastCut(rest, '-')
+	// `<service>-<replica>`, and the replica is what ENDS the name. NOT
+	// `<project>-<service>-<replica>`: `docker compose logs` labels each line
+	// with the SERVICE name, and the project appears only in the container name
+	// that `docker ps` shows. Verified against a live stack after a first
+	// version keyed on the project prefix classified every line as unknown and
+	// failed the gate with `gateway logs=false, service logs=false`.
+	//
+	// Matching the service as a bare prefix is not enough either: `catalog-
+	// sidecar-1` satisfies HasPrefix(name, "catalog-") and would be counted as
+	// catalog. Cut at the LAST dash and require the remainder to be the replica
+	// number and the head to equal a known service exactly.
+	svc, replica, ok := lastCut(name, '-')
 	if !ok || replica == "" || strings.Trim(replica, "0123456789") != "" {
 		return originUnknown
 	}
@@ -1108,21 +1109,21 @@ func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
 // cases are satisfied by the broken matcher too, so they prove nothing on their
 // own and are here to stop the fix from over-correcting.
 func TestLogLineOriginAttributesByContainerNotPayload(t *testing.T) {
-	const project = "ticketing-smoke-22"
 	for _, tc := range []struct {
 		name string
 		line string
 		want logOrigin
 	}{
 		{
-			// The false positive. Payload names the gateway; the container is catalog.
+			// The false positive this ticket exists to close. Payload names the
+			// gateway; the container is catalog.
 			name: "a service line whose payload names the gateway is a SERVICE line",
-			line: project + `-catalog-1  | {"msg":"dialing http://gateway:8080/healthz","trace_id":"abc"}`,
+			line: `catalog-1  | {"msg":"dialing http://gateway:8080/healthz","trace_id":"abc"}`,
 			want: originService,
 		},
 		{
 			name: "a gateway line is a gateway line",
-			line: project + `-gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
+			line: `gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
 			want: originGateway,
 		},
 		{
@@ -1133,22 +1134,28 @@ func TestLogLineOriginAttributesByContainerNotPayload(t *testing.T) {
 			want: originUnknown,
 		},
 		{
-			// A container from a DIFFERENT compose project must not count: the
-			// dev stack and the smoke stack can be up at once.
-			name: "another project's gateway is not this project's gateway",
-			line: `ticketing-gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
+			// Substring-vs-exact on the SERVICE field: a name merely containing
+			// a known service must not match.
+			name: "a service whose name merely contains a known service is unknown",
+			line: `catalog-sidecar-1  | {"trace_id":"abc"}`,
 			want: originUnknown,
 		},
 		{
-			// Substring-vs-prefix on the NAME field: a container merely
-			// containing the word must not match either.
-			name: "a container whose name merely contains a service name is unknown",
-			line: project + `-catalog-sidecar-1  | {"trace_id":"abc"}`,
+			// A service this test does not name is not evidence of anything.
+			name: "an unlisted service is unknown",
+			line: `storefront-1  | {"trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// The replica must be a number. Without this, the previous case's
+			// "sidecar" would parse as the replica of a `catalog-sidecar` service.
+			name: "a non-numeric replica is unknown",
+			line: `catalog-main  | {"trace_id":"abc"}`,
 			want: originUnknown,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := logLineOrigin(tc.line, project); got != tc.want {
+			if got := logLineOrigin(tc.line); got != tc.want {
 				t.Fatalf("logLineOrigin(%q) = %v, want %v", tc.line, got, tc.want)
 			}
 		})
