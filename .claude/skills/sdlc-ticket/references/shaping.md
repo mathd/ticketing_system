@@ -24,6 +24,19 @@ SPIDR slicing (first sprint-sized slice).
 
 **Why `context_memo` is a gate item and not a nicety.** `SKILL.md` already says *every* pipeline ticket gets the bake — but nothing enforced it, so tickets reached Planning without one and the planner re-derived the context by hand, or didn't. The planner is the stage that can least afford to improvise it: whoever drafts reads **code, not decision history**, so an ADR that makes the obvious solution wrong is invisible to it — it recommends the wrong thing with every fact correct (TKT-62: ADR-008 is what made `CREATE INDEX CONCURRENTLY` pointless; TKT-61: ADR-017 *was* the whole ticket and arrived only because the orchestrator went looking). Resolve `governingAdrs` from `registry.bindingPath` at shaping, when there is time to read, rather than at Planning under a drafting deadline. `deferred` is available if the area genuinely has no governing decisions — but say so in `note`, so "none" is a finding rather than an omission. **Every cited ADR must resolve to a real file at HEAD** — `git -C <repo> cat-file -e HEAD:<registry.bindingPath>/<ADR>` or an `ls`. A mémo that names an ADR which does not exist (a planned-but-unwritten decision, or a slot reused for a different topic) sends the drafter looking for a spec that isn't there and costs a Planning-time reconciliation (TKT-56 cited `ADR-030-stripe-behind-psp-port.md`, but ADR-030 was the catalog-coverage gate and the Stripe ADR had never been written — it had to be authored mid-run as ADR-032). If the governing decision is not yet recorded, the honest mémo entry is a `deferred` item whose `note` says "ADR to be authored", not a citation of a file that does not exist.
 
+**A COS that names a MUTATION or a TEST must name the seam it would use — or it may be unbuildable.**
+The DoR asks whether each item is *answered*, not whether it is *possible*, and that gap is where an
+unbuildable acceptance criterion survives shaping intact. TKT-234's COS-3 read *"perturb `occurred_at`
+on an existing event and confirm the chain verification still passes"* — coherent, specific, and
+**impossible**: `occurred_at` is inside the signed canonical form, so perturbing it fails verification
+by design, which the governing ADR's own threat model already stated. Naming the seam (*"call X with
+Y and assert Z"*) is what forces the check, and it costs one `git grep` at the moment you are already
+reading the code. Same discipline as the ADR-resolves-to-a-real-file rule above: a criterion that
+cannot be satisfied sends the implementer to either fabricate a test that appears to satisfy it, or
+spend a build cycle discovering it cannot be — and the first outcome is the dangerous one, because it
+ships a green test that means nothing. If the seam does not exist, say so in `note` and let the COS be
+about the reachable property instead.
+
 **`governingTests` is required on the same terms — non-empty or explicitly `none`.** An ADR is discoverable by *reading*; a cross-cutting invariant enforced by a test is discoverable only by *failing the gate*, which is the worst possible moment and the one place the drafter has no way to look. Shaping is the cheapest place to find them because you are already reading the code. TKT-241's single most dangerous constraint was not an ADR at all: `channel_seam_test.go` is a live tripwire pinning the public reserve route as channel-free, carrying an instruction not to delete it, and a plan that "fixed" the seam by re-adding the forward would have been correct against every ADR it cited and still wrong. TKT-235's plan failed the gate twice for the same shape. Grade `met` when the list is populated **or** when you have looked and there are none — say which in `note`, so "none" is a finding rather than an omission, exactly as for `governingAdrs`.
 
 ```json
