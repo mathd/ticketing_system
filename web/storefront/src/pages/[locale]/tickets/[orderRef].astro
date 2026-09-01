@@ -2,7 +2,7 @@
 import Layout from '../../../layouts/Layout.astro';
 import { isLocale, UI_STRINGS } from '../../../lib/locales';
 import { SESSION_COOKIE, lookupSession } from '../../../lib/session';
-import { getTicketBundle } from '../../../lib/ticket-api';
+import { getTicketBundle, ticketsForDisplay } from '../../../lib/ticket-api';
 
 const locale = Astro.params.locale;
 if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
@@ -83,7 +83,15 @@ Astro.response.headers.set('Cache-Control', 'no-store');
       </p>
     )
   }
-  {bundle.tickets.map((ticket, index) => {
+  {/*
+    Renders ticketsForDisplay(...), not the wire objects: this file is NOT
+    typechecked (tsc does not parse .astro and the repo has no @astrojs/check),
+    so a field read here is unchecked and a renamed contract field would ship
+    an <img src={undefined}> past a fully green gate. The projection reads every
+    field in checked TypeScript, where the rename breaks the build (TKT-303
+    ai-review [medium]).
+  */}
+  {ticketsForDisplay(bundle).map((ticket, index) => {
     const voided = voidedReason(ticket.history);
     return (
       <article class={voided ? 'ticket ticket--voided' : 'ticket'}>
@@ -91,10 +99,10 @@ Astro.response.headers.set('Cache-Control', 'no-store');
         {voided ? (
           <p class="voided" role="status"><strong>{t.ticketVoided}</strong><br />{voided}</p>
         ) : (
-          <img src={ticket.qr_url} width="256" height="256" alt={t.ticketQrAlt} />
+          <img src={ticket.qrUrl} width="256" height="256" alt={t.ticketQrAlt} />
         )}
         <ul aria-label={t.ticketHistory}>
-          {ticket.history.map((event) => <li>{event.type} — {new Date(event.occurred_at).toLocaleString(locale)}</li>)}
+          {ticket.history.map((event) => <li>{event.type} — {new Date(event.occurredAt).toLocaleString(locale)}</li>)}
         </ul>
       </article>
     );

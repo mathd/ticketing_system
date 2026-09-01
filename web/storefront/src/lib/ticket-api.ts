@@ -18,20 +18,23 @@ const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
  * what access promises, not a runtime check that it delivered; that gap is
  * unchanged by this ticket and is not what it set out to close.
  *
- * What the generation actually buys, measured rather than assumed by renaming
- * `qr_url` in access's contract and regenerating:
+ * What the generation buys, measured rather than assumed by renaming `qr_url`
+ * in access's contract, regenerating and COMMITTING the output:
  *
- *   - `check-generate` goes red. That is the gate COS3 asked for, and it fires
- *     whether or not anyone consumes the type.
- *   - A `.ts` consumer of this type fails to compile (TS2339).
- *   - A `.astro` TEMPLATE does NOT. `pnpm run build` is
- *     `astro sync && tsc --noEmit && astro build`, and `tsc` does not parse
- *     `.astro`; that needs `astro check`, which this repo does not run. So
- *     `[orderRef].astro`'s `ticket.qr_url` stayed green under the rename.
+ *   - `check-generate` PASSES. It compares the spec against the generated files
+ *     and both moved together, so it detects generator drift, not consumer
+ *     compatibility. An earlier version of this comment claimed it "closes the
+ *     gap"; that was false and an ai-review finding caught it.
+ *   - A `.ts` consumer that READS a renamed field fails to compile (TS2339).
+ *   - A `.astro` template does not. `pnpm run build` is
+ *     `astro sync && tsc --noEmit && astro build`, `tsc` does not parse
+ *     `.astro`, and this repo does not install `@astrojs/check`.
  *
- * The last point is a real limit of this change, not a detail: the buyer ticket
- * page is exactly the surface the ticket worried about. `check-generate` is what
- * closes the gap; the type adoption is what makes the next `.ts` reader honest.
+ * So a type alias nothing reads buys nothing: the cast below names the type but
+ * touches no field, and the only field consumer was the unchecked template.
+ * `ticketsForDisplay` exists to close that — it reads every field the page
+ * renders, in checked TypeScript, so the rename that would ship an
+ * `<img src={undefined}>` fails the build instead.
  */
 export type TicketBundle = components['schemas']['TicketBundle'];
 
@@ -96,4 +99,31 @@ export async function getTicketBundle(orderRef: string): Promise<TicketBundleRes
   } catch {
     return { ok: false, status: 503 };
   }
+}
+
+/**
+ * The fields the ticket page renders, read HERE so the compiler sees them.
+ *
+ * This is the whole point of adopting the generated type: a cast alone is a
+ * claim nobody checks. Every property access below is a compile-time assertion
+ * that access's contract still carries that field under that name, and the page
+ * consumes this projection instead of the wire object.
+ *
+ * `qrUrl` is the one that motivated it — rename `qr_url` in the contract,
+ * regenerate, and this file stops compiling. Before, the page rendered
+ * `<img src={undefined}>` and every gate stayed green.
+ */
+export type TicketForDisplay = {
+  qrUrl: string;
+  history: ReadonlyArray<{ type: string; occurredAt: string }>;
+};
+
+export function ticketsForDisplay(bundle: TicketBundle): TicketForDisplay[] {
+  return bundle.tickets.map((ticket) => ({
+    qrUrl: ticket.qr_url,
+    history: ticket.history.map((event) => ({
+      type: event.type,
+      occurredAt: event.occurred_at,
+    })),
+  }));
 }

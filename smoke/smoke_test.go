@@ -180,33 +180,49 @@ func TestTracePropagation(t *testing.T) {
 		if err != nil {
 			return fmt.Errorf("compose logs: %v", err)
 		}
-		var gw, svc bool
-		var classified int
-		for _, line := range strings.Split(string(out), "\n") {
-			if !strings.Contains(line, traceID) {
-				continue
-			}
-			switch logLineOrigin(line) {
-			case originGateway:
-				gw, classified = true, classified+1
-			case originService:
-				svc, classified = true, classified+1
-			}
-		}
-		// A line carrying the trace id that matches NEITHER prefix means the
-		// container-name field did not parse — a compose format change, or
-		// colour that survived the flags. Silence there would look exactly like
-		// "the trace has not arrived yet" and then time out with a message
-		// blaming propagation, so say which it was.
-		if classified == 0 && (gw || svc) {
-			return fmt.Errorf("trace %s: lines matched but none could be attributed to a container — "+
-				"the `docker compose logs` prefix format may have changed", traceID)
-		}
-		if !gw || !svc {
-			return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
-		}
-		return nil
+		return tracePropagated(string(out), traceID)
 	})
+}
+
+// tracePropagated is TestTracePropagation's verdict on one `docker compose logs`
+// capture, extracted so the ACCOUNTING can be tested and not only the parser.
+//
+// The distinction earned its own ai-review finding: the first version tracked a
+// single counter incremented inside the same arms that set gw/svc, which made
+// the format-change diagnostic unreachable by construction — a check that cannot
+// fire, in the ticket whose whole subject is checks that cannot fire. A unit
+// test of logLineOrigin could not have caught that, because the defect was in
+// the caller.
+func tracePropagated(logs, traceID string) error {
+	var gw, svc bool
+	// matched counts lines carrying the trace id; classified counts those that
+	// could be attributed to a container. SEPARATE counters, deliberately.
+	var matched, classified int
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, traceID) {
+			continue
+		}
+		matched++
+		switch logLineOrigin(line) {
+		case originGateway:
+			gw, classified = true, classified+1
+		case originService:
+			svc, classified = true, classified+1
+		}
+	}
+	// Lines carry the trace id but none parsed: the prefix format changed, or
+	// colour survived the flags. Silence here looks exactly like "the trace has
+	// not arrived yet" and times out blaming propagation — which is precisely
+	// how the first version of this change failed the gate, with a 30s timeout
+	// whose message named the wrong cause.
+	if matched > 0 && classified == 0 {
+		return fmt.Errorf("trace %s: %d line(s) carry the trace id but none could be attributed to a "+
+			"container — the `docker compose logs` prefix format may have changed", traceID, matched)
+	}
+	if !gw || !svc {
+		return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
+	}
+	return nil
 }
 
 // logOrigin is which container emitted a `docker compose logs` line.
@@ -1157,6 +1173,78 @@ func TestLogLineOriginAttributesByContainerNotPayload(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := logLineOrigin(tc.line); got != tc.want {
 				t.Fatalf("logLineOrigin(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTracePropagatedAccounting covers the CALLER's classification accounting,
+// which the logLineOrigin table cannot reach. The ai-review finding that
+// produced this test was a guard that could never fire: `classified` was only
+// incremented inside the arms that also set gw/svc, so "matched but
+// unattributable" was unreachable by construction.
+//
+// The first case is the one that matters. It is also the exact situation the
+// first version of this change hit on the gate: lines carrying the trace id
+// whose prefix does not parse. Revert the accounting to a single counter and it
+// goes red — the run reports the generic propagation timeout instead, naming
+// the wrong cause.
+func TestTracePropagatedAccounting(t *testing.T) {
+	const id = "0af7651916cd43dd8448eb211c80319c"
+	for _, tc := range []struct {
+		name    string
+		logs    string
+		wantErr string
+	}{
+		{
+			name: "lines match but no prefix parses reports a FORMAT problem, not a propagation one",
+			logs: `{"trace_id":"` + id + `","msg":"gateway proxied"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"catalog served"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			name:    "gateway only is a propagation failure",
+			logs:    `gateway-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "in gateway logs=true, in service logs=false",
+		},
+		{
+			name:    "service only is a propagation failure",
+			logs:    `catalog-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "in gateway logs=false, in service logs=true",
+		},
+		{
+			name:    "no lines at all is a propagation failure, NOT a format one",
+			logs:    `gateway-1  | {"trace_id":"someone-elses-trace"}`,
+			wantErr: "in gateway logs=false, in service logs=false",
+		},
+		{
+			name: "both present passes",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "",
+		},
+		{
+			// A service line naming the gateway in its payload must not satisfy
+			// the gateway half — the whole point of Part 2, asserted here at the
+			// caller so the two halves cannot drift apart.
+			name:    "a catalog line naming the gateway does not satisfy the gateway half",
+			logs:    `catalog-1  | {"trace_id":"` + id + `","msg":"dialing http://gateway:8080"}`,
+			wantErr: "in gateway logs=false, in service logs=true",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tracePropagated(tc.logs, id)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want pass, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
 			}
 		})
 	}
