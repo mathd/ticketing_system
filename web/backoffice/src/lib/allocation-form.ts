@@ -51,6 +51,14 @@ export interface AllocationRow {
   channel: string;
   cap: string;
   releaseAt: string;
+  /**
+   * The operator asked to REMOVE this release gate (ai-review pass 2, [medium]).
+   *
+   * A real checkbox, so absent-means-false holds: `form.get` returns null when it
+   * is unticked, which is reachable. A hidden input would always submit and
+   * `value=""` would read as present-and-empty — the trap TKT-236 paid for.
+   */
+  clearRelease: boolean;
 }
 
 /**
@@ -109,6 +117,7 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
       channel: verbatim('channel'),
       cap: at('cap'),
       releaseAt: at('releaseAt'),
+      clearRelease: form.get(`clearRelease.${i}`) === 'true',
     });
   }
   return rows;
@@ -157,10 +166,64 @@ export function parseAllocationRevision(form: FormData): number | undefined {
  */
 function instant(channel: string, value: string): string | undefined {
   if (!value) return undefined;
-  if (!hasExplicitZone(value) || Number.isNaN(new Date(value).getTime())) {
+  const parsed = parseZonedInstant(value);
+  if (parsed === undefined) {
     throw new UnzonedReleaseTime(channel, value);
   }
-  return new Date(value).toISOString();
+  return parsed;
+}
+
+/**
+ * RFC 3339 with a zone, validated COMPONENT BY COMPONENT, or undefined.
+ *
+ * `new Date()` is not a validator, and delegating to it was an ai-review [high]
+ * (second pass). It NORMALIZES impossible dates instead of rejecting them:
+ *
+ *     2026-02-30T10:00:00Z -> 2026-03-02T10:00:00.000Z   (two days later)
+ *     2026-04-31T10:00:00Z -> 2026-05-01T10:00:00.000Z
+ *     2026-09-01T24:00:00Z -> 2026-09-02T00:00:00.000Z   (the next day)
+ *
+ * Each satisfies the input's `pattern`, so an operator who typed a wrong date got
+ * a redirect reporting success and a release gate moved by days. The first
+ * version of this check tested `2026-13-01T10:00:00Z`, which `Date` happens to
+ * reject — one malformation class generalised to all of them.
+ *
+ * So: parse the components, bound each, check the day against the real month
+ * length, then confirm `Date` round-trips to the same instant. The round-trip is
+ * the backstop — if any normalisation slipped past the component checks, the
+ * reconstructed value would differ.
+ */
+function parseZonedInstant(value: string): string | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+    value.trim(),
+  );
+  if (!m) return undefined;
+  const [, y, mo, d, h, mi, sec, zone] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  const hour = Number(h);
+  const minute = Number(mi);
+  const second = sec === undefined ? 0 : Number(sec);
+
+  if (month < 1 || month > 12) return undefined;
+  // Real month length, leap years included: day 0 of the NEXT month is the last
+  // day of this one. Uses UTC so the host's zone cannot change the answer.
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) return undefined;
+  // Hour 24 is legal in ISO 8601 for end-of-day but means the NEXT day, which is
+  // not what an operator typing it into a release field intends. Refused rather
+  // than normalised.
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${String(second).padStart(2, '0')}${zone}`;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  // The offset itself can be out of range (+99:00) and still match the pattern.
+  // A zone Date could not apply leaves the reconstruction disagreeing.
+  const zoneMatch = /^[+-](\d{2}):(\d{2})$/.exec(zone);
+  if (zoneMatch && (Number(zoneMatch[1]) > 23 || Number(zoneMatch[2]) > 59)) return undefined;
+  return parsed.toISOString();
 }
 
 /**
@@ -222,10 +285,20 @@ export function toMinuteInput(value: string | undefined): string {
 function preservedInstant(
   channel: string,
   submitted: string,
+  clearRelease: boolean,
   current: string | undefined,
 ): string | undefined {
+  // Explicit removal, and the ONLY way to reach it. Blank alone is refused below.
+  if (clearRelease) return undefined;
   if (current && submitted === toMinuteInput(current)) {
     return current;
+  }
+  // A blank field where one WAS set is not a request to remove it — it is far too
+  // easy to reach by accident in a free-text input, and clearing a gate is
+  // destructive (ai-review pass 2, [medium]). Refuse and make the operator say so.
+  // Blank where none was set is a no-op and stays legal.
+  if (!submitted && current) {
+    throw new BlankedReleaseTime(channel);
   }
   return instant(channel, submitted);
 }
@@ -283,6 +356,22 @@ export class UnzonedReleaseTime extends Error {
   ) {
     super(`release time for channel ${JSON.stringify(channel)} is not a zoned RFC 3339 instant`);
     this.name = 'UnzonedReleaseTime';
+  }
+}
+
+/**
+ * Thrown when a release time that WAS set is submitted blank without the explicit
+ * removal checkbox (ai-review pass 2, [medium]).
+ *
+ * Blank-means-clear predates this ticket — the `datetime-local` input behaved the
+ * same way — but the free-text field this ticket introduces makes an accidental
+ * blank easier to reach, and it asked for LESS input than a malformed value, which
+ * is refused outright. Removal is now an explicit act.
+ */
+export class BlankedReleaseTime extends Error {
+  constructor(public readonly channel: string) {
+    super(`release time for channel ${JSON.stringify(channel)} was blanked without confirmation`);
+    this.name = 'BlankedReleaseTime';
   }
 }
 
@@ -356,7 +445,7 @@ export function toAllocationRequest(
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = preservedInstant(r.channel, r.releaseAt, held.release_at);
+      const release = preservedInstant(r.channel, r.releaseAt, r.clearRelease, held.release_at);
       if (release) a.release_at = release;
       if (held.opens_at) a.opens_at = held.opens_at;
       if (held.closes_at) a.closes_at = held.closes_at;

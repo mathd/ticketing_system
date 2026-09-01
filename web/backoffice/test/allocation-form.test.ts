@@ -7,6 +7,7 @@ import {
   toAllocationRequest,
   toMinuteInput,
   UnzonedReleaseTime,
+  BlankedReleaseTime,
   MissingAllocationChannel,
   UnknownAllocationChannel,
   type AllocationRow,
@@ -26,6 +27,7 @@ const row = (over: Partial<AllocationRow> = {}): AllocationRow => ({
   channel: 'reseller-acme',
   cap: '40',
   releaseAt: '',
+  clearRelease: false,
   ...over,
 });
 
@@ -108,7 +110,7 @@ describe('the form cannot carry a field this screen does not edit', () => {
     form.set('soldBy.0', '99999999-9999-9999-9999-999999999999');
     form.set('opensAt.0', '2030-01-01T00:00');
     const parsed = parseAllocationForm(form);
-    expect(parsed[0]).toEqual({ channel: 'reseller-acme', cap: '40', releaseAt: '' });
+    expect(parsed[0]).toEqual({ channel: 'reseller-acme', cap: '40', releaseAt: '', clearRelease: false });
 
     // And they reach the wire only from the server's set.
     const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', parsed, [
@@ -326,12 +328,42 @@ describe('the write takes unrendered fields from the server, never from the clie
     );
   });
 
-  it('throws on a value that matches the input pattern but is not a real instant', () => {
-    // The `pattern` attribute is a browser convenience, not a boundary: this shape
-    // satisfies it and is still impossible. Month 13.
-    expect(() => build({ ...row(), releaseAt: '2026-13-01T10:00:00Z' }, [current()])).toThrow(
-      UnzonedReleaseTime,
-    );
+  // ai-review pass 2, [high]. The FIRST version of this test used only
+  // '2026-13-01T10:00:00Z', which `new Date` happens to reject — one malformation
+  // class generalised to all of them. `Date` NORMALISES the rest instead:
+  // 2026-02-30 becomes March 2, 2026-04-31 becomes May 1, hour 24 becomes the next
+  // day. Each matches the input's `pattern`, so an operator who typed a wrong date
+  // got a redirect reporting success and a gate moved by DAYS.
+  //
+  // Enumerated by malformation CLASS rather than by example (AGENTS.md): syntax,
+  // range, and the normalising impossibilities that are the actual hazard here.
+  it.each([
+    ['month 13 — rejected by Date, the only class the first version covered', '2026-13-01T10:00:00Z'],
+    ['February 30 — Date NORMALISES this to March 2', '2026-02-30T10:00:00Z'],
+    ['April 31 — normalises to May 1', '2026-04-31T10:00:00Z'],
+    ['February 29 in a non-leap year — normalises to March 1', '2025-02-29T10:00:00Z'],
+    ['hour 24 — legal ISO 8601 end-of-day, but means the NEXT day', '2026-09-01T24:00:00Z'],
+    ['minute 60', '2026-09-01T10:60:00Z'],
+    ['second 60', '2026-09-01T10:00:60Z'],
+    ['day 0', '2026-09-00T10:00:00Z'],
+    ['an out-of-range offset that still matches the pattern', '2026-09-01T10:00:00+99:00'],
+    ['no zone at all', '2026-09-02T08:00'],
+  ])('throws on %s', (_name, value) => {
+    expect(() => build({ ...row(), releaseAt: value }, [current()])).toThrow(UnzonedReleaseTime);
+  });
+
+  it('accepts the boundaries a real calendar allows', () => {
+    // The negative cases above must not have been bought by refusing everything.
+    // February 29 in a LEAP year is legal; so is a seconds-less value, and an
+    // offset at the edge of the range.
+    const leap = build({ ...row(), releaseAt: '2028-02-29T10:00:00Z' }, [current()]);
+    expect(leap!.release_at).toBe('2028-02-29T10:00:00.000Z');
+
+    const noSeconds = build({ ...row(), releaseAt: '2026-09-01T10:00Z' }, [current()]);
+    expect(noSeconds!.release_at).toBe('2026-09-01T10:00:00.000Z');
+
+    const edgeOffset = build({ ...row(), releaseAt: '2026-09-01T10:00:00+14:00' }, [current()]);
+    expect(edgeOffset!.release_at).toBe('2026-08-31T20:00:00.000Z');
   });
 
   it('names the channel and the submitted text, so the error can sit beside the field', () => {
@@ -345,8 +377,32 @@ describe('the write takes unrendered fields from the server, never from the clie
     }
   });
 
-  it('an EMPTY release time still clears the gate — that is a real thing to want', () => {
-    const a = build({ ...row(), releaseAt: '' }, [current()]);
+  // ai-review pass 2, [medium]. Blanking a free-text field is far easier to reach
+  // by accident than typing a malformed value — which is refused outright — so
+  // removal is an explicit act. Blank-means-clear predates this ticket (the
+  // datetime-local input behaved the same way); the free-text field is what makes
+  // the accident cheap.
+  it('THROWS when a set release time is blanked without confirmation', () => {
+    expect(() => build({ ...row(), releaseAt: '' }, [current()])).toThrow(BlankedReleaseTime);
+  });
+
+  it('removes the gate when the operator ticks the confirmation', () => {
+    const a = build({ ...row(), releaseAt: '', clearRelease: true }, [current()]);
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('a blank field where no gate was set is a no-op, not a refusal', () => {
+    // The refusal is about DESTROYING something. There is nothing to destroy here,
+    // so refusing would block a save for no reason.
+    const noRelease = { ...current(), release_at: undefined };
+    const a = build({ ...row(), releaseAt: '' }, [noRelease]);
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('the confirmation wins even if text is also present', () => {
+    // Ticked and non-empty is contradictory; removal is the safer reading of an
+    // explicit act, and it must not fall through to parsing the leftover text.
+    const a = build({ ...row(), releaseAt: '2026-09-02T08:00:00Z', clearRelease: true }, [current()]);
     expect(a).not.toHaveProperty('release_at');
   });
 
@@ -357,11 +413,6 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(toMinuteInput('2026-09-01T10:17:43.123456Z')).toBe('2026-09-01T10:17:43Z');
     expect(toMinuteInput(undefined)).toBe('');
     expect(toMinuteInput('not a date')).toBe('');
-  });
-
-  it('clearing the release time removes it', () => {
-    const a = build({ ...row(), releaseAt: '' }, [current()]);
-    expect(a).not.toHaveProperty('release_at');
   });
 
   // ai-review pass 3, [high]. A row naming a channel inventory does not hold is REFUSED,
@@ -383,7 +434,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(() =>
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: 'brand-new', cap: '10' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'brand-new', cap: '10' })],
         [current()],
       ),
     ).toThrow(UnknownAllocationChannel);
@@ -395,7 +446,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(() =>
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: ' reseller-acme ' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: ' reseller-acme ' })],
         [current()],
       ),
     ).toThrow(UnknownAllocationChannel);
@@ -405,7 +456,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     try {
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: 'ghost' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'ghost' })],
         [current()],
       );
       expect.unreachable('should have thrown');

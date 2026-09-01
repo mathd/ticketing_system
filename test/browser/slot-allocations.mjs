@@ -387,6 +387,15 @@ try {
     //
     // The refusal must leave the row alone, so the only safe assertion is equality
     // with what was there before.
+    // `before` must be a REAL instant, not empty. Equality with an empty string
+    // would hold trivially if this section were ever reordered ahead of the save
+    // that sets the value, and the assertion below would then prove nothing while
+    // looking exactly as it does now.
+    check(
+      'the row carries a release time to preserve, so the check below is not vacuous',
+      /^\d{4}-\d{2}-\d{2}T/.test(before),
+      `before=${JSON.stringify(before)} — this section depends on the zoned save above`,
+    );
     check(
       'a zoneless release time changes NOTHING — not stored, and not cleared',
       afterZoneless === before,
@@ -397,6 +406,44 @@ try {
       'the refusal is shown beside the release field, and the page does not redirect away',
       (await tzPage.locator(`[data-release-error="${plainChannel}"]`).count()) === 1,
       'a refusal the operator cannot see is a save that silently did nothing',
+    );
+
+    // BLANKING is refused too, and for a sharper reason: clearing a release gate is
+    // destructive and a free-text field makes an accidental blank cheap — cheaper
+    // than the malformed value above, which is refused outright (ai-review pass 2,
+    // [medium]). Removal is an explicit act.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '');
+    await tzPage.click('button[data-action="save-allocations"]');
+    await tzPage.waitForLoadState('domcontentloaded');
+    const afterBlank = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'blanking the field WITHOUT the confirmation does not remove the gate',
+      afterBlank === before,
+      `release_at=${afterBlank}, want it unchanged at ${before}`,
+    );
+
+    // And the confirmed removal works, or the refusal above would just be a wall.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '');
+    await tzPage.check(`input[data-clear-release-for="${plainChannel}"]`);
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterConfirmedClear = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'ticking the confirmation DOES remove the gate',
+      afterConfirmedClear === 'NULL',
+      `release_at=${afterConfirmedClear} — the refusal must not make removal impossible`,
     );
   } finally {
     await tzContext.close();

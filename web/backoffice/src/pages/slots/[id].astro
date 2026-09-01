@@ -43,6 +43,7 @@ import {
   MissingAllocationChannel,
   UnknownAllocationChannel,
   UnzonedReleaseTime,
+  BlankedReleaseTime,
 } from '../../lib/allocation-form';
 import { type Channel, listChannelsForOperator } from '../../lib/catalog';
 import {
@@ -132,7 +133,15 @@ if (Astro.request.method === 'POST') {
       );
       return Astro.redirect(here, 303);
     } catch (e) {
-      if (e instanceof UnzonedReleaseTime) {
+      if (e instanceof BlankedReleaseTime) {
+        releaseErrors = {
+          [e.channel]: 'To remove this release gate, tick “Remove this release gate”. Nothing was saved.',
+        };
+        errors = {
+          rows: {},
+          form: 'Nothing was saved. Clearing a release gate must be confirmed.',
+        };
+      } else if (e instanceof UnzonedReleaseTime) {
         // A row-level refusal, beside the field the operator must fix. NOTHING was
         // sent to inventory: returning early from toAllocationRequest is what stops
         // the full-set replace from clearing this channel's release gate, which is
@@ -323,6 +332,29 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                         data-release-for={row.channel}
                         aria-invalid={releaseErrors[row.channel] ? 'true' : undefined}
                       />
+                      {/* Clearing a release gate is DESTRUCTIVE and asks for less
+                          input than a malformed value, which the server refuses
+                          outright (ai-review pass 2, [medium]). Blank-means-clear
+                          predates this ticket — the datetime-local input behaved
+                          the same way — but a free-text field makes an accidental
+                          blank easier, so removal is now an explicit act rather
+                          than the absence of one.
+
+                          Checked-and-blank clears; blank alone is refused. This
+                          is the checkbox convention (absent means false), and it
+                          is a real checkbox rather than a hidden input, so absent
+                          is reachable — the trap TKT-236 paid for. */}
+                      {row.releaseAt !== '' && (
+                        <label class="clear-release">
+                          <input
+                            type="checkbox"
+                            name={`clearRelease.${i}`}
+                            value="true"
+                            data-clear-release-for={row.channel}
+                          />
+                          Remove this release gate
+                        </label>
+                      )}
                       {releaseErrors[row.channel] && (
                         <p class="error" role="alert" data-release-error={row.channel}>
                           {releaseErrors[row.channel]}
