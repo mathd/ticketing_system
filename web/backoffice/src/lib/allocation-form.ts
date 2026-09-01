@@ -189,8 +189,24 @@ function instant(channel: string, value: string): string | undefined {
  * reject — one malformation class generalised to all of them.
  *
  * So: parse the components, bound each, check the day against the real month
- * length and the offset range, then let `Date` refuse what those rules cannot
+ * length and the fraction width, then let `Date` refuse what those rules cannot
  * express.
+ *
+ * PRECISION IS A CONTRACT, and this one is milliseconds. A fraction finer than
+ * that is REFUSED, not truncated.
+ *
+ * JavaScript Date holds milliseconds, so converting through it silently drops the
+ * rest: `.123456` would store as `.123`. These boundaries are compared against
+ * `clock_timestamp()`, so that is a release gate moved by up to 999µs with no
+ * warning — small, real, and exactly the class of silent shift this ticket exists
+ * to remove. An earlier version accepted and truncated, and a test encoded the
+ * truncation as if it were the requirement (ai-review pass 4, [medium]).
+ *
+ * Refusing is the honest option available here: preserving microseconds would mean
+ * not converting through Date at all, which is a larger change than this ticket's
+ * subject. An UNTOUCHED field is unaffected either way — preservedInstant returns
+ * the stored value byte for byte, microseconds included — and the field renders
+ * without fractions, so this only fires when someone types them deliberately.
  *
  * That last step is NOT a round-trip comparison, and an earlier version of this
  * comment said it was (ai-review pass 3, [low]). Nothing here compares the
@@ -217,6 +233,8 @@ function parseZonedInstant(value: string): string | undefined {
   const minute = Number(mi);
   const second = sec === undefined ? 0 : Number(sec);
 
+  // Milliseconds at most: three fractional digits. See the precision contract above.
+  if (frac !== undefined && frac.length > 4) return undefined;
   if (month < 1 || month > 12) return undefined;
   // Real month length, leap years included: day 0 of the NEXT month is the last
   // day of this one. Uses UTC so the host's zone cannot change the answer.

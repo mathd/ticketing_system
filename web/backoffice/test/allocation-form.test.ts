@@ -348,6 +348,13 @@ describe('the write takes unrendered fields from the server, never from the clie
     // new Date(...) is Invalid Date. Refused because there is no instant to store,
     // which is a different reason from the malformations around it.
     ['second 60, a leap second JavaScript cannot represent', '2026-12-31T23:59:60Z'],
+    // Finer than milliseconds. The previous version ACCEPTED this and asserted it
+    // stored as `.123Z` — encoding JavaScript's truncation as if it were the
+    // requirement (ai-review pass 4, [medium]). These boundaries are compared
+    // against clock_timestamp(), so a silently truncated fraction is a release gate
+    // moved by up to 999µs. Refused instead, and the precision contract is stated
+    // in parseZonedInstant.
+    ['a fraction finer than milliseconds, which Date would silently truncate', '2026-09-01T10:17:43.123456Z'],
     ['day 0', '2026-09-00T10:00:00Z'],
     // Refused by the Date parse, NOT by an offset-range rule: there is no offset
     // Date accepts that such a rule would reject, so the rule this file used to
@@ -380,7 +387,7 @@ describe('the write takes unrendered fields from the server, never from the clie
   it.each([
     ['a lowercase zone marker, which RFC 3339 permits', '2026-09-01T10:00:00z', '2026-09-01T10:00:00.000Z'],
     ['fractional seconds', '2026-09-01T10:00:00.500Z', '2026-09-01T10:00:00.500Z'],
-    ['microsecond precision, as the database stores it', '2026-09-01T10:17:43.123456Z', '2026-09-01T10:17:43.123Z'],
+
     ['a lowercase date/time separator', '2026-09-01t10:00:00Z', '2026-09-01T10:00:00.000Z'],
     ['+00:00, which is Z spelled out', '2026-09-01T10:00:00+00:00', '2026-09-01T10:00:00.000Z'],
     ['-00:00', '2026-09-01T10:00:00-00:00', '2026-09-01T10:00:00.000Z'],

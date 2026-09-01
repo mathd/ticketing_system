@@ -427,6 +427,50 @@ try {
       `release_at=${afterBlank}, want it unchanged at ${before}`,
     );
 
+    // THE FORM'S OWN GRAMMAR must match the server's. The unit acceptance cases
+    // call the mapper directly and so cannot see a `pattern` attribute that blocks
+    // a value the server would have taken (ai-review pass 4, [medium]): the browser
+    // refuses the submission, the operator sees a tooltip, and every unit test
+    // still passes. Submitted through the real form, with NO DOM tampering, so the
+    // browser's constraint validation is part of what is under test.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-03t08:30:00.5z');
+
+    // checkValidity() explicitly, BEFORE submitting. Playwright's click submits
+    // programmatically and bypasses HTML constraint validation, so the round trip
+    // below passes whatever the `pattern` says — the first version of this
+    // assertion did exactly that and stayed green with the pattern reverted to
+    // uppercase-only. This is the line that actually reads the attribute a real
+    // operator's browser would enforce.
+    check(
+      "the form's own pattern accepts what the server accepts",
+      await tzPage.$eval(`input[data-release-for="${plainChannel}"]`, (el) => el.checkValidity()),
+      'the input pattern rejects a value the server parses — a real operator could not submit it',
+    );
+
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterMixedCase = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a lowercase-t/z value with a fraction goes through the real form',
+      afterMixedCase === '2026-09-03T08:30:00.500000',
+      `release_at=${afterMixedCase}, want 2026-09-03T08:30:00.500000 — ` +
+        'NULL or unchanged means the input pattern blocked a form the server accepts',
+    );
+
+    // Put the gate back where the sections below expect it.
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-01T10:00:37Z');
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+
     // RECOVER FROM THE REFUSAL PAGE, without reloading. This is the case the
     // previous version of this spec missed by doing a fresh GET first: the
     // checkbox was rendered only when the SUBMITTED text was non-empty, so the
