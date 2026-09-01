@@ -11,8 +11,8 @@ ordering, which this ADR had implemented and left unstated, and bounds what a re
 
 Amended by **TKT-145** (2026-09-01, §Amendment below) — records why an unparked `release_pending`
 checkout is answered 202 rather than a terminal 402/408, distinguishes the two exits that park (only
-one of which leaves the row `release_pending`), and names the attempt budget as the bound on the
-buyer's wait.
+one of which leaves the row `release_pending`), and states that the attempt budget bounds failed
+*claimed re-drives* rather than the buyer's elapsed wait, which has no wall-clock bound.
 
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
@@ -489,54 +489,94 @@ same thing to a buyer either way: no worker will advance this without a human. `
 excludes parked rows (`store/recovery.go:79`, and the claimable index in `0004`/`0005`), so that is
 a statement about the system, not a guess.
 
-### What ends the 202 — and what it is NOT
+### What ends the 202, and the narrow thing the attempt budget actually bounds
 
-**What ends it is the attempt budget, and the budget counts attempts, not seconds.**
-`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). `ClaimStuckOrders` increments
-`recovery_attempts` when a pass **claims** the row (:84-92), and `ReleaseStuckOrder` sets
-`recovery_parked_at` on the release whose count has reached the budget, backing off exponentially to
-a five-minute ceiling in between. So "202 forever" is *202 while the runner is still working*, and
-the runner does give up.
+**The 202 ends when a claimed re-drive reaches the failure-release path with the budget spent.**
+That sentence is deliberately narrow; every wider reading of it is false, and one of them was in the
+first draft of this amendment.
 
-**Be exact about what that bounds, because it is not the buyer's wait.** Ten attempts is a bound on
-*claimed re-drives that failed*, not on elapsed time. Nothing converts it into a deadline:
+`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). The counter moves in two places, and the
+asymmetry between them is the whole subtlety:
 
-- The pass runs on a ticker whose period is configurable — `recoveryInterval()` reads
-  `RECOVERY_INTERVAL` and defaults to 30s (`cmd/commerce/main.go:549-559`).
-- A claim also waits on `recovery_next_attempt_at`, an exponential backoff, and on a
-  two-minute `updated_at` grace that keeps recovery off live checkouts (`store/recovery.go:79-84`).
-- Claims are taken in batches (`RECOVERY_BATCH`, default 16), so a backlog delays a given row.
-- A stopped, crash-looping or starved runner claims nothing, and therefore **consumes no attempts
-  at all**.
+- `ClaimStuckOrders` increments `recovery_attempts` when a pass **claims** the row
+  (`store/recovery.go:92`) — *before* any work is attempted.
+- `AbandonRecoveryClaim` decrements it (`:345-350`), and it runs only from `releaseUndriven`
+  (`recovery/runner.go:275`), i.e. only on an **orderly** cancellation that hands back claims the
+  pass never reached.
 
-Under normal operation this resolves in a small number of cycles. **There is no wall-clock bound,
-and this ADR does not claim one.**
+So the budget is spent by *claims*, and refunded only by a graceful shutdown. Parking then happens
+in `ReleaseStuckOrder` (`:123-133`) — but only if `fail` actually reaches it.
 
-An HTTP-level deadline is therefore not simply redundant, and it should be evaluated on its own
-merits rather than dismissed here. What can be said against it is narrower: it answers *terminally*
-while the runner may still hold attempts, which asserts an ending the system is actively trying to
-avoid, and it reports a wedged runner as a declined payment. Whether a product-level deadline with
-some *other* buyer-facing wording is worth having is a question this ADR leaves open.
+**Four failure shapes, and only one of them ends in a park:**
 
-### The residual, stated rather than hidden — and it is NOT observable today
+| Shape | Attempts | Ends parked? |
+|---|---|---|
+| Claimed, drive failed, `fail` ran | consumed | **Yes**, once the count reaches 10 |
+| Runner stopped **before** claiming | untouched | No — nothing advances the row at all |
+| Orderly shutdown after claiming | refunded by `AbandonRecoveryClaim` | No, and correctly so |
+| **Crash after claiming, before `fail`** | **consumed, never refunded** | **No** — the parking UPDATE never runs |
 
-A runner permanently wedged **without** consuming attempts — stopped, crash-looping, or starved —
-leaves a buyer on 202 indefinitely. Inventing a terminal status code does not fix that: it converts
-an accurate "still working" into an inaccurate "declined" while the order stays exactly as stuck.
+The fourth row is the one worth stating: a runner crash-looping just after `ClaimStuckOrders` burns
+attempts without ever parking anything, and each burnt claim also holds `recovery_lease_until` for
+the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s` (`recovery/runner.go:197-206`),
+roughly 17 minutes at the defaults — before the row is claimable again. Such an order can exceed ten
+claims and remain unparked indefinitely.
 
-**Nothing currently observes this state, and it would be wrong to imply otherwise.** The recovery
-gauges are fed by `ReadRecoveryBacklog`, whose query is scoped
-`WHERE recovery_parked_at IS NOT NULL` (`store/recovery.go:601-613`) — a wedged runner's orders are
-**unparked** by definition, so no gauge counts them. The two gauges also do not correspond to the
-two exits above: `commerce.recovery.parked` counts every parked order whose status is
-`IS DISTINCT FROM 'reconciliation_required'` and
-`commerce.recovery.parked.reconciliation_required` counts the rest, both aggregating across all five
-recoverable statuses rather than isolating `release_pending`.
+**And even on the ordinary path, ten attempts is not a deadline.** It bounds failed claimed
+re-drives, not elapsed time, and several things sit between the two:
 
-So the honest position is: **the exhaustion path is instrumented; the wedged-runner path is not.**
-Closing that gap means a metric over the age of the oldest *claimable, unparked* row — the thing that
-grows when nothing is draining — and an alert on it. That is not in this ticket's scope and is
-recorded here as an open item rather than left as an implied guarantee.
+- the ticker period, configurable via `RECOVERY_INTERVAL`, default 30s
+  (`cmd/commerce/main.go:553-559`);
+- `recovery_next_attempt_at`, an exponential backoff — and note the **effective ceiling is 256
+  seconds, not five minutes**: the SQL is
+  `least(make_interval(secs => power(2, least(recovery_attempts, 8))), interval '5 minutes')`
+  (`store/recovery.go:129`), and the inner cap at 2^8 means the five-minute operand can never win;
+- a two-minute `updated_at` grace that keeps recovery off live checkouts (`store/recovery.go:84`);
+- `recovery_lease_until`, which withholds a claimed row for the lease above;
+- batch size (`RECOVERY_BATCH`, default 16), so a backlog delays a given row.
+
+Under normal operation this resolves in a small number of cycles. **The buyer's wait has no
+wall-clock bound, and this ADR does not claim one.**
+
+An HTTP-level deadline is therefore not simply redundant, and should be judged on its own merits
+rather than dismissed here. The narrow objection that does hold: answering terminally reports a
+*declined payment* for an order that is merely unattended, which is a false statement about money
+rather than a pessimistic one about time. Whether a product-level deadline with some **other**
+buyer-facing wording is worth having is left open.
+
+### The residual, and exactly how much of it is observable
+
+A runner that stops advancing orders leaves a buyer on 202 indefinitely. A terminal status code does
+not fix that — it converts an accurate "still working" into an inaccurate "declined" while the order
+stays exactly as stuck. What *would* help is noticing, so be precise about what notices today.
+
+**Partly observable.** A runner that cannot claim logs `claim stuck orders` at ERROR on every
+non-cancellation error (`recovery/runner.go:243-249`), and a database outage severe enough to cause
+that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`). Those cases consume no
+attempts and are visible as dependency failures.
+
+**Not observable.** A recovery goroutine that is starved, deadlocked, or never started inside an
+otherwise healthy process — and the crash-after-claim shape above — produce **no signal at all**.
+No metric measures the count or age of *eligible, unparked* recovery rows, which is the quantity
+that grows when nothing is draining. `ReadRecoveryBacklog`, which feeds every `commerce.recovery.*`
+gauge, is scoped `WHERE recovery_parked_at IS NOT NULL` (`store/recovery.go:601-613`), so unparked
+rows are excluded by construction.
+
+Two corrections to how those gauges are sometimes described, since this amendment relies on them:
+they do **not** correspond to the two exits above, and neither is scoped to `release_pending`.
+`commerce.recovery.parked` counts parked rows whose status `IS DISTINCT FROM
+'reconciliation_required'`; `commerce.recovery.parked.reconciliation_required` counts the rest.
+Together they **partition every parked row**, with no `status IN (…)` restriction at all — so a
+parked row outside the five claimable statuses would be counted too.
+
+**The gap is precedented, which is what makes it worth naming rather than shrugging at.** The
+sibling reversal runner already has exactly the missing shape:
+`commerce.refund.reversal.outstanding` counts obligations *including unparked ones* and is
+documented as *"sustained nonzero means a downstream is not recovering"*
+(`reversal/metrics.go:26-27`), alongside an `oldest_age_seconds`. Recovery has the parked half of
+that pair and not the outstanding half. Closing it means a gauge over eligible unparked rows and
+their age, plus an alert. **Out of scope here, recorded as an open item** — not as an implied
+guarantee.
 
 ### What this amendment does not claim
 
