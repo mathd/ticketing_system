@@ -6,6 +6,7 @@ import {
   parseAllocationRevision,
   toAllocationRequest,
   toMinuteInput,
+  UnzonedReleaseTime,
   MissingAllocationChannel,
   UnknownAllocationChannel,
   type AllocationRow,
@@ -312,12 +313,40 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(paris.release_at).toBe('2026-09-01T08:00:00.000Z');
   });
 
-  it('refuses a non-empty value with no zone rather than guessing one', () => {
-    // NOT treated as "clear the release time": that would remove a boundary the
-    // operator was editing. The row simply carries no release_at, and the
-    // pattern attribute stops a browser submitting this shape in the first
-    // place — this is the server-side half of the same refusal.
-    const a = build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
+  // ai-review [high]. The FIRST version of this test asserted that the row simply
+  // carried no `release_at`, and called that a refusal. It was not: the write is a
+  // full-set replace, so an omitted release_at CLEARS the stored release gate and
+  // redirects as a successful save. The test encoded the defect — an omission and a
+  // refusal are indistinguishable in the request body, and only one of them is safe.
+  //
+  // A non-empty unusable value must THROW, so nothing reaches inventory at all.
+  it('THROWS on a non-empty value with no zone rather than clearing the gate', () => {
+    expect(() => build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()])).toThrow(
+      UnzonedReleaseTime,
+    );
+  });
+
+  it('throws on a value that matches the input pattern but is not a real instant', () => {
+    // The `pattern` attribute is a browser convenience, not a boundary: this shape
+    // satisfies it and is still impossible. Month 13.
+    expect(() => build({ ...row(), releaseAt: '2026-13-01T10:00:00Z' }, [current()])).toThrow(
+      UnzonedReleaseTime,
+    );
+  });
+
+  it('names the channel and the submitted text, so the error can sit beside the field', () => {
+    try {
+      build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
+      throw new Error('expected UnzonedReleaseTime');
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnzonedReleaseTime);
+      expect((e as UnzonedReleaseTime).channel).toBe(row().channel);
+      expect((e as UnzonedReleaseTime).submitted).toBe('2026-09-02T08:00');
+    }
+  });
+
+  it('an EMPTY release time still clears the gate — that is a real thing to want', () => {
+    const a = build({ ...row(), releaseAt: '' }, [current()]);
     expect(a).not.toHaveProperty('release_at');
   });
 

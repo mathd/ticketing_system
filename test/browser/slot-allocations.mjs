@@ -370,20 +370,33 @@ try {
       },
       [`input[data-release-for="${plainChannel}"]`, '2026-09-02T08:00:00'],
     );
-    await Promise.all([
-      tzPage.waitForURL(`**/admin/slots/${slot}`),
-      tzPage.click('button[data-action="save-allocations"]'),
-    ]);
+    // NOT waitForURL: a refusal re-renders the form in place rather than redirecting,
+    // which is itself part of what is under test.
+    await tzPage.click('button[data-action="save-allocations"]');
+    await tzPage.waitForLoadState('domcontentloaded');
     const afterZoneless = sql(
       'inventory',
       `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
          FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
     );
+    // EXACTLY UNCHANGED. The first version of this assertion required the value to
+    // DIFFER from 2026-09-02T08:00:00 and from its prior value — which `NULL`
+    // satisfies, so it blessed the destructive outcome it was written to catch
+    // (ai-review [high]): an omitted release_at on a full-set replace CLEARS the
+    // gate, and the page redirects as a successful save.
+    //
+    // The refusal must leave the row alone, so the only safe assertion is equality
+    // with what was there before.
     check(
-      'a zoneless release time is NOT resolved in the server zone',
-      afterZoneless !== '2026-09-02T08:00:00.000000' && afterZoneless !== before,
-      `release_at=${afterZoneless} (was ${before}) — a server-zone reading would store ` +
-        "some 2026-09-02 instant whose hour depends on where the SSR process runs",
+      'a zoneless release time changes NOTHING — not stored, and not cleared',
+      afterZoneless === before,
+      `release_at=${afterZoneless}, want it unchanged at ${before} — ` +
+        'storing it means the server zone decided; NULL means the refusal destroyed the gate',
+    );
+    check(
+      'the refusal is shown beside the release field, and the page does not redirect away',
+      (await tzPage.locator(`[data-release-error="${plainChannel}"]`).count()) === 1,
+      'a refusal the operator cannot see is a save that silently did nothing',
     );
   } finally {
     await tzContext.close();

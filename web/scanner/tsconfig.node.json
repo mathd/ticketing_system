@@ -19,5 +19,12 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts"]
+  // test/ rather than src/: the config test reads the effective compiler config
+  // through node:child_process, and putting it in the app project would mean
+  // adding "node" to the app's types — which makes `process` and `Buffer` legal
+  // in every BROWSER module under src/, so code that cannot run in a browser
+  // would typecheck cleanly and fail only at the live gate (TKT-302 ai-review
+  // [medium]). The app's environment checking stays narrow; the Node-shaped test
+  // lives in the Node-shaped project.
+  "include": ["vite.config.ts", "test"]
 }

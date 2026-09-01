@@ -155,11 +155,12 @@ export function parseAllocationRevision(form: FormData): number | undefined {
  * unparseable non-empty value must not be read as "clear this boundary", which
  * would remove a release gate the operator was trying to edit.
  */
-function instant(value: string): string | undefined {
+function instant(channel: string, value: string): string | undefined {
   if (!value) return undefined;
-  if (!hasExplicitZone(value)) return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  if (!hasExplicitZone(value) || Number.isNaN(new Date(value).getTime())) {
+    throw new UnzonedReleaseTime(channel, value);
+  }
+  return new Date(value).toISOString();
 }
 
 /**
@@ -201,10 +202,16 @@ export function toMinuteInput(value: string | undefined): string {
 /**
  * The instant to submit for one editable timestamp, given what the SERVER currently holds.
  *
- * An untouched field keeps the server's value byte for byte: a `datetime-local` input holds
- * minutes, so re-deriving from it drops seconds and fractions, and these boundaries are
- * compared against `clock_timestamp()` — a cap edit would bring a release or a window
- * forward by up to a minute (ai-review pass 1, [high]).
+ * An untouched field keeps the server's value byte for byte, because the rendered form of an
+ * instant is LOSSY and re-deriving from it would truncate. That was up to a minute when the
+ * input was `datetime-local`; since TKT-302 the field renders to the SECOND, so the loss is
+ * sub-second — still real, because these boundaries are compared against `clock_timestamp()`
+ * and the stored values carry microseconds (ai-review pass 1, [high]).
+ *
+ * The comparison is against `toMinuteInput(current)`, so it tracks whatever that renders. It
+ * held when both sides were server-local minutes and it holds now that both are UTC seconds;
+ * what would break it is changing one side alone. The browser spec's microsecond assertions on
+ * the untouched row are what prove it end to end.
  *
  * "Untouched" is decided against the CURRENT SERVER VALUE, never against a hidden input
  * echoing what was rendered (ai-review pass 2, [high]). Hidden fields are client-controlled:
@@ -212,11 +219,15 @@ export function toMinuteInput(value: string | undefined): string {
  * written verbatim — including boundaries this screen does not expose for editing at all.
  * The server value is not forgeable and is re-read on every request.
  */
-function preservedInstant(submitted: string, current: string | undefined): string | undefined {
+function preservedInstant(
+  channel: string,
+  submitted: string,
+  current: string | undefined,
+): string | undefined {
   if (current && submitted === toMinuteInput(current)) {
     return current;
   }
-  return instant(submitted);
+  return instant(channel, submitted);
 }
 
 /**
@@ -247,6 +258,34 @@ export class UnknownAllocationChannel extends Error {
  * This screen edits existing allocations: it creates none and deletes none. Both
  * directions of that sentence need enforcing.
  */
+/**
+ * Thrown when a release time is present but not a zoned RFC 3339 instant.
+ *
+ * REFUSING is the point, and returning `undefined` was not refusing (ai-review [high]).
+ * `toAllocationRequest` omits `release_at` when it is undefined, and the write is a
+ * FULL-SET REPLACE — so an unparseable value took the same path as a deliberately emptied
+ * field and CLEARED the release gate, then redirected as a successful save. That is
+ * destructive, and worse than the timezone shift this ticket set out to fix: the operator
+ * asked to change a boundary and silently removed it.
+ *
+ * The input's `pattern` stops the ordinary zoneless shape in the browser, which is a
+ * convenience and not a boundary: it accepts syntactically valid impossibilities like
+ * `2026-13-01T10:00:00Z`, and any caller that ignores the markup submits whatever it likes.
+ * This is the server-side half.
+ *
+ * Empty stays empty: an operator clearing the field still removes the release gate, which
+ * is a real thing to want. Only a NON-EMPTY unusable value throws.
+ */
+export class UnzonedReleaseTime extends Error {
+  constructor(
+    public readonly channel: string,
+    public readonly submitted: string,
+  ) {
+    super(`release time for channel ${JSON.stringify(channel)} is not a zoned RFC 3339 instant`);
+    this.name = 'UnzonedReleaseTime';
+  }
+}
+
 export class MissingAllocationChannel extends Error {
   constructor(public readonly channel: string) {
     super(`submitted set omits channel ${JSON.stringify(channel)}`);
@@ -317,7 +356,7 @@ export function toAllocationRequest(
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = preservedInstant(r.releaseAt, held.release_at);
+      const release = preservedInstant(r.channel, r.releaseAt, held.release_at);
       if (release) a.release_at = release;
       if (held.opens_at) a.opens_at = held.opens_at;
       if (held.closes_at) a.closes_at = held.closes_at;
