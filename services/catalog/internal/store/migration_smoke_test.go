@@ -33,6 +33,7 @@ const (
 	versionBeforeFeeRules           = 15 // roll 0016_fee_rules down (TKT-214)
 	versionBeforeChannels           = 17 // roll 0018_channels down (TKT-235)
 	versionBeforePriceRuleChannel   = 18 // roll 0019_price_rule_channels down (TKT-237)
+	versionBeforeMoneyBounds        = 20 // roll 0021_ticket_type_money_bounds down (TKT-154)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -724,6 +725,42 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if table {
 			t.Fatal("0018 down left channels behind")
+		}
+	})
+	// TKT-154. The two CHECKs are what stops a row the contract-declared price
+	// read would 500 on, so "0021 rolls back cleanly" has to mean those two
+	// constraints specifically, named, and not whichever constraint happens to
+	// exist on the table.
+	//
+	// The BEFORE assertion is positive and exact -- count == 2, not "> 0" and
+	// not merely "gone afterwards". A name that never matches (a typo, a
+	// schema-qualified lookup that misses the isolated test schema) returns
+	// zero rows in BOTH halves, and a present-then-absent shape would read as
+	// proof while proving nothing.
+	t.Run("money-bounds migration installs both ticket_types CHECKs and rolls them back", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		countBounds := func() int {
+			t.Helper()
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint
+				WHERE conrelid = (current_schema() || '.ticket_types')::regclass
+				AND conname IN ('ticket_types_price_amount_max','ticket_types_currency_format')`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		if got := countBounds(); got != 2 {
+			t.Fatalf("0021 up installed %d of the 2 named money-bound CHECKs — "+
+				"if this is 0, the constraint names in this test do not match the migration", got)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeMoneyBounds); err != nil {
+			t.Fatalf("down to before 0021: %v", err)
+		}
+		if got := countBounds(); got != 0 {
+			t.Fatalf("0021 down left %d money-bound CHECK(s) behind", got)
 		}
 	})
 }
