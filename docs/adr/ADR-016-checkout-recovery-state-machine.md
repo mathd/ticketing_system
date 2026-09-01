@@ -9,6 +9,11 @@ Accepted (approved at the TKT-43 plan gate)
 Amended by **TKT-262** (2026-08-20, §Amendment below) — records the compensation's refund-before-release
 ordering, which this ADR had implemented and left unstated, and bounds what a refused release guarantees.
 
+Amended by **TKT-145** (2026-09-01, §Amendment below) — records why an unparked `release_pending`
+checkout is answered 202 rather than a terminal 402/408, distinguishes the two exits that park (only
+one of which leaves the row `release_pending`), and names the attempt budget as the bound on the
+buyer's wait.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -414,6 +419,114 @@ claim itself has to reach a state whose release maps to `nil`.
 So unparking is the *second* step, not the fix: it is how a repaired order is returned to the runner.
 Unparking alone, with the claim untouched, only buys another refusal.
 
+
+## Amendment (2026-09-01, TKT-145) — an unparked `release_pending` checkout answers 202, and what bounds the buyer's wait
+
+§Decision 2 makes `release_pending` a durable state carrying a persisted terminal payment outcome
+(the paragraph beginning *"`release_pending` becomes a durable state"*). It does not say what a
+**buyer** is told when they retry a checkout that is sitting in
+it. Both code paths have answered **202 with the durable status** since TKT-116, and both carry
+comments defending it — but the choice was never recorded as a decision, so it read as an
+implementation detail rather than as something weighed and settled.
+
+Nothing in the code changes. Unlike the TKT-262 amendment above, the behaviour here is **also
+already asserted by a test**: TKT-280's `TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`
+(`services/commerce/internal/api/recovery_parked_answer_smoke_test.go:47`) pins the unparked 202 on
+both paths. What was missing was only the *decision*, and the reason it is not the obvious 402/408.
+
+### The decision
+
+**An unparked `release_pending` order is answered `202` echoing the durable status, on both paths,
+with no `error` field.** The alternative — deriving a terminal 402/408 from `terminal_outcome` — is
+rejected; the refutation is below so it is not re-proposed.
+
+### Why 202 and not the terminal outcome
+
+`terminal_outcome` is written by `RecordTerminalOutcome` in the **same statement** as
+`status='release_pending'`, gated on `terminal_outcome IS NULL` and fenced on the recovery claim
+(`services/commerce/internal/store/recovery.go:197-205`), and `releasableOutcome` (:167) admits only
+outcomes that **prove no side effect**: `declined`, `timeout`, `not_attempted`, `no_side_effect`. So
+at this point the system does know, durably, that **no money was captured**.
+
+What it does not know is **how the order ends**. `terminal_outcome` records why the *payment*
+finished; the *order* still owes an inventory release, and that release can still be refused. A 402
+here would be a claim the state machine is able to falsify moments later — precisely the discipline
+[ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) applies to "tamper-evident": name what the
+evidence actually proves before asserting it. 202 with the durable status says *the payment is
+resolved and the order is not* — which is exactly what is known — and it stays true under every
+continuation below. A 402 that a later park contradicts is worse than a 202 that never lied.
+
+There is a second, independent objection. `terminalCheckoutCode` (`api/server.go:1536`) maps
+`timeout`→408 and everything else→402, and it takes the **order status**, not the outcome. The
+order's terminal status comes from `store.TerminalStatus` (`store/recovery.go:175`), which folds
+`not_attempted` and `no_side_effect` into `timeout` deliberately — *"from their side nothing was
+charged either way"*. An API-tier shortcut feeding `terminal_outcome` straight into
+`terminalCheckoutCode` would therefore tell a `not_attempted` buyer **402 Payment Required** about a
+charge payments never bound. Answering terminally from here means reimplementing that mapping at a
+second site, where it can drift from the one at `store/recovery.go:279` that decides the order's
+real ending.
+
+### Where the buyer's non-202 answer actually comes from — two exits, not one
+
+`release_pending` has three exits, and being exact about them is the whole content of this
+amendment, because the two non-terminal ones **park differently**:
+
+| Exit | Mechanism | Row afterwards | Buyer sees |
+|---|---|---|---|
+| Release succeeds | `MarkReleased` | terminal failure status | 402 / 408, the ordinary ending |
+| Release refused — the claim is **confirmed** while payment did not capture | `releaseAndFail` → **`ParkForReconciliation`** (`recovery/runner.go:556-565`) | **`status='reconciliation_required'`**, `recovery_parked_at` set | 409, through the `reconciliation_required` branch |
+| Attempt budget exhausted | `fail` → **`ReleaseStuckOrder`** (`store/recovery.go:123-133`) | **still `release_pending`**, `recovery_parked_at` set | 409, through the parked check |
+
+`ParkForReconciliation` changes the status; `ReleaseStuckOrder` deliberately does not
+(`recovery_parked_at=CASE WHEN recovery_attempts>=$4 THEN now() ELSE NULL END`, status untouched).
+The second row is the only one that is `release_pending` **and** parked — and it is the reason both
+answer paths read `recovery_parked_at` rather than status alone. Reading it as *"both non-terminal
+exits leave a parked `release_pending` row"* would make the parked check look redundant on one exit
+and absent on the other; it is neither.
+
+Both parked shapes answer **409 "order awaiting payment reconciliation"**, because parked means the
+same thing to a buyer either way: no worker will advance this without a human. `ClaimStuckOrders`
+excludes parked rows (`store/recovery.go:79`, and the claimable index in `0004`/`0005`), so that is
+a statement about the system, not a guess.
+
+### What bounds the wait
+
+**The attempt budget, not a timer on the status code.** `MaxRecoveryAttempts` is 10
+(`store/recovery.go:51`); `ReleaseStuckOrder` backs off exponentially to a five-minute ceiling and
+sets `recovery_parked_at` on the attempt that reaches the budget. So "202 forever" is really *202
+while the runner is still working*, and the runner gives up on a bound the code states. This is
+§Decision 1's *driven, not awaited* applied to the buyer's side: what advances the order is a
+scheduled pass, and what ends the 202 is that pass exhausting itself, not the passage of wall-clock
+time observed at the API.
+
+Adding an HTTP-level deadline would not improve on this. It would answer terminally while the
+runner still had attempts left — asserting an ending the system is still trying to avoid — and it
+would have to guess a bound the runner already knows exactly.
+
+### The residual, stated rather than hidden
+
+A runner permanently wedged **without** consuming attempts — stopped, crash-looping, or starved —
+would leave a buyer on 202 indefinitely. That is a **liveness** problem, and inventing a terminal
+status code does not fix it: it converts an accurate "still working" into an inaccurate "declined"
+while the order remains exactly as stuck. It is instrumented instead, and the split matters:
+`commerce.recovery.parked` counts parked orders **outside** `reconciliation_required` — *"a nonzero
+value is work waiting for a human"* — while `commerce.recovery.parked.reconciliation_required`
+counts the other exit separately, *"because the resolution differs in kind"*
+(`recovery/metrics.go`). Those two gauges are the two non-terminal exits above.
+
+### What this amendment does not claim
+
+Per ADR-021's name-the-claim discipline, and because prose is not compiled:
+
+- **Not** that every 202 eventually becomes terminal. A wedged runner is the case above.
+- **Not** that any timer guarantees progress. Nothing here is time-based; the bound is a counter.
+- **Not** that `terminal_outcome` proves the order failed. It proves **no capture**, and that is all
+  it is read for here.
+- **Not** that the two paths agree by construction. They agree because
+  `TestParkedReleasePendingGetsTheSameAnswerFromBothPaths` compares them to each other on one seeded
+  row; that test is the tripwire, and it was written precisely because an earlier comment claimed
+  the agreement was structural and a one-sided fix falsified it.
+
 ## References
 
 - [ADR-011 — Checkout finalization and canonical money journal](./ADR-011-checkout-journal-protocol.md) (recovery story amended by this ADR)
@@ -421,4 +534,5 @@ Unparking alone, with the claim untouched, only buys another refusal.
 - [ADR-012 — Ticket issuance](./ADR-012-ticket-issuance-and-qr-credentials.md) (names TKT-43 for outbox recovery) · [ADR-007 — PostgreSQL + NATS](./ADR-007-postgres-nats.md) · [ADR-010 — PostgreSQL claim transaction](./ADR-010-postgres-claim-transaction.md)
 - [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) (§2 *observed, not predicted* is the precedent the TKT-262 amendment applies; §4 assigns unparking to TKT-146)
 - [ADR-032 — Stripe behind the PSP port](./ADR-032-stripe-behind-the-psp-port.md) (the status/refund contract `resolveReconciliation` reads; its TKT-115 amendment shipped the same-pass refund)
+- TKT-116 (the 202 branch this ADR's TKT-145 amendment records) · TKT-280 (`TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`, the tripwire that pins both the parked 409 and the unparked 202)
 - TKT-43 · TKT-28 (the walking skeleton this hardens) · TKT-11 (fiscal archive; owns the anchor choice) · TKT-33 (PII erasure machinery)
