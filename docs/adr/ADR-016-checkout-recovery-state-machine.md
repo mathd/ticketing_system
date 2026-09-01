@@ -495,32 +495,41 @@ a statement about the system, not a guess.
 That sentence is deliberately narrow; every wider reading of it is false, and one of them was in the
 first draft of this amendment.
 
-`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). The counter moves in two places, and the
+`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). The counter moves in **three** places, and the
 asymmetry between them is the whole subtlety:
 
-- `ClaimStuckOrders` increments `recovery_attempts` when a pass **claims** the row
-  (`store/recovery.go:92`) — *before* any work is attempted.
-- `AbandonRecoveryClaim` decrements it (`:345-350`), and it runs only from `releaseUndriven`
-  (`recovery/runner.go:275`), i.e. only on an **orderly** cancellation that hands back claims the
-  pass never reached.
+- `ClaimStuckOrders` **increments** it when a pass **claims** the row (`store/recovery.go:92`) —
+  inside the UPDATE CTE, *before* any work is attempted.
+- `AbandonRecoveryClaim` **decrements** it (`:348`), and its only caller is `releaseUndriven`
+  (`recovery/runner.go:275`), which hands back the **undriven suffix** of a batch on an orderly
+  shutdown (`:251-259`).
+- `UnparkOrder` **resets it to zero** (`:535`) — an operator intervention, not a runner path, and
+  the reason its comment calls that reset "not cosmetic" is that `ReleaseStuckOrder` would otherwise
+  re-park the row on its next failure.
 
-So the budget is spent by *claims*, and refunded only by a graceful shutdown. Parking then happens
-in `ReleaseStuckOrder` (`:123-133`) — but only if `fail` actually reaches it.
+So the budget is spent by *claims*, refunded only for the part of a batch a graceful shutdown never
+reached, and cleared only by a human. Parking then happens in `ReleaseStuckOrder` (`:123-133`) —
+and even reaching it is not sufficient, see the table.
 
-**Four failure shapes, and only one of them ends in a park:**
+**Five shapes, and only one of them reliably ends in a park:**
 
 | Shape | Attempts | Ends parked? |
 |---|---|---|
-| Claimed, drive failed, `fail` ran | consumed | **Yes**, once the count reaches 10 |
+| Claimed, drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | consumed | **Yes**, once the count reaches 10 |
+| Claimed, drive failed, `fail` ran, `ReleaseStuckOrder` **errored** | consumed | **No** — the error is logged and swallowed (`runner.go:585-587`) |
 | Runner stopped **before** claiming | untouched | No — nothing advances the row at all |
-| Orderly shutdown after claiming | refunded by `AbandonRecoveryClaim` | No, and correctly so |
-| **Crash after claiming, before `fail`** | **consumed, never refunded** | **No** — the parking UPDATE never runs |
+| Orderly shutdown, order in the **undriven suffix** | refunded by `AbandonRecoveryClaim` | No, and correctly so |
+| Orderly shutdown **during a drive**, or a **crash after claiming** | **consumed, never refunded** | **No** — a cancelled drive reaches `fail`; a crash reaches nothing |
 
-The fourth row is the one worth stating: a runner crash-looping just after `ClaimStuckOrders` burns
-attempts without ever parking anything, and each burnt claim also holds `recovery_lease_until` for
-the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s` (`recovery/runner.go:197-206`),
-roughly 17 minutes at the defaults — before the row is claimable again. Such an order can exceed ten
-claims and remain unparked indefinitely.
+Two rows deserve emphasis. The second is a genuine trap: `fail` logs *"stuck order parked after
+exhausting recovery attempts"* whenever `s.Attempts >= MaxRecoveryAttempts`, on the value it read at
+claim time, **regardless of whether the parking write succeeded** — so the log can assert a park
+that did not happen. The fifth is the liveness one: a runner crash-looping just after
+`ClaimStuckOrders` burns attempts without ever parking anything, and each burnt claim holds
+`recovery_lease_until` for the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s`
+(`recovery/runner.go:197-206`), which at the defaults (16 × 6 × 10s + 60s) is **exactly 17
+minutes** — before the row is claimable again. Such an order can exceed ten claims and stay
+unparked indefinitely.
 
 **And even on the ordinary path, ten attempts is not a deadline.** It bounds failed claimed
 re-drives, not elapsed time, and several things sit between the two:
@@ -552,8 +561,14 @@ stays exactly as stuck. What *would* help is noticing, so be precise about what 
 
 **Partly observable.** A runner that cannot claim logs `claim stuck orders` at ERROR on every
 non-cancellation error (`recovery/runner.go:243-249`), and a database outage severe enough to cause
-that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`). Those cases consume no
-attempts and are visible as dependency failures.
+that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`).
+
+Do not read that as *"a claim error costs nothing"*, though. The increment happens **inside** the
+UPDATE CTE (`store/recovery.go:92`), and the error can surface afterwards from `Scan`/`rows.Err` —
+so a statement PostgreSQL committed whose result stream was then lost leaves the attempt and the
+lease durable while `RunOnce` drives nothing and returns 0. **A claim failure is
+outcome-ambiguous** unless it is known the statement never executed, and the ambiguous case lands in
+the unparked-and-unmeasured population below.
 
 **Not observable.** A recovery goroutine that is starved, deadlocked, or never started inside an
 otherwise healthy process — and the crash-after-claim shape above — produce **no signal at all**.
@@ -569,14 +584,22 @@ they do **not** correspond to the two exits above, and neither is scoped to `rel
 Together they **partition every parked row**, with no `status IN (…)` restriction at all — so a
 parked row outside the five claimable statuses would be counted too.
 
-**The gap is precedented, which is what makes it worth naming rather than shrugging at.** The
-sibling reversal runner already has exactly the missing shape:
-`commerce.refund.reversal.outstanding` counts obligations *including unparked ones* and is
-documented as *"sustained nonzero means a downstream is not recovering"*
-(`reversal/metrics.go:26-27`), alongside an `oldest_age_seconds`. Recovery has the parked half of
-that pair and not the outstanding half. Closing it means a gauge over eligible unparked rows and
-their age, plus an alert. **Out of scope here, recorded as an open item** — not as an implied
-guarantee.
+**A loose precedent exists, and its differences matter as much as its shape.** The sibling reversal
+runner publishes `commerce.refund.reversal.outstanding` beside its parked gauge, with an
+`oldest_age_seconds` (`reversal/metrics.go:26-38`) — so it does have the *outstanding-work* signal
+recovery lacks. It is **not** a drop-in model, and copying it uncritically would import the wrong
+population twice over: that gauge counts every outstanding obligation **parked included**, so a
+sustained nonzero can mean permanent parked work awaiting a human rather than a downstream failing
+to recover; and its runner charges an attempt only **after** a failed drive
+(`ReleaseReversalClaim`), where recovery charges at **claim** time — which is precisely the
+asymmetry that makes recovery's unparked population interesting in the first place.
+
+State recovery's requirement directly instead of by analogy: **the count and age of rows in a
+claimable status with `recovery_parked_at IS NULL` that are eligible now** — past
+`recovery_next_attempt_at`, past the `updated_at` grace, lease lapsed or absent. That is the
+quantity that grows when nothing is draining, and it is the one signal that would surface every
+unparked shape in the table above, the ambiguous claim failure included. **Out of scope here,
+recorded as an open item** — not as an implied guarantee.
 
 ### What this amendment does not claim
 
