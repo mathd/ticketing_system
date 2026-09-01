@@ -495,8 +495,10 @@ a statement about the system, not a guess.
 That sentence is deliberately narrow; every wider reading of it is false, and one of them was in the
 first draft of this amendment.
 
-`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). The counter moves in **three** places, and the
-asymmetry between them is the whole subtlety:
+`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). **At steady state, after migrations, the
+counter moves in three places** — and the asymmetry between them is the whole subtlety. (The fourth
+writer is a one-off: migration `0005_psp_recovery.sql:38` resets it to zero for the two populations
+it re-opens, which is an upgrade-time transition, not a runtime path.)
 
 - `ClaimStuckOrders` **increments** it when a pass **claims** the row (`store/recovery.go:92`) —
   inside the UPDATE CTE, *before* any work is attempted.
@@ -507,29 +509,42 @@ asymmetry between them is the whole subtlety:
   the reason its comment calls that reset "not cosmetic" is that `ReleaseStuckOrder` would otherwise
   re-park the row on its next failure.
 
-So the budget is spent by *claims*, refunded only for the part of a batch a graceful shutdown never
-reached, and cleared only by a human. Parking then happens in `ReleaseStuckOrder` (`:123-133`) —
-and even reaching it is not sufficient, see the table.
+So at runtime the budget is spent by *claims*, refunded only for the part of a batch a graceful
+shutdown never reached, and cleared only by an operator. Parking then happens in `ReleaseStuckOrder`
+(`:123-133`) or `ParkForReconciliation` (`:139-158`) — and reaching either is not sufficient, for
+the reason below the table.
 
-**Five shapes, and only one of them reliably ends in a park:**
+**How a claimed pass can end.** Do not read this as a list of failures; the first two rows are the
+ordinary outcomes, and they matter here because neither returns the attempt:
 
-| Shape | Attempts | Ends parked? |
+| Outcome of a claimed pass | Attempts afterwards | Parked? |
 |---|---|---|
-| Claimed, drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | consumed | **Yes**, once the count reaches 10 |
-| Claimed, drive failed, `fail` ran, `ReleaseStuckOrder` **errored** | consumed | **No** — the error is logged and swallowed (`runner.go:585-587`) |
+| Drive **succeeded** — terminal state reached, `ClearRecoveryClaim` | consumed, **retained** (`:355-359` does not touch the counter) | No — the row is done |
+| Drive routed to `ParkForReconciliation` and it succeeded | consumed | **Yes**, at *any* attempt count — this exit does not wait for the budget |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | consumed | **Yes**, once the count reaches 10 |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **errored** | consumed | **No** — the error is logged and swallowed (`runner.go:585-587`) |
 | Runner stopped **before** claiming | untouched | No — nothing advances the row at all |
 | Orderly shutdown, order in the **undriven suffix** | refunded by `AbandonRecoveryClaim` | No, and correctly so |
 | Orderly shutdown **during a drive**, or a **crash after claiming** | **consumed, never refunded** | **No** — a cancelled drive reaches `fail`; a crash reaches nothing |
 
-Two rows deserve emphasis. The second is a genuine trap: `fail` logs *"stuck order parked after
-exhausting recovery attempts"* whenever `s.Attempts >= MaxRecoveryAttempts`, on the value it read at
-claim time, **regardless of whether the parking write succeeded** — so the log can assert a park
-that did not happen. The fifth is the liveness one: a runner crash-looping just after
-`ClaimStuckOrders` burns attempts without ever parking anything, and each burnt claim holds
-`recovery_lease_until` for the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s`
-(`recovery/runner.go:197-206`), which at the defaults (16 × 6 × 10s + 60s) is **exactly 17
-minutes** — before the row is claimable again. Such an order can exceed ten claims and stay
-unparked indefinitely.
+**And every row that says "succeeded" means the SQL returned no error, which is not the same as
+having changed the row.** `ReleaseStuckOrder` and `AbandonRecoveryClaim` are both fenced on
+`recovery_claim_id=$2` and **neither checks `RowsAffected`** (`:123-133`, `:345-350`), so a claimant
+whose lease lapsed and whose row was re-claimed by a successor gets `nil` back from a statement that
+matched nothing. The fencing is correct — it is what stops a stale claimant from disturbing its
+successor — but it means the table's outcomes describe the *intended* effect, and a stale token
+turns any of them into a silent no-op. `ParkForReconciliation` is the exception that shows the
+contrast: it *does* check, and returns `ErrRecoveryConflict` on zero rows (`:152-155`).
+
+Two rows deserve emphasis. The `ReleaseStuckOrder` **errored** row is a genuine trap: `fail` logs
+*"stuck order parked after exhausting recovery attempts"* whenever
+`s.Attempts >= MaxRecoveryAttempts`, on the value read at claim time, **regardless of whether the
+parking write succeeded or matched a row** — so the log can assert a park that did not happen. And
+the last row is the liveness one: a runner crash-looping just after `ClaimStuckOrders` burns
+attempts without ever parking anything, and each burnt claim holds `recovery_lease_until` for the
+full lease — `batch × MaxCallsPerOrder × callTimeout + 60s` (`recovery/runner.go:197-206`), which at
+the defaults (16 × 6 × 10s + 60s) is **exactly 17 minutes** — before the row is claimable again.
+Such an order can exceed ten claims and stay unparked indefinitely.
 
 **And even on the ordinary path, ten attempts is not a deadline.** It bounds failed claimed
 re-drives, not elapsed time, and several things sit between the two:
