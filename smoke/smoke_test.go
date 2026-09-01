@@ -195,29 +195,40 @@ func TestTracePropagation(t *testing.T) {
 // the caller.
 func tracePropagated(logs, traceID string) error {
 	var gw, svc bool
-	// matched counts lines carrying the trace id; classified counts those that
-	// could be attributed to a container. SEPARATE counters, deliberately.
-	var matched, classified int
+	// unattributable counts trace-bearing lines whose container field did not
+	// parse. ANY of them is a format problem, not "some". Two weaker versions
+	// were wrong for the same reason, each caught by a review pass:
+	//
+	//   1. incrementing a single counter inside the arms that set gw/svc, which
+	//      made the diagnostic unreachable by construction;
+	//   2. firing only when EVERY traced line failed to parse, which stays
+	//      silent on mixed output — and, with both halves satisfied plus one
+	//      unparseable line, returns SUCCESS while the format has drifted.
+	//
+	// The command asks compose for six named services, so every line it returns
+	// belongs to one of them. A line that does not parse is drift, whatever else
+	// parsed alongside it.
+	var unattributable int
 	for _, line := range strings.Split(logs, "\n") {
 		if !strings.Contains(line, traceID) {
 			continue
 		}
-		matched++
 		switch logLineOrigin(line) {
 		case originGateway:
-			gw, classified = true, classified+1
+			gw = true
 		case originService:
-			svc, classified = true, classified+1
+			svc = true
+		default:
+			unattributable++
 		}
 	}
-	// Lines carry the trace id but none parsed: the prefix format changed, or
-	// colour survived the flags. Silence here looks exactly like "the trace has
-	// not arrived yet" and times out blaming propagation — which is precisely
-	// how the first version of this change failed the gate, with a 30s timeout
-	// whose message named the wrong cause.
-	if matched > 0 && classified == 0 {
-		return fmt.Errorf("trace %s: %d line(s) carry the trace id but none could be attributed to a "+
-			"container — the `docker compose logs` prefix format may have changed", traceID, matched)
+	// Checked BEFORE the propagation verdict: an unparseable line means the
+	// evidence is incomplete, so "gateway=false" might be a parse failure rather
+	// than a missing log. Reporting propagation there names the wrong cause,
+	// which is exactly how this change's own first gate failure read.
+	if unattributable > 0 {
+		return fmt.Errorf("trace %s: %d trace-bearing line(s) could not be attributed to a container — "+
+			"the `docker compose logs` prefix format may have changed", traceID, unattributable)
 	}
 	if !gw || !svc {
 		return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
@@ -1216,6 +1227,34 @@ func TestTracePropagatedAccounting(t *testing.T) {
 			name:    "no lines at all is a propagation failure, NOT a format one",
 			logs:    `gateway-1  | {"trace_id":"someone-elses-trace"}`,
 			wantErr: "in gateway logs=false, in service logs=false",
+		},
+		{
+			// MIXED, and the worst variant: both halves satisfied AND an
+			// unparseable traced line. The previous fix returned nil here —
+			// success, with the format silently drifted (ai-review pass 2).
+			name: "both halves present plus an unparseable traced line is a FORMAT problem",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"no prefix"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			// MIXED, partial: one half parses, the other does not. The previous
+			// fix reported a propagation failure and burned the full 30s retry
+			// naming the wrong cause.
+			name: "one half parseable and one not is a FORMAT problem, not propagation",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"catalog line with no prefix"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			// An unparseable line NOT carrying the trace id is somebody else's
+			// log noise and must not trip the diagnostic.
+			name: "an unparseable line without the trace id is ignored",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"msg":"unrelated line, no trace id"}`,
+			wantErr: "",
 		},
 		{
 			name: "both present passes",
