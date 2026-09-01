@@ -142,6 +142,35 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 // Without this, an implementation that ordered by append_order first would pass the tie
 // test above while silently reordering every history that has distinct timestamps — which
 // is all of them, almost all of the time (ai-review finding 1).
+//
+// ────────────────────────────────────────────────────────────────────────────────────────
+// TKT-234 / ADR-021 §Amendment (2026-09-01): THIS TEST IS ALSO A GAP SENTINEL. READ BEFORE
+// CHANGING IT.
+//
+// It records the CURRENT preference — wall clock first — and that preference is exactly the
+// exposure ADR-021's amendment names and does NOT close: `claim_history` has no hash chain,
+// so unlike access's lifecycle trail its sort key IS its ordering guarantee, and a backward
+// clock step genuinely reorders history that was appended in a definite order.
+//
+// So this test going red is not automatically a regression. **TKT-295 promotes
+// `append_order` to the primary sort key**, and when it does, this test MUST go red. Reverse
+// it deliberately, with the legacy-NULL boundary stated — do not delete it, and do not
+// "fix" it by weakening the assertion. That is the discipline ADR-021's rollback-gap test
+// exists to enforce: a known gap is pinned as PRESENT so it cannot drift silently, and the
+// day it closes, the pin is updated rather than removed.
+//
+// TWO THINGS THAT MAKE IT WEAKER EVIDENCE THAN IT LOOKS, both of which TKT-295 inherits:
+//
+//   - Its fixture is built inside `withTriggerDisabled`. Migration 0012's own comment says
+//     that state is one "the trigger exists to make unreachable through the normal path" —
+//     the trigger OVERWRITES whatever a writer supplies, always, so a COPY or a replication
+//     apply cannot inject a value. This test therefore asserts a preference over a state
+//     that cannot arise honestly. It does not refute promotion; it means promotion must
+//     consciously reverse it with a stated reason.
+//   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
+//     this one and must stay green through TKT-295: same-microsecond collisions ordered by
+//     `append_order` is a regression proof, not a preference.
+// ────────────────────────────────────────────────────────────────────────────────────────
 func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
 	f := historyFixture(t)
 
