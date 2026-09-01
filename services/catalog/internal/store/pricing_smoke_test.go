@@ -420,3 +420,71 @@ func TestResolveTicketTypePriceSwitchesTierWithoutAnyWrite(t *testing.T) {
 		t.Errorf("at cutover losers = %+v, want the early bird as outside_window_past", after.Candidates)
 	}
 }
+
+// TestTicketTypeMoneyBoundsMigrationConstraints is TKT-154: ticket_types was
+// the table the bounds above were NOT applied to. `price_amount` had no upper
+// bound and `currency` no case constraint, while the contract's Money caps the
+// amount at 9007199254740991 and requires ^[A-Z]{3}$
+// (services/catalog/api/openapi.yaml:2568,2571). Migration 0021 closes both.
+//
+// The expected values are read from the CONTRACT, not from a run. An assertion
+// written by observing what the column accepts would pin the behaviour rather
+// than the rule, and would still pass if someone widened the CHECK.
+//
+// Each rejection case violates EXACTLY ONE constraint, everything else valid. A
+// row breaking both would let PostgreSQL report either one, so a single fixture
+// could pass with one constraint missing — one case per constraint, and each
+// asserts the constraint NAME so a passing test cannot be the other constraint
+// firing.
+//
+// Only orgID and slotID are load-bearing here; seedPricingChain seeds a venue,
+// event, series and a valid ticket_type as well, and this test observes none of
+// them. It is used because it is the established helper for a valid FK chain,
+// not because the extra rows are part of what is being proved.
+func TestTicketTypeMoneyBoundsMigrationConstraints(t *testing.T) {
+	ctx, db, _ := seasonSmokeStore(t)
+	_, orgID, _, _, slotID, _ := seedPricingChain(ctx, t, db)
+
+	insert := func(amount int64, currency string) error {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO ticket_types(organizer_id,performance_id,name,price_amount,currency)
+			 VALUES($1,$2,'{"en":"GA"}',$3,$4)`, orgID, slotID, amount, currency)
+		return err
+	}
+
+	// The contract's bound is inclusive, so the cap itself must still be a
+	// legal price. Zero is the existing lower bound from migration 0001 and is
+	// here to prove 0021 did not narrow what was already accepted.
+	for _, ok := range []int64{0, 9007199254740991} {
+		if err := insert(ok, "EUR"); err != nil {
+			t.Errorf("amount %d must be accepted — the contract's Money.amount maximum is inclusive: %v", ok, err)
+		}
+	}
+
+	// One over the cap: representable in bigint, not in the contract, and the
+	// exact row that would 500 the declared price-resolution read (ADR-028).
+	err := insert(9007199254740992, "EUR")
+	if err == nil {
+		t.Fatal("amount 9007199254740992 must be rejected — it is one above the contract's Money.amount maximum")
+	}
+	if !strings.Contains(err.Error(), "ticket_types_price_amount_max") {
+		t.Errorf("the over-cap amount must be refused by ticket_types_price_amount_max, got: %v", err)
+	}
+
+	// The lower bound predates this migration. Asserted so a future edit to
+	// 0021 cannot drop 0001's CHECK while this file still looks like it covers
+	// the column's range.
+	if err := insert(-1, "EUR"); err == nil {
+		t.Error("amount -1 must be rejected — migration 0001's lower bound must survive 0021")
+	}
+
+	// Legal in char(3), refused by the contract's ^[A-Z]{3}$. Without the
+	// column CHECK it resolves fine and then fails response validation.
+	err = insert(4550, "eur")
+	if err == nil {
+		t.Fatal("a lowercase currency must be rejected — the contract requires ^[A-Z]{3}$")
+	}
+	if !strings.Contains(err.Error(), "ticket_types_currency_format") {
+		t.Errorf("the lowercase currency must be refused by ticket_types_currency_format, got: %v", err)
+	}
+}
