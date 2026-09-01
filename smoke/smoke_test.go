@@ -171,27 +171,104 @@ func TestTracePropagation(t *testing.T) {
 	}
 
 	retry(t, 30*time.Second, func() error {
-		out, err := exec.Command("docker", "compose", "-p", project, "logs",
+		// --ansi never + --no-color so the container-name field is plain text.
+		// With colour it
+		// carries ANSI escapes, a prefix match never fires, and this test
+		// becomes one that cannot pass for the right reason (TKT-303).
+		out, err := exec.Command("docker", "compose", "--ansi", "never", "-p", project, "logs", "--no-color",
 			"gateway", "catalog", "inventory", "commerce", "payments", "access").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("compose logs: %v", err)
 		}
 		var gw, svc bool
+		var classified int
 		for _, line := range strings.Split(string(out), "\n") {
 			if !strings.Contains(line, traceID) {
 				continue
 			}
-			if strings.Contains(line, "gateway") {
-				gw = true
-			} else {
-				svc = true
+			switch logLineOrigin(line, project) {
+			case originGateway:
+				gw, classified = true, classified+1
+			case originService:
+				svc, classified = true, classified+1
 			}
+		}
+		// A line carrying the trace id that matches NEITHER prefix means the
+		// container-name field did not parse — a compose format change, or
+		// colour that survived the flags. Silence there would look exactly like
+		// "the trace has not arrived yet" and then time out with a message
+		// blaming propagation, so say which it was.
+		if classified == 0 && (gw || svc) {
+			return fmt.Errorf("trace %s: lines matched but none could be attributed to a container — "+
+				"the `docker compose logs` prefix format may have changed", traceID)
 		}
 		if !gw || !svc {
 			return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
 		}
 		return nil
 	})
+}
+
+// logOrigin is which container emitted a `docker compose logs` line.
+type logOrigin int
+
+const (
+	originUnknown logOrigin = iota
+	originGateway
+	originService
+)
+
+// logLineOrigin attributes one `docker compose logs` line to the gateway or to
+// a service, by the CONTAINER NAME field rather than by scanning the whole line.
+//
+// The substring match this replaces (`strings.Contains(line, "gateway")`) reads
+// the payload too, so a catalog line logging an upstream URL like
+// http://gateway:8080 set gw=true with the gateway having logged nothing — and
+// its else-branch counted every other line as a service, so a second gateway
+// line could satisfy svc. Both halves of the claim could be true while the
+// propagation it asserts had not happened (TKT-303).
+//
+// Compose prefixes each line with `<project>-<service>-<replica>  | `. Anything
+// that does not parse is originUnknown, and the caller says so rather than
+// silently counting it.
+func logLineOrigin(line, project string) logOrigin {
+	name, _, found := strings.Cut(line, "|")
+	if !found {
+		return originUnknown
+	}
+	name = strings.TrimSpace(name)
+	rest, ok := strings.CutPrefix(name, project+"-")
+	if !ok {
+		return originUnknown
+	}
+	// `<service>-<replica>`, and the replica is what ENDS the name. Matching the
+	// service as a bare prefix is not enough: `<project>-catalog-sidecar-1`
+	// satisfies HasPrefix(name, project+"-catalog-") and would be counted as the
+	// catalog service. Cut at the LAST dash and require the remainder to equal a
+	// known service exactly. (This function's own test caught that; the case is
+	// still in it.)
+	svc, replica, ok := lastCut(rest, '-')
+	if !ok || replica == "" || strings.Trim(replica, "0123456789") != "" {
+		return originUnknown
+	}
+	if svc == "gateway" {
+		return originGateway
+	}
+	for _, known := range []string{"catalog", "inventory", "commerce", "payments", "access"} {
+		if svc == known {
+			return originService
+		}
+	}
+	return originUnknown
+}
+
+// lastCut splits around the LAST occurrence of sep.
+func lastCut(s string, sep byte) (before, after string, found bool) {
+	i := strings.LastIndexByte(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
 }
 
 // TestJetStreamPersists proves the bus is JetStream and that stack init
@@ -1017,5 +1094,63 @@ func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestLogLineOriginAttributesByContainerNotPayload is TKT-303's Part 2. The
+// case that matters is the FIRST one: a catalog line whose payload names
+// http://gateway:8080. The substring matcher this replaced classified it as
+// gateway, so a service talking to the gateway could satisfy the "the gateway
+// logged this trace" half of TestTracePropagation on its own.
+//
+// Revert logLineOrigin to strings.Contains(line, "gateway") and that case goes
+// red while every other case here stays green — which is the point: the other
+// cases are satisfied by the broken matcher too, so they prove nothing on their
+// own and are here to stop the fix from over-correcting.
+func TestLogLineOriginAttributesByContainerNotPayload(t *testing.T) {
+	const project = "ticketing-smoke-22"
+	for _, tc := range []struct {
+		name string
+		line string
+		want logOrigin
+	}{
+		{
+			// The false positive. Payload names the gateway; the container is catalog.
+			name: "a service line whose payload names the gateway is a SERVICE line",
+			line: project + `-catalog-1  | {"msg":"dialing http://gateway:8080/healthz","trace_id":"abc"}`,
+			want: originService,
+		},
+		{
+			name: "a gateway line is a gateway line",
+			line: project + `-gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
+			want: originGateway,
+		},
+		{
+			// The old else-branch counted anything non-matching as a service, so
+			// an unparseable line silently became evidence. It must not.
+			name: "a line with no container field is unknown, not a service",
+			line: `{"msg":"orphaned line with no compose prefix","trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// A container from a DIFFERENT compose project must not count: the
+			// dev stack and the smoke stack can be up at once.
+			name: "another project's gateway is not this project's gateway",
+			line: `ticketing-gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// Substring-vs-prefix on the NAME field: a container merely
+			// containing the word must not match either.
+			name: "a container whose name merely contains a service name is unknown",
+			line: project + `-catalog-sidecar-1  | {"trace_id":"abc"}`,
+			want: originUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := logLineOrigin(tc.line, project); got != tc.want {
+				t.Fatalf("logLineOrigin(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
 	}
 }

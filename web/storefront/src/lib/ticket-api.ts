@@ -1,15 +1,39 @@
 import { UPSTREAM_DEADLINE_MS, withUpstreamDeadline } from './upstream';
+import type { components } from './access-api-types.gen';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
-export type TicketBundle = {
-  tickets: Array<{
-    ticket_id: string;
-    issued_at: string;
-    history: Array<{ type: string; occurred_at: string }>;
-    qr_url: string;
-  }>;
-};
+/**
+ * The wire shape, from access's contract rather than restated here (TKT-303).
+ *
+ * The hand-written version this replaces was already drifting on four fields:
+ * it omitted `order_ref` and `qr_payload` entirely, and typed `history` as
+ * `{ type, occurred_at }` while the contract's LifecycleEvent also carries a
+ * required `id` and an optional `sequence`. Nothing failed, because the body
+ * is cast rather than validated —
+ * which is exactly why a renamed field would have surfaced as a broken buyer
+ * ticket page instead of a red gate. `check-generate` now covers this file.
+ *
+ * Still a cast, not validation. Generated types are a compile-time claim about
+ * what access promises, not a runtime check that it delivered; that gap is
+ * unchanged by this ticket and is not what it set out to close.
+ *
+ * What the generation actually buys, measured rather than assumed by renaming
+ * `qr_url` in access's contract and regenerating:
+ *
+ *   - `check-generate` goes red. That is the gate COS3 asked for, and it fires
+ *     whether or not anyone consumes the type.
+ *   - A `.ts` consumer of this type fails to compile (TS2339).
+ *   - A `.astro` TEMPLATE does NOT. `pnpm run build` is
+ *     `astro sync && tsc --noEmit && astro build`, and `tsc` does not parse
+ *     `.astro`; that needs `astro check`, which this repo does not run. So
+ *     `[orderRef].astro`'s `ticket.qr_url` stayed green under the rename.
+ *
+ * The last point is a real limit of this change, not a detail: the buyer ticket
+ * page is exactly the surface the ticket worried about. `check-generate` is what
+ * closes the gap; the type adoption is what makes the next `.ts` reader honest.
+ */
+export type TicketBundle = components['schemas']['TicketBundle'];
 
 export type TicketBundleResult =
   | { ok: true; value: TicketBundle }
