@@ -133,6 +133,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Confirm a claim, permanently consuming its capacity (internal)
+         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have captured the payment before confirming: this transition permanently increments the pool's `confirmed_quantity`, and inventory checks only the claim's own status — it never sees payment, so a confirm without a capture is sold capacity that never paid. Confirming after the capture can only under-sell, which is why only this direction matters. Inventory does not prove the capture happened and cannot: the guarantee is honest-caller, enforced by the caller that knows both facts.
+         */
         post: operations["confirmHold"];
         delete?: never;
         options?: never;
@@ -165,6 +169,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Release a claim, returning its whole capacity to the pool (internal)
+         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have ensured the related entitlement can no longer admit before releasing: freeing the seat while the ticket still admits is the one sequence that can oversell (ADR-038 §1). Inventory validates the claim and nothing else — this operation takes only a hold id and an organizer and frees the whole claim with no evidence of anything, which is why a proof-of-voiding receipt on the partial return next door would not close the gap. The guarantee is honest-caller.
+         */
         post: operations["releaseHold"];
         delete?: never;
         options?: never;
@@ -198,7 +206,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Return a refunded quantity of a confirmed claim's capacity to the pool (internal) */
+        /**
+         * Return a refunded quantity of a confirmed claim's capacity to the pool (internal)
+         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-070). The second obligation of a refund's reversal, and it must come AFTER the tickets are voided (TKT-161 / ADR-038 §1): freeing capacity while the original ticket still admits is the one ordering that can oversell. Inventory validates the claim and the quantity, not that anyone voided anything, and it cannot — the guarantee is honest-caller, enforced structurally in commerce's `driveOrderedReversal`.
+         *
+         *     409 `partial seated` is not a transient failure: nothing associates an issued ticket with a seat identity, so a partial return of a seated claim cannot say which seats to free (TKT-164). The refund itself still completes.
+         */
         post: operations["returnRefundedCapacity"];
         delete?: never;
         options?: never;

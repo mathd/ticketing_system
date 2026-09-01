@@ -121,8 +121,17 @@ free capacity while the tickets still admit. That is the system's existing trust
 a new hole (`/internal/holds/{id}/release` has always been able to free a whole claim the same
 way, and `/internal/psp/refund` can move money), but it means the ordering is an **honest-caller**
 guarantee, not an enforced one — the ADR-021 distinction, applied to a service boundary instead of
-a database. Whether inventory should demand proof of prior voiding, and whether that generalizes to
-every internal mutation, is **TKT-165**.
+a database.
+
+**Settled by [ADR-070](./ADR-070-internal-mutation-ordering-honest-caller.md) (TKT-165): the
+honest-caller model is ratified, and no boundary receipt is added.** A proof-of-voiding check at
+`refund-capacity` buys nothing against a token holder, for two independent reasons — the release
+route next door is strictly easier and no receipt closes it, and whatever proof inventory demanded
+the same token could obtain. What was done instead is to declare the assumption in each affected
+operation's *served* contract, where an integrator reads it; ADR-070 §4 enumerates all six such
+endpoints across the three services, of which this ADR named three. One correction it records:
+`/internal/psp/refund` is no longer behind `INTERNAL_SERVICE_TOKEN` — payments has had its own
+credential since ai-review S8, so the sentence above overstates that endpoint's exposure.
 
 **Not backfilled.** Refunds written before this migration returned money with their tickets still
 valid; stamping them would assert a voiding that never happened.

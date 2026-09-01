@@ -157,10 +157,20 @@ paths:
         '502': {$ref: '#/components/responses/Error'}
   /internal/psp/refund:
     post:
-      # Refund captured money. The refund amount/currency are the STORED captured amount —
-      # callers cannot supply an amount. A pending/failed provider refund is 502 with the
-      # compensation still bound: payment.refunded is appended only on a settled success.
       operationId: pspRefund
+      summary: Refund the whole captured amount of a compensation (internal)
+      description: >-
+        Refund captured money. The refund amount/currency are the STORED captured amount — callers
+        cannot supply an amount. A pending/failed provider refund is 502 with the compensation still
+        bound: `payment.refunded` is appended only on a settled success.
+
+
+        ORDERING ASSUMED, NOT VERIFIED (ADR-070). This is one leg of a reversal sequence the CALLER
+        owns; payments settles money and knows nothing about the entitlement or the seat. It does not
+        verify that tickets were voided, that capacity was returned, or in what order — and a
+        successful refund here is not evidence about inventory state. Unlike inventory's internal
+        surface, this operation is behind `PAYMENTS_INTERNAL_TOKEN` rather than the shared
+        `INTERNAL_SERVICE_TOKEN` (ADR-070 §5), so its caller set is already narrowed to commerce.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensation'}}}}
       responses:
         '200': {description: Refunded (or replay of the completed refund), content: {application/json: {schema: {$ref: '#/components/schemas/PSPCompensationResult'}}}}
@@ -172,13 +182,21 @@ paths:
         '502': {$ref: '#/components/responses/Error'}
   /internal/psp/partial-refund:
     post:
-      # Post-purchase partial refund leg (TKT-156, ADR-037). The ONE refund path whose
-      # amount comes from the caller — validated against the operation's own durable
-      # captured evidence under a row lock before any provider call, so it can only ever
-      # be a subset of money payments already knows moved. Repeatable: many legs against
-      # one charge, each with its own refund_key and its own provider idempotency key.
-      # Mutually exclusive with the whole-refund recovery path above.
       operationId: pspPartialRefund
+      summary: Refund part of a captured charge as one repeatable leg (internal)
+      description: >-
+        Post-purchase partial refund leg (TKT-156, ADR-037). The ONE refund path whose amount comes
+        from the caller — validated against the operation's own durable captured evidence under a row
+        lock before any provider call, so it can only ever be a subset of money payments already
+        knows moved. Repeatable: many legs against one charge, each with its own `refund_key` and its
+        own provider idempotency key. Mutually exclusive with the whole-refund recovery path above.
+
+
+        ORDERING ASSUMED, NOT VERIFIED (ADR-070). Same position as `pspRefund`: one leg of a
+        caller-owned reversal sequence. Payments validates the amount against its own captured
+        evidence and nothing about the entitlement; a settled leg says money moved, never that a
+        ticket was voided or a seat returned. Behind `PAYMENTS_INTERNAL_TOKEN`, not the shared
+        credential (ADR-070 §5).
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PSPPartialRefund'}}}}
       responses:
         '200': {description: Refunded (or replay of the completed leg), content: {application/json: {schema: {$ref: '#/components/schemas/PSPPartialRefundResult'}}}}
