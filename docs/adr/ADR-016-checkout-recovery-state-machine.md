@@ -9,6 +9,11 @@ Accepted (approved at the TKT-43 plan gate)
 Amended by **TKT-262** (2026-08-20, §Amendment below) — records the compensation's refund-before-release
 ordering, which this ADR had implemented and left unstated, and bounds what a refused release guarantees.
 
+Amended by **TKT-145** (2026-09-01, §Amendment below) — records why an unparked `release_pending`
+checkout is answered 202 rather than a terminal 402/408, distinguishes the two exits that park (only
+one of which leaves the row `release_pending`), and states that the attempt budget bounds failed
+*claimed re-drives* rather than the buyer's elapsed wait, which has no wall-clock bound.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -414,6 +419,219 @@ claim itself has to reach a state whose release maps to `nil`.
 So unparking is the *second* step, not the fix: it is how a repaired order is returned to the runner.
 Unparking alone, with the claim untouched, only buys another refusal.
 
+
+## Amendment (2026-09-01, TKT-145) — an unparked `release_pending` checkout answers 202, and what bounds the buyer's wait
+
+§Decision 2 makes `release_pending` a durable state carrying a persisted terminal payment outcome
+(the paragraph beginning *"`release_pending` becomes a durable state"*). It does not say what a
+**buyer** is told when they retry a checkout that is sitting in
+it. Both code paths have answered **202 with the durable status** since TKT-116, and both carry
+comments defending it — but the choice was never recorded as a decision, so it read as an
+implementation detail rather than as something weighed and settled.
+
+Nothing in the code changes. Unlike the TKT-262 amendment above, the behaviour here is **also
+already asserted by a test**: TKT-280's `TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`
+(`services/commerce/internal/api/recovery_parked_answer_smoke_test.go:47`) pins the unparked 202 on
+both paths. What was missing was only the *decision*, and the reason it is not the obvious 402/408.
+
+### The decision
+
+**An unparked `release_pending` order is answered `202` echoing the durable status, on both paths,
+with no `error` field.** The alternative — deriving a terminal 402/408 from `terminal_outcome` — is
+rejected; the refutation is below so it is not re-proposed.
+
+### Why 202 and not the terminal outcome
+
+`terminal_outcome` is written by `RecordTerminalOutcome` in the **same statement** as
+`status='release_pending'`, gated on `terminal_outcome IS NULL` and fenced on the recovery claim
+(`services/commerce/internal/store/recovery.go:197-205`), and `releasableOutcome` (:167) admits only
+outcomes that **prove no side effect**: `declined`, `timeout`, `not_attempted`, `no_side_effect`. So
+at this point the system does know, durably, that **no money was captured**.
+
+What it does not know is **how the order ends**. `terminal_outcome` records why the *payment*
+finished; the *order* still owes an inventory release, and that release can still be refused. A 402
+here would be a claim the state machine is able to falsify moments later — precisely the discipline
+[ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) applies to "tamper-evident": name what the
+evidence actually proves before asserting it. 202 with the durable status says *the payment is
+resolved and the order is not* — which is exactly what is known — and it stays true under every
+continuation below. A 402 that a later park contradicts is worse than a 202 that never lied.
+
+There is a second, independent objection. `terminalCheckoutCode` (`api/server.go:1536`) maps
+`timeout`→408 and everything else→402, and it takes the **order status**, not the outcome. The
+order's terminal status comes from `store.TerminalStatus` (`store/recovery.go:175`), which folds
+`not_attempted` and `no_side_effect` into `timeout` deliberately — *"from their side nothing was
+charged either way"*. An API-tier shortcut feeding `terminal_outcome` straight into
+`terminalCheckoutCode` would therefore tell a `not_attempted` buyer **402 Payment Required** about a
+charge payments never bound. Answering terminally from here means reimplementing that mapping at a
+second site, where it can drift from the one at `store/recovery.go:279` that decides the order's
+real ending.
+
+### Where the buyer's non-202 answer actually comes from — two exits, not one
+
+`release_pending` has three exits, and being exact about them is the whole content of this
+amendment, because the two non-terminal ones **park differently**:
+
+| Exit | Mechanism | Row afterwards | Buyer sees |
+|---|---|---|---|
+| Release succeeds | `MarkReleased` | terminal failure status | 402 / 408, the ordinary ending |
+| Release refused — the claim is **confirmed** while payment did not capture | `releaseAndFail` → **`ParkForReconciliation`** (`recovery/runner.go:556-565`) | **`status='reconciliation_required'`**, `recovery_parked_at` set | 409, through the `reconciliation_required` branch |
+| Attempt budget exhausted | `fail` → **`ReleaseStuckOrder`** (`store/recovery.go:123-133`) | **still `release_pending`**, `recovery_parked_at` set | 409, through the parked check |
+
+`ParkForReconciliation` changes the status; `ReleaseStuckOrder` deliberately does not
+(`recovery_parked_at=CASE WHEN recovery_attempts>=$4 THEN now() ELSE NULL END`, status untouched).
+The second row is the only one that is `release_pending` **and** parked — and it is the reason both
+answer paths read `recovery_parked_at` rather than status alone. Reading it as *"both non-terminal
+exits leave a parked `release_pending` row"* would make the parked check look redundant on one exit
+and absent on the other; it is neither.
+
+Both parked shapes answer **409 "order awaiting payment reconciliation"**, because parked means the
+same thing to a buyer either way: no worker will advance this without a human. `ClaimStuckOrders`
+excludes parked rows (`store/recovery.go:79`, and the claimable index in `0004`/`0005`), so that is
+a statement about the system, not a guess.
+
+### What ends the 202, and the narrow thing the attempt budget actually bounds
+
+**The 202 ends when a claimed re-drive reaches the failure-release path with the budget spent.**
+That sentence is deliberately narrow; every wider reading of it is false, and one of them was in the
+first draft of this amendment.
+
+`MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). **At steady state, after migrations, the
+counter moves in three places** — and the asymmetry between them is the whole subtlety. (The fourth
+writer is a one-off: migration `0005_psp_recovery.sql:38` resets it to zero for the two populations
+it re-opens, which is an upgrade-time transition, not a runtime path.)
+
+- `ClaimStuckOrders` **increments** it when a pass **claims** the row (`store/recovery.go:92`) —
+  inside the UPDATE CTE, *before* any work is attempted.
+- `AbandonRecoveryClaim` **decrements** it (`:348`), and its only caller is `releaseUndriven`
+  (`recovery/runner.go:275`), which hands back the **undriven suffix** of a batch on an orderly
+  shutdown (`:251-259`).
+- `UnparkOrder` **resets it to zero** (`:535`) — an operator intervention, not a runner path, and
+  the reason its comment calls that reset "not cosmetic" is that `ReleaseStuckOrder` would otherwise
+  re-park the row on its next failure.
+
+So at runtime the budget is spent by *claims*, refunded only for the part of a batch a graceful
+shutdown never reached, and cleared only by an operator. Parking then happens in `ReleaseStuckOrder`
+(`:123-133`) or `ParkForReconciliation` (`:139-158`) — and reaching either is not sufficient, for
+the reason below the table.
+
+**How a claimed pass can end.** Do not read this as a list of failures; the first two rows are the
+ordinary outcomes, and they matter here because neither returns the attempt:
+
+| Outcome of a claimed pass | Attempts afterwards | Parked? |
+|---|---|---|
+| Drive **succeeded** — terminal state reached, `ClearRecoveryClaim` | consumed, **retained** (`:355-359` does not touch the counter) | No — the row is done |
+| Drive routed to `ParkForReconciliation` and it succeeded | consumed | **Yes**, at *any* attempt count — this exit does not wait for the budget |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | consumed | **Yes**, once the count reaches 10 |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **errored** | consumed | **No** — the error is logged and swallowed (`runner.go:585-587`) |
+| Runner stopped **before** claiming | untouched | No — nothing advances the row at all |
+| Orderly shutdown, order in the **undriven suffix** | refunded by `AbandonRecoveryClaim` | No, and correctly so |
+| Orderly shutdown **during a drive**, or a **crash after claiming** | **consumed, never refunded** | **No** — a cancelled drive reaches `fail`; a crash reaches nothing |
+
+**And every row that says "succeeded" means the SQL returned no error, which is not the same as
+having changed the row.** `ReleaseStuckOrder` and `AbandonRecoveryClaim` are both fenced on
+`recovery_claim_id=$2` and **neither checks `RowsAffected`** (`:123-133`, `:345-350`), so a claimant
+whose lease lapsed and whose row was re-claimed by a successor gets `nil` back from a statement that
+matched nothing. The fencing is correct — it is what stops a stale claimant from disturbing its
+successor — but it means the table's outcomes describe the *intended* effect, and a stale token
+turns any of them into a silent no-op. `ParkForReconciliation` is the exception that shows the
+contrast: it *does* check, and returns `ErrRecoveryConflict` on zero rows (`:152-155`).
+
+Two rows deserve emphasis. The `ReleaseStuckOrder` **errored** row is a genuine trap: `fail` logs
+*"stuck order parked after exhausting recovery attempts"* whenever
+`s.Attempts >= MaxRecoveryAttempts`, on the value read at claim time, **regardless of whether the
+parking write succeeded or matched a row** — so the log can assert a park that did not happen. And
+the last row is the liveness one: a runner crash-looping just after `ClaimStuckOrders` burns
+attempts without ever parking anything, and each burnt claim holds `recovery_lease_until` for the
+full lease — `batch × MaxCallsPerOrder × callTimeout + 60s` (`recovery/runner.go:197-206`), which at
+the defaults (16 × 6 × 10s + 60s) is **exactly 17 minutes** — before the row is claimable again.
+Such an order can exceed ten claims and stay unparked indefinitely.
+
+**And even on the ordinary path, ten attempts is not a deadline.** It bounds failed claimed
+re-drives, not elapsed time, and several things sit between the two:
+
+- the ticker period, configurable via `RECOVERY_INTERVAL`, default 30s
+  (`cmd/commerce/main.go:553-559`);
+- `recovery_next_attempt_at`, an exponential backoff — and note the **effective ceiling is 256
+  seconds, not five minutes**: the SQL is
+  `least(make_interval(secs => power(2, least(recovery_attempts, 8))), interval '5 minutes')`
+  (`store/recovery.go:129`), and the inner cap at 2^8 means the five-minute operand can never win;
+- a two-minute `updated_at` grace that keeps recovery off live checkouts (`store/recovery.go:84`);
+- `recovery_lease_until`, which withholds a claimed row for the lease above;
+- batch size (`RECOVERY_BATCH`, default 16), so a backlog delays a given row.
+
+Under normal operation this resolves in a small number of cycles. **The buyer's wait has no
+wall-clock bound, and this ADR does not claim one.**
+
+An HTTP-level deadline is therefore not simply redundant, and should be judged on its own merits
+rather than dismissed here. The narrow objection that does hold: answering terminally reports a
+*declined payment* for an order that is merely unattended, which is a false statement about money
+rather than a pessimistic one about time. Whether a product-level deadline with some **other**
+buyer-facing wording is worth having is left open.
+
+### The residual, and exactly how much of it is observable
+
+A runner that stops advancing orders leaves a buyer on 202 indefinitely. A terminal status code does
+not fix that — it converts an accurate "still working" into an inaccurate "declined" while the order
+stays exactly as stuck. What *would* help is noticing, so be precise about what notices today.
+
+**Partly observable.** A runner that cannot claim logs `claim stuck orders` at ERROR on every
+non-cancellation error (`recovery/runner.go:243-249`), and a database outage severe enough to cause
+that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`).
+
+Do not read that as *"a claim error costs nothing"*, though. The increment happens **inside** the
+UPDATE CTE (`store/recovery.go:92`), and the error can surface afterwards from `Scan`/`rows.Err` —
+so a statement PostgreSQL committed whose result stream was then lost leaves the attempt and the
+lease durable while `RunOnce` drives nothing and returns 0. **A claim failure is
+outcome-ambiguous** unless it is known the statement never executed, and the ambiguous case lands in
+the unparked-and-unmeasured population below.
+
+**Not observable.** A recovery goroutine that is starved, deadlocked, or never started inside an
+otherwise healthy process — and the crash-after-claim shape above — produce **no signal at all**.
+No metric measures the count or age of *eligible, unparked* recovery rows, which is the quantity
+that grows when nothing is draining. `ReadRecoveryBacklog`, which feeds every `commerce.recovery.*`
+gauge, is scoped `WHERE recovery_parked_at IS NOT NULL` (`store/recovery.go:601-613`), so unparked
+rows are excluded by construction.
+
+Two corrections to how those gauges are sometimes described, since this amendment relies on them:
+they do **not** correspond to the two exits above, and neither is scoped to `release_pending`.
+`commerce.recovery.parked` counts parked rows whose status `IS DISTINCT FROM
+'reconciliation_required'`; `commerce.recovery.parked.reconciliation_required` counts the rest.
+Together they **partition every parked row**, with no `status IN (…)` restriction at all — so a
+parked row outside the five claimable statuses would be counted too.
+
+**A loose precedent exists, and its differences matter as much as its shape.** The sibling reversal
+runner publishes `commerce.refund.reversal.outstanding` beside its parked gauge, with an
+`oldest_age_seconds` (`reversal/metrics.go:26-38`) — so it does have the *outstanding-work* signal
+recovery lacks. It is **not** a drop-in model, and copying it uncritically would import the wrong
+population twice over: that gauge counts every outstanding obligation **parked included**, so a
+sustained nonzero can mean permanent parked work awaiting a human rather than a downstream failing
+to recover; and its runner charges an attempt only **after** a failed drive
+(`ReleaseReversalClaim`), where recovery charges at **claim** time — which is precisely the
+asymmetry that makes recovery's unparked population interesting in the first place.
+
+State recovery's requirement directly instead of by analogy: **the count and age of rows in a
+claimable status with `recovery_parked_at IS NULL` that are eligible now** — past
+`recovery_next_attempt_at`, past the `updated_at` grace, lease lapsed or absent. That is the
+quantity that grows when nothing is draining, and it is the one signal that would surface every
+unparked shape in the table above, the ambiguous claim failure included. **Out of scope here,
+recorded as an open item** — not as an implied guarantee.
+
+### What this amendment does not claim
+
+Per ADR-021's name-the-claim discipline, and because prose is not compiled:
+
+- **Not** that every 202 eventually becomes terminal. A wedged runner is the case above.
+- **Not** that the buyer's wait is bounded in wall-clock time. `MaxRecoveryAttempts` bounds failed
+  *claimed* re-drives; the schedule, the backoff, the batch size and whether the runner is running
+  at all sit between it and any elapsed-time figure.
+- **Not** that a wedged runner is observed. It is not — see the residual above.
+- **Not** that `terminal_outcome` proves the order failed. It proves **no capture**, and that is all
+  it is read for here.
+- **Not** that the two paths agree by construction. They agree because
+  `TestParkedReleasePendingGetsTheSameAnswerFromBothPaths` compares them to each other on one seeded
+  row; that test is the tripwire, and it was written precisely because an earlier comment claimed
+  the agreement was structural and a one-sided fix falsified it.
+
 ## References
 
 - [ADR-011 — Checkout finalization and canonical money journal](./ADR-011-checkout-journal-protocol.md) (recovery story amended by this ADR)
@@ -421,4 +639,5 @@ Unparking alone, with the claim untouched, only buys another refusal.
 - [ADR-012 — Ticket issuance](./ADR-012-ticket-issuance-and-qr-credentials.md) (names TKT-43 for outbox recovery) · [ADR-007 — PostgreSQL + NATS](./ADR-007-postgres-nats.md) · [ADR-010 — PostgreSQL claim transaction](./ADR-010-postgres-claim-transaction.md)
 - [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) (§2 *observed, not predicted* is the precedent the TKT-262 amendment applies; §4 assigns unparking to TKT-146)
 - [ADR-032 — Stripe behind the PSP port](./ADR-032-stripe-behind-the-psp-port.md) (the status/refund contract `resolveReconciliation` reads; its TKT-115 amendment shipped the same-pass refund)
+- TKT-116 (the 202 branch this ADR's TKT-145 amendment records) · TKT-280 (`TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`, the tripwire that pins both the parked 409 and the unparked 202)
 - TKT-43 · TKT-28 (the walking skeleton this hardens) · TKT-11 (fiscal archive; owns the anchor choice) · TKT-33 (PII erasure machinery)
