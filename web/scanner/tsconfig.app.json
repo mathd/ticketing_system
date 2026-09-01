@@ -4,9 +4,23 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // "node" alongside "vite/client": vitest runs in Node, and
+    // tsconfig-strict.test.ts reads the effective compiler config through
+    // node:child_process. "include" is ["src"], so test files are part of this
+    // project and must typecheck under it (TKT-302).
+    "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
+
+    /* TKT-302: the two Astro apps extend astro/tsconfigs/strict; this one had no
+       `strict` key at all, so strictNullChecks and noImplicitAny were off for the
+       app that runs at a live gate. Turning it on costs nothing today (zero
+       errors), which is exactly why it should be on before it costs something:
+       null-safety around video.current and the IDB records in App.tsx is where
+       it would rot. Asserted by tsconfig.test.ts against the EFFECTIVE config,
+       because a compile check passes with or without the flag while the source
+       has no violation. */
+    "strict": true,
 
     /* Bundler mode */
     "moduleResolution": "bundler",

@@ -79,7 +79,47 @@ export function sessionCountForTest(): number {
   return sessions.size;
 }
 
-export function createSession(principal: StaffPrincipal, now = Date.now()): string {
+/**
+ * The clock in-process session lifetimes are measured on (TKT-302, mirroring the
+ * storefront's `monotonicNow`, whose comment records the reasoning from TKT-220's
+ * ai-review).
+ *
+ * `Date.now()` is wall-clock and can step BACKWARDS — NTP correction, a VM
+ * migration, an operator setting the clock. When it does, a session stamped
+ * before the step has an `expiresAt` in what is now the future, so a token that
+ * should have expired is honoured again. Delete-on-read does not help: the entry
+ * is only removed when someone presents it, and the dangerous case is precisely
+ * the token that was never presented while it was expired.
+ *
+ * `performance.now()` cannot go backwards. Sessions do not survive a restart, so
+ * a clock that resets with the process costs nothing — there is nothing left to
+ * compare against.
+ *
+ * NOT used for assertion expiry: see assertionLifetimeMs, which subtracts from a
+ * Unix timestamp catalog minted and therefore needs the wall clock.
+ */
+function monotonicNow(): number {
+  return performance.now();
+}
+
+/**
+ * TWO clocks, deliberately, and merging them is the trap (TKT-302 plan-final).
+ *
+ * `now` is a MONOTONIC reading and measures this process's own TTL.
+ * `wallClockNow` is a Unix timestamp and exists ONLY for assertionLifetimeMs,
+ * which computes `expiry * 1000 - wallClockNow` against a value catalog stamped.
+ * Pass a monotonic reading there and the subtraction compares milliseconds since
+ * process start against the Unix epoch: `remaining` becomes astronomically large,
+ * the Math.min clamp below never binds, and the session outlives the assertion it
+ * carries — silently restoring the 401-on-a-live-looking-session that the clamp
+ * exists to prevent. TestSessionClampsToAssertionExpiryUnderAMonotonicClock is
+ * the test that fails if they are ever merged.
+ */
+export function createSession(
+  principal: StaffPrincipal,
+  now = monotonicNow(),
+  wallClockNow = Date.now(),
+): string {
   // One pass over the map does both jobs, because both need the same walk.
   //
   //  - Reclaim expired entries (ai-review pass 1, F4). Expiry-on-read alone only
@@ -125,7 +165,7 @@ export function createSession(principal: StaffPrincipal, now = Date.now()): stri
   const token = randomBytes(32).toString('base64url');
   // The session never outlives the assertion it carries (TKT-245). Equal TTLs are
   // not enough on their own — see assertionLifetimeMs.
-  const assertionMs = assertionLifetimeMs(principal.organizerAssertion, now);
+  const assertionMs = assertionLifetimeMs(principal.organizerAssertion, wallClockNow);
   const lifetime = assertionMs === undefined ? SESSION_TTL_MS : Math.min(SESSION_TTL_MS, assertionMs);
   sessions.set(token, { principal, expiresAt: now + lifetime });
   return token;
@@ -160,14 +200,22 @@ function assertionLifetimeMs(assertion: string, wallClockNow: number): number | 
   return remaining > 0 ? remaining : 0;
 }
 
-export function lookupSession(token: string, now = Date.now()): StaffPrincipal | undefined {
+export function lookupSession(token: string, now = monotonicNow()): StaffPrincipal | undefined {
   if (!token) return undefined;
   const entry = sessions.get(token);
   if (!entry) return undefined;
   if (now >= entry.expiresAt) {
     // Delete on read rather than leave it: the map is the only thing holding the
-    // principal, and an expired entry that lingers is a session that a clock
-    // adjustment could resurrect.
+    // principal, so dropping it here bounds how long an expired entry occupies
+    // memory between sweeps.
+    //
+    // It does NOT prevent a clock adjustment from resurrecting a session, and an
+    // earlier version of this comment claimed it did (TKT-302). Delete-on-read
+    // fires only when a token is PRESENTED, and the case that mattered was
+    // exactly the one that is not: a token expired while nobody used it, then a
+    // backwards wall-clock step puts its expiry in the future again, and the
+    // next presentation finds it live. What closes that is measuring the TTL on
+    // a monotonic clock (see monotonicNow), not this delete.
     sessions.delete(token);
     return undefined;
   }

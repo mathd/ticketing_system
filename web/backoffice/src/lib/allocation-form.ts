@@ -141,19 +141,61 @@ export function parseAllocationRevision(form: FormData): number | undefined {
  * string — an unzoned value is not a valid date-time and would be refused by request
  * validation.
  */
+/**
+ * A zoned instant, or `undefined` for an empty field. A NON-EMPTY value without a
+ * zone is refused (TKT-302).
+ *
+ * The refusal is the fix. `new Date('2026-09-01T10:00')` resolves a zoneless
+ * string in the SSR PROCESS's zone, so an operator's edited release time was
+ * shifted by (server TZ - operator TZ) — silently, with a 303 reporting success.
+ * The repo already refuses this shape one page over: events/new.astro takes RFC
+ * 3339 with an offset "because a local value carries no zone".
+ *
+ * Refused rather than guessed, and refused rather than treated as empty: an
+ * unparseable non-empty value must not be read as "clear this boundary", which
+ * would remove a release gate the operator was trying to edit.
+ */
 function instant(value: string): string | undefined {
   if (!value) return undefined;
+  if (!hasExplicitZone(value)) return undefined;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
-/** Minute-precision rendering of an instant, matching what a datetime-local input holds. */
+/**
+ * Whether an RFC 3339 date-time carries a zone: a trailing `Z`, or `+HH:MM` /
+ * `-HH:MM` after the time.
+ *
+ * Anchored to the END so the `-` separators in the DATE cannot satisfy it —
+ * `2026-09-01T10:00` must not read as zoned because it contains dashes.
+ */
+export function hasExplicitZone(value: string): boolean {
+  return /(?:Z|[+-]\d{2}:\d{2})$/.test(value.trim());
+}
+
+/**
+ * How an instant is rendered back into the editable field: UTC, with an explicit
+ * `Z`, to the second.
+ *
+ * Was minute-precision LOCAL time (`getFullYear()`/`getHours()`/...), which is
+ * the other half of the same defect — the render used the server's zone too, so
+ * a round trip through this screen moved every boundary by the server/operator
+ * offset even when nothing was edited. Rendering in UTC makes the value
+ * self-describing: whatever zone the operator's browser is in, the field says
+ * which instant it means.
+ *
+ * Seconds are kept because these boundaries are compared against
+ * `clock_timestamp()`; truncating to minutes is what preservedInstant exists to
+ * avoid, and rendering at minute precision would reintroduce it for any field
+ * the operator DOES touch.
+ */
 export function toMinuteInput(value: string | undefined): string {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  // toISOString is always UTC with a trailing Z; drop the milliseconds, which no
+  // operator types and which the round-trip comparison does not need.
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 /**

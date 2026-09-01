@@ -283,10 +283,25 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                       <label class="visually-hidden" for={`release-${i}`}>
                         Release time for {row.channel}
                       </label>
+                      {/* RFC 3339 WITH a zone, not datetime-local (TKT-302).
+                          A datetime-local value carries no zone, so the server
+                          resolved it in ITS zone and an operator's edited
+                          release time shifted by (server TZ - operator TZ) --
+                          silently, with a 303 reporting success. Same shape and
+                          same reason as events/new.astro's starts_at.
+
+                          The value is rendered in UTC so the field says which
+                          instant it means; an operator may type any offset. The
+                          cost is the native picker, which is the trade
+                          events/new.astro already made. */}
                       <input
                         id={`release-${i}`}
                         name={`releaseAt.${i}`}
-                        type="datetime-local"
+                        type="text"
+                        inputmode="text"
+                        placeholder="2026-09-18T19:30:00Z"
+                        pattern="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})"
+                        title="RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00"
                         value={row.releaseAt}
                         data-release-for={row.channel}
                       />

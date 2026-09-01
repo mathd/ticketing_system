@@ -258,6 +258,137 @@ try {
     'a full-set replace that dropped unknown codes would delete it',
   );
 
+  // --- 6b. THE RELEASE TIME, FROM A NON-UTC BROWSER (TKT-302).
+  //
+  // The defect: `release_at` was submitted as a bare `datetime-local` value, which
+  // carries no zone, and the SSR handler resolved it with `new Date(...)` in the
+  // SERVER's zone. An operator in Toronto typing 10:00 stored whatever 10:00 meant
+  // where the server ran — silently, with a 303 reporting success.
+  //
+  // Only a browser tier can show this, and only a non-UTC one: a unit test runs in
+  // whatever zone the machine has, so a server-local implementation and a correct
+  // one agree whenever that zone is UTC — which is exactly what CI is. This context
+  // is pinned to America/Toronto so the two answers differ by four hours.
+  //
+  // The value submitted is UTC-explicit, so the assertion has ONE right answer
+  // regardless of where this runs. What the non-UTC context proves is that the
+  // BROWSER's zone does not leak into the stored instant either.
+  const tzContext = await browser.newContext({ baseURL: BASE, timezoneId: 'America/Toronto' });
+  try {
+    const tzPage = await tzContext.newPage();
+    check(
+      'the second context really is in a non-UTC zone',
+      (await tzPage.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone)) ===
+        'America/Toronto',
+      'without this the spec would pass on a UTC-only difference and prove nothing',
+    );
+
+    await tzPage.goto('/admin/login', { waitUntil: 'domcontentloaded' });
+    await tzPage.fill('#identifier', identifier);
+    await tzPage.fill('#password', password);
+    await Promise.all([
+      tzPage.waitForURL('**/admin**'),
+      tzPage.click('button[type=submit]'),
+    ]);
+
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+
+    // Rendered in UTC with an explicit zone. A server-local render would show
+    // whatever the SSR process's zone made of the stored instant, and the operator
+    // would have no way to tell which zone the field meant.
+    const renderedRelease = await tzPage
+      .locator(`input[data-release-for="${plainChannel}"]`)
+      .inputValue();
+    check(
+      'an empty release time renders empty rather than as an epoch',
+      renderedRelease === '',
+      `release input = ${JSON.stringify(renderedRelease)}`,
+    );
+
+    // Seconds, not a whole minute. AGENTS.md records a spec that seeded
+    // whole-minute timestamps and stayed green through a truncation; a value ending
+    // in :37 cannot survive one.
+    const submitted = '2026-09-01T10:00:37-04:00';
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, submitted);
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+
+    // EXACT, to the microsecond, in UTC. -04:00 means 14:00:37Z, and the seconds
+    // must survive.
+    //
+    // WHAT THIS DOES NOT PROVE, stated because it would otherwise read as the
+    // whole point of this section: a ZONED submission parses to the same instant
+    // whether or not the server-zone bug is present, because the offset decides
+    // and `new Date` honours it either way. Measured, not assumed — with the fix
+    // reverted AND the SSR container pinned to America/Los_Angeles, this
+    // assertion still passed. It pins the round trip and the seconds; it cannot
+    // see the defect.
+    //
+    // The case that separates fixed from broken is a ZONELESS submission, below.
+    const storedRelease = sql(
+      'inventory',
+      `SELECT to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a release time submitted with an offset round-trips to THAT instant',
+      storedRelease === '2026-09-01T14:00:37.000000',
+      `release_at=${storedRelease}, want 2026-09-01T14:00:37.000000 — submitted ${submitted}`,
+    );
+
+    // And it round-trips: re-rendering must not shift it back.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    const rerendered = await tzPage
+      .locator(`input[data-release-for="${plainChannel}"]`)
+      .inputValue();
+    check(
+      'the stored instant re-renders as the same instant, in UTC',
+      rerendered === '2026-09-01T14:00:37Z',
+      `re-rendered as ${JSON.stringify(rerendered)} — a server-local render moves it every round trip`,
+    );
+
+    // THE case that separates fixed from broken. A zoneless value is what the old
+    // `datetime-local` input submitted, and resolving it took the SERVER's zone —
+    // so the same keystrokes stored a different instant depending on where the
+    // process ran. The fix refuses it rather than guessing.
+    //
+    // Submitted past the input's `pattern` with a direct DOM write, deliberately:
+    // the pattern is a browser convenience and this asserts the SERVER refuses,
+    // which is the half that binds a caller who ignores the markup.
+    const before = sql(
+      'inventory',
+      `SELECT to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    await tzPage.evaluate(
+      ([sel, value]) => {
+        const el = document.querySelector(sel);
+        el.removeAttribute('pattern');
+        el.value = value;
+      },
+      [`input[data-release-for="${plainChannel}"]`, '2026-09-02T08:00:00'],
+    );
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterZoneless = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a zoneless release time is NOT resolved in the server zone',
+      afterZoneless !== '2026-09-02T08:00:00.000000' && afterZoneless !== before,
+      `release_at=${afterZoneless} (was ${before}) — a server-zone reading would store ` +
+        "some 2026-09-02 instant whose hour depends on where the SSR process runs",
+    );
+  } finally {
+    await tzContext.close();
+  }
+
   // --- 7. THE STALE SAVE (TKT-250). Two operators, one slot: this page was rendered
   // before someone else committed, and its save must be refused rather than silently
   // overwriting them.

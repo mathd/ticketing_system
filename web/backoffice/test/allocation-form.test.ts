@@ -42,7 +42,7 @@ describe('the full set survives a round trip', () => {
   it('carries every field, including the ones the operator cannot edit', () => {
     const req = toAllocationRequest(
       '11111111-1111-1111-1111-111111111111',
-      [row({ cap: '50', releaseAt: '2026-09-01T10:00' })],
+      [row({ cap: '50', releaseAt: '2026-09-01T10:00:00Z' })],
       // The fields this screen does not render come from inventory's current set, and
       // ONLY from there — they are not submittable at all (ai-review passes 2 and 3).
       [
@@ -64,12 +64,15 @@ describe('the full set survives a round trip', () => {
     expect(a.sold_by).toBe('22222222-2222-2222-2222-222222222222');
     expect(a.opens_at).toBe('2026-08-01T09:00:00.000000Z');
     expect(a.closes_at).toBe('2026-08-31T23:00:00.000000Z');
-    // The release time IS editable, and a `datetime-local` value carries no zone, so it
-    // must arrive as an explicit instant denoting the moment the operator picked.
-    // Asserted as a round trip rather than a literal — pinning the UTC string would
-    // encode the machine's timezone into the test.
-    expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-01T10:00').getTime());
-    expect(a.release_at).toMatch(/Z$/); // zoned, or request validation refuses it
+    // The release time IS editable and now arrives ZONED (TKT-302), so this is a
+    // literal rather than a round trip. The old version compared
+    // `new Date(a.release_at)` against `new Date('2026-09-01T10:00')` and noted
+    // that pinning the UTC string "would encode the machine's timezone into the
+    // test" — which was true, and was a symptom: both sides resolved a zoneless
+    // string in the same local zone, so the assertion held on every machine
+    // while the value it checked was wrong on all but one. A zoned input has one
+    // correct answer everywhere.
+    expect(a.release_at).toBe('2026-09-01T10:00:00.000Z');
   });
 
   // Absent optional fields must be OMITTED, not sent as empty strings: the contract
@@ -284,10 +287,47 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
   });
 
-  it('a genuinely different minute replaces the stored instant', () => {
+  it('a genuinely different instant replaces the stored one', () => {
+    const a = build({ ...row(), releaseAt: '2026-09-02T08:00:00Z' }, [current()]);
+    // Asserted as an exact UTC instant, derived from the SUBMITTED offset rather
+    // than from whatever `new Date` would make of a zoneless string in the
+    // server's zone. Before TKT-302 this test passed a bare local value and
+    // compared it against `new Date` of the same bare value — self-consistent,
+    // and blind to the shift it was supposed to catch.
+    expect(a.release_at).toBe('2026-09-02T08:00:00.000Z');
+  });
+
+  // TKT-302. The defect: a zoneless value was resolved in the SSR process's
+  // zone, so the stored instant depended on where the server was.
+  it('takes the instant from the submitted OFFSET, not the server zone', () => {
+    // Same wall-clock reading, three zones, three different instants. Under the
+    // old `new Date(bare)` behaviour all three would have collapsed to whatever
+    // the server's zone made of "10:00", which is the bug.
+    const utc = build({ ...row(), releaseAt: '2026-09-01T10:00:00Z' }, [current()]);
+    const toronto = build({ ...row(), releaseAt: '2026-09-01T10:00:00-04:00' }, [current()]);
+    const paris = build({ ...row(), releaseAt: '2026-09-01T10:00:00+02:00' }, [current()]);
+
+    expect(utc.release_at).toBe('2026-09-01T10:00:00.000Z');
+    expect(toronto.release_at).toBe('2026-09-01T14:00:00.000Z');
+    expect(paris.release_at).toBe('2026-09-01T08:00:00.000Z');
+  });
+
+  it('refuses a non-empty value with no zone rather than guessing one', () => {
+    // NOT treated as "clear the release time": that would remove a boundary the
+    // operator was editing. The row simply carries no release_at, and the
+    // pattern attribute stops a browser submitting this shape in the first
+    // place — this is the server-side half of the same refusal.
     const a = build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
-    expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-02T08:00').getTime());
-    expect(a.release_at).not.toBe('2026-09-01T10:17:43.123456Z');
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('renders a stored instant in UTC with an explicit zone, to the second', () => {
+    // The other half of the defect: rendering used getFullYear()/getHours(), so
+    // a round trip through this screen moved every boundary by the server's
+    // offset even when nothing was edited. UTC makes the field self-describing.
+    expect(toMinuteInput('2026-09-01T10:17:43.123456Z')).toBe('2026-09-01T10:17:43Z');
+    expect(toMinuteInput(undefined)).toBe('');
+    expect(toMinuteInput('not a date')).toBe('');
   });
 
   it('clearing the release time removes it', () => {
