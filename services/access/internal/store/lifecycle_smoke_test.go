@@ -1530,6 +1530,67 @@ func TestHistoryUsesIntegritySequenceNotClaimedTime(t *testing.T) {
 	if !history[2].OccurredAt.Equal(lifecycle.Normalize(early.OccurredAt)) {
 		t.Fatalf("claimed time rewritten: %v", history[2].OccurredAt)
 	}
+
+	// TKT-234 / ADR-021 §Amendment. Everything above is about DISPLAY — what History
+	// returns. This half is about the INTEGRITY CLAIM, and it is the half the amendment
+	// records: a non-monotonic occurred_at sequence is not a corruption. Each event's own
+	// timestamp is signed honestly; only their ORDER is inverted, which is exactly what a
+	// backward clock step or an out-of-order offline reconcile produces. The chain must
+	// verify clean, because what it fixes is `sequence`, not time.
+	//
+	// WITHOUT THIS, the test proves History sorts correctly and says NOTHING about what the
+	// chain guarantees — and the amendment's claim would be recorded with nothing asserting
+	// it, which is the failure ADR-021 §D and TKT-262's amendment both warn about.
+	//
+	// The contrast that gives it meaning: MODIFYING a stored occurred_at is a different
+	// thing entirely and MUST fail, because occurred_at is inside the signed canonical form
+	// (lifecycle.go CanonicalEvent) and the verifier recomputes from the stored value
+	// (lifecycle_verify.go). §Threat model already says so — "modification of any signed
+	// field" is detected. So the ticket's own COS-3, "perturb occurred_at and confirm
+	// verification still passes", is impossible as literally written; the honest-writer
+	// inversion below is what it can mean.
+	if err := New(db, verifyOnlyConfig(t, cfg)).VerifyLifecycle(ctx, VerifyOptions{RequireCoverage: true}); err != nil {
+		t.Fatalf("inverted timestamps must not break the chain -- they are honestly signed, "+
+			"and the chain fixes sequence rather than time: %v", err)
+	}
+
+	// And read the integrity rows DIRECTLY rather than through History, which is the only
+	// way to separate "the chain recorded append order" from "the read sorted by it". A
+	// History-only assertion is satisfied by a correct ORDER BY over a wrong chain.
+	rows, err := db.QueryContext(ctx, `
+		SELECT i.sequence
+		FROM lifecycle_event_integrity i
+		WHERE i.event_id=$1`, late.OccurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var lateSequence int64
+	if !rows.Next() {
+		t.Fatal("the later-timestamped event that was appended FIRST has no integrity row")
+	}
+	if err := rows.Scan(&lateSequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = rows.Close()
+	var earlySequence int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT sequence FROM lifecycle_event_integrity WHERE event_id=$1`, early.OccurrenceID).
+		Scan(&earlySequence); err != nil {
+		t.Fatal(err)
+	}
+	// Appended late-first, so its sequence must be the LOWER one -- the opposite of what
+	// their timestamps imply. Asserting the relation rather than the literals 2 and 3 keeps
+	// this about the invariant ("a draw-down moves a redemption, never creates one") rather
+	// than about the issuance event that happens to occupy sequence 1.
+	if lateSequence >= earlySequence {
+		t.Fatalf("the chain followed claimed time instead of append order: the event appended "+
+			"FIRST (timestamped +1h) got sequence %d, the one appended SECOND (timestamped -1h) "+
+			"got %d", lateSequence, earlySequence)
+	}
 }
 
 // Concurrent cross-ticket reuse of one occurrence id: each ticket's lock only

@@ -65,13 +65,26 @@ INSERT INTO t(id, ord) VALUES (…, NULL); -- ord = NULL   (DEFAULT bypassed)
 
 So a DEFAULT is a convenience for writers that omit the column, never a guarantee about the column.
 A `BEFORE INSERT` trigger closes that hole — but only if it **overwrites unconditionally**. A
-fill-in-NULLs trigger (`IF NEW.x IS NULL THEN …`) still lets any INSERT, COPY, restore or
-replication apply supply its own value.
+fill-in-NULLs trigger (`IF NEW.x IS NULL THEN …`) still lets any INSERT, COPY or restore supply its
+own value.
 
 That distinction is what makes uniqueness a *property* rather than a constraint: if the sequence is
 provably the only source of the value, no unique index is needed to enforce it — which matters
 because a unique index costs a full-table scan (see 4). The trade is that a restore must disable the
 trigger deliberately and resynchronize the sequence.
+
+**CORRECTION (TKT-234, 2026-09-01, measured).** This section originally listed "replication apply"
+alongside INSERT, COPY and restore, as a writer an unconditional trigger governs. **It is not**, and the exception is
+broader than replication. An ordinary `CREATE TRIGGER` does not fire for **any** session running
+`SET session_replication_role = replica` — verified: an INSERT supplying `999` was renumbered to
+`1`, and the same INSERT under that setting kept `999`. PostgreSQL's logical-replication apply
+worker runs as `replica`, which is how replication inherits the exception, but a maintenance session
+can set it just as easily. `COPY` was checked the same
+way and **does** fire. So "the sequence is provably the only source of the value" is a property of
+the paths the trigger reaches, not of the column; `ENABLE ALWAYS TRIGGER` is what would extend it to
+a subscriber. And because a subscription's *initial sync* uses `COPY` while streaming apply does
+not, a replicated table would carry two independently generated numbering schemes. ADR-021
+§Amendment (TKT-234) records what that costs.
 
 ## 4. `ADD CONSTRAINT … NOT VALID` is the scan-free way to enforce a predicate for new rows
 

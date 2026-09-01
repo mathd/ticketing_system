@@ -69,10 +69,18 @@ ALTER TABLE claim_history ADD COLUMN append_order bigint;
 -- would cost the bound and buy nothing. It can be VALIDATEd later, out of band, if ever
 -- wanted.
 --
--- This is NOT redundant with the trigger below. The trigger assigns a value only when one
--- was not supplied, so any INSERT, COPY, restore or replication apply that supplies a
--- non-NULL value writes it through unchecked. A negative value would sort ahead of every
--- legitimate row (ai-review finding 3).
+-- This is NOT redundant with the trigger below, and the reason is narrower than it looks.
+-- The trigger overwrites UNCONDITIONALLY, so on every path that FIRES it -- ordinary INSERT,
+-- COPY, a plain restore -- a supplied value never survives and this CHECK has nothing to do.
+-- What it guards is paths where the trigger is not in force, and the list is open rather than
+-- closed. Two are known: `ALTER TABLE ... DISABLE TRIGGER` (which a restore preserving
+-- original values must use), and ANY SESSION running `SET session_replication_role = replica`
+-- -- ordinary triggers do not fire under it, which is why logical-replication apply skips
+-- this one, but a maintenance or administrative session can set it just as easily. Name the
+-- adversary the way 0017_payees_and_split_schedules.sql does for its own deferred trigger:
+-- this is honest-writer consistency, not a guarantee. There a supplied value writes through,
+-- and a negative one would sort ahead of every legitimate row (ai-review finding 3).
+
 ALTER TABLE claim_history
   ADD CONSTRAINT claim_history_append_order_positive
   CHECK (append_order IS NULL OR append_order > 0) NOT VALID;
@@ -93,10 +101,24 @@ ALTER TABLE claim_history
 -- a writer that does not yet exist.
 --
 -- Second, and the reason for the unconditional assignment: a fill-in-NULLs trigger lets
--- any INSERT, COPY, restore or logical-replication apply supply its OWN value, which then
--- rides through unchecked (ai-review finding 3). A duplicate would collapse two rows back
--- onto the random-uuid tie-break -- reintroducing exactly the defect this migration
--- closes -- and the NOT VALID CHECK above only rejects non-positive values, not repeats.
+-- any INSERT, COPY or restore supply its OWN value, which then rides through unchecked
+-- (ai-review finding 3). A duplicate would collapse two rows back onto the random-uuid
+-- tie-break -- reintroducing exactly the defect this migration closes -- and the NOT VALID
+-- CHECK above only rejects non-positive values, not repeats.
+--
+-- CORRECTION (TKT-234, measured): this paragraph originally listed "logical-replication
+-- apply" alongside INSERT, COPY and restore, as though the trigger governed it too. It does
+-- not, and the exception is broader than replication. This is an ordinary CREATE TRIGGER
+-- with no ENABLE REPLICA / ENABLE ALWAYS, so it does not fire for ANY session running
+-- `SET session_replication_role = replica` -- verified: an INSERT supplying 999 was
+-- renumbered to 1, and the same INSERT under that setting kept 999. Logical-replication
+-- apply is one such session, not the only one. COPY, checked the same way, DOES fire. So
+-- "the sequence is the sole source of the value" holds for the paths the trigger reaches,
+-- which is every ordinary writer, and not for a session that opts out. A subscription's initial sync uses COPY and would therefore renumber the
+-- snapshot, after which streaming apply would preserve publisher values: two numbering
+-- schemes in one column. Nothing here configures replication today, and while append_order
+-- is only a tie-break the discontinuity is tolerable -- TKT-295, which would make it the
+-- primary sort key, must decide deliberately. ADR-021 §Amendment (TKT-234) records this.
 -- Overwriting is strictly stronger than a unique index here AND costs no scan: the
 -- sequence is then the sole source of the value, by construction, so uniqueness is not a
 -- constraint to enforce but a property of who assigns it.

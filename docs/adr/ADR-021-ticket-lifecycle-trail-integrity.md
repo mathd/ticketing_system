@@ -6,6 +6,12 @@ Date: 2026-07-15
 
 Accepted (approved at the TKT-57 plan gate, 2026-07-15) · **Implemented by TKT-67, 2026-07-15**
 
+Amended by **TKT-234** (2026-09-01, §Amendment below) — states, per trail, what fixes order versus
+what merely displays it: access's per-ticket order is fixed by the chain and `occurred_at` is a
+claim, while inventory's `claim_history` has no chain, so its sort key *is* its ordering guarantee
+and it is honest-writer consistency rather than tamper-evidence. No code changes; TKT-295 owns the
+inventory half.
+
 **Implemented.** `lifecycle_events` is now chained per ticket in a companion integrity table with
 signed heads, checkpointed per organizer, and verified by `access verify-lifecycle` in the local
 gate against populated *and* deliberately corrupted data. This ADR closed the open question
@@ -379,6 +385,159 @@ checkpoint chain off it**.
    blows a 30-second budget on a populated database. TKT-67 owns deciding whether it fits, or whether
    it needs its own resumable job outside the migrate deadline. Do not assume it fits.
 
+## Amendment (2026-09-01, TKT-234) — what fixes a trail's order, per trail, and what merely displays it
+
+TKT-230's third review pass raised a [high] finding: append-only trails `ORDER BY occurred_at`,
+making a non-monotonic system clock the leading sort key of an audit trail. A backward step — NTP
+correction, VM migration, a manual `date -s` — can make a later append sort before an earlier one.
+
+That reading is **correct about the SQL and wrong about the guarantee**, and the difference is
+entirely the presence or absence of a chain. This amendment states it per trail, because the two
+trails this platform runs are not in the same position and treating them alike would either
+overstate one or understate the other. **Nothing in the code changes.** §Threat model already asserts
+that reordering within a ticket chain is detected cryptographically; this makes the consequence for
+the *sort key* explicit, and says plainly where no such consequence is available.
+
+### Access `lifecycle_events` — the chain fixes the order; `occurred_at` is a claim
+
+| | |
+|---|---|
+| **What fixes order** | `lifecycle_event_integrity.sequence` — `bigint NOT NULL CHECK (sequence > 0)`, `UNIQUE (ticket_id, sequence)`, linked by `previous_hash`/`entry_hash` and terminated by a signed head (`0003_lifecycle_integrity.sql:23-34`). Assigned as `head.sequence + 1` at append. |
+| **What displays** | `occurred_at` — the gate's *claimed* physical time. It is inside the signed canonical form, so it cannot be modified undetected; it is **not** the ordering authority. |
+| **Adversary** | A database writer without a lifecycle private key cannot modify or reorder signed history undetected (§Threat model, unchanged). |
+
+**So a clock step moves the display and not the guarantee.** Two events appended in one order and
+timestamped in the other are both *honestly signed*; the chain records the order they were appended
+in, and verification is indifferent to whether their timestamps ascend. `History` already sorts by
+`i.sequence NULLS LAST, e.occurred_at, e.id` (`postgres.go:237`) — sequence first — and
+[ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md) §Decision 5 states the rule
+verbatim: *"The integrity `sequence` is the authoritative append/reconciliation order; `occurred_at`
+is the gate-recorded (claimed) physical time. Cross-device offline events may reconcile out of
+timestamp order; existing rows are never relabeled or reordered to impose device-clock order."*
+This amendment does not invent that; it records what the *chain* therefore guarantees about it.
+
+Pinned by `TestHistoryUsesIntegritySequenceNotClaimedTime`
+(`services/access/internal/store/lifecycle_smoke_test.go`), which appends two events with inverted
+timestamps and asserts three separable things: `History` returns append order, the stored
+`sequence` values follow append order, and **`VerifyLifecycle` passes**. The third is this
+amendment's claim; without it the test would prove only that a read sorts correctly.
+
+**One distinction this amendment must not blur.** *Inverting the order of two honestly-signed
+timestamps* is not tampering and verifies clean. *Modifying a stored `occurred_at`* is tampering and
+**fails** — measured, not assumed: it returns `entry hash mismatch on ticket … at sequence N`,
+because `occurred_at` is inside `CanonicalEvent` and the verifier recomputes from the stored value.
+A claim that verification is indifferent to `occurred_at` **as a value** would be false and would
+contradict §Threat model.
+
+**The legacy exception, stated rather than glossed.** For rows that predate the chain, the backfill
+adopts `(occurred_at, id)` as the baseline order and chains them in it
+(`lifecycle_checkpoint.go:317`, whose comment says it *"adopts the order the trail has always
+presented rather than inventing a new one"*). That path runs once, only for a ticket with events and
+no head, and refuses outright on partial coverage. So for legacy rows **the chain makes the
+wall-clock order tamper-evident; it does not make it true.** Live appends never touch that query.
+
+### Inventory `claim_history` — the sort key IS the ordering guarantee, and there is no chain
+
+| | |
+|---|---|
+| **What fixes order** | Nothing cryptographic. `append_order` is a sequence-backed tie-break only: both reads are `ORDER BY occurred_at, append_order NULLS FIRST, id` (`capacity.go:132`, `operational.go:369`). |
+| **What displays** | The same clause. There is no second order to fall back on. |
+| **Adversary** | **Honest-writer consistency, NOT tamper-evidence.** |
+
+**Do not write "tamper-evident" about `claim_history`.** It has no chain, so per §The trust boundary
+there is nothing here that constrains a writer with database access: they can set `occurred_at` and
+`append_order` alike, and the `BEFORE INSERT` trigger that owns `append_order` is DDL, which the same
+adversary can drop.
+
+And the honest-writer case is genuinely exposed, which is why this is a real gap rather than a
+wording problem: **a backward clock step reorders history that was appended in a definite order**,
+because the wall clock leads. Access survives this and `claim_history` does not — the asymmetry is
+the whole point of stating them separately.
+
+**Not closed here. TKT-295** owns promoting `append_order` to primary, its legacy-NULL boundary, and
+the guarded restore path. Per this ADR's pin-the-gap discipline, the exposure is asserted as
+**present** by `TestHistoryOrdersDistinctTimestampsByOccurredAt`
+(`inventory/internal/store/history_order_smoke_test.go`), which records the current wall-clock-first
+preference and carries a comment saying that TKT-295 must **reverse it deliberately rather than
+delete it**. Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` is independent and must stay
+green through that change.
+
+### Restore and replication, for both trails
+
+`append_order` is renumbered by a `BEFORE INSERT` trigger on any insert **that fires it**, so on
+that path it preserves relative order only if rows are reinserted in their original order.
+`occurred_at` survives a restore verbatim. Neither is evidence about the other.
+
+**Which writers the trigger actually governs — measured against this repo's PostgreSQL, because
+the answer is not uniform:**
+
+| Path | Trigger fires? | Result |
+|---|---|---|
+| Ordinary `INSERT` | **yes** | renumbered from the sequence |
+| `COPY` (and so a plain restore) | **yes** | renumbered |
+| Ongoing logical-replication **apply** | **no** | the publisher's value is written through |
+
+The last row is the surprise, and it follows from the trigger being an ordinary `CREATE TRIGGER`
+with no `ENABLE REPLICA`/`ENABLE ALWAYS`: the apply worker runs with
+`session_replication_role = replica`, which skips ordinary triggers. Verified directly — an insert
+supplying `999` was renumbered to `1`, and the same insert under
+`SET session_replication_role = replica` kept `999`. `COPY` was checked the same way and **does**
+fire.
+
+**The two together are worse than either alone, and this is the part worth carrying forward.**
+PostgreSQL performs a subscription's *initial table synchronization* with `COPY` and only then
+switches to streaming apply. So a subscriber would **renumber the whole existing history from its
+own sequence**, then start **preserving the publisher's numbers** for everything after — two
+**independently generated** numbering schemes in one column. Nothing relates them: they may
+overlap, and the concatenation need not be monotonic. `append_order` would stop being comparable
+across that boundary.
+
+**Be exact about what an overlap costs, because it is not a future problem.** Migration `0012`'s
+own reasoning says a duplicate `append_order` *"would collapse two rows back onto the random-uuid
+tie-break — reintroducing exactly the defect this migration closes"*, and the `NOT VALID` CHECK
+rejects non-positive values, not repeats. The current reads are
+`ORDER BY occurred_at, append_order NULLS FIRST, id`, so **two rows sharing a timestamp AND an
+`append_order` already lose their append order today.** TKT-295 does not create that exposure; by
+making `append_order` primary it widens it from *equal-timestamp rows* to *every row*.
+
+**The replication half is not a live hazard today**: nothing in this repository configures logical
+replication — no publication, no subscription, and `wal_level` is PostgreSQL's default `replica`
+rather than the `logical` that replication requires. It is recorded because a value that is merely a
+tie-break tolerates a numbering discontinuity that a primary sort key cannot. If replication is ever
+adopted, that decision has to be taken deliberately — `ENABLE ALWAYS TRIGGER`, or a stated guarantee
+that subscribers preserve publisher ordering, or an explicit resync — rather than inherited from an
+assumption that the trigger is always in force.
+
+**The restore half is not settled, and this ADR should not imply it is.** `COPY` fires the trigger,
+so a plain restore renumbers — and renumbering preserves relative order **only if the restore's
+input is already in append order**. Nothing supplies or verifies that: migration `0012` states the
+precondition and names `ALTER TABLE … DISABLE TRIGGER` as the escape, but there is no restore
+procedure in this repository to enforce either. So the correct statement is that `0012` handles the
+paths it *describes* — it does not make an arbitrary restore safe. Supplying or checking that
+ordering guarantee is part of **TKT-295**'s guarded restore path, and until it exists an operator
+restoring from an unordered dump can silently change the reconstruction of equal-timestamp rows.
+
+**And the trigger's bypass is broader than replication.** It does not fire for **any** session
+running `SET session_replication_role = replica`, of which logical apply is one caller and a
+maintenance session is another — the same point `services/catalog/internal/store/migrations/0017_payees_and_split_schedules.sql`
+makes about its own deferred trigger: *"Anyone who can set `session_replication_role = replica`, or
+run `ALTER TABLE … DISABLE TRIGGER`, commits whatever they like."* Per §The trust boundary that is
+honest-writer consistency, not a guarantee, and `claim_history` has nothing stronger behind it.
+
+Designing the guarded restore path likewise belongs with TKT-295. Guarding a value that is currently
+a tie-break would be guarding the wrong thing.
+
+### What this amendment does not claim
+
+- **Not** that any wall clock is monotonic. None is; that is the premise, not a conclusion.
+- **Not** that a sort key detects tampering. Only the chain does, and only for access.
+- **Not** that the legacy backfill reconstructs true historical append order — it adopts the
+  wall-clock order and then makes *that* tamper-evident.
+- **Not** that `claim_history` is tamper-evident, or that this ticket closes its exposure.
+- **Not** that this ticket adds a restore path.
+- **Not** anything about targeted rollback or current-key compromise, which remain open and remain
+  TKT-11's (§The trust boundary, §Threat model).
+
 ### Threat model
 
 Scoped to the **database-write adversary who does not hold a lifecycle private key**. Read
@@ -460,10 +619,16 @@ to the lifecycle trail.
 
 - TKT-57 (this decision) · TKT-67 (implementation follow-up) · TKT-43 (money-path hardening, which
   deferred this) · TKT-11 (fiscal archive; owns the external anchor)
+- TKT-230 (raised the wall-clock ordering finding) · **TKT-234** (the 2026-09-01 amendment above) ·
+  **TKT-295** (owns the inventory half: promoting `append_order` to primary, its legacy-NULL
+  boundary, and the guarded restore path)
 - [ADR-003 — Append-only audit trail](./ADR-003-append-only-audit-trail.md) (§Status gap closed here;
   §D2 trace-derived redemption; §D3 pseudonymity; §D4 NF525 scope)
 - [ADR-016 — Checkout recovery state machine](./ADR-016-checkout-recovery-state-machine.md) (§D7
   threat model, re-argued here for per-ticket granularity)
+- [ADR-025 — Admission events and offline reconciliation](./ADR-025-admission-events-and-offline-reconciliation.md)
+  (§Decision 5: the integrity sequence is the authoritative order, `occurred_at` is a claim — the
+  rule the TKT-234 amendment records the chain's guarantee for)
 - [ADR-002 — Services from day one](./ADR-002-services-from-day-one.md) (one database per service)
 - [ADR-012 — Ticket issuance and QR credentials](./ADR-012-ticket-issuance-and-qr-credentials.md)
 - [ADR-022 — Out-of-band service migrations](./ADR-022-out-of-band-service-migrations.md) (supersedes

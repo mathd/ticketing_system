@@ -142,6 +142,52 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 // Without this, an implementation that ordered by append_order first would pass the tie
 // test above while silently reordering every history that has distinct timestamps — which
 // is all of them, almost all of the time (ai-review finding 1).
+//
+// ────────────────────────────────────────────────────────────────────────────────────────
+// TKT-234 / ADR-021 §Amendment (2026-09-01): THIS TEST IS ALSO A GAP SENTINEL. READ BEFORE
+// CHANGING IT.
+//
+// It records the CURRENT preference — wall clock first — and that preference is exactly the
+// exposure ADR-021's amendment names and does NOT close: `claim_history` has no hash chain,
+// so unlike access's lifecycle trail its sort key IS its ordering guarantee, and a backward
+// clock step genuinely reorders history that was appended in a definite order.
+//
+// So this test going red is not automatically a regression. **TKT-295 promotes
+// `append_order` to the primary sort key**, and when it does, this test MUST go red. Reverse
+// it deliberately, with the legacy-NULL boundary stated — do not delete it, and do not
+// "fix" it by weakening the assertion. That is the discipline ADR-021's rollback-gap test
+// exists to enforce: a known gap is pinned as PRESENT so it cannot drift silently, and the
+// day it closes, the pin is updated rather than removed.
+//
+// TWO THINGS TKT-295 INHERITS, and the first one corrects an earlier reading of this test.
+//
+//   - **The state this fixture builds IS honestly reachable, and that is the whole point.**
+//     An earlier draft of this comment (and TKT-234's shaping note) said the trigger makes
+//     it "unreachable through the normal path". That is wrong, and it matters: the trigger
+//     controls WHO ASSIGNS `append_order`, not the RELATIVE ORDER of the two columns.
+//     `occurred_at` defaults to `clock_timestamp()` (0012:43), so a backward clock step
+//     between two ordinary inserts produces exactly this state — an increasing
+//     `append_order` against a decreasing `occurred_at` — with the trigger firing normally
+//     throughout. `withTriggerDisabled` is used here only to CONSTRUCT the state
+//     deterministically without waiting for a clock step; it is a convenience, not evidence
+//     that the state is synthetic. **This test therefore records a real exposure**, which is
+//     precisely why it is a gap sentinel rather than a curiosity.
+//   - **The trigger does not govern every writer.** Measured against this repo's PostgreSQL:
+//     an ordinary INSERT fires it (a supplied 999 became 1), `COPY` fires it, and it does
+//     **not** fire for any session running `SET session_replication_role = replica` — the
+//     same insert kept 999 — because this is an ordinary `CREATE TRIGGER` with no
+//     `ENABLE REPLICA`/`ENABLE ALWAYS`. Logical-replication apply is one such session; a
+//     maintenance session is another. Worse than either alone: a subscription's INITIAL
+//     SYNC uses `COPY` and therefore renumbers, then streaming apply preserves publisher
+//     values — two independently generated numbering schemes in one column, which may
+//     overlap. Not a live hazard (nothing here configures replication; `wal_level` is
+//     `replica`, not `logical`). **Migration 0012 now records this exception at the trigger
+//     itself** — that is the authoritative statement; this is a pointer to it. ADR-021
+//     §Amendment (TKT-234) says what it would cost.
+//   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
+//     this one and must stay green through TKT-295: same-microsecond collisions ordered by
+//     `append_order` is a regression proof, not a preference.
+// ────────────────────────────────────────────────────────────────────────────────────────
 func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
 	f := historyFixture(t)
 
@@ -151,11 +197,15 @@ func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
 	}
 	later, earlier := uuid.New(), uuid.New()
 
-	// The trigger OWNS append_order and overwrites anything supplied, so it is disabled
-	// for these two inserts: the point is to construct a state where append_order and
-	// occurred_at DISAGREE, which the trigger exists to make unreachable through the
-	// normal path. Restored immediately, and by t.Cleanup so a failure between the two
-	// statements cannot leave it disabled for the rest of the schema's life.
+	// The trigger overwrites whatever a writer supplies, so it is disabled here to assign
+	// append_order DETERMINISTICALLY — that is the only reason, and it is worth being exact
+	// because an earlier version of this comment said the trigger makes the resulting state
+	// "unreachable through the normal path". IT DOES NOT (see the block above this test):
+	// occurred_at defaults to clock_timestamp(), so a backward clock step between two
+	// ordinary inserts produces the same disagreement with the trigger firing throughout.
+	// Disabling it buys a fixture that does not depend on moving the system clock.
+	// Restored immediately, and by t.Cleanup so a failure between the two statements cannot
+	// leave it disabled for the rest of the schema's life.
 	withTriggerDisabled(t, f, func() {
 		insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
 			VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`
