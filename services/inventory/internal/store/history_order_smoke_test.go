@@ -172,15 +172,16 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 //     deterministically without waiting for a clock step; it is a convenience, not evidence
 //     that the state is synthetic. **This test therefore records a real exposure**, which is
 //     precisely why it is a gap sentinel rather than a curiosity.
-//   - **The trigger does not own `append_order` under logical replication.** It is an
-//     ordinary `CREATE TRIGGER` (0012:119-121) with no `ENABLE REPLICA`/`ENABLE ALWAYS`, and
-//     PostgreSQL's apply worker runs with `session_replication_role = replica`, which does
-//     not fire ordinary triggers. So a subscriber keeps the publisher's values rather than
-//     renumbering them. 0012's comment addresses `COPY`, which is a different path with a
-//     different answer. TKT-295 must decide the replication/restore policy explicitly —
-//     `ENABLE REPLICA TRIGGER`, or a stated guarantee that subscribers preserve the
-//     publisher's ordering — rather than inheriting an assumption that the trigger is
-//     always in force.
+//   - **The trigger does not govern every writer, and the exception is not the one 0012
+//     names.** Measured against this repo's PostgreSQL: an ordinary INSERT fires it (a
+//     supplied 999 became 1), `COPY` fires it, and ongoing **logical-replication apply does
+//     not** — under `session_replication_role = replica` the same insert kept 999, because
+//     this is an ordinary `CREATE TRIGGER` with no `ENABLE REPLICA`/`ENABLE ALWAYS`. Worse
+//     than either alone: a subscription's INITIAL SYNC uses `COPY` and therefore renumbers,
+//     then streaming apply preserves publisher values — two numbering schemes in one column
+//     across one boundary. Not a live hazard (nothing here configures replication), but
+//     TKT-295 makes `append_order` load-bearing, and a primary sort key cannot tolerate a
+//     numbering discontinuity that a tie-break can. See ADR-021 §Amendment (TKT-234).
 //   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
 //     this one and must stay green through TKT-295: same-microsecond collisions ordered by
 //     `append_order` is a regression proof, not a preference.
@@ -194,11 +195,15 @@ func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
 	}
 	later, earlier := uuid.New(), uuid.New()
 
-	// The trigger OWNS append_order and overwrites anything supplied, so it is disabled
-	// for these two inserts: the point is to construct a state where append_order and
-	// occurred_at DISAGREE, which the trigger exists to make unreachable through the
-	// normal path. Restored immediately, and by t.Cleanup so a failure between the two
-	// statements cannot leave it disabled for the rest of the schema's life.
+	// The trigger overwrites whatever a writer supplies, so it is disabled here to assign
+	// append_order DETERMINISTICALLY — that is the only reason, and it is worth being exact
+	// because an earlier version of this comment said the trigger makes the resulting state
+	// "unreachable through the normal path". IT DOES NOT (see the block above this test):
+	// occurred_at defaults to clock_timestamp(), so a backward clock step between two
+	// ordinary inserts produces the same disagreement with the trigger firing throughout.
+	// Disabling it buys a fixture that does not depend on moving the system clock.
+	// Restored immediately, and by t.Cleanup so a failure between the two statements cannot
+	// leave it disabled for the rest of the schema's life.
 	withTriggerDisabled(t, f, func() {
 		insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
 			VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`

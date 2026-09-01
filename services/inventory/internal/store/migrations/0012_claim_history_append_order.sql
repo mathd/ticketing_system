@@ -70,9 +70,11 @@ ALTER TABLE claim_history ADD COLUMN append_order bigint;
 -- wanted.
 --
 -- This is NOT redundant with the trigger below. The trigger assigns a value only when one
--- was not supplied, so any INSERT, COPY, restore or replication apply that supplies a
--- non-NULL value writes it through unchecked. A negative value would sort ahead of every
--- legitimate row (ai-review finding 3).
+-- was not supplied, so any INSERT, COPY or restore that supplies a non-NULL value writes it
+-- through unchecked. A negative value would sort ahead of every legitimate row (ai-review
+-- finding 3). This CHECK is also the ONLY thing standing between the column and a
+-- replication apply, which skips the trigger entirely -- see the note on the trigger below.
+
 ALTER TABLE claim_history
   ADD CONSTRAINT claim_history_append_order_positive
   CHECK (append_order IS NULL OR append_order > 0) NOT VALID;
@@ -93,10 +95,22 @@ ALTER TABLE claim_history
 -- a writer that does not yet exist.
 --
 -- Second, and the reason for the unconditional assignment: a fill-in-NULLs trigger lets
--- any INSERT, COPY, restore or logical-replication apply supply its OWN value, which then
--- rides through unchecked (ai-review finding 3). A duplicate would collapse two rows back
--- onto the random-uuid tie-break -- reintroducing exactly the defect this migration
--- closes -- and the NOT VALID CHECK above only rejects non-positive values, not repeats.
+-- any INSERT, COPY or restore supply its OWN value, which then rides through unchecked
+-- (ai-review finding 3). A duplicate would collapse two rows back onto the random-uuid
+-- tie-break -- reintroducing exactly the defect this migration closes -- and the NOT VALID
+-- CHECK above only rejects non-positive values, not repeats.
+--
+-- CORRECTION (TKT-234, measured): this paragraph originally listed "logical-replication
+-- apply" alongside INSERT, COPY and restore, as though the trigger governed it too. It does
+-- not. This is an ordinary CREATE TRIGGER with no ENABLE REPLICA / ENABLE ALWAYS, and
+-- PostgreSQL's apply worker runs with session_replication_role = replica, which skips
+-- ordinary triggers -- verified: an INSERT supplying 999 was renumbered to 1, and the same
+-- INSERT under `SET session_replication_role = replica` kept 999. COPY, checked the same
+-- way, DOES fire. A subscription's initial sync uses COPY and would therefore renumber the
+-- snapshot, after which streaming apply would preserve publisher values: two numbering
+-- schemes in one column. Nothing here configures replication today, and while append_order
+-- is only a tie-break the discontinuity is tolerable -- TKT-295, which would make it the
+-- primary sort key, must decide deliberately. ADR-021 §Amendment (TKT-234) records this.
 -- Overwriting is strictly stronger than a unique index here AND costs no scan: the
 -- sequence is then the sole source of the value, by construction, so uniqueness is not a
 -- constraint to enforce but a property of who assigns it.

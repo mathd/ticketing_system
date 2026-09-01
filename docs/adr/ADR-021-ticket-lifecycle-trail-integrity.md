@@ -468,23 +468,40 @@ green through that change.
 that path it preserves relative order only if rows are reinserted in their original order.
 `occurred_at` survives a restore verbatim. Neither is evidence about the other.
 
-**Two paths do not fire it, and they differ from each other** — a distinction TKT-295 must settle
-rather than inherit:
+**Which writers the trigger actually governs — measured against this repo's PostgreSQL, because
+the answer is not uniform:**
 
-- **`COPY`** does fire the trigger, so a plain restore renumbers. Migration `0012` says so and calls
-  it deliberate, with `ALTER TABLE … DISABLE TRIGGER` named as the escape for a restore that must
-  preserve the originals.
-- **Logical replication apply** does **not**. `claim_history_set_append_order` is an ordinary
-  trigger with no `ENABLE REPLICA`/`ENABLE ALWAYS`, and the apply worker runs with
-  `session_replication_role = replica`, which skips ordinary triggers. A subscriber therefore keeps
-  the **publisher's** `append_order` values rather than minting its own. That is arguably the
-  desired behaviour — it preserves order across the link — but it is not currently a stated
-  guarantee, and nothing tests it.
+| Path | Trigger fires? | Result |
+|---|---|---|
+| Ordinary `INSERT` | **yes** | renumbered from the sequence |
+| `COPY` (and so a plain restore) | **yes** | renumbered |
+| Ongoing logical-replication **apply** | **no** | the publisher's value is written through |
 
-Designing the guarded restore path belongs with **TKT-295**, beside the promotion that would make
-`append_order` load-bearing, and it must state the replication policy explicitly. Guarding a value
-that is currently a tie-break would be guarding the wrong thing; guarding it while assuming the
-trigger is always in force would be guarding it wrongly.
+The last row is the surprise, and it follows from the trigger being an ordinary `CREATE TRIGGER`
+with no `ENABLE REPLICA`/`ENABLE ALWAYS`: the apply worker runs with
+`session_replication_role = replica`, which skips ordinary triggers. Verified directly — an insert
+supplying `999` was renumbered to `1`, and the same insert under
+`SET session_replication_role = replica` kept `999`. `COPY` was checked the same way and **does**
+fire.
+
+**The two together are worse than either alone, and this is the part worth carrying forward.**
+PostgreSQL performs a subscription's *initial table synchronization* with `COPY` and only then
+switches to streaming apply. So a subscriber would **renumber the whole existing history from its
+own sequence**, then start **preserving the publisher's numbers** for everything after — two
+disjoint numbering schemes in one column, with no guarantee that they do not overlap or that the
+concatenation is monotonic. `append_order` would stop being comparable across that boundary.
+
+**None of this is a live hazard today**: nothing in this repository configures logical replication —
+no publication, no subscription, no `wal_level` setting — and migration `0012`'s own reasoning
+addresses `COPY` and restores, which it handles correctly. It is recorded here because **TKT-295
+would make `append_order` load-bearing**, and a value that is merely a tie-break can tolerate a
+numbering discontinuity that a primary sort key cannot. If replication is ever adopted, that
+decision has to be taken deliberately — `ENABLE ALWAYS TRIGGER`, or a stated guarantee that
+subscribers preserve publisher ordering, or an explicit resync — rather than inherited from an
+assumption that the trigger is always in force.
+
+Designing the guarded restore path likewise belongs with TKT-295. Guarding a value that is currently
+a tie-break would be guarding the wrong thing.
 
 ### What this amendment does not claim
 
