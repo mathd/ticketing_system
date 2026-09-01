@@ -255,7 +255,13 @@ func staffCredential(t *testing.T) (identifier, password string) {
 	t.Helper()
 	identifier, password = os.Getenv("SMOKE_STAFF_IDENTIFIER"), os.Getenv("SMOKE_STAFF_PASSWORD")
 	if identifier == "" || password == "" {
-		t.Skip("SMOKE_STAFF_IDENTIFIER/SMOKE_STAFF_PASSWORD not set (scripts/smoke.sh provisions them)")
+		// t.Fatal, never t.Skip (channel_registry_lookup_test.go:93). The skip
+		// this replaces could not fire in today's gate, because scripts/smoke.sh
+		// provisions and exports these — and that is precisely the problem: a
+		// refactor of the provisioning path would drop the whole back-office
+		// role matrix, refund refusals included, while `go test` exited 0 and
+		// nothing anywhere reported it (TKT-303).
+		t.Fatal("SMOKE_STAFF_IDENTIFIER/SMOKE_STAFF_PASSWORD not set (scripts/smoke.sh provisions them)")
 	}
 	return identifier, password
 }
@@ -370,7 +376,8 @@ func roleCredential(t *testing.T, role string) (identifier, password string) {
 	}
 	identifier, password = os.Getenv(idEnv), os.Getenv(pwEnv)
 	if identifier == "" || password == "" {
-		t.Skipf("%s/%s not set (scripts/smoke.sh provisions them)", idEnv, pwEnv)
+		// t.Fatalf, never t.Skipf — see staffCredential above (TKT-303).
+		t.Fatalf("%s/%s not set (scripts/smoke.sh provisions them)", idEnv, pwEnv)
 	}
 	return identifier, password
 }

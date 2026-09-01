@@ -38,7 +38,7 @@ generate:
 # the gate goes green over a client that has drifted from its contract — the
 # exact failure ADR-009 has this target for. Edit the two together (TKT-220).
 check-generate: generate
-	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts web/storefront/src/lib/commerce-api-types.gen.ts web/backoffice/src/lib/api-types.gen.ts web/backoffice/src/lib/inventory-api-types.gen.ts \
+	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts web/storefront/src/lib/commerce-api-types.gen.ts web/backoffice/src/lib/api-types.gen.ts web/backoffice/src/lib/inventory-api-types.gen.ts web/storefront/src/lib/access-api-types.gen.ts web/backoffice/src/lib/access-api-types.gen.ts web/scanner/src/access-api-types.gen.ts \
 		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
 
 ## ---- dependency declarations (TKT-129, ADR-035: one version per shared dep) ----

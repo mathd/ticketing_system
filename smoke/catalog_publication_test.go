@@ -1764,7 +1764,11 @@ func TestCatalogWriteCredentialDoesNotOpenAnotherService(t *testing.T) {
 	catalogToken := staffWriteToken()
 	internalToken := os.Getenv("SMOKE_INTERNAL_TOKEN")
 	if catalogToken == "" || internalToken == "" {
-		t.Skip("SMOKE_CATALOG_STAFF_WRITE_TOKEN / SMOKE_INTERNAL_TOKEN not set")
+		// t.Fatal, never t.Skip (channel_registry_lookup_test.go:93): this test
+		// is the one proving catalog's write credential does not open inventory,
+		// and a silent skip of a separation test is indistinguishable from the
+		// separation holding (TKT-303).
+		t.Fatal("SMOKE_CATALOG_STAFF_WRITE_TOKEN / SMOKE_INTERNAL_TOKEN not set")
 	}
 	// The separation is only meaningful if the values differ. Assert it here as
 	// well as at catalog startup: a run where they collapsed to one value would

@@ -171,27 +171,132 @@ func TestTracePropagation(t *testing.T) {
 	}
 
 	retry(t, 30*time.Second, func() error {
-		out, err := exec.Command("docker", "compose", "-p", project, "logs",
+		// --ansi never + --no-color so the container-name field is plain text.
+		// With colour it
+		// carries ANSI escapes, a prefix match never fires, and this test
+		// becomes one that cannot pass for the right reason (TKT-303).
+		out, err := exec.Command("docker", "compose", "--ansi", "never", "-p", project, "logs", "--no-color",
 			"gateway", "catalog", "inventory", "commerce", "payments", "access").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("compose logs: %v", err)
 		}
-		var gw, svc bool
-		for _, line := range strings.Split(string(out), "\n") {
-			if !strings.Contains(line, traceID) {
-				continue
-			}
-			if strings.Contains(line, "gateway") {
-				gw = true
-			} else {
-				svc = true
-			}
-		}
-		if !gw || !svc {
-			return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
-		}
-		return nil
+		return tracePropagated(string(out), traceID)
 	})
+}
+
+// tracePropagated is TestTracePropagation's verdict on one `docker compose logs`
+// capture, extracted so the ACCOUNTING can be tested and not only the parser.
+//
+// The distinction earned its own ai-review finding: the first version tracked a
+// single counter incremented inside the same arms that set gw/svc, which made
+// the format-change diagnostic unreachable by construction — a check that cannot
+// fire, in the ticket whose whole subject is checks that cannot fire. A unit
+// test of logLineOrigin could not have caught that, because the defect was in
+// the caller.
+func tracePropagated(logs, traceID string) error {
+	var gw, svc bool
+	// unattributable counts trace-bearing lines whose container field did not
+	// parse. ANY of them is a format problem, not "some". Two weaker versions
+	// were wrong for the same reason, each caught by a review pass:
+	//
+	//   1. incrementing a single counter inside the arms that set gw/svc, which
+	//      made the diagnostic unreachable by construction;
+	//   2. firing only when EVERY traced line failed to parse, which stays
+	//      silent on mixed output — and, with both halves satisfied plus one
+	//      unparseable line, returns SUCCESS while the format has drifted.
+	//
+	// The command asks compose for six named services, so every line it returns
+	// belongs to one of them. A line that does not parse is drift, whatever else
+	// parsed alongside it.
+	var unattributable int
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, traceID) {
+			continue
+		}
+		switch logLineOrigin(line) {
+		case originGateway:
+			gw = true
+		case originService:
+			svc = true
+		default:
+			unattributable++
+		}
+	}
+	// Checked BEFORE the propagation verdict: an unparseable line means the
+	// evidence is incomplete, so "gateway=false" might be a parse failure rather
+	// than a missing log. Reporting propagation there names the wrong cause,
+	// which is exactly how this change's own first gate failure read.
+	if unattributable > 0 {
+		return fmt.Errorf("trace %s: %d trace-bearing line(s) could not be attributed to a container — "+
+			"the `docker compose logs` prefix format may have changed", traceID, unattributable)
+	}
+	if !gw || !svc {
+		return fmt.Errorf("trace %s: in gateway logs=%v, in service logs=%v", traceID, gw, svc)
+	}
+	return nil
+}
+
+// logOrigin is which container emitted a `docker compose logs` line.
+type logOrigin int
+
+const (
+	originUnknown logOrigin = iota
+	originGateway
+	originService
+)
+
+// logLineOrigin attributes one `docker compose logs` line to the gateway or to
+// a service, by the CONTAINER NAME field rather than by scanning the whole line.
+//
+// The substring match this replaces (`strings.Contains(line, "gateway")`) reads
+// the payload too, so a catalog line logging an upstream URL like
+// http://gateway:8080 set gw=true with the gateway having logged nothing — and
+// its else-branch counted every other line as a service, so a second gateway
+// line could satisfy svc. Both halves of the claim could be true while the
+// propagation it asserts had not happened (TKT-303).
+//
+// Compose prefixes each line with `<project>-<service>-<replica>  | `. Anything
+// that does not parse is originUnknown, and the caller says so rather than
+// silently counting it.
+func logLineOrigin(line string) logOrigin {
+	name, _, found := strings.Cut(line, "|")
+	if !found {
+		return originUnknown
+	}
+	name = strings.TrimSpace(name)
+	// `<service>-<replica>`, and the replica is what ENDS the name. NOT
+	// `<project>-<service>-<replica>`: `docker compose logs` labels each line
+	// with the SERVICE name, and the project appears only in the container name
+	// that `docker ps` shows. Verified against a live stack after a first
+	// version keyed on the project prefix classified every line as unknown and
+	// failed the gate with `gateway logs=false, service logs=false`.
+	//
+	// Matching the service as a bare prefix is not enough either: `catalog-
+	// sidecar-1` satisfies HasPrefix(name, "catalog-") and would be counted as
+	// catalog. Cut at the LAST dash and require the remainder to be the replica
+	// number and the head to equal a known service exactly.
+	svc, replica, ok := lastCut(name, '-')
+	if !ok || replica == "" || strings.Trim(replica, "0123456789") != "" {
+		return originUnknown
+	}
+	if svc == "gateway" {
+		return originGateway
+	}
+	for _, known := range []string{"catalog", "inventory", "commerce", "payments", "access"} {
+		if svc == known {
+			return originService
+		}
+	}
+	return originUnknown
+}
+
+// lastCut splits around the LAST occurrence of sep.
+func lastCut(s string, sep byte) (before, after string, found bool) {
+	i := strings.LastIndexByte(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
 }
 
 // TestJetStreamPersists proves the bus is JetStream and that stack init
@@ -1017,5 +1122,169 @@ func TestServerRefusesToStartWithoutARealCredential(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestLogLineOriginAttributesByContainerNotPayload is TKT-303's Part 2. The
+// case that matters is the FIRST one: a catalog line whose payload names
+// http://gateway:8080. The substring matcher this replaced classified it as
+// gateway, so a service talking to the gateway could satisfy the "the gateway
+// logged this trace" half of TestTracePropagation on its own.
+//
+// Revert logLineOrigin to strings.Contains(line, "gateway") and that case goes
+// red while every other case here stays green — which is the point: the other
+// cases are satisfied by the broken matcher too, so they prove nothing on their
+// own and are here to stop the fix from over-correcting.
+func TestLogLineOriginAttributesByContainerNotPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		want logOrigin
+	}{
+		{
+			// The false positive this ticket exists to close. Payload names the
+			// gateway; the container is catalog.
+			name: "a service line whose payload names the gateway is a SERVICE line",
+			line: `catalog-1  | {"msg":"dialing http://gateway:8080/healthz","trace_id":"abc"}`,
+			want: originService,
+		},
+		{
+			name: "a gateway line is a gateway line",
+			line: `gateway-1  | {"msg":"proxied","trace_id":"abc"}`,
+			want: originGateway,
+		},
+		{
+			// The old else-branch counted anything non-matching as a service, so
+			// an unparseable line silently became evidence. It must not.
+			name: "a line with no container field is unknown, not a service",
+			line: `{"msg":"orphaned line with no compose prefix","trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// Substring-vs-exact on the SERVICE field: a name merely containing
+			// a known service must not match.
+			name: "a service whose name merely contains a known service is unknown",
+			line: `catalog-sidecar-1  | {"trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// A service this test does not name is not evidence of anything.
+			name: "an unlisted service is unknown",
+			line: `storefront-1  | {"trace_id":"abc"}`,
+			want: originUnknown,
+		},
+		{
+			// The replica must be a number. Without this, the previous case's
+			// "sidecar" would parse as the replica of a `catalog-sidecar` service.
+			name: "a non-numeric replica is unknown",
+			line: `catalog-main  | {"trace_id":"abc"}`,
+			want: originUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := logLineOrigin(tc.line); got != tc.want {
+				t.Fatalf("logLineOrigin(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTracePropagatedAccounting covers the CALLER's classification accounting,
+// which the logLineOrigin table cannot reach. The ai-review finding that
+// produced this test was a guard that could never fire: `classified` was only
+// incremented inside the arms that also set gw/svc, so "matched but
+// unattributable" was unreachable by construction.
+//
+// The first case is the one that matters. It is also the exact situation the
+// first version of this change hit on the gate: lines carrying the trace id
+// whose prefix does not parse. Revert the accounting to a single counter and it
+// goes red — the run reports the generic propagation timeout instead, naming
+// the wrong cause.
+func TestTracePropagatedAccounting(t *testing.T) {
+	const id = "0af7651916cd43dd8448eb211c80319c"
+	for _, tc := range []struct {
+		name    string
+		logs    string
+		wantErr string
+	}{
+		{
+			name: "lines match but no prefix parses reports a FORMAT problem, not a propagation one",
+			logs: `{"trace_id":"` + id + `","msg":"gateway proxied"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"catalog served"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			name:    "gateway only is a propagation failure",
+			logs:    `gateway-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "in gateway logs=true, in service logs=false",
+		},
+		{
+			name:    "service only is a propagation failure",
+			logs:    `catalog-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "in gateway logs=false, in service logs=true",
+		},
+		{
+			name:    "no lines at all is a propagation failure, NOT a format one",
+			logs:    `gateway-1  | {"trace_id":"someone-elses-trace"}`,
+			wantErr: "in gateway logs=false, in service logs=false",
+		},
+		{
+			// MIXED, and the worst variant: both halves satisfied AND an
+			// unparseable traced line. The previous fix returned nil here —
+			// success, with the format silently drifted (ai-review pass 2).
+			name: "both halves present plus an unparseable traced line is a FORMAT problem",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"no prefix"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			// MIXED, partial: one half parses, the other does not. The previous
+			// fix reported a propagation failure and burned the full 30s retry
+			// naming the wrong cause.
+			name: "one half parseable and one not is a FORMAT problem, not propagation",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"trace_id":"` + id + `","msg":"catalog line with no prefix"}`,
+			wantErr: "prefix format may have changed",
+		},
+		{
+			// An unparseable line NOT carrying the trace id is somebody else's
+			// log noise and must not trip the diagnostic.
+			name: "an unparseable line without the trace id is ignored",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`{"msg":"unrelated line, no trace id"}`,
+			wantErr: "",
+		},
+		{
+			name: "both present passes",
+			logs: `gateway-1  | {"trace_id":"` + id + `"}` + "\n" +
+				`catalog-1  | {"trace_id":"` + id + `"}`,
+			wantErr: "",
+		},
+		{
+			// A service line naming the gateway in its payload must not satisfy
+			// the gateway half — the whole point of Part 2, asserted here at the
+			// caller so the two halves cannot drift apart.
+			name:    "a catalog line naming the gateway does not satisfy the gateway half",
+			logs:    `catalog-1  | {"trace_id":"` + id + `","msg":"dialing http://gateway:8080"}`,
+			wantErr: "in gateway logs=false, in service logs=true",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tracePropagated(tc.logs, id)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want pass, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
