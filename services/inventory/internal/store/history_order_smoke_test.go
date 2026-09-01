@@ -173,10 +173,11 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 //     that the state is synthetic. **This test therefore records a real exposure**, which is
 //     precisely why it is a gap sentinel rather than a curiosity.
 //   - **The trigger does not govern every writer.** Measured against this repo's PostgreSQL:
-//     an ordinary INSERT fires it (a supplied 999 became 1), `COPY` fires it, and ongoing
-//     **logical-replication apply does not** — under `session_replication_role = replica`
-//     the same insert kept 999, because this is an ordinary `CREATE TRIGGER` with no
-//     `ENABLE REPLICA`/`ENABLE ALWAYS`. Worse than either alone: a subscription's INITIAL
+//     an ordinary INSERT fires it (a supplied 999 became 1), `COPY` fires it, and it does
+//     **not** fire for any session running `SET session_replication_role = replica` — the
+//     same insert kept 999 — because this is an ordinary `CREATE TRIGGER` with no
+//     `ENABLE REPLICA`/`ENABLE ALWAYS`. Logical-replication apply is one such session; a
+//     maintenance session is another. Worse than either alone: a subscription's INITIAL
 //     SYNC uses `COPY` and therefore renumbers, then streaming apply preserves publisher
 //     values — two independently generated numbering schemes in one column, which may
 //     overlap. Not a live hazard (nothing here configures replication; `wal_level` is

@@ -500,14 +500,29 @@ rejects non-positive values, not repeats. The current reads are
 `append_order` already lose their append order today.** TKT-295 does not create that exposure; by
 making `append_order` primary it widens it from *equal-timestamp rows* to *every row*.
 
-**None of it is a live hazard today**: nothing in this repository configures logical replication —
-no publication, no subscription, and `wal_level` is PostgreSQL's default `replica` rather than the
-`logical` that replication requires. Migration `0012` handles `COPY` and restores correctly, which
-are the paths that exist. It is recorded here because a value that is merely a tie-break tolerates
-a numbering discontinuity that a primary sort key cannot. If replication is ever adopted, that
-decision has to be taken deliberately — `ENABLE ALWAYS TRIGGER`, or a stated guarantee that
-subscribers preserve publisher ordering, or an explicit resync — rather than inherited from an
+**The replication half is not a live hazard today**: nothing in this repository configures logical
+replication — no publication, no subscription, and `wal_level` is PostgreSQL's default `replica`
+rather than the `logical` that replication requires. It is recorded because a value that is merely a
+tie-break tolerates a numbering discontinuity that a primary sort key cannot. If replication is ever
+adopted, that decision has to be taken deliberately — `ENABLE ALWAYS TRIGGER`, or a stated guarantee
+that subscribers preserve publisher ordering, or an explicit resync — rather than inherited from an
 assumption that the trigger is always in force.
+
+**The restore half is not settled, and this ADR should not imply it is.** `COPY` fires the trigger,
+so a plain restore renumbers — and renumbering preserves relative order **only if the restore's
+input is already in append order**. Nothing supplies or verifies that: migration `0012` states the
+precondition and names `ALTER TABLE … DISABLE TRIGGER` as the escape, but there is no restore
+procedure in this repository to enforce either. So the correct statement is that `0012` handles the
+paths it *describes* — it does not make an arbitrary restore safe. Supplying or checking that
+ordering guarantee is part of **TKT-295**'s guarded restore path, and until it exists an operator
+restoring from an unordered dump can silently change the reconstruction of equal-timestamp rows.
+
+**And the trigger's bypass is broader than replication.** It does not fire for **any** session
+running `SET session_replication_role = replica`, of which logical apply is one caller and a
+maintenance session is another — the same point `services/catalog/internal/store/migrations/0017_payees_and_split_schedules.sql`
+makes about its own deferred trigger: *"Anyone who can set `session_replication_role = replica`, or
+run `ALTER TABLE … DISABLE TRIGGER`, commits whatever they like."* Per §The trust boundary that is
+honest-writer consistency, not a guarantee, and `claim_history` has nothing stronger behind it.
 
 Designing the guarded restore path likewise belongs with TKT-295. Guarding a value that is currently
 a tie-break would be guarding the wrong thing.
