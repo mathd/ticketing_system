@@ -159,14 +159,28 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 // exists to enforce: a known gap is pinned as PRESENT so it cannot drift silently, and the
 // day it closes, the pin is updated rather than removed.
 //
-// TWO THINGS THAT MAKE IT WEAKER EVIDENCE THAN IT LOOKS, both of which TKT-295 inherits:
+// TWO THINGS TKT-295 INHERITS, and the first one corrects an earlier reading of this test.
 //
-//   - Its fixture is built inside `withTriggerDisabled`. Migration 0012's own comment says
-//     that state is one "the trigger exists to make unreachable through the normal path" —
-//     the trigger OVERWRITES whatever a writer supplies, always, so a COPY or a replication
-//     apply cannot inject a value. This test therefore asserts a preference over a state
-//     that cannot arise honestly. It does not refute promotion; it means promotion must
-//     consciously reverse it with a stated reason.
+//   - **The state this fixture builds IS honestly reachable, and that is the whole point.**
+//     An earlier draft of this comment (and TKT-234's shaping note) said the trigger makes
+//     it "unreachable through the normal path". That is wrong, and it matters: the trigger
+//     controls WHO ASSIGNS `append_order`, not the RELATIVE ORDER of the two columns.
+//     `occurred_at` defaults to `clock_timestamp()` (0012:43), so a backward clock step
+//     between two ordinary inserts produces exactly this state — an increasing
+//     `append_order` against a decreasing `occurred_at` — with the trigger firing normally
+//     throughout. `withTriggerDisabled` is used here only to CONSTRUCT the state
+//     deterministically without waiting for a clock step; it is a convenience, not evidence
+//     that the state is synthetic. **This test therefore records a real exposure**, which is
+//     precisely why it is a gap sentinel rather than a curiosity.
+//   - **The trigger does not own `append_order` under logical replication.** It is an
+//     ordinary `CREATE TRIGGER` (0012:119-121) with no `ENABLE REPLICA`/`ENABLE ALWAYS`, and
+//     PostgreSQL's apply worker runs with `session_replication_role = replica`, which does
+//     not fire ordinary triggers. So a subscriber keeps the publisher's values rather than
+//     renumbering them. 0012's comment addresses `COPY`, which is a different path with a
+//     different answer. TKT-295 must decide the replication/restore policy explicitly —
+//     `ENABLE REPLICA TRIGGER`, or a stated guarantee that subscribers preserve the
+//     publisher's ordering — rather than inheriting an assumption that the trigger is
+//     always in force.
 //   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
 //     this one and must stay green through TKT-295: same-microsecond collisions ordered by
 //     `append_order` is a regression proof, not a preference.
