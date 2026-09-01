@@ -488,14 +488,23 @@ fire.
 PostgreSQL performs a subscription's *initial table synchronization* with `COPY` and only then
 switches to streaming apply. So a subscriber would **renumber the whole existing history from its
 own sequence**, then start **preserving the publisher's numbers** for everything after — two
-disjoint numbering schemes in one column, with no guarantee that they do not overlap or that the
-concatenation is monotonic. `append_order` would stop being comparable across that boundary.
+**independently generated** numbering schemes in one column. Nothing relates them: they may
+overlap, and the concatenation need not be monotonic. `append_order` would stop being comparable
+across that boundary.
 
-**None of this is a live hazard today**: nothing in this repository configures logical replication —
-no publication, no subscription, no `wal_level` setting — and migration `0012`'s own reasoning
-addresses `COPY` and restores, which it handles correctly. It is recorded here because **TKT-295
-would make `append_order` load-bearing**, and a value that is merely a tie-break can tolerate a
-numbering discontinuity that a primary sort key cannot. If replication is ever adopted, that
+**Be exact about what an overlap costs, because it is not a future problem.** Migration `0012`'s
+own reasoning says a duplicate `append_order` *"would collapse two rows back onto the random-uuid
+tie-break — reintroducing exactly the defect this migration closes"*, and the `NOT VALID` CHECK
+rejects non-positive values, not repeats. The current reads are
+`ORDER BY occurred_at, append_order NULLS FIRST, id`, so **two rows sharing a timestamp AND an
+`append_order` already lose their append order today.** TKT-295 does not create that exposure; by
+making `append_order` primary it widens it from *equal-timestamp rows* to *every row*.
+
+**None of it is a live hazard today**: nothing in this repository configures logical replication —
+no publication, no subscription, and `wal_level` is PostgreSQL's default `replica` rather than the
+`logical` that replication requires. Migration `0012` handles `COPY` and restores correctly, which
+are the paths that exist. It is recorded here because a value that is merely a tie-break tolerates
+a numbering discontinuity that a primary sort key cannot. If replication is ever adopted, that
 decision has to be taken deliberately — `ENABLE ALWAYS TRIGGER`, or a stated guarantee that
 subscribers preserve publisher ordering, or an explicit resync — rather than inherited from an
 assumption that the trigger is always in force.

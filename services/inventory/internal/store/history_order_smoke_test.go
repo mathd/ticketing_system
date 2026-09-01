@@ -172,16 +172,17 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 //     deterministically without waiting for a clock step; it is a convenience, not evidence
 //     that the state is synthetic. **This test therefore records a real exposure**, which is
 //     precisely why it is a gap sentinel rather than a curiosity.
-//   - **The trigger does not govern every writer, and the exception is not the one 0012
-//     names.** Measured against this repo's PostgreSQL: an ordinary INSERT fires it (a
-//     supplied 999 became 1), `COPY` fires it, and ongoing **logical-replication apply does
-//     not** — under `session_replication_role = replica` the same insert kept 999, because
-//     this is an ordinary `CREATE TRIGGER` with no `ENABLE REPLICA`/`ENABLE ALWAYS`. Worse
-//     than either alone: a subscription's INITIAL SYNC uses `COPY` and therefore renumbers,
-//     then streaming apply preserves publisher values — two numbering schemes in one column
-//     across one boundary. Not a live hazard (nothing here configures replication), but
-//     TKT-295 makes `append_order` load-bearing, and a primary sort key cannot tolerate a
-//     numbering discontinuity that a tie-break can. See ADR-021 §Amendment (TKT-234).
+//   - **The trigger does not govern every writer.** Measured against this repo's PostgreSQL:
+//     an ordinary INSERT fires it (a supplied 999 became 1), `COPY` fires it, and ongoing
+//     **logical-replication apply does not** — under `session_replication_role = replica`
+//     the same insert kept 999, because this is an ordinary `CREATE TRIGGER` with no
+//     `ENABLE REPLICA`/`ENABLE ALWAYS`. Worse than either alone: a subscription's INITIAL
+//     SYNC uses `COPY` and therefore renumbers, then streaming apply preserves publisher
+//     values — two independently generated numbering schemes in one column, which may
+//     overlap. Not a live hazard (nothing here configures replication; `wal_level` is
+//     `replica`, not `logical`). **Migration 0012 now records this exception at the trigger
+//     itself** — that is the authoritative statement; this is a pointer to it. ADR-021
+//     §Amendment (TKT-234) says what it would cost.
 //   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
 //     this one and must stay green through TKT-295: same-microsecond collisions ordered by
 //     `append_order` is a regression proof, not a preference.

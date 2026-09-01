@@ -69,11 +69,14 @@ ALTER TABLE claim_history ADD COLUMN append_order bigint;
 -- would cost the bound and buy nothing. It can be VALIDATEd later, out of band, if ever
 -- wanted.
 --
--- This is NOT redundant with the trigger below. The trigger assigns a value only when one
--- was not supplied, so any INSERT, COPY or restore that supplies a non-NULL value writes it
--- through unchecked. A negative value would sort ahead of every legitimate row (ai-review
--- finding 3). This CHECK is also the ONLY thing standing between the column and a
--- replication apply, which skips the trigger entirely -- see the note on the trigger below.
+-- This is NOT redundant with the trigger below, and the reason is narrower than it looks.
+-- The trigger overwrites UNCONDITIONALLY, so on every path that fires it -- ordinary INSERT,
+-- COPY, a plain restore -- a supplied value never survives and this CHECK has nothing to do.
+-- What it guards is the paths where the trigger is NOT in force: an explicit
+-- `ALTER TABLE ... DISABLE TRIGGER` (which a restore preserving original values must use),
+-- and ongoing logical-replication apply, which skips ordinary triggers entirely -- see the
+-- note on the trigger below. There a supplied value writes through, and a negative one would
+-- sort ahead of every legitimate row (ai-review finding 3).
 
 ALTER TABLE claim_history
   ADD CONSTRAINT claim_history_append_order_positive
