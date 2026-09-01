@@ -189,16 +189,27 @@ function instant(channel: string, value: string): string | undefined {
  * reject — one malformation class generalised to all of them.
  *
  * So: parse the components, bound each, check the day against the real month
- * length, then confirm `Date` round-trips to the same instant. The round-trip is
- * the backstop — if any normalisation slipped past the component checks, the
- * reconstructed value would differ.
+ * length and the offset range, then let `Date` refuse what those rules cannot
+ * express.
+ *
+ * That last step is NOT a round-trip comparison, and an earlier version of this
+ * comment said it was (ai-review pass 3, [low]). Nothing here compares the
+ * reconstructed components against the submitted ones — `Date` simply parses and
+ * serialises. It still earns its place: a leap second passes every range check
+ * above and Date refuses it, which is the reachable input that only this step
+ * catches.
  */
 function parseZonedInstant(value: string): string | undefined {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+  // Case-insensitive `Z` and optional fractional seconds, because RFC 3339 permits
+  // both and the previous implementation accepted them. Tightening a validator into
+  // refusing legitimate operator input is a new defect, not a fix (ai-review pass 3):
+  // the stored values carry MICROSECONDS, so a fraction is exactly what someone
+  // pasting from a log or the database would type.
+  const m = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:\d{2})$/.exec(
     value.trim(),
   );
   if (!m) return undefined;
-  const [, y, mo, d, h, mi, sec, zone] = m;
+  const [, y, mo, d, h, mi, sec, frac, zone] = m;
   const year = Number(y);
   const month = Number(mo);
   const day = Number(d);
@@ -214,15 +225,35 @@ function parseZonedInstant(value: string): string | undefined {
   // Hour 24 is legal in ISO 8601 for end-of-day but means the NEXT day, which is
   // not what an operator typing it into a release field intends. Refused rather
   // than normalised.
-  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  // Second 60 is a LEAP SECOND, which RFC 3339 permits and JavaScript cannot
+  // represent: `new Date('2026-12-31T23:59:60Z')` is Invalid Date, not a
+  // normalisation. Refused — not because it is malformed, but because there is no
+  // instant to store. Checked rather than assumed: an earlier version of this
+  // comment claimed Date collapsed it into the next minute. It does not.
+  //
+  // Accepting it would mean choosing an instant on the operator's behalf, and a
+  // release gate is not the place for that.
+  if (hour > 23 || minute > 59 || second > 60) return undefined;
 
-  const iso = `${y}-${mo}-${d}T${h}:${mi}:${String(second).padStart(2, '0')}${zone}`;
+  // NO explicit offset-range guard, and its absence is deliberate.
+  //
+  // An earlier version had one, placed AFTER the Date call where it could never
+  // run (ai-review pass 3, [low]). Moving it before the call did not help either:
+  // enumerating every offset matching [+-]dd:dd shows there is NO value Date
+  // accepts that an hours<=23 / minutes<=59 rule would reject. The guard was
+  // structurally inert, not mis-ordered, so it is deleted rather than repaired —
+  // AGENTS.md's rule for a mechanism whose unreachability is a property of the
+  // algorithm rather than a decision someone plans to reverse.
+  //
+  // What refuses +99:00 is the Date parse below, and its test now says so.
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${String(second).padStart(2, '0')}${frac ?? ''}${
+    zone.toUpperCase() === 'Z' ? 'Z' : zone
+  }`;
+  // Date is the last check, not the first: it catches what the component rules
+  // cannot represent — a leap second is the reachable example, since second 60
+  // passes every range check above and Date still refuses it.
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return undefined;
-  // The offset itself can be out of range (+99:00) and still match the pattern.
-  // A zone Date could not apply leaves the reconstruction disagreeing.
-  const zoneMatch = /^[+-](\d{2}):(\d{2})$/.exec(zone);
-  if (zoneMatch && (Number(zoneMatch[1]) > 23 || Number(zoneMatch[2]) > 59)) return undefined;
   return parsed.toISOString();
 }
 

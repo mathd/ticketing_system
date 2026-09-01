@@ -427,9 +427,19 @@ try {
       `release_at=${afterBlank}, want it unchanged at ${before}`,
     );
 
-    // And the confirmed removal works, or the refusal above would just be a wall.
-    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
-    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '');
+    // RECOVER FROM THE REFUSAL PAGE, without reloading. This is the case the
+    // previous version of this spec missed by doing a fresh GET first: the
+    // checkbox was rendered only when the SUBMITTED text was non-empty, so the
+    // refusal re-rendered the blank and hid the very control its error message
+    // told the operator to tick (ai-review pass 3, [medium]). An error with no
+    // way to act on it.
+    check(
+      'the confirmation checkbox is still on the page AFTER the blank was refused',
+      (await tzPage.locator(`input[data-clear-release-for="${plainChannel}"]`).count()) === 1,
+      'the operator must be able to act on the refusal without reloading and re-editing',
+    );
+
+    // And the confirmed removal works from that same page, or the refusal is a wall.
     await tzPage.check(`input[data-clear-release-for="${plainChannel}"]`);
     await Promise.all([
       tzPage.waitForURL(`**/admin/slots/${slot}`),

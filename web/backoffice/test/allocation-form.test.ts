@@ -344,9 +344,15 @@ describe('the write takes unrendered fields from the server, never from the clie
     ['February 29 in a non-leap year — normalises to March 1', '2025-02-29T10:00:00Z'],
     ['hour 24 — legal ISO 8601 end-of-day, but means the NEXT day', '2026-09-01T24:00:00Z'],
     ['minute 60', '2026-09-01T10:60:00Z'],
-    ['second 60', '2026-09-01T10:00:60Z'],
+    // A leap second is LEGAL RFC 3339, and JavaScript cannot represent it —
+    // new Date(...) is Invalid Date. Refused because there is no instant to store,
+    // which is a different reason from the malformations around it.
+    ['second 60, a leap second JavaScript cannot represent', '2026-12-31T23:59:60Z'],
     ['day 0', '2026-09-00T10:00:00Z'],
-    ['an out-of-range offset that still matches the pattern', '2026-09-01T10:00:00+99:00'],
+    // Refused by the Date parse, NOT by an offset-range rule: there is no offset
+    // Date accepts that such a rule would reject, so the rule this file used to
+    // carry was structurally inert and was deleted (ai-review pass 3, [low]).
+    ['an out-of-range offset, refused by the Date parse', '2026-09-01T10:00:00+99:00'],
     ['no zone at all', '2026-09-02T08:00'],
   ])('throws on %s', (_name, value) => {
     expect(() => build({ ...row(), releaseAt: value }, [current()])).toThrow(UnzonedReleaseTime);
@@ -364,6 +370,22 @@ describe('the write takes unrendered fields from the server, never from the clie
 
     const edgeOffset = build({ ...row(), releaseAt: '2026-09-01T10:00:00+14:00' }, [current()]);
     expect(edgeOffset!.release_at).toBe('2026-08-31T20:00:00.000Z');
+  });
+
+  // ai-review pass 3, (a). A validator that refuses LEGITIMATE input is a new
+  // defect, and the first component-wise version refused three RFC 3339 forms the
+  // implementation it replaced had accepted. The fractional case is the one that
+  // would have bitten: stored values carry MICROSECONDS, so a fraction is exactly
+  // what an operator pasting from a log or the database types.
+  it.each([
+    ['a lowercase zone marker, which RFC 3339 permits', '2026-09-01T10:00:00z', '2026-09-01T10:00:00.000Z'],
+    ['fractional seconds', '2026-09-01T10:00:00.500Z', '2026-09-01T10:00:00.500Z'],
+    ['microsecond precision, as the database stores it', '2026-09-01T10:17:43.123456Z', '2026-09-01T10:17:43.123Z'],
+    ['a lowercase date/time separator', '2026-09-01t10:00:00Z', '2026-09-01T10:00:00.000Z'],
+    ['+00:00, which is Z spelled out', '2026-09-01T10:00:00+00:00', '2026-09-01T10:00:00.000Z'],
+    ['-00:00', '2026-09-01T10:00:00-00:00', '2026-09-01T10:00:00.000Z'],
+  ])('accepts %s', (_name, value, want) => {
+    expect(build({ ...row(), releaseAt: value }, [current()])!.release_at).toBe(want);
   });
 
   it('names the channel and the submitted text, so the error can sit beside the field', () => {

@@ -343,8 +343,15 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                           Checked-and-blank clears; blank alone is refused. This
                           is the checkbox convention (absent means false), and it
                           is a real checkbox rather than a hidden input, so absent
-                          is reachable — the trap TKT-236 paid for. */}
-                      {row.releaseAt !== '' && (
+                          is reachable — the trap TKT-236 paid for.
+
+                          Keyed on the STORED gate, not the submitted text. Keying it
+                          on `row.releaseAt !== ''` hid the checkbox on exactly the
+                          re-render that tells the operator to tick it: a blank
+                          submission is refused, the page re-renders the SUBMITTED
+                          blank, and the control vanishes — an error with no way to
+                          act on it (ai-review pass 3, [medium]). */}
+                      {stored.some((c) => c.channel === row.channel && c.release_at) && (
                         <label class="clear-release">
                           <input
                             type="checkbox"
