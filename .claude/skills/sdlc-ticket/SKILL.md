@@ -134,6 +134,7 @@ Four stages are model-assignable. **The config declares it; the agent never infe
 | `main-agent` | **You** do it — whichever model drives this Claude Code session. Never hardcode which one that is. |
 | `gpt-5.6-sol` (any `gpt-*`) | Codex, via the plugin's companion script — **read `references/codex-runner.md` first.** Reviews → `adversarial-review`; free-form work (plan drafting, implementation) → `task`. |
 | `gpt-5.6-sol@claudex` (any `gpt-*@claudex`) | Same model, different harness: headless Claude Code through a local proxy — **read `references/claudex-runner.md` first.** Read-only stages only; requires the env contract that doc defines, else stop and report. |
+| `gemini-3.8-flash-high` (any `gemini-*`) | The Antigravity CLI: `agy --model <value> --add-dir <repo path> -p '<brief>'`. Write stages also need `--dangerously-skip-permissions`. **Without `--add-dir` it works in its own scratch directory and never touches the repo** — the shell's cwd is not its workspace. Reasoning effort is part of the model id (`-low`/`-medium`/`-high`), so an `:effort` suffix is a config error. |
 | `fable-5`, `opus-4.8`, `sonnet-5` (any Claude model) | A subagent: the `Agent` tool with `model:` set to it. Brief it from the ticket + the approved plan — it does **not** inherit this session's context. |
 | **an array of values** (`plan` and `aiReview` only) | An A/B experiment: run every arm on the same input, score, record — **read `references/ab-stages.md` first.** Arrays on `planReview`/`implement` are a config error: stop and report. |
 

@@ -11,8 +11,8 @@
   "models": {
     "plan": "gpt-5.6-sol",
     "planReview": "main-agent",
-    "implement": "gpt-5.6-luna",
-    "aiReview": "opus-5"
+    "implement": "gemini-3.8-flash-high",
+    "aiReview": "gpt-5.6-sol"
   },
   "registry": {
     "bindingPath": "docs/adr/",
