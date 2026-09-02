@@ -28,3 +28,9 @@ spike/
 # duplicate the history, and go stale the moment the branch moves. TKT-193
 # committed four of them (4,917 lines) to main on a `git add -A`.
 .review-*.md
+
+# Local gate wrapper artifacts (scripts/gate.sh): the run's log, its verdict, and
+# the lock that tells the edit guard a gate is reading the tree right now.
+.gate.lock
+.gate.log
+.gate.verdict

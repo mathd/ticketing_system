@@ -32,6 +32,13 @@ experiment stays valid.
 - **Money is integer minor units + ISO currency code — floats are banned on money paths.**
 - **Local gate:** `make check` (lint + test + build, Go & TS, plus the gateway smoke suite;
   run `make deps` first on a clean clone). CI runs the same gate — keep them mirrored.
+  `make check` is now a wrapper around `scripts/gate.sh`: it takes `.gate.lock`, streams to
+  `.gate.log`, and writes `.gate.verdict` from the exit code **and** the log body, which is the
+  authority when they disagree. **The stages live in `make check-all`, which refuses to start
+  without the lock** — so no spelling of the gate (`sh -c`, `eval`, `nohup`, a chain, a pipe, `&`)
+  runs unlocked and reports someone else's exit code. For a background run, wait with
+  `while [ -e .gate.lock ]; do sleep 5; done` and then read `.gate.verdict`; never poll with
+  `pgrep -f`, which matches the watcher's own command line and never returns.
   **Commit regenerated code (`openapi_gen.go`, `api-types.gen.ts`) before running the gate** —
   `check-generate` diffs against HEAD, so an uncommitted regen reads as drift and fails the run
   (cost two gate runs on TKT-114).

@@ -115,7 +115,8 @@ Project-specific bindings live in **`.claude/sdlc.config.json`** in the code rep
                   "blocksLinkType": "Blocks" },
   "confluence": { "spaceKey": "<SPACE>" },
   "code":       { "repo": "<owner/repo>", "defaultBranch": "main",
-                  "localGate": "<project's local gate cmd, mirrors CI>" },
+                  "localGate": "<project's local gate cmd, mirrors CI>",
+                  "gateVerdict": "<optional: path the gate writes its own verdict to; omit if it doesn't>" },
   "models":     { "plan": "main-agent", "planReview": "gpt-5.6-sol",
                   "implement": "main-agent", "aiReview": "gpt-5.6-sol" },
   "registry":   { "bindingPath": "docs/decisions/", "referenceLocation": "confluence" }
@@ -261,26 +262,29 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   One implementer, no worktree — WIP is one ticket, and a TDD loop doesn't parallelize.
 #   Local gate (mirrors CI): run config.code.localGate. If you delegated, VERIFY don't trust —
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
-#   READ the gate's exit code before pushing — run the gate as the SOLE command in its shell
-#   call: no trailing chains AND no prefix chains (`verify && gate > log` short-circuits on the
-#   verify and reports the verify's failure as the gate's — TKT-87 closeout), and re-check cwd
-#   (a mis-cwd'd `make check` exits 2 on "No rule to make target" — TKT-71's shape). Never chain
-#   commit/push onto the same shell command as the gate: `gate; echo exit=$?` then push in a later call. Chained, a gate that
-#   failed to even start (mis-cwd'd, missing target) ships the push anyway (TKT-71). And don't
-#   pipe the gate (`gate | tail; echo $?` reads tail's exit, not the gate's — a failed gate
-#   reported exit=0 on TKT-94): redirect to a file and read the file. And when the gate runs as a
-#   BACKGROUND job, judge PASS/FAIL from the log body (`grep -E 'Error [0-9]+|FAIL|drifted'`), not
-#   the harness-reported exit code — they diverged on TKT-101 (bg wrapper said exit 0 across three
-#   runs the log showed failing: errcheck, a .dockerignore miss, a migration-version collision).
-#   And judge a bg gate DONE by an explicit exit-code sentinel (`gate > log 2>&1; echo EXIT=$? > done`;
-#   wait on the sentinel file with `until [ -f done ]; do sleep N; done`), NEVER by
-#   `pgrep -f "<gate cmd>"` — `-f` matches the watcher's own command line, so the poll self-matches
-#   and reports a false "still running" long after the gate exited (TKT-106;
-#   docs/learnings/2026-07-21-pgrep-watchers-self-match.md). The sentinel is also what makes the
-#   harness's own completion status non-load-bearing: on TKT-235 the harness reported a background
-#   gate as "exit code 0" while the sentinel said EXIT=2 and the log said
-#   `make: *** [lint-go] Error 1`. Read the sentinel AND grep the log body; believe neither the
-#   harness nor a single one of them alone.
+#   **`config.code.gateVerdict` set?** The project's gate writes its own verdict and that FILE is
+#   the authority. Run `localGate` as the SOLE command in its shell call, let the process finish,
+#   then read the configured path: first token `PASS` or `FAIL`, everything after it is
+#   provenance (the revision and tree it tested — check it describes the tree you mean). Missing,
+#   malformed, or not newer than the moment you launched the run = FAIL. Believe it over the exit
+#   code, over the harness's completion status, and over the log. Build no sentinel, grep no log
+#   body, poll for no process — the project already solved this and a second protocol beside it
+#   is a second thing that can disagree.
+#   **Not set?** Judge it yourself, and every trap below is live. Run the gate as the SOLE command
+#   in its shell call: no trailing chains AND no prefix chains (`verify && gate > log`
+#   short-circuits on the verify and reports the verify's failure as the gate's — TKT-87), and
+#   re-check cwd (a mis-cwd'd `make check` exits 2 on "No rule to make target" — TKT-71's shape).
+#   Never chain commit/push onto the gate's shell call: chained, a gate that failed to even start
+#   ships the push anyway (TKT-71). Don't pipe it (`gate | tail; echo $?` reads tail's exit, not
+#   the gate's — a failed gate reported exit=0 on TKT-94): redirect to a file and read the file.
+#   For a BACKGROUND run judge PASS/FAIL from the log body (`grep -E 'Error [0-9]+|FAIL|drifted'`),
+#   not the harness-reported exit code — they diverged on TKT-101 (three runs reported exit 0 that
+#   the log showed failing) and again on TKT-235 ("exit code 0" while the log said
+#   `make: *** [lint-go] Error 1`). Judge DONE by an explicit exit-code sentinel
+#   (`gate > log 2>&1; echo EXIT=$? > done`; wait with `until [ -f done ]; do sleep N; done`),
+#   NEVER by `pgrep -f "<gate cmd>"` — `-f` matches the watcher's own command line, so the poll
+#   self-matches and never returns (TKT-106;
+#   docs/learnings/2026-07-21-pgrep-watchers-self-match.md). Believe no single one alone.
 #   Code: verify `git branch --show-current` is the ticket branch FIRST (a session's branch can
 #   be switched under it — TKT-84 briefly committed to local main), then commit (no AI
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"

@@ -5,16 +5,39 @@ GO_MODULES := shared/go services/catalog services/inventory services/commerce se
 # smoke's tests are build-tagged and run in the smoke stage, not test-go
 GO_TEST_MODULES := $(filter-out smoke,$(GO_MODULES))
 BIN := $(CURDIR)/bin
-# pinned so local and CI runs use the same linter (latest at time of pinning)
-GOLANGCI_VERSION := v2.12.2
-GOLANGCI := $(BIN)/golangci-lint
+# pinned so local and CI runs use the same linter (latest at time of pinning).
+# v2.13.2 is built with go1.27 — check-go-toolchain asserts that against the
+# active Go, so this pin and the CI go-version move together, never apart.
+GOLANGCI_VERSION := v2.13.2
+# Named after the pin: a version bump names a path that does not exist yet, so
+# make installs it instead of reusing the binary already sitting in ./bin.
+GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
 
-check: deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links lint test build smoke
+# `make check` IS the wrapper. It holds .gate.lock so nothing edits the tree
+# mid-run (TKT-240), captures the log, and writes .gate.verdict from the exit
+# code AND the log body — a chained, piped or backgrounded gate otherwise reports
+# someone else's status (TKT-71/87/94/101/235). The stages live in check-all,
+# which refuses to start without the lock, so there is no spelling of the gate —
+# `sh -c`, `eval`, `nohup`, a newline — that runs unlocked.
+check:
+	@./scripts/gate.sh
+
+check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint test build smoke
+
+# The lock must be THIS run's, not merely present: a hand-made or stale lock is
+# not evidence that a wrapper is holding the tree still. GATE_LOCK is a variable
+# so the guard self-test can exercise it without touching the real lock.
+GATE_LOCK ?= .gate.lock
+
+gate-lock-held:
+	@[ -n "$$GATE_TOKEN" ] && [ -e "$(GATE_LOCK)" ] \
+		&& [ "$$(cut -d' ' -f1 < $(GATE_LOCK))" = "$$GATE_TOKEN" ] \
+		|| { echo "check-all is internal: run 'make check' (or scripts/gate.sh), which takes the lock first." >&2; exit 2; }
 
 ## ---- deps (self-contained gate: clean clone needs nothing pre-installed) ----
 deps:
@@ -68,6 +91,23 @@ check-hermetic-workflow-trigger:
 check-adr-numbers:
 	@./scripts/check-adr-numbers.sh
 
+## ---- agent guards (.claude/hooks) ----
+# The PreToolUse guards refuse a merge that cannot contain the work, an
+# attributed commit, and anything but waiting and reading while the gate holds
+# the lock. A guard that fails open is silent, so the seeded-violation test runs
+# in the gate like everything else. The hook cases work in a throwaway repo, so
+# holding .gate.lock here does not skew them.
+check-hooks:
+	@./.claude/hooks/selftest.sh
+
+## ---- Go toolchain agreement (local vs the pinned linter) ----
+# A linter built with an older Go minor cannot type-check against a newer Go
+# stdlib: it panics mid-lint, which reads as a code defect. Cheap, so it runs
+# before the expensive stages rather than after them.
+check-go-toolchain: $(GOLANGCI)
+	@./scripts/check-go-toolchain.sh --selftest
+	@./scripts/check-go-toolchain.sh $(GOLANGCI)
+
 ## ---- documentation cross-references ----
 # ADR-062 pointed at a filename ADR-010 never had, so an inherited locking
 # decision was unreachable and nothing noticed. Local and network-free: external
@@ -87,7 +127,7 @@ check-required-env:
 lint: lint-go lint-ts
 
 $(GOLANGCI):
-	./scripts/install-golangci-lint.sh $(GOLANGCI_VERSION) $(BIN)
+	./scripts/install-golangci-lint.sh $(GOLANGCI_VERSION) $(BIN) $(notdir $(GOLANGCI))
 
 lint-go: $(GOLANGCI)
 	@for m in $(GO_MODULES); do \
