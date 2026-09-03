@@ -71,7 +71,7 @@ func runReemitPolicies(t *testing.T) {
 	out, err := exec.Command("docker", "run", "--rm",
 		"--network", project+"_default",
 		"-e", "DATABASE_URL="+containerDSN("catalog", "catalog"),
-		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "NATS_URL="+containerNATSURL("catalog"),
 		project+"-catalog", "reemit-policies").CombinedOutput()
 	if err != nil {
 		t.Fatalf("reemit-policies run failed: %v: %s", err, out)

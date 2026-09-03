@@ -34,7 +34,7 @@ flowchart TB
 
     subgraph Data
         PG[(PostgreSQL 18.4<br/>one DB + role per service, ADR-007)]
-        NATS[[NATS JetStream<br/>PLATFORM stream]]
+        NATS[[NATS JetStream<br/>PLATFORM stream, publisher ACLs, ADR-072]]
     end
 
     subgraph Schema
@@ -124,6 +124,8 @@ edge-denied.
   structured JSON logs with `trace_id`.
 - Migrations run through each binary's `migrate` subcommand as one-shot Compose jobs. Server mode
   never applies schema changes (ADR-022).
+- NATS operates with per-user authentication and publisher/subscriber access control lists (ADR-072). Services
+  receive individual credentials and publish only to authorized subjects.
 
 ## Deployment topology
 

@@ -82,10 +82,17 @@ quarantined event and stays down across restarts while unresolved rows exist —
 Postgres-backed, not ack-window-backed.
 
 To recover: deploy an inventory binary whose schema registry covers the quarantined variants,
-run `inventory reprocess-quarantine` (one-shot subcommand; republishes the stored envelopes
-byte-identically to their original subjects with deterministic `Nats-Msg-Id`s, marks rows only
-after the broker accepts), then restart inventory — startup confirms no unresolved rows remain
-and readiness returns. Rows the running binary still cannot read stay unresolved and keep
+run `inventory reprocess-quarantine` (one-shot subcommand using the `inventory-reprocess` operator
+credential; republishes the stored envelopes byte-identically to their original subjects with
+deterministic `Nats-Msg-Id`s, marks rows only after the broker accepts):
+
+```bash
+docker compose run --rm \
+  -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
+  inventory /app reprocess-quarantine
+```
+
+Then restart inventory — startup confirms no unresolved rows remain and readiness returns. Rows the running binary still cannot read stay unresolved and keep
 readiness down; `reinjected_at` means broker republication succeeded, never that inventory
 business processing completed (that is `consumed_events`' job). Reinjected rows are pruned
 7 days after reinjection; unresolved rows never age out. If the quarantine itself fills, new
@@ -876,6 +883,50 @@ forms through the real gateway and Astro SSR layer, but it sets `Origin` itself 
 prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Run
 `make browser` and add a spec to `test/browser/` (see the ticket DoD and
 `learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md`).
+
+## NATS publisher ACLs and credential operations (ADR-072)
+
+NATS JetStream uses per-user publish and subscribe permissions configured in `deploy/nats/nats-server.conf`
+under the default `$G` account ([ADR-072](adr/ADR-072-nats-publisher-acls.md)).
+
+### Credential generation
+
+Stack credentials generate automatically during `make up` via `scripts/env-bootstrap.sh`. Each of the
+seven principals receives an independent `/dev/urandom` draw stored in `.env`:
+- `NATS_ADMIN_PASSWORD`: full broker rights, used by `nats-init` and smoke tests.
+- `NATS_CATALOG_PASSWORD`: publish rights for catalog events.
+- `NATS_COMMERCE_PASSWORD`: publish rights for commerce order events.
+- `NATS_ACCESS_PASSWORD`: publish rights for access alarms and subscription rights for order/performance events.
+- `NATS_INVENTORY_PASSWORD`: consumer rights only; zero platform publish rights.
+- `NATS_INVENTORY_REPROCESS_PASSWORD`: operator credential for `inventory reprocess-quarantine`. Delivered ONLY to the `nats` container.
+- `NATS_PAYMENTS_PASSWORD`: zero publish/subscribe rights; used for connection healthcheck only.
+
+### Operator invocation
+
+To run `inventory reprocess-quarantine`, pass `NATS_URL` with the operator password:
+
+```bash
+docker compose run --rm \
+  -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
+  inventory /app reprocess-quarantine
+```
+
+### Credential rotation
+
+To rotate a service principal credential:
+1. Generate a new 32-byte hex secret: `od -An -tx1 -N32 /dev/urandom | tr -d ' \n'`.
+2. Update the corresponding `NATS_<SERVICE>_PASSWORD` in `.env`.
+3. Restart NATS to pick up the new environment variable: `docker compose up -d nats`.
+4. Restart the affected service container: `docker compose up -d <service>`.
+5. Verify health: `docker compose ps` (confirm all services report healthy).
+
+### Rollback
+
+To revert to unauthenticated NATS operation:
+1. In `compose.yaml`, restore `command: ["-js", "-sd", "/data", "-m", "8222"]` on the `nats` service and remove the `deploy/nats/nats-server.conf` volume mount.
+2. Restore `NATS_URL: nats://nats:4222` in the `&go-env` anchor and remove per-service `NATS_URL` overrides.
+3. Update `nats-init` command to remove user credentials from `nats --server`.
+4. Run `docker compose up -d nats` followed by restarting all services.
 
 ## The browser-submit gate (TKT-228)
 

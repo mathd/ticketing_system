@@ -141,7 +141,7 @@ generated_vars() {
 # the parse broke or the compose file changed shape, and either way this checker
 # has stopped meaning what it claims. Raise the floor deliberately, never lower
 # it to make a run go green.
-MIN_REQUIRED=19
+MIN_REQUIRED=26
 
 main() {
 	local required missing count
