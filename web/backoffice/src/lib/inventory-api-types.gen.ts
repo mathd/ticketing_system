@@ -171,7 +171,7 @@ export interface paths {
         put?: never;
         /**
          * Release a claim, returning its whole capacity to the pool (internal)
-         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have ensured the related entitlement can no longer admit before releasing: freeing the seat while the ticket still admits is the one sequence that can oversell (ADR-038 §1). Inventory validates the claim and nothing else — this operation takes only a hold id and an organizer and frees the whole claim with no evidence of anything, which is why a proof-of-voiding receipt on the partial return next door would not close the gap. The guarantee is honest-caller.
+         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have ensured the related entitlement can no longer admit before releasing: freeing the seat while the ticket still admits is the one sequence that can oversell (ADR-038 §1). Inventory validates the claim and nothing else — it takes a hold id and an organizer and frees the whole claim without evidence that anything was voided. Scope, so this is not over-read: only a `held` or `finalizing` claim can be released, so a claim whose tickets already admit is refused here and returns its capacity through `refund-capacity` instead. The guarantee is honest-caller.
          */
         post: operations["releaseHold"];
         delete?: never;

@@ -89,27 +89,79 @@ Pinned by `TestVoidReturnsCapacityOnlyAfterTicketsAreVoided` and
 (`services/commerce/internal/refunds/reversal_order_test.go:82,139`). **Those tests are the evidence
 for this whole decision.** If they go, the ratification below is unsupported.
 
-### 3. Why a boundary receipt buys nothing — name the adversary (ADR-021)
+### 3. Why no boundary receipt — name the adversary (ADR-021)
 
 The adversary for inventory's and commerce's internal surfaces is **a holder of
 `INTERNAL_SERVICE_TOKEN`**. That is not hypothetical framing: inventory's own startup check calls it
 the credential that *"opens every inventory operation"*
 (`services/inventory/cmd/inventory/main.go:119`).
 
-Against that adversary a proof-of-voiding check at `refund-capacity` is **theatre**, for two
-independent reasons, either sufficient:
+**State the path precisely first, because an earlier draft of this ADR did not.**
+`refund-capacity` is the **only** internal mutation that returns capacity from a claim while that
+claim's tickets may still admit. The two endpoints are **disjoint in claim state**, not adjacent
+doors:
 
-1. **A strictly easier path exists that no receipt closes.** `POST /internal/holds/{id}/release` sits
-   behind the *same* `internalOnly` guard, takes only a hold id and an organizer, and frees the whole
-   claim. Requiring a receipt on the partial return while the total release stands open is a lock on
-   one of two adjacent doors.
-2. **The adversary can produce the proof.** Whatever evidence inventory demanded, the same token
-   could obtain — it is the credential that authorizes the voiding in the first place. A receipt
-   verifiable by the callee is a receipt obtainable by anyone who can call the issuer.
+```go
+if c.Status != "held" && c.Status != "finalizing" { return c, ErrConflict }
+```
+<sub>`services/inventory/internal/store/store.go:841` — so a `confirmed` claim cannot be released</sub>
+
+```go
+if status != "confirmed" || kind != "buyer" { return RefundCapacityReturn{}, ErrRefundReturnNotConfirmed }
+```
+<sub>`services/inventory/internal/store/refund_returns.go:106` — and refund return requires exactly that state</sub>
+
+Tickets exist only after confirmation, so a claim whose ticket admits is never releasable. ADR-016
+already says so in as many words. **The oversell path is real, single, and specific to this
+endpoint.**
+
+So the decision does not rest on there being an easier path to the same harm through
+`release` — there is not. It rests on what the receipt would and would not contain:
+
+1. **A receipt would bind an honest caller, not this adversary.** It is worth being exact about what
+   it buys, because overstating this is how the previous draft went wrong. A receipt issued only by a
+   successful void **is** obtainable only by performing the void — authority to invoke the issuer is
+   not authority to forge its signature (`services/access/internal/api/refunds.go:28-48`). Against a
+   buggy or mis-sequenced *honest* caller, a receipt would genuinely enforce the protocol. That is a
+   real property and this ADR does not claim otherwise.
+2. **It does not contain the named adversary, because the same credential can oversell directly and
+   by a wider margin.** `POST /internal/slots/{id}/capacity-adjustments` sits behind the same
+   `internalOnly` guard (`services/inventory/internal/api/server.go:139`). Its store refuses only a
+   non-positive value and **applies raises freely, with no external upper bound**:
+
+   ```go
+   if newCap <= 0 { return CapacityAdjustment{}, false, fmt.Errorf("capacity must be positive") }
+   ```
+   <sub>`services/inventory/internal/store/capacity.go:29-31`; the header at `:13-14` states the rule —
+   *"raises apply freely; a cut below live demand clamps"*</sub>
+
+   Ordinary holds then admit against that raised ceiling. A token holder can therefore sell above the
+   venue's real capacity without touching `refund-capacity` at all, in one call, at any magnitude.
+
+**A receipt would lock one door in a wall whose widest door stays open**, and would cost a new
+cross-service credential with its issuance, verification, expiry and clock-skew policy. That is the
+trade this ADR declines.
+
+**What is NOT the argument here.** `POST /internal/holds` does *not* oversell: `CreateHold` locks the
+pool and refuses when confirmed + held + requested exceeds the limit
+(`services/inventory/internal/store/store.go:507-524,679-685`), accounting for reserved allocations
+on the unchannelled path (`:707-715`). It is named because an earlier draft implied otherwise;
+capacity adjustment is the direct path, and it is the only one.
+
+**Could inventory enforce the ordering locally instead, with no new credential?** No, and this was
+checked rather than assumed. Inventory holds no ticket, order or void state — its claims table
+carries none (`services/inventory/internal/store/migrations/0001_inventory.sql:12-23`) and the refund
+migration adds only `returned_quantity` (`migrations/0010_refund_capacity_returns.sql:7-16`). Its
+consumer subscribes to catalog publication and lifecycle subjects, not to access ticket events
+(`services/inventory/internal/consumer/consumer.go:21-37`). Access's voided-ticket feed reports
+ticket ids, not a refund/hold/quantity binding (`services/access/internal/store/voided_feed.go:25-32`),
+so consuming it would still need a new projection and a cross-service identity mapping. **Enforcement
+here necessarily means new cross-service information.** That is the cost being weighed, and it is why
+the answer is not "add a cheap local check".
 
 So the honest statement is the ADR-021 one: **this ordering holds against concurrency, crashes,
 restarts and mistakes. It does not hold against a token holder, and no in-system check at the callee
-could make it.**
+could make it** — because that token already commands a larger oversell directly.
 
 What must **not** be concluded from that: the token is *not* worthless. It authenticates that the
 caller is an internal process, which is what keeps the public internet away from these routes: the
@@ -120,17 +172,30 @@ rule). What it does not authenticate is **ordering**, or
 
 ### 4. The endpoints this applies to
 
-A sweep of all 26 internal endpoints across the five services (TKT-165 shaping) found **six** whose
-correctness depends on the caller having acted first. ADR-038 §6 named three; these are the six.
+**Scope of the sweep, stated exactly.** Counted at HEAD, the five services register **51 internal
+routes, of which 31 are mutations**:
+
+```
+grep -hE 'r\.(Get|Post|Put|Patch|Delete)\("/internal' services/*/internal/api/server.go | wc -l   -> 51
+grep -hE 'r\.(Post|Put|Patch|Delete)\("/internal' services/*/internal/api/server.go | wc -l       -> 31
+```
+
+Catalog's generated router installs three further internal GETs that this grep does not see
+(`services/catalog/internal/api/openapi_gen.go:3467-3473`); they are reads and carry no ordering
+invariant. **An earlier draft of this ADR said "all 26 internal endpoints", which was never the
+population.** The claim below is scoped to what was actually examined — the 31 mutations — and says
+so rather than asserting an exhaustive sweep it cannot support.
+
+Of those 31 mutations, **four** depend on the caller having acted first. ADR-038 §6 named three, one
+of which (`confirm`) it named correctly and two of which are payments operations that are **not**
+ordering-dependent — see *Considered and excluded* below.
 
 | # | Endpoint | Service | The caller must have done this first |
 |---|---|---|---|
 | 1 | `POST /internal/holds/{id}/refund-capacity` | inventory | voided the refunded tickets |
 | 2 | `POST /internal/holds/{id}/release` | inventory | ensured the entitlement can no longer admit |
 | 3 | `POST /internal/holds/{id}/confirm` | inventory | captured the payment |
-| 4 | `POST /internal/psp/refund` | payments | — see §5; ordering is the caller's reversal sequence |
-| 5 | `POST /internal/psp/partial-refund` | payments | — see §5 |
-| 6 | `POST /internal/exchanges/{id}/tickets-switched` | commerce | committed the entitlement switch |
+| 4 | `POST /internal/exchanges/{id}/tickets-switched` | commerce | committed the entitlement switch |
 
 **#3 deserves emphasis, because it is the highest-traffic internal mutation in the system and was
 named nowhere before this ADR.** Commerce charges and then confirms; inventory's
@@ -138,11 +203,29 @@ named nowhere before this ADR.** Commerce charges and then confirms; inventory's
 `confirmed_quantity` (`services/inventory/internal/store/store.go:841-847`). It never sees payment. A
 confirm without a capture is sold capacity that never paid.
 
-**#6 is worth noting for the opposite reason: it exists to make an ordering checkable and is itself
+**#4 is worth noting for the opposite reason: it exists to make an ordering checkable and is itself
 ordering-dependent.** Access calls it after its switch transaction commits; commerce records
 `tickets_exchanged_at` and only then returns the old capacity.
 
 #### Considered and excluded
+
+- **`POST /internal/psp/refund` and `POST /internal/psp/partial-refund`** (payments) — **excluded,
+  correcting both an earlier draft of this ADR and ADR-038 §6.** Both were listed as
+  ordering-dependent. They are not: they are the **start** of the sequence, not a step that depends on
+  a prior cross-service action. Commerce refunds the money and only then drives the reversal —
+
+  ```go
+  factID, err := s.refundPayment(ctx, refund)   // :94  money moves FIRST
+  ...
+  return Result{Refund: s.DriveReversal(ctx, refund)}, nil   // :107  tickets and capacity AFTER
+  ```
+  <sub>`services/commerce/internal/refunds/service.go:93-107`; recovery takes the same order at
+  `services/commerce/internal/recovery/runner.go:494-508,526-532`</sub>
+
+  Describing them as ordering-dependent would **declare an ordering production does not follow**,
+  which is worse than the silence it replaced: an integrator would sequence against a rule the system
+  contradicts. Their served prose says what they do and what the caller owns, and asserts no prior
+  action. (Their adversary is also narrower — §5.)
 
 - **`POST /internal/holds/{id}/finalize`** — sits beside `confirm` behind the same guard, and is
   excluded deliberately. Finalizing moves a claim to `finalizing`, which inventory counts against
@@ -181,8 +264,11 @@ any of them opened charge, void, refund and partial refund"*
 
 **This is the ADR-053/ADR-057 answer, already applied.** It matters twice over:
 
-- The adversary for #4 and #5 is **narrower** than for #1–#3 and #6, and this ADR must not flatten
-  the two into one. Naming a uniform adversary would understate what the system actually protects.
+- The adversary for the two payments legs is **narrower** than for #1–#4, and this ADR must not
+  flatten the two into one. Naming a uniform adversary would understate what the system actually
+  protects. This is also why they keep their served declaration (§6) even though they are excluded
+  from the ordering table: what an integrator needs told is that payments knows nothing about the
+  seat, which is a statement about scope rather than about sequence.
 - It shows the shape of the remedy if a specific operation ever warrants one: **narrow the
   credential**, which reduces who can call at all, rather than demand a receipt, which the caller can
   always produce. A receipt asks *"did you do the thing?"* of a party that can always answer yes; a
@@ -193,13 +279,15 @@ any of them opened charge, void, refund and partial refund"*
 
 ### 6. What is done instead: declare it in the served contract
 
-The one real gap this ticket closes. Of the six, only two carried any statement of their ordering
-assumption, and **both were YAML `#` comments** — invisible to every generated client and to the
-rendered spec. Two (`confirm`, `release`) carried no operation prose at all.
+The one real gap this ticket closes. **Six operations carry the declaration**: the four in the table
+above, plus the two payments legs, whose statement is that payments knows nothing about the
+entitlement (§5). Of those six, only two carried any statement at all, and **both were YAML `#`
+comments** — invisible to every generated client and to the rendered spec. Two (`confirm`, `release`)
+carried no operation prose at all.
 
-Each of the six now states, in its served `summary`/`description`: the ordering the honest caller
-must preserve, what the callee checks locally, and that the callee does **not** prove the
-cross-service action. That text reaches `openapi3.T`, `GET /openapi.yaml`, and the generated
+Each of the six now states, in its served `summary`/`description`: what the honest caller must
+preserve, what the callee checks locally, and that the callee does **not** prove the cross-service
+action. That text reaches `openapi3.T`, `GET /openapi.yaml`, and the generated
 TypeScript clients; a `#` comment reaches none of them.
 
 Pinned per service by a test that loads the embedded spec and asserts the marker is present on each
@@ -210,21 +298,38 @@ the failure mode being fixed, reproduced.
 ## Consequences
 
 - **Positive.** The assumption is where an integrator reads it. The next reviewer finds a decision
-  rather than a gap. The enumeration is complete and checkable, and #3 — the highest-traffic case —
-  is documented for the first time.
+  rather than a gap. The enumeration is scoped to the 31 mutations examined and is checkable against
+  the router, and #3 — the highest-traffic case — is documented for the first time.
 - **Positive.** No mechanism, so no new credential to issue, verify, expire or rotate, and no new
   failure mode between services.
 - **Negative, and accepted.** A holder of `INTERNAL_SERVICE_TOKEN` can still return capacity against
   un-voided tickets, or confirm a claim that never paid. That is unchanged by this ADR and is not
-  closable at the callee.
+  closable at the callee — the same credential raises a pool's capacity outright (§3).
+- **Negative, and accepted.** A **buggy honest caller** that returns capacity before voiding is not
+  caught at the boundary either; nothing detects it until the oversell is observed at the door.
+  A receipt would catch that case. This ADR judges the cost of a new cross-service credential higher
+  than the residual risk, given that commerce enforces the sequence structurally (§2) with tests
+  pinning it. **If that enforcement is ever weakened, this trade changes** — which is why §2 names
+  those tests as the evidence for the whole decision.
 - **Neutral.** ADR-043's line is untouched; ADR-038's and ADR-062's deferrals now point here.
 
 ### When to revisit
 
 When an operation's blast radius stops matching its callers — that is the ADR-053/ADR-057 trigger,
-and §5 is what taking it looks like. **Not** when someone proposes a receipt: that argument is
-answered in §3 and should be cited rather than re-run, unless the adversary being defended against
-has changed.
+and §5 is what taking it looks like.
+
+**Revisit the receipt specifically if either premise of §3 changes:**
+
+1. **Capacity adjustment stops being an unbounded raise** behind the shared credential — a ceiling,
+   or its own narrowed credential. That removes the wider door, and the receipt would then be closing
+   the last one rather than one of two.
+2. **Commerce's structural ordering (§2) is weakened or removed**, making a buggy honest caller the
+   live risk rather than a hypothetical one.
+
+Do **not** revisit it merely because someone proposes a receipt on the grounds that the ordering is
+unenforced: that is answered here, and the answer is that it is unenforced *deliberately*. Cite §3
+rather than re-run it — but note §3 does **not** claim a receipt is worthless, only that it does not
+bind the named adversary.
 
 ## References
 
@@ -234,4 +339,4 @@ has changed.
 - [ADR-038 — Refund reversal ticket voiding](./ADR-038-refund-reversal-ticket-voiding.md) §1 (the ordering is a safety property), §6 (deferred the general question here)
 - [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) § Open questions (deferred here) · §2 *observed, not predicted*
 - [ADR-002 — Services from day one](./ADR-002-services-from-day-one.md) (the route table is the security boundary; the gateway's edge denial of `/internal/` cites it) · [ADR-009 — Contract-first APIs](./ADR-009-contract-first-apis.md) (the served contract is the artifact)
-- TKT-161 (raised it, F1) · TKT-165 (this decision) · TKT-166 (#6) · TKT-156 (#5)
+- TKT-161 (raised it, F1) · TKT-165 (this decision) · TKT-166 (#4) · TKT-156 (the partial-refund leg)

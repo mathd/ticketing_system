@@ -20,6 +20,17 @@ import { describe, expect, it } from 'vitest';
 // seeds-two-mechanisms shape from AGENTS.md. Inventory is the sample because it carries the
 // most ordering-dependent operations of any single client.
 //
+// EACH ASSERTION IS SCOPED TO ITS OWN OPERATION'S BLOCK, and that is the whole point of the
+// slicing below. The first version of this file called `toContain` on the WHOLE generated
+// file for every case, which made the operation name decorative: each phrase was found
+// wherever it lived. Its comment claimed "a description accidentally copied from a sibling
+// operation fails rather than passing on the shared marker alone" — and that sentence was
+// FALSE when it was written. ai-review ran the mutation: exchange `confirmHold`'s and
+// `releaseHold`'s descriptions in openapi.yaml, regenerate, and both vitest and `go test`
+// stayed green while `confirm` told operators to check the entitlement and `release` told
+// them to capture payment. AGENTS.md names this exact shape — an assertion written BECAUSE a
+// hazard was identified and unable to see it.
+//
 // WHAT IT CANNOT CATCH, so a green run is not over-read: `check-generate` already fails if
 // this file drifts from the spec, so the realistic failure this catches is not drift but a
 // GENERATOR CHANGE — an openapi-typescript upgrade that stopped emitting `@description`
@@ -33,21 +44,64 @@ const generated = readFileSync(
 
 const ORDERING_MARKER = 'ORDERING ASSUMED, NOT VERIFIED';
 
+/**
+ * The generated text for one path's entry, and nothing after it.
+ *
+ * openapi-typescript keys the `paths` object by PATH, not by operationId, so the path
+ * literal is the only handle the generated file offers. The slice runs to the next
+ * top-level path key, which is what makes a per-operation assertion possible at all — an
+ * assertion against the whole file cannot tell one operation's prose from its neighbour's.
+ *
+ * Throws rather than returning empty on a miss: a renamed path must fail loudly here, not
+ * silently reduce every assertion below to a search of an empty string, which would pass
+ * nothing and fail nothing.
+ */
+function blockForPath(path: string): string {
+  const key = `    "${path}": {`;
+  const start = generated.indexOf(key);
+  if (start === -1) {
+    throw new Error(
+      `${path} is not in the generated client. ADR-070 §4 enumerates it, so either the ` +
+        `enumeration is stale or the route was renamed.`,
+    );
+  }
+  const after = generated.indexOf('\n    "/', start + key.length);
+  return after === -1 ? generated.slice(start) : generated.slice(start, after);
+}
+
 describe('the generated inventory client carries the ordering assumptions', () => {
   // ADR-070 §4's three inventory operations, each with the phrase that makes its own
-  // assumption identifiable — so a description accidentally copied from a sibling operation
-  // fails rather than passing on the shared marker alone.
+  // assumption identifiable. The phrase is asserted against THAT OPERATION'S BLOCK, so a
+  // description copied or swapped from a sibling fails — see the header note.
   it.each([
-    ['confirmHold', 'must have captured the payment'],
-    ['releaseHold', 'can no longer admit before releasing'],
-    ['returnRefundedCapacity', 'AFTER the tickets are voided'],
-  ])('%s declares its own assumption', (operation, ownPhrase) => {
-    // The generated file keys operations by path, not by operationId, so assert on the
-    // distinctive prose rather than trying to re-derive the generator's key shape.
-    expect(generated, `${operation}: no ordering marker anywhere in the generated client`)
-      .toContain(ORDERING_MARKER);
-    expect(generated, `${operation}: its own assumption is missing from the generated client`)
-      .toContain(ownPhrase);
+    ['/internal/holds/{id}/confirm', 'confirmHold', 'must have captured the payment'],
+    ['/internal/holds/{id}/release', 'releaseHold', 'can no longer admit before releasing'],
+    [
+      '/internal/holds/{id}/refund-capacity',
+      'returnRefundedCapacity',
+      'AFTER the tickets are voided',
+    ],
+  ])('%s (%s) declares its own assumption', (path, operation, ownPhrase) => {
+    const block = blockForPath(path);
+    expect(block, `${operation}: no ordering marker in its own generated block`).toContain(
+      ORDERING_MARKER,
+    );
+    expect(block, `${operation}: its own assumption is missing from its generated block`).toContain(
+      ownPhrase,
+    );
+  });
+
+  // The standing mutation, pinned as a test rather than left as a note. Two operations must
+  // not carry each other's assumption: this is what the whole-file version could not see.
+  it('does not let one operation carry a sibling operation assumption', () => {
+    const confirm = blockForPath('/internal/holds/{id}/confirm');
+    const release = blockForPath('/internal/holds/{id}/release');
+    expect(confirm, 'confirmHold carries releaseHold assumption').not.toContain(
+      'can no longer admit before releasing',
+    );
+    expect(release, 'releaseHold carries confirmHold assumption').not.toContain(
+      'must have captured the payment',
+    );
   });
 
   it('emits the marker once per ordering-dependent operation, not once overall', () => {
