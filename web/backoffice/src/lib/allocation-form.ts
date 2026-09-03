@@ -51,6 +51,14 @@ export interface AllocationRow {
   channel: string;
   cap: string;
   releaseAt: string;
+  /**
+   * The operator asked to REMOVE this release gate (ai-review pass 2, [medium]).
+   *
+   * A real checkbox, so absent-means-false holds: `form.get` returns null when it
+   * is unticked, which is reachable. A hidden input would always submit and
+   * `value=""` would read as present-and-empty — the trap TKT-236 paid for.
+   */
+  clearRelease: boolean;
 }
 
 /**
@@ -109,6 +117,7 @@ export function parseAllocationForm(form: FormData): AllocationRow[] {
       channel: verbatim('channel'),
       cap: at('cap'),
       releaseAt: at('releaseAt'),
+      clearRelease: form.get(`clearRelease.${i}`) === 'true',
     });
   }
   return rows;
@@ -141,28 +150,192 @@ export function parseAllocationRevision(form: FormData): number | undefined {
  * string — an unzoned value is not a valid date-time and would be refused by request
  * validation.
  */
-function instant(value: string): string | undefined {
+/**
+ * A zoned instant, or `undefined` for an empty field. A NON-EMPTY value without a
+ * zone is refused (TKT-302).
+ *
+ * The refusal is the fix. `new Date('2026-09-01T10:00')` resolves a zoneless
+ * string in the SSR PROCESS's zone, so an operator's edited release time was
+ * shifted by (server TZ - operator TZ) — silently, with a 303 reporting success.
+ * The repo already refuses this shape one page over: events/new.astro takes RFC
+ * 3339 with an offset "because a local value carries no zone".
+ *
+ * Refused rather than guessed, and refused rather than treated as empty: an
+ * unparseable non-empty value must not be read as "clear this boundary", which
+ * would remove a release gate the operator was trying to edit.
+ */
+function instant(channel: string, value: string): string | undefined {
   if (!value) return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  const parsed = parseZonedInstant(value);
+  if (parsed === undefined) {
+    throw new UnzonedReleaseTime(channel, value);
+  }
+  return parsed;
 }
 
-/** Minute-precision rendering of an instant, matching what a datetime-local input holds. */
+/**
+ * RFC 3339 with a zone, validated COMPONENT BY COMPONENT, or undefined.
+ *
+ * `new Date()` is not a validator, and delegating to it was an ai-review [high]
+ * (second pass). It NORMALIZES impossible dates instead of rejecting them:
+ *
+ *     2026-02-30T10:00:00Z -> 2026-03-02T10:00:00.000Z   (two days later)
+ *     2026-04-31T10:00:00Z -> 2026-05-01T10:00:00.000Z
+ *     2026-09-01T24:00:00Z -> 2026-09-02T00:00:00.000Z   (the next day)
+ *
+ * Each satisfies the input's `pattern`, so an operator who typed a wrong date got
+ * a redirect reporting success and a release gate moved by days. The first
+ * version of this check tested `2026-13-01T10:00:00Z`, which `Date` happens to
+ * reject — one malformation class generalised to all of them.
+ *
+ * So: parse the components, bound each, check the day against the real month
+ * length and the fraction width, then let `Date` refuse what those rules cannot
+ * express.
+ *
+ * PRECISION IS A CONTRACT, and this one is MICROSECONDS — six fractional digits,
+ * which is what PostgreSQL `timestamptz` stores. A finer fraction is REFUSED, and
+ * the refusal says so.
+ *
+ * The value returned is the string assembled below, NOT `Date`'s serialisation.
+ * That distinction is the whole mechanism. JavaScript Date holds milliseconds, so
+ * returning `parsed.toISOString()` silently drops the rest: `.123456` would store
+ * as `.123`. These boundaries are compared against `clock_timestamp()`, so that is
+ * a release gate moved by up to 999µs with no warning — small, real, and exactly
+ * the class of silent shift this ticket exists to remove.
+ *
+ * Two earlier versions each got half of this. One accepted and truncated, with a
+ * test encoding the truncation as if it were the requirement (ai-review pass 4,
+ * [medium]). The next refused any fraction past three digits, on the reasoning that
+ * preserving microseconds meant not converting through Date at all. It does not:
+ * Date stays as the final validity check, and the component string is what travels.
+ * Refusing was itself the defect — the stored values carry microseconds, so an
+ * operator pasting one back from a log or the database was refused a value this
+ * system had produced.
+ *
+ * An UNTOUCHED field is unaffected either way — preservedInstant returns the stored
+ * value byte for byte — and the field renders without fractions, so this only
+ * matters when someone types or pastes them deliberately.
+ *
+ * That last step is NOT a round-trip comparison, and an earlier version of this
+ * comment said it was (ai-review pass 3, [low]). Nothing here compares the
+ * reconstructed components against the submitted ones — `Date` simply parses and
+ * serialises. It still earns its place: a leap second passes every range check
+ * above and Date refuses it, which is the reachable input that only this step
+ * catches.
+ */
+function parseZonedInstant(value: string): string | undefined {
+  // Case-insensitive `Z` and optional fractional seconds, because RFC 3339 permits
+  // both and the previous implementation accepted them. Tightening a validator into
+  // refusing legitimate operator input is a new defect, not a fix (ai-review pass 3):
+  // the stored values carry MICROSECONDS, so a fraction is exactly what someone
+  // pasting from a log or the database would type.
+  const m = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:\d{2})$/.exec(
+    value.trim(),
+  );
+  if (!m) return undefined;
+  const [, y, mo, d, h, mi, sec, frac, zone] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  const hour = Number(h);
+  const minute = Number(mi);
+  const second = sec === undefined ? 0 : Number(sec);
+
+  // Microseconds at most: six fractional digits. `frac` includes its leading dot, so
+  // seven characters is six digits. See the precision contract above.
+  if (frac !== undefined && frac.length > 7) return undefined;
+  if (month < 1 || month > 12) return undefined;
+  // Real month length, leap years included: day 0 of the NEXT month is the last
+  // day of this one. Uses UTC so the host's zone cannot change the answer.
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) return undefined;
+  // Hour 24 is legal in ISO 8601 for end-of-day but means the NEXT day, which is
+  // not what an operator typing it into a release field intends. Refused rather
+  // than normalised.
+  // Second 60 is a LEAP SECOND, which RFC 3339 permits and JavaScript cannot
+  // represent: `new Date('2026-12-31T23:59:60Z')` is Invalid Date, not a
+  // normalisation. Refused — not because it is malformed, but because there is no
+  // instant to store. Checked rather than assumed: an earlier version of this
+  // comment claimed Date collapsed it into the next minute. It does not.
+  //
+  // Accepting it would mean choosing an instant on the operator's behalf, and a
+  // release gate is not the place for that.
+  if (hour > 23 || minute > 59 || second > 60) return undefined;
+
+  // NO explicit offset-range guard, and its absence is deliberate.
+  //
+  // An earlier version had one, placed AFTER the Date call where it could never
+  // run (ai-review pass 3, [low]). Moving it before the call did not help either:
+  // enumerating every offset matching [+-]dd:dd shows there is NO value Date
+  // accepts that an hours<=23 / minutes<=59 rule would reject. The guard was
+  // structurally inert, not mis-ordered, so it is deleted rather than repaired —
+  // AGENTS.md's rule for a mechanism whose unreachability is a property of the
+  // algorithm rather than a decision someone plans to reverse.
+  //
+  // What refuses +99:00 is the Date parse below, and its test now says so.
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${String(second).padStart(2, '0')}${frac ?? ''}${
+    zone.toUpperCase() === 'Z' ? 'Z' : zone
+  }`;
+  // Date is the last check, not the first: it catches what the component rules
+  // cannot represent — a leap second is the reachable example, since second 60
+  // passes every range check above and Date still refuses it.
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  // The COMPONENT string, not `parsed.toISOString()`. Date parsed it only to reject
+  // what the range rules cannot express; its own serialisation is millisecond-capped
+  // and would silently truncate the microseconds `iso` carries.
+  return iso;
+}
+
+/**
+ * Whether an RFC 3339 date-time carries a zone: a trailing `Z`, or `+HH:MM` /
+ * `-HH:MM` after the time.
+ *
+ * Anchored to the END so the `-` separators in the DATE cannot satisfy it —
+ * `2026-09-01T10:00` must not read as zoned because it contains dashes.
+ */
+export function hasExplicitZone(value: string): boolean {
+  return /(?:Z|[+-]\d{2}:\d{2})$/.test(value.trim());
+}
+
+/**
+ * How an instant is rendered back into the editable field: UTC, with an explicit
+ * `Z`, to the second.
+ *
+ * Was minute-precision LOCAL time (`getFullYear()`/`getHours()`/...), which is
+ * the other half of the same defect — the render used the server's zone too, so
+ * a round trip through this screen moved every boundary by the server/operator
+ * offset even when nothing was edited. Rendering in UTC makes the value
+ * self-describing: whatever zone the operator's browser is in, the field says
+ * which instant it means.
+ *
+ * Seconds are kept because these boundaries are compared against
+ * `clock_timestamp()`; truncating to minutes is what preservedInstant exists to
+ * avoid, and rendering at minute precision would reintroduce it for any field
+ * the operator DOES touch.
+ */
 export function toMinuteInput(value: string | undefined): string {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  // toISOString is always UTC with a trailing Z; drop the milliseconds, which no
+  // operator types and which the round-trip comparison does not need.
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 /**
  * The instant to submit for one editable timestamp, given what the SERVER currently holds.
  *
- * An untouched field keeps the server's value byte for byte: a `datetime-local` input holds
- * minutes, so re-deriving from it drops seconds and fractions, and these boundaries are
- * compared against `clock_timestamp()` — a cap edit would bring a release or a window
- * forward by up to a minute (ai-review pass 1, [high]).
+ * An untouched field keeps the server's value byte for byte, because the rendered form of an
+ * instant is LOSSY and re-deriving from it would truncate. That was up to a minute when the
+ * input was `datetime-local`; since TKT-302 the field renders to the SECOND, so the loss is
+ * sub-second — still real, because these boundaries are compared against `clock_timestamp()`
+ * and the stored values carry microseconds (ai-review pass 1, [high]).
+ *
+ * The comparison is against `toMinuteInput(current)`, so it tracks whatever that renders. It
+ * held when both sides were server-local minutes and it holds now that both are UTC seconds;
+ * what would break it is changing one side alone. The browser spec's microsecond assertions on
+ * the untouched row are what prove it end to end.
  *
  * "Untouched" is decided against the CURRENT SERVER VALUE, never against a hidden input
  * echoing what was rendered (ai-review pass 2, [high]). Hidden fields are client-controlled:
@@ -170,11 +343,25 @@ export function toMinuteInput(value: string | undefined): string {
  * written verbatim — including boundaries this screen does not expose for editing at all.
  * The server value is not forgeable and is re-read on every request.
  */
-function preservedInstant(submitted: string, current: string | undefined): string | undefined {
+function preservedInstant(
+  channel: string,
+  submitted: string,
+  clearRelease: boolean,
+  current: string | undefined,
+): string | undefined {
+  // Explicit removal, and the ONLY way to reach it. Blank alone is refused below.
+  if (clearRelease) return undefined;
   if (current && submitted === toMinuteInput(current)) {
     return current;
   }
-  return instant(submitted);
+  // A blank field where one WAS set is not a request to remove it — it is far too
+  // easy to reach by accident in a free-text input, and clearing a gate is
+  // destructive (ai-review pass 2, [medium]). Refuse and make the operator say so.
+  // Blank where none was set is a no-op and stays legal.
+  if (!submitted && current) {
+    throw new BlankedReleaseTime(channel);
+  }
+  return instant(channel, submitted);
 }
 
 /**
@@ -205,6 +392,50 @@ export class UnknownAllocationChannel extends Error {
  * This screen edits existing allocations: it creates none and deletes none. Both
  * directions of that sentence need enforcing.
  */
+/**
+ * Thrown when a release time is present but not a zoned RFC 3339 instant.
+ *
+ * REFUSING is the point, and returning `undefined` was not refusing (ai-review [high]).
+ * `toAllocationRequest` omits `release_at` when it is undefined, and the write is a
+ * FULL-SET REPLACE — so an unparseable value took the same path as a deliberately emptied
+ * field and CLEARED the release gate, then redirected as a successful save. That is
+ * destructive, and worse than the timezone shift this ticket set out to fix: the operator
+ * asked to change a boundary and silently removed it.
+ *
+ * The input's `pattern` stops the ordinary zoneless shape in the browser, which is a
+ * convenience and not a boundary: it accepts syntactically valid impossibilities like
+ * `2026-13-01T10:00:00Z`, and any caller that ignores the markup submits whatever it likes.
+ * This is the server-side half.
+ *
+ * Empty stays empty: an operator clearing the field still removes the release gate, which
+ * is a real thing to want. Only a NON-EMPTY unusable value throws.
+ */
+export class UnzonedReleaseTime extends Error {
+  constructor(
+    public readonly channel: string,
+    public readonly submitted: string,
+  ) {
+    super(`release time for channel ${JSON.stringify(channel)} is not a zoned RFC 3339 instant`);
+    this.name = 'UnzonedReleaseTime';
+  }
+}
+
+/**
+ * Thrown when a release time that WAS set is submitted blank without the explicit
+ * removal checkbox (ai-review pass 2, [medium]).
+ *
+ * Blank-means-clear predates this ticket — the `datetime-local` input behaved the
+ * same way — but the free-text field this ticket introduces makes an accidental
+ * blank easier to reach, and it asked for LESS input than a malformed value, which
+ * is refused outright. Removal is now an explicit act.
+ */
+export class BlankedReleaseTime extends Error {
+  constructor(public readonly channel: string) {
+    super(`release time for channel ${JSON.stringify(channel)} was blanked without confirmation`);
+    this.name = 'BlankedReleaseTime';
+  }
+}
+
 export class MissingAllocationChannel extends Error {
   constructor(public readonly channel: string) {
     super(`submitted set omits channel ${JSON.stringify(channel)}`);
@@ -275,7 +506,7 @@ export function toAllocationRequest(
       };
       // The optional fields are OMITTED when unset rather than sent empty: the contract
       // types them as date-time/uuid, and "" fails request validation.
-      const release = preservedInstant(r.releaseAt, held.release_at);
+      const release = preservedInstant(r.channel, r.releaseAt, r.clearRelease, held.release_at);
       if (release) a.release_at = release;
       if (held.opens_at) a.opens_at = held.opens_at;
       if (held.closes_at) a.closes_at = held.closes_at;

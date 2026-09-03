@@ -42,6 +42,8 @@ import {
   toMinuteInput,
   MissingAllocationChannel,
   UnknownAllocationChannel,
+  UnzonedReleaseTime,
+  BlankedReleaseTime,
 } from '../../lib/allocation-form';
 import { type Channel, listChannelsForOperator } from '../../lib/catalog';
 import {
@@ -60,6 +62,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const here = `${base}/slots/${encodeURIComponent(slotId)}`;
 
 let errors: AllocationFormErrors = { rows: {} };
+// Release-time refusals render beside the RELEASE input, not the cap input which
+// `errors.rows` drives — putting a message about a timestamp under a number field
+// is how an operator ends up editing the wrong thing (TKT-302 ai-review [high]).
+let releaseErrors: Record<string, string> = {};
 // The rows as submitted, so a refusal re-renders what the operator typed rather than
 // discarding it back to the stored values.
 let submitted: AllocationRow[] | null = null;
@@ -127,7 +133,29 @@ if (Astro.request.method === 'POST') {
       );
       return Astro.redirect(here, 303);
     } catch (e) {
-      if (e instanceof UnknownAllocationChannel || e instanceof MissingAllocationChannel) {
+      if (e instanceof BlankedReleaseTime) {
+        releaseErrors = {
+          [e.channel]: 'To remove this release gate, tick “Remove this release gate”. Nothing was saved.',
+        };
+        errors = {
+          rows: {},
+          form: 'Nothing was saved. Clearing a release gate must be confirmed.',
+        };
+      } else if (e instanceof UnzonedReleaseTime) {
+        // A row-level refusal, beside the field the operator must fix. NOTHING was
+        // sent to inventory: returning early from toAllocationRequest is what stops
+        // the full-set replace from clearing this channel's release gate, which is
+        // what an omitted release_at would have done (ai-review [high]).
+        releaseErrors = {
+          [e.channel]:
+            'Use RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00. ' +
+            'At most six fractional-second digits.',
+        };
+        errors = {
+          rows: {},
+          form: 'Nothing was saved. One release time is not a zoned instant this form accepts.',
+        };
+      } else if (e instanceof UnknownAllocationChannel || e instanceof MissingAllocationChannel) {
         // The submitted set does not match this slot's current allocations — it names one
         // inventory does not hold, or omits one it does. Either the set changed while this
         // page was open, or the request did not come from this form. Either way the safe
@@ -283,13 +311,84 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                       <label class="visually-hidden" for={`release-${i}`}>
                         Release time for {row.channel}
                       </label>
+                      {/* RFC 3339 WITH a zone, not datetime-local (TKT-302).
+                          A datetime-local value carries no zone, so the server
+                          resolved it in ITS zone and an operator's edited
+                          release time shifted by (server TZ - operator TZ) --
+                          silently, with a 303 reporting success. Same shape and
+                          same reason as events/new.astro's starts_at.
+
+                          The value is rendered in UTC so the field says which
+                          instant it means; an operator may type any offset. The
+                          cost is the native picker, which is the trade
+                          events/new.astro already made. */}
                       <input
                         id={`release-${i}`}
                         name={`releaseAt.${i}`}
-                        type="datetime-local"
+                        type="text"
+                        inputmode="text"
+                        placeholder="2026-09-18T19:30:00Z"
+                        {/* Must mirror parseZonedInstant's grammar. A stricter
+                            pattern is not a harmless extra guard: the browser
+                            blocks the submission, so a form the SERVER accepts
+                            becomes unreachable through the UI and the unit tests
+                            still pass because they bypass the form (ai-review
+                            pass 4, [medium]). Case-insensitive T/Z and a
+                            MICROSECOND-bounded fraction (six digits), exactly as
+                            the server parses — PostgreSQL timestamptz stores
+                            microseconds, so a value pasted back from the database
+                            must be typable here.
+
+                            THE HYPHEN IS ESCAPED, and that is load-bearing.
+                            Browsers compile `pattern` with the RegExp `v` flag,
+                            under which a bare `[+-]` is a reserved double-punctuator
+                            and the whole regex FAILS TO COMPILE — so the attribute
+                            is ignored and validates nothing. Verified in real
+                            Chrome: `[+-]` gives checkValidity() === true for a value
+                            it should reject, `[+\-]` gives false. The pattern this
+                            replaced carried the bare form and had therefore never
+                            enforced anything. */}
+                        pattern="\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?([Zz]|[+\-]\d{2}:\d{2})"
+                        title="RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00"
                         value={row.releaseAt}
                         data-release-for={row.channel}
+                        aria-invalid={releaseErrors[row.channel] ? 'true' : undefined}
                       />
+                      {/* Clearing a release gate is DESTRUCTIVE and asks for less
+                          input than a malformed value, which the server refuses
+                          outright (ai-review pass 2, [medium]). Blank-means-clear
+                          predates this ticket — the datetime-local input behaved
+                          the same way — but a free-text field makes an accidental
+                          blank easier, so removal is now an explicit act rather
+                          than the absence of one.
+
+                          Checked-and-blank clears; blank alone is refused. This
+                          is the checkbox convention (absent means false), and it
+                          is a real checkbox rather than a hidden input, so absent
+                          is reachable — the trap TKT-236 paid for.
+
+                          Keyed on the STORED gate, not the submitted text. Keying it
+                          on `row.releaseAt !== ''` hid the checkbox on exactly the
+                          re-render that tells the operator to tick it: a blank
+                          submission is refused, the page re-renders the SUBMITTED
+                          blank, and the control vanishes — an error with no way to
+                          act on it (ai-review pass 3, [medium]). */}
+                      {stored.some((c) => c.channel === row.channel && c.release_at) && (
+                        <label class="clear-release">
+                          <input
+                            type="checkbox"
+                            name={`clearRelease.${i}`}
+                            value="true"
+                            data-clear-release-for={row.channel}
+                          />
+                          Remove this release gate
+                        </label>
+                      )}
+                      {releaseErrors[row.channel] && (
+                        <p class="error" role="alert" data-release-error={row.channel}>
+                          {releaseErrors[row.channel]}
+                        </p>
+                      )}
                     </td>
                   </tr>
                 );

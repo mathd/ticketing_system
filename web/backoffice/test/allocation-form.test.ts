@@ -6,6 +6,8 @@ import {
   parseAllocationRevision,
   toAllocationRequest,
   toMinuteInput,
+  UnzonedReleaseTime,
+  BlankedReleaseTime,
   MissingAllocationChannel,
   UnknownAllocationChannel,
   type AllocationRow,
@@ -25,6 +27,7 @@ const row = (over: Partial<AllocationRow> = {}): AllocationRow => ({
   channel: 'reseller-acme',
   cap: '40',
   releaseAt: '',
+  clearRelease: false,
   ...over,
 });
 
@@ -42,7 +45,7 @@ describe('the full set survives a round trip', () => {
   it('carries every field, including the ones the operator cannot edit', () => {
     const req = toAllocationRequest(
       '11111111-1111-1111-1111-111111111111',
-      [row({ cap: '50', releaseAt: '2026-09-01T10:00' })],
+      [row({ cap: '50', releaseAt: '2026-09-01T10:00:00Z' })],
       // The fields this screen does not render come from inventory's current set, and
       // ONLY from there — they are not submittable at all (ai-review passes 2 and 3).
       [
@@ -64,12 +67,16 @@ describe('the full set survives a round trip', () => {
     expect(a.sold_by).toBe('22222222-2222-2222-2222-222222222222');
     expect(a.opens_at).toBe('2026-08-01T09:00:00.000000Z');
     expect(a.closes_at).toBe('2026-08-31T23:00:00.000000Z');
-    // The release time IS editable, and a `datetime-local` value carries no zone, so it
-    // must arrive as an explicit instant denoting the moment the operator picked.
-    // Asserted as a round trip rather than a literal — pinning the UTC string would
-    // encode the machine's timezone into the test.
-    expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-01T10:00').getTime());
-    expect(a.release_at).toMatch(/Z$/); // zoned, or request validation refuses it
+    // The release time IS editable and now arrives ZONED (TKT-302), so this is a
+    // literal rather than a round trip. The old version compared
+    // `new Date(a.release_at)` against `new Date('2026-09-01T10:00')` and noted
+    // that pinning the UTC string "would encode the machine's timezone into the
+    // test" — which was true, and was a symptom: both sides resolved a zoneless
+    // string in the same local zone, so the assertion held on every machine
+    // while the value it checked was wrong on all but one. A zoned input has one
+    // correct answer everywhere — and it is the submitted components, since the
+    // parser returns those rather than Date's millisecond-capped serialisation.
+    expect(a.release_at).toBe('2026-09-01T10:00:00Z');
   });
 
   // Absent optional fields must be OMITTED, not sent as empty strings: the contract
@@ -104,7 +111,7 @@ describe('the form cannot carry a field this screen does not edit', () => {
     form.set('soldBy.0', '99999999-9999-9999-9999-999999999999');
     form.set('opensAt.0', '2030-01-01T00:00');
     const parsed = parseAllocationForm(form);
-    expect(parsed[0]).toEqual({ channel: 'reseller-acme', cap: '40', releaseAt: '' });
+    expect(parsed[0]).toEqual({ channel: 'reseller-acme', cap: '40', releaseAt: '', clearRelease: false });
 
     // And they reach the wire only from the server's set.
     const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', parsed, [
@@ -284,15 +291,179 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(a.release_at).toBe('2026-09-01T10:17:43.123456Z');
   });
 
-  it('a genuinely different minute replaces the stored instant', () => {
-    const a = build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
-    expect(new Date(a.release_at!).getTime()).toBe(new Date('2026-09-02T08:00').getTime());
-    expect(a.release_at).not.toBe('2026-09-01T10:17:43.123456Z');
+  it('a genuinely different instant replaces the stored one', () => {
+    const a = build({ ...row(), releaseAt: '2026-09-02T08:00:00Z' }, [current()]);
+    // Asserted as an exact UTC instant, derived from the SUBMITTED offset rather
+    // than from whatever `new Date` would make of a zoneless string in the
+    // server's zone. Before TKT-302 this test passed a bare local value and
+    // compared it against `new Date` of the same bare value — self-consistent,
+    // and blind to the shift it was supposed to catch.
+    expect(a.release_at).toBe('2026-09-02T08:00:00Z');
   });
 
-  it('clearing the release time removes it', () => {
-    const a = build({ ...row(), releaseAt: '' }, [current()]);
+  // TKT-302. The defect: a zoneless value was resolved in the SSR process's
+  // zone, so the stored instant depended on where the server was.
+  it('takes the instant from the submitted OFFSET, not the server zone', () => {
+    // Same wall-clock reading, three zones, three different instants. Under the
+    // old `new Date(bare)` behaviour all three would have collapsed to whatever
+    // the server's zone made of "10:00", which is the bug.
+    const utc = build({ ...row(), releaseAt: '2026-09-01T10:00:00Z' }, [current()]);
+    const toronto = build({ ...row(), releaseAt: '2026-09-01T10:00:00-04:00' }, [current()]);
+    const paris = build({ ...row(), releaseAt: '2026-09-01T10:00:00+02:00' }, [current()]);
+
+    // ASSERTED AS AN INSTANT, not as a string, and that is the point of the test.
+    // The parser now returns the submitted components verbatim, so comparing text
+    // would only prove the three inputs differ — which they visibly do — while
+    // saying nothing about what instant each one denotes. Parsing the result is
+    // what makes the assertion discriminating: it is the same question the server
+    // asks, and it is the question the zone defect got wrong.
+    const at = (v: string | undefined) => new Date(v!).getTime();
+    expect(at(utc.release_at)).toBe(Date.UTC(2026, 8, 1, 10, 0, 0));
+    expect(at(toronto.release_at)).toBe(Date.UTC(2026, 8, 1, 14, 0, 0));
+    expect(at(paris.release_at)).toBe(Date.UTC(2026, 8, 1, 8, 0, 0));
+
+    // And the three are genuinely distinct instants, which is what a server-zone
+    // collapse would destroy: under the old behaviour all three read as one.
+    expect(new Set([at(utc.release_at), at(toronto.release_at), at(paris.release_at)]).size).toBe(3);
+  });
+
+  // ai-review [high]. The FIRST version of this test asserted that the row simply
+  // carried no `release_at`, and called that a refusal. It was not: the write is a
+  // full-set replace, so an omitted release_at CLEARS the stored release gate and
+  // redirects as a successful save. The test encoded the defect — an omission and a
+  // refusal are indistinguishable in the request body, and only one of them is safe.
+  //
+  // A non-empty unusable value must THROW, so nothing reaches inventory at all.
+  it('THROWS on a non-empty value with no zone rather than clearing the gate', () => {
+    expect(() => build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()])).toThrow(
+      UnzonedReleaseTime,
+    );
+  });
+
+  // ai-review pass 2, [high]. The FIRST version of this test used only
+  // '2026-13-01T10:00:00Z', which `new Date` happens to reject — one malformation
+  // class generalised to all of them. `Date` NORMALISES the rest instead:
+  // 2026-02-30 becomes March 2, 2026-04-31 becomes May 1, hour 24 becomes the next
+  // day. Each matches the input's `pattern`, so an operator who typed a wrong date
+  // got a redirect reporting success and a gate moved by DAYS.
+  //
+  // Enumerated by malformation CLASS rather than by example (AGENTS.md): syntax,
+  // range, and the normalising impossibilities that are the actual hazard here.
+  it.each([
+    ['month 13 — rejected by Date, the only class the first version covered', '2026-13-01T10:00:00Z'],
+    ['February 30 — Date NORMALISES this to March 2', '2026-02-30T10:00:00Z'],
+    ['April 31 — normalises to May 1', '2026-04-31T10:00:00Z'],
+    ['February 29 in a non-leap year — normalises to March 1', '2025-02-29T10:00:00Z'],
+    ['hour 24 — legal ISO 8601 end-of-day, but means the NEXT day', '2026-09-01T24:00:00Z'],
+    ['minute 60', '2026-09-01T10:60:00Z'],
+    // A leap second is LEGAL RFC 3339, and JavaScript cannot represent it —
+    // new Date(...) is Invalid Date. Refused because there is no instant to store,
+    // which is a different reason from the malformations around it.
+    ['second 60, a leap second JavaScript cannot represent', '2026-12-31T23:59:60Z'],
+    // Finer than MICROSECONDS — seven digits. Six are accepted and preserved (below);
+    // beyond that PostgreSQL timestamptz has nowhere to put the digits either, so the
+    // refusal is the honest answer rather than a silent round.
+    //
+    // Two earlier versions got this wrong in opposite directions. One accepted
+    // `.123456Z` and asserted it stored as `.123Z`, encoding JavaScript's truncation
+    // as the requirement (ai-review pass 4, [medium]). The next refused anything past
+    // three digits — which refused a value the database itself produces.
+    ['a fraction finer than microseconds, which nothing downstream can store', '2026-09-01T10:17:43.1234567Z'],
+    ['day 0', '2026-09-00T10:00:00Z'],
+    // Refused by the Date parse, NOT by an offset-range rule: there is no offset
+    // Date accepts that such a rule would reject, so the rule this file used to
+    // carry was structurally inert and was deleted (ai-review pass 3, [low]).
+    ['an out-of-range offset, refused by the Date parse', '2026-09-01T10:00:00+99:00'],
+    ['no zone at all', '2026-09-02T08:00'],
+  ])('throws on %s', (_name, value) => {
+    expect(() => build({ ...row(), releaseAt: value }, [current()])).toThrow(UnzonedReleaseTime);
+  });
+
+  it('accepts the boundaries a real calendar allows', () => {
+    // The negative cases above must not have been bought by refusing everything.
+    // February 29 in a LEAP year is legal; so is a seconds-less value, and an
+    // offset at the edge of the range.
+    // The value is the SUBMITTED components, normalised only in the ways the parser
+    // states: seconds defaulted, `z`/`t` upper-cased. It is NOT Date's serialisation,
+    // so an offset is preserved rather than converted to UTC — Go parses either
+    // spelling to the same instant, and keeping the operator's offset keeps the
+    // microseconds Date would drop.
+    const leap = build({ ...row(), releaseAt: '2028-02-29T10:00:00Z' }, [current()]);
+    expect(leap!.release_at).toBe('2028-02-29T10:00:00Z');
+
+    const noSeconds = build({ ...row(), releaseAt: '2026-09-01T10:00Z' }, [current()]);
+    expect(noSeconds!.release_at).toBe('2026-09-01T10:00:00Z');
+
+    const edgeOffset = build({ ...row(), releaseAt: '2026-09-01T10:00:00+14:00' }, [current()]);
+    expect(edgeOffset!.release_at).toBe('2026-09-01T10:00:00+14:00');
+  });
+
+  // ai-review pass 3, (a). A validator that refuses LEGITIMATE input is a new
+  // defect, and the first component-wise version refused three RFC 3339 forms the
+  // implementation it replaced had accepted. The fractional case is the one that
+  // would have bitten: stored values carry MICROSECONDS, so a fraction is exactly
+  // what an operator pasting from a log or the database types.
+  it.each([
+    ['a lowercase zone marker, which RFC 3339 permits', '2026-09-01T10:00:00z', '2026-09-01T10:00:00Z'],
+    ['fractional seconds', '2026-09-01T10:00:00.500Z', '2026-09-01T10:00:00.500Z'],
+    // The case the whole precision contract exists for: six digits, preserved exactly.
+    // Date.toISOString() would return `.123Z` here, losing 456µs.
+    ['microseconds, preserved to the digit', '2026-09-01T10:17:43.123456Z', '2026-09-01T10:17:43.123456Z'],
+    ['microseconds on an offset zone', '2026-09-01T06:17:43.123456-04:00', '2026-09-01T06:17:43.123456-04:00'],
+    ['a lowercase date/time separator', '2026-09-01t10:00:00Z', '2026-09-01T10:00:00Z'],
+    ['+00:00, which is Z spelled out', '2026-09-01T10:00:00+00:00', '2026-09-01T10:00:00+00:00'],
+    ['-00:00', '2026-09-01T10:00:00-00:00', '2026-09-01T10:00:00-00:00'],
+  ])('accepts %s', (_name, value, want) => {
+    expect(build({ ...row(), releaseAt: value }, [current()])!.release_at).toBe(want);
+  });
+
+  it('names the channel and the submitted text, so the error can sit beside the field', () => {
+    try {
+      build({ ...row(), releaseAt: '2026-09-02T08:00' }, [current()]);
+      throw new Error('expected UnzonedReleaseTime');
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnzonedReleaseTime);
+      expect((e as UnzonedReleaseTime).channel).toBe(row().channel);
+      expect((e as UnzonedReleaseTime).submitted).toBe('2026-09-02T08:00');
+    }
+  });
+
+  // ai-review pass 2, [medium]. Blanking a free-text field is far easier to reach
+  // by accident than typing a malformed value — which is refused outright — so
+  // removal is an explicit act. Blank-means-clear predates this ticket (the
+  // datetime-local input behaved the same way); the free-text field is what makes
+  // the accident cheap.
+  it('THROWS when a set release time is blanked without confirmation', () => {
+    expect(() => build({ ...row(), releaseAt: '' }, [current()])).toThrow(BlankedReleaseTime);
+  });
+
+  it('removes the gate when the operator ticks the confirmation', () => {
+    const a = build({ ...row(), releaseAt: '', clearRelease: true }, [current()]);
     expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('a blank field where no gate was set is a no-op, not a refusal', () => {
+    // The refusal is about DESTROYING something. There is nothing to destroy here,
+    // so refusing would block a save for no reason.
+    const noRelease = { ...current(), release_at: undefined };
+    const a = build({ ...row(), releaseAt: '' }, [noRelease]);
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('the confirmation wins even if text is also present', () => {
+    // Ticked and non-empty is contradictory; removal is the safer reading of an
+    // explicit act, and it must not fall through to parsing the leftover text.
+    const a = build({ ...row(), releaseAt: '2026-09-02T08:00:00Z', clearRelease: true }, [current()]);
+    expect(a).not.toHaveProperty('release_at');
+  });
+
+  it('renders a stored instant in UTC with an explicit zone, to the second', () => {
+    // The other half of the defect: rendering used getFullYear()/getHours(), so
+    // a round trip through this screen moved every boundary by the server's
+    // offset even when nothing was edited. UTC makes the field self-describing.
+    expect(toMinuteInput('2026-09-01T10:17:43.123456Z')).toBe('2026-09-01T10:17:43Z');
+    expect(toMinuteInput(undefined)).toBe('');
+    expect(toMinuteInput('not a date')).toBe('');
   });
 
   // ai-review pass 3, [high]. A row naming a channel inventory does not hold is REFUSED,
@@ -314,7 +485,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(() =>
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: 'brand-new', cap: '10' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'brand-new', cap: '10' })],
         [current()],
       ),
     ).toThrow(UnknownAllocationChannel);
@@ -326,7 +497,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     expect(() =>
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: ' reseller-acme ' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: ' reseller-acme ' })],
         [current()],
       ),
     ).toThrow(UnknownAllocationChannel);
@@ -336,7 +507,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     try {
       toAllocationRequest(
         '11111111-1111-1111-1111-111111111111',
-        [row(), row({ channel: 'ghost' })],
+        [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'ghost' })],
         [current()],
       );
       expect.unreachable('should have thrown');

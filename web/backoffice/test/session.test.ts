@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   SESSION_COOKIE,
@@ -212,6 +212,73 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
       Math.floor(nowMs / 1000) + secondsFromNow
     }.mac`;
 
+  // TKT-302. The two tests below are the ones that fail if the monotonic clock is
+  // ever reverted, or if the two clocks are merged back into one parameter.
+  //
+  // Neither is covered by the test that follows them: that one passes `now`
+  // EXPLICITLY, so it drives both clocks with the same value and stays green
+  // under a merge. These drive the DEFAULTS, which is where the bug lives.
+  it('expires on the default monotonic clock, which the wall clock cannot move', () => {
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      perf.mockReturnValue(1_000);
+      const token = createSession(principal);
+
+      // Wall clock leaps ten TTLs forward: irrelevant to an in-process TTL.
+      Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(principal);
+
+      // Wall clock leaps ten TTLs BACKWARD — the resurrection case. An expired
+      // entry that was never presented must not come back to life.
+      Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
+      expect(lookupSession(token)).toEqual(principal);
+
+      // The monotonic clock crossing the TTL is what ends it, with the wall
+      // clock still rolled back so nothing here is attributable to Date.now.
+      perf.mockReturnValue(1_000 + SESSION_TTL_MS);
+      expect(lookupSession(token)).toBeUndefined();
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
+  });
+
+  it('clamps to the assertion expiry using the WALL clock, not the monotonic one', () => {
+    // The merge trap (TKT-302 plan-final): assertionLifetimeMs subtracts from a
+    // Unix timestamp catalog minted. Feed it a monotonic reading and
+    // `expiry * 1000 - performance.now()` is astronomically large, Math.min
+    // never binds, and the session outlives its assertion.
+    //
+    // performance.now() is small (ms since process start) while Date.now() is
+    // ~1.8e12, so a merge is observable: the clamp silently stops working.
+    const realDateNow = Date.now;
+    const perf = vi.spyOn(performance, 'now');
+    try {
+      const wall = 1_800_000_000_000;
+      Date.now = () => wall;
+      perf.mockReturnValue(5_000);
+
+      // One hour of assertion left, far short of the 8h session TTL.
+      const shortLived = { ...principal, organizerAssertion: assertionExpiringAt(wall, 60 * 60) };
+      const token = createSession(shortLived);
+
+      // Alive just before the assertion dies, on the MONOTONIC clock.
+      perf.mockReturnValue(5_000 + 59 * 60 * 1000);
+      expect(lookupSession(token)).toBeDefined();
+
+      // Gone once it has — which only happens if the clamp saw the wall clock.
+      perf.mockReturnValue(5_000 + 61 * 60 * 1000);
+      expect(lookupSession(token)).toBeUndefined();
+
+      // Proof the assertion ended it rather than the session TTL.
+      expect(61 * 60 * 1000).toBeLessThan(SESSION_TTL_MS);
+    } finally {
+      Date.now = realDateNow;
+      perf.mockRestore();
+    }
+  });
+
   it('ends the session when the assertion dies first, not eight hours later', () => {
     const now = 1_800_000_000_000;
     // One hour of assertion left — far short of the 8h session TTL.
@@ -220,7 +287,7 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
       organizerAssertion: assertionExpiringAt(now, 60 * 60),
     };
 
-    const token = createSession(shortLived, now);
+    const token = createSession(shortLived, now, now);
 
     // Alive just before the assertion expires...
     expect(lookupSession(token, now + 59 * 60 * 1000)).toBeDefined();
@@ -238,7 +305,7 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
       organizerAssertion: assertionExpiringAt(now, 48 * 60 * 60),
     };
 
-    const token = createSession(longLived, now);
+    const token = createSession(longLived, now, now);
 
     // The session's own 8h still governs: the clamp is a minimum, not a lease.
     expect(lookupSession(token, now + SESSION_TTL_MS - 1000)).toBeDefined();
@@ -252,7 +319,7 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
     const now = 1_800_000_000_000;
     for (const bad of ['', 'not-a-token', 'v1.only.three.parts', 'v1.a.b.not-a-number.mac']) {
       resetSessionsForTest();
-      const token = createSession({ ...principal, organizerAssertion: bad }, now);
+      const token = createSession({ ...principal, organizerAssertion: bad }, now, now);
       expect(lookupSession(token, now + SESSION_TTL_MS - 1000), `bad=${bad}`).toBeDefined();
       expect(lookupSession(token, now + SESSION_TTL_MS + 1000), `bad=${bad}`).toBeUndefined();
     }
@@ -263,7 +330,7 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
   it('creates an already-expired session when the assertion is already dead', () => {
     const now = 1_800_000_000_000;
     const dead = { ...principal, organizerAssertion: assertionExpiringAt(now, -60) };
-    const token = createSession(dead, now);
+    const token = createSession(dead, now, now);
     expect(lookupSession(token, now)).toBeUndefined();
   });
 });

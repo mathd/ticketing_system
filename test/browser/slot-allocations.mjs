@@ -258,6 +258,284 @@ try {
     'a full-set replace that dropped unknown codes would delete it',
   );
 
+  // --- 6b. THE RELEASE TIME, FROM A NON-UTC BROWSER (TKT-302).
+  //
+  // The defect: `release_at` was submitted as a bare `datetime-local` value, which
+  // carries no zone, and the SSR handler resolved it with `new Date(...)` in the
+  // SERVER's zone. An operator in Toronto typing 10:00 stored whatever 10:00 meant
+  // where the server ran — silently, with a 303 reporting success.
+  //
+  // Only a browser tier can show this, and only a non-UTC one: a unit test runs in
+  // whatever zone the machine has, so a server-local implementation and a correct
+  // one agree whenever that zone is UTC — which is exactly what CI is. This context
+  // is pinned to America/Toronto so the two answers differ by four hours.
+  //
+  // The value submitted is UTC-explicit, so the assertion has ONE right answer
+  // regardless of where this runs. What the non-UTC context proves is that the
+  // BROWSER's zone does not leak into the stored instant either.
+  const tzContext = await browser.newContext({ baseURL: BASE, timezoneId: 'America/Toronto' });
+  try {
+    const tzPage = await tzContext.newPage();
+    check(
+      'the second context really is in a non-UTC zone',
+      (await tzPage.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone)) ===
+        'America/Toronto',
+      'without this the spec would pass on a UTC-only difference and prove nothing',
+    );
+
+    await tzPage.goto('/admin/login', { waitUntil: 'domcontentloaded' });
+    await tzPage.fill('#identifier', identifier);
+    await tzPage.fill('#password', password);
+    await Promise.all([
+      tzPage.waitForURL('**/admin**'),
+      tzPage.click('button[type=submit]'),
+    ]);
+
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+
+    // Rendered in UTC with an explicit zone. A server-local render would show
+    // whatever the SSR process's zone made of the stored instant, and the operator
+    // would have no way to tell which zone the field meant.
+    const renderedRelease = await tzPage
+      .locator(`input[data-release-for="${plainChannel}"]`)
+      .inputValue();
+    check(
+      'an empty release time renders empty rather than as an epoch',
+      renderedRelease === '',
+      `release input = ${JSON.stringify(renderedRelease)}`,
+    );
+
+    // Seconds, not a whole minute. AGENTS.md records a spec that seeded
+    // whole-minute timestamps and stayed green through a truncation; a value ending
+    // in :37 cannot survive one.
+    const submitted = '2026-09-01T10:00:37-04:00';
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, submitted);
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+
+    // EXACT, to the microsecond, in UTC. -04:00 means 14:00:37Z, and the seconds
+    // must survive.
+    //
+    // WHAT THIS DOES NOT PROVE, stated because it would otherwise read as the
+    // whole point of this section: a ZONED submission parses to the same instant
+    // whether or not the server-zone bug is present, because the offset decides
+    // and `new Date` honours it either way. Measured, not assumed — with the fix
+    // reverted AND the SSR container pinned to America/Los_Angeles, this
+    // assertion still passed. It pins the round trip and the seconds; it cannot
+    // see the defect.
+    //
+    // The case that separates fixed from broken is a ZONELESS submission, below.
+    const storedRelease = sql(
+      'inventory',
+      `SELECT to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a release time submitted with an offset round-trips to THAT instant',
+      storedRelease === '2026-09-01T14:00:37.000000',
+      `release_at=${storedRelease}, want 2026-09-01T14:00:37.000000 — submitted ${submitted}`,
+    );
+
+    // And it round-trips: re-rendering must not shift it back.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    const rerendered = await tzPage
+      .locator(`input[data-release-for="${plainChannel}"]`)
+      .inputValue();
+    check(
+      'the stored instant re-renders as the same instant, in UTC',
+      rerendered === '2026-09-01T14:00:37Z',
+      `re-rendered as ${JSON.stringify(rerendered)} — a server-local render moves it every round trip`,
+    );
+
+    // THE case that separates fixed from broken. A zoneless value is what the old
+    // `datetime-local` input submitted, and resolving it took the SERVER's zone —
+    // so the same keystrokes stored a different instant depending on where the
+    // process ran. The fix refuses it rather than guessing.
+    //
+    // Submitted past the input's `pattern` with a direct DOM write, deliberately:
+    // the pattern is a browser convenience and this asserts the SERVER refuses,
+    // which is the half that binds a caller who ignores the markup.
+    const before = sql(
+      'inventory',
+      `SELECT to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    await tzPage.evaluate(
+      ([sel, value]) => {
+        const el = document.querySelector(sel);
+        el.removeAttribute('pattern');
+        el.value = value;
+      },
+      [`input[data-release-for="${plainChannel}"]`, '2026-09-02T08:00:00'],
+    );
+    // NOT waitForURL: a refusal re-renders the form in place rather than redirecting,
+    // which is itself part of what is under test.
+    await tzPage.click('button[data-action="save-allocations"]');
+    await tzPage.waitForLoadState('domcontentloaded');
+    const afterZoneless = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    // EXACTLY UNCHANGED. The first version of this assertion required the value to
+    // DIFFER from 2026-09-02T08:00:00 and from its prior value — which `NULL`
+    // satisfies, so it blessed the destructive outcome it was written to catch
+    // (ai-review [high]): an omitted release_at on a full-set replace CLEARS the
+    // gate, and the page redirects as a successful save.
+    //
+    // The refusal must leave the row alone, so the only safe assertion is equality
+    // with what was there before.
+    // `before` must be a REAL instant, not empty. Equality with an empty string
+    // would hold trivially if this section were ever reordered ahead of the save
+    // that sets the value, and the assertion below would then prove nothing while
+    // looking exactly as it does now.
+    check(
+      'the row carries a release time to preserve, so the check below is not vacuous',
+      /^\d{4}-\d{2}-\d{2}T/.test(before),
+      `before=${JSON.stringify(before)} — this section depends on the zoned save above`,
+    );
+    check(
+      'a zoneless release time changes NOTHING — not stored, and not cleared',
+      afterZoneless === before,
+      `release_at=${afterZoneless}, want it unchanged at ${before} — ` +
+        'storing it means the server zone decided; NULL means the refusal destroyed the gate',
+    );
+    check(
+      'the refusal is shown beside the release field, and the page does not redirect away',
+      (await tzPage.locator(`[data-release-error="${plainChannel}"]`).count()) === 1,
+      'a refusal the operator cannot see is a save that silently did nothing',
+    );
+
+    // BLANKING is refused too, and for a sharper reason: clearing a release gate is
+    // destructive and a free-text field makes an accidental blank cheap — cheaper
+    // than the malformed value above, which is refused outright (ai-review pass 2,
+    // [medium]). Removal is an explicit act.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '');
+    await tzPage.click('button[data-action="save-allocations"]');
+    await tzPage.waitForLoadState('domcontentloaded');
+    const afterBlank = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'blanking the field WITHOUT the confirmation does not remove the gate',
+      afterBlank === before,
+      `release_at=${afterBlank}, want it unchanged at ${before}`,
+    );
+
+    // THE FORM'S OWN GRAMMAR must match the server's. The unit acceptance cases
+    // call the mapper directly and so cannot see a `pattern` attribute that blocks
+    // a value the server would have taken (ai-review pass 4, [medium]): the browser
+    // refuses the submission, the operator sees a tooltip, and every unit test
+    // still passes. Submitted through the real form, with NO DOM tampering, so the
+    // browser's constraint validation is part of what is under test.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-03t08:30:00.5z');
+
+    // checkValidity() explicitly, BEFORE submitting. Playwright's click submits
+    // programmatically and bypasses HTML constraint validation, so the round trip
+    // below passes whatever the `pattern` says — the first version of this
+    // assertion did exactly that and stayed green with the pattern reverted to
+    // uppercase-only. This is the line that actually reads the attribute a real
+    // operator's browser would enforce.
+    check(
+      "the form's own pattern accepts what the server accepts",
+      await tzPage.$eval(`input[data-release-for="${plainChannel}"]`, (el) => el.checkValidity()),
+      'the input pattern rejects a value the server parses — a real operator could not submit it',
+    );
+
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterMixedCase = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a lowercase-t/z value with a fraction goes through the real form',
+      afterMixedCase === '2026-09-03T08:30:00.500000',
+      `release_at=${afterMixedCase}, want 2026-09-03T08:30:00.500000 — ` +
+        'NULL or unchanged means the input pattern blocked a form the server accepts',
+    );
+
+    // MICROSECONDS SURVIVE THE WHOLE PATH, and only this tier can show it. The unit
+    // tests assert what the mapper returns; this asserts what PostgreSQL holds after a
+    // real browser submitted a real form. The two are different claims, and the defect
+    // this replaces lived between them: the mapper returned `Date.toISOString()`, which
+    // is millisecond-capped, so `.123456Z` was stored as `.123000` — a release gate
+    // moved by 456µs, reported as a success.
+    //
+    // `.US` in the format string is microseconds, so a truncating implementation reads
+    // back as `...123000` and this check fails on the digits it exists for.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-04T11:22:33.123456Z');
+    check(
+      "the form's own pattern accepts six fractional digits",
+      await tzPage.$eval(`input[data-release-for="${plainChannel}"]`, (el) => el.checkValidity()),
+      'the input pattern rejects a microsecond value the server parses — and the database ' +
+        'itself produces exactly this shape, so an operator pasting one back would be blocked',
+    );
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterMicros = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a microsecond fraction is stored to the digit, not truncated to milliseconds',
+      afterMicros === '2026-09-04T11:22:33.123456',
+      `release_at=${afterMicros}, want 2026-09-04T11:22:33.123456 — ` +
+        '...123000 means the value went through a millisecond-capped conversion',
+    );
+
+    // Put the gate back where the sections below expect it.
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-01T10:00:37Z');
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+
+    // RECOVER FROM THE REFUSAL PAGE, without reloading. This is the case the
+    // previous version of this spec missed by doing a fresh GET first: the
+    // checkbox was rendered only when the SUBMITTED text was non-empty, so the
+    // refusal re-rendered the blank and hid the very control its error message
+    // told the operator to tick (ai-review pass 3, [medium]). An error with no
+    // way to act on it.
+    check(
+      'the confirmation checkbox is still on the page AFTER the blank was refused',
+      (await tzPage.locator(`input[data-clear-release-for="${plainChannel}"]`).count()) === 1,
+      'the operator must be able to act on the refusal without reloading and re-editing',
+    );
+
+    // And the confirmed removal works from that same page, or the refusal is a wall.
+    await tzPage.check(`input[data-clear-release-for="${plainChannel}"]`);
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterConfirmedClear = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'ticking the confirmation DOES remove the gate',
+      afterConfirmedClear === 'NULL',
+      `release_at=${afterConfirmedClear} — the refusal must not make removal impossible`,
+    );
+  } finally {
+    await tzContext.close();
+  }
+
   // --- 7. THE STALE SAVE (TKT-250). Two operators, one slot: this page was rendered
   // before someone else committed, and its save must be refused rather than silently
   // overwriting them.
