@@ -10,7 +10,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+// rejectedPrefixRows is the malformed backlog both acceptance tests seed.
+//
+// TKT-268's ticket names a 50,000-row fixture, which is the size the original measurements used.
+// These tests seed 5,000, and the reduction costs nothing THIS TEST asserts, because the
+// assertion is on the SHAPE of the plan rather than on a magnitude: with the predicate in the
+// partial index the malformed rows are not in the index at all, so `Rows Removed by Filter` is
+// zero and the buffer count is flat in the prefix — 2 buffers at 5,000 and 2 at 50,000. Removing
+// the equality from the index gives `Rows Removed by Filter: 5000` here and 50,000 there; both
+// fail the assertion just as loudly.
+//
+// What the reduction buys is staying inside outboxDB's 30s per-test budget when the whole store
+// package runs against one shared database. At 50,000 the exchange fixture exceeded it under that
+// contention while passing in isolation, which is a flake waiting to be muted rather than a
+// stronger test.
+const rejectedPrefixRows = 5000
 
 // The reversal claims' work is bounded by the BATCH, not by the rejected prefix (TKT-268).
 //
@@ -38,7 +56,7 @@ import (
 // copied query drifts from production and keeps asserting about the copy.
 func TestTheRefundClaimsWorkIsBoundedByTheBatchNotTheRejectedPrefix(t *testing.T) {
 	db, ctx := outboxDB(t)
-	seedRejectedPrefix(t, db, ctx, "refund-prefix", 50000, 32)
+	seedRejectedPrefix(t, db, ctx, "refund-prefix", rejectedPrefixRows, 32)
 
 	node := explainQueueScan(t, db, ctx, claimOutstandingReversalsSQL,
 		"order_refunds_reversal_queue_idx", 16)
@@ -51,12 +69,68 @@ func TestTheRefundClaimsWorkIsBoundedByTheBatchNotTheRejectedPrefix(t *testing.T
 // needs settled_at and tickets_exchanged_at, a refund needs status and the void marker).
 func TestTheExchangeClaimsWorkIsBoundedByTheBatchNotTheRejectedPrefix(t *testing.T) {
 	db, ctx := outboxDB(t)
-	seedExchangeRejectedPrefix(t, db, ctx, "exchange-prefix", 50000, 32)
+	seedExchangeRejectedPrefix(t, db, ctx, "exchange-prefix", rejectedPrefixRows, 32)
 
 	node := explainQueueScan(t, db, ctx, claimOutstandingExchangeReversalsSQL,
 		"order_exchanges_reversal_queue_idx", 16)
 
 	assertBoundedByBatch(t, node, 16)
+}
+
+// A row UPDATEd out of the partial index is still claimed correctly (TKT-268, ai-review F3).
+//
+// The two tests above deliberately insert their malformed rows malformed, because that is what
+// makes their PLAN assertions honest. This one covers the path they therefore stop covering, and
+// it is a real production path: an operator repairing a mis-tenanted row, or the parent-side
+// triggers moving a derived organizer, both move rows across the predicate by UPDATE.
+//
+// What is asserted here is CORRECTNESS, not physical work. The dead index entries such an UPDATE
+// leaves behind are a vacuum concern, not a wrong answer: the claim must still refuse the row that
+// became malformed and still lease the one that became valid. Asserting buffers here instead would
+// pin PostgreSQL's vacuum timing, which is exactly the flake this file avoids elsewhere.
+func TestAQueueRowMovedAcrossThePredicateByUpdateIsClaimedCorrectly(t *testing.T) {
+	db, ctx := outboxDB(t)
+
+	// Starts valid, becomes malformed.
+	fell := completedRefund(t, db, ctx, "moved-out", func(s *refundSeed) {
+		s.NextAttemptAt = reversalAgo(2 * time.Hour)
+	})
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_refunds SET organizer_id=gen_random_uuid() WHERE id=$1`, fell.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Starts malformed, becomes valid: the repair direction.
+	rose := completedRefund(t, db, ctx, "moved-in", func(s *refundSeed) {
+		s.NextAttemptAt = reversalAgo(time.Hour)
+		s.OrganizerID = uuid.New()
+	})
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_refunds SET organizer_id=source_organizer_id WHERE id=$1`, rose.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := ClaimOutstandingReversals(ctx, db, 50, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotFell, gotRose bool
+	for _, c := range claimed {
+		if c.Refund.ID == fell.ID {
+			gotFell = true
+		}
+		if c.Refund.ID == rose.ID {
+			gotRose = true
+		}
+	}
+	if gotFell {
+		t.Error("a refund that became malformed by UPDATE was still claimed: the index entry it " +
+			"left behind is dead, but the row must not be leased")
+	}
+	if !gotRose {
+		t.Error("a refund REPAIRED by UPDATE was not claimed. Moving a row back into the " +
+			"predicate must make it claimable, or a repair leaves the obligation stranded")
+	}
 }
 
 // assertBoundedByBatch is the whole claim of both tests, in one place so the two queues
@@ -88,6 +162,21 @@ func assertBoundedByBatch(t *testing.T, node map[string]any, batch int) {
 	}
 	if rows := num(node["Actual Rows"]); rows > float64(batch) {
 		t.Errorf("the queue scan returned %.0f rows for a batch of %d", rows, batch)
+	}
+
+	// (4) PHYSICAL work, not just logical. (1)-(3) are all counts of rows the executor
+	// RETURNED or FILTERED, and dead index entries appear in neither: an UPDATE that moves a
+	// row out of a partial index leaves its entry behind until vacuum, and a scan walking
+	// thousands of them satisfies every assertion above (ai-review F3). Buffers are what
+	// notice. The ceiling is generous — a handful of B-tree levels plus the batch's heap
+	// pages — because the claim is "bounded by the batch", not a tuned number: the failing
+	// shapes miss it by one to two orders of magnitude (2 vs 102 vs 915 measured).
+	const ceiling = 64
+	if b := num(node["Shared Hit Blocks"]) + num(node["Shared Read Blocks"]); b > ceiling {
+		t.Errorf("the queue scan touched %.0f buffers for a batch of %d (ceiling %d). The row "+
+			"counts above can all pass while the scan walks a prefix of DEAD index entries, "+
+			"which never reach the filter and are never returned — physical work is what sees "+
+			"them", b, batch, ceiling)
 	}
 }
 
@@ -159,29 +248,37 @@ func claimUUID() string { return "00000000-0000-0000-0000-0000000000ff" }
 // Set-based, not row-by-row: 50,000 round trips would dominate the suite's runtime, and the
 // fixture's size is the point of the test.
 //
-// The malformed state is built DIRECTLY — the queue row's organizer is moved away from its
-// source reservation's after insert — because no code path creates it. That is also why the
-// migration deliberately ships no CHECK constraint: a constraint making this unrepresentable
-// would make this fixture unbuildable, and the test would silently become about nothing.
+// The malformed rows are INSERTED malformed, never inserted valid and then updated out of the
+// partial index. That distinction is the whole difference between this test working and this test
+// lying, and it cost a review round to find (ai-review F3).
+//
+// PostgreSQL's MVCC leaves the OLD index entry in place when an UPDATE moves a row out of a
+// partial index's predicate, until vacuum removes it. A scan still walks those dead entries, and
+// because dead tuples never reach the filter they do NOT increment `Rows Removed by Filter`, and
+// they do not appear in `Actual Rows` either. So the fixture's first version built its 5,000
+// malformed rows by UPDATE, and every assertion here passed while the scan did 102 buffers of
+// work instead of 2. Measured: 2 buffers inserted-malformed, 102 updated-out-of-index, 3 after a
+// VACUUM. Inserting them malformed is what makes the assertions describe the work.
+//
+// The trigger is what makes this possible: source_organizer_id is derived from the ORDER's
+// reservation, so giving the queue row a different organizer_id at INSERT time produces the
+// mismatch at birth.
+//
+// The mismatch is built directly because no code path creates it. That is also why the migration
+// deliberately ships no CHECK constraint: a constraint making this state unrepresentable would
+// make this fixture unbuildable, and the test would silently become about nothing.
 func seedRejectedPrefix(t *testing.T, db *sql.DB, ctx context.Context, key string, malformed, valid int) {
 	t.Helper()
-	org, order, _ := seedPrefixParent(t, db, ctx, key)
+	_, order, _ := seedPrefixParent(t, db, ctx, key)
 
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
 		                          quantity,unit_amount,amount,currency,actor,reason,status,
 		                          completed_at,payment_fact_id,reversal_next_attempt_at)
-		SELECT gen_random_uuid(),$1,$2,'k-'||$3||'-'||g,'f-'||$3||'-'||g,1,100,100,'EUR',
+		SELECT gen_random_uuid(),$1,gen_random_uuid(),'k-'||$2||'-'||g,'f-'||$2||'-'||g,1,100,100,'EUR',
 		       'ops@example.test','prefix fixture','completed',now(),gen_random_uuid(),
 		       now() - interval '30 days' + (g * interval '1 second')
-		FROM generate_series(1,$4) g`, order, org, key, malformed); err != nil {
-		t.Fatal(err)
-	}
-	// Make them malformed: the queue row's organizer no longer matches the source
-	// reservation's. The trigger owns source_organizer_id, so moving organizer_id is what
-	// creates the mismatch.
-	if _, err := db.ExecContext(ctx,
-		`UPDATE order_refunds SET organizer_id=gen_random_uuid() WHERE organizer_id=$1`, org); err != nil {
+		FROM generate_series(1,$3) g`, order, key, malformed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,8 +296,9 @@ func seedExchangeRejectedPrefix(t *testing.T, db *sql.DB, ctx context.Context, k
 	// UNLIKE THE REFUND SIDE, every malformed row needs its OWN source order:
 	// `order_exchanges_one_per_source` is UNIQUE on source_order_id, so 50,000 exchanges on
 	// one order is not a state the schema can hold. The reservations and orders are seeded in
-	// bulk alongside them, all on the same organizer, which is what the mismatch update below
-	// then moves the queue rows away from.
+	// bulk alongside them on one organizer; each queue row then gets its OWN random
+	// organizer_id at insert time, so it is malformed at birth (see seedRejectedPrefix on why
+	// that matters).
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,
 		                         quantity,unit_amount,total_amount,face_value_amount,currency,status)
@@ -230,20 +328,16 @@ func seedExchangeRejectedPrefix(t *testing.T, db *sql.DB, ctx context.Context, k
 		                            replacement_reservation_id,target_slot_id,basis_at,
 		                            currency,actor,reason,settled_at,tickets_exchanged_at,
 		                            reversal_next_attempt_at)
-		SELECT $1,gen_random_uuid(),
+		SELECT gen_random_uuid(),gen_random_uuid(),
 		       ('00000000-0000-4001-8000-' || lpad(g::text,12,'0'))::uuid,
 		       ('00000000-0000-4001-8000-' || lpad(g::text,12,'0'))::uuid,
-		       gen_random_uuid(),'k-'||$2||'-'||g,'f-'||$2||'-'||g,
+		       gen_random_uuid(),'k-'||$1||'-'||g,'f-'||$1||'-'||g,
 		       2,2500,2500,2500,0,1250,gen_random_uuid(),
 		       ('00000000-0000-4000-8000-' || lpad(g::text,12,'0'))::uuid,
 		       gen_random_uuid(),now(),
 		       'EUR','ops@example.test','prefix fixture',now(),now(),
 		       now() - interval '30 days' + (g * interval '1 second')
-		FROM generate_series(1,$3) g`, org, key, malformed); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx,
-		`UPDATE order_exchanges SET organizer_id=gen_random_uuid() WHERE organizer_id=$1`, org); err != nil {
+		FROM generate_series(1,$2) g`, key, malformed); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < valid; i++ {

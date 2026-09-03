@@ -131,6 +131,38 @@ reading and discarding all 50,000.
       to the shipped statement. It is kept because the edit that reintroduces it, rewriting the
       check as a join, is exactly the edit a future reader is likely to attempt.
 
+### The concurrency contract
+
+A denormalized identity is only as good as the moment it was derived, and three of the five
+findings in this change's adversarial review were about that moment rather than about the design.
+They are recorded here because each one is invisible in the shipped SQL unless you know to look.
+
+**The derivation locks the source reservation** (`FOR SHARE OF r`). Without it the queue-row
+trigger performs an unlocked read: one transaction can move a reservation's organizer and run its
+own maintenance while still uncommitted, a second can then insert a queue row for that order, read
+the old committed organizer, and commit. The first transaction's maintenance has already run and
+cannot revisit a row that did not exist yet, so the row lands satisfying the claim predicate while
+its source belongs elsewhere. That is the recurring-lease defect this change removes, reintroduced
+by the change itself. It was reproduced with two concurrent sessions before the lock was added,
+and a test now pins it.
+
+**The Up locks the parents, not only the queue tables.** `ADD COLUMN` takes `ACCESS EXCLUSIVE` on
+`order_refunds` and `order_exchanges` by itself; nothing would otherwise hold `orders` and
+`reservations` still between the backfill's read and the migration's commit, and the maintenance
+triggers cannot help because they are created later in that same uncommitted transaction.
+
+**The Down computes mismatches from the authoritative relationship**, joining each queue row
+through its order to its reservation, rather than reading `source_organizer_id`. Deciding whether
+it is safe to drop a column by trusting that column is circular, and the state that matters is
+exactly the one where it is stale: it agrees with the queue row while the reservation has moved,
+so a column-reading guard counts zero and waves through the rollback that restores the unbounded
+scan.
+
+The parent-side maintenance is **row-level with `WHEN` clauses**, not statement-level. The
+statement-level form re-reconciles both entire queue tables on every parent identity update: 198ms,
+4,812 buffers and 4,364 temp blocks spilled to disk to update zero rows on a 200,000-row queue,
+against 28 buffers and two index scans for the row-level form.
+
 ### Name the adversary (ADR-021)
 
 This is **honest-writer consistency and bounded claim work. It is not tamper-evidence.**
