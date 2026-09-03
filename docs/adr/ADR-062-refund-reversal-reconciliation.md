@@ -182,7 +182,9 @@ Safe to add: `capacity_returned_at` has exactly one writer in commerce, downstre
   leased-then-dropped row makes the store return fewer rows than it leased and `RunOnce` reads a short
   batch as a drained queue (`len(claimed) < r.batch`) and ends the pass. **Closed by TKT-267**, which
   moved the check into `claimable` for this query and ADR-063's alike; the final join stays as defence
-  in depth. This was a **liveness** defect, not a leak, and per ADR-021 it is honest-writer
+  in depth. TKT-267's `EXISTS` could not be part of the partial queue index, so its cost was linear
+  in the rejected prefix; **[ADR-070](./ADR-070-indexable-reversal-claim-scoping.md) (TKT-268)
+  replaced it with an indexed column comparison** and the claim's work is now bounded by the batch. This was a **liveness** defect, not a leak, and per ADR-021 it is honest-writer
   consistency: no code path writes a mismatched pair, a writer with commerce database access still
   can, and the predicate constrains that writer not at all.
 - **Unparking.** TKT-146, above.

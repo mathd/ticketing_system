@@ -61,26 +61,21 @@ type ClaimedReversal struct {
 //   - `reversal_next_attempt_at<=now()` — the backoff. Written on release; this is what
 //     reads it.
 //   - lease absent or expired — the fence against a concurrent runner or a second replica.
-//   - the source reservation belongs to this refund's organizer — checked here rather than
-//     only at the join below, because this CTE selects and the next one leases before that
-//     join runs (TKT-267).
+//   - `source_organizer_id = organizer_id` — the source reservation belongs to this refund's
+//     organizer. Checked here rather than only at the join below, because this CTE selects
+//     and the next one leases before that join runs (TKT-267). It is a plain column
+//     comparison on the queue row, and it is IN the partial index, so a malformed row is
+//     absent from the index rather than read and filtered (TKT-268, ADR-070).
 //
 // The claimable set is chosen in a CTE under FOR UPDATE SKIP LOCKED, then joined to
 // orders/reservations for the identifiers the drive needs — the row lock has to sit on the
 // selection, not the join, or concurrent runners would contend on reservations too. Same
 // shape as ClaimStuckOrders.
-func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]ClaimedReversal, error) {
-	claim := uuid.New()
-	// EVERY statement in this lifecycle keys on the FULL composite (organizer_id, id).
-	// `order_refunds`' primary key is (organizer_id, id) — `id` alone is not unique by
-	// schema. The obvious version of this query copies `ClaimStuckOrders`, which matches on
-	// `id` alone because ITS table (`orders`) has `id` as a sole primary key; that shape does
-	// not transfer, and matching on `id` here would let one eligible row hand its claim token
-	// to every same-id row in another tenant — including pending, parked, discharged and
-	// live-leased ones that satisfied none of the predicates below (ai-review F3). A refund's
-	// id is derived by SHA-1 over its organizer, so a collision is not reachable today; the
-	// scoping is still correct rather than lucky, and costs nothing.
-	rows, err := db.QueryContext(ctx, `
+// claimOutstandingReversalsSQL is the shipped claim statement, extracted so the acceptance test can
+// EXPLAIN THE EXACT SQL THIS FUNCTION RUNS rather than a copy of it. A copied query in a
+// plan test drifts from production silently and keeps asserting about the copy
+// (season_smoke_test.go says the same thing about catalog's scoped reads).
+const claimOutstandingReversalsSQL = `
 		WITH claimable AS (
 			SELECT rf.organizer_id, rf.id FROM order_refunds AS rf
 			WHERE rf.status='completed'
@@ -102,26 +97,27 @@ func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, leas
 			  -- (len(claimed) < r.batch) and ends the pass.
 			  --
 			  -- FOR UPDATE OF rf, not a bare FOR UPDATE: the lock target is explicit and a
-			  -- mistyped alias is a parse error rather than a silently wider lock. The
-			  -- EXISTS leaves orders and reservations at AccessShareLock, so sweep replicas
-			  -- do not contend on them.
+			  -- mistyped alias is a parse error rather than a silently wider lock.
 			  --
-			  -- The cost is linear in the REJECTED PREFIX, not bounded by the batch: the
-			  -- EXISTS cannot be part of the partial queue index, so it is evaluated per
-			  -- candidate and the LIMIT cannot stop early on rows it rejects. Negligible at
-			  -- today's population (zero malformed rows means one probe per RETURNED row);
-			  -- proportional to the backlog if one ever exists. No code path creates such a
-			  -- backlog, but per the ADR-021 note below a writer with database access can,
-			  -- and nothing here bounds its size. The exchange-side comment carries the
-			  -- measurements, their caveats, and the follow-up (TKT-268).
+			  -- TKT-268 replaced TKT-267's correlated EXISTS over orders/reservations with
+			  -- this column comparison. The EXISTS was correct and unindexable: PostgreSQL
+			  -- evaluated it per candidate row, so the LIMIT could not stop early on the rows
+			  -- it rejected and the work was linear in the REJECTED PREFIX rather than bounded
+			  -- by the batch. Measured at a 50,000-row malformed prefix, batch 16: 263ms over
+			  -- 350,585 buffers before, 0.039ms over 2 buffers after, with zero rows removed by
+			  -- filter. source_organizer_id is derived from the source reservation BY TRIGGER
+			  -- (migration 0026), never from this row's own organizer_id and never from a
+			  -- caller-supplied value — a copy of organizer_id would make this predicate true by
+			  -- construction and unable to refuse anything.
 			  --
-			  -- ADR-021: honest-writer consistency, not tamper-evidence. No code path writes
-			  -- a mismatched pair; a writer with commerce database access still can.
-			  AND EXISTS (
-			      SELECT 1 FROM orders o
-			      JOIN reservations r ON r.id = o.reservation_id
-			                         AND r.organizer_id = rf.organizer_id
-			      WHERE o.id = rf.order_id)
+			  -- The predicate is also in order_refunds_reversal_queue_idx. Both halves matter:
+			  -- in the query alone the index still holds the malformed rows and they are read
+			  -- and discarded; in the index alone the planner cannot use it for this query.
+			  --
+			  -- ADR-021: honest-writer consistency and bounded claim work, not tamper-evidence.
+			  -- No code path writes a mismatched pair; a writer with commerce database access
+			  -- can, and can equally drop the trigger or the index. ADR-070 states the scope.
+			  AND rf.source_organizer_id = rf.organizer_id
 			ORDER BY rf.reversal_next_attempt_at
 			FOR UPDATE OF rf SKIP LOCKED
 			LIMIT $1
@@ -149,7 +145,20 @@ func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, leas
 		JOIN orders o ON o.id = c.order_id
 		-- The reservation is joined on organizer too: it is where hold_id and the tenant
 		-- identity live, and an unscoped join is how a row acquires another tenant's hold.
-		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`,
+		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`
+
+func ClaimOutstandingReversals(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]ClaimedReversal, error) {
+	claim := uuid.New()
+	// EVERY statement in this lifecycle keys on the FULL composite (organizer_id, id).
+	// `order_refunds`' primary key is (organizer_id, id) — `id` alone is not unique by
+	// schema. The obvious version of this query copies `ClaimStuckOrders`, which matches on
+	// `id` alone because ITS table (`orders`) has `id` as a sole primary key; that shape does
+	// not transfer, and matching on `id` here would let one eligible row hand its claim token
+	// to every same-id row in another tenant — including pending, parked, discharged and
+	// live-leased ones that satisfied none of the predicates below (ai-review F3). A refund's
+	// id is derived by SHA-1 over its organizer, so a collision is not reachable today; the
+	// scoping is still correct rather than lucky, and costs nothing.
+	rows, err := db.QueryContext(ctx, claimOutstandingReversalsSQL,
 		limit, lease.Seconds(), claim)
 	if err != nil {
 		return nil, fmt.Errorf("claim outstanding reversals: %w", err)

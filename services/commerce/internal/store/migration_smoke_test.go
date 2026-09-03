@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -603,4 +604,633 @@ func TestMigration0024DownRefusesToDestroyUnwindEvidence(t *testing.T) {
 	if _, err := provider.DownTo(ctx, 23); err != nil {
 		t.Fatalf("0024 down on an empty history: %v", err)
 	}
+}
+
+// Migration 0026 (TKT-268): the backfill derives source_organizer_id from the SOURCE
+// RESERVATION, and rows seeded at 0025 are upgraded correctly.
+//
+// The upgrade is the half a fully-migrated database cannot express: the store-test database
+// is always at head, so a backfill bug there is invisible. Seeding at 0025 and stepping over
+// 0026 is the only way to see it.
+//
+// The malformed row matters most. A backfill that copied the queue row's own organizer_id
+// would produce source_organizer_id = organizer_id for EVERY row, which reads as success and
+// makes the claim predicate true by construction — a precondition that cannot fail. So this
+// asserts the mismatch SURVIVES the backfill.
+func TestMigration0026BackfillsFromTheSourceReservation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.UpTo(ctx, 25); err != nil {
+		t.Fatalf("apply migrations through 0025: %v", err)
+	}
+
+	sourceOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, sourceOrg)
+
+	// Two refunds on that order: one whose queue organizer agrees with the source, one whose
+	// does not. Only the second can tell a source-derived backfill from a self-copy.
+	agreeing, malformed := uuid.New(), uuid.New()
+	otherOrg := uuid.New()
+	for _, r := range []struct {
+		id  uuid.UUID
+		org uuid.UUID
+	}{{agreeing, sourceOrg}, {malformed, otherOrg}} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+			                          quantity,unit_amount,amount,currency,actor,reason,status,
+			                          completed_at,payment_fact_id)
+			VALUES($1,$2,$3,$4,'fp',1,100,100,'EUR','ops@example.test','backfill test','completed',now(),$5)`,
+			r.id, order, r.org, "mk-"+r.id.String(), uuid.New()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := provider.UpTo(ctx, 26); err != nil {
+		t.Fatalf("apply 0026: %v", err)
+	}
+
+	var src, own uuid.UUID
+	read := func(id uuid.UUID) {
+		t.Helper()
+		if err := db.QueryRowContext(ctx,
+			`SELECT source_organizer_id, organizer_id FROM order_refunds WHERE id=$1`, id).
+			Scan(&src, &own); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read(agreeing)
+	if src != sourceOrg {
+		t.Errorf("the agreeing row's source_organizer_id is %s, want the source reservation's %s", src, sourceOrg)
+	}
+
+	read(malformed)
+	if src != sourceOrg {
+		t.Errorf("the malformed row's source_organizer_id is %s, want the SOURCE reservation's %s. "+
+			"A backfill that copies the queue row's own organizer makes every row agree with "+
+			"itself, so the claim predicate can never refuse anything", src, sourceOrg)
+	}
+	if src == own {
+		t.Error("the malformed row's source and queue organizers agree after the backfill, so the " +
+			"mismatch this fixture created did not survive it and nothing here can fail")
+	}
+
+	// The columns are NOT NULL on both queue tables.
+	for _, table := range []string{"order_refunds", "order_exchanges"} {
+		var nullable string
+		if err := db.QueryRowContext(ctx, `
+			SELECT is_nullable FROM information_schema.columns
+			WHERE table_name=$1 AND column_name='source_organizer_id'`, table).Scan(&nullable); err != nil {
+			t.Fatal(err)
+		}
+		if nullable != "NO" {
+			t.Errorf("%s.source_organizer_id is nullable; a NULL is a row the queue index silently drops", table)
+		}
+	}
+
+	// The equality reached the partial index predicates, which is the half that makes the
+	// scan bounded. Asserting the column exists proves nothing on its own.
+	for _, idx := range []string{"order_refunds_reversal_queue_idx", "order_exchanges_reversal_queue_idx"} {
+		var def string
+		if err := db.QueryRowContext(ctx,
+			`SELECT pg_get_indexdef(oid) FROM pg_class WHERE relname=$1`, idx).Scan(&def); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(def, "source_organizer_id = organizer_id") {
+			t.Errorf("%s does not carry the source-organizer equality, so malformed rows are still "+
+				"IN the index and the claim reads and discards them:\n%s", idx, def)
+		}
+	}
+}
+
+// The trigger OVERWRITES a submitted source_organizer_id (TKT-268).
+//
+// Without this the column would be caller-supplied, and a writer could hand the queue a value
+// matching its own organizer, satisfying the claim predicate while the real source belongs to
+// someone else. That is the defect the predicate exists to catch, so the derivation has to be
+// the database's rather than the caller's.
+//
+// ADR-021: this constrains writers who go THROUGH the trigger. Anyone with commerce database
+// access can drop it. Honest-writer consistency, not tamper-evidence.
+func TestMigration0026TriggerOverwritesASubmittedSourceOrganizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	sourceOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, sourceOrg)
+	liar := uuid.New()
+
+	// The writer claims the source is its own organizer. Both columns agree in the INSERT.
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,source_organizer_id,idempotency_key,
+		                          request_fingerprint,quantity,unit_amount,amount,currency,actor,
+		                          reason,status,completed_at,payment_fact_id)
+		VALUES($1,$2,$3,$3,'k','fp',1,100,100,'EUR','ops@example.test','trigger test','completed',now(),$4)`,
+		id, order, liar, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	var src uuid.UUID
+	if err := db.QueryRowContext(ctx,
+		`SELECT source_organizer_id FROM order_refunds WHERE id=$1`, id).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	if src != sourceOrg {
+		t.Fatalf("source_organizer_id is %s — the submitted value was trusted. It must be %s, "+
+			"derived from the source reservation, or a writer can make the claim predicate "+
+			"pass on a row whose source belongs to another organizer", src, sourceOrg)
+	}
+}
+
+// Moving a parent identity link moves the derived value with it (TKT-268).
+//
+// Production does not rewrite orders.reservation_id or reservations.organizer_id today.
+// Without this half the guarantee would rest on that convention holding forever, and the
+// mismatch would be reachable from the parent side while every queue-row test stayed green.
+func TestMigration0026ParentIdentityChangesMoveTheDerivedOrganizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	sourceOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, sourceOrg)
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+		                          quantity,unit_amount,amount,currency,actor,reason,status,
+		                          completed_at,payment_fact_id)
+		VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','reseat test','completed',now(),$4)`,
+		id, order, sourceOrg, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reservation changes hands.
+	moved := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		UPDATE reservations SET organizer_id=$1
+		WHERE id=(SELECT reservation_id FROM orders WHERE id=$2)`, moved, order); err != nil {
+		t.Fatal(err)
+	}
+
+	var src uuid.UUID
+	if err := db.QueryRowContext(ctx,
+		`SELECT source_organizer_id FROM order_refunds WHERE id=$1`, id).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	if src != moved {
+		t.Fatalf("source_organizer_id is still %s after the reservation moved to %s. The queue row's "+
+			"derived value is stale, so a mismatch is reachable from the parent side and the "+
+			"claim predicate would keep passing it", src, moved)
+	}
+}
+
+// 0026's Down fails closed while a malformed row exists, and rolls back cleanly otherwise.
+//
+// BOTH directions. A refusal-only test is satisfied by an unconditional RAISE, which would
+// make the migration permanently irreversible rather than conditionally so.
+func TestMigration0026DownRefusesOverAMalformedQueueRow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	sourceOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, sourceOrg)
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+		                          quantity,unit_amount,amount,currency,actor,reason,status,
+		                          completed_at,payment_fact_id)
+		VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','down test','completed',now(),$4)`,
+		id, order, sourceOrg, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	// Make it malformed: the queue organizer leaves its source behind.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_refunds SET organizer_id=$1 WHERE id=$2`, uuid.New(), id); err != nil {
+		t.Fatal(err)
+	}
+
+	// DownTo pins the aim: provider.Down() rolls back exactly one migration, so without this
+	// the test would silently retarget the moment 0027 lands (TKT-173's lesson, same file).
+	if _, err := provider.DownTo(ctx, 25); err == nil {
+		t.Fatal("0026 rolled back while a malformed queue row exists. Rolling back restores the " +
+			"correlated EXISTS, whose cost is linear in exactly those rows — the guard is missing")
+	}
+
+	// Repaired, it rolls back cleanly, so the guard is a guard rather than a broken Down.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_refunds SET organizer_id=source_organizer_id WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 25); err != nil {
+		t.Fatalf("0026 down on a clean queue: %v", err)
+	}
+}
+
+// An ordinary reservation status write does not fire the reseat triggers (TKT-268).
+//
+// This is the OTHER half of the deadlock argument in 0026's comment, and the half that is cheap to
+// break by accident. The cycle between the queue-row trigger and the parent triggers is only
+// unreachable through the application because no code path writes reservations.organizer_id and
+// because the WHEN clauses keep the reseat triggers out of the way of the writes that DO happen —
+// every UPDATE on reservations in commerce touches status.
+//
+// Widen the trigger to fire on any UPDATE and every checkout status write starts taking queue
+// locks, which turns a documented-and-unreachable cycle into a live one.
+//
+// WHY THIS ASSERTS THE TRIGGER DID NOT FIRE, rather than that nothing changed. The first version
+// of this test compared the queue row's xmin before and after, and a widened trigger PASSED it:
+// the trigger BODY also filters on `IS DISTINCT FROM`, so on a status write it matches zero rows
+// and rewrites nothing whichever way the WHEN clause is written. An effect-based assertion cannot
+// separate the two guards. `EXPLAIN ANALYZE` reports a `Trigger` line per trigger that actually
+// FIRES, which is the thing being claimed.
+func TestMigration0026AStatusWriteDoesNotFireTheReseatTriggers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	org := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, org)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+		                          quantity,unit_amount,amount,currency,actor,reason,status,
+		                          completed_at,payment_fact_id)
+		VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','when test','completed',now(),$4)`,
+		uuid.New(), order, org, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := explainStatusWrite(t, ctx, db, order)
+	if strings.Contains(plan, "Trigger") {
+		t.Errorf("a reservation STATUS write fired a trigger. The reseat trigger's WHEN clause is "+
+			"not holding, so every checkout status write now reaches into the queue tables — which "+
+			"turns 0026's documented, application-unreachable lock cycle into a reachable one.\n%s", plan)
+	}
+
+	// And the control: an organizer write MUST fire it, or the assertion above is satisfied by a
+	// trigger that never works at all — the same "green for the wrong reason" trap this test was
+	// itself rewritten to escape.
+	rows, err := db.QueryContext(ctx, `
+		EXPLAIN (ANALYZE, FORMAT TEXT)
+		UPDATE reservations SET organizer_id=gen_random_uuid()
+		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var control strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		control.WriteString(line + "\n")
+	}
+	// An error mid-iteration ends the loop with no rows and no complaint, which would make the
+	// "no Trigger line" check below pass for the wrong reason.
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(control.String(), "Trigger") {
+		t.Errorf("an ORGANIZER write fired no trigger, so the check above proves nothing — the "+
+			"reseat mechanism is not running at all.\n%s", control.String())
+	}
+}
+
+// explainStatusWrite returns the full EXPLAIN ANALYZE text for a reservation status write.
+func explainStatusWrite(t *testing.T, ctx context.Context, db *sql.DB, order uuid.UUID) string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		EXPLAIN (ANALYZE, FORMAT TEXT)
+		UPDATE reservations SET status='completed'
+		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var b strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(line + "\n")
+	}
+	// Same reason as the control loop: a truncated plan with no error reported reads as a plan
+	// with no Trigger line in it, which is exactly what the caller treats as success.
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// A queue row inserted while a parent identity change is in flight derives from the COMMITTED
+// organizer, not a stale one (TKT-268, ai-review F1 and pass-2 F2).
+//
+// Two transactions, ordered by an OBSERVED DATABASE LOCK rather than by a sleep. A moves a parent
+// identity and holds its transaction open. B then inserts a queue row for that order, naming the
+// OLD organizer as its own.
+//
+// Without a lock in the derivation, B's trigger reads the old committed parent, stores it, and
+// commits — so source_organizer_id equals B's own organizer while the source belongs elsewhere,
+// the claim predicate passes, and the final join drops the row: the recurring-lease defect this
+// whole migration removes, reintroduced by its own fix.
+//
+// WHY pg_blocking_pids AND NOT A SLEEP (pass-2 F4). The first version waited 500ms and treated
+// silence as proof that B was blocked. Silence proves nothing: the goroutine may not have been
+// scheduled, or may still have been opening a connection. With the lock removed AND the goroutine
+// slow to start, B would read the already-committed new organizer and every assertion would pass
+// — leaving the fix with no regression test. Waiting until PostgreSQL REPORTS B blocked by A is
+// the barrier the test actually needs, and it fails loudly if that never happens.
+//
+// Run for BOTH parent links, because they are separate races through separate columns and the
+// first fix closed only one of them.
+func TestMigration0026DerivationBlocksOnAnInFlightParentIdentityChange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// move performs the parent identity change inside txA.
+		move func(t *testing.T, ctx context.Context, tx *sql.Tx, db *sql.DB, order, newOrg uuid.UUID)
+	}{
+		{
+			name: "the reservation changes organizer",
+			move: func(t *testing.T, ctx context.Context, tx *sql.Tx, db *sql.DB, order, newOrg uuid.UUID) {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE reservations SET organizer_id=$1
+					WHERE id=(SELECT reservation_id FROM orders WHERE id=$2)`, newOrg, order); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "the order is repointed at another reservation",
+			move: func(t *testing.T, ctx context.Context, tx *sql.Tx, db *sql.DB, order, newOrg uuid.UUID) {
+				// A second reservation owned by newOrg, seeded OUTSIDE txA so the repoint is the
+				// only thing txA holds.
+				res := uuid.New()
+				if _, err := db.ExecContext(ctx, `
+					INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status`+faceValueColumns(t, ctx, db)+`)
+					VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','completed'`+faceValueValues(t, ctx, db)+`)`,
+					res, newOrg, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE orders SET reservation_id=$1 WHERE id=$2`, res, order); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			db, provider := schemaDB(t, ctx)
+			if _, err := provider.Up(ctx); err != nil {
+				t.Fatalf("apply all migrations: %v", err)
+			}
+
+			oldOrg, newOrg := uuid.New(), uuid.New()
+			order := seedV4OrderForOrganizer(t, ctx, db, oldOrg)
+
+			// B needs its own connection, or it can be handed the pooled one txA is using.
+			connB, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = connB.Close() }()
+			var pidB int
+			if err := connB.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pidB); err != nil {
+				t.Fatal(err)
+			}
+
+			txA, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.move(t, ctx, txA, db, order, newOrg)
+
+			id := uuid.New()
+			inserted := make(chan error, 1)
+			go func() {
+				_, err := connB.ExecContext(ctx, `
+					INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+					                          quantity,unit_amount,amount,currency,actor,reason,status,
+					                          completed_at,payment_fact_id)
+					VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','race test','completed',now(),$4)`,
+					id, order, oldOrg, uuid.New())
+				inserted <- err
+			}()
+
+			// THE BARRIER: wait until PostgreSQL says B is blocked. If the derivation does not
+			// lock, B commits instead and this never becomes true.
+			waitUntilBlocked(t, ctx, db, pidB, inserted)
+
+			if err := txA.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-inserted; err != nil {
+				t.Fatal(err)
+			}
+
+			var src uuid.UUID
+			var passes bool
+			if err := db.QueryRowContext(ctx, `
+				SELECT source_organizer_id, source_organizer_id = organizer_id
+				FROM order_refunds WHERE id=$1`, id).Scan(&src, &passes); err != nil {
+				t.Fatal(err)
+			}
+			if src != newOrg {
+				t.Errorf("source_organizer_id is %s, want the COMMITTED %s", src, newOrg)
+			}
+			if passes {
+				t.Error("the row satisfies the claim predicate while its source belongs to another " +
+					"organizer. The queue admits it and the final join drops it, which is the " +
+					"recurring-lease defect this migration removes")
+			}
+		})
+	}
+}
+
+// waitUntilBlocked blocks until PostgreSQL reports pid as waiting on another backend, and fails
+// the test if the statement finishes first or nothing ever blocks.
+//
+// This is the synchronisation a sleep was pretending to be: it observes the lock rather than
+// inferring it from elapsed time.
+func waitUntilBlocked(t *testing.T, ctx context.Context, db *sql.DB, pid int, done <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("the insert completed while the parent identity change was still open "+
+				"(err=%v). Its derivation read the parents without a lock, so it stored an "+
+				"identity that was already being replaced", err)
+		default:
+		}
+		var blocked bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT cardinality(pg_blocking_pids($1)) > 0`, pid).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the insert never blocked on the open parent identity change, and never " +
+				"finished either. Without an observed lock this test cannot show what it is about")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The Down guard reads the AUTHORITATIVE relationship, not the column it is about to drop
+// (TKT-268, ai-review F5).
+//
+// A guard that decides "is it safe to remove source_organizer_id?" by reading
+// source_organizer_id is circular. The state that matters is precisely the one where that column
+// is stale: it agrees with the queue row's own organizer, so a column-reading guard counts zero
+// mismatches, while the source reservation actually belongs to someone else. Rolling back then
+// restores the correlated scan over a rejected population that genuinely exists.
+//
+// This constructs that state directly, with the triggers disabled so the forgery survives, which
+// is also the honest statement of scope: per ADR-021 this is a check against stale data, not
+// against an adversary — anyone able to write these rows can equally drop the guard.
+func TestMigration0026DownReadsTheSourceNotTheDenormalizedColumn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	sourceOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, sourceOrg)
+	queueOrg := uuid.New()
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+		                          quantity,unit_amount,amount,currency,actor,reason,status,
+		                          completed_at,payment_fact_id)
+		VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','stale test','completed',now(),$4)`,
+		id, order, queueOrg, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Forge the stale state: the column agrees with the queue row, the reservation does not.
+	// The trigger is what normally prevents this, so it has to be off for the write.
+	if _, err := db.ExecContext(ctx, `ALTER TABLE order_refunds DISABLE TRIGGER order_refunds_source_organizer`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE order_refunds SET source_organizer_id=organizer_id WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE order_refunds ENABLE TRIGGER order_refunds_source_organizer`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A column-reading guard sees no mismatch here and lets the rollback through.
+	var selfConsistent bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT source_organizer_id = organizer_id FROM order_refunds WHERE id=$1`, id).
+		Scan(&selfConsistent); err != nil {
+		t.Fatal(err)
+	}
+	if !selfConsistent {
+		t.Fatal("the fixture failed to build the stale state, so this test cannot show what it is about")
+	}
+
+	if _, err := provider.DownTo(ctx, 25); err == nil {
+		t.Fatal("0026 rolled back over a row whose SOURCE RESERVATION belongs to another organizer. " +
+			"The guard is reading source_organizer_id — the column it is about to drop — instead " +
+			"of joining through to the reservation, so a stale value waves through the rollback " +
+			"that reinstates the unbounded scan")
+	}
+}
+
+// The OTHER parent path: an order re-pointed at a different reservation (TKT-268).
+//
+// Two identity links can move, and the first version of these tests covered only one. An order
+// whose reservation_id changes reaches a different organizer without reservations ever being
+// updated, so the reservations-side trigger never fires and a test that only moves an organizer
+// cannot see it.
+func TestMigration0026RepointingAnOrderMovesTheDerivedOrganizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+
+	firstOrg := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, firstOrg)
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(id,order_id,organizer_id,idempotency_key,request_fingerprint,
+		                          quantity,unit_amount,amount,currency,actor,reason,status,
+		                          completed_at,payment_fact_id)
+		VALUES($1,$2,$3,'k','fp',1,100,100,'EUR','ops@example.test','repoint test','completed',now(),$4)`,
+		id, order, firstOrg, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second reservation, a different organizer, and the order moves onto it.
+	secondOrg := uuid.New()
+	secondRes := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status`+faceValueColumns(t, ctx, db)+`)
+		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','completed'`+faceValueValues(t, ctx, db)+`)`,
+		secondRes, secondOrg, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE orders SET reservation_id=$1 WHERE id=$2`, secondRes, order); err != nil {
+		t.Fatal(err)
+	}
+
+	var src uuid.UUID
+	if err := db.QueryRowContext(ctx,
+		`SELECT source_organizer_id FROM order_refunds WHERE id=$1`, id).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	if src != secondOrg {
+		t.Fatalf("source_organizer_id is %s after the order was re-pointed at a reservation owned "+
+			"by %s. The orders-side trigger did not fire, so the derived value is stale and a "+
+			"mismatch is reachable without touching the reservations table", src, secondOrg)
+	}
+}
+
+// seedV4OrderForOrganizer is seedV4Order with a caller-chosen organizer, which is what the
+// 0026 tests need: the whole point is that the SOURCE reservation's organizer differs from
+// the queue row's.
+func seedV4OrderForOrganizer(t *testing.T, ctx context.Context, db *sql.DB, org uuid.UUID) uuid.UUID {
+	t.Helper()
+	resID, orderID := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,currency,status`+faceValueColumns(t, ctx, db)+`)
+		VALUES($1,$2,$3,$4,$5,$6,1,1000,1000,'EUR','completed'`+faceValueValues(t, ctx, db)+`)`,
+		resID, org, uuid.New(), uuid.New(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint)
+		VALUES($1,$2,'completed',$3,'fp')`,
+		orderID, resID, "mig-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	return orderID
 }
