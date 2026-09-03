@@ -190,11 +190,11 @@ Safe to add: `capacity_returned_at` has exactly one writer in commerce, downstre
 - **Unparking.** TKT-146, above.
 - **Seated partial returns.** TKT-164 owns the repair. Here they are parked and counted.
 - **Whether inventory should demand proof of prior voiding.** **Closed by
-  [ADR-070](./ADR-070-internal-mutation-ordering-honest-caller.md) (TKT-165): no.** The ordering is
+  [ADR-071](./ADR-071-internal-mutation-ordering-honest-caller.md) (TKT-165): no.** The ordering is
   an honest-caller guarantee, enforced structurally in commerce's `driveOrderedReversal` and now
   declared in the served contract of every affected internal operation. A callee-side receipt would
   bind a buggy honest caller but **not** the named adversary, who can raise a pool's capacity
-  directly with the same credential; ADR-070 §3 gives that argument and names the two conditions
+  directly with the same credential; ADR-071 §3 gives that argument and names the two conditions
   that would reopen it, so cite it rather than re-run it.
 - **Comped (zero-price) orders** get no reversal at all, because there is no money leg to refund
   against — ADR-040 recorded this and it is untouched.

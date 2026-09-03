@@ -1,6 +1,6 @@
 package api
 
-// TKT-165 / ADR-070. Payments' two refund legs must carry their ordering assumption in the
+// TKT-165 / ADR-071. Payments' two refund legs must carry their ordering assumption in the
 // SERVED contract. Same invariant and same reasoning as inventory's copy of this test
 // (services/inventory/internal/api/internal_ordering_contract_test.go), which states the
 // method in full: assert against the PARSED document, because a `#` comment — which is what
@@ -15,7 +15,7 @@ package api
 // AND THE ADVERSARY IS DIFFERENT HERE, which is the reason these two operations are worth a
 // separate file rather than a row in inventory's table. Payments authenticates on
 // PAYMENTS_INTERNAL_TOKEN, which runtimecfg refuses to let equal INTERNAL_SERVICE_TOKEN, so
-// a holder of the shared credential cannot reach these routes at all (ADR-070 §5). Their
+// a holder of the shared credential cannot reach these routes at all (ADR-071 §5). Their
 // prose says so; this test only checks it is said.
 
 import (
@@ -44,7 +44,7 @@ func TestRefundLegsDeclareTheirOrderingAssumption(t *testing.T) {
 			}
 			found := operationByID(doc, op.id)
 			if found == nil {
-				t.Fatalf("operation %q is not in the served spec — ADR-070 §4 enumerates it, so "+
+				t.Fatalf("operation %q is not in the served spec — ADR-071 §4 enumerates it, so "+
 					"either the enumeration is stale or the operation was renamed", op.id)
 			}
 			if strings.TrimSpace(found.Summary) == "" {
@@ -55,7 +55,7 @@ func TestRefundLegsDeclareTheirOrderingAssumption(t *testing.T) {
 					"  want the marker %q in .description — %s\n"+
 					"  got description: %q\n"+
 					"A `#` comment does NOT satisfy this: it never reaches the parsed document or "+
-					"the served spec, which is the gap ADR-070 §6 closes.",
+					"the served spec, which is the gap ADR-071 §6 closes.",
 					op.id, orderingMarker, op.what, found.Description)
 			}
 		})

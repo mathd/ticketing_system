@@ -1,6 +1,6 @@
 package api
 
-// TKT-165 / ADR-070. Inventory's three ordering-dependent internal mutations must carry
+// TKT-165 / ADR-071. Inventory's three ordering-dependent internal mutations must carry
 // their assumption in the SERVED contract, not in a YAML comment.
 //
 // WHY THIS TIER, AND WHY NOT A GREP. The thing being fixed is that the assumption was
@@ -23,7 +23,7 @@ package api
 // WHAT IT DOES NOT ASSERT, stated so a green run is not read as more than it is. It does
 // not check that the prose is TRUE, that the ordering is enforced anywhere, or that any
 // caller honours it. Enforcement lives in commerce and is pinned by
-// services/commerce/internal/refunds/reversal_order_test.go; ADR-070 §2 says so and this
+// services/commerce/internal/refunds/reversal_order_test.go; ADR-071 §2 says so and this
 // test would stay green if that guard were deleted. It asserts visibility, which is the one
 // thing this ticket changed.
 
@@ -42,7 +42,7 @@ import (
 const orderingMarker = "ORDERING ASSUMED, NOT VERIFIED"
 
 func TestOrderingDependentOperationsDeclareTheirAssumption(t *testing.T) {
-	// The three inventory operations ADR-070 §4 enumerates. Named by operationId rather than
+	// The three inventory operations ADR-071 §4 enumerates. Named by operationId rather than
 	// by path so a route rename cannot silently empty this list — a path typo would make the
 	// lookup fail loudly below, where a `paths[...]` miss would just skip.
 	for _, op := range []struct {
@@ -60,7 +60,7 @@ func TestOrderingDependentOperationsDeclareTheirAssumption(t *testing.T) {
 			}
 			found := operationByID(doc, op.id)
 			if found == nil {
-				t.Fatalf("operation %q is not in the served spec — ADR-070 §4 enumerates it, so "+
+				t.Fatalf("operation %q is not in the served spec — ADR-071 §4 enumerates it, so "+
 					"either the enumeration is stale or the operation was renamed", op.id)
 			}
 			// Summary AND description, for different reasons. The summary is what the
@@ -77,7 +77,7 @@ func TestOrderingDependentOperationsDeclareTheirAssumption(t *testing.T) {
 					"  got description: %q\n"+
 					"A `#` comment in openapi.yaml does NOT satisfy this: it never reaches the "+
 					"parsed document, the served spec, or the generated client, which is the "+
-					"exact gap ADR-070 §6 closes.",
+					"exact gap ADR-071 §6 closes.",
 					op.id, orderingMarker, op.what, found.Description)
 			}
 		})

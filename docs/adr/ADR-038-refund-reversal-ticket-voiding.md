@@ -120,13 +120,13 @@ quantity, not that anyone voided anything. A holder of the internal service toke
 free capacity while the tickets still admit. The ordering is an **honest-caller** guarantee, not an
 enforced one — the ADR-021 distinction, applied to a service boundary instead of a database.
 
-**Settled by [ADR-070](./ADR-070-internal-mutation-ordering-honest-caller.md) (TKT-165): the
+**Settled by [ADR-071](./ADR-071-internal-mutation-ordering-honest-caller.md) (TKT-165): the
 honest-caller model is ratified, and no boundary receipt is added.** What was done instead is to
 declare the assumption in each affected operation's *served* contract, where an integrator reads it.
 
 **Three corrections this paragraph used to get wrong, recorded because each was argued and believed
 (TKT-165 ai-review).** They are stated here rather than silently edited, since this section was the
-source ADR-070's first draft reasoned from.
+source ADR-071's first draft reasoned from.
 
 1. **`/internal/holds/{id}/release` is NOT an easier path to the same harm.** An earlier version of
    this paragraph said it "has always been able to free a whole claim the same way". It cannot, for
@@ -136,10 +136,10 @@ source ADR-070's first draft reasoned from.
    while a ticket admits.
 2. **"The adversary could obtain whatever proof is demanded" was backwards.** A receipt issued only
    by a successful void is obtainable only by performing the void. Authority to invoke the issuer is
-   not authority to forge its signature. ADR-070 §3 gives the argument that does hold: the same
+   not authority to forge its signature. ADR-071 §3 gives the argument that does hold: the same
    credential can raise a pool's capacity outright, so a receipt would close one door in a wall whose
    widest door stays open.
-3. **The count and the membership.** ADR-070 §4 enumerates **four** ordering-dependent mutations, not
+3. **The count and the membership.** ADR-071 §4 enumerates **four** ordering-dependent mutations, not
    six, scoped to the 31 internal mutations actually swept. `/internal/psp/refund` and
    `/internal/psp/partial-refund` are **excluded**: commerce refunds the money *before* driving the
    reversal (`services/commerce/internal/refunds/service.go:93-107`), so they begin the sequence

@@ -1,4 +1,4 @@
-# ADR-070: Cross-service ordering is an honest-caller guarantee, enforced in the caller and declared at the boundary
+# ADR-071: Cross-service ordering is an honest-caller guarantee, enforced in the caller and declared at the boundary
 
 Date: 2026-09-01
 

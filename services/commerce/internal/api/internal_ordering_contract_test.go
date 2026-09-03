@@ -1,6 +1,6 @@
 package api
 
-// TKT-165 / ADR-070. Commerce's exchange switch callback must carry its ordering assumption
+// TKT-165 / ADR-071. Commerce's exchange switch callback must carry its ordering assumption
 // in the SERVED contract. Same invariant and method as the inventory copy of this test,
 // which states the reasoning in full: assert against the PARSED document, because the `#`
 // comment this operation carried before this ticket cannot reach `openapi3.T`, the served
@@ -11,7 +11,7 @@ package api
 // commerce records `tickets_exchanged_at` before returning the old capacity — and it is
 // itself ordering-dependent, because commerce takes access's report on trust. An operation
 // whose whole purpose is to be evidence of an ordering, and which cannot verify the ordering
-// it reports, is the clearest statement of why ADR-070 concludes what it does.
+// it reports, is the clearest statement of why ADR-071 concludes what it does.
 
 import (
 	"strings"
@@ -32,7 +32,7 @@ func TestExchangeSwitchCallbackDeclaresItsOrderingAssumption(t *testing.T) {
 	}
 	found := orderingOperationByID(doc, id)
 	if found == nil {
-		t.Fatalf("operation %q is not in the served spec — ADR-070 §4 enumerates it, so either "+
+		t.Fatalf("operation %q is not in the served spec — ADR-071 §4 enumerates it, so either "+
 			"the enumeration is stale or the operation was renamed", id)
 	}
 	if strings.TrimSpace(found.Summary) == "" {
@@ -44,7 +44,7 @@ func TestExchangeSwitchCallbackDeclaresItsOrderingAssumption(t *testing.T) {
 			"transaction commits, and commerce cannot verify that it did\n"+
 			"  got description: %q\n"+
 			"A `#` comment does NOT satisfy this: it never reaches the parsed document, the "+
-			"served spec, or the generated client, which is the gap ADR-070 §6 closes.",
+			"served spec, or the generated client, which is the gap ADR-071 §6 closes.",
 			id, orderingMarker, found.Description)
 	}
 }

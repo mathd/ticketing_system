@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-// TKT-165 / ADR-070. The ordering assumption must reach the GENERATED CLIENT, which is the
+// TKT-165 / ADR-071. The ordering assumption must reach the GENERATED CLIENT, which is the
 // artifact an integrator actually reads.
 //
 // WHY THIS EXISTS ALONGSIDE THE GO TESTS. The three Go declaration tests
@@ -61,7 +61,7 @@ function blockForPath(path: string): string {
   const start = generated.indexOf(key);
   if (start === -1) {
     throw new Error(
-      `${path} is not in the generated client. ADR-070 §4 enumerates it, so either the ` +
+      `${path} is not in the generated client. ADR-071 §4 enumerates it, so either the ` +
         `enumeration is stale or the route was renamed.`,
     );
   }
@@ -70,7 +70,7 @@ function blockForPath(path: string): string {
 }
 
 describe('the generated inventory client carries the ordering assumptions', () => {
-  // ADR-070 §4's three inventory operations, each with the phrase that makes its own
+  // ADR-071 §4's three inventory operations, each with the phrase that makes its own
   // assumption identifiable. The phrase is asserted against THAT OPERATION'S BLOCK, so a
   // description copied or swapped from a sibling fails — see the header note.
   it.each([

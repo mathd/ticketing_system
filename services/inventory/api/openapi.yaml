@@ -155,7 +155,7 @@ paths:
       operationId: confirmHold
       summary: Confirm a claim, permanently consuming its capacity (internal)
       description: >-
-        ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have captured the payment before
+        ORDERING ASSUMED, NOT VERIFIED (ADR-071). The caller must have captured the payment before
         confirming: this transition permanently increments the pool's `confirmed_quantity`, and
         inventory checks only the claim's own status — it never sees payment, so a confirm without a
         capture is sold capacity that never paid. Confirming after the capture can only under-sell,
@@ -173,7 +173,7 @@ paths:
       operationId: releaseHold
       summary: Release a claim, returning its whole capacity to the pool (internal)
       description: >-
-        ORDERING ASSUMED, NOT VERIFIED (ADR-070). The caller must have ensured the related
+        ORDERING ASSUMED, NOT VERIFIED (ADR-071). The caller must have ensured the related
         entitlement can no longer admit before releasing: freeing the seat while the ticket still
         admits is the one sequence that can oversell (ADR-038 §1). Inventory validates the claim and
         nothing else — it takes a hold id and an organizer and frees the whole claim without
@@ -207,7 +207,7 @@ paths:
       operationId: returnRefundedCapacity
       summary: Return a refunded quantity of a confirmed claim's capacity to the pool (internal)
       description: >-
-        ORDERING ASSUMED, NOT VERIFIED (ADR-070). The second obligation of a refund's reversal, and
+        ORDERING ASSUMED, NOT VERIFIED (ADR-071). The second obligation of a refund's reversal, and
         it must come AFTER the tickets are voided (TKT-161 / ADR-038 §1): freeing capacity while the
         original ticket still admits is the one ordering that can oversell. Inventory validates the
         claim and the quantity, not that anyone voided anything, and it cannot — the guarantee is
