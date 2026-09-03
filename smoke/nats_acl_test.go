@@ -509,13 +509,23 @@ func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
 	// VALUE. The name check catches the obvious regression (someone adds the variable to the
 	// shared anchor); the value check catches it arriving under a different name, e.g. folded
 	// into a NATS_URL.
+	// FAIL rather than skip when the value is unavailable. A `!= ""` guard here would let the
+	// value check silently become a no-op in any environment that does not export the password,
+	// leaving a test that still passes while performing half the job it documents — the
+	// green-test-that-cannot-reach-the-failing-state shape. If this fires, the harness is
+	// misconfigured (scripts/smoke.sh exports it), not the code under test.
 	operatorPassword := strings.TrimSpace(os.Getenv(operatorVar))
+	if operatorPassword == "" {
+		t.Fatalf("%s is not set in the test environment, so the value check cannot run; "+
+			"scripts/smoke.sh must export it (a name-only check would pass while a renamed "+
+			"copy of the credential sat in a service's environment)", operatorVar)
+	}
 	for _, service := range []string{"inventory", "catalog", "commerce", "access", "payments"} {
 		env := envOf(service)
 		if strings.Contains(env, operatorVar+"=") {
 			t.Errorf("%s holds %s; the operator credential must reach only the nats container", service, operatorVar)
 		}
-		if operatorPassword != "" && strings.Contains(env, operatorPassword) {
+		if strings.Contains(env, operatorPassword) {
 			t.Errorf("%s holds the operator password VALUE; it must reach only the nats container", service)
 		}
 	}
