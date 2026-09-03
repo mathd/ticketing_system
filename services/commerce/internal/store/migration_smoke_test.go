@@ -901,6 +901,11 @@ func TestMigration0026AStatusWriteDoesNotFireTheReseatTriggers(t *testing.T) {
 		}
 		control.WriteString(line + "\n")
 	}
+	// An error mid-iteration ends the loop with no rows and no complaint, which would make the
+	// "no Trigger line" check below pass for the wrong reason.
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(control.String(), "Trigger") {
 		t.Errorf("an ORGANIZER write fired no trigger, so the check above proves nothing — the "+
 			"reseat mechanism is not running at all.\n%s", control.String())
@@ -925,6 +930,11 @@ func explainStatusWrite(t *testing.T, ctx context.Context, db *sql.DB, order uui
 			t.Fatal(err)
 		}
 		b.WriteString(line + "\n")
+	}
+	// Same reason as the control loop: a truncated plan with no error reported reads as a plan
+	// with no Trigger line in it, which is exactly what the caller treats as success.
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	return b.String()
 }
