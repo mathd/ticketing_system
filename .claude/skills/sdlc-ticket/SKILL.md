@@ -54,7 +54,7 @@ State the mode in the **claim comment** ("running gateless per `config.gates: au
 **Gate replacements:**
 
 - **Gate 1 (priority):** not replaced — the ticket must already be in `Ready`. Verify that against the board (§ Before you start); a ticket really in Backlog gets shaped and **stops there** for the human.
-- **Gate 2 (plan approval):** after the cross-model plan critique, resolve every open decision yourself: prefer the option the critique recommends; if it makes no recommendation, pick the **most reversible** option. Record each self-made decision and its rationale in the `kind=plan-final` comment, then transition `Planning → Building` yourself.
+- **Gate 2 (plan approval):** after the cross-model plan critique, resolve every open decision yourself: prefer the option the critique recommends; if it makes no recommendation, pick the **most reversible** option. Record each self-made material decision as a `kind=decision` comment, reference its ID from `kind=plan-final`, then transition `Planning → Building` yourself.
 - **Gate 3 (review + merge):** after the adversarial ai-review converges (same triage, second-pass, and churn-cap rules as always), post the **review-guide on the PR first** — it becomes the audit record — then verify `git rev-parse HEAD` == `git rev-parse origin/<branch>` (Hard rules), squash-merge the PR yourself, delete the branch, and transition `Building → PO Review`.
 - **Gate 4 (PO acceptance):** self-validate **each COS against test evidence on the merged code**, post the validation note, transition to `Done`, and close with the full `kind=metrics` comment — the `overrides:` list (§ Memory & metrics) is mandatory on every autonomous run, `none` earned not assumed.
 
@@ -72,7 +72,7 @@ State the mode in the **claim comment** ("running gateless per `config.gates: au
 - (d) a configured model is **unreachable** after the documented escalation ladder;
 - (e) an action would be **destructive or hard to reverse** and the right choice is ambiguous.
 
-Otherwise make the call yourself, record it (plan-final decisions, stage comments, `overrides:`), and keep going.
+Otherwise make the call yourself, record it (`kind=decision`, stage comments, `overrides:`), and keep going.
 
 > **Custom workflow, deliberately richer than the org standard.** The agent stages (`Planning`, `Building`) are **first-class Jira statuses**, not just labels — the label axis alone isn't visible enough for human + AI co-work. The org's admin route creates the bare Jira project + Confluence space; **you** (project admin) build the workflow/board yourself. **PO Review** (gate 4) and transversal **BLOCKED** are kept from the standard because the business wants them. Details: `references/setup.md` §1.
 
@@ -170,14 +170,60 @@ Swapping `plan` ↔ `planReview` is how the "Codex drafts, main agent reviews" v
 - **The Jira comment thread is the memory.** Every `agent:*` stage ends with a marker-tagged comment (`<!-- sdlc:stage=… kind=… -->` on line 1) *before* the label moves; every stage and every resume starts by reading the board + thread, not conversation memory. Comments without a marker are human steering — incorporate and acknowledge them.
 - Per-stage durations come from the **Jira issue changelog** (status + label history), never hand-tracked.
 
+## Decision log artifacts
+
+Planning and Building each produce a two-part review bundle. The planning bundle is the draft plus
+its final amendments, paired with the planning decision log. The development bundle is the diff,
+tests and verification evidence, paired with the development decision log. The ticket thread owns
+both logs through append-only `kind=decision` comments, so the board can show them without another
+state store.
+
+Log a decision when the ticket or approved plan did not settle it and the choice:
+
+- changes observable behaviour, security, data, money, concurrency, failure handling or the test seam;
+- selects between meaningful alternatives;
+- changes the approved plan or leaves follow-up work;
+- would help a reviewer explain why the result has this shape.
+
+Do not log routine mechanics, facts already dictated by the spec, or private reasoning. Record the
+decision when it is made, before more work makes the choice expensive to reverse. Never edit an old
+entry. Append a new entry with `Supersedes: <ID>` when a later fact changes it. IDs are sequential
+within the ticket: `D1`, `D2`, and so on across both phases.
+
+Use this exact body shape so humans and tools can scan the log consistently:
+
+```markdown
+<!-- sdlc:stage=<planning|coding> kind=decision -->
+Decision ID: D<n>
+
+Decision: <the choice in one sentence>
+
+Trigger: <what the ticket or approved plan did not specify>
+
+Options considered:
+- <option and its concrete trade-off>
+- <option and its concrete trade-off>
+
+Why: <evidence that selected the choice>
+
+Consequences: <new constraint, risk or follow-up, or `none`>
+
+Artifacts: <plan section, files, tests, ADR or PR location>
+```
+
+`Artifacts` may name planned locations during Planning and must name actual locations during
+Building. If a phase has no material decisions, its closing `kind=plan-final` or `kind=summary`
+comment says `Decision log: none`. Otherwise it lists every decision ID for that phase. The list is
+a completeness check, not a duplicate rationale.
+
 ## The 6 statuses
 
 | # | Status | Entry means | Agent does (label sequence) | Exit gate |
 |---|--------|-------------|------------------------------|-----------|
 | 1 | `Backlog` | issue created | Write **COS** (Conditions of Success — this pipeline's term for acceptance criteria) + scope; suggest `risk:low` if trivial. **Every pipeline ticket gets the context-mémo bake** (`decomposition.md` § context-mémo) — standalone tickets too. **Raw idea →** explore first (`exploration.md`). **PRD/multi-ticket →** decompose (`decomposition.md`). **Then shape** (`shaping.md`): fill the 8-item DoR (`readiness` field — `context_memo` is one of them, so the bake is gate-enforced), spawn spikes, flag human decisions (`owner: "human"`). | ⛔ human → `Ready` — **hard-blocked while any DoR item is `open` or a blocker is open** (`deferred` passes) |
 | 2 | `Ready` | approved queue | Verify **zero open blockers**, then claim: assign self, create branch `<ISSUE-KEY>-<slug>` off `origin/main`, post a claim comment with selection reason. | agent claims → `Planning` |
-| 3 | `Planning` | agent claimed | `agent:planning`: **`config.models.plan`** reads the real code + the context-mémo, picks the **test seam**, drafts the plan (DoD, files, test plan) → `agent:plan-review`: **`config.models.planReview`** critiques it adversarially, pre-mortem pass → `needs:human` (skip if `risk:low`). | ⛔ human → `Building` |
-| 4 | `Building` | plan approved | `agent:coding`: **`config.models.implement`** does TDD from the approved plan, local gate green, push, open PR (`<ISSUE-KEY>` in title/body) → `agent:ai-review`: **`config.models.aiReview`** adversarially reviews the diff, triage, fix, rebase if behind, re-green, second pass if fixes were non-trivial → `needs:human`: post the review-guide on the PR, stop. | ⛔ human reviews + **merges** → `PO Review` |
+| 3 | `Planning` | agent claimed | `agent:planning`: **`config.models.plan`** reads the real code + the context-mémo, picks the **test seam**, drafts the plan and records material `kind=decision` entries → `agent:plan-review`: **`config.models.planReview`** critiques the plan and planning decision log, pre-mortem pass → `needs:human` (skip if `risk:low`). | ⛔ human reviews the plan bundle → `Building` |
+| 4 | `Building` | plan approved | `agent:coding`: **`config.models.implement`** does TDD from the approved plan and records new or changed material decisions, local gate green, push, open PR (`<ISSUE-KEY>` in title/body) → `agent:ai-review`: **`config.models.aiReview`** first reviews the diff blind, then audits it with both decision logs, triage, fix, rebase if behind, re-green, second pass if fixes were non-trivial → `needs:human`: post the review-guide on the PR, stop. | ⛔ human reviews the development bundle + **merges** → `PO Review` |
 | 5 | `PO Review` | human merged (deployed to DEV) | `needs:human`: post a validation note showing the **COS are met** from the user's output (via code if not user-demonstrable), + any preview link; stop pushing. | ⛔ PO validates COS + gives final go → `Done` |
 | 6 | `Done` | PO accepted | Remove `needs:human`; verify PR merged + the **project DoD** (see `references/setup.md`); post the metrics comment; promote reusable learnings; delete branch. | — |
 
@@ -236,11 +282,14 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      safe-must-be-public contract rule and on the cachetier tier audit's closed allowlist.
 #      Post the draft attributed to the model that wrote it.
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=planning kind=plan -->
+#   As material choices are made, append one <!-- sdlc:stage=planning kind=decision --> comment
+#   per choice using § Decision log artifacts. Do not reconstruct the log at the end.
 #   MCP editJiraIssue: -agent:planning +agent:plan-review
 #   3b CRITIQUE — by config.models.planReview (≠ plan, enforced). Adversarial, not a rubber stamp.
 #      Verify every file/symbol/test seam the draft names actually EXISTS (`git grep -n` at HEAD) —
 #      a drafter that couldn't run the gate will hallucinate seams. Check against the real code,
-#      the COS, the registry; pre-mortem lens (quality-practices.md §1).
+#      the COS, the registry; pre-mortem lens (quality-practices.md §1). Review the plan first
+#      without its rationale, then audit the plan together with every planning decision entry.
 #      Accept / amend / reject each part of the draft with a stated reason.
 #   3c FINALIZE — YOU, always (a delegated worker cannot talk to the human): grill the human on
 #      the open decisions (complex tickets, one question at a time), revise, post kind=plan-final
@@ -252,6 +301,8 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      reviewed by nobody but their author — the cross-model guarantee covers the draft and the
 #      code, not 3b's own inventions (TKT-57). Name them again in the Gate 2 hand-off. If the
 #      list is empty, write `none`.
+#      REQUIRED SECTION — `Decision log: <IDs>` or `Decision log: none`. Confirm the listed
+#      entries cover every material choice introduced while drafting or revising the plan.
 #   If risk:low → skip to step 4.
 #   MCP editJiraIssue: -agent:plan-review +needs:human
 #   ⛔ GATE 2 — wait for the human to transition Planning → Building.
@@ -260,6 +311,9 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   MCP editJiraIssue: -needs:human +agent:coding
 #   TDD, by config.models.implement. The approved kind=plan-final IS the brief — if it isn't
 #   enough to hand over, that's a plan bug; fix the plan, don't paper over it in-session.
+#   Append <!-- sdlc:stage=coding kind=decision --> when implementation exposes a material choice
+#   the approved plan did not settle, or when evidence forces a plan decision to change. Link the
+#   affected code/test in Artifacts; use Supersedes when replacing an earlier decision.
 #   One implementer, no worktree — WIP is one ticket, and a TDD loop doesn't parallelize.
 #   Local gate (mirrors CI): run config.code.localGate. If you delegated, VERIFY don't trust —
 #   re-run the gate yourself on the committed tree (quality-practices.md §2.b).
@@ -291,12 +345,14 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   attribution), push; gh pr create --base main --title "<ISSUE-KEY> …" --body "…<ISSUE-KEY>…"
 #   MCP addCommentToJiraIssue: <!-- sdlc:stage=coding kind=summary --> (+ stage YAML; name the implementer)
 #   MCP editJiraIssue: -agent:coding +agent:ai-review
-#   REVIEW — by config.models.aiReview, on the branch diff vs base, primed for guilt (Hard rules).
+#   REVIEW — by config.models.aiReview. First review the branch diff vs base blind, primed for
+#   guilt. Then run the decision audit with the approved plan plus both decision logs (Hard rules).
 #   Triage findings (quality-practices.md §2): blocking→fix in PR; incidental→new backlog ticket;
 #   rejected→stated reason. Rebase on origin/main if behind; re-green.
 #   SECOND PASS iff the fixes were non-trivial (Hard rules). Trivial → one pass, say so in the
 #   stage comment. No third on a stable diff — still churning → stop, hand to the human.
-#   MCP comment kind=summary (ai-review): per-finding verdicts, what was fixed, second-pass call + why.
+#   MCP comment kind=summary (ai-review): per-finding verdicts, what was fixed, decision-audit
+#   verdicts, `Decision log: <development IDs>` or `Decision log: none`, second-pass call + why.
 #   MCP editJiraIssue: -agent:ai-review +needs:human ; post the review-guide on the PR. STOP pushing.
 #   ⛔ GATE 3 — human reviews + merges (squash) in the code repo, then transitions Building → PO Review.
 #     Do NOT merge yourself. Merge conflict? swap back to agent:coding, rebase, re-green,
@@ -317,7 +373,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 
 ## Memory & metrics (Jira)
 
-- **Thread = memory.** Markers on line 1: `<!-- sdlc:stage=<backlog|ready|planning|plan-review|coding|ai-review|po-review|done> kind=<claim|plan|plan-final|summary|blocker|metrics|readiness> -->`. The `review-guide` lives on the **PR**, not Jira. Resume = read the board status + label + the latest of each marker kind + any human comment after the last agent comment.
+- **Thread = memory.** Markers on line 1: `<!-- sdlc:stage=<backlog|ready|planning|plan-review|coding|ai-review|po-review|done> kind=<claim|plan|plan-final|decision|summary|blocker|metrics|readiness> -->`. The `review-guide` lives on the **PR**, not Jira. Resume = read the board status + label + the latest of each marker kind + every `kind=decision` comment + any human comment after the last agent comment.
 - **Cross-ticket memory.** Reusable learnings (codebase patterns, gotchas) go to a dedicated **"🧠 Agent memory" Jira issue** (or the team decision registry). When a pattern proves out, promote it per the **"3 houses" rule** (`references/setup.md`): **technical** standards → the team's shared standards registry (via PR), **process** learnings → the team wiki, repo-local guidance → `AGENTS.md` via a normal gated ticket. Working memory ≠ gospel.
 - **Promotion is a mandatory Done step, not best-effort.** The `kind=metrics` closing comment must include a `learnings:` section — either concrete promotable items (each with its target house) or the explicit word `none`. Skipping it is the registry cold-start failure mode.
 - **Metrics.** Durations from the Jira changelog (status/label transitions); `needs:human` time-in-state is the Gate 2 / Gate 3 human wait — a first-class metric, the likely bottleneck. Diff size from `gh pr view`. The `kind=metrics` comment has **required fields** — a table `stage | duration` (one row per status + per `agent:*` label), `human-wait total`, `diff: +x/−y (n files)`, the `learnings:` section, and a `retro:` section. All five, every ticket; missing data is written `n/a`, not omitted.
@@ -333,7 +389,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 - **Delegated ≠ done.** When a stage resolves to anything but `main-agent`, you still own the outcome: verify the output against the real code, re-run the gate yourself (`quality-practices.md` §2.b), and attribute the work in the stage comment. A delegated run reports a *claim*; the evidence is what you check.
 - **`gpt-*` stage mechanics live in `references/codex-runner.md`** — companion script (not raw `codex exec`, not slash commands), prompt-file materialization, the raw fallback, judging output (exit 0 ≠ success), and the fixed escalation ladder. Read it before running any such stage. A `@claudex` suffix on the model swaps the harness, not the model — those mechanics live in `references/claudex-runner.md` instead.
 - **Verify reviewer findings against the revision under review — not the base branch.** The review pass is a *lead generator*, not an oracle. Check each finding with `git grep -n "<sym>" HEAD` (or the working tree); use `origin/main` **only** to ask whether something pre-existed the change — grepping the base for a symbol the PR *introduces* looks like a refuted finding. Make sure your checkout is current first (a stale local `main` is what makes this go wrong). Record a per-finding verdict in the stage comment.
-- **Prime the reviewer for guilt, and give it the diff only.** The reviewer is told to **assume the diff is wrong and find where** — not to "check whether it's ok". Withholding the plan and the reasoning is **deliberate**: a reviewer that has read the justification evaluates the code against the author's intent instead of against reality. Don't "help" it by pasting in the plan.
+- **Review through two lenses, in order.** First prime the reviewer for guilt and give it the diff only. Tell it to **assume the diff is wrong and find where**, not to "check whether it's ok". This blind pass keeps the author's rationale from persuading the reviewer before it inspects reality. After the blind findings are fixed or triaged, give the reviewer the approved plan and both decision logs for a **decision audit**. The audit checks that each choice is supported by the code and evidence, that the implementation follows the approved plan, and that no material choice is missing from the log. Never replace the blind pass with the informed pass. A good explanation can still defend bad code.
 - **A second `ai-review` pass when the fixes were non-trivial — otherwise one.** The second pass exists because **the fix diff is code no one has reviewed** — judge the *fix diff*, not the original PR diff. **Non-trivial = any of:** a blocking finding was fixed (correctness/security/AC — fixing one changes logic by construction, so a real review round almost always earns a second pass); aggregate volume, even when each fix is small; new/changed control flow, signature/API/schema/migration, a money/auth/concurrency path, a new or rewritten test, or fixes spilling into files the findings didn't name. A rebase that materially changed the diff also triggers. Pure trivia (typos, comments, formatting, a compiler-verified rename) → one pass. Record the call in the stage comment either way.
   **Cap: two passes per *stable* diff — but a pass that invalidates the previous pass's fix resets the counter (absolute cap 4).** The cap stops **churn** (re-litigated style, resurfaced already-triaged findings, findings shrinking each round → stop, hand to the human), not **convergence** (a pass proved the previous fix wrong at the root and a structural rewrite followed — that rewrite is the branch's least-reviewed, riskiest commit, so run one more; TKT-61). **The absolute cap of 4 may be exceeded only when the run is demonstrably converging**, which means BOTH: every pass so far invalidated the previous pass's fix at the root (never re-litigated settled ground), AND the finding count is **strictly decreasing** each round. Name each extra pass and this justification in `overrides:`. Absent either condition the cap holds — a run that keeps finding *new* defects in *unchanged* code is not converging, it is a diff nobody understands yet, and that belongs with a human. TKT-244 is the boundary case: four passes, findings 3→2→1→1, each refuting the prior fix, each fix structurally smaller than the last (trim → hidden state → server merge → **remove the capability**) — and the fourth still found a real [high]. It stopped at the cap by rule, with the residual honestly recorded as *unquantified*. If you do stop at the cap with an unreviewed fix diff, **say so explicitly in the stage comment *and* the review-guide**, and label your own verification as your own.
   **Carve-out for a diff touching no production or test code** (an ADR, docs, comments): the cap still stops the *review*, but the agent **may merge at the cap** provided every finding is fixed, the gate is green, and the unreviewed fix diff is named in `overrides:` and the review-guide. The rule's rationale is that *a diff nobody understands yet* belongs with a human; a prose diff's failure mode is a misled reader, corrigible by editing prose with no migration, deploy or rollback. And on such tickets the count measures the wrong thing: TKT-234 ran 1→2→3→2 with the *mechanism* settled after pass 2 — what kept the count up was four copies of one fact (an ADR, a test comment, a migration comment, a `docs/learnings/` entry) disagreeing with each other, which is a consistency problem, not an understanding problem. TKT-145 was the same shape at 2→5→3→2. **This does not touch the convergence exception above**, which remains the only route past the absolute cap for a diff that changes code.

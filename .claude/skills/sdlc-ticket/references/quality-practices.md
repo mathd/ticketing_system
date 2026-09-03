@@ -26,9 +26,24 @@ If pre-mortem fits poorly: **inversion** (what would guarantee failure? avoid th
 
 Record one line in the `plan-final` comment: lens applied + what it changed (or "no changes").
 
-Why the two roles are always different models: **a drafter is unattached to a favoured approach right up until it has drafted one** — after that it wants its plan accepted. The critic has no such stake, which is the entire reason the split exists. The two sides bring different things, so assign them deliberately: the **grounded** side (repo, ticket thread, ability to run the gate) is the one that can *falsify* a draft; the **fresh** side is the one that brings an angle unattached to the ticket's history. Drafting is where a fresh angle pays; critiquing is where grounding pays. `config.models` decides which model sits where — this pass is the same either way, and the critic is never handed the author's justification.
+Why the two roles are always different models: **a drafter is unattached to a favoured approach right up until it has drafted one** — after that it wants its plan accepted. The critic has no such stake, which is the entire reason the split exists. The two sides bring different things, so assign them deliberately: the **grounded** side (repo, ticket thread, ability to run the gate) is the one that can *falsify* a draft; the **fresh** side is the one that brings an angle unattached to the ticket's history. Drafting is where a fresh angle pays; critiquing is where grounding pays. `config.models` decides which model sits where. The critic sees the author's decision log only after recording the blind critique, so the second lens cannot erase the first one's findings.
 
-## 2. Findings triage (in `agent:ai-review` and at Gate 3 feedback)
+## 2. Findings triage and decision audit (in `agent:ai-review` and at Gate 3 feedback)
+
+The code review has two ordered inputs. Start with the diff only and record its findings before
+showing the reviewer the approved plan or decision log. Then provide the approved plan, every
+`kind=decision` comment, and the implementation evidence for a decision audit. The second lens asks:
+
+- Does the implementation match the approved plan?
+- Does the evidence support each logged choice and its stated consequences?
+- Did implementation make a material choice that the development log omits?
+- Did new evidence invalidate a planning decision without a `Supersedes` entry?
+
+Treat a decision-audit problem like any other finding. A wrong choice that violates correctness,
+security or the COS is blocking. Missing rationale or a missing entry is blocking only when it hides
+a material choice from Gate 3. Fix the artifact as well as the code when both are wrong. The audit
+does not count as a second review pass because the diff has not changed; any non-trivial fix it
+causes still triggers the normal second-pass rule.
 
 Every finding — from the Codex adversarial review or the human reviewer — gets classified before acting:
 
@@ -63,6 +78,7 @@ The "ready for review" comment **on the PR** (code repo, not Jira) is a guided w
 
 **High-risk spots:** <each tagged `[security]` `[schema]` `[data]` `[concurrency]` `[perf]` + location — or "none">
 **Manual checks:** <1–3 observable verifications the reviewer can run>
+**Decision log:** <planning IDs + development IDs, each linked to the ticket's Decisions tab, or "none">
 **Deferred (triage):** <Backlog tickets from incidental findings, or "none">
 ```
 

@@ -131,10 +131,14 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
 2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
    `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
-4. **Planning** — `kind=plan` (drafted by `config.models.plan`) → `agent:plan-review` (critiqued by
-   `config.models.planReview`) → `kind=plan-final` → `needs:human` (skip if `risk:low`).
+4. **Planning** — `kind=plan` (drafted by `config.models.plan`) + append-only `kind=decision`
+   entries → `agent:plan-review` (blind plan critique, then plan + decision-log audit by
+   `config.models.planReview`) → `kind=plan-final` with the decision IDs → `needs:human` (skip if
+   `risk:low`).
 5. ⛔ Gate 2 — human approves → `Building`, swap to `agent:coding`.
-6. **Building** — TDD, PR open (`pr` field) → `agent:ai-review` → `kind=summary` → `needs:human`.
+6. **Building** — TDD + append-only `kind=decision` entries, PR open (`pr` field) →
+   `agent:ai-review` (blind diff review, then approved-plan + decision-log audit) → `kind=summary`
+   with the development decision IDs → `needs:human`.
 7. ⛔ Gate 3 — human merges → `pr.state:"merged"`, → `PO Review`.
 8. **PO Review** — `kind=summary` validation note; stop.
 9. ⛔ Gate 4 — PO accepts → `Done`; remove `needs:human`; `kind=metrics` (with `learnings:` + `retro:`).
@@ -145,6 +149,8 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
 
 ## Rules
 - Same invariants as Jira mode: one pipeline label in flight, stop at `needs:human`, thread = memory.
+- `kind=decision` comments are the ticket's planning and development decision logs. The board shows
+  their phase counts on cards and renders the full log in the ticket's Decisions tab.
 - State lives in the vault. Never write ticket state into a feature branch, a PR, or the
   `sdlc-state` worktree.
 - **Always send `_rev`** and treat a 409 as a real conflict: re-read, re-apply, retry. Never retry

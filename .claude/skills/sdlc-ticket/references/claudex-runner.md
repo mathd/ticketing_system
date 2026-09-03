@@ -66,10 +66,13 @@ re-reviews of fix commits get the discount, and say in the stage comment which e
 ## Reviews under @claudex
 
 There is no claudex equivalent of Codex's built-in `adversarial-review`: a review here is
-the configured model + your review brief in the Claude Code harness. All SKILL.md review rules apply unchanged —
-prime for guilt, diff only, no plan, verify findings against the revision under review. Flag in
-the stage comment that the reviewer ran `@claudex`: swapping the built-in reviewer for a
-prompt-driven one is a semantic change to the experiment, not just plumbing.
+the configured model + your review brief in the Claude Code harness. Run it twice with separate
+briefs. The first brief primes for guilt and contains the diff only. Record those findings. The
+second brief contains the approved plan, every `kind=decision` comment, the diff and verification
+evidence, and asks for the decision audit from `quality-practices.md` §2. Verify all findings
+against the revision under review. Flag in the stage comment that the reviewer ran `@claudex`:
+swapping the built-in reviewer for a prompt-driven one is a semantic change to the experiment,
+not just plumbing.
 
 ## Scope and fallback
 

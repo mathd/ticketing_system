@@ -19,6 +19,8 @@ node "$CODEX" task --prompt-file .brief.$$.md --model gpt-5.6-sol --effort high 
 node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>
 # ai-review — the PR diff vs the base branch
 node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what to attack>"
+# decision audit — a separate read-only task after blind findings are recorded
+node "$CODEX" task --prompt-file .decision-audit.$$.md --model gpt-5.6-sol --effort high --background
 ```
 
 - **`adversarial-review`** is the review command: it takes focus text and challenges the
@@ -27,6 +29,11 @@ node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what
   `--scope auto|working-tree|branch`.
 - **`task` is the only command that takes a model** — pass `--model gpt-5.6-sol` explicitly.
   **The literal is `gpt-5.6-sol`; plain `gpt-5.6` does not work.** Don't "correct" it.
+- **Keep the two review inputs separate.** The `adversarial-review` call receives the diff and no
+  plan or rationale. Record its output before starting the decision-audit `task`. The audit brief
+  contains the approved plan, every `kind=decision` comment, the diff and verification evidence,
+  and asks the questions in `quality-practices.md` §2. Reusing one prompt for both destroys the
+  blind pass.
 - ⚠ **`--background` is a lie for reviews** — parsed and then ignored (verified in the script:
   `review`/`adversarial-review` unconditionally call `runForegroundCommand`; only `task` honours
   it). `status`/`result` polling does **not** work for review jobs, and a stalled review blocks
