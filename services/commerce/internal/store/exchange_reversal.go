@@ -51,15 +51,11 @@ type ClaimedExchangeReversal struct {
 // SIX independent conjuncts guard this claim, and an earlier refusal short-circuits the
 // rest, so each needs its own test with the earlier ones satisfied (AGENTS.md; the store
 // smoke file has one case per conjunct).
-func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]ClaimedExchangeReversal, error) {
-	claim := uuid.New()
-	// EVERY statement in this lifecycle keys on the FULL composite (organizer_id, id).
-	// `order_exchanges`' primary key is (organizer_id, id) — `id` alone is not unique by
-	// schema, and matching on it would let one eligible row hand its claim token to every
-	// same-id row in another tenant, including settled, parked and live-leased ones that
-	// satisfied none of the predicates below. This is ADR-062's ai-review F3, applied here
-	// at write time rather than re-learned.
-	rows, err := db.QueryContext(ctx, `
+// claimOutstandingExchangeReversalsSQL is the shipped claim statement, extracted so the acceptance test can
+// EXPLAIN THE EXACT SQL THIS FUNCTION RUNS rather than a copy of it. A copied query in a
+// plan test drifts from production silently and keeps asserting about the copy
+// (season_smoke_test.go says the same thing about catalog's scoped reads).
+const claimOutstandingExchangeReversalsSQL = `
 		WITH claimable AS (
 			SELECT oe.organizer_id, oe.id FROM order_exchanges AS oe
 			WHERE oe.settled_at IS NOT NULL
@@ -103,68 +99,53 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 			  -- head-of-line blocking the awaiting-switch conjunct above exists to prevent,
 			  -- reached by a different route.
 			  --
-			  -- The lock stays on the queue row: orders and reservations are only ever read
-			  -- here, at AccessShareLock, so sweep replicas do not contend with checkout on
-			  -- them. Measured, not assumed, and the four cases are worth stating precisely
-			  -- because it is easy to credit the wrong thing:
+			  -- THE LOCK PROPERTY, and what TKT-268 changed about it. Before TKT-268 this
+			  -- conjunct was a correlated EXISTS over orders/reservations, and the narrow lock
+			  -- was bought by that EXISTS being a WHERE-clause subquery rather than a FROM-list
+			  -- entry. Measured then, and the four cases are worth keeping because it is easy to
+			  -- credit the wrong thing:
 			  --
 			  --   EXISTS + bare FOR UPDATE  -> orders/reservations AccessShareLock
 			  --   EXISTS + FOR UPDATE OF oe -> orders/reservations AccessShareLock
 			  --   JOIN   + bare FOR UPDATE  -> orders/reservations ROWSHARELOCK  <- regression
 			  --   JOIN   + FOR UPDATE OF oe -> orders/reservations AccessShareLock
 			  --
-			  -- So the narrow lock is bought by the EXISTS being a WHERE-clause subquery
-			  -- rather than a FROM-list entry — NOT by OF oe, which changes nothing while
-			  -- the query has this shape. OF oe is kept for the row above it: it is what
-			  -- makes the obvious refactor (rewriting the EXISTS as a join) keep the narrow
-			  -- lock instead of silently taking row locks on two hot tables. It is insurance
-			  -- against a future edit, not the reason today's lock is narrow.
+			  -- The predicate is now a plain column comparison on the queue row, so this query
+			  -- does not read orders or reservations AT ALL and takes no lock on them whatever.
+			  -- The table above therefore describes a hazard that no longer applies to this
+			  -- statement, and is kept for the edit that would reintroduce it: rewriting the
+			  -- check as a join over those tables. OF oe is likewise kept as insurance against
+			  -- that same future edit, not because today's shape needs it.
 			  --
-			  -- TestTheClaimLocksTheQueueRowOnlyAndNeverTwice guards the property that
-			  -- matters — a concurrent write to the traversed reservation is not blocked, and
-			  -- SKIP LOCKED still fences a second claimant. It does NOT go red on swapping
-			  -- OF oe for a bare FOR UPDATE, because that swap is genuinely a no-op here;
-			  -- it goes red on the join rewrite, which is the edit that can actually hurt.
+			  -- TestTheClaimLocksTheQueueRowOnlyAndNeverTwice guards the property that matters —
+			  -- a concurrent write to the source reservation is not blocked, and SKIP LOCKED
+			  -- still fences a second claimant. It goes red on the join rewrite, which is the
+			  -- edit that can actually hurt.
 			  --
-			  -- WHAT THIS COSTS, stated honestly (ai-review F2). The EXISTS cannot be part
-			  -- of the partial queue index, so PostgreSQL evaluates it per candidate row and
-			  -- the LIMIT cannot stop early on rows it rejects. The work is therefore linear
-			  -- in the size of the REJECTED PREFIX, not bounded by the batch. Measured on
-			  -- PostgreSQL 18.4: 0 malformed rows costs 16 probes and ~0.1ms of subplan work
-			  -- (the LIMIT bounds it, which is today's population); 500 malformed rows ahead
-			  -- of the queue costs ~4ms; 50,000 costs ~263ms against ~0.34ms for the
-			  -- unfiltered query, a 775x regression on 350k buffer hits.
+			  -- WHY THE SHAPE CHANGED (TKT-268, ADR-070). The EXISTS was correct and could not
+			  -- be part of the partial queue index, so PostgreSQL evaluated it per candidate row
+			  -- and the LIMIT could not stop early on the rows it rejected: the work was linear
+			  -- in the REJECTED PREFIX rather than bounded by the batch. Measured at a
+			  -- 50,000-row malformed prefix, batch 16: 263ms over 350,585 buffers before,
+			  -- 0.039ms over 2 buffers after, zero rows removed by filter. Accepting it was
+			  -- right at the time — without any such check those rows are leased and dropped,
+			  -- which wedges the sweep outright, and slow beats stuck — but the durable fix
+			  -- belonged in the schema, which is what 0026 does.
 			  --
-			  -- Accepted here because the alternative is worse, NOT because the bad population
-			  -- is impossible. Without the predicate those rows are LEASED and dropped, which
-			  -- wedges the sweep outright; with it the sweep slows in proportion to how many
-			  -- there are. Slow beats stuck.
+			  -- source_organizer_id is derived from the source reservation BY TRIGGER (migration
+			  -- 0026), never from this row's own organizer_id and never from a caller-supplied
+			  -- value: a copy of organizer_id would make this predicate true by construction and
+			  -- unable to refuse anything. The same predicate is in
+			  -- order_exchanges_reversal_queue_idx, and both halves matter — in the query alone
+			  -- the index still holds the malformed rows and they are read and discarded; in the
+			  -- index alone the planner cannot use it for this query.
 			  --
-			  -- Be precise about how bad that population can get, because it is tempting to
-			  -- write "no code path creates it" and stop there. No code path does — but the
-			  -- ADR-021 note below says plainly that a writer with commerce database access
-			  -- CAN, and a botched repair script is the realistic author of a large one. So
-			  -- the reassuring version of this sentence would contradict the paragraph under
-			  -- it. Nothing here bounds the size of a malformed backlog; only the absence of
-			  -- one does (ai-review pass 2, F5).
-			  --
-			  -- The measurements above are from one run on one machine (PostgreSQL 18.4,
-			  -- warm cache, the fixture described in TKT-268). They are orders of magnitude,
-			  -- not thresholds to tune against, and nothing in this repository reproduces
-			  -- them — TKT-268 owns turning them into something checkable (pass 2, F6).
-			  --
-			  -- A durable fix belongs in the schema, so that claimability stays indexable;
-			  -- filed as TKT-268 rather than widened into this ticket.
-			  --
-			  -- ADR-021, name the adversary: honest-writer consistency, not
-			  -- tamper-evidence. No code path writes a mismatched pair; a writer with
-			  -- commerce database access still can, and this constrains that writer not at
-			  -- all. What it removes is the sweep's inability to progress once one exists.
-			  AND EXISTS (
-			      SELECT 1 FROM orders o
-			      JOIN reservations r ON r.id = o.reservation_id
-			                         AND r.organizer_id = oe.organizer_id
-			      WHERE o.id = oe.source_order_id)
+			  -- ADR-021, name the adversary: honest-writer consistency and bounded claim work,
+			  -- not tamper-evidence. No code path writes a mismatched pair; a writer with
+			  -- commerce database access still can, and can equally drop the trigger or the
+			  -- index. What this removes is the sweep's inability to progress once one exists,
+			  -- and the unbounded scan that removal used to cost. ADR-070 states the scope.
+			  AND oe.source_organizer_id = oe.organizer_id
 			ORDER BY oe.reversal_next_attempt_at
 			FOR UPDATE OF oe SKIP LOCKED
 			LIMIT $1
@@ -199,7 +180,17 @@ func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit i
 		-- lease and can no longer reach this join at all. It is kept because a claim that
 		-- silently returned another tenant's hold would be the worse failure, and the
 		-- predicate costs nothing.
-		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`,
+		JOIN reservations res ON res.id = o.reservation_id AND res.organizer_id = c.organizer_id`
+
+func ClaimOutstandingExchangeReversals(ctx context.Context, db OutboxDB, limit int, lease time.Duration) ([]ClaimedExchangeReversal, error) {
+	claim := uuid.New()
+	// EVERY statement in this lifecycle keys on the FULL composite (organizer_id, id).
+	// `order_exchanges`' primary key is (organizer_id, id) — `id` alone is not unique by
+	// schema, and matching on it would let one eligible row hand its claim token to every
+	// same-id row in another tenant, including settled, parked and live-leased ones that
+	// satisfied none of the predicates below. This is ADR-062's ai-review F3, applied here
+	// at write time rather than re-learned.
+	rows, err := db.QueryContext(ctx, claimOutstandingExchangeReversalsSQL,
 		limit, lease.Seconds(), claim)
 	if err != nil {
 		return nil, fmt.Errorf("claim outstanding exchange reversals: %w", err)

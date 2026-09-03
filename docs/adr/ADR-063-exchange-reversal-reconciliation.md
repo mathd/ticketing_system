@@ -205,7 +205,11 @@ tuning knobs, not credentials.
   the identical three-stage shape). The cost had been worse than one claim slot: a leased-then-dropped
   row makes the store return fewer rows than it leased, and `RunOnce` reads a short batch as a drained
   queue (`len(claimed) < r.batch`) and ends the pass — so one such row cut a drain from its per-pass
-  bound to a single batch per tick. The final join is kept as defence in depth. **Closed by TKT-260**,
+  bound to a single batch per tick. The final join is kept as defence in depth. That sixth conjunct
+  was a correlated `EXISTS` and so could not be part of the partial queue index, making the claim's
+  cost linear in the rejected prefix rather than bounded by the batch;
+  **[ADR-070](./ADR-070-indexable-reversal-claim-scoping.md) (TKT-268) replaced it with an indexed
+  column comparison**, and the statement no longer reads `orders` or `reservations` at all. **Closed by TKT-260**,
   which gave the read the same
   `r.organizer_id = x.organizer_id` predicate. The join is FK-to-unique-key at both hops, so the
   predicate cannot select a different reservation — it reduces a mismatched pair to zero rows, and
