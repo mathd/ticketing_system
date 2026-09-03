@@ -53,11 +53,11 @@ variables.
 | User | Publish Allow | Publish Deny | Subscribe Allow | Subscribe Deny | Purpose |
 |---|---|---|---|---|---|
 | `platform-admin` | `>` | — | `>` | — | Admin migrations, `nats-init`, smoke runner |
-| `catalog` | `platform.catalog.performance.published`, `platform.catalog.performance.archived`, `platform.catalog.performance.closed`, `platform.catalog.performance.reopened`, `platform.catalog.seat_map.published`, `$JS.API.STREAM.INFO.PLATFORM`, `$JS.API.STREAM.MSG.>` | — | `_INBOX.>` | — | Catalog publications |
-| `commerce` | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `$JS.API.STREAM.INFO.PLATFORM`, `$JS.API.STREAM.MSG.>` | — | `_INBOX.>` | — | Order completions and exchanges |
-| `access` | `platform.access.ticket-issuance.failed`, `platform.access.lifecycle-integrity.alarm`, `platform.access.admission-conflict.alarm`, `platform.access.admission-policy-conflict.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, `$JS.API.STREAM.MSG.>`, `$JS.API.CONSUMER.CREATE.PLATFORM.>`, `$JS.API.CONSUMER.INFO.PLATFORM.*`, `$JS.API.CONSUMER.MSG.NEXT.PLATFORM.>`, `$JS.ACK.PLATFORM.>` | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, `platform.access.lifecycle-integrity.alarm`, `platform.access.admission-conflict.alarm`, `platform.access.admission-policy-conflict.alarm`, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
-| `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, `$JS.API.CONSUMER.CREATE.PLATFORM.>`, `$JS.API.CONSUMER.INFO.PLATFORM.*`, `$JS.API.CONSUMER.MSG.NEXT.PLATFORM.>`, `$JS.API.CONSUMER.DELETE.PLATFORM.>`, `$JS.ACK.PLATFORM.>` | All `platform.*` | `platform.catalog.performance.published`, `platform.catalog.performance.archived`, `platform.catalog.performance.closed`, `platform.catalog.performance.reopened`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
-| `inventory-reprocess` | `platform.catalog.performance.published`, `platform.catalog.performance.archived`, `platform.catalog.performance.closed`, `platform.catalog.performance.reopened`, `$JS.API.STREAM.INFO.PLATFORM`, `$JS.API.STREAM.MSG.>` | — | `_INBOX.>` | — | Operator quarantine reprocess command only |
+| `catalog` | `platform.catalog.performance.{published,archived,closed,reopened}`, `platform.catalog.seat_map.published`, `$JS.API.STREAM.INFO.PLATFORM` | — | `_INBOX.>` | — | Catalog publications |
+| `commerce` | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `$JS.API.STREAM.INFO.PLATFORM` | — | `_INBOX.>` | — | Order completions and exchanges |
+| `access` | `platform.access.ticket-issuance.failed`, `platform.access.{lifecycle-integrity,admission-conflict,admission-policy-conflict}.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to its OWN durables only (`CREATE`/`INFO`/`MSG.NEXT`/`ACK` for `access-ticket-issuer` and `access-slot-policy`, `INFO` for the three alarm operator durables) | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, the three `platform.access.*.alarm` subjects, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
+| `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to `inventory-catalog-offering` alone, plus `CONSUMER.DELETE` for the single legacy durable `inventory-performance-provisioner` | All `platform.*` | `platform.catalog.performance.{published,archived,closed,reopened}`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
+| `inventory-reprocess` | `platform.catalog.performance.{published,archived,closed,reopened}`, `$JS.API.STREAM.INFO.PLATFORM` | — | `_INBOX.>` | — | Operator quarantine reprocess command only |
 | `payments` | — | `>` | — | `>` | Healthcheck connection only (`IsConnected`) |
 
 ### 2. The Adversary Model (ADR-021 discipline)
@@ -93,6 +93,28 @@ docker compose run --rm -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY
 ```
 
 ### 5. Access Consumer Wildcard Rationale
+
+Two grant shapes were REMOVED after adversarial review executed them, and the reasons matter more
+than the diff.
+
+**`$JS.API.STREAM.MSG.>` is administrative authority, not part of the publish ack path.** It was
+granted to all four publishers on the assumption that a JetStream publisher needs it to receive its
+ack. It does not: the ack returns on `_INBOX.>`, and `$JS.API.STREAM.INFO` is enough for the client
+to resolve the stream. What the grant actually covers is `STREAM.MSG.GET` and `STREAM.MSG.DELETE`.
+Executed with commerce's real credential, it read a `platform.catalog.performance.published`
+envelope out of the stream and then **deleted** it, with the admin's re-read confirming
+`no message found (10037)`. A publisher could therefore read every other service's events —
+including `order.completed`, which carries `guest_order_ref`, the bearer credential for retrieving
+signed ticket payloads — and erase them before consumption. Verifying that a permission is
+SUFFICIENT is not the same as asking what it ALLOWS.
+
+**Consumer APIs are scoped to each principal's own durables, never `PLATFORM.>`.** The wildcard let
+one service drive another's durable: with inventory's credential, `consumer rm PLATFORM
+access-slot-policy` succeeded. That deletion was nearly invisible, because access's reconnect loop
+recreated the durable at once and the only evidence was its creation timestamp. A test watching for
+an error would have seen a healthy system. The `CREATE.>` half is worse in principle: a principal
+that can create a consumer with an arbitrary filter can read any subject, which would make the
+subscribe column above decorative rather than a boundary.
 
 The grant `$JS.API.CONSUMER.INFO.PLATFORM.*` for the `access` user is a deliberate wildcard.
 Access configures three alarm consumer durable names from environment variables (`ACCESS_LIFECYCLE_ALARM_DURABLE`,

@@ -87,10 +87,23 @@ credential; republishes the stored envelopes byte-identically to their original 
 deterministic `Nats-Msg-Id`s, marks rows only after the broker accepts):
 
 ```bash
+NATS_INVENTORY_REPROCESS_PASSWORD="$(grep '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)" \
 docker compose run --rm \
   -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
-  inventory /app reprocess-quarantine
+  inventory reprocess-quarantine
 ```
+
+Two details that decide whether this command works, both found by review (ai-review F4):
+
+- **Read the password from `.env` on the command line.** `make up` writes it to `.env` and does not
+  export it. Compose reads `.env` for its own interpolation, but `-e NATS_URL="...${VAR}..."` is
+  expanded by YOUR SHELL first, which substitutes empty and hands the broker a credential-less URL.
+  The connection then sits in `RECONNECTING` and the subcommand hangs rather than failing.
+- **The subcommand is `reprocess-quarantine`, not `/app reprocess-quarantine`.** The image declares
+  `ENTRYPOINT ["/app"]` (`build/go.Dockerfile:21`), so an explicit `/app` makes argv
+  `/app /app reprocess-quarantine`; `os.Args[1]` is then `/app`, which is not a registered
+  subcommand, and the binary **starts in server mode** instead of reprocessing
+  (`services/inventory/cmd/inventory/main.go:39-41`).
 
 Then restart inventory — startup confirms no unresolved rows remain and readiness returns. Rows the running binary still cannot read stay unresolved and keep
 readiness down; `reinjected_at` means broker republication succeeded, never that inventory
@@ -906,10 +919,15 @@ seven principals receives an independent `/dev/urandom` draw stored in `.env`:
 To run `inventory reprocess-quarantine`, pass `NATS_URL` with the operator password:
 
 ```bash
+NATS_INVENTORY_REPROCESS_PASSWORD="$(grep '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)" \
 docker compose run --rm \
   -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
-  inventory /app reprocess-quarantine
+  inventory reprocess-quarantine
 ```
+
+The password is read from `.env` on the command line because `make up` writes it there without
+exporting it, and the subcommand carries no `/app` prefix because the image already sets
+`ENTRYPOINT ["/app"]`. See the operator section above for why each matters.
 
 ### Credential rotation
 

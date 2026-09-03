@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,29 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// assertEventAbsent drains the observer until the deadline and fails only if the TARGET id
+// appears. It deliberately does not stop at the first id it sees.
+//
+// The single-read version this replaces (ai-review F5) accepted an unrelated event as proof of
+// absence: the observer listens on live production subjects, so any background event satisfied
+// one read and ended the check before the forged id could arrive. The test then passed while
+// the mechanism it names was never exercised — green, and about something else.
+func assertEventAbsent(t *testing.T, seenIDs <-chan string, targetID, whenSeen string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-seenIDs:
+			if got == targetID {
+				t.Fatalf(whenSeen, targetID)
+			}
+			// An unrelated event. Keep waiting for the target or the deadline.
+		case <-deadline:
+			return
+		}
+	}
+}
 
 // createAdminObserver attaches a JetStream consumer and core subscription to observe events
 // published to the given subject. It runs on the admin connection before publish attempts.
@@ -148,14 +172,8 @@ func TestNATSUnauthenticatedPublishIsRefused(t *testing.T) {
 		_ = nc.FlushTimeout(1 * time.Second)
 	}
 
-	select {
-	case got := <-seenIDs:
-		if got == eventID {
-			t.Fatalf("admin observer saw unauthenticated event %s; want refusal", eventID)
-		}
-	case <-time.After(1 * time.Second):
-		// Confirmed absent
-	}
+	assertEventAbsent(t, seenIDs, eventID,
+		"admin observer saw unauthenticated event %s; want refusal")
 }
 
 // TestNATSCommerceCannotPublishAccessSubject asserts that commerce's credentials cannot
@@ -208,14 +226,8 @@ func TestNATSCommerceCannotPublishAccessSubject(t *testing.T) {
 		t.Fatalf("commerce publish to platform.access subject succeeded; want refusal")
 	}
 
-	select {
-	case got := <-seenIDs:
-		if got == eventID {
-			t.Fatalf("stream contains event %s published by unauthorized commerce principal", eventID)
-		}
-	case <-time.After(1 * time.Second):
-		// Confirmed absent
-	}
+	assertEventAbsent(t, seenIDs, eventID,
+		"stream contains event %s published by unauthorized commerce principal")
 }
 
 // TestNATSInventoryServerCannotPublishCatalogSubject asserts that the long-running inventory
@@ -263,14 +275,8 @@ func TestNATSInventoryServerCannotPublishCatalogSubject(t *testing.T) {
 		t.Fatalf("inventory server publish to platform.catalog subject succeeded; want refusal")
 	}
 
-	select {
-	case got := <-seenIDs:
-		if got == eventID {
-			t.Fatalf("stream contains event %s published by unauthorized inventory server", eventID)
-		}
-	case <-time.After(1 * time.Second):
-		// Confirmed absent
-	}
+	assertEventAbsent(t, seenIDs, eventID,
+		"stream contains event %s published by unauthorized inventory server")
 }
 
 // TestNATSPaymentsConnectsWithZeroSubjectRights asserts that payments credentials connect
@@ -468,5 +474,62 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	}
 	if finalConfirmed != initialConfirmed {
 		t.Fatalf("inventory_pools confirmed_quantity changed: initial=%d, final=%d", initialConfirmed, finalConfirmed)
+	}
+}
+
+// TestNATSOperatorCredentialIsConfinedToTheBroker asserts the ticket's CENTRAL claim: the
+// inventory-reprocess operator password reaches the nats container and NOTHING else. In
+// particular it must never enter the long-running inventory server's environment.
+//
+// Why this test exists (ai-review F3). Every other test here is a NEGATIVE about the
+// `inventory` principal: they prove that credential cannot publish on catalog's prefix. None of
+// them observes the operator credential at all, so adding NATS_INVENTORY_REPROCESS_PASSWORD to
+// compose's shared &go-env anchor would leave this entire file green while voiding the
+// separation the ADR claims. A mitigation whose failure no test can see is a claim, not a
+// control.
+//
+// It asserts on the ENVIRONMENT rather than on a refusal because that is where the property
+// lives. The broker cannot tell us who else holds a password; only the container's environment
+// can. Per ADR-021: state inside a system cannot constrain what is handed to it from outside.
+func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
+	ctx := context.Background()
+	const operatorVar = "NATS_INVENTORY_REPROCESS_PASSWORD"
+
+	envOf := func(service string) string {
+		t.Helper()
+		container := fmt.Sprintf("%s-%s-1", project, service)
+		out, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
+		if err != nil {
+			t.Fatalf("docker inspect %s: %v: %s", container, err, out)
+		}
+		return out
+	}
+
+	// The operator password must be absent from every long-running service, by NAME and by
+	// VALUE. The name check catches the obvious regression (someone adds the variable to the
+	// shared anchor); the value check catches it arriving under a different name, e.g. folded
+	// into a NATS_URL.
+	operatorPassword := strings.TrimSpace(os.Getenv(operatorVar))
+	for _, service := range []string{"inventory", "catalog", "commerce", "access", "payments"} {
+		env := envOf(service)
+		if strings.Contains(env, operatorVar+"=") {
+			t.Errorf("%s holds %s; the operator credential must reach only the nats container", service, operatorVar)
+		}
+		if operatorPassword != "" && strings.Contains(env, operatorPassword) {
+			t.Errorf("%s holds the operator password VALUE; it must reach only the nats container", service)
+		}
+	}
+
+	// And the inventory server must hold its OWN credential, so the check above is not passing
+	// merely because the service has no NATS credential at all.
+	inventoryEnv := envOf("inventory")
+	if !strings.Contains(inventoryEnv, "nats://inventory:") {
+		t.Errorf("inventory does not carry its own `inventory` principal; the absence assertions above prove nothing")
+	}
+
+	// The broker DOES need it: it is the component that enforces the identity. If this fails,
+	// the operator credential is not configured anywhere and the recovery path is dead.
+	if natsEnv := envOf("nats"); !strings.Contains(natsEnv, operatorVar+"=") {
+		t.Errorf("the nats container lacks %s; the operator identity cannot be enforced", operatorVar)
 	}
 }
