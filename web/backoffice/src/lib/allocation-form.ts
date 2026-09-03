@@ -192,21 +192,29 @@ function instant(channel: string, value: string): string | undefined {
  * length and the fraction width, then let `Date` refuse what those rules cannot
  * express.
  *
- * PRECISION IS A CONTRACT, and this one is milliseconds. A fraction finer than
- * that is REFUSED, not truncated.
+ * PRECISION IS A CONTRACT, and this one is MICROSECONDS — six fractional digits,
+ * which is what PostgreSQL `timestamptz` stores. A finer fraction is REFUSED, and
+ * the refusal says so.
  *
- * JavaScript Date holds milliseconds, so converting through it silently drops the
- * rest: `.123456` would store as `.123`. These boundaries are compared against
- * `clock_timestamp()`, so that is a release gate moved by up to 999µs with no
- * warning — small, real, and exactly the class of silent shift this ticket exists
- * to remove. An earlier version accepted and truncated, and a test encoded the
- * truncation as if it were the requirement (ai-review pass 4, [medium]).
+ * The value returned is the string assembled below, NOT `Date`'s serialisation.
+ * That distinction is the whole mechanism. JavaScript Date holds milliseconds, so
+ * returning `parsed.toISOString()` silently drops the rest: `.123456` would store
+ * as `.123`. These boundaries are compared against `clock_timestamp()`, so that is
+ * a release gate moved by up to 999µs with no warning — small, real, and exactly
+ * the class of silent shift this ticket exists to remove.
  *
- * Refusing is the honest option available here: preserving microseconds would mean
- * not converting through Date at all, which is a larger change than this ticket's
- * subject. An UNTOUCHED field is unaffected either way — preservedInstant returns
- * the stored value byte for byte, microseconds included — and the field renders
- * without fractions, so this only fires when someone types them deliberately.
+ * Two earlier versions each got half of this. One accepted and truncated, with a
+ * test encoding the truncation as if it were the requirement (ai-review pass 4,
+ * [medium]). The next refused any fraction past three digits, on the reasoning that
+ * preserving microseconds meant not converting through Date at all. It does not:
+ * Date stays as the final validity check, and the component string is what travels.
+ * Refusing was itself the defect — the stored values carry microseconds, so an
+ * operator pasting one back from a log or the database was refused a value this
+ * system had produced.
+ *
+ * An UNTOUCHED field is unaffected either way — preservedInstant returns the stored
+ * value byte for byte — and the field renders without fractions, so this only
+ * matters when someone types or pastes them deliberately.
  *
  * That last step is NOT a round-trip comparison, and an earlier version of this
  * comment said it was (ai-review pass 3, [low]). Nothing here compares the
@@ -233,8 +241,9 @@ function parseZonedInstant(value: string): string | undefined {
   const minute = Number(mi);
   const second = sec === undefined ? 0 : Number(sec);
 
-  // Milliseconds at most: three fractional digits. See the precision contract above.
-  if (frac !== undefined && frac.length > 4) return undefined;
+  // Microseconds at most: six fractional digits. `frac` includes its leading dot, so
+  // seven characters is six digits. See the precision contract above.
+  if (frac !== undefined && frac.length > 7) return undefined;
   if (month < 1 || month > 12) return undefined;
   // Real month length, leap years included: day 0 of the NEXT month is the last
   // day of this one. Uses UTC so the host's zone cannot change the answer.
@@ -272,7 +281,10 @@ function parseZonedInstant(value: string): string | undefined {
   // passes every range check above and Date still refuses it.
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return undefined;
-  return parsed.toISOString();
+  // The COMPONENT string, not `parsed.toISOString()`. Date parsed it only to reject
+  // what the range rules cannot express; its own serialisation is millisecond-capped
+  // and would silently truncate the microseconds `iso` carries.
+  return iso;
 }
 
 /**

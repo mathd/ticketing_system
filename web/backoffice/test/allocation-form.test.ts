@@ -74,8 +74,9 @@ describe('the full set survives a round trip', () => {
     // test" — which was true, and was a symptom: both sides resolved a zoneless
     // string in the same local zone, so the assertion held on every machine
     // while the value it checked was wrong on all but one. A zoned input has one
-    // correct answer everywhere.
-    expect(a.release_at).toBe('2026-09-01T10:00:00.000Z');
+    // correct answer everywhere — and it is the submitted components, since the
+    // parser returns those rather than Date's millisecond-capped serialisation.
+    expect(a.release_at).toBe('2026-09-01T10:00:00Z');
   });
 
   // Absent optional fields must be OMITTED, not sent as empty strings: the contract
@@ -297,7 +298,7 @@ describe('the write takes unrendered fields from the server, never from the clie
     // server's zone. Before TKT-302 this test passed a bare local value and
     // compared it against `new Date` of the same bare value — self-consistent,
     // and blind to the shift it was supposed to catch.
-    expect(a.release_at).toBe('2026-09-02T08:00:00.000Z');
+    expect(a.release_at).toBe('2026-09-02T08:00:00Z');
   });
 
   // TKT-302. The defect: a zoneless value was resolved in the SSR process's
@@ -310,9 +311,20 @@ describe('the write takes unrendered fields from the server, never from the clie
     const toronto = build({ ...row(), releaseAt: '2026-09-01T10:00:00-04:00' }, [current()]);
     const paris = build({ ...row(), releaseAt: '2026-09-01T10:00:00+02:00' }, [current()]);
 
-    expect(utc.release_at).toBe('2026-09-01T10:00:00.000Z');
-    expect(toronto.release_at).toBe('2026-09-01T14:00:00.000Z');
-    expect(paris.release_at).toBe('2026-09-01T08:00:00.000Z');
+    // ASSERTED AS AN INSTANT, not as a string, and that is the point of the test.
+    // The parser now returns the submitted components verbatim, so comparing text
+    // would only prove the three inputs differ — which they visibly do — while
+    // saying nothing about what instant each one denotes. Parsing the result is
+    // what makes the assertion discriminating: it is the same question the server
+    // asks, and it is the question the zone defect got wrong.
+    const at = (v: string | undefined) => new Date(v!).getTime();
+    expect(at(utc.release_at)).toBe(Date.UTC(2026, 8, 1, 10, 0, 0));
+    expect(at(toronto.release_at)).toBe(Date.UTC(2026, 8, 1, 14, 0, 0));
+    expect(at(paris.release_at)).toBe(Date.UTC(2026, 8, 1, 8, 0, 0));
+
+    // And the three are genuinely distinct instants, which is what a server-zone
+    // collapse would destroy: under the old behaviour all three read as one.
+    expect(new Set([at(utc.release_at), at(toronto.release_at), at(paris.release_at)]).size).toBe(3);
   });
 
   // ai-review [high]. The FIRST version of this test asserted that the row simply
@@ -348,13 +360,15 @@ describe('the write takes unrendered fields from the server, never from the clie
     // new Date(...) is Invalid Date. Refused because there is no instant to store,
     // which is a different reason from the malformations around it.
     ['second 60, a leap second JavaScript cannot represent', '2026-12-31T23:59:60Z'],
-    // Finer than milliseconds. The previous version ACCEPTED this and asserted it
-    // stored as `.123Z` — encoding JavaScript's truncation as if it were the
-    // requirement (ai-review pass 4, [medium]). These boundaries are compared
-    // against clock_timestamp(), so a silently truncated fraction is a release gate
-    // moved by up to 999µs. Refused instead, and the precision contract is stated
-    // in parseZonedInstant.
-    ['a fraction finer than milliseconds, which Date would silently truncate', '2026-09-01T10:17:43.123456Z'],
+    // Finer than MICROSECONDS — seven digits. Six are accepted and preserved (below);
+    // beyond that PostgreSQL timestamptz has nowhere to put the digits either, so the
+    // refusal is the honest answer rather than a silent round.
+    //
+    // Two earlier versions got this wrong in opposite directions. One accepted
+    // `.123456Z` and asserted it stored as `.123Z`, encoding JavaScript's truncation
+    // as the requirement (ai-review pass 4, [medium]). The next refused anything past
+    // three digits — which refused a value the database itself produces.
+    ['a fraction finer than microseconds, which nothing downstream can store', '2026-09-01T10:17:43.1234567Z'],
     ['day 0', '2026-09-00T10:00:00Z'],
     // Refused by the Date parse, NOT by an offset-range rule: there is no offset
     // Date accepts that such a rule would reject, so the rule this file used to
@@ -369,14 +383,19 @@ describe('the write takes unrendered fields from the server, never from the clie
     // The negative cases above must not have been bought by refusing everything.
     // February 29 in a LEAP year is legal; so is a seconds-less value, and an
     // offset at the edge of the range.
+    // The value is the SUBMITTED components, normalised only in the ways the parser
+    // states: seconds defaulted, `z`/`t` upper-cased. It is NOT Date's serialisation,
+    // so an offset is preserved rather than converted to UTC — Go parses either
+    // spelling to the same instant, and keeping the operator's offset keeps the
+    // microseconds Date would drop.
     const leap = build({ ...row(), releaseAt: '2028-02-29T10:00:00Z' }, [current()]);
-    expect(leap!.release_at).toBe('2028-02-29T10:00:00.000Z');
+    expect(leap!.release_at).toBe('2028-02-29T10:00:00Z');
 
     const noSeconds = build({ ...row(), releaseAt: '2026-09-01T10:00Z' }, [current()]);
-    expect(noSeconds!.release_at).toBe('2026-09-01T10:00:00.000Z');
+    expect(noSeconds!.release_at).toBe('2026-09-01T10:00:00Z');
 
     const edgeOffset = build({ ...row(), releaseAt: '2026-09-01T10:00:00+14:00' }, [current()]);
-    expect(edgeOffset!.release_at).toBe('2026-08-31T20:00:00.000Z');
+    expect(edgeOffset!.release_at).toBe('2026-09-01T10:00:00+14:00');
   });
 
   // ai-review pass 3, (a). A validator that refuses LEGITIMATE input is a new
@@ -385,12 +404,15 @@ describe('the write takes unrendered fields from the server, never from the clie
   // would have bitten: stored values carry MICROSECONDS, so a fraction is exactly
   // what an operator pasting from a log or the database types.
   it.each([
-    ['a lowercase zone marker, which RFC 3339 permits', '2026-09-01T10:00:00z', '2026-09-01T10:00:00.000Z'],
+    ['a lowercase zone marker, which RFC 3339 permits', '2026-09-01T10:00:00z', '2026-09-01T10:00:00Z'],
     ['fractional seconds', '2026-09-01T10:00:00.500Z', '2026-09-01T10:00:00.500Z'],
-
-    ['a lowercase date/time separator', '2026-09-01t10:00:00Z', '2026-09-01T10:00:00.000Z'],
-    ['+00:00, which is Z spelled out', '2026-09-01T10:00:00+00:00', '2026-09-01T10:00:00.000Z'],
-    ['-00:00', '2026-09-01T10:00:00-00:00', '2026-09-01T10:00:00.000Z'],
+    // The case the whole precision contract exists for: six digits, preserved exactly.
+    // Date.toISOString() would return `.123Z` here, losing 456µs.
+    ['microseconds, preserved to the digit', '2026-09-01T10:17:43.123456Z', '2026-09-01T10:17:43.123456Z'],
+    ['microseconds on an offset zone', '2026-09-01T06:17:43.123456-04:00', '2026-09-01T06:17:43.123456-04:00'],
+    ['a lowercase date/time separator', '2026-09-01t10:00:00Z', '2026-09-01T10:00:00Z'],
+    ['+00:00, which is Z spelled out', '2026-09-01T10:00:00+00:00', '2026-09-01T10:00:00+00:00'],
+    ['-00:00', '2026-09-01T10:00:00-00:00', '2026-09-01T10:00:00-00:00'],
   ])('accepts %s', (_name, value, want) => {
     expect(build({ ...row(), releaseAt: value }, [current()])!.release_at).toBe(want);
   });

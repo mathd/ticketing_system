@@ -147,11 +147,13 @@ if (Astro.request.method === 'POST') {
         // the full-set replace from clearing this channel's release gate, which is
         // what an omitted release_at would have done (ai-review [high]).
         releaseErrors = {
-          [e.channel]: 'Use RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00.',
+          [e.channel]:
+            'Use RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00. ' +
+            'At most six fractional-second digits.',
         };
         errors = {
           rows: {},
-          form: 'Nothing was saved. One release time is not a valid zoned instant.',
+          form: 'Nothing was saved. One release time is not a zoned instant this form accepts.',
         };
       } else if (e instanceof UnknownAllocationChannel || e instanceof MissingAllocationChannel) {
         // The submitted set does not match this slot's current allocations — it names one
@@ -332,8 +334,10 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                             becomes unreachable through the UI and the unit tests
                             still pass because they bypass the form (ai-review
                             pass 4, [medium]). Case-insensitive T/Z and a
-                            millisecond-bounded fraction, exactly as the server
-                            parses.
+                            MICROSECOND-bounded fraction (six digits), exactly as
+                            the server parses — PostgreSQL timestamptz stores
+                            microseconds, so a value pasted back from the database
+                            must be typable here.
 
                             THE HYPHEN IS ESCAPED, and that is load-bearing.
                             Browsers compile `pattern` with the RegExp `v` flag,
@@ -344,7 +348,7 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
                             it should reject, `[+\-]` gives false. The pattern this
                             replaced carried the bare form and had therefore never
                             enforced anything. */}
-                        pattern="\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?([Zz]|[+\-]\d{2}:\d{2})"
+                        pattern="\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?([Zz]|[+\-]\d{2}:\d{2})"
                         title="RFC 3339 with a zone, e.g. 2026-09-18T19:30:00Z or 2026-09-18T15:30:00-04:00"
                         value={row.releaseAt}
                         data-release-for={row.channel}

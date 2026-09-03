@@ -464,6 +464,39 @@ try {
         'NULL or unchanged means the input pattern blocked a form the server accepts',
     );
 
+    // MICROSECONDS SURVIVE THE WHOLE PATH, and only this tier can show it. The unit
+    // tests assert what the mapper returns; this asserts what PostgreSQL holds after a
+    // real browser submitted a real form. The two are different claims, and the defect
+    // this replaces lived between them: the mapper returned `Date.toISOString()`, which
+    // is millisecond-capped, so `.123456Z` was stored as `.123000` — a release gate
+    // moved by 456µs, reported as a success.
+    //
+    // `.US` in the format string is microseconds, so a truncating implementation reads
+    // back as `...123000` and this check fails on the digits it exists for.
+    await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
+    await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-04T11:22:33.123456Z');
+    check(
+      "the form's own pattern accepts six fractional digits",
+      await tzPage.$eval(`input[data-release-for="${plainChannel}"]`, (el) => el.checkValidity()),
+      'the input pattern rejects a microsecond value the server parses — and the database ' +
+        'itself produces exactly this shape, so an operator pasting one back would be blocked',
+    );
+    await Promise.all([
+      tzPage.waitForURL(`**/admin/slots/${slot}`),
+      tzPage.click('button[data-action="save-allocations"]'),
+    ]);
+    const afterMicros = sql(
+      'inventory',
+      `SELECT coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+         FROM channel_allocations WHERE pool_id='${slot}' AND channel_code='${plainChannel}'`,
+    );
+    check(
+      'a microsecond fraction is stored to the digit, not truncated to milliseconds',
+      afterMicros === '2026-09-04T11:22:33.123456',
+      `release_at=${afterMicros}, want 2026-09-04T11:22:33.123456 — ` +
+        '...123000 means the value went through a millisecond-capped conversion',
+    );
+
     // Put the gate back where the sections below expect it.
     await tzPage.fill(`input[data-release-for="${plainChannel}"]`, '2026-09-01T10:00:37Z');
     await Promise.all([
