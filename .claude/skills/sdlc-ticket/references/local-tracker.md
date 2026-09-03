@@ -127,7 +127,8 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
 
 1. **Backlog** — shape per `shaping.md`: COS + the 8-item `readiness` object on the ticket (incl. `context_memo`),
    spikes (`type:"Spike"`, parent `blocked-by` them) for investigations, `owner:"human"` items for
-   pending decisions; `kind=readiness` verdict comment; suggest `risk:low` if trivial.
+   pending decisions; append a `kind=decision` comment for each settled material choice;
+   `kind=readiness` verdict comment with the shaping decision IDs; suggest `risk:low` if trivial.
 2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
    `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
@@ -141,7 +142,8 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
    with the development decision IDs → `needs:human`.
 7. ⛔ Gate 3 — human merges → `pr.state:"merged"`, → `PO Review`.
 8. **PO Review** — `kind=summary` validation note; stop.
-9. ⛔ Gate 4 — PO accepts → `Done`; remove `needs:human`; `kind=metrics` (with `learnings:` + `retro:`).
+9. ⛔ Gate 4 — PO accepts → `Done`; remove `needs:human`; `kind=metrics` (with `learnings:` +
+   `retro:`, including the required decision-audit duration and yield line).
    The board **refuses** moving a non-spike ticket to Done without a `kind=metrics` comment — post the
    closeout *before* the PO clears the gate.
 
@@ -149,8 +151,8 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
 
 ## Rules
 - Same invariants as Jira mode: one pipeline label in flight, stop at `needs:human`, thread = memory.
-- `kind=decision` comments are the ticket's planning and development decision logs. The board shows
-  their phase counts on cards and renders the full log in the ticket's Decisions tab.
+- `kind=decision` comments are the ticket's shaping, planning and development decision logs. The
+  board shows their phase counts on cards and renders the full log in the ticket's Decisions tab.
 - State lives in the vault. Never write ticket state into a feature branch, a PR, or the
   `sdlc-state` worktree.
 - **Always send `_rev`** and treat a 409 as a real conflict: re-read, re-apply, retry. Never retry

@@ -78,7 +78,7 @@ The "ready for review" comment **on the PR** (code repo, not Jira) is a guided w
 
 **High-risk spots:** <each tagged `[security]` `[schema]` `[data]` `[concurrency]` `[perf]` + location — or "none">
 **Manual checks:** <1–3 observable verifications the reviewer can run>
-**Decision log:** <planning IDs + development IDs, each linked to the ticket's Decisions tab, or "none">
+**Decision log:** <shaping + planning + development IDs, or "none">
 **Deferred (triage):** <Backlog tickets from incidental findings, or "none">
 ```
 

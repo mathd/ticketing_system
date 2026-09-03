@@ -172,13 +172,13 @@ Swapping `plan` ↔ `planReview` is how the "Codex drafts, main agent reviews" v
 
 ## Decision log artifacts
 
-Planning and Building each produce a two-part review bundle. The planning bundle is the draft plus
-its final amendments, paired with the planning decision log. The development bundle is the diff,
-tests and verification evidence, paired with the development decision log. The ticket thread owns
-both logs through append-only `kind=decision` comments, so the board can show them without another
-state store.
+Shaping records the product and scope choices that make a ticket ready. Planning and Building each
+produce a two-part review bundle. The planning bundle is the draft plus its final amendments,
+paired with the planning decision log. The development bundle is the diff, tests and verification
+evidence, paired with the development decision log. The ticket thread owns all three logs through
+append-only `kind=decision` comments, so the board can show them without another state store.
 
-Log a decision when the ticket or approved plan did not settle it and the choice:
+Log a decision when the governing artifacts did not settle it and the choice:
 
 - changes observable behaviour, security, data, money, concurrency, failure handling or the test seam;
 - selects between meaningful alternatives;
@@ -187,24 +187,16 @@ Log a decision when the ticket or approved plan did not settle it and the choice
 
 Do not log routine mechanics, facts already dictated by the spec, or private reasoning. Record the
 decision when it is made, before more work makes the choice expensive to reverse. Never edit an old
-entry. Append a new entry with `Supersedes: <ID>` when a later fact changes it. IDs are sequential
-within the ticket: `D1`, `D2`, and so on across both phases.
+entry. When a later fact changes one, put `supersedes D<n>` in the new Decision line. IDs are
+sequential within the ticket: `D1`, `D2`, and so on across shaping, planning and development.
 
 Use this exact body shape so humans and tools can scan the log consistently:
 
 ```markdown
-<!-- sdlc:stage=<planning|coding> kind=decision -->
-Decision ID: D<n>
+<!-- sdlc:stage=<backlog|planning|plan-review|coding|ai-review> kind=decision -->
+Decision: D<n>. <the choice in one sentence; add `Supersedes D<x>.` here when needed>
 
-Decision: <the choice in one sentence>
-
-Trigger: <what the ticket or approved plan did not specify>
-
-Options considered:
-- <option and its concrete trade-off>
-- <option and its concrete trade-off>
-
-Why: <evidence that selected the choice>
+Why: <the evidence and the rejected option in one or two sentences>
 
 Consequences: <new constraint, risk or follow-up, or `none`>
 
@@ -212,15 +204,16 @@ Artifacts: <plan section, files, tests, ADR or PR location>
 ```
 
 `Artifacts` may name planned locations during Planning and must name actual locations during
-Building. If a phase has no material decisions, its closing `kind=plan-final` or `kind=summary`
-comment says `Decision log: none`. Otherwise it lists every decision ID for that phase. The list is
-a completeness check, not a duplicate rationale.
+Building. The shaping `kind=readiness` comment and planning `kind=plan-final` comment each say
+`Decision log: <IDs>` or `Decision log: none` for their phase. Building puts that line in the
+`agent:ai-review` `kind=summary` comment, not the earlier coding summary or later PO summary. The
+list is a completeness check, not a duplicate rationale.
 
 ## The 6 statuses
 
 | # | Status | Entry means | Agent does (label sequence) | Exit gate |
 |---|--------|-------------|------------------------------|-----------|
-| 1 | `Backlog` | issue created | Write **COS** (Conditions of Success — this pipeline's term for acceptance criteria) + scope; suggest `risk:low` if trivial. **Every pipeline ticket gets the context-mémo bake** (`decomposition.md` § context-mémo) — standalone tickets too. **Raw idea →** explore first (`exploration.md`). **PRD/multi-ticket →** decompose (`decomposition.md`). **Then shape** (`shaping.md`): fill the 8-item DoR (`readiness` field — `context_memo` is one of them, so the bake is gate-enforced), spawn spikes, flag human decisions (`owner: "human"`). | ⛔ human → `Ready` — **hard-blocked while any DoR item is `open` or a blocker is open** (`deferred` passes) |
+| 1 | `Backlog` | issue created | Write **COS** (Conditions of Success — this pipeline's term for acceptance criteria) + scope; suggest `risk:low` if trivial. **Every pipeline ticket gets the context-mémo bake** (`decomposition.md` § context-mémo) — standalone tickets too. **Raw idea →** explore first (`exploration.md`). **PRD/multi-ticket →** decompose (`decomposition.md`). **Then shape** (`shaping.md`): fill the 8-item DoR (`readiness` field — `context_memo` is one of them, so the bake is gate-enforced), spawn spikes, flag human decisions (`owner: "human"`), and record each settled material choice as a `kind=decision` entry. | ⛔ human → `Ready` — **hard-blocked while any DoR item is `open` or a blocker is open** (`deferred` passes) |
 | 2 | `Ready` | approved queue | Verify **zero open blockers**, then claim: assign self, create branch `<ISSUE-KEY>-<slug>` off `origin/main`, post a claim comment with selection reason. | agent claims → `Planning` |
 | 3 | `Planning` | agent claimed | `agent:planning`: **`config.models.plan`** reads the real code + the context-mémo, picks the **test seam**, drafts the plan and records material `kind=decision` entries → `agent:plan-review`: **`config.models.planReview`** critiques the plan and planning decision log, pre-mortem pass → `needs:human` (skip if `risk:low`). | ⛔ human reviews the plan bundle → `Building` |
 | 4 | `Building` | plan approved | `agent:coding`: **`config.models.implement`** does TDD from the approved plan and records new or changed material decisions, local gate green, push, open PR (`<ISSUE-KEY>` in title/body) → `agent:ai-review`: **`config.models.aiReview`** first reviews the diff blind, then audits it with both decision logs, triage, fix, rebase if behind, re-green, second pass if fixes were non-trivial → `needs:human`: post the review-guide on the PR, stop. | ⛔ human reviews the development bundle + **merges** → `PO Review` |
@@ -291,6 +284,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #      the COS, the registry; pre-mortem lens (quality-practices.md §1). Review the plan first
 #      without its rationale, then audit the plan together with every planning decision entry.
 #      Accept / amend / reject each part of the draft with a stated reason.
+#      Append a stage=plan-review kind=decision entry for any material choice introduced here.
 #   3c FINALIZE — YOU, always (a delegated worker cannot talk to the human): grill the human on
 #      the open decisions (complex tickets, one question at a time), revise, post kind=plan-final
 #      as a DELTA, not a restatement: amendments + decisions + the required sections, with "the
@@ -349,6 +343,8 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 #   guilt. Then run the decision audit with the approved plan plus both decision logs (Hard rules).
 #   Triage findings (quality-practices.md §2): blocking→fix in PR; incidental→new backlog ticket;
 #   rejected→stated reason. Rebase on origin/main if behind; re-green.
+#   Append a stage=ai-review kind=decision entry when a finding fix introduces or changes a
+#   material choice. A fix is implementation too; do not hide its decisions in the summary.
 #   SECOND PASS iff the fixes were non-trivial (Hard rules). Trivial → one pass, say so in the
 #   stage comment. No third on a stable diff — still churning → stop, hand to the human.
 #   MCP comment kind=summary (ai-review): per-finding verdicts, what was fixed, decision-audit
@@ -378,7 +374,7 @@ Each step is an agent action on the user's command. **Jira ops = Atlassian MCP t
 - **Promotion is a mandatory Done step, not best-effort.** The `kind=metrics` closing comment must include a `learnings:` section — either concrete promotable items (each with its target house) or the explicit word `none`. Skipping it is the registry cold-start failure mode.
 - **Metrics.** Durations from the Jira changelog (status/label transitions); `needs:human` time-in-state is the Gate 2 / Gate 3 human wait — a first-class metric, the likely bottleneck. Diff size from `gh pr view`. The `kind=metrics` comment has **required fields** — a table `stage | duration` (one row per status + per `agent:*` label), `human-wait total`, `diff: +x/−y (n files)`, the `learnings:` section, and a `retro:` section. All five, every ticket; missing data is written `n/a`, not omitted.
 - **Gates waived? The closeout names every objection the agent overrode.** On any run where a human gate is replaced by agent judgement — every `gates: "autonomous"` run, or an ad-hoc waiver — add an `overrides:` list to `kind=metrics`: each point where a review pass (or the human, earlier) stated a **blocking** objection and the agent proceeded anyway — finding, reviewer's reason, agent's reason, and the ticket carrying the residual risk. `none` is a valid answer and must be earned. Rationale: on a gateless run the machinery catches the ordinary defects; what it cannot settle is a genuine disagreement about whether something should ship. That list is the smallest thing an owner must read to re-take the decisions that were taken for them — and it is unrecoverable later, because a fixed finding and an overridden one look identical in a merged diff (TKT-190 overrode one [high] "do not ship").
-- **`retro:` = introspection on the collaboration, not the code.** Two fixed questions, answered honestly (`nothing` is allowed but must be earned): **(1)** *What would have made this ticket faster or better — missing context in the mémo, ambiguous COS, a gap in this skill?* **(2)** *What should the humans change — in the process, the config, or how the ticket was written?* Each retro item is a **concrete, appliable change** (which file/section, what edit) — not an observation. V0 is interactive: after posting the retro, offer to apply the changes now; if approved, patch in the same session and note `applied`. Unapplied items land in the weekly registry review; a recurring one is a signal to stop re-noting and patch.
+- **`retro:` = introspection on the collaboration, not the code.** It starts with one required measurement: `decision-audit: <duration>; yield: <N> proposed, <B> blocking, <I> incidental, <R> rejected; <short names or none>`. These are findings the informed audit added after the blind pass, not its total findings. This line measures whether the extra model call earns its cost. Then answer two fixed questions honestly (`nothing` is allowed but must be earned): **(1)** *What would have made this ticket faster or better — missing context in the mémo, ambiguous COS, a gap in this skill?* **(2)** *What should the humans change — in the process, the config, or how the ticket was written?* Each retro item is a **concrete, appliable change** (which file/section, what edit) — not an observation. V0 is interactive: after posting the retro, offer to apply the changes now; if approved, patch in the same session and note `applied`. Unapplied items land in the weekly registry review; a recurring one is a signal to stop re-noting and patch.
 - **High bar for skill edits.** This skill carries *rules*, not knowledge. A retro item may patch the skill only if it would change agent behavior in a future session **and** isn't already readable from the repo when needed — learnings (`docs/LEARNINGS.md`, `docs/learnings/`) and ADRs (`docs/adr/`) are accessible to every session; **cite them, never restate them**. Incident narratives go to `docs/learnings/`; the skill gets the rule, a one-line why, and the ticket citation. When in doubt, it's a learning, not a skill edit.
   **A learning that asserts a fact about a tool or a database records HOW it was established.** Those files are cited as authority and nothing gates them, so a plausible-but-wrong sentence in one is read as settled and propagates: TKT-234 found that `2026-08-09-a-total-order-is-not-a-meaningful-one.md` had claimed for three weeks that an unconditional `BEFORE INSERT` trigger governs logical-replication apply — it does not, and the same false claim had by then been copied into an ADR, a migration comment and a test comment. One `psql` session settled it. Write the command and its output beside the claim, or write that you have not run it. Corollary when correcting one: **grep for the CLAIM, not the symbol**, across `docs/` and comments — the copies do not share a spelling, and three consecutive review passes each found one of them.
 

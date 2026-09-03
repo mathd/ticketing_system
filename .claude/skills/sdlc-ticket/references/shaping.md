@@ -149,9 +149,13 @@ there is nothing observable between them the second guard is untestable and the 
    you can't exemplify is an unknown. Sort unknowns into:
    - **investigations** (answerable by work) → spawn a **spike** (below);
    - **decisions** (answerable only by a human) → `open` + `owner: "human"`, grill concisely.
-3. **Record** — write `readiness` on the ticket + a `kind=readiness` verdict comment
-   (`<!-- sdlc:stage=backlog kind=readiness -->`): item states + what's left and who owns it.
-4. Re-run the pass when a spike closes or a human answers — flip items, update the comment.
+3. **Log settled choices** — when the human answers or a spike settles a material choice, append a
+   `<!-- sdlc:stage=backlog kind=decision -->` comment using `SKILL.md` § Decision log artifacts.
+   Do not log the open question as though it had an answer.
+4. **Record** — write `readiness` on the ticket + a `kind=readiness` verdict comment
+   (`<!-- sdlc:stage=backlog kind=readiness -->`): item states, what's left and who owns it, plus
+   `Decision log: <shaping IDs>` or `Decision log: none`.
+5. Re-run the pass when a spike closes or a human answers — flip items, update the comment.
 
 ## Spikes — preparation work as first-class tickets
 
