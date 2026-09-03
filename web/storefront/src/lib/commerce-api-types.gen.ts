@@ -351,7 +351,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Access reports that an exchange's entitlement switch has committed */
+        /**
+         * Access reports that an exchange's entitlement switch has committed
+         * @description ORDERING ASSUMED, NOT VERIFIED (ADR-071). TKT-166 / ADR-038 §1, ADR-039 §6. Access must call this AFTER its switch transaction commits. Commerce records `tickets_exchanged_at` and only THEN returns the old capacity to inventory: freeing capacity while the old tickets still admit is the one ordering that can oversell, and this call is the evidence it was honoured. Commerce takes that evidence on trust — it does not and cannot verify that access committed anything, so a caller that reported the switch early would move capacity against tickets that still admit. This operation is unusual in existing PRECISELY to make an ordering checkable while being ordering-dependent itself.
+         *
+         *     Idempotent — a lost response is retried by an unacknowledged JetStream message, and both the marker and inventory's receipt absorb the repeat.
+         */
         post: operations["exchangeTicketsSwitched"];
         delete?: never;
         options?: never;
