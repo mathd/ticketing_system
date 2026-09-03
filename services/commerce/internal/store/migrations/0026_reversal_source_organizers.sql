@@ -59,13 +59,16 @@
 -- this same uncommitted transaction. The result is a row that is stale the moment the migration
 -- lands, sitting in the new partial index.
 --
--- The lock order is queue tables then parents, matching the Down and matching the application:
--- the queue-row triggers touch their own table first and reach the reservation second. Taking
--- them in one statement makes the order explicit rather than incidental.
+-- PARENTS FIRST, then the queue tables (ai-review pass 2, F1). That is the order the application
+-- already uses: BindOrderRefund and BindOrderExchange take `FOR UPDATE OF o` on the order and
+-- then INSERT into their queue table (refunds.go, exchanges.go). Locking queue-first here would
+-- invert it against every live bind — a bind holding an order row while this migration holds
+-- order_refunds, each waiting on the other — and out-of-band placement (ADR-022) does not by
+-- itself quiesce an older revision that is still serving.
 --
--- Migrations run out-of-band as a one-shot job the services wait on (ADR-022), so this blocks a
--- deploy rather than live traffic.
-LOCK TABLE order_refunds, order_exchanges, orders, reservations IN ACCESS EXCLUSIVE MODE;
+-- One statement, so the order is explicit rather than an artifact of how the lines happen to be
+-- written. The Down below takes the same order for the same reason.
+LOCK TABLE orders, reservations, order_refunds, order_exchanges IN ACCESS EXCLUSIVE MODE;
 
 ALTER TABLE order_refunds ADD COLUMN source_organizer_id uuid;
 ALTER TABLE order_exchanges ADD COLUMN source_organizer_id uuid;
@@ -114,9 +117,42 @@ ALTER TABLE order_exchanges ALTER COLUMN source_organizer_id SET NOT NULL;
 -- head-of-line failure this migration exists to remove. Reproduced with two concurrent sessions
 -- before the lock was added: passes_claim_predicate true, actually_malformed true.
 --
--- FOR SHARE rather than FOR UPDATE: this reads an identity it must not see change, it never
--- writes the reservation, and a share lock lets concurrent inserts against the same reservation
--- proceed together while still conflicting with the FOR UPDATE that an identity change takes.
+-- BOTH tables are locked, not just the reservation (ai-review pass 2). The derived value depends
+-- on TWO links — orders.reservation_id and reservations.organizer_id — and locking only the
+-- reservation leaves the symmetric race open: a transaction can repoint an order at a different
+-- reservation, run its maintenance before the new queue row exists, and stay uncommitted while a
+-- concurrent insert reads the OLD order link unblocked, locks the OLD reservation, and commits a
+-- value derived from it. Same stale row, reached through the other link.
+--
+-- FOR SHARE rather than FOR UPDATE: this reads identities it must not see change, it writes
+-- neither table, and a share lock lets concurrent inserts against the same parents proceed
+-- together while still conflicting with the FOR UPDATE an identity change takes.
+--
+-- THE RESIDUAL LOCK CYCLE, stated rather than discovered later, and narrowed twice by review.
+--
+-- The bind path is safe. BindOrderRefund and BindOrderExchange take the order FOR UPDATE and then
+-- INSERT into their queue table, so they are parent-before-queue; the trigger below then re-locks
+-- the order that same transaction already holds, which adds no cycle. The migration's LOCK TABLE
+-- takes the same order for the same reason.
+--
+-- What remains is a writer that holds a QUEUE row and then touches its parent, racing the parent
+-- trigger, which holds the parent and writes queue rows. Constructed: one session updating a
+-- refund row and then its reservation, against another updating that same reservation, gives
+-- `ERROR: deadlock detected`. It is not specific to this design — a parent trigger that writes
+-- children cycles this way with any child-first writer, as FK maintenance does.
+--
+-- It is unreachable through the application. NO commerce code path writes
+-- reservations.organizer_id or orders.reservation_id — every UPDATE on reservations touches
+-- `status`, and the WHEN clauses mean a status write does not fire these triggers at all (pinned
+-- by TestMigration0026AStatusWriteDoesNotFireTheReseatTriggers). Nothing updates a queue row's
+-- order_id or source_organizer_id either, so the queue trigger does not fire outside a bind.
+-- Reaching the cycle takes two concurrent hand-written tenancy repairs.
+--
+-- The outcome there is one transaction aborted loudly and retryably on an already-exceptional
+-- path, which beats both alternatives: dropping the locks reopens the stale-derivation race that
+-- admits malformed rows to the queue, and taking the parents first from inside the queue trigger
+-- would serialise every refund bind behind its reservation. Repair scripts should lock
+-- parent-first, matching the bind path and this migration, and run when the sweep is quiet.
 --
 -- One function per table, not one shared function branching on TG_TABLE_NAME. plpgsql
 -- resolves NEW's fields when the statement is COMPILED, not when the branch is taken, so a
@@ -125,15 +161,31 @@ ALTER TABLE order_exchanges ALTER COLUMN source_organizer_id SET NOT NULL;
 -- The duplication is two lines and the alternative does not work.
 -- +goose StatementBegin
 CREATE FUNCTION order_refunds_source_organizer() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE res uuid;
 DECLARE src uuid;
 BEGIN
-    SELECT r.organizer_id INTO src
-    FROM orders o JOIN reservations r ON r.id = o.reservation_id
-    WHERE o.id = NEW.order_id
-    FOR SHARE OF r;
-    IF src IS NULL THEN
-        RAISE EXCEPTION 'order_refunds row for order % has no reachable source reservation', NEW.order_id;
+    -- Resolved in TWO steps, each locking one row, rather than one locking join.
+    --
+    -- The join form is correct but its diagnostics lie. Under READ COMMITTED a locking SELECT
+    -- that blocks on a concurrently-updated row re-evaluates its qualifiers against the new
+    -- version (EvalPlanQual); with `orders JOIN reservations` in one statement, a committed
+    -- repoint makes the join condition fail on re-check and the whole SELECT returns no row. The
+    -- trigger then reports "no reachable source reservation", which describes corrupt data and
+    -- sends an operator hunting a missing row that is not missing.
+    --
+    -- Two steps make each outcome nameable: lock the order and read its current reservation,
+    -- then lock that reservation and read its organizer. A concurrent repoint is picked up by
+    -- the second lookup rather than annihilating the first.
+    SELECT o.reservation_id INTO res FROM orders o WHERE o.id = NEW.order_id FOR SHARE;
+    IF res IS NULL THEN
+        RAISE EXCEPTION 'order_refunds row for order % has no order row', NEW.order_id;
     END IF;
+
+    SELECT r.organizer_id INTO src FROM reservations r WHERE r.id = res FOR SHARE;
+    IF src IS NULL THEN
+        RAISE EXCEPTION 'order_refunds row for order % points at reservation %, which does not exist', NEW.order_id, res;
+    END IF;
+
     NEW.source_organizer_id := src;
     RETURN NEW;
 END $$;
@@ -141,15 +193,31 @@ END $$;
 
 -- +goose StatementBegin
 CREATE FUNCTION order_exchanges_source_organizer() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE res uuid;
 DECLARE src uuid;
 BEGIN
-    SELECT r.organizer_id INTO src
-    FROM orders o JOIN reservations r ON r.id = o.reservation_id
-    WHERE o.id = NEW.source_order_id
-    FOR SHARE OF r;
-    IF src IS NULL THEN
-        RAISE EXCEPTION 'order_exchanges row for source order % has no reachable source reservation', NEW.source_order_id;
+    -- Resolved in TWO steps, each locking one row, rather than one locking join.
+    --
+    -- The join form is correct but its diagnostics lie. Under READ COMMITTED a locking SELECT
+    -- that blocks on a concurrently-updated row re-evaluates its qualifiers against the new
+    -- version (EvalPlanQual); with `orders JOIN reservations` in one statement, a committed
+    -- repoint makes the join condition fail on re-check and the whole SELECT returns no row. The
+    -- trigger then reports "no reachable source reservation", which describes corrupt data and
+    -- sends an operator hunting a missing row that is not missing.
+    --
+    -- Two steps make each outcome nameable: lock the order and read its current reservation,
+    -- then lock that reservation and read its organizer. A concurrent repoint is picked up by
+    -- the second lookup rather than annihilating the first.
+    SELECT o.reservation_id INTO res FROM orders o WHERE o.id = NEW.source_order_id FOR SHARE;
+    IF res IS NULL THEN
+        RAISE EXCEPTION 'order_exchanges row for source order % has no order row', NEW.source_order_id;
     END IF;
+
+    SELECT r.organizer_id INTO src FROM reservations r WHERE r.id = res FOR SHARE;
+    IF src IS NULL THEN
+        RAISE EXCEPTION 'order_exchanges row for source order % points at reservation %, which does not exist', NEW.source_order_id, res;
+    END IF;
+
     NEW.source_organizer_id := src;
     RETURN NEW;
 END $$;
@@ -259,7 +327,7 @@ CREATE INDEX order_exchanges_reversal_queue_idx
 -- exact unbounded scan this migration removed, on a queue that is already carrying the
 -- population that triggers it. A clean queue rolls back freely, which keeps the escape hatch
 -- open for a deploy undone before any mismatch appears.
-LOCK TABLE order_refunds, order_exchanges, orders, reservations IN ACCESS EXCLUSIVE MODE;
+LOCK TABLE orders, reservations, order_refunds, order_exchanges IN ACCESS EXCLUSIVE MODE;
 -- +goose StatementBegin
 DO $$
 DECLARE bad bigint;

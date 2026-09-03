@@ -158,6 +158,28 @@ exactly the one where it is stale: it agrees with the queue row while the reserv
 so a column-reading guard counts zero and waves through the rollback that restores the unbounded
 scan.
 
+**The derivation locks both parent links, in the application's order.** The derived value depends
+on `orders.reservation_id` and `reservations.organizer_id`, so locking only the reservation left
+the symmetric race open: an order repointed at another reservation, its maintenance run before the
+new queue row exists, and a concurrent insert reading the old link unblocked. Both are locked, and
+resolved in two steps rather than one join — under `READ COMMITTED` a locking join re-evaluates its
+qualifiers against the updated row, so a committed repoint made the join return nothing and the
+trigger reported missing data for what was really a concurrent change.
+
+The lock order is **parents before queue tables**, everywhere: the migration's `LOCK TABLE`, the
+`Down`, and the bind path that already worked this way (`FOR UPDATE OF o` on the order, then an
+`INSERT` into the queue table). Locking queue-first in the migration would have inverted it against
+every live bind, and out-of-band placement does not by itself quiesce an older revision.
+
+**A residual cycle remains, and is unreachable through the application.** A writer holding a queue
+row and then touching its parent races the parent trigger, which holds the parent and writes queue
+rows; constructed, it gives `ERROR: deadlock detected`. This is not specific to the design — a
+parent trigger that writes children cycles this way with any child-first writer, as foreign-key
+maintenance does. No commerce code path writes either parent identity column or a queue row's
+`order_id`, and the `WHEN` clauses keep ordinary status writes out entirely, so reaching it takes
+two concurrent hand-written tenancy repairs. The outcome is one transaction aborted loudly and
+retryably. Repair scripts should lock parent-first and run when the sweep is quiet.
+
 The parent-side maintenance is **row-level with `WHEN` clauses**, not statement-level. The
 statement-level form re-reconciles both entire queue tables on every parent identity update: 198ms,
 4,812 buffers and 4,364 temp blocks spilled to disk to update zero rows on a 200,000-row queue,
