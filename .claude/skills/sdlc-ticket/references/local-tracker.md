@@ -139,11 +139,12 @@ Drag-and-drop enforces the workflow graph and writes via the same `POST /ticket`
 5. ⛔ Gate 2 — human approves → `Building`, swap to `agent:coding`.
 6. **Building** — TDD + append-only `kind=decision` entries, PR open (`pr` field) →
    `agent:ai-review` (blind diff review, then approved-plan + decision-log audit) → `kind=summary`
-   with the development decision IDs → `needs:human`.
+   with the development decision IDs plus the decision-audit duration and yield line →
+   `needs:human`.
 7. ⛔ Gate 3 — human merges → `pr.state:"merged"`, → `PO Review`.
 8. **PO Review** — `kind=summary` validation note; stop.
 9. ⛔ Gate 4 — PO accepts → `Done`; remove `needs:human`; `kind=metrics` (with `learnings:` +
-   `retro:`, including the required decision-audit duration and yield line).
+   `retro:`, copying the required decision-audit duration and yield line from the ai-review summary).
    The board **refuses** moving a non-spike ticket to Done without a `kind=metrics` comment — post the
    closeout *before* the PO clears the gate.
 

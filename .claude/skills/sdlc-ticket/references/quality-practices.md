@@ -37,7 +37,8 @@ showing the reviewer the approved plan or decision log. Then provide the approve
 - Does the implementation match the approved plan?
 - Does the evidence support each logged choice and its stated consequences?
 - Did implementation make a material choice that the development log omits?
-- Did new evidence invalidate a planning decision without a `Supersedes` entry?
+- Did new evidence invalidate a planning decision without a later `Decision:` line naming
+  `Supersedes D<n>`?
 
 Treat a decision-audit problem like any other finding. A wrong choice that violates correctness,
 security or the COS is blocking. Missing rationale or a missing entry is blocking only when it hides
