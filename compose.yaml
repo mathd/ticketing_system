@@ -30,7 +30,6 @@ x-go-service: &go-service
   environment: &go-env
     # No default credential ships in the repo (TKT-83): `make up` generates one.
     INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
-    NATS_URL: nats://nats:4222
     OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     # fast export cadence so telemetry is queryable within seconds (smoke)
     OTEL_METRIC_EXPORT_INTERVAL: "5000"
@@ -97,9 +96,25 @@ services:
     restart: unless-stopped
     # file-backed JetStream store on a named volume: streams survive
     # container recreation (ADR-007 durability)
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    command: ["-c", "/etc/nats/nats-server.conf", "-js", "-sd", "/data", "-m", "8222"]
     volumes:
       - natsdata:/data
+      - ./deploy/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+    environment:
+      # NATS server publisher ACL credentials (TKT-170, ADR-072).
+      # Held by nats to configure per-user authorization in nats-server.conf.
+      # NATS_INVENTORY_REPROCESS_PASSWORD is intentionally delivered ONLY here
+      # and never to the inventory container.
+      # Wrapped in quotes so NATS internal config lexer (conf/parse.go parseEnv)
+      # parses environment variable expansions as strings even when a random hex
+      # draw resembles scientific notation (e.g. 34e084f3).
+      NATS_ADMIN_PASSWORD: "\"${NATS_ADMIN_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_CATALOG_PASSWORD: "\"${NATS_CATALOG_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_INVENTORY_PASSWORD: "\"${NATS_INVENTORY_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_INVENTORY_REPROCESS_PASSWORD: "\"${NATS_INVENTORY_REPROCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_COMMERCE_PASSWORD: "\"${NATS_COMMERCE_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_PAYMENTS_PASSWORD: "\"${NATS_PAYMENTS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
+      NATS_ACCESS_PASSWORD: "\"${NATS_ACCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8222/healthz"]
       interval: 5s
@@ -115,23 +130,25 @@ services:
         condition: service_healthy
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    environment:
+      NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}
     command:
       # set -e: each provisioning compound must fail the init job itself —
       # without it, only the LAST compound's status survives the semicolons
       # and an earlier durable's creation failure exits 0 (ai-review G7).
       - >-
         set -e;
-        nats --server nats://nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
-        nats --server nats://nats:4222 stream add PLATFORM
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 stream add PLATFORM
         --subjects "platform.>" --storage file --retention limits --defaults;
-        nats --server nats://nats:4222 consumer info PLATFORM access-lifecycle-integrity-operator >/dev/null 2>&1 ||
-        nats --server nats://nats:4222 consumer add PLATFORM access-lifecycle-integrity-operator
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM access-lifecycle-integrity-operator >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM access-lifecycle-integrity-operator
         --filter "platform.access.lifecycle-integrity.alarm" --pull --deliver all --ack explicit --defaults;
-        nats --server nats://nats:4222 consumer info PLATFORM access-admission-conflict-operator >/dev/null 2>&1 ||
-        nats --server nats://nats:4222 consumer add PLATFORM access-admission-conflict-operator
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM access-admission-conflict-operator >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM access-admission-conflict-operator
         --filter "platform.access.admission-conflict.alarm" --pull --deliver all --ack explicit --defaults;
-        nats --server nats://nats:4222 consumer info PLATFORM access-policy-conflict-operator >/dev/null 2>&1 ||
-        nats --server nats://nats:4222 consumer add PLATFORM access-policy-conflict-operator
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM access-policy-conflict-operator >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM access-policy-conflict-operator
         --filter "platform.access.admission-policy-conflict.alarm" --pull --deliver all --ack explicit --defaults
 
   lgtm:
@@ -160,6 +177,9 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://catalog:${CATALOG_DB_PASSWORD}@postgres:5432/catalog
+      # Per-service NATS publisher credential (TKT-170, ADR-072). Held by catalog
+      # alone — deliberately NOT in the shared &go-env anchor.
+      NATS_URL: nats://catalog:${NATS_CATALOG_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       # TKT-191: the credential catalog checks on every unsafe contract operation.
       # Held by catalog and the back office and nothing else — deliberately NOT in
       # the shared &go-env anchor, which every service inherits.
@@ -203,6 +223,10 @@ services:
       DATABASE_URL: postgres://inventory:${INVENTORY_DB_PASSWORD}@postgres:5432/inventory
       HOLD_TTL: ${HOLD_TTL:-10m}
       CATALOG_URL: http://catalog:8080
+      # Per-service NATS credential (TKT-170, ADR-072). Held by the inventory
+      # server — deliberately NOT in the shared &go-env anchor. Holds NO publish
+      # rights on any platform.* subject.
+      NATS_URL: nats://inventory:${NATS_INVENTORY_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       # The back office's channel-allocation editor (TKT-244, ADR-057). Opens exactly
       # two operations — the staff availability read and the allocation replace — and
       # is deliberately NOT the shared INTERNAL_SERVICE_TOKEN in the &go-env anchor:
@@ -226,6 +250,9 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://commerce:${COMMERCE_DB_PASSWORD}@postgres:5432/commerce
+      # Per-service NATS publisher credential (TKT-170, ADR-072). Held by commerce
+      # alone — deliberately NOT in the shared &go-env anchor.
+      NATS_URL: nats://commerce:${NATS_COMMERCE_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       # Commerce is payments' one caller, so it is the one service that holds the
       # money credential alongside the shared one (ai-review S8). It refuses to
       # start if any two of its four credentials are equal.
@@ -270,6 +297,9 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments
+      # Per-service NATS credential (TKT-170, ADR-072). Held by payments alone —
+      # deliberately NOT in the shared &go-env anchor. Publishes and subscribes nothing.
+      NATS_URL: nats://payments:${NATS_PAYMENTS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       # Payments authenticates its internal surface on THIS, not on the shared
       # INTERNAL_SERVICE_TOKEN every service holds (ai-review S8). Commerce is the
       # only caller and holds both; nothing else needs the money surface.
@@ -353,6 +383,9 @@ services:
     environment:
       <<: *go-env
       DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
+      # Per-service NATS publisher/subscriber credential (TKT-170, ADR-072). Held by
+      # access alone — deliberately NOT in the shared &go-env anchor.
+      NATS_URL: nats://access:${NATS_ACCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       COMMERCE_URL: http://commerce:8080
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       # No default: `make up` mints this pair per clone (ai-review S5). Until

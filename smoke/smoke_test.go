@@ -68,6 +68,33 @@ func containerDSN(role, database string) string {
 		env("SMOKE_DB_"+strings.ToUpper(role)+"_PASSWORD", role), database)
 }
 
+// natsPassword returns the password for a NATS principal from the environment or .env fallback.
+func natsPassword(user string) string {
+	roleKey := strings.ToUpper(strings.ReplaceAll(user, "-", "_"))
+	if v := os.Getenv("NATS_" + roleKey + "_PASSWORD"); v != "" {
+		return v
+	}
+	if v := os.Getenv("SMOKE_NATS_" + roleKey + "_PASSWORD"); v != "" {
+		return v
+	}
+	if data, err := os.ReadFile("../.env"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			prefix := "NATS_" + roleKey + "_PASSWORD="
+			if strings.HasPrefix(line, prefix) {
+				val := strings.TrimPrefix(line, prefix)
+				return strings.Trim(val, `"'`)
+			}
+		}
+	}
+	return ""
+}
+
+// containerNATSURL builds the in-network NATS URL for a service principal.
+func containerNATSURL(user string) string {
+	return fmt.Sprintf("nats://%s:%s@nats:4222", user, natsPassword(user))
+}
+
 // retry polls fn until it returns nil or the deadline passes.
 func retry(t *testing.T, d time.Duration, fn func() error) {
 	t.Helper()
@@ -751,7 +778,7 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
 		"-e", "DATABASE_URL="+containerDSN("catalog", probeDB),
-		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "NATS_URL="+containerNATSURL("catalog"),
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
 		// The money surface has its own credential since ai-review S8. Supplied to
@@ -832,7 +859,7 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
 		"-e", "DATABASE_URL="+containerDSN("commerce", probeDB),
-		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "NATS_URL="+containerNATSURL("commerce"),
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
 		// The money surface has its own credential since ai-review S8. Supplied to
@@ -941,7 +968,7 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 	out, err := exec.Command("docker", "run", "-d", "--name", probe,
 		"--network", project+"_default",
 		"-e", "DATABASE_URL="+containerDSN("commerce", probeDB),
-		"-e", "NATS_URL=nats://nats:4222",
+		"-e", "NATS_URL="+containerNATSURL("commerce"),
 		"-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318",
 		"-e", "INTERNAL_SERVICE_TOKEN="+os.Getenv("SMOKE_INTERNAL_TOKEN"),
 		// The money surface has its own credential since ai-review S8. Supplied to

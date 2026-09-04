@@ -284,6 +284,16 @@ still lost completely.
 exits; an incident shows a teardown-only error carries evidence the log line does not; or consumer
 termination gains a documented upper bound and the deployment gains a shutdown budget that can pay
 for a join.
+
+### Amendment: NATS authentication and durable consumer permissions (ADR-072 / TKT-170)
+
+[ADR-072](ADR-072-nats-publisher-acls.md) configures authentication and per-principal ACLs on the NATS
+broker. Consumers now require explicit `$JS.API.CONSUMER.*` publish permissions and `_INBOX.>` subscribe
+permissions to manage JetStream durables. The durable consumer lifecycle primitive in `shared/durableconsumer`
+operates without modification because credentials are provided in the broker connection URL (`NATS_URL`).
+
+## References
+
 - [ADR-033: One domain-event envelope in the shared kernel](ADR-033-shared-domain-event-envelope.md)
 - [ADR-017: Domain event schema evolution](ADR-017-domain-event-schema-evolution.md) §5b, §5b′, §236-241
 - [ADR-009: Contract-first APIs and the platform envelope](ADR-009-contract-first-apis.md) §5

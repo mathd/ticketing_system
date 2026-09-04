@@ -50,6 +50,11 @@ the gateway, plus named infra assertions:
 - storefront and scanner served through the gateway
 - trace propagation — a caller-chosen trace id appears in gateway **and** service JSON logs
 - JetStream — the `PLATFORM` stream exists from stack init (nats-init) + publish/durable consume
+- NATS publisher ACLs — real-broker enforcement of unauthenticated publish refusal, cross-prefix
+  publication refusal, payments zero-rights connection, and residual credentialed forgery pinning
+  (ADR-072, `smoke/nats_acl_test.go`). Operator-identity isolation is asserted on the CONTAINER
+  ENVIRONMENT, not on a broker refusal: the property is "no other component holds this password",
+  and a broker cannot report who else was given one
 - DB credential isolation — service A's role cannot connect to service B's database
 - metrics ingestion — `http_server_*` series queryable in Prometheus after traffic
 - US-004/006 checkout and gate scan — authoritative EUR price, capture+confirm,

@@ -222,6 +222,15 @@ legitimate future wire change means updating a literal deliberately, in an ADR o
       still author whatever envelope it likes; nothing here constrains one. `DecodeEnvelope` rejects
       *malformed* envelopes, not *dishonest* ones.
 
+### Amendment: NATS publisher ACLs (ADR-072 / TKT-170)
+
+[ADR-072](ADR-072-nats-publisher-acls.md) introduces per-principal publish and subscribe permissions on
+the NATS broker. Clients without credentials cannot publish events, and services can only publish to their
+authorized subjects. However, the event envelope itself remains unsigned: its deterministic `id` provides
+deduplication and idempotency, not cryptographic authentication. A compromised service publishing within its
+authorized subject can author arbitrary payloads that consumers will accept. Cryptographic tamper-evidence
+remains future work tracked in TKT-296.
+
 ## References
 
 - TKT-126 — this ticket; TKT-127 — the consumer skeleton it unblocks
