@@ -550,7 +550,7 @@ Such an order can exceed ten claims and stay unparked indefinitely.
 re-drives, not elapsed time, and several things sit between the two:
 
 - the ticker period, configurable via `RECOVERY_INTERVAL`, default 30s
-  (`cmd/commerce/main.go:553-559`);
+  (`workerConfigFromEnv` in `cmd/commerce/main.go`);
 - `recovery_next_attempt_at`, an exponential backoff — and note the **effective ceiling is 256
   seconds, not five minutes**: the SQL is
   `least(make_interval(secs => power(2, least(recovery_attempts, 8))), interval '5 minutes')`

@@ -27,11 +27,10 @@ import (
 	"ticketing/services/catalog/internal/store"
 )
 
-// fakeStore is an in-memory Store. It mirrors the referential/tenancy checks
+// fakeStore is the API's in-memory persistence fake. It mirrors the referential/tenancy checks
 // the SQL enforces; the real queries are exercised by the smoke suite.
-// RegisterPublicReadInvalidator satisfies store.Store (TKT-206). The fake never
-// writes through a transaction, so it announces nothing; the cache's own tests
-// drive invalidation directly.
+// The fake never writes through a transaction, so it announces no cache
+// invalidations. The cache's own tests drive invalidation directly.
 func (f *fakeStore) RegisterPublicReadInvalidator(func(store.PublicReadScope)) {}
 
 type fakeStore struct {
@@ -54,7 +53,7 @@ type fakeStore struct {
 	// fake and the handler agree and nothing about the SQL — the predicate is
 	// proven in internal/store/organizer_predicate_smoke_test.go, at the tier the
 	// mechanism lives.
-	organizerSeen map[string]uuid.UUID
+	organizerSeen  map[string]uuid.UUID
 	venues         map[uuid.UUID]store.Venue
 	events         map[uuid.UUID]store.Event
 	performances   map[uuid.UUID]store.Performance
@@ -81,7 +80,6 @@ type fakeStore struct {
 	priceRules     map[uuid.UUID][]store.PriceRule
 	priceScope     map[uuid.UUID]store.PricingScopes
 	feeRules       map[uuid.UUID][]store.FeeRule
-	payees         map[uuid.UUID]store.Payee
 	splitSchedules map[uuid.UUID][]store.SplitSchedule
 	// TKT-190 staff sign-in, keyed by normalized identifier.
 	staffAccounts  map[string]staffAuthResult
@@ -268,7 +266,10 @@ func (f *fakeStore) EditSeatMap(_ context.Context, in store.EditSeatMapInput) (s
 	for _, sec := range in.Sections {
 		for _, row := range sec.Rows {
 			for _, seat := range row.Seats {
-				id := sec.Name + "/" + row.Label + "/" + seat.Label
+				id, err := store.ComposeSeatIdentity(sec.Name, row.Label, seat.Label)
+				if err != nil {
+					return store.SeatMap{}, false, err
+				}
 				if newIdentities[id] {
 					return store.SeatMap{}, false, fmt.Errorf("seat identity: %w", store.ErrSeatMapConflict)
 				}
@@ -337,12 +338,6 @@ func (f *fakeStore) UpdateVenueGACapacity(_ context.Context, in store.VenueGACap
 	return v, nil
 }
 
-func (f *fakeStore) PinSeat(_ context.Context, _ store.PinSeatInput) error {
-	return fmt.Errorf("seat map: %w", store.ErrNotFound)
-}
-
-func (f *fakeStore) UnpinSeat(_ context.Context, _ store.PinSeatInput) error { return nil }
-
 func (f *fakeStore) PinSeats(_ context.Context, _ store.BatchPinInput) error {
 	return fmt.Errorf("seat map: %w", store.ErrNotFound)
 }
@@ -394,7 +389,10 @@ func (f *fakeStore) AddSeatMapSeat(_ context.Context, in store.SeatMapSeatInput)
 	if _, ok := f.draftMap(in.SeatMapID, in.OrganizerID); !ok {
 		return store.SeatMapSeat{}, fmt.Errorf("row: %w", store.ErrNotFound)
 	}
-	identity := row.sectionName + "/" + row.Label + "/" + in.Label
+	identity, err := store.ComposeSeatIdentity(row.sectionName, row.Label, in.Label)
+	if err != nil {
+		return store.SeatMapSeat{}, err
+	}
 	for _, s := range f.seatSeats {
 		if s.seatMapID == in.SeatMapID && s.SeatIdentity == identity {
 			return store.SeatMapSeat{}, fmt.Errorf("seat identity: %w", store.ErrSeatMapConflict)
@@ -864,62 +862,6 @@ func (f *fakeStore) ResolveTicketTypeFees(_ context.Context, ticketTypeID uuid.U
 	}
 	sel.OrganizerID = tt.OrganizerID
 	return sel, nil
-}
-
-// ListRuleCurrencyMismatches (TKT-243) has no API surface — it exists for the
-// `catalog validate-rules` CLI. Present only to satisfy store.Store, and
-// deliberately NOT reimplemented over the fake's rows: the mechanism under test
-// is the SQL scope-pair join, so an in-memory answer here would prove the fake
-// agrees with itself. rules_validation_smoke_test.go asserts it against Postgres.
-func (f *fakeStore) ListRuleCurrencyMismatches(context.Context) ([]store.RuleCurrencyMismatch, error) {
-	return nil, nil
-}
-
-// CreatePayee / CreateSplitSchedule mirror the store's contract closely enough
-// for the handler tests: the write gate refuses a scope_id that names no seeded
-// entity, exactly as the SQL gate does.
-func (f *fakeStore) CreatePayee(_ context.Context, in store.Payee) (store.Payee, error) {
-	if f.payees == nil {
-		f.payees = map[uuid.UUID]store.Payee{}
-	}
-	in.ID = uuid.New()
-	f.payees[in.ID] = in
-	return in, nil
-}
-
-func (f *fakeStore) CreateSplitSchedule(_ context.Context, in store.SplitSchedule) (uuid.UUID, error) {
-	known := false
-	switch in.ScopeLevel {
-	case store.ScopeTicketType:
-		_, known = f.ticketTypes[in.ScopeID]
-	case store.ScopeSlot:
-		_, known = f.performances[in.ScopeID]
-	case store.ScopeSeries:
-		_, known = f.series[in.ScopeID]
-	case store.ScopeEvent:
-		_, known = f.events[in.ScopeID]
-	case store.ScopeVenue:
-		_, known = f.venues[in.ScopeID]
-	}
-	if !known {
-		return uuid.Nil, store.ErrNotFound
-	}
-	// The database's deferred trigger is what really enforces this; the fake
-	// enforces it too so a handler test cannot seed a schedule production would
-	// refuse to commit.
-	var total int32
-	for _, p := range in.Parts {
-		total += p.ShareBps
-	}
-	if len(in.Parts) == 0 || total != 10000 {
-		return uuid.Nil, store.ErrNotFound
-	}
-	in.ID = uuid.New()
-	if f.splitSchedules == nil {
-		f.splitSchedules = map[uuid.UUID][]store.SplitSchedule{}
-	}
-	f.splitSchedules[in.ScopeID] = append(f.splitSchedules[in.ScopeID], in)
-	return in.ID, nil
 }
 
 // TKT-222. Deliberately ignores publication state, matching the real
@@ -1581,7 +1523,7 @@ func (e *env) doWithHeaders(method, path string, body any, hdr map[string]string
 // on the guard is never accidentally satisfied by a 400 from the validator.
 func validEventCreate() EventCreate {
 	return EventCreate{
-		Name:        LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
+		Name: LocalizedString{"fr": "Nuit Électrique", "en": "Electric Night"},
 	}
 }
 
@@ -1707,8 +1649,8 @@ func (e *env) createFixture(publish bool) (eventID, performanceID uuid.UUID) {
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		PerformanceId: perf.Id,
-		Name:  LocalizedString{"fr": "Admission générale", "en": "General admission"},
-		Price: Money{Amount: 4550, Currency: "EUR"},
+		Name:          LocalizedString{"fr": "Admission générale", "en": "General admission"},
+		Price:         Money{Amount: 4550, Currency: "EUR"},
 	})
 	if publish {
 		rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil)
@@ -2144,8 +2086,8 @@ func (e *env) createFestivalDay(venueID, eventID uuid.UUID, day int) Performance
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		PerformanceId: p.Id,
-		Name:  LocalizedString{"en": fmt.Sprintf("Day %d", day), "fr": fmt.Sprintf("Jour %d", day)},
-		Price: Money{Amount: 7500, Currency: "CAD"},
+		Name:          LocalizedString{"en": fmt.Sprintf("Day %d", day), "fr": fmt.Sprintf("Jour %d", day)},
+		Price:         Money{Amount: 7500, Currency: "CAD"},
 	})
 	return p
 }
@@ -2310,7 +2252,7 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 	}))
 	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
 		EventId: eventID,
-		Name: LocalizedString{"en": "Run", "fr": "Série"},
+		Name:    LocalizedString{"en": "Run", "fr": "Série"},
 	}))
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: sellableID, Position: 1})
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: blocking.Id, Position: 2})
@@ -2329,8 +2271,8 @@ func TestSeriesPublishConflictNamesBlockingSlotAndIsAtomic(t *testing.T) {
 
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		PerformanceId: blocking.Id,
-		Name:  LocalizedString{"en": "Admission", "fr": "Admission"},
-		Price: Money{Amount: 2500, Currency: "CAD"},
+		Name:          LocalizedString{"en": "Admission", "fr": "Admission"},
+		Price:         Money{Amount: 2500, Currency: "CAD"},
 	})
 	if rec = e.do("POST", "/series/"+series.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
 		t.Fatalf("publish after repair: %d %s", rec.Code, rec.Body.String())
@@ -2356,12 +2298,12 @@ func TestSeriesArchiveBlocksOwedClosureThenEmitsInOrder(t *testing.T) {
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		PerformanceId: second.Id,
-		Name:  LocalizedString{"en": "Second", "fr": "Deuxième"},
-		Price: Money{Amount: 5000, Currency: "EUR"},
+		Name:          LocalizedString{"en": "Second", "fr": "Deuxième"},
+		Price:         Money{Amount: 5000, Currency: "EUR"},
 	})
 	series := decode[Series](t, e.do("POST", "/series", SeriesCreate{
 		EventId: eventID,
-		Name: LocalizedString{"en": "Run", "fr": "Série"},
+		Name:    LocalizedString{"en": "Run", "fr": "Série"},
 	}))
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: firstID, Position: 1})
 	e.do("POST", "/series/"+series.Id.String()+"/performances", SeriesPerformanceAttach{PerformanceId: second.Id, Position: 2})
@@ -2406,7 +2348,7 @@ func TestSeriesEmptyFrozenAndOrganizerMismatchContracts(t *testing.T) {
 	eventID, performanceID := e.createFixture(true)
 	empty := decode[Series](t, e.do("POST", "/series", SeriesCreate{
 		EventId: eventID,
-		Name: LocalizedString{"en": "Empty", "fr": "Vide"},
+		Name:    LocalizedString{"en": "Empty", "fr": "Vide"},
 	}))
 	for _, action := range []string{"publish", "archive"} {
 		if rec := e.do("POST", "/series/"+empty.Id.String()+"/"+action, nil); rec.Code != http.StatusConflict {
@@ -2593,7 +2535,7 @@ func TestPublishEmitsSlotKind(t *testing.T) {
 	}))
 	e.do("POST", "/ticket-types", TicketTypeCreate{
 		PerformanceId: perf.Id,
-		Name: LocalizedString{"fr": "Pass jour", "en": "Day pass"}, Price: Money{Amount: 9000, Currency: "EUR"},
+		Name:          LocalizedString{"fr": "Pass jour", "en": "Day pass"}, Price: Money{Amount: 9000, Currency: "EUR"},
 	})
 	if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
 		t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())
@@ -2877,9 +2819,6 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 // let the handler get away with post-filtering would make the API tests agree
 // with a store that leaks disabled channels to the public read.
 func (f *fakeStore) CreateChannel(_ context.Context, in store.ChannelInput) (store.Channel, error) {
-	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
-		return store.Channel{}, err
-	}
 	if err := f.rejectUnknownOrganizer(in.OrganizerID); err != nil {
 		return store.Channel{}, err
 	}
@@ -2908,9 +2847,6 @@ func (f *fakeStore) CreateChannel(_ context.Context, in store.ChannelInput) (sto
 }
 
 func (f *fakeStore) UpdateChannel(_ context.Context, organizerID, id uuid.UUID, in store.ChannelUpdate) (store.Channel, error) {
-	if _, err := store.ValidateChannelWriteForTest(in.Code, in.DisplayName, in.Kind); err != nil {
-		return store.Channel{}, err
-	}
 	c, ok := f.channels[id]
 	// Scoped to the tenant, exactly as the real store is: a channel belonging to
 	// another organizer is ErrNotFound, indistinguishable from one that does not

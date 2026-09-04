@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/commerce/internal/store"
+	"ticketing/services/commerce/internal/worklease"
 )
 
 // Payments resolves what a payment operation actually did — the recorded outcome via
@@ -185,40 +186,34 @@ type Runner struct {
 // the enumerating test pins the chain itself.
 const MaxCallsPerOrder = 6
 
-// LeaseFor sizes the batch lease from the caller's own I/O budget.
-//
-// The lease has to outlast the work it covers. A batch is driven sequentially and each
-// order can make MaxCallsPerOrder calls, each bounded only by the HTTP client timeout —
-// so the pass's worst case is batch × calls × timeout. Sizing the lease from an
-// unrelated per-order guess is how it silently ends up shorter than the batch it
-// protects: the lease lapses mid-pass, a second runner claims rows the first is still
-// driving, and the claim token only fences the final database write — not the inventory
-// call or the journal submission already in flight.
-func LeaseFor(batch int, callTimeout time.Duration) time.Duration {
+// LeaseFor sizes a sequential batch from the recovery client's timeout.
+func LeaseFor(batch int, callTimeout time.Duration) (time.Duration, error) {
 	if batch <= 0 {
 		batch = 1
 	}
 	if callTimeout <= 0 {
 		callTimeout = 10 * time.Second
 	}
-	// Plus a margin for database work and scheduling between calls.
-	return time.Duration(batch)*MaxCallsPerOrder*callTimeout + 60*time.Second
+	return worklease.ForBatch(batch, MaxCallsPerOrder, callTimeout, 60*time.Second)
 }
 
 func New(st Store, payments Payments, inventory Inventory, journal Journal, completer Completer,
-	interval time.Duration, batch int, callTimeout time.Duration, log *slog.Logger) *Runner {
+	interval time.Duration, batch int, lease time.Duration, log *slog.Logger) (*Runner, error) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
 	if batch <= 0 {
 		batch = 16
 	}
+	if lease <= 0 {
+		return nil, errors.New("lease must be positive")
+	}
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Runner{store: st, payments: payments, inventory: inventory, journal: journal,
 		completer: completer, interval: interval, batch: batch,
-		lease: LeaseFor(batch, callTimeout), log: log}
+		lease: lease, log: log}, nil
 }
 
 // Run drives until ctx is cancelled. It runs once immediately: on restart, orders

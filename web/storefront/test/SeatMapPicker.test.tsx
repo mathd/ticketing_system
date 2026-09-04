@@ -11,39 +11,60 @@ import SeatMapPicker, {
 } from '../src/components/SeatMapPicker';
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../src/lib/api';
 
-const ORG = '00000000-0000-0000-0000-000000000001';
-const SLOT = '00000000-0000-0000-0000-000000000002';
-const MAP = '00000000-0000-0000-0000-000000000003';
+const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+const SLOT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+const MAP = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3';
+const OTHER_MAP = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd4';
+const VENUE = '00000000-0000-0000-0000-000000000005';
+const SECTION_BALCONY = '00000000-0000-0000-0000-000000000006';
+const SECTION_STALLS = '00000000-0000-0000-0000-000000000007';
+const ROW_BALCONY = '00000000-0000-0000-0000-000000000008';
+const ROW_STALLS_TWO = '00000000-0000-0000-0000-000000000009';
+const ROW_STALLS_ONE = '00000000-0000-0000-0000-000000000010';
+const SEAT_BALCONY_TWO = '00000000-0000-0000-0000-000000000011';
+const SEAT_BALCONY_ONE = '00000000-0000-0000-0000-000000000012';
+const SEAT_STALLS_TWO = '00000000-0000-0000-0000-000000000013';
+const SEAT_STALLS_ONE = '00000000-0000-0000-0000-000000000014';
 const POLL = 5000;
 
 // Deliberately out of position order at every level: the picker must sort, not
 // trust the response's array order.
 function geometry(): SeatMapGeometry {
   return {
-    map: { id: MAP, venue_id: 'v', name: 'Stalls', status: 'published', version: 1 },
+    map: {
+      id: MAP,
+      organizer_id: ORG,
+      venue_id: VENUE,
+      name: 'Stalls',
+      status: 'published',
+      version: 1,
+      published_at: '2026-08-03T12:00:00Z',
+      orphan_prevention_enabled: false,
+      created_at: '2026-08-03T11:00:00Z',
+    },
     sections: [
       {
-        id: 's2', name: 'Balcony', position: 2,
+        id: SECTION_BALCONY, name: 'Balcony', position: 2,
         rows: [
-          { id: 'r2', label: 'B', position: 1, seats: [
-            { id: 'x', seat_identity: 'Balcony/B/2', label: '2', position: 2 },
-            { id: 'y', seat_identity: 'Balcony/B/1', label: '1', position: 1 },
+          { id: ROW_BALCONY, label: 'B', position: 1, seats: [
+            { id: SEAT_BALCONY_TWO, seat_identity: 'Balcony/B/2', label: '2', position: 2 },
+            { id: SEAT_BALCONY_ONE, seat_identity: 'Balcony/B/1', label: '1', position: 1 },
           ] },
         ],
       },
       {
-        id: 's1', name: 'Stalls', position: 1,
+        id: SECTION_STALLS, name: 'Stalls', position: 1,
         rows: [
-          { id: 'r1b', label: 'A2', position: 2, seats: [
-            { id: 'z', seat_identity: 'Stalls/A2/1', label: '1', position: 1 },
+          { id: ROW_STALLS_TWO, label: 'A2', position: 2, seats: [
+            { id: SEAT_STALLS_TWO, seat_identity: 'Stalls/A2/1', label: '1', position: 1 },
           ] },
-          { id: 'r1a', label: 'A1', position: 1, seats: [
-            { id: 'w', seat_identity: 'Stalls/A1/1', label: '1', position: 1 },
+          { id: ROW_STALLS_ONE, label: 'A1', position: 1, seats: [
+            { id: SEAT_STALLS_ONE, seat_identity: 'Stalls/A1/1', label: '1', position: 1 },
           ] },
         ],
       },
     ],
-  } as SeatMapGeometry;
+  };
 }
 
 function occupancy(unavailable: string[], extra: Record<string, unknown> = {}) {
@@ -51,6 +72,29 @@ function occupancy(unavailable: string[], extra: Record<string, unknown> = {}) {
     slot_id: SLOT, seat_map_id: MAP, offering_status: 'open',
     remaining_capacity: 100, unavailable_seat_identities: unavailable, ...extra,
   };
+}
+
+function geometryWithPosition(
+  level: 'section' | 'row' | 'seat',
+  position: number,
+): SeatMapGeometry {
+  const result = structuredClone(geometry());
+  const section = result.sections?.[0];
+  const row = section?.rows?.[0];
+  const seat = row?.seats?.[0];
+  if (!section || !row || !seat) throw new Error('geometry fixture is incomplete');
+  if (level === 'section') section.position = position;
+  if (level === 'row') row.position = position;
+  if (level === 'seat') seat.position = position;
+  return result;
+}
+
+function geometryWithFirstSeatIdentity(seatIdentity: string): SeatMapGeometry {
+  const result = structuredClone(geometry());
+  const seat = result.sections?.[0]?.rows?.[0]?.seats?.[0];
+  if (!seat) throw new Error('geometry fixture is incomplete');
+  seat.seat_identity = seatIdentity;
+  return result;
 }
 
 // stubFetch answers the two reads the picker makes, by URL.
@@ -138,6 +182,23 @@ describe('SeatMapPicker', () => {
       'Balcony, row B, seat 1, Available',
       'Balcony, row B, seat 2, Available',
     ]);
+  });
+
+  it('accepts geometry and occupancy UUIDs that differ from the requested IDs only by case', async () => {
+    vi.stubGlobal('fetch', stubFetch(geometry(), occupancy([])));
+    render(
+      <SeatMapPicker
+        ref={handle}
+        organizerId={ORG.toUpperCase()}
+        slotId={SLOT.toUpperCase()}
+        seatMapId={MAP.toUpperCase()}
+        locale="en"
+        onSelectionChange={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1/ });
+    expect(screen.queryByText(/Seat selection is temporarily unavailable/)).toBeNull();
   });
 
   it('toggles a free seat and reports the selection upward', async () => {
@@ -232,8 +293,96 @@ describe('SeatMapPicker', () => {
   });
 
   it('fails closed when the two services name different map versions', async () => {
-    mount(stubFetch(geometry(), occupancy([], { seat_map_id: 'a-different-version' })));
+    mount(stubFetch(geometry(), occupancy([], { seat_map_id: OTHER_MAP })));
     await screen.findByText(/Seat selection is temporarily unavailable/);
+  });
+
+  it('rejects a composed geometry seat identity longer than 200 characters', async () => {
+    mount(stubFetch(geometryWithFirstSeatIdentity('S'.repeat(201)), occupancy([])));
+    await screen.findByText(/Seat selection is temporarily unavailable/);
+  });
+
+  it('accepts a 200-character Unicode seat identity', async () => {
+    mount(stubFetch(geometryWithFirstSeatIdentity('🎟'.repeat(200)), occupancy([])));
+    await screen.findByRole('button', { name: /Balcony, row B, seat 2, Available/ });
+    expect(screen.queryByText(/Seat selection is temporarily unavailable/)).toBeNull();
+  });
+
+  it('accepts an occupancy identity at the 200-character contract limit', async () => {
+    mount(stubFetch(geometry(), occupancy(['S'.repeat(200)])));
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
+    expect(screen.queryByText(/Seat selection is temporarily unavailable/)).toBeNull();
+  });
+
+  it('accepts the exact JavaScript-safe remaining-capacity ceiling', async () => {
+    mount(stubFetch(geometry(), occupancy([], { remaining_capacity: Number.MAX_SAFE_INTEGER })));
+    await screen.findByRole('button', { name: /Stalls, row A1, seat 1, Available/ });
+    expect(screen.queryByText(/Seat selection is temporarily unavailable/)).toBeNull();
+  });
+
+  it.each([
+    ['an absent occupancy identity', () => {
+      const { slot_id: _slotId, ...body } = occupancy([]);
+      return [geometry(), body];
+    }],
+    ['a non-array unavailable set', () => [
+      geometry(),
+      occupancy([], { unavailable_seat_identities: {} }),
+    ]],
+    ['a negative remaining capacity', () => [
+      geometry(),
+      occupancy([], { remaining_capacity: -1 }),
+    ]],
+    ['an unsafe remaining capacity', () => [
+      geometry(),
+      occupancy([], { remaining_capacity: Number.MAX_SAFE_INTEGER + 1 }),
+    ]],
+    ['an overlong occupancy identity', () => [
+      geometry(),
+      occupancy(['S'.repeat(201)]),
+    ]],
+    ['an unknown offering status', () => [
+      geometry(),
+      occupancy([], { offering_status: 'paused' }),
+    ]],
+    ['a malformed seat identity', () => {
+      const geo = geometry();
+      return [
+        {
+          ...geo,
+          sections: geo.sections.map((section, sectionIndex) => sectionIndex === 0
+            ? {
+                ...section,
+                rows: section.rows?.map((row, rowIndex) => rowIndex === 0
+                  ? {
+                      ...row,
+                      seats: row.seats?.map((seat, seatIndex) => seatIndex === 0
+                        ? { ...seat, id: 'seat-1' }
+                        : seat),
+                    }
+                  : row),
+              }
+            : section),
+        },
+        occupancy([]),
+      ];
+    }],
+    ['a zero section position', () => [geometryWithPosition('section', 0), occupancy([])]],
+    ['a zero row position', () => [geometryWithPosition('row', 0), occupancy([])]],
+    ['a zero seat position', () => [geometryWithPosition('seat', 0), occupancy([])]],
+    ['an empty geometry seat identity', () => [
+      geometryWithFirstSeatIdentity(''),
+      occupancy([]),
+    ]],
+    ['an invalid geometry date', () => {
+      const geo = geometry();
+      return [{ ...geo, map: { ...geo.map, created_at: 'yesterday' } }, occupancy([])];
+    }],
+  ])('fails closed when a successful seat read contains %s', async (_name, response) => {
+    const [geo, occ] = response();
+    mount(stubFetch(geo, occ));
+    await screen.findByText(/Seat selection is temporarily unavailable/);
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 });
 

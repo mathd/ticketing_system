@@ -4,10 +4,11 @@ import { getVenues, listChannelsForOperator, publishPerformance, updateChannel }
 import { getOrderState, refundOrder, type RefundRequest } from '../src/lib/commerce';
 import { getStaffAvailability, replaceChannelAllocations } from '../src/lib/inventory';
 import { unresolvedRefund } from '../src/lib/order-console';
-import { UPSTREAM_DEADLINE_MS } from '../src/lib/upstream';
+import { AmbiguousMutationError, UPSTREAM_DEADLINE_MS } from '../src/lib/upstream';
 
 const ASSERTION =
   'v1.11111111-1111-1111-1111-111111111111.00000000-0000-0000-0000-000000000001.99999999999.testmac';
+const ORGANIZER = '00000000-0000-0000-0000-000000000001';
 const ORDER = '11111111-1111-4111-8111-111111111111';
 const SLOT = '22222222-2222-4222-8222-222222222222';
 
@@ -60,27 +61,40 @@ describe('back-office upstream operation deadlines', () => {
 
   it.each([
     ['catalog read', () => getVenues('org-1')],
-    ['catalog write', () => publishPerformance(SLOT, ASSERTION)],
-    ['operator catalog read', () => listChannelsForOperator(ASSERTION)],
+    ['operator catalog read', () => listChannelsForOperator(ASSERTION, ORGANIZER)],
+    ['inventory read', () => getStaffAvailability(SLOT, 'org-1')],
+  ])('aborts a stalled %s', async (_name, operation) => {
+    const calls = stallUpstream();
+    const result = operation();
+    const rejection = expect(result).rejects.toThrow('upstream aborted');
+
+    expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
+    await vi.advanceTimersByTimeAsync(UPSTREAM_DEADLINE_MS);
+
+    expect(calls[0]?.signal?.aborted).toBe(true);
+    await rejection;
+  });
+
+  it.each([
+    ['catalog write', () => publishPerformance(SLOT, ASSERTION, ORGANIZER)],
     [
       'operator catalog write',
       () =>
-        updateChannel(ASSERTION, 'channel-1', {
+        updateChannel(ASSERTION, ORGANIZER, 'channel-1', {
           code: 'box-office',
           displayName: 'Box office',
           kind: 'pos',
           enabled: true,
         }),
     ],
-    ['inventory read', () => getStaffAvailability(SLOT, 'org-1')],
     [
       'inventory write',
       () => replaceChannelAllocations(SLOT, { organizer_id: 'org-1', allocations: [] }),
     ],
-  ])('aborts a stalled %s', async (_name, operation) => {
+  ])('classifies a stalled %s as ambiguous after fetch observes it', async (_name, operation) => {
     const calls = stallUpstream();
     const result = operation();
-    const rejection = expect(result).rejects.toThrow('upstream aborted');
+    const rejection = expect(result).rejects.toBeInstanceOf(AmbiguousMutationError);
 
     expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
     await vi.advanceTimersByTimeAsync(UPSTREAM_DEADLINE_MS);

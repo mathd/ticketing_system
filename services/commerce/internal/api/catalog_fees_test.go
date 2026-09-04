@@ -16,6 +16,7 @@ import (
 
 	apispec "ticketing/services/commerce/api"
 	commercestore "ticketing/services/commerce/internal/store"
+	"ticketing/shared/contract"
 )
 
 // The pure fee arithmetic (TKT-215 / ADR-046 §2). No HTTP, no database — the
@@ -256,6 +257,65 @@ func TestComposedTotalAddsOnlyPassedOnFees(t *testing.T) {
 	}
 }
 
+// A catalog unit amount fits every JavaScript client, but multiplying it by a
+// valid quantity can produce a larger int64. Feed the real composition output
+// through the same response validator used in production. This catches a wire
+// maximum that is narrower than the producer before it becomes a post-hold 500.
+func TestLargeComposedReservationPassesResponseContract(t *testing.T) {
+	const quantity int32 = 2
+	composition, err := computeFeeBreakdown([]resolvedFeeCode{
+		code("service", feeRule("service", basisPerTicketFixed, incidencePassedOn,
+			amt(maxContractAmount), nil)),
+	}, maxContractAmount, quantity, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	faceValue, err := checkedMul(maxContractAmount, int64(quantity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	total, err := composedTotal(faceValue, composition.PassedOnTotal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total <= maxContractAmount || composition.Items[0].Amount <= maxContractAmount {
+		t.Fatalf("fixture did not cross the old response limit: total=%d fee=%d",
+			total, composition.Items[0].Amount)
+	}
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	out := map[string]any{
+		"reservation_id": uuid.New(),
+		"hold_id":        uuid.New(),
+		"buyer_id":       uuid.New(),
+		"amount":         total,
+		"currency":       "EUR",
+		"expires_at":     now.Add(10 * time.Minute),
+		"server_time":    now,
+	}
+	addFeeFields(out, faceValue, composition)
+
+	handler, err := contract.RequestValidator(apispec.Spec, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		write(w, http.StatusCreated, out)
+	}), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/reservations", strings.NewReader(
+		`{"organizer_id":"`+pricingOrg+`","ticket_type_id":"`+pricingTT+`","quantity":2}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "large-composed-total")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("valid large reservation response became %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"amount":`+itoa(total)) {
+		t.Fatalf("response lost the exact composed total %d: %s", total, rec.Body.String())
+	}
+}
+
 // --- consumer tests: the read, the channel, and failing closed ---
 
 // feeStack wires a catalog that answers the price read normally and the fee read
@@ -294,7 +354,7 @@ func feeStack(t *testing.T, feeStatus int, feeBody string) (*Server, *string, *b
 		w.WriteHeader(409)
 		_, _ = w.Write([]byte(`{"error":"stop"}`))
 	}))
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	return s, &askedFor, &inventoryCalled, func() { catalog.Close(); inventory.Close() }
 }
 
@@ -624,7 +684,7 @@ func TestReserveRefusesAnUnrepresentableTotalBeforeTheHold(t *testing.T) {
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	body := `{"organizer_id":"` + pricingOrg + `","ticket_type_id":"` + pricingTT + `","quantity":2}`
 	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -979,7 +1039,7 @@ func TestAPublicRequestNamingAChannelNeverReachesCatalog(t *testing.T) {
 		}))
 		defer inventory.Close()
 
-		srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+		srv := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 		// The PUBLIC case posts a body that NAMES a reseller channel, through the
 		// unvalidated router. That is the whole point: a channel-free public body
 		// has nothing to leak, so a fixture built from one stays green with the

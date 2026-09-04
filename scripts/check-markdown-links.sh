@@ -73,8 +73,7 @@ broken=$(
         resolved = (path ~ /^\//) ? "." path : dir "/" path
 
         if (!(resolved in seen)) {
-          # `test -e` covers files and directories both; a directory target is
-          # legitimate here (several docs link to ../.sdlc/).
+          # `test -e` covers files and directories both.
           seen[resolved] = (system("test -e \"" resolved "\"") == 0)
         }
         if (!seen[resolved]) {

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 
 	commercestore "ticketing/services/commerce/internal/store"
 )
@@ -131,17 +130,6 @@ The link works once and expires in %s. If you did not ask for this, nothing has
 changed and you can ignore this message.
 `, link, commercestore.ResetTokenTTL)
 	return tok.Email, subject, body
-}
-
-// WithPublicURL supplies the buyer-facing origin reset links are built from. A separate
-// setter for the same reason WithAccess is one: every existing New caller keeps
-// compiling.
-//
-// It mirrors access's PUBLIC_BASE_URL, which is how ticket-delivery links are already
-// built (services/access/cmd/access/main.go). One environment variable, one meaning.
-func (s *Server) WithPublicURL(public string) *Server {
-	s.publicURL = strings.TrimSuffix(public, "/")
-	return s
 }
 
 // WarnIfResetMailUnconfigured is logged once at startup rather than per request. A

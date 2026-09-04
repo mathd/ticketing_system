@@ -10,13 +10,13 @@
 import type { APIRoute } from 'astro';
 
 import { LOCALES, type Locale } from '../../../lib/locales';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH, destroySession } from '../../../lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, sessionStore } from '../../../lib/session';
 
 export const POST: APIRoute = ({ params, cookies, redirect }) => {
   const locale = LOCALES.includes(params.locale as Locale) ? (params.locale as Locale) : 'en';
 
   const token = cookies.get(SESSION_COOKIE)?.value;
-  if (token) destroySession(token);
+  if (token) sessionStore.destroy(token);
 
   // The delete MUST name the same path the cookie was set with, or the browser
   // keeps the old cookie beside the deletion and hands it straight back on the

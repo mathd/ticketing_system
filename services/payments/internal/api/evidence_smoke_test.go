@@ -89,7 +89,7 @@ func evidenceServer(t *testing.T, ops ...evidenceOperation) (http.Handler, *sql.
 			_, _ = db.Exec(`DELETE FROM payment_operations WHERE organizer_id=$1`, org)
 		})
 	}
-	return NewWithPSP(store.New(db, ring), evidenceCredential, psp.NewFake()).Router(nil, true), db
+	return newTestServerWithPSP(store.New(db, ring), evidenceCredential, psp.NewFake()).Router(nil, true), db
 }
 
 // getEvidence issues an authenticated GET. token == "" sends no credential at all.

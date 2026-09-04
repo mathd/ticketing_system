@@ -2,7 +2,6 @@ package main
 
 import (
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -274,40 +273,46 @@ func TestNullableUUIDDistinguishesAbsentFromZero(t *testing.T) {
 	}
 }
 
-// The commands are reachable through main's dispatch.
-//
-// Not a test of main() — nothing here executes it — but of the one fact a dispatch bug would
-// break silently: that these names are the ones wired. `os.Args`-driven dispatch has no
-// compiler check, so a typo in either string sends the operator's command into `run()`, which
-// tries to start a server and fails with something unrelated to what they typed.
-func TestTheSubcommandNamesAreTheOnesDocumented(t *testing.T) {
-	// The names appear in the usage strings the argument errors carry, which is what an
-	// operator actually reads. If a name changes, the usage text and the dispatch have to
-	// change together, and this couples them.
-	err := listWedgedExchanges([]string{"x"})
-	if err == nil || !strings.Contains(err.Error(), "list-wedged-exchanges") {
-		t.Errorf("list usage = %v, want it to name the subcommand", err)
+func TestCommandRegistryInvokesEveryCommerceCallback(t *testing.T) {
+	var invoked string
+	withoutArgs := func(name string) func() error {
+		return func() error { invoked = name; return nil }
 	}
-	err = unwindExchange(nil)
-	if err == nil || !strings.Contains(err.Error(), "unwind-exchange") {
-		t.Errorf("unwind usage = %v, want it to name the subcommand", err)
+	withArgs := func(name string) func([]string) error {
+		return func([]string) error { invoked = name; return nil }
 	}
-	// And the binary's own dispatch strings, read from the source of truth rather than
-	// retyped: os.Args[1] is compared against these literals in main().
-	for _, name := range []string{"list-wedged-exchanges", "unwind-exchange"} {
-		if !strings.Contains(mainDispatchNames(), name) {
-			t.Errorf("main() does not dispatch %q; the command would fall through to run() and "+
-				"try to start a server", name)
-		}
+	callbacks := commandCallbacks{
+		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
+		enrolReseller: withArgs("enrol-reseller"), revokeReseller: withArgs("revoke-reseller"),
+		listResellers: withArgs("list-resellers"), listParked: withArgs("list-parked"),
+		unparkOrder: withArgs("unpark-order"), listWedgedExchanges: withArgs("list-wedged-exchanges"),
+		unwindExchange: withArgs("unwind-exchange"),
 	}
-}
-
-// mainDispatchNames reads main.go and returns its text, so the test above compares the usage
-// strings against the actual dispatch rather than against a copy of it.
-func mainDispatchNames() string {
-	b, err := os.ReadFile("main.go")
-	if err != nil {
-		return ""
+	registry := commandRegistry(callbacks)
+	names := []string{
+		"migrate", "healthcheck", "enrol-reseller", "revoke-reseller", "list-resellers",
+		"list-parked", "unpark-order", "list-wedged-exchanges", "unwind-exchange",
 	}
-	return string(b)
+	if len(registry) != len(names) {
+		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			invoked = ""
+			got := execute([]string{name, "tail"}, callbacks, func() error {
+				t.Fatal("server ran after a command was selected")
+				return nil
+			})
+			wantExit := 0
+			if name == "healthcheck" {
+				wantExit = 7
+			}
+			if got.Name != name || got.Err != nil || got.ExitCode != wantExit {
+				t.Fatalf("dispatch result = %+v, want %s with exit %d", got, name, wantExit)
+			}
+			if invoked != name {
+				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+		})
+	}
 }

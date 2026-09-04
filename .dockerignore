@@ -8,6 +8,5 @@ bin/*
 !bin/gate
 docs
 test
-.sdlc
 .claude
 .github

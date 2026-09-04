@@ -23,14 +23,28 @@ export function provisionAdmin(container, identifier, password) {
   );
 }
 
+export function enrolScanner(container, label) {
+  const output = execFileSync(
+    'docker',
+    ['exec', '-i', container, '/app', 'enrol-scanner', ORGANIZER, label],
+    { encoding: 'utf8' },
+  );
+  const token = output.match(/^  X-Scanner-Token: (.+)$/m)?.[1]?.trim();
+  if (!token) throw new Error('access enrol-scanner returned no pairing token');
+  return token;
+}
+
 export async function signIn(page, identifier, password) {
   await page.goto('/admin/login', { waitUntil: 'domcontentloaded' });
   await page.fill('#identifier', identifier);
   await page.fill('#password', password);
   await Promise.all([
-    page.waitForURL('**/admin**'),
+    page.waitForURL(
+      (url) => url.pathname === '/admin/' && url.search === '' && url.hash === '',
+    ),
     page.click('button[type=submit]'),
   ]);
+  await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor({ state: 'visible' });
 }
 
 export async function submitForm(page, button) {

@@ -198,6 +198,15 @@ conflicts. Together every physical admission that Access learns about is represe
    local pending record + mark-before-open. Adversarial tests: a copied occurrence id from
    another scanner/session, and a repeated already-actuated occurrence, must not cause a second
    actuation — while a genuine lost-response retry still completes exactly once.
+
+   **Pending records have a page owner and a renewable lease.** Each page load gets a fresh owner
+   id. A real same-tab reload carries only the prior owner id through `sessionStorage`, so it can
+   queue its interrupted request immediately without treating another live tab's request as its
+   own. Every pending row also carries a 30-second lease which its live page renews every 10
+   seconds. A different owner may queue the row only after that lease expires. This gives a tab
+   without session storage, or a second tab left open after the first crashes, a bounded recovery
+   path. Actuation still requires `PENDING`, `actuated:false`, and the current owner id in one
+   IndexedDB transaction. Recovery can therefore make a request retryable, never gate-opening.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at

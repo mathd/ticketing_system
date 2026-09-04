@@ -24,7 +24,7 @@ func (s *Server) CreateVenue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := s.store.CreateVenue(r.Context(), store.VenueInput{
+	v, err := s.authoring.CreateVenue(r.Context(), store.VenueInput{
 		OrganizerID: organizerID,
 		Name:        in.Name,
 		GACapacity:  in.GaCapacity,
@@ -66,7 +66,7 @@ func (s *Server) CreateEvent(w http.ResponseWriter, r *http.Request, params Crea
 	if !ok {
 		return
 	}
-	ev, err := s.store.CreateEvent(r.Context(), store.EventInput{
+	ev, err := s.authoring.CreateEvent(r.Context(), store.EventInput{
 		OrganizerID:    organizerID,
 		Name:           store.LocalizedText(in.Name),
 		Description:    desc,
@@ -125,7 +125,7 @@ func (s *Server) CreateSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := s.store.CreateSeries(r.Context(), store.SeriesInput{OrganizerID: organizerID, EventID: in.EventId, Name: store.LocalizedText(in.Name)})
+	out, err := s.authoring.CreateSeries(r.Context(), store.SeriesInput{OrganizerID: organizerID, EventID: in.EventId, Name: store.LocalizedText(in.Name)})
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -143,7 +143,7 @@ func (s *Server) AttachPerformanceToSeries(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	out, err := s.store.AttachPerformanceToSeries(r.Context(), organizerID, seriesId, in.PerformanceId, in.Position)
+	out, err := s.authoring.AttachPerformanceToSeries(r.Context(), organizerID, seriesId, in.PerformanceId, in.Position)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -165,7 +165,7 @@ func (s *Server) CreateSeason(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := s.store.CreateSeason(r.Context(), store.SeasonInput{OrganizerID: organizerID, Name: store.LocalizedText(in.Name)})
+	out, err := s.authoring.CreateSeason(r.Context(), store.SeasonInput{OrganizerID: organizerID, Name: store.LocalizedText(in.Name)})
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -183,7 +183,7 @@ func (s *Server) AttachSeriesToSeason(w http.ResponseWriter, r *http.Request, se
 	if !ok {
 		return
 	}
-	out, err := s.store.AttachSeriesToSeason(r.Context(), organizerID, seasonId, in.SeriesId)
+	out, err := s.authoring.AttachSeriesToSeason(r.Context(), organizerID, seasonId, in.SeriesId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -201,7 +201,7 @@ func (s *Server) AttachEventToSeason(w http.ResponseWriter, r *http.Request, sea
 	if !ok {
 		return
 	}
-	out, err := s.store.AttachEventToSeason(r.Context(), organizerID, seasonId, in.EventId)
+	out, err := s.authoring.AttachEventToSeason(r.Context(), organizerID, seasonId, in.EventId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -227,7 +227,7 @@ func (s *Server) CreateFestival(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := s.store.CreateFestival(r.Context(), store.FestivalInput{
+	out, err := s.authoring.CreateFestival(r.Context(), store.FestivalInput{
 		OrganizerID: organizerID, Name: store.LocalizedText(in.Name), SharedCapacity: in.SharedCapacity,
 	})
 	if err != nil {
@@ -247,7 +247,7 @@ func (s *Server) AttachDayToFestival(w http.ResponseWriter, r *http.Request, fes
 	if !ok {
 		return
 	}
-	out, err := s.store.AttachDayToFestival(r.Context(), organizerID, festivalId, in.PerformanceId)
+	out, err := s.authoring.AttachDayToFestival(r.Context(), organizerID, festivalId, in.PerformanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -326,7 +326,7 @@ func (s *Server) CreatePerformance(w http.ResponseWriter, r *http.Request, param
 		d := in.OperatingDate.Time
 		input.OperatingDate = &d
 	}
-	p, err := s.store.CreatePerformance(r.Context(), input)
+	p, err := s.authoring.CreatePerformance(r.Context(), input)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

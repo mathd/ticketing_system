@@ -29,8 +29,9 @@ There is no TS7-capable Volar yet.
 ## What we did about each
 
 **`openapi-typescript` moved to the workspace root**, which keeps its own `typescript@~6` — the
-root package has no Astro and no TS 7. `make generate` calls `pnpm run generate:api` from the root
-instead of `pnpm --filter <app> generate:api`; the emitted `api-types.gen.ts` is byte-identical.
+root package has no Astro and no TS 7. `make generate` now calls the repository's API-generation
+script, which invokes the root tool once for every TypeScript output; the emitted
+`api-types.gen.ts` is byte-identical.
 (`pnpm dlx openapi-typescript@7` also works — isolated tree, own TS 5 — but it puts a network fetch
 in the gate for no gain.)
 

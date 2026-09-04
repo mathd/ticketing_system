@@ -56,8 +56,8 @@ const piSucceededNoAmount = `{
 // the shipped defect itself: `stripePI` never declared `amount_received`, so the value
 // arrived on the wire and was dropped.
 //
-// Note this cannot be caught by TestFixturesParse — the fixtures ALREADY carried
-// `amount_received` while the struct ignored it, so that test was green throughout.
+// A parse-only fixture check cannot catch this. The fixture already carried
+// `amount_received` while the production struct ignored it.
 func TestStripeCaptureCarriesAmountReceived(t *testing.T) {
 	stub := newStripeStub(t, map[string]stubResp{
 		"POST /v1/payment_intents":                          {200, piRequiresCapture},

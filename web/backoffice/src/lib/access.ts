@@ -1,17 +1,62 @@
 // The back office's access client: the ticket bundle behind a guest reference
 // (TKT-193), with the QR credential removed.
+import type { components } from './access-api-types.gen';
 import {
   GATEWAY_URL,
   type Read,
   readJson,
   boolean,
+  dateTime,
+  positiveWholeNumber,
   required,
+  responseObject,
   sameIdentity,
-  wholeNumber,
+  uuid,
   withUpstreamDeadline,
 } from './upstream';
 
 const access = (path: string) => `${GATEWAY_URL}/api/access${path}`;
+
+type AccessTicketBundle = components['schemas']['TicketBundle'];
+type AccessTicket = components['schemas']['Ticket'];
+type AccessLifecycleEvent = components['schemas']['LifecycleEvent'];
+type SafeTicketWire = Pick<AccessTicket, 'ticket_id' | 'issued_at'> & {
+  history: AccessLifecycleEvent[];
+};
+type SafeTicketBundleWire = Pick<AccessTicketBundle, 'order_ref'> & {
+  tickets: SafeTicketWire[];
+};
+
+function decodeTicketBundle(value: unknown): SafeTicketBundleWire {
+  const body = responseObject(value, 'ticket bundle');
+  if (!Array.isArray(body.tickets)) throw new Error('response is missing tickets');
+  return {
+    order_ref: uuid(body.order_ref, 'order_ref'),
+    tickets: body.tickets.map((rawTicket) => {
+      const ticket = responseObject(rawTicket, 'ticket');
+      if (!Array.isArray(ticket.history)) throw new Error('ticket history is missing or not a list');
+      return {
+        ticket_id: uuid(ticket.ticket_id, 'ticket_id'),
+        issued_at: dateTime(ticket.issued_at, 'issued_at'),
+        history: ticket.history.map((rawEvent) => {
+          const event = responseObject(rawEvent, 'lifecycle event');
+          if (
+            event.sequence !== undefined &&
+            (typeof event.sequence !== 'number' || !Number.isSafeInteger(event.sequence) || event.sequence < 1)
+          ) {
+            throw new Error('lifecycle sequence is not a chain position');
+          }
+          return {
+            id: uuid(event.id, 'event id'),
+            type: required(event.type, 'event type'),
+            sequence: event.sequence as number | undefined,
+            occurred_at: dateTime(event.occurred_at, 'occurred_at'),
+          };
+        }),
+      };
+    }),
+  };
+}
 
 export type LifecycleEvent = {
   id: string;
@@ -34,46 +79,18 @@ export type SafeTicket = { ticketId: string; issuedAt: string; history: Lifecycl
  */
 export function getOrderTickets(ref: string): Promise<Read<SafeTicket[]>> {
   return readJson(access(`/orders/${encodeURIComponent(ref)}/tickets`), (body) => {
-    const b = body as { tickets?: unknown; order_ref?: unknown };
-    sameIdentity(required(b.order_ref, 'order_ref'), ref, 'order_ref');
-    if (!Array.isArray(b.tickets)) throw new Error('response is missing tickets');
-    return b.tickets.map((raw) => {
-      const t = raw as Record<string, unknown>;
-      // NOT `t.history ?? []`. The access contract makes `history` required, so
-      // its absence is a broken response, and defaulting it would render "no
-      // lifecycle events recorded yet" — a statement about the ticket — when
-      // what actually happened is that access did not answer properly.
-      const history = t.history;
-      if (!Array.isArray(history)) throw new Error('ticket history is missing or not a list');
-      return {
-        ticketId: required(t.ticket_id, 'ticket_id'),
-        issuedAt: required(t.issued_at, 'issued_at'),
-        history: history.map((rawEvent) => {
-          const e = rawEvent as Record<string, unknown>;
-          // A sequence that is present but not a number is a contract the client
-          // does not understand — rendering NaN beside a lifecycle event would
-          // read as a gap in the integrity chain (ADR-025 §D5) rather than as
-          // this client's confusion.
-          // Absent is legitimate — legacy rows the chain backfill has not
-          // adopted. Present means an integer >= 1 (openapi.yaml: int64,
-          // minimum 1); 0 or 1.5 is a chain position that cannot exist, and
-          // rendering one as "#0" would read as an integrity gap rather than as
-          // this client accepting nonsense.
-          if (
-            e.sequence !== undefined &&
-            (typeof e.sequence !== 'number' || !Number.isInteger(e.sequence) || e.sequence < 1)
-          ) {
-            throw new Error('lifecycle sequence is not a chain position');
-          }
-          return {
-            id: required(e.id, 'event id'),
-            type: required(e.type, 'event type'),
-            sequence: e.sequence as number | undefined,
-            occurredAt: required(e.occurred_at, 'occurred_at'),
-          };
-        }),
-      };
-    });
+    const bundle = decodeTicketBundle(body);
+    sameIdentity(bundle.order_ref, ref, 'order_ref');
+    return bundle.tickets.map((ticket) => ({
+      ticketId: ticket.ticket_id,
+      issuedAt: ticket.issued_at,
+      history: ticket.history.map((event) => ({
+        id: event.id,
+        type: event.type,
+        sequence: event.sequence,
+        occurredAt: event.occurred_at,
+      })),
+    }));
   });
 }
 
@@ -175,16 +192,14 @@ export async function redeliverOrderTickets(req: RedeliveryRequest): Promise<Red
       if (!res.ok) return { ok: false, kind: 'ambiguous', message };
 
       try {
-        const b = (await res.json()) as Record<string, unknown>;
-        const orderId = required(b.order_id, 'order_id');
+        const b = responseObject(await res.json(), 'ticket redelivery');
+        const orderId = uuid(b.order_id, 'order_id');
         // The order it answers about must be the order asked about. A mismatch is a
         // response this client does not understand, and rendering "re-sent" against
         // the wrong order id is worse than reporting the ambiguity.
         sameIdentity(orderId, req.orderId, 'order_id');
-        const ticketCount = wholeNumber(b.ticket_count, 'ticket_count');
-        // A resend of nothing is not a success. The contract says minimum 1, and
-        // rendering "re-sent 0 tickets" would report an action that did not happen.
-        if (ticketCount < 1) throw new Error('response ticket_count is not a count');
+        const ticketCount = positiveWholeNumber(b.ticket_count, 'ticket_count');
+        if (ticketCount > 50) throw new Error('ticket_count is above the contract maximum');
         return { ok: true, value: { orderId, ticketCount, replay: boolean(b.replay, 'replay') } };
       } catch (err) {
         // A 200 we could not read. The mail went out; only our understanding of the
@@ -207,7 +222,7 @@ export async function redeliverOrderTickets(req: RedeliveryRequest): Promise<Red
  */
 async function accessMessage(res: Response): Promise<string> {
   try {
-    const b = (await res.clone().json()) as Record<string, unknown>;
+    const b = responseObject(await res.clone().json(), 'access error');
     if (typeof b.error === 'string' && b.error) return b.error;
   } catch {
     /* fall through */

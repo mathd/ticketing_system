@@ -70,19 +70,16 @@ func (e *SeatOrphanedError) Unwrap() error { return ErrSeatOrphaned }
 // orphanedSeatsQuery finds the seats a selection would strand, entirely in SQL and
 // entirely within the caller's transaction and pool lock.
 //
-// The candidate set is the NEIGHBOURS OF THE REQUESTED SEATS, and that single choice
-// carries two properties an earlier version got wrong (ai-review):
+// The candidate set is the neighbours of the requested seats. That choice makes both
+// correctness and lock duration structural:
 //
 //   - **Only newly orphaned seats.** A seat can only become isolated by this claim if
 //     one of its own neighbours is being taken now, so restricting candidates to
-//     N(requested) makes "newly" structural rather than a filter. The earlier version
-//     scanned every seat and tried to exclude pre-existing orphans with a predicate
-//     that was tautological — it re-reported the same stranded seat on every later
-//     claim in that row, for ever.
+//     N(requested) makes "newly" structural rather than a filter; pre-existing
+//     orphans elsewhere in the row cannot enter the candidate set.
 //   - **Bounded work under the lock.** At most two candidates per requested seat, each
 //     reached through seat_claim_adjacency's (pool_id, seat_identity) primary key. The
-//     earlier version scanned the whole pool while holding the row lock that serialises
-//     every claimant on the performance — the worst place in the system to do O(map).
+//     query therefore stays proportional to the selection while holding the pool lock.
 //
 // `occupied(x)` is what will be taken once this claim commits: the requested set, plus
 // anything already live under the same predicate the claim path enforces (see

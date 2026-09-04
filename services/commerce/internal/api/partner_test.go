@@ -25,7 +25,7 @@ import (
 // lookup therefore fails, which is exactly the fixture these tests want: they are
 // about what happens when authentication does not succeed.
 func partnerServer() http.Handler {
-	return New(nil, http.DefaultClient, "", "", "", "secret").Router(nil, true)
+	return newTestServer(nil, http.DefaultClient, "", "", "", "secret").Router(nil, true)
 }
 
 func partnerRequest(method, path, body string) *http.Request {

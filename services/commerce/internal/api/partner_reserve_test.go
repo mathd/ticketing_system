@@ -62,7 +62,7 @@ func reserveAsPartner(t *testing.T, scope partnerScope, requestBody string) capt
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	req := httptest.NewRequest(http.MethodPost, "/partners/reservations", bytes.NewBufferString(requestBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "partner-"+t.Name())
@@ -158,7 +158,7 @@ func TestThePartnerRouteIgnoresChannelAndResellerInTheBody(t *testing.T) {
 	slot := new(partnerScope)
 	*slot = scope
 	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, slot))
-	New(nil, http.DefaultClient, "", "", "", "secret").partnerReserve(rec, req)
+	newTestServer(nil, http.DefaultClient, "", "", "", "secret").partnerReserve(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("a body carrying reseller_id answered %d, want 400 — the field must not exist on "+
 			"the request type, so that attributing a sale to another reseller is unaskable rather "+
@@ -234,7 +234,7 @@ func TestAPartnerCannotReserveForAnotherOrganizer(t *testing.T) {
 	*slot = scope
 	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, slot))
 
-	srv := New(nil, http.DefaultClient, "", "", "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, "", "", "", "secret")
 	srv.partnerReserve(rec, req)
 
 	if rec.Code != http.StatusForbidden {
@@ -256,7 +256,7 @@ func TestAPartnerReserveWithoutAScopeIsRefused(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "partner-no-scope")
 
-	srv := New(nil, http.DefaultClient, "", "", "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, "", "", "", "secret")
 	srv.partnerReserve(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {

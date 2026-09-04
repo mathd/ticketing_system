@@ -29,9 +29,12 @@ The `printf` matters if you reproduce this by hand: it emits no trailing newline
 instead changes the checksum and so the slot. Because `$STACK` is part of the input, the smoke and
 browser stacks in one worktree normally get *different* slots.
 
-The script then shifts both the project name (`ticketing-<stack>-<slot>`) and every port by the
-slot (gateway `18080+slot`, postgres `15432+slot`, and so on), so two worktrees can smoke at once.
-Do not assume the literals `ticketing-smoke` or 18080 in scripts; read the exported values instead.
+The script shifts every port by the slot (gateway `18080+slot`, postgres `15432+slot`, and so on).
+Unless `SMOKE_COMPOSE_PROJECT` explicitly overrides it, the Compose project is derived separately
+as `ticketing-<stack>-<path-digest>`. Two checkout paths that land in the same 40-slot port range
+therefore keep distinct containers and volumes; the second stack fails on the occupied ports
+instead of gaining authority to tear down the first. Do not assume a literal project name or port
+in scripts; read the exported values instead.
 
 Gotchas already paid for:
 

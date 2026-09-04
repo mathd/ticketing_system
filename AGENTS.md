@@ -308,10 +308,9 @@ experiment stays valid.
   tracking work here. **Ticket state is not in this repo.** It lives as one note per ticket in a
   Fast Note Sync vault, served by the board in `~/sources/sdlc-board` (`python3 server.py 8787`);
   read and write it through that server's HTTP API, per
-  `.claude/skills/sdlc-ticket/references/local-tracker.md`. The `.sdlc/` directory here is a
-  **superseded rollback stub** — its `server.py`, `board.html` and `config.json` are no longer the
-  source of truth and must not be run. The `sdlc-state` branch is likewise a **read-only archive**
-  refreshed by a scheduled pull; never write to it.
+  `.claude/skills/sdlc-ticket/references/local-tracker.md`. The former in-repository `.sdlc/`
+  rollback stub has been removed; git history is the rollback mechanism. The `sdlc-state` branch is
+  a **read-only archive** refreshed by a scheduled pull; never write to it.
 - **Changing a domain event's payload, or consuming one? Read [ADR-017](docs/adr/ADR-017-domain-event-schema-evolution.md) first.**
   Bump on **consumer semantics**, not parse compatibility — the dangerous payload deserializes fine
   (§3). And a consumer must **dispatch on `schema` before decoding `data`** (§5b′): a bump exists

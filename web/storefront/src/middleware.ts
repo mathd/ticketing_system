@@ -24,14 +24,14 @@ import { defineMiddleware } from 'astro:middleware';
 
 import { gateRequest } from './lib/gate';
 import { pageCacheControl } from './lib/page-tier';
-import { SESSION_COOKIE, lookupSession, type CustomerPrincipal } from './lib/session';
+import { SESSION_COOKIE, sessionStore, type CustomerPrincipal } from './lib/session';
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const response = await gateRequest({
     request: context.request,
     pathname: context.url.pathname,
     sessionToken: context.cookies.get(SESSION_COOKIE)?.value ?? '',
-    lookup: (token) => lookupSession(token),
+    lookup: (token) => sessionStore.lookup(token),
     onAuthenticated: (principal) => {
       context.locals.customer = principal as CustomerPrincipal;
     },

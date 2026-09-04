@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   allocationErrors,
+  allocationRowsFromAvailability,
   parseAllocationForm,
   parseAllocationRevision,
   toAllocationRequest,
@@ -30,6 +31,22 @@ const row = (over: Partial<AllocationRow> = {}): AllocationRow => ({
   clearRelease: false,
   ...over,
 });
+const REVISION = 0;
+
+describe('stored allocation mapping', () => {
+  it('builds a complete untouched form row', () => {
+    expect(allocationRowsFromAvailability([{
+      channel: 'reseller-acme',
+      cap: 40,
+      release_at: '2026-09-01T10:15:30.123Z',
+    }])).toEqual([{
+      channel: 'reseller-acme',
+      cap: '40',
+      releaseAt: '2026-09-01T10:15:30Z',
+      clearRelease: false,
+    }]);
+  });
+});
 
 /** The current server-side set, which is the ONLY source for unrendered fields. */
 const held = (over: Partial<CurrentAllocation> = {}): CurrentAllocation => ({
@@ -56,6 +73,7 @@ describe('the full set survives a round trip', () => {
           sold_by: '22222222-2222-2222-2222-222222222222',
         }),
       ],
+      REVISION,
     );
 
     expect(req.organizer_id).toBe('11111111-1111-1111-1111-111111111111');
@@ -86,6 +104,7 @@ describe('the full set survives a round trip', () => {
       '11111111-1111-1111-1111-111111111111',
       [row()],
       [held()],
+      REVISION,
     ).allocations;
     expect(a).not.toHaveProperty('release_at');
     expect(a).not.toHaveProperty('opens_at');
@@ -114,9 +133,12 @@ describe('the form cannot carry a field this screen does not edit', () => {
     expect(parsed[0]).toEqual({ channel: 'reseller-acme', cap: '40', releaseAt: '', clearRelease: false });
 
     // And they reach the wire only from the server's set.
-    const [a] = toAllocationRequest('11111111-1111-1111-1111-111111111111', parsed, [
-      held({ requires_code: false }),
-    ]).allocations;
+    const [a] = toAllocationRequest(
+      '11111111-1111-1111-1111-111111111111',
+      parsed,
+      [held({ requires_code: false })],
+      REVISION,
+    ).allocations;
     expect(a.requires_code).toBe(false);
     expect(a).not.toHaveProperty('sold_by');
     expect(a).not.toHaveProperty('opens_at');
@@ -258,7 +280,7 @@ describe('the write takes unrendered fields from the server, never from the clie
   });
 
   const build = (r: AllocationRow, c: CurrentAllocation[]) =>
-    toAllocationRequest('11111111-1111-1111-1111-111111111111', [r], c).allocations[0];
+    toAllocationRequest('11111111-1111-1111-1111-111111111111', [r], c, REVISION).allocations[0];
 
   // The invariant, without naming the implementation: EDITING A CAP CHANGES THE CAP AND
   // NOTHING ELSE — to the microsecond, because these boundaries are compared against
@@ -487,6 +509,7 @@ describe('the write takes unrendered fields from the server, never from the clie
         '11111111-1111-1111-1111-111111111111',
         [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'brand-new', cap: '10' })],
         [current()],
+        REVISION,
       ),
     ).toThrow(UnknownAllocationChannel);
   });
@@ -499,6 +522,7 @@ describe('the write takes unrendered fields from the server, never from the clie
         '11111111-1111-1111-1111-111111111111',
         [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: ' reseller-acme ' })],
         [current()],
+        REVISION,
       ),
     ).toThrow(UnknownAllocationChannel);
   });
@@ -509,6 +533,7 @@ describe('the write takes unrendered fields from the server, never from the clie
         '11111111-1111-1111-1111-111111111111',
         [row({ releaseAt: toMinuteInput(current().release_at) }), row({ channel: 'ghost' })],
         [current()],
+        REVISION,
       );
       expect.unreachable('should have thrown');
     } catch (e) {
@@ -550,20 +575,30 @@ describe('a submitted set that omits a current allocation is refused', () => {
   it('refuses an EMPTY submission against a non-empty current set', () => {
     // The sharpest case: `channel.0` absent parses to no rows at all, and a full-set
     // replace with an empty list clears every allocation the slot has.
-    expect(() => toAllocationRequest('11111111-1111-1111-1111-111111111111', [], two)).toThrow(
+    expect(() => toAllocationRequest('11111111-1111-1111-1111-111111111111', [], two, REVISION)).toThrow(
       MissingAllocationChannel,
     );
   });
 
   it('refuses a submission that drops one current channel', () => {
     expect(() =>
-      toAllocationRequest('11111111-1111-1111-1111-111111111111', [row({ channel: 'reseller-acme' })], two),
+      toAllocationRequest(
+        '11111111-1111-1111-1111-111111111111',
+        [row({ channel: 'reseller-acme' })],
+        two,
+        REVISION,
+      ),
     ).toThrow(MissingAllocationChannel);
   });
 
   it('names the omitted channel, so the page can say which', () => {
     try {
-      toAllocationRequest('11111111-1111-1111-1111-111111111111', [row({ channel: 'reseller-acme' })], two);
+      toAllocationRequest(
+        '11111111-1111-1111-1111-111111111111',
+        [row({ channel: 'reseller-acme' })],
+        two,
+        REVISION,
+      );
       expect.unreachable('should have thrown');
     } catch (e) {
       expect((e as MissingAllocationChannel).channel).toBe('presale');
@@ -575,13 +610,14 @@ describe('a submitted set that omits a current allocation is refused', () => {
       '11111111-1111-1111-1111-111111111111',
       [row({ channel: 'reseller-acme' }), row({ channel: 'presale' })],
       two,
+      REVISION,
     );
     expect(req.allocations.map((a) => a.channel)).toEqual(['reseller-acme', 'presale']);
   });
 
   // An empty submission against an empty current set is not a deletion, so it is allowed.
   it('allows an empty submission when the slot has no allocations', () => {
-    expect(toAllocationRequest('11111111-1111-1111-1111-111111111111', [], []).allocations).toEqual([]);
+    expect(toAllocationRequest('11111111-1111-1111-1111-111111111111', [], [], REVISION).allocations).toEqual([]);
   });
 });
 
@@ -606,10 +642,14 @@ describe('the allocation-set revision', () => {
     expect('allocation_revision' in req).toBe(true);
   });
 
-  // Omitted only when genuinely absent. The page refuses that case before calling this,
-  // but the mapping must not invent a value of its own.
-  it('omits the field entirely when no revision is supplied', () => {
-    expect('allocation_revision' in toAllocationRequest(org, [row()], current)).toBe(false);
+  it('requires both the current set and its revision', () => {
+    expectTypeOf<Parameters<typeof toAllocationRequest>>().toEqualTypeOf<[
+      organizerId: string,
+      rows: AllocationRow[],
+      current: CurrentAllocation[],
+      revision: number,
+    ]>();
+    expectTypeOf<ReturnType<typeof toAllocationRequest>['allocation_revision']>().toEqualTypeOf<number>();
   });
 
   it('reads the revision from the submitted form', () => {

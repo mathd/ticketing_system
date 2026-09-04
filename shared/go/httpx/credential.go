@@ -19,9 +19,6 @@ import (
 //   - Fail closed on an unconfigured value. A service started WITHOUT a credential
 //     must refuse everyone rather than admit anyone presenting nothing, which is
 //     what an empty-vs-empty comparison would do.
-//
-// Lifted from commerce's credentialMatches (staff_credential.go), which stays as
-// the thin wrapper its two-header call site reads better with.
 func CredentialMatches(presented, configured string) bool {
 	if configured == "" || presented == "" {
 		return false

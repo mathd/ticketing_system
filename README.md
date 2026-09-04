@@ -28,8 +28,9 @@ Then:
 make check                 # drift + contract checks, then lint + test + build + smoke — exactly what CI runs
 ```
 
-`make smoke` boots an isolated copy of the stack (compose project `ticketing-smoke`,
-shifted ports) and runs the integration suite in `smoke/`; it never touches your dev stack.
+`make smoke` boots an isolated copy of the stack under a path-derived Compose project and
+deterministic shifted ports. It runs the integration suite in `smoke/`; its default cleanup scope
+is separate from your dev stack.
 `scripts/gate-selftest.sh` proves the gate fails on seeded lint/test/build errors.
 
 Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.

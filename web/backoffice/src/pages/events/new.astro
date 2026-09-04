@@ -14,6 +14,7 @@
 // session on every write; a query param would be an authorization decision made
 // by the URL bar. Catalog stays authoritative for existence and lifecycle.
 import Layout from '../../layouts/Layout.astro';
+import { AmbiguousMutationError } from '../../lib/upstream';
 import {
   CatalogApiError,
   createEvent,
@@ -126,7 +127,12 @@ if (Astro.request.method === 'POST') {
         error = name.message;
         errorField = `name_${name.field}`;
       } else {
-        const created = await createEvent(staff.organizerAssertion, name.value, eventKey);
+        const created = await createEvent(
+          staff.organizerAssertion,
+          staff.organizerId,
+          name.value,
+          eventKey,
+        );
         return Astro.redirect(`${here}?event=${encodeURIComponent(created.id)}`, 303);
       }
     } else if (action === 'create-performance') {
@@ -140,16 +146,16 @@ if (Astro.request.method === 'POST') {
       if (readFailed) {
         // error already describes the venue read failure
       } else {
-      const perf = await createPerformance(staff.organizerAssertion, {
-        eventId: String(eventId),
-        venueId: field('venue_id'),
-        startsAt: field('starts_at'),
-        timezone: field('timezone'),
-      }, performanceKey);
-      return Astro.redirect(
-        `${here}?event=${encodeURIComponent(String(eventId))}&performance=${encodeURIComponent(perf.id)}`,
-        303,
-      );
+        const perf = await createPerformance(staff.organizerAssertion, staff.organizerId, {
+          eventId: String(eventId),
+          venueId: field('venue_id'),
+          startsAt: field('starts_at'),
+          timezone: field('timezone'),
+        }, performanceKey);
+        return Astro.redirect(
+          `${here}?event=${encodeURIComponent(String(eventId))}&performance=${encodeURIComponent(perf.id)}`,
+          303,
+        );
       }
     } else if (action === 'create-ticket-type') {
       const name = parseLocalizedName({ en: field('tt_name_en'), fr: field('tt_name_fr') });
@@ -160,7 +166,7 @@ if (Astro.request.method === 'POST') {
         error = bad.message;
         errorField = bad.field === 'en' || bad.field === 'fr' ? `tt_name_${bad.field}` : bad.field;
       } else if (name.ok && amount.ok && currency.ok) {
-        const tt = await createTicketType(staff.organizerAssertion, {
+        const tt = await createTicketType(staff.organizerAssertion, staff.organizerId, {
           performanceId: String(performanceId),
           name: name.value,
           amount: amount.value,
@@ -179,7 +185,11 @@ if (Astro.request.method === 'POST') {
       // told it. Publishing is idempotent server-side (ADR-018), so a refresh
       // that re-posts is harmless — which is what makes forgoing PRG safe here,
       // and nowhere else on this page.
-      const slot = await publishPerformance(String(performanceId), staff.organizerAssertion);
+      const slot = await publishPerformance(
+        String(performanceId),
+        staff.organizerAssertion,
+        staff.organizerId,
+      );
       // `published`, not merely truthy. Catalog's publish updates and rereads in
       // separate statements, so a concurrent archive can return `archived` here
       // — and rendering that under "Publication accepted" would report a slot
@@ -200,9 +210,12 @@ if (Astro.request.method === 'POST') {
     // festival day publishes through its festival, an archived slot cannot
     // transition, a slot with no ticket type is not sellable. Surfacing our own
     // paraphrase would be a second lifecycle opinion.
-    error =
-      e instanceof CatalogApiError
-        ? e.message
+    error = e instanceof CatalogApiError
+      ? e.message
+      : e instanceof AmbiguousMutationError
+        ? action === 'publish-performance'
+          ? 'Catalog may have published this date, but its response could not be verified. Reload and reconcile the current event state before retrying.'
+          : 'Catalog may have saved this step, but its response could not be verified. Reload and reconcile the current event state before retrying. This form keeps the same idempotency key.'
         : 'Something went wrong talking to the catalog. Try again.';
   }
 }
@@ -258,7 +271,7 @@ const val = (name: string) => submitted[name] ?? '';
       <h2>2. When and where</h2>
       <label for="venue_id">Venue</label>
       <select id="venue_id" name="venue_id" required>
-        {venues.map((v) => <option value={v.id}>{v.name}</option>)}
+        {venues.map((v) => <option value={v.id} selected={v.id === val('venue_id')}>{v.name}</option>)}
       </select>
       <label for="starts_at">Starts at</label>
       {/* RFC 3339 WITH an offset, not a datetime-local value. A local value

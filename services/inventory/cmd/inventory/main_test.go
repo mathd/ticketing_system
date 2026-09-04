@@ -11,12 +11,41 @@ import (
 	"ticketing/services/inventory/internal/store"
 )
 
-func TestSubcommandsRegisterMigrateAndReprocessQuarantine(t *testing.T) {
-	subs := subcommands()
-	for _, name := range []string{"migrate", "reprocess-quarantine", "reconcile-pins"} {
-		if _, ok := subs[name]; !ok {
-			t.Fatalf("subcommands() lacks %q", name)
-		}
+func TestCommandRegistryInvokesEveryInventoryCallback(t *testing.T) {
+	var invoked string
+	withoutArgs := func(name string) func() error {
+		return func() error { invoked = name; return nil }
+	}
+	withArgs := func(name string) func([]string) error {
+		return func([]string) error { invoked = name; return nil }
+	}
+	callbacks := commandCallbacks{
+		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
+		reprocessQuarantine: withArgs("reprocess-quarantine"), reconcilePins: withArgs("reconcile-pins"),
+	}
+	registry := commandRegistry(callbacks)
+	names := []string{"migrate", "healthcheck", "reprocess-quarantine", "reconcile-pins"}
+	if len(registry) != len(names) {
+		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			invoked = ""
+			got := execute([]string{name, "tail"}, callbacks, func() error {
+				t.Fatal("server ran after a command was selected")
+				return nil
+			})
+			wantExit := 0
+			if name == "healthcheck" {
+				wantExit = 7
+			}
+			if got.Name != name || got.Err != nil || got.ExitCode != wantExit {
+				t.Fatalf("dispatch result = %+v, want %s with exit %d", got, name, wantExit)
+			}
+			if invoked != name {
+				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+		})
 	}
 }
 

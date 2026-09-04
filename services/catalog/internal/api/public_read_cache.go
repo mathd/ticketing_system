@@ -41,9 +41,9 @@ const (
 // cannot be constructed unwired — a cache nothing invalidates is worse than no
 // cache, because it looks like it works.
 //
-// Writes are NOT on this interface. Server keeps store.Store for every write and
-// for the seat-map reads, so nothing but the four minute-tier handlers can reach
-// a cached value. That separation is asserted structurally, not by convention.
+// Writes are not on this interface. Server keeps separate handler dependencies
+// for writes and seat-map reads, so only the four minute-tier handlers can reach
+// a cached value. A structural test pins that separation.
 type publicReadSource interface {
 	ListPublishedEvents(ctx context.Context) ([]store.EventAggregate, error)
 	GetPublishedEvent(ctx context.Context, id uuid.UUID) (store.EventAggregate, error)
@@ -132,35 +132,36 @@ type publicReadCache struct {
 	detailGen uint64
 }
 
-type publicReadOption func(*publicReadCache)
-
-func withPublicReadClock(now func() time.Time) publicReadOption {
-	return func(c *publicReadCache) { c.now = now }
+type publicReadCacheConfig struct {
+	now         func() time.Time
+	ttl         time.Duration
+	maxEntries  int
+	maxInFlight int
+	loadTimeout time.Duration
 }
 
-func withPublicReadBounds(maxEntries, maxInFlight int) publicReadOption {
-	return func(c *publicReadCache) { c.maxEntries, c.maxInFlight = maxEntries, maxInFlight }
-}
-
-func withPublicReadTimeout(d time.Duration) publicReadOption {
-	return func(c *publicReadCache) { c.loadTimeout = d }
-}
-
-func newPublicReadCache(src publicReadSource, opts ...publicReadOption) *publicReadCache {
-	c := &publicReadCache{
-		src:         src,
+func defaultPublicReadCacheConfig() publicReadCacheConfig {
+	return publicReadCacheConfig{
 		now:         time.Now,
 		ttl:         cachetier.Minutes.Duration(),
 		maxEntries:  defaultPublicReadEntries,
 		maxInFlight: defaultPublicReadInFlight,
 		loadTimeout: defaultPublicReadTimeout,
+	}
+}
+
+func newPublicReadCache(src publicReadSource, config publicReadCacheConfig) *publicReadCache {
+	c := &publicReadCache{
+		src:         src,
+		now:         config.now,
+		ttl:         config.ttl,
+		maxEntries:  config.maxEntries,
+		maxInFlight: config.maxInFlight,
+		loadTimeout: config.loadTimeout,
 		enabled:     true,
 		entries:     map[readKey]*readEntry{},
 		lru:         list.New(),
 		inflight:    map[readKey]*readFlight{},
-	}
-	for _, o := range opts {
-		o(c)
 	}
 	c.sem = make(chan struct{}, c.maxInFlight)
 	src.RegisterPublicReadInvalidator(c.Invalidate)
@@ -381,12 +382,6 @@ func (c *publicReadCache) insertLocked(k readKey, v any) {
 func (c *publicReadCache) removeLocked(e *readEntry) {
 	c.lru.Remove(e.elem)
 	delete(c.entries, e.key)
-}
-
-func (c *publicReadCache) entryCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
 }
 
 func (c *publicReadCache) ListPublishedEvents(ctx context.Context) (cached[[]store.EventAggregate], error) {

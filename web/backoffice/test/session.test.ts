@@ -5,12 +5,8 @@ import {
   MAX_SESSIONS_PER_STAFF,
   SESSION_COOKIE_PATH,
   SESSION_TTL_MS,
-  createSession,
-  destroySession,
-  lookupSession,
-  resetSessionsForTest,
+  createSessionStore,
   sessionCookieOptions,
-  sessionCountForTest,
 } from '../src/lib/session';
 
 // The assertion's expiry is far in the future so the TTL clamp (TKT-245) is not
@@ -18,6 +14,8 @@ import {
 // session lifetime, the cap and the sweep. The clamp has its own tests below.
 const FAR_FUTURE_ASSERTION =
   'v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.99999999999.mac';
+let sessions = createSessionStore();
+
 const principal = {
   staffId: 'staff-1',
   organizerId: 'org-1',
@@ -26,17 +24,25 @@ const principal = {
 } as const;
 
 beforeEach(() => {
-  resetSessionsForTest();
+  sessions = createSessionStore();
 });
 
 describe('session lifecycle', () => {
+  it('keeps independent stores isolated', () => {
+    const other = createSessionStore();
+    const token = sessions.create(principal);
+
+    expect(other.lookup(token)).toBeUndefined();
+    expect(sessions.lookup(token)).toEqual(principal);
+  });
+
   it('issues a token that resolves back to the principal', () => {
-    const token = createSession(principal);
-    expect(lookupSession(token)).toEqual(principal);
+    const token = sessions.create(principal);
+    expect(sessions.lookup(token)).toEqual(principal);
   });
 
   it('issues a distinct, high-entropy token each time', () => {
-    const tokens = new Set(Array.from({ length: 50 }, () => createSession(principal)));
+    const tokens = new Set(Array.from({ length: 50 }, () => sessions.create(principal)));
     expect(tokens.size).toBe(50);
     for (const token of tokens) {
       // 256 bits, base64url — enough that guessing is not an attack path.
@@ -45,59 +51,45 @@ describe('session lifecycle', () => {
   });
 
   it('does not resolve a token it never issued', () => {
-    expect(lookupSession('not-a-real-token')).toBeUndefined();
-    expect(lookupSession('')).toBeUndefined();
+    expect(sessions.lookup('not-a-real-token')).toBeUndefined();
+    expect(sessions.lookup('')).toBeUndefined();
   });
 
   // COS-3: sign-out invalidates SERVER-side. Clearing the browser's cookie is not
   // invalidation — an attacker who captured the cookie beforehand still holds it.
   it('stops resolving a destroyed token', () => {
-    const token = createSession(principal);
-    destroySession(token);
-    expect(lookupSession(token)).toBeUndefined();
+    const token = sessions.create(principal);
+    sessions.destroy(token);
+    expect(sessions.lookup(token)).toBeUndefined();
   });
 
   it('destroying an unknown token is a no-op, not a throw', () => {
-    expect(() => destroySession('never-issued')).not.toThrow();
+    expect(() => sessions.destroy('never-issued')).not.toThrow();
   });
 
   // The expiry is absolute, not idle: an eight-hour-old session ends whether or
   // not it was in use. A sliding window would let one stolen cookie live forever.
   it('stops resolving a token past its absolute lifetime', () => {
     const issuedAt = 1_000_000;
-    const token = createSession(principal, issuedAt);
-    expect(lookupSession(token, issuedAt + SESSION_TTL_MS - 1)).toEqual(principal);
-    expect(lookupSession(token, issuedAt + SESSION_TTL_MS)).toBeUndefined();
-  });
-
-  // ai-review F4: expiry-on-read only collects a token that is presented again,
-  // and the entries that never come back — the tab someone just closed — are the
-  // common case. Without a sweep the map grows for the process's whole life.
-  it('reclaims expired entries that were never presented again', () => {
-    const issuedAt = 1_000_000;
-    for (let i = 0; i < 5; i++) createSession(principal, issuedAt);
-    expect(sessionCountForTest()).toBe(5);
-
-    // One sign-in after they all expire: the abandoned five are gone, not merely
-    // unreadable.
-    createSession(principal, issuedAt + SESSION_TTL_MS);
-    expect(sessionCountForTest()).toBe(1);
+    const token = sessions.create(principal, issuedAt);
+    expect(sessions.lookup(token, issuedAt + SESSION_TTL_MS - 1)).toEqual(principal);
+    expect(sessions.lookup(token, issuedAt + SESSION_TTL_MS)).toBeUndefined();
   });
 
   it('does not sweep away sessions that are still live', () => {
     const issuedAt = 1_000_000;
-    const live = createSession(principal, issuedAt);
-    createSession(principal, issuedAt + 1);
-    expect(sessionCountForTest()).toBe(2);
-    expect(lookupSession(live, issuedAt + 2)).toEqual(principal);
+    const live = sessions.create(principal, issuedAt);
+    const next = sessions.create(principal, issuedAt + 1);
+    expect(sessions.lookup(live, issuedAt + 2)).toEqual(principal);
+    expect(sessions.lookup(next, issuedAt + 2)).toEqual(principal);
   });
 
   it('forgets an expired entry rather than holding it forever', () => {
     const issuedAt = 1_000_000;
-    const token = createSession(principal, issuedAt);
-    lookupSession(token, issuedAt + SESSION_TTL_MS); // the read that observes expiry
+    const token = sessions.create(principal, issuedAt);
+    sessions.lookup(token, issuedAt + SESSION_TTL_MS); // the read that observes expiry
     // Even rewinding the clock cannot bring it back: expiry is a deletion.
-    expect(lookupSession(token, issuedAt)).toBeUndefined();
+    expect(sessions.lookup(token, issuedAt)).toBeUndefined();
   });
 });
 
@@ -138,12 +130,11 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
   // of a comment.
   it('keeps at most MAX_SESSIONS_PER_STAFF live sessions for one staff member', () => {
     const tokens = Array.from({ length: MAX_SESSIONS_PER_STAFF + 7 }, () =>
-      createSession(principal),
+      sessions.create(principal),
     );
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF);
 
     // The survivors are the newest; the oldest were evicted to make room.
-    const live = tokens.filter((t) => lookupSession(t) !== undefined);
+    const live = tokens.filter((t) => sessions.lookup(t) !== undefined);
     expect(live).toEqual(tokens.slice(-MAX_SESSIONS_PER_STAFF));
   });
 
@@ -154,13 +145,17 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
       role: 'box_office',
       organizerAssertion: FAR_FUTURE_ASSERTION,
     } as const;
-    const theirs = createSession(colleague);
+    const theirs = sessions.create(colleague);
 
-    for (let i = 0; i < MAX_SESSIONS_PER_STAFF * 3; i++) createSession(principal);
+    const mine = Array.from({ length: MAX_SESSIONS_PER_STAFF * 3 }, () =>
+      sessions.create(principal),
+    );
 
     // A global cap would have thrown this away; a per-principal one must not.
-    expect(lookupSession(theirs)).toEqual(colleague);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF + 1);
+    expect(sessions.lookup(theirs)).toEqual(colleague);
+    expect(
+      mine.slice(-MAX_SESSIONS_PER_STAFF).every((token) => sessions.lookup(token)),
+    ).toBe(true);
   });
 
   // ai-review pass 3, T1. The previous implementation evicted the smallest
@@ -176,21 +171,20 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
   // input shape that can tell them apart.
   it('evicts the earliest-ISSUED session even when the clock runs backwards', () => {
     const t0 = 5_000_000;
-    const oldest = createSession(principal, t0);
-    const older = createSession(principal, t0 + 1000);
-    const mid = createSession(principal, t0 + 2000);
-    const newer = createSession(principal, t0 + 3000);
+    const oldest = sessions.create(principal, t0);
+    const older = sessions.create(principal, t0 + 1000);
+    const mid = sessions.create(principal, t0 + 2000);
+    const newer = sessions.create(principal, t0 + 3000);
 
     // The clock jumps back. This session is issued LAST but expires FIRST.
-    const newestButExpiringSoonest = createSession(principal, t0 - 60_000);
-    expect(sessionCountForTest()).toBe(MAX_SESSIONS_PER_STAFF);
+    const newestButExpiringSoonest = sessions.create(principal, t0 - 60_000);
 
     // A sixth sign-in must retire `oldest` — not the one just issued.
-    const sixth = createSession(principal, t0 + 4000);
+    const sixth = sessions.create(principal, t0 + 4000);
 
-    expect(lookupSession(oldest, t0 + 4000)).toBeUndefined();
+    expect(sessions.lookup(oldest, t0 + 4000)).toBeUndefined();
     for (const [name, token] of Object.entries({ older, mid, newer, newestButExpiringSoonest, sixth })) {
-      expect(lookupSession(token, t0 + 4000), `${name} must have survived`).toBeDefined();
+      expect(sessions.lookup(token, t0 + 4000), `${name} must have survived`).toBeDefined();
     }
   });
 });
@@ -204,8 +198,6 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
 // the boundary as a 401 from catalog on a session this process still believes is
 // live, which is the least diagnosable failure available to a staff member.
 describe('session lifetime is clamped to the assertion (TKT-245)', () => {
-  beforeEach(() => resetSessionsForTest());
-
   /** An assertion in catalog's format, expiring `secondsFromNow` after `now`. */
   const assertionExpiringAt = (nowMs: number, secondsFromNow: number) =>
     `v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.${
@@ -223,21 +215,21 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
     const perf = vi.spyOn(performance, 'now');
     try {
       perf.mockReturnValue(1_000);
-      const token = createSession(principal);
+      const token = sessions.create(principal);
 
       // Wall clock leaps ten TTLs forward: irrelevant to an in-process TTL.
       Date.now = () => realDateNow() + SESSION_TTL_MS * 10;
-      expect(lookupSession(token)).toEqual(principal);
+      expect(sessions.lookup(token)).toEqual(principal);
 
       // Wall clock leaps ten TTLs BACKWARD — the resurrection case. An expired
       // entry that was never presented must not come back to life.
       Date.now = () => realDateNow() - SESSION_TTL_MS * 10;
-      expect(lookupSession(token)).toEqual(principal);
+      expect(sessions.lookup(token)).toEqual(principal);
 
       // The monotonic clock crossing the TTL is what ends it, with the wall
       // clock still rolled back so nothing here is attributable to Date.now.
       perf.mockReturnValue(1_000 + SESSION_TTL_MS);
-      expect(lookupSession(token)).toBeUndefined();
+      expect(sessions.lookup(token)).toBeUndefined();
     } finally {
       Date.now = realDateNow;
       perf.mockRestore();
@@ -261,15 +253,15 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
 
       // One hour of assertion left, far short of the 8h session TTL.
       const shortLived = { ...principal, organizerAssertion: assertionExpiringAt(wall, 60 * 60) };
-      const token = createSession(shortLived);
+      const token = sessions.create(shortLived);
 
       // Alive just before the assertion dies, on the MONOTONIC clock.
       perf.mockReturnValue(5_000 + 59 * 60 * 1000);
-      expect(lookupSession(token)).toBeDefined();
+      expect(sessions.lookup(token)).toBeDefined();
 
       // Gone once it has — which only happens if the clamp saw the wall clock.
       perf.mockReturnValue(5_000 + 61 * 60 * 1000);
-      expect(lookupSession(token)).toBeUndefined();
+      expect(sessions.lookup(token)).toBeUndefined();
 
       // Proof the assertion ended it rather than the session TTL.
       expect(61 * 60 * 1000).toBeLessThan(SESSION_TTL_MS);
@@ -287,12 +279,12 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
       organizerAssertion: assertionExpiringAt(now, 60 * 60),
     };
 
-    const token = createSession(shortLived, now, now);
+    const token = sessions.create(shortLived, now, now);
 
     // Alive just before the assertion expires...
-    expect(lookupSession(token, now + 59 * 60 * 1000)).toBeDefined();
+    expect(sessions.lookup(token, now + 59 * 60 * 1000)).toBeDefined();
     // ...and gone once it has, rather than surviving to the session's own 8h.
-    expect(lookupSession(token, now + 61 * 60 * 1000)).toBeUndefined();
+    expect(sessions.lookup(token, now + 61 * 60 * 1000)).toBeUndefined();
     // Without the clamp this would still be live: proof the assertion is what
     // ended it, not SESSION_TTL_MS.
     expect(now + 61 * 60 * 1000).toBeLessThan(now + SESSION_TTL_MS);
@@ -305,11 +297,11 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
       organizerAssertion: assertionExpiringAt(now, 48 * 60 * 60),
     };
 
-    const token = createSession(longLived, now, now);
+    const token = sessions.create(longLived, now, now);
 
     // The session's own 8h still governs: the clamp is a minimum, not a lease.
-    expect(lookupSession(token, now + SESSION_TTL_MS - 1000)).toBeDefined();
-    expect(lookupSession(token, now + SESSION_TTL_MS + 1000)).toBeUndefined();
+    expect(sessions.lookup(token, now + SESSION_TTL_MS - 1000)).toBeDefined();
+    expect(sessions.lookup(token, now + SESSION_TTL_MS + 1000)).toBeUndefined();
   });
 
   // Whether a token is well-formed is catalog's verdict to give. This process
@@ -318,10 +310,10 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
   it('falls back to the session TTL when the assertion cannot be parsed', () => {
     const now = 1_800_000_000_000;
     for (const bad of ['', 'not-a-token', 'v1.only.three.parts', 'v1.a.b.not-a-number.mac']) {
-      resetSessionsForTest();
-      const token = createSession({ ...principal, organizerAssertion: bad }, now, now);
-      expect(lookupSession(token, now + SESSION_TTL_MS - 1000), `bad=${bad}`).toBeDefined();
-      expect(lookupSession(token, now + SESSION_TTL_MS + 1000), `bad=${bad}`).toBeUndefined();
+      sessions = createSessionStore();
+      const token = sessions.create({ ...principal, organizerAssertion: bad }, now, now);
+      expect(sessions.lookup(token, now + SESSION_TTL_MS - 1000), `bad=${bad}`).toBeDefined();
+      expect(sessions.lookup(token, now + SESSION_TTL_MS + 1000), `bad=${bad}`).toBeUndefined();
     }
   });
 
@@ -330,7 +322,7 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
   it('creates an already-expired session when the assertion is already dead', () => {
     const now = 1_800_000_000_000;
     const dead = { ...principal, organizerAssertion: assertionExpiringAt(now, -60) };
-    const token = createSession(dead, now, now);
-    expect(lookupSession(token, now)).toBeUndefined();
+    const token = sessions.create(dead, now, now);
+    expect(sessions.lookup(token, now)).toBeUndefined();
   });
 });

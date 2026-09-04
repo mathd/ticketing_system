@@ -31,9 +31,8 @@ import (
 // checks the component stays green when the component is removed from the
 // place that uses it.
 
-// telemetryHarness drives the REAL router (the same New(...).Router(...) a
-// service main builds) with a real slog sink, a real metric reader and a real
-// span exporter behind it.
+// telemetryHarness drives the real router built by New(ServerConfig), as production
+// does, with a real slog sink, metric reader and span exporter behind it.
 type telemetryHarness struct {
 	router http.Handler
 	logs   *bytes.Buffer
@@ -66,10 +65,10 @@ func newTelemetryHarness(t *testing.T) *telemetryHarness {
 	devices := &fakeDevices{token: testDeviceToken, organizer: uuid.New(), id: device}
 
 	spans := tracetest.NewInMemoryExporter()
-	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(spans))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(spans)))
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
-	inner := New(nil, verifier).
+	inner := newTestServer(nil, verifier).
 		WithScannerDevices(devices).
 		WithScannerTelemetry(telemetry).
 		Router(nil, true)

@@ -857,8 +857,8 @@ export interface components {
             organizer_id: string;
             role: components["schemas"]["StaffRole"];
             /**
-             * @description Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
-             *     Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+             * @description Version 1 wire form is `v1.<staff UUID>.<organizer UUID>.<Unix expiry>.<43-character base64url HMAC>`. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the HMAC signs the complete prefix. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+             *     A server without a signing key refuses authentication; a successful response always carries this non-empty value.
              */
             organizer_assertion: string;
         };
@@ -1173,6 +1173,7 @@ export interface components {
         Seat: {
             /** Format: uuid */
             id: string;
+            /** @description Stable "section/row/seat" identity accepted by Commerce and Inventory. */
             seat_identity: string;
             label: string;
             /** Format: int32 */

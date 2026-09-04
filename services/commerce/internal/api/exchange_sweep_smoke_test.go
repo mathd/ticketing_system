@@ -107,7 +107,7 @@ func TestADeadLetteredSwitchIsSweptToCompletion(t *testing.T) {
 	policy := &stubPolicy{}
 	policy.catalogUnit.Store(2500)
 	s := exchangeStackFor(t, db, f, policy)
-	srv := New(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
+	srv := newTestServer(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
 		s.payments.server.URL, s.token)
 
 	id := settleAnExchange(t, s, f, "sweep-deadletter")
@@ -161,7 +161,7 @@ func TestASweptExchangeIsNotSweptAgain(t *testing.T) {
 	policy := &stubPolicy{}
 	policy.catalogUnit.Store(2500)
 	s := exchangeStackFor(t, db, f, policy)
-	srv := New(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
+	srv := newTestServer(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
 		s.payments.server.URL, s.token)
 
 	id := settleAnExchange(t, s, f, "sweep-idempotent")
@@ -199,7 +199,7 @@ func TestTheSweepNeverInventsTheSwitchMarker(t *testing.T) {
 	policy := &stubPolicy{}
 	policy.catalogUnit.Store(2500)
 	s := exchangeStackFor(t, db, f, policy)
-	srv := New(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
+	srv := newTestServer(db, http.DefaultClient, s.catalog.server.URL, s.inventory.server.URL,
 		s.payments.server.URL, s.token)
 
 	// Settled, and the callback NEVER arrives — the `order.exchanged` event was never

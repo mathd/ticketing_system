@@ -32,6 +32,7 @@ import {
   ORGANIZER,
   provisionAdmin as provisionAdminIn,
   resultRecorder,
+  signIn,
   sql as sqlIn,
 } from './lib/support.mjs';
 
@@ -127,11 +128,7 @@ try {
 
   // --- 1. Sign in. A real submit, so the session cookie is set by the server on the
   // /admin path rather than fabricated here.
-  await page.goto('/admin/login', { waitUntil: 'domcontentloaded' });
-  await page.fill('#identifier', identifier);
-  await page.fill('#password', password);
-  await Promise.all([page.waitForURL('**/admin**'), page.click('button[type=submit]')]);
-  check('admin signs in and lands in the back office', page.url().includes('/admin'));
+  await signIn(page, identifier, password);
 
   // --- 2. The editor renders, with consumption and the unregistered marker.
   await page.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
@@ -283,13 +280,7 @@ try {
       'without this the spec would pass on a UTC-only difference and prove nothing',
     );
 
-    await tzPage.goto('/admin/login', { waitUntil: 'domcontentloaded' });
-    await tzPage.fill('#identifier', identifier);
-    await tzPage.fill('#password', password);
-    await Promise.all([
-      tzPage.waitForURL('**/admin**'),
-      tzPage.click('button[type=submit]'),
-    ]);
+    await signIn(tzPage, identifier, password);
 
     await tzPage.goto(`/admin/slots/${slot}`, { waitUntil: 'domcontentloaded' });
 

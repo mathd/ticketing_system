@@ -7,7 +7,7 @@
 import type { APIRoute } from 'astro';
 
 import { LOGIN_PATH } from '../lib/gate';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH, destroySession } from '../lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, sessionStore } from '../lib/session';
 
 export const POST: APIRoute = ({ cookies, redirect }) => {
   const token = cookies.get(SESSION_COOKIE)?.value;
@@ -15,7 +15,7 @@ export const POST: APIRoute = ({ cookies, redirect }) => {
     // Server-side first. Expiring the browser's copy only asks the browser to
     // forget; anyone who captured the value still holds it, and replaying it is
     // exactly what COS-3 requires to fail.
-    destroySession(token);
+    sessionStore.destroy(token);
   }
   // Path must match how it was set, or the browser keeps the old cookie
   // alongside the deletion and sends it right back.

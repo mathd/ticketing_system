@@ -1,0 +1,10 @@
+# Test-only worker cadence shared by the host-built and hermetic smoke stacks.
+# Keep this separate from compose.smoke.yaml: that file only swaps build inputs
+# and is deliberately absent from the hermetic path.
+services:
+  commerce:
+    environment:
+      # Drive recovery and reversal quickly enough for smoke tests to observe
+      # eventual completion without inheriting production-scale waits.
+      RECOVERY_INTERVAL: 2s
+      REFUND_REVERSAL_INTERVAL: 2s

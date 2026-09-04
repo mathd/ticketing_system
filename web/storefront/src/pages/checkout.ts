@@ -16,7 +16,7 @@
 // table while depending on the `/` catch-all rather than a registration.
 import type { APIRoute } from 'astro';
 
-import { SESSION_COOKIE, lookupSession } from '../lib/session';
+import { SESSION_COOKIE, sessionStore } from '../lib/session';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
@@ -45,7 +45,7 @@ export const POST: APIRoute = async ({ request, cookies }) => {
   // checkout for the sin of having once been signed in, and the buyer would have
   // no idea why. They get the guest path, which still works and still delivers
   // their tickets by order reference.
-  const principal = lookupSession(cookies.get(SESSION_COOKIE)?.value ?? '');
+  const principal = sessionStore.lookup(cookies.get(SESSION_COOKIE)?.value ?? '');
   if (principal) headers.set('X-Customer-Assertion', principal.assertion);
 
   // Bounded, and the failure is a declared JSON answer rather than Astro's error

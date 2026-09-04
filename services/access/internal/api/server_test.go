@@ -88,7 +88,7 @@ func TestScanRejectsNonStrictJSONBeforeRedeeming(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			request := scanRequest(http.MethodPost, "/scans", bytes.NewBufferString(body))
 			request.Header.Set("Content-Type", "application/json")
-			enrolled(New(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
+			enrolled(newTestServer(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
 			}
@@ -112,7 +112,7 @@ func TestScanContractAcceptsOccurrenceFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := enrolled(New(nil, verifier)).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
 
 	// Full pair: passes the contract validator, fails on the (bad) credential —
 	// proof the fields got past additionalProperties:false.
@@ -165,7 +165,7 @@ func TestReconcileRejectsBadCredentialsPerOccurrence(t *testing.T) {
 			`{"qr_payload":"not-a-ticket","occurrence_id":"`+malformed+`","occurred_at":"2026-07-17T09:02:00Z"},`+
 			`{"qr_payload":"","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:03:00Z"}]}`))
 	request.Header.Set("Content-Type", "application/json")
-	enrolled(New(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
+	enrolled(newTestServer(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (a bad credential is a per-occurrence result, not a batch failure)", recorder.Code)
 	}
@@ -202,7 +202,7 @@ func TestScanAcceptsLowercaseRFC3339(t *testing.T) {
 	request := scanRequest(http.MethodPost, "/scans", bytes.NewBufferString(
 		`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17t09:00:00z"}`))
 	request.Header.Set("Content-Type", "application/json")
-	enrolled(New(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
+	enrolled(newTestServer(nil, verifier)).Router(nil, true).ServeHTTP(recorder, request)
 	var response map[string]string
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestReconcileUnavailableWithoutVerifier(t *testing.T) {
 	request := scanRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
 		`{"occurrences":[{"qr_payload":"x","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}]}`))
 	request.Header.Set("Content-Type", "application/json")
-	enrolled(New(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
+	enrolled(newTestServer(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
@@ -229,7 +229,7 @@ func TestScanRejectsWhenVerifierIsUnavailable(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := scanRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
 	request.Header.Set("Content-Type", "application/json")
-	enrolled(New(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
+	enrolled(newTestServer(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
@@ -244,7 +244,7 @@ func TestScanContractAcceptsDirectionField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := enrolled(New(nil, verifier)).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
 
 	// direction gets past the validator: the failure must be the (bad)
 	// credential, not the contract.
@@ -277,7 +277,7 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := enrolled(New(nil, verifier)).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
 
 	// event_type passes the contract; the bad credential earns a per-item
 	// rejected result, and a malformed event_type is ALSO a per-item rejected
@@ -315,7 +315,7 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 // is that the route can no longer answer outside its own contract.
 func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) {
 	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 503: true}
-	router := enrolled(New(nil, nil, "internal-token")).Router(nil, true)
+	router := enrolled(newTestServer(nil, nil, "internal-token")).Router(nil, true)
 
 	for name, body := range map[string]string{
 		"unknown field":  `{"organizer_id":"00000000-0000-0000-0000-000000000001","refund_id":"00000000-0000-0000-0000-000000000002","quantity":1,"nope":true}`,
@@ -346,7 +346,7 @@ func TestScanKeepsTheScanShapedRejection(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := scanRequest(http.MethodPost, "/scans", strings.NewReader(`{"qr_payload":123}`))
 	request.Header.Set("Content-Type", "application/json")
-	enrolled(New(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
+	enrolled(newTestServer(nil, nil)).Router(nil, true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "invalid_credential") {
 		t.Fatalf("scan rejection changed: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -368,7 +368,7 @@ func TestScanRoutesRefuseAnUnenrolledDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := enrolled(New(nil, verifier)).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
 
 	bodies := map[string]string{
 		"/scans":                 `{"qr_payload":"not-a-ticket"}`,
@@ -424,7 +424,7 @@ func TestScanRefusesWhenEnrolmentCannotBeChecked(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := scanRequest(http.MethodPost, "/scans", bytes.NewBufferString(`{"qr_payload":"not-a-ticket"}`))
 	request.Header.Set("Content-Type", "application/json")
-	New(nil, verifier).Router(nil, true).ServeHTTP(recorder, request)
+	newTestServer(nil, verifier).Router(nil, true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("a server that cannot check enrolment answered %d, want 401", recorder.Code)
 	}
@@ -483,7 +483,7 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 	}
 
 	// A device enrolled for somebody else gets nowhere on either route.
-	router := enrolled(New(nil, verifier), uuid.New()).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier), uuid.New()).Router(nil, true)
 
 	recorder := httptest.NewRecorder()
 	request := scanRequest(http.MethodPost, "/scans", bytes.NewReader(body))
@@ -528,7 +528,7 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 		scanned := httptest.NewRecorder()
 		scan := scanRequest(http.MethodPost, "/scans", bytes.NewReader(body))
 		scan.Header.Set("Content-Type", "application/json")
-		enrolled(New(nil, verifier), organizer).Router(nil, true).ServeHTTP(scanned, scan)
+		enrolled(newTestServer(nil, verifier), organizer).Router(nil, true).ServeHTTP(scanned, scan)
 		return false
 	}()
 	if !reached {
@@ -550,7 +550,7 @@ func TestVoidedFeedRefusesAnUnenrolledDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := enrolled(New(nil, verifier)).Router(nil, true)
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
 
 	for name, token := range map[string]string{
 		"absent":     "",
@@ -583,7 +583,7 @@ func TestVoidedFeedRefusesAnUnenrolledDevice(t *testing.T) {
 func TestVoidedFeedRefusesAForeignCursor(t *testing.T) {
 	mine, theirs := uuid.New(), uuid.New()
 
-	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	signer := newTestServer(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
 	foreign, err := signer.encodeCursor(store.VoidedCursor{
 		OccurredAt: time.Now().UTC(), EventID: uuid.New(), OrganizerID: theirs,
 	})
@@ -613,7 +613,7 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 	at := time.Date(2026, 8, 22, 14, 30, 0, 123456789, time.UTC)
 	id := uuid.New()
 
-	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	signer := newTestServer(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
 	encoded, err := signer.encodeCursor(store.VoidedCursor{OccurredAt: at, EventID: id, OrganizerID: org})
 	if err != nil {
 		t.Fatal(err)
@@ -661,7 +661,7 @@ func TestVoidedFeedCursorRoundTripsAndRefusesGarbage(t *testing.T) {
 // that believes its view is complete when it is not, and this is a way to enter
 // that state and never learn.
 func TestVoidedFeedRefusesAnUnsignedOrTamperedCursor(t *testing.T) {
-	signer := New(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
+	signer := newTestServer(nil, nil).WithFeedCursorKey("test-feed-cursor-key")
 	org := uuid.New()
 
 	valid, err := signer.encodeCursor(store.VoidedCursor{

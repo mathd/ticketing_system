@@ -162,15 +162,6 @@ func customerFromRequest(key customerAssertionKey, header string, now time.Time)
 	return uuid.NullUUID{UUID: id, Valid: true}, nil
 }
 
-// WithCustomerAssertionKey supplies the signing key. A setter rather than another
-// positional argument to New, for the same reason WithAccess is one: every
-// existing caller keeps compiling, and a server constructed without it verifies
-// nothing rather than verifying everything (see the empty-key check above).
-func (s *Server) WithCustomerAssertionKey(key string) *Server {
-	s.assertionKey = customerAssertionKey(key)
-	return s
-}
-
 // mintForPrincipal is the one place an assertion is created, so the TTL cannot
 // drift between the registration and sign-in paths.
 func (s *Server) mintForPrincipal(customerID uuid.UUID) string {

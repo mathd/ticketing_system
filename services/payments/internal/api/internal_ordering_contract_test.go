@@ -7,8 +7,8 @@ package api
 // both of these operations carried before this ticket — cannot survive into `openapi3.T`,
 // so a check reading the YAML as text would pass on exactly the input being rejected.
 //
-// WHY PAYMENTS GETS A GO TEST AND NO VITEST COMPANION. `generate:api` (package.json) runs
-// `openapi-typescript` for catalog, commerce, inventory and access. Payments has no
+// WHY PAYMENTS GETS A GO TEST AND NO VITEST COMPANION. `scripts/generate-api.sh`, called by
+// `make generate`, runs `openapi-typescript` for catalog, commerce, inventory and access. Payments has no
 // generated TypeScript target at all — commerce is its only caller, and it is a Go service.
 // So the served Go document is not merely the best tier here, it is the only one.
 //

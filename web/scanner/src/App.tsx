@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { openOccurrenceStore, type OccurrenceStore } from './occurrences'
-import './index.css'
+import {
+  decodeAccessError,
+  decodeReconcileResponse,
+  decodeScanResponse,
+  type ReconcileResponse,
+  type ReconcileRequest,
+  type ScanRequest,
+} from './access-contract'
+import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
+import { openOccurrenceStore, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
 
 type ScanOutcome =
   | { kind: 'accepted'; scannedAt: string; replay: boolean }
@@ -34,8 +42,10 @@ declare global {
 
 const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
+const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
+const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
 
-// The enrolled device's credential (ai-review S1).
+// The enrolled device's credential.
 //
 // Held per DEVICE, in this browser's storage, and never compiled into the bundle:
 // this app is static and served to every phone that loads /scanner/, so a shared
@@ -48,6 +58,7 @@ const reconcileURL = '/api/access/scans/reconciliations'
 // that device, which is the whole reason the credential is per device.
 const deviceTokenKey = 'scanner.device-token'
 const scannerTokenHeader = 'X-Scanner-Token'
+const pageOccurrenceOwner = createOccurrenceOwner()
 
 function readDeviceToken(): string {
   try {
@@ -65,10 +76,6 @@ function scanHeaders(token: string): HeadersInit {
   return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
 }
 
-// Opened once per page: the durable occurrence queue (ADR-025 §D3). Every scan
-// commits its PENDING record here before the request leaves the device.
-const storePromise: Promise<OccurrenceStore> = openOccurrenceStore()
-
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
 }
@@ -83,10 +90,14 @@ function App() {
   const [cameraActive, setCameraActive] = useState(false)
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
   const [pairingInput, setPairingInput] = useState('')
+  const [storageFailure, setStorageFailure] = useState<string | null>(null)
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
+  const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
+  const occurrenceOwner = useRef(pageOccurrenceOwner)
+  const reopenAfter = useRef<Promise<void>>(Promise.resolve())
   // Bumped by every stopCamera() and every startCamera() entry. A start captures its value and
   // treats itself as stale once the counter moves on — so a stream resolving after unmount or a
   // superseded start disposes of its own resource instead of touching the active one.
@@ -101,6 +112,33 @@ function App() {
     setCameraActive(false)
   }
 
+  const getStore = (): Promise<OccurrenceStore> => {
+    if (storePromise.current) return storePromise.current
+    const owner = occurrenceOwner.current
+    const attempt = reopenAfter.current.then(() => openOccurrenceStore('gate-occurrences', owner))
+    storePromise.current = attempt
+    return attempt
+  }
+
+  const reportStorageFailure = (message = storageBeforeScanMessage) => {
+    const failedStore = storePromise.current
+    storePromise.current = null
+    if (failedStore) {
+      const releasedOwner = occurrenceOwner.current
+      occurrenceOwner.current = replaceOccurrenceOwner(releasedOwner)
+      const priorClose = reopenAfter.current
+      const failedClose = failedStore
+        .then((opened) => opened.close())
+        .catch(() => undefined)
+      reopenAfter.current = Promise.all([priorClose, failedClose]).then(() => undefined)
+    }
+    if (mounted.current) setStorageFailure(message)
+  }
+
+  const reportStorageReady = () => {
+    if (mounted.current) setStorageFailure(null)
+  }
+
   useEffect(() => {
     mounted.current = true
     void refreshQueued()
@@ -110,121 +148,104 @@ function App() {
     return () => {
       mounted.current = false
       window.removeEventListener('online', onOnline)
+      const pendingStore = storePromise.current
+      storePromise.current = null
+      if (pendingStore) void pendingStore.then((opened) => opened.close()).catch(() => undefined)
       stopCamera()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const refreshQueued = async () => {
-    const store = await storePromise
-    const queue = await store.queued()
-    if (mounted.current) setQueuedCount(queue.length)
+    try {
+      const store = await getStore()
+      const queue = await store.queued()
+      if (mounted.current) {
+        setQueuedCount(queue.length)
+        setStorageFailure(null)
+      }
+    } catch {
+      reportStorageFailure()
+    }
   }
 
   const submit = async (value = payload) => {
     if (!value.trim() || submitting) return
     setSubmitting(true)
     setOutcome(null)
-    // Mint and durably commit the occurrence BEFORE the request leaves
-    // (ADR-025 §D3): a retry reuses this record; a new scan mints a new one.
-    const store = await storePromise
-    const record = await store.mint(value.trim(), new Date().toISOString())
-    // Why the scan could not complete, for the operator (TKT-305). Three causes, and
-    // the UI may only assert one it actually established:
-    //
-    //   'offline'      the request never arrived — fetch itself rejected
-    //   'unreadable'   the server answered and the answer could not be parsed
-    //   'local'        the exchange succeeded and something on THIS DEVICE failed
-    //
-    // The old code collapsed all three into "No connection". A non-JSON error body —
-    // a gateway's 502 page, an access panic — makes response.json() throw and lands
-    // in the same catch a dead network does, so gate staff were told the network was
-    // down while access had answered and failed. At a venue that sends someone to
-    // check the wifi while the fault is upstream.
-    //
-    // 'local' is separated for the same reason 'unreadable' is (ai-review [medium]):
-    // the catch also covers store.actuate, store.markQueued and refreshQueued, so an
-    // IndexedDB failure after a perfectly good reply would otherwise report a server
-    // problem — the identical unsupported claim, one step along.
-    //
-    // The queue-and-retry behaviour is unchanged in all three cases (ADR-066).
-    let cause: 'offline' | 'unreadable' | 'local' = 'offline'
     try {
-      const response = await fetch(scanURL, {
-        method: 'POST',
-        headers: scanHeaders(deviceToken),
-        body: JSON.stringify({ qr_payload: record.qrPayload, occurrence_id: record.occurrenceId, occurred_at: record.occurredAt }),
-      })
-      // The request arrived. Anything that throws from here to the end of the parse
-      // is the server's answer being unreadable, not the network being down.
-      cause = 'unreadable'
-      const result: { decision?: string; reason?: string; scanned_at?: string; original_scan_at?: string; replay?: boolean } = await response.json()
-      // Parsed. Anything that throws beyond this point is local to this device.
-      cause = 'local'
-      if (response.ok && result.decision === 'accepted') {
-        // Actuation is keyed on OUR durable pending record, not on the
-        // response: mark-actuated-before-open, and a response for an
-        // occurrence this device never minted (or already actuated) opens
-        // nothing (ADR-025 §D3).
-        const opened = await store.actuate(record.occurrenceId)
-        if (opened) {
-          setOutcome({ kind: 'accepted', scannedAt: result.scanned_at ?? '', replay: result.replay === true })
-        } else {
-          setOutcome({ kind: 'duplicate-response' })
+      let store: OccurrenceStore
+      let record: OccurrenceRecord
+      try {
+        store = await getStore()
+        // Commit the occurrence before sending the request (ADR-025 §D3).
+        record = await store.mint(value.trim(), new Date().toISOString())
+        reportStorageReady()
+      } catch {
+        reportStorageFailure()
+        return
+      }
+
+      // Track how far the exchange reached so the operator sees the cause the
+      // scanner established. Every failure still queues the occurrence.
+      let cause: 'offline' | 'unreadable' | 'local' = 'offline'
+      try {
+        const request: ScanRequest = {
+          qr_payload: record.qrPayload,
+          occurrence_id: record.occurrenceId,
+          occurred_at: record.occurredAt,
         }
-      } else if (response.status === 401) {
-        // Not the ticket's fault, so not a rejection: the person at the turnstile
-        // has a perfectly good ticket and "Rejected" is the wrong instruction.
-        // Clearing the token drops straight to the pairing screen, which is the
-        // one thing the operator can act on, and the note says why they landed
-        // there.
-        //
-        // The occurrence stays QUEUED rather than marked synced — it was never
-        // recorded anywhere upstream, and discarding it because this device was
-        // unpaired would silently drop a real entry.
-        await store.markQueued(record.occurrenceId)
-        clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.')
-        await refreshQueued()
-      } else {
-        await store.markSynced(record.occurrenceId, result.reason ?? 'scan_failed')
-        setOutcome({ kind: 'rejected', reason: result.reason ?? 'scan_failed', originalScanAt: result.original_scan_at })
-      }
-    } catch {
-      // Queued in every case: the occurrence stays durably recorded and reconciles on
-      // sync, which is the fail-closed posture ADR-066 requires and is NOT what this
-      // ticket changes. Only the explanation differs — see `cause`.
-      //
-      // The queue write is itself guarded, because on the 'local' path the thing that
-      // just failed IS this device's storage — so markQueued throws too, the exception
-      // escapes submitScan, and the operator gets NO screen at all. Found while testing
-      // the 'local' message (ai-review [medium]); a blank result with a person at the
-      // turnstile is worse than a wrongly-worded one.
-      //
-      // WHAT THIS COSTS, stated exactly, because the comfortable version of it is false
-      // (ai-review pass 2): the record is durable — mint commits before the request
-      // leaves (ADR-025 §D3) — but it is NOT recovered by the next sync. `queued()`
-      // filters on state === 'QUEUED', so a record still PENDING because markQueued
-      // failed is invisible to reconciliation. Swallowing here therefore trades a
-      // stranded record for a screen the operator can act on, and it is the right trade
-      // only because the alternative strands the SAME record and shows nothing.
-      //
-      // The real repair is a sweep that reconciles PENDING records too — a device whose
-      // storage is failing has bigger problems than one scan, and neither this catch nor
-      // a rethrow fixes that. TKT-315 carries the sync path's gaps.
-      try {
-        await store.markQueued(record.occurrenceId)
+        const response = await fetch(scanURL, {
+          method: 'POST',
+          headers: scanHeaders(deviceToken),
+          body: JSON.stringify(request),
+        })
+        cause = 'unreadable'
+        const body: unknown = await response.json()
+        if (response.status === 401) {
+          decodeAccessError(body)
+          cause = 'local'
+          // The ticket was not checked. Keep the occurrence and return the device
+          // to pairing instead of presenting a ticket rejection.
+          await store.markQueued(record.occurrenceId)
+          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.')
+          await refreshQueued()
+          return
+        }
+        const result = decodeScanResponse(response.status, body)
+        cause = 'local'
+        if (result.decision === 'accepted') {
+          // A response opens the gate only through this device's pending record.
+          const opened = await store.actuate(record.occurrenceId)
+          if (opened) {
+            setOutcome({ kind: 'accepted', scannedAt: result.scanned_at, replay: result.replay === true })
+          } else {
+            setOutcome({ kind: 'duplicate-response' })
+          }
+        } else {
+          setOutcome({ kind: 'rejected', reason: result.reason, originalScanAt: result.original_scan_at })
+          try {
+            await store.markSynced(record.occurrenceId, result.reason)
+          } catch {
+            // Access has decided this ticket. Keep that decision on screen even
+            // when the local terminal-state write fails. Reopening under a new
+            // owner will recover the pending row for reconciliation.
+            reportStorageFailure(storageAfterResponseMessage)
+          }
+          return
+        }
       } catch {
-        // Deliberately swallowed: the screen below is the only thing left that can
-        // help the operator, and it must render.
-      }
-      setOutcome({ kind: 'queued', cause })
-      // Guarded for the same reason: this reads the queue, so on the 'local' path it
-      // throws as well, and an exception escaping here would still deny the operator
-      // the screen set on the line above.
-      try {
-        await refreshQueued()
-      } catch {
-        // The queued-count badge is a convenience; the outcome screen is not.
+        // Preserve the operator result even when the queue write also fails. A
+        // later store open recovers a record that remains PENDING.
+        let queueReadable = true
+        try {
+          await store.markQueued(record.occurrenceId)
+        } catch {
+          queueReadable = false
+          reportStorageFailure(cause === 'local' ? storageAfterResponseMessage : undefined)
+        }
+        setOutcome({ kind: 'queued', cause })
+        if (queueReadable) await refreshQueued()
       }
     } finally {
       setSubmitting(false)
@@ -232,16 +253,30 @@ function App() {
   }
 
   const syncQueued = async () => {
-    const store = await storePromise
-    const queue = await store.queued()
-    if (!queue.length) return
+    let store: OccurrenceStore
+    let queue: OccurrenceRecord[]
     try {
+      store = await getStore()
+      queue = await store.queued()
+      reportStorageReady()
+    } catch {
+      reportStorageFailure()
+      return
+    }
+    if (!queue.length) return
+    let data: ReconcileResponse
+    try {
+      const request: ReconcileRequest = {
+        occurrences: queue.map((record) => ({
+          qr_payload: record.qrPayload,
+          occurrence_id: record.occurrenceId,
+          occurred_at: record.occurredAt,
+        })),
+      }
       const response = await fetch(reconcileURL, {
         method: 'POST',
         headers: scanHeaders(deviceToken),
-        body: JSON.stringify({
-          occurrences: queue.map((r) => ({ qr_payload: r.qrPayload, occurrence_id: r.occurrenceId, occurred_at: r.occurredAt })),
-        }),
+        body: JSON.stringify(request),
       })
       if (response.status === 401) {
         // The queue is untouched: an unpaired device must not discard a night of
@@ -250,21 +285,31 @@ function App() {
         return
       }
       if (!response.ok) return
-      const data: { results?: Array<{ occurrence_id: string; result: string }> } = await response.json()
-      let conflicts = 0
-      for (const entry of data.results ?? []) {
+      data = decodeReconcileResponse(
+        await response.json(),
+        new Set(queue.map((record) => record.occurrenceId)),
+      )
+    } catch {
+      // The queue is durable. A later reconnect or manual retry sends it again.
+      return
+    }
+
+    let conflicts = 0
+    try {
+      for (const entry of data.results) {
         await store.markSynced(entry.occurrence_id, entry.result)
         if (entry.result === 'conflict') conflicts += 1
       }
-      if (mounted.current) {
-        setSyncNote(
-          conflicts > 0
-            ? `Synced ${data.results?.length ?? 0} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
-            : `Synced ${data.results?.length ?? 0} offline scan(s).`,
-        )
-      }
     } catch {
-      // Still offline — the queue is durable; try again later.
+      reportStorageFailure()
+      return
+    }
+    if (mounted.current) {
+      setSyncNote(
+        conflicts > 0
+          ? `Synced ${data.results.length} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
+          : `Synced ${data.results.length} offline scan(s).`,
+      )
     }
     await refreshQueued()
   }
@@ -417,6 +462,7 @@ function App() {
             </p>
           )}
           {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+          {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
         </section>
       </main>
     )
@@ -443,6 +489,7 @@ function App() {
           </p>
         )}
         {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+        {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
       </section>
       {outcome?.kind === 'accepted' && (
         <section className="result accepted" role="status">

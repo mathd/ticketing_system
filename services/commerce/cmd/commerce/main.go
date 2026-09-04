@@ -30,74 +30,66 @@ import (
 	"ticketing/services/commerce/internal/recovery"
 	"ticketing/services/commerce/internal/reversal"
 	commercestore "ticketing/services/commerce/internal/store"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/mail"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
 )
 
-const serviceName = "commerce"
+const (
+	serviceName         = "commerce"
+	recoveryCallTimeout = 10 * time.Second
+)
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := migrate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
-			os.Exit(1)
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		if result.Name == "" {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, result.Name, result.Err)
 		}
-		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
-	// Operator provisioning for reseller credentials (TKT-240 / ADR-056).
-	if len(os.Args) > 1 && (os.Args[1] == "enrol-reseller" || os.Args[1] == "revoke-reseller" || os.Args[1] == "list-resellers") {
-		var run func([]string) error
-		switch os.Args[1] {
-		case "enrol-reseller":
-			run = enrolReseller
-		case "revoke-reseller":
-			run = revokeReseller
-		case "list-resellers":
-			run = listResellers
-		}
-		if err := run(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-			os.Exit(1)
-		}
-		return
+}
+
+// subcommands keeps operator commands in the path main executes. The parked-order and
+// wedged-exchange commands are the supported way to resume work that automated recovery
+// has stopped claiming (TKT-146 and TKT-255).
+type commandCallbacks struct {
+	migrate                                                      func() error
+	healthcheck                                                  func() int
+	enrolReseller, revokeReseller, listResellers                 func([]string) error
+	listParked, unparkOrder, listWedgedExchanges, unwindExchange func([]string) error
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		migrate: migrate, healthcheck: healthcheck,
+		enrolReseller: enrolReseller, revokeReseller: revokeReseller, listResellers: listResellers,
+		listParked: listParked, unparkOrder: unparkOrder,
+		listWedgedExchanges: listWedgedExchanges, unwindExchange: unwindExchange,
 	}
-	// Operator resolution for parked recovery orders (TKT-146). A parked order is
-	// excluded from ClaimStuckOrders forever, so without these there is no path in the
-	// service from "the runner gave up" to "a human resolved it".
-	if len(os.Args) > 1 && (os.Args[1] == "list-parked" || os.Args[1] == "unpark-order") {
-		run := listParked
-		if os.Args[1] == "unpark-order" {
-			run = unparkOrder
-		}
-		if err := run(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-			os.Exit(1)
-		}
-		return
-	}
-	// Operator resolution for wedged exchanges (TKT-255). A wedged exchange answers 409
-	// forever and leaves its source order neither exchangeable nor refundable, and
-	// migration 0010 records that an exchange has no cancelled state — so without these
-	// there is no path in the service from "this order is stuck" to "a human resolved it".
-	if len(os.Args) > 1 && (os.Args[1] == "list-wedged-exchanges" || os.Args[1] == "unwind-exchange") {
-		run := listWedgedExchanges
-		if os.Args[1] == "unwind-exchange" {
-			run = unwindExchange
-		}
-		if err := run(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-			os.Exit(1)
-		}
-		return
-	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"migrate":               cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":           cmdline.ExitStatus(callbacks.healthcheck),
+		"enrol-reseller":        cmdline.WithArgs(callbacks.enrolReseller),
+		"revoke-reseller":       cmdline.WithArgs(callbacks.revokeReseller),
+		"list-resellers":        cmdline.WithArgs(callbacks.listResellers),
+		"list-parked":           cmdline.WithArgs(callbacks.listParked),
+		"unpark-order":          cmdline.WithArgs(callbacks.unparkOrder),
+		"list-wedged-exchanges": cmdline.WithArgs(callbacks.listWedgedExchanges),
+		"unwind-exchange":       cmdline.WithArgs(callbacks.unwindExchange),
 	}
 }
 
@@ -152,9 +144,165 @@ func port() string {
 const staffWriteTokenEnv = "COMMERCE_STAFF_WRITE_TOKEN"
 
 // assertionKeyEnv names the HMAC key for customer checkout assertions (TKT-221).
-// A third credential with a third blast radius: it lets a holder attribute a
-// checkout to any customer, and nothing else.
+// It lets a holder attribute a checkout to any customer, and nothing else.
 const assertionKeyEnv = "COMMERCE_CUSTOMER_ASSERTION_KEY"
+
+type workerSettings struct {
+	interval time.Duration
+	batch    int
+}
+
+type workerConfig struct {
+	outbox       workerSettings
+	recovery     workerSettings
+	cancellation workerSettings
+	reversal     workerSettings
+	exchange     workerSettings
+}
+
+type workerLeaseConfig struct {
+	recovery     time.Duration
+	cancellation time.Duration
+	reversal     time.Duration
+	exchange     time.Duration
+}
+
+type workerDependencies struct {
+	recoveryStore     recovery.Store
+	recoveryPayments  recovery.Payments
+	recoveryInventory recovery.Inventory
+	recoveryJournal   recovery.Journal
+	recoveryCompleter recovery.Completer
+	cancellationStore bulkrefund.Store
+	refunds           bulkrefund.Refunder
+	reversalStore     reversal.Store
+	exchangeStore     exchangesweep.Store
+	exchanges         exchangesweep.Discharger
+}
+
+type workerRunners struct {
+	recovery     *recovery.Runner
+	cancellation *bulkrefund.Runner
+	reversal     *reversal.Runner
+	exchange     *exchangesweep.Runner
+}
+
+func workerLeasesFor(config workerConfig, recoveryClient, apiClient *http.Client) (workerLeaseConfig, error) {
+	if recoveryClient == nil || recoveryClient.Timeout <= 0 {
+		return workerLeaseConfig{}, errors.New("recovery client must have a positive timeout")
+	}
+	if apiClient == nil || apiClient.Timeout <= 0 {
+		return workerLeaseConfig{}, errors.New("API client must have a positive timeout")
+	}
+
+	recoveryLease, err := recovery.LeaseFor(config.recovery.batch, recoveryClient.Timeout)
+	if err != nil {
+		return workerLeaseConfig{}, fmt.Errorf("recovery lease: %w", err)
+	}
+	cancellationLease, err := bulkrefund.LeaseFor(config.cancellation.batch, apiClient.Timeout)
+	if err != nil {
+		return workerLeaseConfig{}, fmt.Errorf("cancellation lease: %w", err)
+	}
+	reversalLease, err := reversal.LeaseFor(config.reversal.batch, apiClient.Timeout)
+	if err != nil {
+		return workerLeaseConfig{}, fmt.Errorf("reversal lease: %w", err)
+	}
+	exchangeLease, err := exchangesweep.LeaseFor(config.exchange.batch, apiClient.Timeout)
+	if err != nil {
+		return workerLeaseConfig{}, fmt.Errorf("exchange lease: %w", err)
+	}
+	return workerLeaseConfig{
+		recovery: recoveryLease, cancellation: cancellationLease,
+		reversal: reversalLease, exchange: exchangeLease,
+	}, nil
+}
+
+// constructWorkerRunners is the production construction seam for the four leased workers.
+// Keeping each batch and lease assignment here lets a test observe the values at Store.Claim,
+// after they have crossed the runner constructor rather than only at the sizing helper.
+func constructWorkerRunners(config workerConfig, recoveryClient, apiClient *http.Client,
+	dependencies workerDependencies, log *slog.Logger) (workerRunners, error) {
+	leases, err := workerLeasesFor(config, recoveryClient, apiClient)
+	if err != nil {
+		return workerRunners{}, err
+	}
+	recoverer, err := recovery.New(dependencies.recoveryStore, dependencies.recoveryPayments,
+		dependencies.recoveryInventory, dependencies.recoveryJournal, dependencies.recoveryCompleter,
+		config.recovery.interval, config.recovery.batch, leases.recovery, log)
+	if err != nil {
+		return workerRunners{}, fmt.Errorf("recovery runner: %w", err)
+	}
+	return workerRunners{
+		recovery: recoverer,
+		cancellation: bulkrefund.New(dependencies.cancellationStore, dependencies.refunds,
+			config.cancellation.interval, config.cancellation.batch, leases.cancellation),
+		reversal: reversal.New(dependencies.reversalStore, dependencies.refunds,
+			config.reversal.interval, config.reversal.batch, leases.reversal, log),
+		exchange: exchangesweep.New(dependencies.exchangeStore, dependencies.exchanges,
+			config.exchange.interval, config.exchange.batch, leases.exchange, log),
+	}, nil
+}
+
+var defaultWorkerConfig = workerConfig{
+	outbox:       workerSettings{interval: 5 * time.Second, batch: 32},
+	recovery:     workerSettings{interval: 30 * time.Second, batch: 16},
+	cancellation: workerSettings{interval: 10 * time.Second, batch: 8},
+	reversal:     workerSettings{interval: time.Minute, batch: 16},
+	exchange:     workerSettings{interval: time.Minute, batch: 16},
+}
+
+func workerConfigFromEnv() (workerConfig, error) {
+	config := defaultWorkerConfig
+	settings := []struct {
+		intervalEnv string
+		batchEnv    string
+		target      *workerSettings
+	}{
+		{"OUTBOX_DRAIN_INTERVAL", "OUTBOX_DRAIN_BATCH", &config.outbox},
+		{"RECOVERY_INTERVAL", "RECOVERY_BATCH", &config.recovery},
+		{"CANCELLATION_REFUND_INTERVAL", "CANCELLATION_REFUND_BATCH", &config.cancellation},
+		{"REFUND_REVERSAL_INTERVAL", "REFUND_REVERSAL_BATCH", &config.reversal},
+		{"EXCHANGE_REVERSAL_INTERVAL", "EXCHANGE_REVERSAL_BATCH", &config.exchange},
+	}
+
+	for _, setting := range settings {
+		interval, err := positiveDurationFromEnv(setting.intervalEnv, setting.target.interval)
+		if err != nil {
+			return workerConfig{}, err
+		}
+		batch, err := positiveIntegerFromEnv(setting.batchEnv, setting.target.batch)
+		if err != nil {
+			return workerConfig{}, err
+		}
+		setting.target.interval = interval
+		setting.target.batch = batch
+	}
+	return config, nil
+}
+
+func positiveDurationFromEnv(name string, fallback time.Duration) (time.Duration, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", name)
+	}
+	return value, nil
+}
+
+func positiveIntegerFromEnv(name string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return value, nil
+}
 
 func run() error {
 	token, err := runtimecfg.InternalTokenFromEnv()
@@ -170,22 +318,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// Two credentials with different blast radii are only two credentials if
-	// they hold different values. Nothing else compares them, so a deployment
-	// setting both to one string would run normally while the back office — an
-	// internet-facing SSR process — quietly held the key to every service's
-	// internal surface. Neither value is echoed.
-	//
-	// Comparing raw strings is sound because RequiredCredential has already
-	// refused every value HTTP would normalize, notably edge whitespace: without
-	// that, " secret " and "secret" would be one credential on the wire while
-	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
-	// one — no two DISTINCT accepted values arrive identical at a server.
 	assertionKey, err := runtimecfg.RequiredCredential(assertionKeyEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
-	// The payments-only credential (ai-review S8). Commerce is payments' one
+	// The payments-only credential. Commerce is payments' one
 	// caller, so this is where the split is spent: commerce holds both values and
 	// nothing else holds this one, which means a compromise of catalog, inventory,
 	// access or the gateway no longer reaches charge, void or refund. Required
@@ -195,20 +332,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// Three credentials with three blast radii are only three credentials if they
-	// hold three different values, and nothing else in the system compares them.
-	//
-	// The pairs are checked EXHAUSTIVELY rather than each new one against the
-	// first: a third credential added to the wiring but not to this check is the
-	// one credential whose separation is never verified, and identical values look
-	// configured (TKT-221 plan-review F2). Adding a fourth means adding its pairs
-	// here — the loop makes that obvious instead of easy to forget.
-	//
-	// Comparing raw strings is sound because RequiredCredential has already
-	// refused every value HTTP would normalize, notably edge whitespace: without
-	// that, " secret " and "secret" would be one credential on the wire while
-	// differing here (TKT-191 ai-review pass 2). The narrow claim is the true
-	// one — no two DISTINCT accepted values arrive identical at a server.
+	// These four credentials grant different privileges, so compare all six pairs.
+	// RequiredCredential rejects edge whitespace before this raw-string comparison;
+	// two accepted values that differ here also differ on the wire.
 	if err := credentialsAreDistinct(token, staffWriteToken, assertionKey, paymentsToken); err != nil {
 		return err
 	}
@@ -223,6 +349,10 @@ func run() error {
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
+	}
+	workers, err := workerConfigFromEnv()
+	if err != nil {
+		return fmt.Errorf("worker configuration: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -310,12 +440,22 @@ func run() error {
 	// cancellation refund runner (TKT-159), which refunds through this server's own refund
 	// unit so both callers share one money path.
 	publicURL := os.Getenv("PUBLIC_BASE_URL")
-	srvHandler := commerceapi.New(db, obs.Client(), catalogURL, inventoryURL, paymentsURL, token, publisher).
-		WithPaymentsToken(paymentsToken).
-		WithStaffWriteCredential(staffWriteToken).
-		WithCustomerAssertionKey(assertionKey).
-		WithAccess(accessURL).
-		WithPublicURL(publicURL)
+	apiClient := obs.Client()
+	recoveryAPIClient := obs.ClientWithTimeout(recoveryCallTimeout)
+	srvHandler := commerceapi.New(commerceapi.ServerConfig{
+		DB:                   db,
+		Client:               apiClient,
+		CatalogURL:           catalogURL,
+		InventoryURL:         inventoryURL,
+		PaymentsURL:          paymentsURL,
+		AccessURL:            accessURL,
+		PublicURL:            publicURL,
+		InternalToken:        token,
+		PaymentsToken:        paymentsToken,
+		StaffWriteToken:      staffWriteToken,
+		CustomerAssertionKey: assertionKey,
+		Publisher:            publisher,
+	})
 	commerceapi.WarnIfResetMailUnconfigured(log, publicURL)
 	r.Mount("/", srvHandler.Router(log, validateResponses))
 
@@ -338,7 +478,7 @@ func run() error {
 	// first drain pass, so an unbounded pass (lock wait, huge scan) would stall
 	// owed-event recovery — the window this worker exists to close — not just
 	// delay repair. Timing out cancels this pass only; the next boot retries.
-	drainer := outbox.New(db, publisher, drainInterval(), drainBatch(),
+	drainer := outbox.New(db, publisher, workers.outbox.interval, workers.outbox.batch,
 		func(bctx context.Context) (int, error) {
 			bctx, cancel := context.WithTimeout(bctx, 30*time.Second)
 			defer cancel()
@@ -356,29 +496,17 @@ func run() error {
 	// When a provider lands it is selected here, beside this comment, and nothing else
 	// about the reset path changes.
 	mailSender := mail.NewFake()
-	// Say so at startup, at WARN, every boot (ai-review [critical], partly upheld).
-	//
-	// The review pass called the fake-by-default wiring a critical defect. As a design
-	// judgement that is refused — it is ADR-032's rule and TKT-226's stated non-goal —
-	// but the risk underneath it is real and was not addressed: a row reaches `sent_at`
-	// and LOOKS delivered while nobody received anything, so an operator can believe
-	// mail works. A running process must not be silent about that.
-	//
-	// WARN and not INFO: this is a state to escalate out of, not a configuration to
-	// settle into.
+	// Warn on every boot: a row reaches `sent_at` even though the offline fake delivers
+	// nothing, so this configuration must remain visible to operators.
 	log.WarnContext(ctx, "transactional mail sender is the offline fake; messages are captured and NEVER delivered",
 		"sender", "fake", "read_them_in", "mail_outbox")
-	mailDrainer := mailer.New(db, mailSender, drainInterval(), drainBatch(), log)
+	mailDrainer := mailer.New(db, mailSender, workers.outbox.interval, workers.outbox.batch, log)
 	stopMailDrainer := start(log, "mail drainer", mailDrainer.Run)
 
 	// The second background worker (ADR-016 §Decision 1): recovery is driven, not
 	// awaited. Without it an order that lost its request stays parked forever and its
 	// seat leaks — a byte-identical checkout replay is the only other thing that would
 	// advance it, and nothing in the system generates one.
-	// One constant for both the client and the lease: the lease must outlast the calls
-	// it covers, so deriving them from different numbers is how the lease ends up
-	// shorter than its own batch.
-	const recoveryCallTimeout = 10 * time.Second
 	recoveryClients := recovery.HTTPClients{
 		// obs.ClientWithTimeout, not a bare &http.Client, so this shares the tuned
 		// cross-service pool with the API server's client (TKT-308). Both call the same
@@ -386,11 +514,11 @@ func run() error {
 		// runner its own untuned pool — which is what it had before that ticket, back
 		// when obs.Client() also resolved to DefaultTransport and the two shared by
 		// accident. Only the timeout differs, and it is deliberately tighter.
-		Client:       obs.ClientWithTimeout(recoveryCallTimeout),
+		Client:       recoveryAPIClient,
 		InventoryURL: inventoryURL,
 		PaymentsURL:  paymentsURL,
 		Token:        token,
-		// The money surface takes its own credential (ai-review S8).
+		// The money surface takes its own credential.
 		PaymentsToken: paymentsToken,
 	}
 	journal := recovery.JournalFact{
@@ -399,8 +527,22 @@ func run() error {
 		Token:       paymentsToken,
 		DB:          recovery.StoreFactDB{DB: db},
 	}
-	recoverer := recovery.New(recovery.DBStore{DB: db}, recoveryClients, recoveryClients, journal,
-		recovery.StoreCompleter{DB: db}, recoveryInterval(), recoveryBatch(), recoveryCallTimeout, log)
+	runners, err := constructWorkerRunners(workers, recoveryAPIClient, apiClient, workerDependencies{
+		recoveryStore:     recovery.DBStore{DB: db},
+		recoveryPayments:  recoveryClients,
+		recoveryInventory: recoveryClients,
+		recoveryJournal:   journal,
+		recoveryCompleter: recovery.StoreCompleter{DB: db},
+		cancellationStore: bulkrefund.DBStore{DB: db},
+		refunds:           srvHandler.Refunds(),
+		reversalStore:     reversal.DBStore{DB: db},
+		exchangeStore:     exchangesweep.DBStore{DB: db},
+		exchanges:         srvHandler.Exchanges(),
+	}, log)
+	if err != nil {
+		return fmt.Errorf("worker construction: %w", err)
+	}
+	recoverer := runners.recovery
 	// Parking is terminal by design (ADR-016 §Decision 1) and the attempt-exhaustion log
 	// is, in its own words, "the last notice anyone gets". These gauges are what turn that
 	// into something an operator can see without thinking to run `list-parked` (ADR-065).
@@ -413,9 +555,7 @@ func run() error {
 	// Event-cancellation bulk refunds (TKT-159). It refunds through the API server's own
 	// refund unit — the SAME code the staff endpoint runs — so there is one money path
 	// with two callers rather than two implementations of one protocol.
-	cancellations := bulkrefund.New(bulkrefund.DBStore{DB: db}, srvHandler.Refunds(),
-		cancellationInterval(), cancellationBatch(),
-		recovery.LeaseFor(cancellationBatch(), recoveryCallTimeout))
+	cancellations := runners.cancellation
 	stopCancellations := start(log, "cancellation refund runner", cancellations.Run)
 
 	// Outstanding refund reversals (TKT-163, ADR-062). ADR-038 §7 shipped the reversal as
@@ -423,17 +563,8 @@ func run() error {
 	// tickets admitting until a human replayed the idempotency key, and the caller got a
 	// 200. This is the thing that comes back for them.
 	//
-	// Through the SAME refund unit as the other two callers — it drives only DriveReversal,
-	// so there is one reversal path with three callers and this runner cannot move money.
-	// The lease is sized from obs.ClientTimeout, NOT from recoveryCallTimeout: the refund
-	// service drives its calls through the API server's own transport, which is
-	// obs.Client() at 30s. Borrowing recovery's 10s constant here produced a lease three
-	// times shorter than the work it protects, letting a second replica reclaim rows the
-	// first was still driving (ai-review F1). Derived from the real value so the two cannot
-	// drift apart.
-	reversals := reversal.New(reversal.DBStore{DB: db}, srvHandler.Refunds(),
-		reversalInterval(), reversalBatch(),
-		reversal.LeaseFor(reversalBatch(), obs.ClientTimeout), log)
+	// It uses the same refund unit as the API and can only drive outstanding obligations.
+	reversals := runners.reversal
 	// Commerce's first metrics (the MeterProvider has been live since obs.Setup; nothing
 	// had registered an instrument). Observability, not a gate — a failure to register
 	// gauges must not keep the service from refunding, so it is logged, not returned.
@@ -447,15 +578,9 @@ func run() error {
 	// JetStream redelivery, driven by the tickets-switched callback answering 502. That
 	// callback REMAINS the first line; this is the backstop for rows it gave up on.
 	//
-	// Through the SAME discharge unit the callback uses, so the two cannot drift, and a
-	// port with one method is what keeps this runner unable to move money or mark a switch.
-	// The lease is sized from obs.ClientTimeout for the reason ADR-062's ai-review F1
-	// recorded on the refund side: the discharge unit borrows the API server's `call`,
-	// which runs on obs.Client() at 30s, and a lease shorter than the work it protects lets
-	// a second replica reclaim rows the first is still driving.
-	sweeps := exchangesweep.New(exchangesweep.DBStore{DB: db}, srvHandler.Exchanges(),
-		exchangeSweepInterval(), exchangeSweepBatch(),
-		exchangesweep.LeaseFor(exchangeSweepBatch(), obs.ClientTimeout), log)
+	// It uses the same discharge unit and HTTP client as the callback. Its port cannot
+	// move money or mark a ticket switch.
+	sweeps := runners.exchange
 	if err := sweeps.ObserveMetrics(otel.Meter("ticketing/commerce/exchangesweep")); err != nil {
 		log.WarnContext(ctx, "exchange sweep metrics unavailable; the sweep still runs", "err", err)
 	}
@@ -525,74 +650,6 @@ func start(log *slog.Logger, name string, run func(context.Context)) func() {
 	}
 }
 
-// drainInterval bounds how long an owed event can sit unpublished when the inline
-// publish failed. Short enough that a buyer is not waiting on it; long enough that an
-// idle service is not polling PostgreSQL hard.
-func drainInterval() time.Duration {
-	if v := os.Getenv("OUTBOX_DRAIN_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return 5 * time.Second
-}
-
-func drainBatch() int {
-	if v := os.Getenv("OUTBOX_DRAIN_BATCH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 32
-}
-
-// recoveryInterval bounds how long a stuck order waits for a re-drive. Longer than the
-// outbox interval: an owed event is one publish away, while a re-drive makes network
-// calls per order and every claim already survived the grace period that keeps recovery
-// off live checkouts.
-func recoveryInterval() time.Duration {
-	if v := os.Getenv("RECOVERY_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return 30 * time.Second
-}
-
-func recoveryBatch() int {
-	if v := os.Getenv("RECOVERY_BATCH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 16
-}
-
-// cancellationInterval bounds how long a cancellation run's next batch waits. Shorter than
-// recovery's: a cancelled event's buyers are owed money now, and unlike a stuck checkout
-// there is no grace period to respect — the run was created by an operator who is waiting
-// for the report.
-func cancellationInterval() time.Duration {
-	if v := os.Getenv("CANCELLATION_REFUND_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return 10 * time.Second
-}
-
-// cancellationBatch bounds one claim, and with it the lease. Smaller than recovery's: each
-// order here makes up to four downstream calls (payments, journal, access, inventory), and
-// the lease has to outlast the whole batch.
-func cancellationBatch() int {
-	if v := os.Getenv("CANCELLATION_REFUND_BATCH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 8
-}
-
 // mountHealth puts each probe set on its own path.
 //
 // Extracted for the same reason as readinessChecks, one level up: a test that only exercises
@@ -627,86 +684,12 @@ func readinessChecks(liveness []httpx.NamedCheck, accessURL string) []httpx.Name
 	)
 }
 
-// reversalInterval bounds how long an outstanding reversal obligation waits for a retry.
-// The LONGEST of the four, deliberately: every row this runner claims has already failed at
-// least once against a downstream that was unavailable, and re-asking a service that is down
-// every ten seconds is how a reconciler becomes a second outage. The obligation is
-// under-selling in the meantime (the tickets are void, the seat is not back), which is the
-// safe direction — unlike a stuck checkout, whose seat is leaking, or a cancellation run,
-// whose operator is waiting for a report.
-//
-// A restart drains immediately regardless (Runner.Run), so this bounds the steady state, not
-// recovery from a deploy.
-func reversalInterval() time.Duration {
-	if v := os.Getenv("REFUND_REVERSAL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return time.Minute
-}
-
-// reversalBatch bounds one claim, and with it the lease. Larger than the cancellation
-// runner's: each row here makes at most two downstream calls (void, then capacity) against
-// no money path, where a cancellation order makes up to four including the provider.
-func reversalBatch() int {
-	if v := os.Getenv("REFUND_REVERSAL_BATCH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 16
-}
-
-// exchangeSweepInterval bounds how long an outstanding exchange obligation waits for a
-// retry. Matches the refund reconciler's minute, for the same reason: every row this sweep
-// claims has already failed against something unavailable, and re-asking a downed service
-// every ten seconds is how a reconciler becomes a second outage. An outstanding exchange
-// obligation is UNDER-selling in the meantime (the source capacity is not back), which is
-// the safe direction.
-//
-// A restart drains immediately regardless (Runner.Run), so this bounds the steady state, not
-// recovery from a deploy.
-//
-// A plain default, never a compose `${VAR:?}`: a mandatory marker with no matching emitter
-// in scripts/env-bootstrap.sh fails `make check`'s check-required-env stage (TKT-227).
-func exchangeSweepInterval() time.Duration {
-	if v := os.Getenv("EXCHANGE_REVERSAL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return time.Minute
-}
-
-// exchangeSweepBatch bounds one claim, and with it the lease. The same 16 as the refund
-// reconciler even though each row here makes at most ONE downstream call rather than two —
-// the batch bounds how many rows a pass claims, and the call count is expressed in
-// MaxCallsPerExchange, where LeaseFor reads it.
-func exchangeSweepBatch() int {
-	if v := os.Getenv("EXCHANGE_REVERSAL_BATCH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 16
-}
-
-// credentialsAreDistinct refuses a deployment where any two of commerce's three
-// credentials hold the same value.
-//
-// Extracted from run() so it can actually be tested: a fail-closed startup check
-// that nothing exercises is a check nobody knows is broken. run() opens databases
-// and listens, so it is not a unit-test seam.
+// credentialsAreDistinct refuses any collision among commerce's four credentials.
 func credentialsAreDistinct(internal, staffWrite, assertion, payments string) error {
 	for _, pair := range []struct{ aName, a, bName, b string }{
 		{staffWriteTokenEnv, staffWrite, "INTERNAL_SERVICE_TOKEN", internal},
 		{assertionKeyEnv, assertion, "INTERNAL_SERVICE_TOKEN", internal},
 		{assertionKeyEnv, assertion, staffWriteTokenEnv, staffWrite},
-		// The fourth (ai-review S8). Its pairs are added HERE, with the others,
-		// because the comment above is only true if someone actually does it:
-		// a credential wired in but left out of this check is the one credential
-		// whose separation is never verified.
 		{runtimecfg.PaymentsTokenEnv, payments, "INTERNAL_SERVICE_TOKEN", internal},
 		{runtimecfg.PaymentsTokenEnv, payments, staffWriteTokenEnv, staffWrite},
 		{runtimecfg.PaymentsTokenEnv, payments, assertionKeyEnv, assertion},

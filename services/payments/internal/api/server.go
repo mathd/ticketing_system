@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,23 +31,21 @@ type Server struct {
 	statusReplayRetention time.Duration
 }
 
-// New wires the payments server. The PSP port decides charge outcomes; New(j, cred)
-// defaults it to the fake PSP so existing callers and the fact-only tests are unchanged.
-// Callers select a provider with NewWithPSP (main.go picks fake vs Stripe by config).
-func New(j *store.Journal, credential string) *Server {
-	return NewWithPSP(j, credential, psp.NewFake())
+// ServerConfig contains every dependency and setting fixed for a server's lifetime.
+type ServerConfig struct {
+	Journal               *store.Journal
+	Credential            string
+	Provider              psp.PSP
+	StatusReplayRetention time.Duration
 }
 
-// NewWithPSP wires the server against an explicit PSP implementation with no
-// status-replay bound (correct for the fake; Stripe callers use NewWithPSPRetention).
-func NewWithPSP(j *store.Journal, credential string, provider psp.PSP) *Server {
-	return NewWithPSPRetention(j, credential, provider, 0)
-}
-
-// NewWithPSPRetention wires the server with the provider's idempotency-key retention,
-// which bounds the status-replay contract (0 = unbounded).
-func NewWithPSPRetention(j *store.Journal, credential string, provider psp.PSP, retention time.Duration) *Server {
-	return &Server{journal: j, credential: credential, psp: provider, statusReplayRetention: retention}
+func New(config ServerConfig) *Server {
+	return &Server{
+		journal:               config.Journal,
+		credential:            config.Credential,
+		psp:                   config.Provider,
+		statusReplayRetention: config.StatusReplayRetention,
+	}
 }
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
@@ -72,12 +69,9 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	}
 	return validated
 }
-func write(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
+
+var write = httpx.WriteJSONNoStore
+
 func (s *Server) authorized(r *http.Request) bool {
 	return httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.credential)
 }

@@ -1,22 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { POST } from '../src/pages/claim';
-import { SESSION_COOKIE, createSession, resetSessionsForTest } from '../src/lib/session';
+let POST: (typeof import('../src/pages/claim'))['POST'];
+let SESSION_COOKIE: string;
+let sessionStore: (typeof import('../src/lib/session'))['sessionStore'];
 
 // The claim bridge (TKT-223). Same shape and the same reason as /checkout: the
 // session cookie is httpOnly, so nothing in the browser can prove who is
 // claiming, and commerce cannot resolve a storefront session.
 
 const FUTURE = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
-const alice = { customerId: 'cust-a', email: 'alice@example.test', assertion: `v1.cust-a.${FUTURE}.mac` };
+const CUSTOMER = '00000000-0000-0000-0000-000000000001';
+const ORDER = '00000000-0000-0000-0000-000000000002';
+const GUEST_ORDER_REF = '00000000-0000-0000-0000-000000000003';
+const alice = {
+  customerId: CUSTOMER,
+  email: 'alice@example.test',
+  assertion: `v1.${CUSTOMER}.${FUTURE}.mac`,
+};
 
 let captured: { headers: Headers; body: string } | undefined;
 let upstream: Response;
 
-beforeEach(() => {
-  resetSessionsForTest();
+beforeEach(async () => {
+  vi.resetModules();
+  const sessionModule = await import('../src/lib/session');
+  SESSION_COOKIE = sessionModule.SESSION_COOKIE;
+  sessionStore = sessionModule.sessionStore;
+  ({ POST } = await import('../src/pages/claim'));
+
   captured = undefined;
-  upstream = new Response('{"order_id":"o-1","guest_order_ref":"g-1","customer_id":"cust-a"}', {
+  upstream = new Response(JSON.stringify({
+    order_id: ORDER,
+    guest_order_ref: GUEST_ORDER_REF,
+    customer_id: CUSTOMER,
+  }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -47,29 +64,33 @@ function post(cookie: string | undefined, fields: Record<string, string>) {
 
 describe('the claim bridge', () => {
   it('sends the session assertion and never the cookie', async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
-    await post(token, { guest_order_ref: 'g-1', locale: 'en' });
+    await post(token, { guest_order_ref: GUEST_ORDER_REF, locale: 'en' });
 
     expect(captured!.headers.get('X-Customer-Assertion')).toBe(alice.assertion);
     expect(captured!.headers.get('cookie')).toBeNull();
-    expect(JSON.parse(captured!.body)).toEqual({ guest_order_ref: 'g-1' });
+    expect(JSON.parse(captured!.body)).toEqual({ guest_order_ref: GUEST_ORDER_REF });
   });
 
   // The body must not be able to name a customer — the bridge builds it, so the
   // form cannot smuggle one through.
   it('ignores any customer the form tries to name', async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
-    await post(token, { guest_order_ref: 'g-1', locale: 'en', customer_id: 'somebody-else' });
+    await post(token, {
+      guest_order_ref: GUEST_ORDER_REF,
+      locale: 'en',
+      customer_id: 'somebody-else',
+    });
 
-    expect(JSON.parse(captured!.body)).toEqual({ guest_order_ref: 'g-1' });
+    expect(JSON.parse(captured!.body)).toEqual({ guest_order_ref: GUEST_ORDER_REF });
   });
 
   it('lands the buyer in their wallet on success', async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
-    const response = await post(token, { guest_order_ref: 'g-1', locale: 'fr' });
+    const response = await post(token, { guest_order_ref: GUEST_ORDER_REF, locale: 'fr' });
 
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe('/fr/account');
@@ -81,7 +102,7 @@ describe('the claim bridge', () => {
   it.each([undefined, 'a-token-this-process-never-issued'])(
     'sends an unauthenticated claimer to sign in (cookie: %s)',
     async (cookie) => {
-      const response = await post(cookie, { guest_order_ref: 'g-1', locale: 'en' });
+      const response = await post(cookie, { guest_order_ref: GUEST_ORDER_REF, locale: 'en' });
 
       expect(response.status).toBe(303);
       expect(response.headers.get('location')).toBe('/en/account/sign-in');
@@ -97,19 +118,24 @@ describe('the claim bridge', () => {
     [503, 'unavailable'],
   ])('returns the buyer to the ticket page with %i -> %s', async (status, reason) => {
     upstream = new Response('{"error":"not found"}', { status });
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
-    const response = await post(token, { guest_order_ref: 'g-1', locale: 'en' });
+    const response = await post(token, { guest_order_ref: GUEST_ORDER_REF, locale: 'en' });
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(`/en/tickets/g-1?claim=${reason}`);
+    expect(response.headers.get('location')).toBe(
+      `/en/tickets/${GUEST_ORDER_REF}?claim=${reason}`,
+    );
   });
 
   // An unknown locale must not be reflected into a redirect target.
   it('falls back to a known locale rather than reflecting the form value', async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
-    const response = await post(token, { guest_order_ref: 'g-1', locale: '../../evil' });
+    const response = await post(token, {
+      guest_order_ref: GUEST_ORDER_REF,
+      locale: '../../evil',
+    });
 
     expect(response.headers.get('location')).toBe('/en/account');
   });

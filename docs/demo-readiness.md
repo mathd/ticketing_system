@@ -103,11 +103,11 @@ GATEWAY_PORT=18080 POSTGRES_PORT=55432 make up
 
 Everything in this document was verified against a stack started that way.
 
-**Demo-day trap:** `18080` is also the smoke suite's gateway port
-(`smoke: project=ticketing-smoke-0 gateway=18080`). A demo stack left up on 18080 makes
-`make check` fail with `port is already allocated` — which is exactly what happened here on the
-first run, and it looks like a real gate failure until you read the line. Pick a demo port that is
-not 18080, or tear the demo stack down before gating.
+**Demo-day trap:** the recorded smoke run landed in slot 0
+(`smoke: project=ticketing-smoke-0 gateway=18080`). Current smoke runs derive one of 40 port slots
+from the checkout path, so read the startup line before choosing a demo port. A conflict fails with
+`port is already allocated`; it cannot tear down the other stack because Compose project identities
+are derived separately. Pick a different demo port or stop the demo stack before gating.
 
 ## Not blockers, but demo-adjacent
 

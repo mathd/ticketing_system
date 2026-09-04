@@ -46,7 +46,7 @@ func chargeServer(t *testing.T) (http.Handler, *countingPSP) {
 		t.Fatal(err)
 	}
 	provider := &countingPSP{PSP: psp.NewFake()}
-	return NewWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true), provider
+	return newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true), provider
 }
 
 func postCharge(t *testing.T, h http.Handler, key, body string) *httptest.ResponseRecorder {

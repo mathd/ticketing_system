@@ -350,5 +350,5 @@ func refundServerWithPSP(t *testing.T, db *sql.DB, p psp.PSP) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
+	return newTestServerWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
 }

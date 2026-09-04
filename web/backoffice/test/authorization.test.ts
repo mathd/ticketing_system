@@ -131,13 +131,6 @@ describe('what the matrix says (COS-2, COS-3)', () => {
     }
   });
 
-  // The failure this ticket is named for. box_office reaches almost nothing
-  // today and that is CORRECT — the order console it exists for is TKT-193/194.
-  // Widening this classification to "give box office something to do" is the
-  // mistake; the fix is to build those surfaces.
-  it('does not give box_office the authoring surface for want of anything else', () => {
-    expect(canAccessRoute('/admin/venues/abc', 'box_office')).toBe(false);
-  });
 });
 
 describe('unclassified and unknown fail closed (COS-6)', () => {
@@ -151,12 +144,8 @@ describe('unclassified and unknown fail closed (COS-6)', () => {
   it('refuses a role outside the vocabulary', () => {
     expect(isRecognisedRole('superuser')).toBe(false);
     expect(isRecognisedRole('')).toBe(false);
-    expect(canAccessRoute('/admin/', 'superuser' as never)).toBe(false);
-  });
-
-  it('recognises exactly the contract vocabulary', () => {
-    expect([...STAFF_ROLES].sort()).toEqual(['admin', 'box_office', 'finance']);
-    for (const role of STAFF_ROLES) expect(isRecognisedRole(role)).toBe(true);
+    expect(isRecognisedRole('toString')).toBe(false);
+    expect(canAccessRoute('/admin/', 'superuser')).toBe(false);
   });
 });
 

@@ -17,7 +17,7 @@ A unit of work flows through **6 statuses** on the **"SDLC agentique"** Jira pro
 
 Commit directly to `config.code.defaultBranch` when the change is:
 
-- a **skill / process / tooling** improvement (this skill, its references, `.sdlc/`, CI config),
+- a **skill / process / tooling** improvement (this skill, its references, CI config),
 - an **ADR addition or amendment**,
 - a **documentation** update (`docs/`, `AGENTS.md`, READMEs).
 

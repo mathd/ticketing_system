@@ -34,7 +34,7 @@ func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, perf
 	if !ok {
 		return
 	}
-	p, needsEmit, err := s.store.PublishPerformance(r.Context(), organizerID, performanceId)
+	p, needsEmit, err := s.lifecycle.PublishPerformance(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -47,7 +47,7 @@ func (s *Server) PublishPerformance(w http.ResponseWriter, r *http.Request, perf
 				Error{Error: "performance is published but the domain event was not emitted; retry publish"})
 			return
 		}
-		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+		if err := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
 			// Ack'd but unmarked: the next publish retry may re-emit — that
 			// is the at-least-once contract, consumers de-duplicate on id.
 			s.log.ErrorContext(r.Context(), "event emitted but not marked", "performance_id", p.ID, "err", err)
@@ -64,7 +64,7 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 	if !ok {
 		return
 	}
-	p, publishNeedsEmit, archiveNeedsEmit, err := s.store.ArchivePerformance(r.Context(), organizerID, performanceId)
+	p, publishNeedsEmit, archiveNeedsEmit, err := s.lifecycle.ArchivePerformance(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -87,12 +87,12 @@ func (s *Server) ArchivePerformance(w http.ResponseWriter, r *http.Request, perf
 	// emissions therefore retries the already-emitted publication too; its
 	// deterministic id makes that safe at the stream.
 	if publishNeedsEmit {
-		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+		if err := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
 			s.log.ErrorContext(r.Context(), "publication event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
 	if archiveNeedsEmit {
-		if err := s.store.MarkPerformanceArchiveEmitted(r.Context(), p.ID); err != nil {
+		if err := s.lifecycle.MarkPerformanceArchiveEmitted(r.Context(), p.ID); err != nil {
 			s.log.ErrorContext(r.Context(), "archive event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
@@ -104,7 +104,7 @@ func (s *Server) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId 
 	if !ok {
 		return
 	}
-	items, err := s.store.PublishSeries(r.Context(), organizerID, seriesId)
+	items, err := s.lifecycle.PublishSeries(r.Context(), organizerID, seriesId)
 	if err != nil {
 		s.writeSeriesTransitionError(w, r, err)
 		return
@@ -115,7 +115,7 @@ func (s *Server) PublishSeries(w http.ResponseWriter, r *http.Request, seriesId 
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is published but a member event is still owed; retry publish"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "series publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -128,7 +128,7 @@ func (s *Server) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId 
 	if !ok {
 		return
 	}
-	items, err := s.store.ArchiveSeries(r.Context(), organizerID, seriesId)
+	items, err := s.lifecycle.ArchiveSeries(r.Context(), organizerID, seriesId)
 	if err != nil {
 		s.writeSeriesTransitionError(w, r, err)
 		return
@@ -139,7 +139,7 @@ func (s *Server) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId 
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is archived but a member publication event is still owed; retry archive"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "series publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -148,7 +148,7 @@ func (s *Server) ArchiveSeries(w http.ResponseWriter, r *http.Request, seriesId 
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "series is archived but a member archive event is still owed; retry archive"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "series archive emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -183,7 +183,7 @@ func (s *Server) PublishFestival(w http.ResponseWriter, r *http.Request, festiva
 	if !ok {
 		return
 	}
-	items, err := s.store.PublishFestival(r.Context(), organizerID, festivalId)
+	items, err := s.lifecycle.PublishFestival(r.Context(), organizerID, festivalId)
 	if err != nil {
 		s.writeFestivalTransitionError(w, r, err)
 		return
@@ -194,7 +194,7 @@ func (s *Server) PublishFestival(w http.ResponseWriter, r *http.Request, festiva
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is published but a member event is still owed; retry publish"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "festival publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -207,7 +207,7 @@ func (s *Server) ArchiveFestival(w http.ResponseWriter, r *http.Request, festiva
 	if !ok {
 		return
 	}
-	items, err := s.store.ArchiveFestival(r.Context(), organizerID, festivalId)
+	items, err := s.lifecycle.ArchiveFestival(r.Context(), organizerID, festivalId)
 	if err != nil {
 		s.writeFestivalTransitionError(w, r, err)
 		return
@@ -218,7 +218,7 @@ func (s *Server) ArchiveFestival(w http.ResponseWriter, r *http.Request, festiva
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is archived but a member publication event is still owed; retry archive"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "festival publication emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -227,7 +227,7 @@ func (s *Server) ArchiveFestival(w http.ResponseWriter, r *http.Request, festiva
 				writeJSON(w, http.StatusInternalServerError, Error{Error: "festival is archived but a member archive event is still owed; retry archive"})
 				return
 			}
-			if markErr := s.store.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
+			if markErr := s.lifecycle.MarkPerformanceArchiveEmitted(r.Context(), item.Performance.ID); markErr != nil {
 				s.log.ErrorContext(r.Context(), "festival archive emitted but not marked", "performance_id", item.Performance.ID, "err", markErr)
 			}
 		}
@@ -273,7 +273,7 @@ func (s *Server) CloseSlot(w http.ResponseWriter, r *http.Request, performanceId
 	if !ok {
 		return
 	}
-	p, publishNeedsEmit, closureNeedsEmit, err := s.store.CloseSlot(r.Context(), organizerID, performanceId, in.Reason)
+	p, publishNeedsEmit, closureNeedsEmit, err := s.lifecycle.CloseSlot(r.Context(), organizerID, performanceId, in.Reason)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -287,7 +287,7 @@ func (s *Server) ReopenSlot(w http.ResponseWriter, r *http.Request, performanceI
 	if !ok {
 		return
 	}
-	p, publishNeedsEmit, closureNeedsEmit, err := s.store.ReopenSlot(r.Context(), organizerID, performanceId)
+	p, publishNeedsEmit, closureNeedsEmit, err := s.lifecycle.ReopenSlot(r.Context(), organizerID, performanceId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -309,7 +309,7 @@ func (s *Server) emitClosure(w http.ResponseWriter, r *http.Request, p store.Per
 				Error{Error: "slot state changed but its publication event was not emitted; retry " + verb})
 			return
 		}
-		if err := s.store.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
+		if err := s.lifecycle.MarkPerformanceEventEmitted(r.Context(), p.ID); err != nil {
 			s.log.ErrorContext(r.Context(), "publication event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
@@ -321,7 +321,7 @@ func (s *Server) emitClosure(w http.ResponseWriter, r *http.Request, p store.Per
 				Error{Error: "slot state changed but the closure event was not emitted; retry " + verb})
 			return
 		}
-		if err := s.store.MarkClosureEmitted(r.Context(), p.ID, p.Closure.Version); err != nil {
+		if err := s.lifecycle.MarkClosureEmitted(r.Context(), p.ID, p.Closure.Version); err != nil {
 			s.log.ErrorContext(r.Context(), "closure event emitted but not marked", "performance_id", p.ID, "err", err)
 		}
 	}
@@ -342,7 +342,7 @@ func (s *Server) CreateTicketType(w http.ResponseWriter, r *http.Request, params
 	if !ok {
 		return
 	}
-	tt, err := s.store.CreateTicketType(r.Context(), store.TicketTypeInput{
+	tt, err := s.authoring.CreateTicketType(r.Context(), store.TicketTypeInput{
 		OrganizerID:    organizerID,
 		PerformanceID:  in.PerformanceId,
 		Name:           store.LocalizedText(in.Name),

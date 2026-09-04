@@ -30,6 +30,7 @@ import (
 	"ticketing/services/access/internal/lifecyclejob"
 	accessstore "ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
@@ -43,21 +44,16 @@ const serviceName = "access"
 const staffWriteTokenEnv = "ACCESS_STAFF_WRITE_TOKEN"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
-	}
-	if len(os.Args) > 1 {
-		if sub, ok := subcommands()[os.Args[1]]; ok {
-			if err := sub(os.Args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-				os.Exit(1)
-			}
-			return
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		if result.Name == "" {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, result.Name, result.Err)
 		}
 	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
 }
 
@@ -65,19 +61,40 @@ func main() {
 // separate jobs on purpose (ADR-021 §D9 as amended for ADR-022): migrate is DDL
 // under ADR-008's surviving 30-second deadline, while the backfill signs a head
 // per ticket and cannot be held to it.
-func subcommands() map[string]func([]string) error {
-	return map[string]func([]string) error{
-		"migrate":              func([]string) error { return migrate() },
-		"lifecycle-backfill":   func([]string) error { return backfillLifecycle() },
-		"verify-lifecycle":     func([]string) error { return verifyLifecycle() },
-		"seal-lifecycle-epoch": func([]string) error { return sealLifecycleEpoch() },
-		"set-lifecycle-mode":   setLifecycleMode,
-		"keygen":               func([]string) error { return keygen(os.Stdout) },
+type commandCallbacks struct {
+	migrate, lifecycleBackfill, verifyLifecycle, sealLifecycleEpoch, keygen func() error
+	healthcheck                                                             func() int
+	setLifecycleMode, enrolScanner, revokeScanner, listScanners             func([]string) error
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		migrate: migrate, healthcheck: healthcheck,
+		lifecycleBackfill: backfillLifecycle, verifyLifecycle: verifyLifecycle,
+		sealLifecycleEpoch: sealLifecycleEpoch, setLifecycleMode: setLifecycleMode,
+		keygen:       func() error { return keygen(os.Stdout) },
+		enrolScanner: enrolScanner, revokeScanner: revokeScanner, listScanners: listScanners,
+	}
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"migrate":              cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":          cmdline.ExitStatus(callbacks.healthcheck),
+		"lifecycle-backfill":   cmdline.WithoutArgs(callbacks.lifecycleBackfill),
+		"verify-lifecycle":     cmdline.WithoutArgs(callbacks.verifyLifecycle),
+		"seal-lifecycle-epoch": cmdline.WithoutArgs(callbacks.sealLifecycleEpoch),
+		"set-lifecycle-mode":   cmdline.WithArgs(callbacks.setLifecycleMode),
+		"keygen":               cmdline.WithoutArgs(callbacks.keygen),
 		// Scanner device enrolment (ai-review S1). See scanner_devices.go for why
 		// this is a CLI rather than an HTTP endpoint.
-		"enrol-scanner":  enrolScanner,
-		"revoke-scanner": revokeScanner,
-		"list-scanners":  listScanners,
+		"enrol-scanner":  cmdline.WithArgs(callbacks.enrolScanner),
+		"revoke-scanner": cmdline.WithArgs(callbacks.revokeScanner),
+		"list-scanners":  cmdline.WithArgs(callbacks.listScanners),
 	}
 }
 
@@ -411,13 +428,18 @@ func run() error {
 		return fmt.Errorf("scanner telemetry metrics: %w", err)
 	}
 
-	r.Mount("/", accessapi.New(st, verifier, token).
-		WithQRLinkKey(qrLinkKey).
-		WithFeedCursorKey(feedCursorKey).
-		WithStaffWriteCredential(staffWriteToken).
-		WithScannerTelemetry(scannerTelemetry).
-		WithRedelivery(delivery.CommerceAddressBook{Client: obs.Client(), BaseURL: commerceURL, Token: token}, mailer, publicURL).
-		Router(log, validateResponses))
+	r.Mount("/", accessapi.New(accessapi.ServerConfig{
+		Store:             st,
+		Verifier:          verifier,
+		InternalToken:     token,
+		StaffWriteToken:   staffWriteToken,
+		QRLinkKey:         qrLinkKey,
+		FeedCursorKey:     feedCursorKey,
+		ScannerTelemetry:  scannerTelemetry,
+		RedeliveryAddress: delivery.CommerceAddressBook{Client: obs.Client(), BaseURL: commerceURL, Token: token},
+		RedeliveryMailer:  mailer,
+		PublicURL:         publicURL,
+	}).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

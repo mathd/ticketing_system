@@ -11,7 +11,7 @@ import { authenticateCustomer } from '../../../lib/customer-api';
 import {
   SESSION_COOKIE,
   SessionCapacityError,
-  createSession,
+  sessionStore,
   isSecureRequest,
   sessionCookieOptions,
 } from '../../../lib/session';
@@ -40,7 +40,7 @@ if (Astro.request.method === 'POST') {
       // flood of registrations, nothing to do with this buyer (see
       // MAX_SESSIONS_TOTAL). It is an OUTAGE, never a credential verdict.
       try {
-        const token = createSession({
+        const token = sessionStore.create({
           customerId: result.principal.customer_id,
           email: result.principal.email,
           // Kept server-side, inside this process's session map. It never

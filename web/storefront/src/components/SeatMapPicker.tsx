@@ -5,6 +5,7 @@ import { parseMaxAge } from '../lib/cache';
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../lib/api';
 import type { Locale } from '../lib/locales';
 import { UI_STRINGS } from '../lib/locales';
+import { dateTimeField, sameUuid, uuidField } from '../lib/wire-primitives';
 
 // SeatMapPicker is TKT-174's seat concern, end to end: it reads the published
 // geometry and the live occupancy, renders the map, owns the selection, and reports
@@ -34,6 +35,144 @@ interface Occupancy {
   offering_status: 'open' | 'closed' | 'archived';
   remaining_capacity: number;
   unavailable_seat_identities: string[];
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCallerCancellation(value: unknown): boolean {
+  return value instanceof Error &&
+    value.name === 'AbortError' &&
+    !('timedOut' in value && value.timedOut === true);
+}
+
+function objectBody(value: unknown, name: string): Record<string, unknown> {
+  if (!isObject(value)) throw new TypeError(`${name} must be an object`);
+  return value;
+}
+
+function stringField(value: unknown, name: string, maximumLength?: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    (maximumLength !== undefined && [...value].length > maximumLength)
+  ) {
+    throw new TypeError(`${name} must be a non-empty string${maximumLength ? ` of at most ${maximumLength} characters` : ''}`);
+  }
+  return value;
+}
+
+function integerField(value: unknown, name: string, minimum: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+    throw new TypeError(`${name} must be an integer of at least ${minimum}`);
+  }
+  return value;
+}
+
+function stringArray(value: unknown, name: string, maximumLength: number): string[] {
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`);
+  const result = value.map((item, index) => stringField(item, `${name}[${index}]`, maximumLength));
+  if (new Set(result).size !== result.length) throw new TypeError(`${name} must not contain duplicates`);
+  return result;
+}
+
+function decodeOccupancy(value: unknown): Occupancy {
+  const body = objectBody(value, 'seat occupancy');
+  const status = body.offering_status;
+  if (status !== 'open' && status !== 'closed' && status !== 'archived') {
+    throw new TypeError('offering_status is invalid');
+  }
+  return {
+    slot_id: uuidField(body.slot_id, 'slot_id'),
+    seat_map_id: uuidField(body.seat_map_id, 'seat_map_id'),
+    offering_status: status,
+    remaining_capacity: integerField(body.remaining_capacity, 'remaining_capacity', 0),
+    unavailable_seat_identities: stringArray(
+      body.unavailable_seat_identities,
+      'unavailable_seat_identities',
+      200,
+    ),
+  };
+}
+
+function decodeSeatMapGeometry(
+  value: unknown,
+  expectedMapId: string,
+  expectedOrganizerId: string,
+): SeatMapGeometry {
+  const body = objectBody(value, 'seat map geometry');
+  const map = objectBody(body.map, 'map');
+  const mapId = uuidField(map.id, 'map.id');
+  const organizerId = uuidField(map.organizer_id, 'map.organizer_id');
+  if (!sameUuid(mapId, expectedMapId) || !sameUuid(organizerId, expectedOrganizerId)) {
+    throw new TypeError('seat map identity does not match the request');
+  }
+  const status = map.status;
+  if (status !== 'draft' && status !== 'published' && status !== 'archived') {
+    throw new TypeError('map.status is invalid');
+  }
+  if (typeof map.orphan_prevention_enabled !== 'boolean') {
+    throw new TypeError('map.orphan_prevention_enabled must be boolean');
+  }
+  if (!Array.isArray(body.sections)) throw new TypeError('sections must be an array');
+  const identities = new Set<string>();
+  const sections = body.sections.map((value, sectionIndex): SeatMapSection => {
+    const section = objectBody(value, `sections[${sectionIndex}]`);
+    let rows: SeatMapRow[] | undefined;
+    if (section.rows !== undefined) {
+      if (!Array.isArray(section.rows)) throw new TypeError(`sections[${sectionIndex}].rows must be an array`);
+      rows = section.rows.map((value, rowIndex): SeatMapRow => {
+        const row = objectBody(value, `sections[${sectionIndex}].rows[${rowIndex}]`);
+        let seats: SeatMapSeat[] | undefined;
+        if (row.seats !== undefined) {
+          if (!Array.isArray(row.seats)) {
+            throw new TypeError(`sections[${sectionIndex}].rows[${rowIndex}].seats must be an array`);
+          }
+          seats = row.seats.map((value, seatIndex): SeatMapSeat => {
+            const path = `sections[${sectionIndex}].rows[${rowIndex}].seats[${seatIndex}]`;
+            const seat = objectBody(value, path);
+            const identity = stringField(seat.seat_identity, `${path}.seat_identity`, 200);
+            if (identities.has(identity)) throw new TypeError('seat identities must be unique');
+            identities.add(identity);
+            return {
+              id: uuidField(seat.id, `${path}.id`),
+              seat_identity: identity,
+              label: stringField(seat.label, `${path}.label`),
+              position: integerField(seat.position, `${path}.position`, 1),
+            };
+          });
+        }
+        return {
+          id: uuidField(row.id, `sections[${sectionIndex}].rows[${rowIndex}].id`),
+          label: stringField(row.label, `sections[${sectionIndex}].rows[${rowIndex}].label`),
+          position: integerField(row.position, `sections[${sectionIndex}].rows[${rowIndex}].position`, 1),
+          ...(seats === undefined ? {} : { seats }),
+        };
+      });
+    }
+    return {
+      id: uuidField(section.id, `sections[${sectionIndex}].id`),
+      name: stringField(section.name, `sections[${sectionIndex}].name`),
+      position: integerField(section.position, `sections[${sectionIndex}].position`, 1),
+      ...(rows === undefined ? {} : { rows }),
+    };
+  });
+  const publishedAt = map.published_at;
+  return {
+    map: {
+      id: mapId,
+      organizer_id: organizerId,
+      venue_id: uuidField(map.venue_id, 'map.venue_id'),
+      name: stringField(map.name, 'map.name'),
+      version: integerField(map.version, 'map.version', 1),
+      status,
+      ...(publishedAt === undefined ? {} : { published_at: dateTimeField(publishedAt, 'map.published_at') }),
+      orphan_prevention_enabled: map.orphan_prevention_enabled,
+      created_at: dateTimeField(map.created_at, 'map.created_at'),
+    },
+    sections,
+  };
 }
 
 /** What the parent needs to decide whether Reserve may be pressed. */
@@ -87,17 +226,9 @@ const MIN_POLL_MS = 1000;
 /**
  * Operational ceiling on a derived cadence: one minute.
  *
- * Scoped to THIS endpoint, not to the system. A first version used ADR-004's
- * longest tier (five minutes), which is the wrong yardstick — occupancy is a
- * SECONDS-tier read, and a mistaken `max-age=300` would leave a buyer looking at
- * a five-minute-old seat map during an on-sale. Checkout stays authoritative, so
- * nobody oversells; they just repeatedly pick seats that are gone, which is the
- * experience this poll exists to prevent.
- *
- * One minute is twelve times the declared tier, so a legitimate bump has room,
- * and far below the timer-overflow threshold — which is not a bound at all: a
- * max-age just under it yields about 24.9 days, suspending refresh for the whole
- * session while every timer behaves correctly (ai-review).
+ * Scoped to this seconds-tier occupancy endpoint, not to the system. One minute
+ * leaves room for a legitimate TTL increase while preventing a mistaken long
+ * cache lifetime from suspending seat-map refresh for the buyer's session.
  */
 const MAX_POLL_MS = 60 * 1000;
 
@@ -198,7 +329,12 @@ const READ_TIMEOUT_MS = 8000;
  * cancellation as a failure, or — worse — swallowing a real timeout and leaving the
  * last snapshot claimable.
  */
-async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortController): Promise<{ body: T; cacheControl: string | null }> {
+async function boundedJSON<T>(
+  url: string,
+  init: RequestInit,
+  controller: AbortController,
+  decode: (value: unknown) => T,
+): Promise<{ body: T; cacheControl: string | null }> {
   let timedOut = false;
   const deadline = window.setTimeout(() => { timedOut = true; controller.abort(); }, READ_TIMEOUT_MS);
   try {
@@ -214,11 +350,12 @@ async function boundedJSON<T>(url: string, init: RequestInit, controller: AbortC
     // from this response's declared freshness (TKT-208), and discarding the
     // Response here is what previously made that impossible.
     const cacheControl = response.headers.get('cache-control');
-    return { body: (await response.json()) as T, cacheControl };
+    return { body: decode(await response.json()), cacheControl };
   } catch (err) {
     // A DOMException is an Error, so this rides along on the real abort object rather
     // than replacing it — the caller still sees name === 'AbortError'.
-    throw Object.assign(err as Error, { timedOut });
+    const failure = err instanceof Error ? err : new Error('seat-map read failed');
+    throw Object.assign(failure, { timedOut });
   } finally {
     window.clearTimeout(deadline);
   }
@@ -268,13 +405,14 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         // After a conflict the cached body is exactly the thing we must not trust.
         { cache: options.bypassCache ? 'no-store' : 'default' },
         controller,
+        decodeOccupancy,
       );
       if (mine !== generation.current) return;
       // Catalog and inventory each publish their own view of which map version a slot
       // is seated against. Disagreeing means a projection skew, and rendering either
       // one would put the buyer on a map that is not the one being claimed against.
       // This one is NOT retryable: it is a real disagreement, not a blip.
-      if (next.slot_id !== slotId || next.seat_map_id !== seatMapId) {
+      if (!sameUuid(next.slot_id, slotId) || !sameUuid(next.seat_map_id, seatMapId)) {
         setOccupancyState('failed');
         return;
       }
@@ -290,8 +428,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
       if (options.bypassCache) setConflicted([]);
     } catch (err) {
       // A timeout aborts too, but it is a real failure and must be reported as one.
-      const failure = err as Error & { timedOut?: boolean };
-      if (failure?.name === 'AbortError' && !failure.timedOut) return;
+      if (isCallerCancellation(err)) return;
       if (mine !== generation.current) return;
       // A failure AFTER a good first read keeps the last known map and says so:
       // blanking it would read as a sold-out house, which is a lie with a cost.
@@ -314,21 +451,23 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
     void (async () => {
       try {
         const { body: geometry } = await boundedJSON<SeatMapGeometry>(
-          `/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`, {}, controller,
+          `/api/catalog/public/seat-maps/${encodeURIComponent(seatMapId)}`,
+          {},
+          controller,
+          (value) => decodeSeatMapGeometry(value, seatMapId, organizerId),
         );
         if (live) {
           setSections(orderByPosition(geometry.sections ?? []));
           setGeometryState('ok');
         }
       } catch (err) {
-        const failure = err as Error & { timedOut?: boolean };
         // An unmount abort is not a failure; a deadline is.
-        if (failure?.name === 'AbortError' && !failure.timedOut) return;
+        if (isCallerCancellation(err)) return;
         if (live) setGeometryState('failed');
       }
     })();
     return () => { live = false; controller.abort(); };
-  }, [seatMapId]);
+  }, [seatMapId, organizerId]);
 
   // Polling is SERIALISED, not on a fixed interval: the next read is scheduled only
   // once the current one settles. A fixed interval against responses slower than the

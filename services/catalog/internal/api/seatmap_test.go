@@ -106,6 +106,61 @@ func TestSeatMapAuthoringChain(t *testing.T) {
 	}
 }
 
+// Exercise the longest identity Catalog may persist through its real router.
+// The cross-contract test in services/catalog/api checks the same boundary
+// against the Commerce and Inventory request schemas.
+func TestSeatMapAuthoringReturnsMaximumIdentity(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Long identity venue")
+	m := seedDraftMap(t, e, venueID, "Long identity map")
+	sectionName := strings.Repeat("🎟", 196)
+
+	section := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{Name: sectionName, Position: 1}))
+	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
+		SeatMapRowCreate{SectionId: section.Id, Label: "R", Position: 1}))
+	seat := decode[Seat](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
+		SeatMapSeatCreate{RowId: row.Id, Label: "1", Position: 1}))
+
+	want := sectionName + "/R/1"
+	if got := len([]rune(want)); got != 200 {
+		t.Fatalf("fixture identity has %d characters, want 200", got)
+	}
+	if seat.SeatIdentity != want {
+		t.Fatalf("seat identity = %q, want %q", seat.SeatIdentity, want)
+	}
+
+	geometry := decode[SeatMapGeometry](t, e.do("GET", "/public/seat-maps/"+m.Id.String(), nil))
+	if geometry.Sections[0].Rows == nil || (*geometry.Sections[0].Rows)[0].Seats == nil {
+		t.Fatalf("long-identity seat missing from geometry: %+v", geometry)
+	}
+	got := (*(*geometry.Sections[0].Rows)[0].Seats)[0].SeatIdentity
+	if got != want {
+		t.Fatalf("geometry seat identity = %q, want %q", got, want)
+	}
+
+}
+
+func TestSeatMapAuthoringRejectsOverlongComposedIdentityBeforeWrite(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Overlong identity venue")
+	m := seedDraftMap(t, e, venueID, "Overlong identity map")
+	section := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{Name: strings.Repeat("🎟", 196), Position: 1}))
+	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
+		SeatMapRowCreate{SectionId: section.Id, Label: "R", Position: 1}))
+	before := len(e.store.seatSeats)
+
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
+		SeatMapSeatCreate{RowId: row.Id, Label: "12", Position: 1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("overlong identity status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if got := len(e.store.seatSeats); got != before {
+		t.Fatalf("rejected identity wrote %d seat(s), want %d", got, before)
+	}
+}
+
 // seedPublishedMap authors a one-seat draft map and publishes it via the API,
 // returning the published version.
 func seedPublishedMap(t *testing.T, e *env, venueID openapi_types.UUID, name string) SeatMap {
@@ -628,8 +683,8 @@ func TestPublicPerformanceDetailCarriesSeatMapID(t *testing.T) {
 		}))
 		e.do("POST", "/ticket-types", TicketTypeCreate{
 			PerformanceId: perf.Id,
-			Name:  LocalizedString{"fr": "Place", "en": "Seat"},
-			Price: Money{Amount: 5000, Currency: "EUR"},
+			Name:          LocalizedString{"fr": "Place", "en": "Seat"},
+			Price:         Money{Amount: 5000, Currency: "EUR"},
 		})
 		if rec := e.do("POST", "/performances/"+perf.Id.String()+"/publish", nil); rec.Code != http.StatusOK {
 			t.Fatalf("publish: %d %s", rec.Code, rec.Body.String())

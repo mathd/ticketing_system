@@ -1,8 +1,9 @@
 # Testing
 
-The gate is `make check` = **deps → generate-drift → dep-drift → build-list-lag → workflow-trigger
-checks (security, hermetic) → ADR numbering → markdown links → lint → test → build → smoke**; CI runs exactly the same target
-(`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
+The gate is `make check` = **deps → generated API drift → dependency drift → build-list lag →
+workflow checks (security, hermetic) → ADR numbering → markdown links → hook self-test → Go
+toolchain check → lint → standalone Go modules → test → build → smoke**. CI runs exactly the
+same target (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
 §Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
 browser evidence on UI stories).
 
@@ -14,23 +15,24 @@ browser evidence on UI stories).
 | dep-drift | one version per dependency across the eight modules — manifest-only and offline ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md)) | — |
 | build-list-lag | no module declares **below** the version the workspace selects ([ADR-035](adr/ADR-035-go-module-dependency-declarations.md) §Amendment). Resolves the module graph via `go list -m`, so unlike dep-drift it **needs the module cache or network**; fails closed (exit 2) when the graph cannot be resolved | — |
 | lint | golangci-lint (pinned) per module (`--build-tags smoke`) | `oxlint --deny-warnings` |
+| standalone | workspace-disabled, network-disabled readonly package loading for every Go module | — |
 | test | `go test` per module | `vitest run` (jsdom + testing-library) |
-| build | `go build` + `go vet` per module | `tsc -b && vite build` |
+| build | `go build` + `go vet` per module | Scanner: `tsc -b && vite build`; Storefront and Back Office: `astro sync && tsc --noEmit && astro build` |
 | smoke | `smoke/` suite via `scripts/smoke.sh` | — |
 
 ## Smoke build paths (TKT-42)
 
 Per-PR/local smoke packages **host-built artifacts** into the images: static Go binaries
-(`make build-gate-linux`, `CGO_ENABLED=0 GOOS=linux`) and the scanner `dist` (from
-`build-ts`), selected via `compose.smoke.yaml` + the packaging-only Dockerfiles
-(`build/go-bin.Dockerfile`, `web/scanner/Dockerfile.smoke`). This removes the in-Docker
-compiles that dominated gate time (CI daemons are cold; `RUN` cache mounts don't persist).
+(`make build-gate-linux`, `CGO_ENABLED=0 GOOS=linux`) and the Scanner, Storefront, and Back Office
+`dist` directories (from `build-ts`). `compose.smoke.yaml` selects the packaging-only
+`build/go-bin.Dockerfile` and each web application's `Dockerfile.smoke`. This removes the
+in-Docker compiles that dominated gate time (CI daemons are cold; `RUN` cache mounts don't
+persist).
 
-The **hermetic** in-Docker build path (`build/go.Dockerfile`, `web/scanner/Dockerfile`) is
-still what `make up` uses, and is exercised end-to-end by `make smoke-hermetic` in
-`.github/workflows/hermetic.yaml` — weekly on main **and** on any PR touching the build
-files (Dockerfiles, `compose*.yaml`, `.dockerignore`, `go.work*`), so hermetic regressions
-cannot merge silently through the fast path.
+The **hermetic** in-Docker build path (`build/go.Dockerfile` and each web application's
+`Dockerfile`) is still what `make up` uses. `.github/workflows/hermetic.yaml` exercises it
+end-to-end with `make smoke-hermetic`, weekly on main and on any PR touching the build files
+(Dockerfiles, Compose files, `.dockerignore`, or `go.work*`).
 
 Gate timings measured on TKT-42 (before → after):
 
@@ -63,10 +65,13 @@ the gateway, plus named infra assertions:
 - ADR-003 journal — `payments verify-journal` runs against the populated smoke database
   before Compose teardown and fails the gate on a gap, hash or signature mismatch
 
-The reproducible browser check is `scripts/verify-checkout-browser.py` against a running seeded
-stack. It verifies checkout success, guest-ticket QR retrieval, pasted credential acceptance,
-duplicate rejection, and retriable decline; evidence lives in `docs/verification/checkout/` and
-`docs/verification/ticket-delivery/`.
+Run `make browser` for the reproducible browser check. The checkout spec creates a published offer,
+submits successful and declined payments, opens the guest ticket page, pairs a scanner, and checks
+accepted and duplicate scans. It requires real Google Chrome and `zbarimg` from the host's ZBar
+command-line tools. The spec decodes the PNG the ticket page loaded and submits that decoded value,
+so a broken image route cannot pass through a direct ticket-bundle fallback. The screenshots in `docs/verification/checkout/` and
+`docs/verification/ticket-delivery/` record earlier manual proof runs; the automated check does not
+rewrite tracked evidence.
 
 ## The gate self-test
 

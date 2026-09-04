@@ -34,6 +34,7 @@ const (
 	versionBeforeChannels           = 17 // roll 0018_channels down (TKT-235)
 	versionBeforePriceRuleChannel   = 18 // roll 0019_price_rule_channels down (TKT-237)
 	versionBeforeMoneyBounds        = 20 // roll 0021_ticket_type_money_bounds down (TKT-154)
+	versionBeforeSeatIdentityLength = 21 // roll 0022_seat_identity_length down
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -761,6 +762,78 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if got := countBounds(); got != 0 {
 			t.Fatalf("0021 down left %d money-bound CHECK(s) behind", got)
+		}
+	})
+
+	t.Run("seat-identity migration refuses legacy overflow and installs the bound", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.UpTo(ctx, versionBeforeSeatIdentityLength); err != nil {
+			t.Fatal(err)
+		}
+		var mapID, sectionID, rowID uuid.UUID
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_maps(organizer_id,venue_id,name)
+			VALUES($1,$2,'legacy identity') RETURNING id`, seatMapOrg, seatMapVenue).Scan(&mapID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_map_sections(organizer_id,seat_map_id,name,position)
+			VALUES($1,$2,'S',1) RETURNING id`, seatMapOrg, mapID).Scan(&sectionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_map_rows(organizer_id,seat_map_id,section_id,label,position)
+			VALUES($1,$2,$3,'R',1) RETURNING id`, seatMapOrg, mapID, sectionID).Scan(&rowID); err != nil {
+			t.Fatal(err)
+		}
+		longIdentity := strings.Repeat("S", 197) + "/R/1"
+		var seatID uuid.UUID
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_map_seats(organizer_id,seat_map_id,row_id,seat_identity,label,position)
+			VALUES($1,$2,$3,$4,'1',1) RETURNING id`, seatMapOrg, mapID, rowID, longIdentity).Scan(&seatID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Up(ctx); err == nil || !strings.Contains(err.Error(), "existing identity is longer than 200 characters") {
+			t.Fatalf("0022 with legacy overflow error = %v", err)
+		}
+		var preserved bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM seat_map_seats WHERE id=$1)`, seatID).Scan(&preserved); err != nil {
+			t.Fatal(err)
+		}
+		if !preserved {
+			t.Fatal("failed migration changed the legacy seat")
+		}
+		if _, err := db.ExecContext(ctx, `DELETE FROM seat_map_seats WHERE id=$1`, seatID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatalf("0022 after removing legacy overflow: %v", err)
+		}
+		var constraints int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint
+			WHERE conrelid=(current_schema() || '.seat_map_seats')::regclass
+			AND conname='seat_map_seats_identity_length'`).Scan(&constraints); err != nil {
+			t.Fatal(err)
+		}
+		if constraints != 1 {
+			t.Fatalf("0022 installed %d named seat-identity constraints, want 1", constraints)
+		}
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_seats(organizer_id,seat_map_id,row_id,seat_identity,label,position)
+			VALUES($1,$2,$3,$4,'1',1)`, seatMapOrg, mapID, rowID, longIdentity); err == nil {
+			t.Fatal("database accepted a 201-character seat identity")
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeSeatIdentityLength); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint
+			WHERE conrelid=(current_schema() || '.seat_map_seats')::regclass
+			AND conname='seat_map_seats_identity_length'`).Scan(&constraints); err != nil {
+			t.Fatal(err)
+		}
+		if constraints != 0 {
+			t.Fatalf("0022 down left %d seat-identity constraints", constraints)
 		}
 	})
 }

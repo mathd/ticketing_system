@@ -76,7 +76,7 @@ func TestCompensationBasisFromStoredRow(t *testing.T) {
 // All three PSP endpoints are internal: no token, no answer — and they never reach the
 // journal (nil here), proving auth is checked first.
 func TestPSPEndpointsRequireInternalToken(t *testing.T) {
-	server := New(nil, "secret")
+	server := newTestServer(nil, "secret")
 	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","idempotency_key":"k1"}`
 	requests := []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/internal/psp/status?organizer_id=00000000-0000-0000-0000-000000000001&idempotency_key=k1", nil),

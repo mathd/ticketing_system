@@ -23,6 +23,7 @@ import (
 	"ticketing/services/inventory/internal/api"
 	"ticketing/services/inventory/internal/consumer"
 	"ticketing/services/inventory/internal/store"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
@@ -34,21 +35,16 @@ const serviceName = "inventory"
 const staffWriteTokenEnv = "INVENTORY_STAFF_WRITE_TOKEN"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
-	}
-	if len(os.Args) > 1 {
-		if sub, ok := subcommands()[os.Args[1]]; ok {
-			if err := sub(os.Args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-				os.Exit(1)
-			}
-			return
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		if result.Name == "" {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, result.Name, result.Err)
 		}
 	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
 }
 
@@ -56,11 +52,29 @@ func main() {
 // out-of-band migration job (ADR-022); reprocess-quarantine republishes future-schema events a
 // newer binary now understands (TKT-68) — deploy that binary first, run this, then restart;
 // reconcile-pins reclaims catalog seat pins left behind by expired holds (TKT-112).
-func subcommands() map[string]func([]string) error {
-	return map[string]func([]string) error{
-		"migrate":              func([]string) error { return migrate() },
-		"reprocess-quarantine": reprocessQuarantine,
-		"reconcile-pins":       reconcilePins,
+type commandCallbacks struct {
+	migrate                            func() error
+	healthcheck                        func() int
+	reprocessQuarantine, reconcilePins func([]string) error
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		migrate: migrate, healthcheck: healthcheck,
+		reprocessQuarantine: reprocessQuarantine, reconcilePins: reconcilePins,
+	}
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"migrate":              cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":          cmdline.ExitStatus(callbacks.healthcheck),
+		"reprocess-quarantine": cmdline.WithArgs(callbacks.reprocessQuarantine),
+		"reconcile-pins":       cmdline.WithArgs(callbacks.reconcilePins),
 	}
 }
 

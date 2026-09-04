@@ -61,7 +61,7 @@ func (s *Server) ListPublicEvents(w http.ResponseWriter, r *http.Request, params
 // predicate (ADR-002). The response is the full Venue payload so the contract
 // (ADR-028) is satisfied without hand-shaping.
 func (s *Server) ListPublicVenues(w http.ResponseWriter, r *http.Request, params ListPublicVenuesParams) {
-	venues, err := s.store.ListVenues(r.Context(), params.OrganizerId)
+	venues, err := s.venues.ListVenues(r.Context(), params.OrganizerId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

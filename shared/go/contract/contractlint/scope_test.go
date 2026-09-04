@@ -1,4 +1,4 @@
-package statusaudit
+package contractlint
 
 import (
 	"go/ast"
@@ -39,7 +39,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			reg = fn
 		}
 	}
-	p := &Package{Funcs: map[string]*ast.FuncDecl{}, Register: reg}
+	p := &Package{Funcs: map[string][]*ast.FuncDecl{}, Register: reg}
 	got := map[string][]string{}
 	for _, r := range p.Routes(func(string, string) bool { return true }) {
 		got[r.Path] = r.Handlers
@@ -62,6 +62,11 @@ func (s *Server) registerRoutes(r chi.Router) {
 			}
 		}
 	}
+	for _, route := range p.Routes(func(string, string) bool { return true }) {
+		if !route.TerminalResolved {
+			t.Fatalf("%s terminal handler was not resolved", route.Path)
+		}
+	}
 }
 
 // The ORDERING case, which the fixture above cannot distinguish and no live spec reaches.
@@ -72,7 +77,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 // would attribute `lateMW` to /early, a status that route cannot write, breaking the sound-
 // subset property this audit rests on.
 //
-// NESTED INSIDE AN OUTER GROUP, and that is not cosmetic (ai-review pass 3). On the ROOT
+// NESTED INSIDE AN OUTER GROUP. On the ROOT
 // mux the sequence is impossible: With() calls updateRouteHandler() when the mux is not
 // inline, which sets mx.handler, so the following r.Use panics with "all middlewares must be
 // defined before routes on a mux". A fixture pinning a sequence chi rejects would assert
@@ -111,7 +116,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			reg = fn
 		}
 	}
-	p := &Package{Funcs: map[string]*ast.FuncDecl{}, Register: reg}
+	p := &Package{Funcs: map[string][]*ast.FuncDecl{}, Register: reg}
 	got := map[string][]string{}
 	for _, r := range p.Routes(func(string, string) bool { return true }) {
 		got[r.Path] = r.Handlers

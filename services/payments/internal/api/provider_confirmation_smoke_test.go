@@ -79,7 +79,7 @@ func divergentChargeServer(t *testing.T, p *divergentPSP) http.Handler {
 		t.Fatal(err)
 	}
 	p.PSP = psp.NewFake()
-	return NewWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
+	return newTestServerWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
 }
 
 // assertChargeWroteNothing re-reads the DATABASE rather than trusting the response code.
@@ -236,7 +236,7 @@ func divergentRefundServer(t *testing.T, org uuid.UUID, sourceKey string, captur
 		_, _ = db.Exec(`DELETE FROM payment_operations WHERE organizer_id=$1`, org)
 	})
 	p.PSP = psp.NewFake()
-	return NewWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
+	return newTestServerWithPSP(store.New(db, ring), refundCredential, p).Router(nil, true)
 }
 
 // assertLegStillBound re-reads the LEG. A response-code assertion cannot distinguish a

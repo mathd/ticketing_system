@@ -48,9 +48,8 @@ type Server struct {
 	// money surface was split off it because one value shared by five services
 	// meant a compromise anywhere reached charge, void and refund.
 	//
-	// Empty falls back to `token`, which keeps every existing New caller and every
-	// test construction working unchanged. main.go never leaves it empty — a
-	// deployment that did would simply be back where it started, not broken.
+	// Empty falls back to `token`. main.go always supplies the dedicated value;
+	// tests may omit it when the destination does not matter.
 	paymentsToken string
 	// The HMAC key for customer checkout assertions (TKT-221); see assertion.go.
 	// Commerce-only, and main.go refuses to start when it equals either other
@@ -67,8 +66,7 @@ type Server struct {
 	publicURL string
 	publisher commerceevents.Publisher
 	// refunds is the one unit of work for refunding an order, shared with the
-	// event-cancellation bulk runner (TKT-159). Rebuilt by WithAccess because the access
-	// URL arrives after New.
+	// event-cancellation bulk runner (TKT-159).
 	refunds *refunds.Service
 	// exchanges discharges an exchange's capacity obligation. Shared with the sweep
 	// (internal/exchangesweep) so the callback and the backstop cannot drift (TKT-259).
@@ -86,14 +84,39 @@ type Server struct {
 	limOnce  sync.Once
 }
 
-func New(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
-	var publisher commerceevents.Publisher
-	if len(publishers) > 0 {
-		publisher = publishers[0]
+// ServerConfig contains every dependency and setting fixed for a server's lifetime.
+type ServerConfig struct {
+	DB                   *sql.DB
+	Client               *http.Client
+	CatalogURL           string
+	InventoryURL         string
+	PaymentsURL          string
+	AccessURL            string
+	PublicURL            string
+	InternalToken        string
+	PaymentsToken        string
+	StaffWriteToken      string
+	CustomerAssertionKey string
+	Publisher            commerceevents.Publisher
+}
+
+func New(config ServerConfig) *Server {
+	s := &Server{
+		db:              config.DB,
+		client:          config.Client,
+		catalogURL:      strings.TrimSuffix(config.CatalogURL, "/"),
+		inventoryURL:    strings.TrimSuffix(config.InventoryURL, "/"),
+		paymentsURL:     strings.TrimSuffix(config.PaymentsURL, "/"),
+		accessURL:       strings.TrimSuffix(config.AccessURL, "/"),
+		publicURL:       strings.TrimSuffix(config.PublicURL, "/"),
+		token:           config.InternalToken,
+		paymentsToken:   config.PaymentsToken,
+		staffWriteToken: config.StaffWriteToken,
+		assertionKey:    customerAssertionKey(config.CustomerAssertionKey),
+		publisher:       config.Publisher,
 	}
-	s := &Server{db: db, client: client, catalogURL: strings.TrimSuffix(catalog, "/"), inventoryURL: strings.TrimSuffix(inventory, "/"), paymentsURL: strings.TrimSuffix(payments, "/"), token: token, publisher: publisher}
-	s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
-	s.exchanges = exchanges.New(db, exchanges.Caller(s.call), s.inventoryURL)
+	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
 	return s
 }
@@ -115,14 +138,6 @@ func (s *Server) internalTokenFor(url string) string {
 		return s.paymentsToken
 	}
 	return s.token
-}
-
-// WithPaymentsToken supplies the payments-only credential (ai-review S8). An
-// option rather than a New parameter for the same reason WithStaffWriteCredential
-// is one: New already takes six positional strings.
-func (s *Server) WithPaymentsToken(token string) *Server {
-	s.paymentsToken = token
-	return s
 }
 
 // lim returns the rate limiters, building the real ones on first use if the
@@ -156,17 +171,6 @@ func (s *Server) Refunds() *refunds.Service { return s.refunds }
 // the sweep. The sweep drives only this — it must never be able to move money or mark a
 // switch, and a port with one method is a stronger guarantee of that than a comment.
 func (s *Server) Exchanges() *exchanges.Service { return s.exchanges }
-
-// WithAccess supplies the access base URL for refund ticket voiding. A separate setter
-// rather than a seventh positional argument: every existing New caller keeps compiling,
-// and a server without it degrades to leaving reversals outstanding instead of failing.
-func (s *Server) WithAccess(access string) *Server {
-	s.accessURL = strings.TrimSuffix(access, "/")
-	// Rebuild the refund unit: it captured an empty access URL at New, and a coordinator
-	// that cannot reach access would leave every ticket-voiding obligation outstanding.
-	s.refunds = refunds.New(s.db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
-	return s
-}
 
 // registerRoutes is separate from Router so a test can WALK the real route
 // inventory (TKT-194). The credential enumeration proving that the back
@@ -311,12 +315,9 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	// because the validator runs before any middleware the chi router carries.
 	return withPartnerScopeSlot(validated)
 }
-func write(w http.ResponseWriter, c int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(c)
-	_ = json.NewEncoder(w).Encode(v)
-}
+
+var write = httpx.WriteJSONNoStore
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	if httpx.DecodeJSON(w, r, v, 1<<20) != nil {
 		write(w, 400, map[string]string{"error": "invalid body"})

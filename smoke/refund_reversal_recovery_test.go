@@ -58,6 +58,10 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 	defer cancel()
 
 	container := project + "-access-1"
+	reversalInterval, err := commerceReversalInterval(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	slot, tt := publishedSlot(t, "Reversal Hall", 10)
 	// buyOne waits for issuance before returning, which matters here: access answers 503
 	// ("not yet") while a refund outruns issuance, and a test that refunded earlier would
@@ -124,9 +128,9 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 	// The deadline is derived from the runner's configured interval rather than guessed, so
 	// this does not become a flake the day the default changes. Several intervals plus room
 	// for the pass itself and for access's issuance path to settle.
-	deadline := 8 * reversalInterval()
-	if deadline < 90*time.Second {
-		deadline = 90 * time.Second
+	deadline := 8 * reversalInterval
+	if deadline < 20*time.Second {
+		deadline = 20 * time.Second
 	}
 	// A read error is retried, not fatal: psql can lose a race with a container restart,
 	// and killing the poll on it would report a transport hiccup as "the reconciler never
@@ -195,19 +199,25 @@ func readRefundState(t *testing.T, ctx context.Context, refundID string) refundS
 	return s
 }
 
-// reversalInterval mirrors the runner's default and its env override, so the poll deadline
-// above tracks the configuration instead of a copied constant.
-func reversalInterval() time.Duration {
-	if v := envDuration("REFUND_REVERSAL_INTERVAL"); v > 0 {
-		return v
-	}
-	return time.Minute
-}
-
-func envDuration(name string) time.Duration {
-	d, err := time.ParseDuration(env(name, ""))
+func commerceReversalInterval(ctx context.Context) (time.Duration, error) {
+	container := project + "-commerce-1"
+	out, err := dockerRun(ctx, "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", container)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("inspect %s environment: %w: %s", container, err, out)
 	}
-	return d
+	for _, line := range strings.Split(out, "\n") {
+		value, found := strings.CutPrefix(line, "REFUND_REVERSAL_INTERVAL=")
+		if !found {
+			continue
+		}
+		interval, parseErr := time.ParseDuration(value)
+		if parseErr != nil || interval <= 0 {
+			return 0, fmt.Errorf("%s has invalid REFUND_REVERSAL_INTERVAL %q", container, value)
+		}
+		if interval > 5*time.Second {
+			return 0, fmt.Errorf("%s REFUND_REVERSAL_INTERVAL=%s is not a short smoke cadence", container, interval)
+		}
+		return interval, nil
+	}
+	return 0, fmt.Errorf("%s has no REFUND_REVERSAL_INTERVAL", container)
 }

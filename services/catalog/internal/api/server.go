@@ -128,11 +128,18 @@ func cacheControlForSeatMapList(maps ...store.SeatMap) string {
 }
 
 type Server struct {
-	store store.Store
+	authoring   authoringStore
+	seatMaps    seatMapStore
+	lifecycle   lifecycleStore
+	channels    channelStore
+	inventory   inventoryStore
+	pricing     pricingStore
+	staff       staffStore
+	displayName displayNameStore
+	venues      venueReadStore
 	// public serves the four minute-tier public reads from memory (TKT-206).
-	// Deliberately separate from `store`: every write and the seat-map reads keep
-	// using `store` directly, so nothing but those four handlers can reach a
-	// cached value. Asserted structurally, not by convention.
+	// Every write and seat-map read uses a separate dependency, so only those
+	// four handlers can reach cached data. A structural test pins the split.
 	public publicReader
 	pub    events.Publisher
 	log    *slog.Logger
@@ -166,19 +173,34 @@ const (
 	staffWriteHeader         = "X-Catalog-Staff-Write-Token"
 )
 
-func NewServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string) *Server {
-	return newServer(st, pub, log, internalCredential, staffWriteCredential, newPublicReadCache(st))
+func NewServer(st catalogStore, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string) *Server {
+	return newServer(st, pub, log, internalCredential, staffWriteCredential,
+		newPublicReadCache(st, defaultPublicReadCacheConfig()))
 }
 
 // newServerWithPublicReader injects the display-read collaborator. Tests use it
 // to count store loads and to prove no other handler can reach it.
-func newServerWithPublicReader(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
+func newServerWithPublicReader(st handlerStore, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
 	return newServer(st, pub, log, internalCredential, staffWriteCredential, pr)
 }
 
-func newServer(st store.Store, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
-	return &Server{store: st, pub: pub, log: log, public: pr,
-		internalCredential: internalCredential, staffWriteCredential: staffWriteCredential}
+func newServer(st handlerStore, pub events.Publisher, log *slog.Logger, internalCredential, staffWriteCredential string, pr publicReader) *Server {
+	return &Server{
+		authoring:            st,
+		seatMaps:             st,
+		lifecycle:            st,
+		channels:             st,
+		inventory:            st,
+		pricing:              st,
+		staff:                st,
+		displayName:          st,
+		venues:               st,
+		pub:                  pub,
+		log:                  log,
+		public:               pr,
+		internalCredential:   internalCredential,
+		staffWriteCredential: staffWriteCredential,
+	}
 }
 
 // WithOrganizerAssertionKey supplies the signing key (TKT-245). A setter rather
@@ -430,7 +452,7 @@ func (s *Server) getTicketType(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid ticket type id"})
 		return
 	}
-	tt, err := s.store.GetTicketType(r.Context(), id)
+	tt, err := s.inventory.GetTicketType(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -451,7 +473,7 @@ func (s *Server) getPublishedPerformance(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid performance id"})
 		return
 	}
-	perf, err := s.store.GetPublishedPerformance(r.Context(), id)
+	perf, err := s.inventory.GetPublishedPerformance(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -478,7 +500,7 @@ func (s *Server) getPoolOfferState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pool id"})
 		return
 	}
-	state, err := s.store.GetPoolOfferState(r.Context(), id)
+	state, err := s.inventory.GetPoolOfferState(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -525,7 +547,7 @@ func (s *Server) listSeatMapPins(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	pins, err := s.store.ListSeatMapPins(r.Context(), after, limit)
+	pins, err := s.inventory.ListSeatMapPins(r.Context(), after, limit)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -571,7 +593,7 @@ func (s *Server) pinSeats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.PinSeats(r.Context(), in); err != nil {
+	if err := s.inventory.PinSeats(r.Context(), in); err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
@@ -593,7 +615,7 @@ func (s *Server) unpinSeats(w http.ResponseWriter, r *http.Request) {
 	// naming a map that does not exist, or one belonging to another organizer — is a
 	// caller bug that currently has no other symptom until TKT-112's sweep finds
 	// orphaned pins.
-	if err := s.store.UnpinSeats(r.Context(), in); err != nil && !errors.Is(err, store.ErrSeatMapFamilyNotFound) {
+	if err := s.inventory.UnpinSeats(r.Context(), in); err != nil && !errors.Is(err, store.ErrSeatMapFamilyNotFound) {
 		s.writeStoreError(w, r, err)
 		return
 	} else if err != nil {
@@ -603,14 +625,7 @@ func (s *Server) unpinSeats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unpinned"})
 }
 
-func writeJSON(w http.ResponseWriter, code int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	if w.Header().Get("Cache-Control") == "" {
-		w.Header().Set("Cache-Control", "no-store")
-	}
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
-}
+var writeJSON = httpx.WriteJSONDefaultNoStore
 
 func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
@@ -645,6 +660,8 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		// edit that submits a duplicate seat identity (TKT-105) — one sentinel, so
 		// the message names both causes rather than misdescribing an edit conflict.
 		writeJSON(w, http.StatusConflict, Error{Error: "duplicate seat identity, or duplicate name or position within the seat map"})
+	case errors.Is(err, store.ErrSeatIdentityTooLong):
+		writeJSON(w, http.StatusBadRequest, Error{Error: "seat identity must be at most 200 characters"})
 	case errors.Is(err, store.ErrSeatMapNotPublished):
 		writeJSON(w, http.StatusConflict, Error{Error: "seat map must be published before a slot can be seated against it"})
 	case errors.Is(err, store.ErrSeatMapEditOrphansPinned):

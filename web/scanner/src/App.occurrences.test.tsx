@@ -11,11 +11,13 @@ import App from './App'
 // of them would be re-asserting the pairing screen and its own subject not at
 // all. The pairing screen has its own tests, in App.test.tsx.
 beforeEach(() => {
+  sessionStorage.clear()
   localStorage.setItem('scanner.device-token', 'paired-device-token')
 })
 
 afterEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()

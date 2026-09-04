@@ -41,15 +41,6 @@ import (
 // re-emit ticket capabilities. That is ADR-057's premise, and it transfers exactly.
 const staffWriteHeader = "X-Access-Staff-Write-Token"
 
-// WithStaffWriteCredential supplies the back office's credential. An option rather
-// than a New parameter, for the reason inventory records: another positional string
-// beside the internal token is one more thing a call site can pass in the wrong
-// order — with a credential, silently.
-func (s *Server) WithStaffWriteCredential(token string) *Server {
-	s.staffWriteToken = token
-	return s
-}
-
 // staffWriteOperations is the allowlist ADR-068 grants the back office's credential,
 // keyed by chi's route pattern. One entry.
 //

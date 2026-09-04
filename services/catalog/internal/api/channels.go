@@ -65,7 +65,7 @@ func (s *Server) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	c, err := s.store.CreateChannel(r.Context(), store.ChannelInput{
+	c, err := s.channels.CreateChannel(r.Context(), store.ChannelInput{
 		OrganizerID: organizerID,
 		Code:        in.Code,
 		DisplayName: in.DisplayName,
@@ -140,7 +140,7 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	organizerID := scope.OrganizerID
-	channels, err := s.store.ListChannels(r.Context(), organizerID)
+	channels, err := s.channels.ListChannels(r.Context(), organizerID)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -163,7 +163,7 @@ func (s *Server) getChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid channel id"})
 		return
 	}
-	c, err := s.store.GetChannel(r.Context(), id)
+	c, err := s.channels.GetChannel(r.Context(), id)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -186,7 +186,7 @@ func (s *Server) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId
 	if !ok {
 		return
 	}
-	c, err := s.store.UpdateChannel(r.Context(), organizerID, channelId, store.ChannelUpdate{
+	c, err := s.channels.UpdateChannel(r.Context(), organizerID, channelId, store.ChannelUpdate{
 		Code:        in.Code,
 		DisplayName: in.DisplayName,
 		Kind:        store.ChannelKind(in.Kind),
@@ -216,7 +216,7 @@ func (s *Server) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId
 // nothing here ages in memory, and Age is required only on responses that can
 // come back already stale (see the PublicReadAge header's own rationale).
 func (s *Server) ListPublicChannels(w http.ResponseWriter, r *http.Request, params ListPublicChannelsParams) {
-	channels, err := s.store.ListEnabledChannels(r.Context(), params.OrganizerId)
+	channels, err := s.channels.ListEnabledChannels(r.Context(), params.OrganizerId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

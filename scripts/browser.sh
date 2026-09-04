@@ -38,8 +38,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # TKT-227 did not reproduce on this platform, and `make up` builds the scanner
 # image and comes up healthy. The detour is a speed choice — keep it, but do not
 # re-inherit it as a workaround for a defect that does not exist.
-# compose.direct-ports.yaml: see the note in scripts/smoke.sh (ai-review S11).
-COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke.yaml")
+# compose.direct-ports.yaml: see the note in scripts/smoke.sh.
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke-cadence.yaml" -f "$ROOT/compose.smoke.yaml")
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
 require_artifacts() {
@@ -77,6 +77,12 @@ require_artifacts() {
     echo "browser: real Google Chrome not found (looked for /opt/google/chrome/chrome, the macOS app bundle, and google-chrome on PATH)." >&2
     echo "  The specs drive the HOST's Chrome on purpose (AGENTS.md); Playwright's bundled Chromium is not a substitute." >&2
     echo "  Install it with 'npx playwright install chrome' (needs sudo), your distro's google-chrome-stable package, or the macOS download." >&2
+    exit 1
+  }
+  command -v zbarimg >/dev/null 2>&1 || {
+    echo "browser: zbarimg not found on PATH." >&2
+    echo "  The checkout spec decodes the PNG loaded by the ticket page, then submits that exact credential to the scanner." >&2
+    echo "  Install the ZBar command-line tools (for example, package 'zbar-tools' on Debian or Ubuntu) and rerun make browser." >&2
     exit 1
   }
 }
@@ -120,10 +126,14 @@ run_specs() {
   catalog="$(compose ps -q catalog)"
   [ -n "$catalog" ] || { echo "browser: catalog container not found" >&2; exit 1; }
 
+  local access
+  access="$(compose ps -q access)"
+  [ -n "$access" ] || { echo "browser: access container not found" >&2; exit 1; }
+
   local failed=0
   for spec in "${specs[@]}"; do
     echo "=== $(basename "$spec")"
-    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" \
+    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" ACCESS_CONTAINER="$access" \
       node "$spec" || failed=1
   done
   return $failed
@@ -133,7 +143,9 @@ case "${1:-all}" in
 all)
   # Trap BEFORE `up`, as smoke.sh does: a stack that half-starts must not be left
   # behind for the next run's pre-clean to find.
-  trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT INT TERM
+  trap 'compose down -v --remove-orphans >/dev/null 2>&1 || true' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   up
   run_specs
   ;;

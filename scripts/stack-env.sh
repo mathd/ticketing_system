@@ -5,17 +5,16 @@
 #   ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 #   . "$ROOT/scripts/stack-env.sh" <stack-name>
 #
-# Sets PROJECT, every *_PORT, and the four service credentials. This lives in one
+# Sets PROJECT, every *_PORT, and the runtime credentials. This lives in one
 # file because the two stacks must agree: browser.sh started life as a per-ticket
 # copy of these lines with the ports hardcoded, and 18099 — the gateway port that
 # copy picked — is smoke's own gateway port at slot 19. Two tickets' worth of
 # copies is what promoted this into a shared file (TKT-228).
 
-STACK="${1:?stack-env.sh needs a stack name}"
-: "${ROOT:?stack-env.sh needs ROOT}"
-
-# Isolate the stack per checkout AND per stack kind — project name AND ports,
-# derived from the checkout path plus the stack name.
+# Isolate the stack per checkout and per stack kind. Ports use a small stable
+# slot so they stay recognizable. The Compose project uses a separate digest of
+# the full identity, so two checkouts that share a port slot cannot tear down
+# each other's containers and volumes.
 #
 # This repo is routinely worked on in sibling worktrees, and both halves of the isolation are
 # load-bearing. A shared project name is worse than a port clash: smoke.sh's `cleanup` runs
@@ -28,10 +27,29 @@ STACK="${1:?stack-env.sh needs a stack name}"
 # The slot is a stable hash of the checkout path and the stack name: same worktree and stack →
 # same ports every run (greppable, debuggable); different worktrees, or the browser stack
 # alongside the smoke stack in one worktree, → different ports. Distinct hosts/ranges keep the
-# six services from colliding with each other. A hash collision just fails loudly on "port
-# already allocated" — the honest failure this replaces the silent one with.
-SLOT=$(( $(printf '%s/%s' "$ROOT" "$STACK" | cksum | cut -d' ' -f1) % 40 ))
-PROJECT="${SMOKE_COMPOSE_PROJECT:-ticketing-${STACK}-${SLOT}}"
+# six services from colliding with each other. A slot collision now fails loudly on "port
+# already allocated" without giving either stack authority over the other's resources.
+stack_identity() {
+  local root=$1 stack=$2 override=${3:-} slot_hash project_hash
+  slot_hash=$(printf '%s/%s' "$root" "$stack" | cksum | cut -d' ' -f1)
+  project_hash=$(printf '%s/%s' "$root" "$stack" | shasum -a 256 | cut -c1-16)
+  SLOT=$((slot_hash % 40))
+  PROJECT="${override:-ticketing-${stack}-${project_hash}}"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  if [ "$#" -ne 3 ] || [ "$1" != "--identity" ]; then
+    echo "usage: stack-env.sh --identity <checkout-root> <stack-name>" >&2
+    exit 2
+  fi
+  stack_identity "$2" "$3"
+  printf '%s %s\n' "$SLOT" "$PROJECT"
+  exit 0
+fi
+
+STACK="${1:?stack-env.sh needs a stack name}"
+: "${ROOT:?stack-env.sh needs ROOT}"
+stack_identity "$ROOT" "$STACK" "${SMOKE_COMPOSE_PROJECT:-}"
 export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=$((14222 + SLOT)) \
        GRAFANA_PORT=$((13000 + SLOT)) PROM_PORT=$((19090 + SLOT)) OTLP_PORT=$((14318 + SLOT)) \
        CATALOG_PORT=$((15080 + SLOT)) INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \

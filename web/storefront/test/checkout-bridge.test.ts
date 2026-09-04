@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { POST } from '../src/pages/checkout';
-import { SESSION_COOKIE, createSession, destroySession, resetSessionsForTest } from '../src/lib/session';
+let POST: (typeof import('../src/pages/checkout'))['POST'];
+let SESSION_COOKIE: string;
+let sessionStore: (typeof import('../src/lib/session'))['sessionStore'];
 
 // The checkout bridge (TKT-221). What it must do is narrow and what it must NOT do
 // is the interesting half: it adds one header and changes nothing else, because
@@ -27,8 +28,13 @@ interface Captured {
 let captured: Captured | undefined;
 let upstream: Response;
 
-beforeEach(() => {
-  resetSessionsForTest();
+beforeEach(async () => {
+  vi.resetModules();
+  const sessionModule = await import('../src/lib/session');
+  SESSION_COOKIE = sessionModule.SESSION_COOKIE;
+  sessionStore = sessionModule.sessionStore;
+  ({ POST } = await import('../src/pages/checkout'));
+
   captured = undefined;
   upstream = new Response('{"order_id":"o-1","guest_order_ref":"g-1","status":"completed"}', {
     status: 200,
@@ -79,7 +85,7 @@ describe('the checkout bridge', () => {
   });
 
   it('attaches the assertion for a live session, and never the cookie', async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
     await post(token);
 
@@ -113,7 +119,7 @@ describe('the checkout bridge', () => {
   });
 
   it("ignores a caller-supplied assertion and sends the SESSION's", async () => {
-    const token = createSession(alice);
+    const token = sessionStore.create(alice);
 
     await post(token, 'v1.victim.99999999999.forged');
 
@@ -123,8 +129,8 @@ describe('the checkout bridge', () => {
   // A genuinely dead session, not merely an unknown token: the session was issued
   // by this process and then destroyed, which is what sign-out and eviction do.
   it('falls back to guest for a session that existed and is now gone', async () => {
-    const token = createSession(alice);
-    destroySession(token);
+    const token = sessionStore.create(alice);
+    sessionStore.destroy(token);
 
     const response = await post(token);
 

@@ -33,7 +33,7 @@ func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapI
 	if !ok {
 		return
 	}
-	m, needsEmit, err := s.store.PublishSeatMap(r.Context(), organizerID, seatMapId)
+	m, needsEmit, err := s.seatMaps.PublishSeatMap(r.Context(), organizerID, seatMapId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -46,7 +46,7 @@ func (s *Server) PublishSeatMap(w http.ResponseWriter, r *http.Request, seatMapI
 				Error{Error: "seat map is published but the domain event was not emitted; retry publish"})
 			return
 		}
-		if err := s.store.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
+		if err := s.seatMaps.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
 			// Ack'd but unmarked: a publish retry may re-emit — the at-least-once
 			// contract, consumers de-duplicate on the deterministic id.
 			s.log.ErrorContext(r.Context(), "seat-map event emitted but not marked", "seat_map_id", m.ID, "err", err)
@@ -80,7 +80,7 @@ func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId S
 	if !ok {
 		return
 	}
-	m, needsEmit, err := s.store.EditSeatMap(r.Context(), editInput(organizerID, seatMapId, in))
+	m, needsEmit, err := s.seatMaps.EditSeatMap(r.Context(), editInput(organizerID, seatMapId, in))
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -93,7 +93,7 @@ func (s *Server) EditSeatMap(w http.ResponseWriter, r *http.Request, seatMapId S
 				Error{Error: "the new version is published but its domain event was not emitted; retry by publishing the new version"})
 			return
 		}
-		if err := s.store.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
+		if err := s.seatMaps.MarkSeatMapEventEmitted(r.Context(), m.ID); err != nil {
 			s.log.ErrorContext(r.Context(), "edited seat-map event emitted but not marked", "seat_map_id", m.ID, "err", err)
 		}
 	}
@@ -135,7 +135,7 @@ func editInput(organizerID uuid.UUID, seatMapID SeatMapId, in SeatMapEdit) store
 // tier (cacheControlForSeatMapList: minutes when all-published, TKT-107 +
 // TKT-141), catalog-owned.
 func (s *Server) ListSeatMapVersions(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
-	versions, err := s.store.ListSeatMapVersions(r.Context(), seatMapId)
+	versions, err := s.seatMaps.ListSeatMapVersions(r.Context(), seatMapId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -165,7 +165,7 @@ func (s *Server) UpdateVenueGaCapacity(w http.ResponseWriter, r *http.Request, v
 	if !ok {
 		return
 	}
-	v, err := s.store.UpdateVenueGACapacity(r.Context(), store.VenueGACapacityInput{
+	v, err := s.seatMaps.UpdateVenueGACapacity(r.Context(), store.VenueGACapacityInput{
 		OrganizerID: organizerID, VenueID: venueId, GACapacity: in.GaCapacity,
 	})
 	if err != nil {
@@ -188,7 +188,7 @@ func (s *Server) CreateSeatMap(w http.ResponseWriter, r *http.Request, venueId V
 	if !ok {
 		return
 	}
-	m, err := s.store.CreateSeatMap(r.Context(), store.SeatMapInput{
+	m, err := s.seatMaps.CreateSeatMap(r.Context(), store.SeatMapInput{
 		OrganizerID: organizerID, VenueID: venueId, Name: in.Name,
 		// Absent means false: a caller that has never heard of the rule creates
 		// exactly the map it created before (ADR-041).
@@ -211,7 +211,7 @@ func (s *Server) AddSeatMapSection(w http.ResponseWriter, r *http.Request, seatM
 	if !ok {
 		return
 	}
-	sec, err := s.store.AddSeatMapSection(r.Context(), store.SeatMapSectionInput{
+	sec, err := s.seatMaps.AddSeatMapSection(r.Context(), store.SeatMapSectionInput{
 		OrganizerID: organizerID, SeatMapID: seatMapId, Name: in.Name, Position: in.Position,
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func (s *Server) AddSeatMapRow(w http.ResponseWriter, r *http.Request, seatMapId
 	if !ok {
 		return
 	}
-	row, err := s.store.AddSeatMapRow(r.Context(), store.SeatMapRowInput{
+	row, err := s.seatMaps.AddSeatMapRow(r.Context(), store.SeatMapRowInput{
 		OrganizerID: organizerID, SeatMapID: seatMapId, SectionID: in.SectionId,
 		Label: in.Label, Position: in.Position,
 	})
@@ -252,7 +252,7 @@ func (s *Server) AddSeatMapSeat(w http.ResponseWriter, r *http.Request, seatMapI
 	if !ok {
 		return
 	}
-	seat, err := s.store.AddSeatMapSeat(r.Context(), store.SeatMapSeatInput{
+	seat, err := s.seatMaps.AddSeatMapSeat(r.Context(), store.SeatMapSeatInput{
 		OrganizerID: organizerID, SeatMapID: seatMapId, RowID: in.RowId,
 		Label: in.Label, Position: in.Position,
 	})
@@ -266,7 +266,7 @@ func (s *Server) AddSeatMapSeat(w http.ResponseWriter, r *http.Request, seatMapI
 }
 
 func (s *Server) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request, seatMapId SeatMapId) {
-	g, err := s.store.GetSeatMapGeometry(r.Context(), seatMapId)
+	g, err := s.seatMaps.GetSeatMapGeometry(r.Context(), seatMapId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
@@ -293,7 +293,7 @@ func (s *Server) GetPublicSeatMapGeometry(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) ListVenueSeatMaps(w http.ResponseWriter, r *http.Request, venueId VenueId) {
-	maps, err := s.store.ListVenueSeatMaps(r.Context(), venueId)
+	maps, err := s.seatMaps.ListVenueSeatMaps(r.Context(), venueId)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

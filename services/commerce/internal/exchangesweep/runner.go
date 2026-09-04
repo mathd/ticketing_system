@@ -40,6 +40,7 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/commerce/internal/store"
+	"ticketing/services/commerce/internal/worklease"
 )
 
 // Store is the durable state the runner decides against. A port rather than a *sql.DB so
@@ -77,28 +78,15 @@ type Discharger interface {
 // reason this constant exists rather than being borrowed.
 const MaxCallsPerExchange = 1
 
-// LeaseFor sizes the batch lease from the I/O budget of the client that will actually make
-// the calls. A batch is driven sequentially and each exchange can make MaxCallsPerExchange
-// calls, each bounded only by that client's timeout, so the pass's worst case is
-// batch × calls × timeout.
-//
-// **Pass the timeout of the transport DriveExchange really uses**, which is `obs.Client()`'s
-// (`shared/go/obs`) — the API server builds its `call` on it and the discharge unit borrows
-// that method unchanged. The refund side shipped this wrong first: it borrowed a 10s
-// recovery constant while the work ran on a 30s client, giving a lease shorter than the work
-// it protected (ADR-062 ai-review F1). A lease shorter than its work is worse than no lease:
-// a second replica reclaims rows the first is still driving, and the claim token fences only
-// the final database write — never the inventory call already in flight.
-// `LeaseIsNotShorterThanItsBatch` pins the relationship so the two cannot drift apart.
-func LeaseFor(batch int, callTimeout time.Duration) time.Duration {
+// LeaseFor sizes a sequential batch from the exchange service client's timeout.
+func LeaseFor(batch int, callTimeout time.Duration) (time.Duration, error) {
 	if batch <= 0 {
 		batch = 1
 	}
 	if callTimeout <= 0 {
 		callTimeout = 30 * time.Second
 	}
-	// Plus a margin for database work and scheduling between calls.
-	return time.Duration(batch)*MaxCallsPerExchange*callTimeout + 60*time.Second
+	return worklease.ForBatch(batch, MaxCallsPerExchange, callTimeout, 60*time.Second)
 }
 
 // Runner reconciles outstanding exchange obligations.

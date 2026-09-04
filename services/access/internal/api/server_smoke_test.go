@@ -78,7 +78,7 @@ func newSmokeServer(t *testing.T, ctx context.Context) (*Server, *store.Postgres
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(st, verifier), st, qrSigner
+	return newTestServer(st, verifier), st, qrSigner
 }
 
 // issueSmokeTicket issues one ticket and returns its credential AND the

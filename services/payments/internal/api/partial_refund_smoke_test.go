@@ -118,7 +118,7 @@ func refundServer(t *testing.T, org uuid.UUID, sourceKey string, captured int64)
 		_, _ = db.Exec(`DELETE FROM payment_operations WHERE organizer_id=$1`, org)
 	})
 	provider := &countingPSP{PSP: psp.NewFake()}
-	return NewWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true), provider
+	return newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true), provider
 }
 
 func postRefundLeg(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {

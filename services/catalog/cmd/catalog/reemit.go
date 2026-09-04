@@ -23,8 +23,12 @@ const reemitBatchSize = 100
 // deterministic id (events.PerformancePublishedBackfill), so access re-projects
 // the current re_entry policy for slots published before the field existed.
 type policyReemitter struct {
-	list    func(ctx context.Context, after *uuid.UUID, limit int) ([]store.Performance, error)
-	publish func(ctx context.Context, p store.Performance) error
+	list      func(ctx context.Context, after *uuid.UUID, limit int) ([]store.Performance, error)
+	publisher policyBackfillPublisher
+}
+
+type policyBackfillPublisher interface {
+	PerformancePublishedBackfill(context.Context, store.Performance) error
 }
 
 // run drains the published ungrouped slots oldest-id first and re-emits each. Any
@@ -47,7 +51,7 @@ func (r policyReemitter) run(ctx context.Context) (reemitted int, err error) {
 		}
 		for i := range batch {
 			perf := batch[i]
-			if err := r.publish(ctx, perf); err != nil {
+			if err := r.publisher.PerformancePublishedBackfill(ctx, perf); err != nil {
 				return reemitted, fmt.Errorf("re-emit %s: %w", perf.ID, err)
 			}
 			reemitted++
@@ -86,8 +90,8 @@ func reemitPolicies(args []string) error {
 
 	st := store.NewPostgres(db)
 	r := policyReemitter{
-		list:    st.ListPublishedUngroupedPerformances,
-		publish: pub.PerformancePublishedBackfill,
+		list:      st.ListPublishedUngroupedPerformances,
+		publisher: pub,
 	}
 	reemitted, err := r.run(ctx)
 	fmt.Printf("%s reemit-policies: reemitted=%d\n", serviceName, reemitted)

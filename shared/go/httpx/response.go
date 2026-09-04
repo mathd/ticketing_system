@@ -1,29 +1,20 @@
 package httpx
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 )
 
 // ErrResponseTooLarge reports that an upstream response exceeded the caller's
-// ceiling and was NOT read. Callers that have to classify a side effect check
-// for it with errors.Is: a body we refused to read is a body we could not
-// classify, which is ambiguous, never terminal.
+// ceiling and was not read. A body that cannot be classified is ambiguous,
+// never terminal.
 var ErrResponseTooLarge = errors.New("upstream response body too large")
 
-// ReadResponseBody reads an upstream response body with a byte ceiling.
-//
-// A client timeout bounds how LONG a response may take, not how MANY bytes it
-// may be. A malformed or hostile upstream can stream indefinitely inside its
-// deadline, and io.ReadAll grows a buffer for all of it — on a checkout or
-// recovery path, on a server holding other requests' claims.
-//
-// The limit is applied as maxBytes+1 so that a body of exactly maxBytes is
-// accepted and the first byte past it is detected rather than silently
-// truncated. Truncation is the failure mode to avoid above all others here: a
-// clipped JSON body does not decode, but a clipped body that DOES decode would
-// be classified on partial evidence.
+// ReadResponseBody reads an upstream response body with a byte ceiling. The
+// extra byte distinguishes an exact-boundary body from a truncated one.
 func ReadResponseBody(body io.Reader, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("response body limit must be positive")
@@ -36,4 +27,24 @@ func ReadResponseBody(body io.Reader, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, maxBytes)
 	}
 	return raw, nil
+}
+
+// WriteJSONNoStore writes a JSON response that must not be cached, replacing
+// any cache policy already present on the response.
+func WriteJSONNoStore(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// WriteJSONDefaultNoStore preserves an explicit cache policy and otherwise
+// defaults the response to no-store.
+func WriteJSONDefaultNoStore(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }

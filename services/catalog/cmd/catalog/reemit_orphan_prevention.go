@@ -20,8 +20,12 @@ import (
 // policyReemitter (TKT-96) on purpose — a second wave should not invent a second
 // pattern.
 type orphanCorrector struct {
-	list    func(ctx context.Context, after *uuid.UUID, limit int) ([]store.Performance, error)
-	publish func(ctx context.Context, p store.Performance) error
+	list      func(ctx context.Context, after *uuid.UUID, limit int) ([]store.Performance, error)
+	publisher orphanCorrectionPublisher
+}
+
+type orphanCorrectionPublisher interface {
+	PerformancePublishedOrphanCorrection(context.Context, store.Performance) error
 }
 
 // run re-emits every published slot bound to a rule-enabled seat-map version under the
@@ -51,7 +55,7 @@ func (c orphanCorrector) run(ctx context.Context) (corrected int, err error) {
 		}
 		for i := range batch {
 			perf := batch[i]
-			if err := c.publish(ctx, perf); err != nil {
+			if err := c.publisher.PerformancePublishedOrphanCorrection(ctx, perf); err != nil {
 				return corrected, fmt.Errorf("correct %s: %w", perf.ID, err)
 			}
 			corrected++
@@ -93,8 +97,8 @@ func reemitOrphanPrevention(args []string) error {
 
 	st := store.NewPostgres(db)
 	c := orphanCorrector{
-		list:    st.ListOrphanPreventionCandidates,
-		publish: pub.PerformancePublishedOrphanCorrection,
+		list:      st.ListOrphanPreventionCandidates,
+		publisher: pub,
 	}
 	corrected, err := c.run(ctx)
 	fmt.Printf("%s reemit-orphan-prevention: corrected=%d\n", serviceName, corrected)

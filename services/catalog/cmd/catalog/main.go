@@ -23,6 +23,7 @@ import (
 	"ticketing/services/catalog/internal/api"
 	"ticketing/services/catalog/internal/events"
 	"ticketing/services/catalog/internal/store"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
@@ -31,18 +32,16 @@ import (
 const serviceName = "catalog"
 
 func main() {
-	if len(os.Args) > 1 {
-		if sub, ok := subcommands()[os.Args[1]]; ok {
-			if err := sub(os.Args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, os.Args[1], err)
-				os.Exit(1)
-			}
-			return
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		if result.Name == "" {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", serviceName, result.Name, result.Err)
 		}
 	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
 }
 
@@ -51,14 +50,33 @@ func main() {
 // reemit-policies re-emits published slots' re_entry policy so access re-projects
 // slots published before the field existed (TKT-96) — a one-shot data repair,
 // idempotent and safe to re-run.
-func subcommands() map[string]func([]string) error {
-	return map[string]func([]string) error{
-		"migrate":                  func([]string) error { return migrate() },
-		"healthcheck":              func([]string) error { os.Exit(healthcheck()); return nil },
-		"reemit-policies":          reemitPolicies,
-		"reemit-orphan-prevention": reemitOrphanPrevention,
-		"provision-staff":          provisionStaffCommand,
-		"validate-rules":           validateRulesCommand,
+type commandCallbacks struct {
+	migrate                                func() error
+	healthcheck                            func() int
+	reemitPolicies, reemitOrphanPrevention func([]string) error
+	provisionStaff, validateRules          func([]string) error
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		migrate: migrate, healthcheck: healthcheck,
+		reemitPolicies: reemitPolicies, reemitOrphanPrevention: reemitOrphanPrevention,
+		provisionStaff: provisionStaffCommand, validateRules: validateRulesCommand,
+	}
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"migrate":                  cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":              cmdline.ExitStatus(callbacks.healthcheck),
+		"reemit-policies":          cmdline.WithArgs(callbacks.reemitPolicies),
+		"reemit-orphan-prevention": cmdline.WithArgs(callbacks.reemitOrphanPrevention),
+		"provision-staff":          cmdline.WithArgs(callbacks.provisionStaff),
+		"validate-rules":           cmdline.WithArgs(callbacks.validateRules),
 	}
 }
 
@@ -132,7 +150,7 @@ func run() error {
 	// Comparing the RAW strings is sound because RequiredCredential has already
 	// refused every value HTTP would NORMALIZE — specifically edge whitespace,
 	// which header parsing strips, so " secret " and "secret" would be one
-	// credential on the wire while differing here (ai-review pass 2). Without
+	// credential on the wire while differing here. Without
 	// that refusal upstream, this comparison would report success while the
 	// boundary it protects was already gone.
 	//
@@ -140,8 +158,7 @@ func run() error {
 	// identical at a server, so `!=` here means "different on the wire". It is
 	// NOT the broader claim that every accepted value is unproblematic — that is
 	// a statement about transmissibility, which is RequiredCredential's job and
-	// is tested there by an actual round-trip. An earlier version of this comment
-	// overstated exactly that (ai-review pass 3).
+	// is tested there by an actual round-trip.
 	if staffWriteToken == internalToken {
 		return fmt.Errorf("%s must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists "+
 			"so the back office cannot reach other services' internal surfaces, and identical values "+

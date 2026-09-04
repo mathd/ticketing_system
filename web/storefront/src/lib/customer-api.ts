@@ -14,10 +14,154 @@
 // contract change that is not regenerated fails the gate.
 import type { components } from './commerce-api-types.gen';
 import { withUpstreamDeadline } from './upstream';
+import { dateTimeField, sameUuid, uuidField } from './wire-primitives';
 
 export type CustomerPrincipalResponse = components['schemas']['CustomerPrincipal'];
+type OrderClaimResponse = components['schemas']['OrderClaimResult'];
+type PasswordResetResponse = components['schemas']['PasswordResetResult'];
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
+
+const CURRENCY = /^[A-Z]{3}$/;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function objectBody(value: unknown, name: string): Record<string, unknown> {
+  if (!isObject(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  return value;
+}
+
+function stringField(value: unknown, name: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`${name} must be a non-empty string`);
+  }
+  return value;
+}
+
+function integerField(value: unknown, name: string, minimum: number, maximum: number): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new TypeError(`${name} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
+}
+
+function nullableString(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string or null`);
+  return value;
+}
+
+function nullableDateTime(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  return dateTimeField(value, name);
+}
+
+function customerAssertion(value: unknown): { token: string; customerId: string } {
+  const token = stringField(value, 'customer_assertion');
+  const parts = token.split('.');
+  if (parts.length !== 4 || parts[0] !== 'v1') {
+    throw new TypeError('customer_assertion has an unsupported structure');
+  }
+  const customerId = uuidField(parts[1], 'customer_assertion customer id');
+  if (!/^\d+$/.test(parts[2] ?? '')) {
+    throw new TypeError('customer_assertion expiry must be integer seconds');
+  }
+  const expiry = Number(parts[2]);
+  if (!Number.isSafeInteger(expiry) || expiry <= 0) {
+    throw new TypeError('customer_assertion expiry must be positive safe integer seconds');
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(parts[3] ?? '')) {
+    throw new TypeError('customer_assertion MAC must be present');
+  }
+  return { token, customerId };
+}
+
+function decodeCustomerPrincipal(value: unknown): CustomerPrincipalResponse {
+  const body = objectBody(value, 'customer principal');
+  const customerId = uuidField(body.customer_id, 'customer_id');
+  const assertion = customerAssertion(body.customer_assertion);
+  if (!sameUuid(customerId, assertion.customerId)) {
+    throw new TypeError('customer_assertion customer id does not match the principal');
+  }
+  return {
+    customer_id: customerId,
+    email: stringField(body.email, 'email'),
+    customer_assertion: assertion.token,
+  };
+}
+
+function decodeCustomerOrderPage(value: unknown): CustomerOrderPage {
+  const body = objectBody(value, 'customer order page');
+  if (!Array.isArray(body.orders)) throw new TypeError('orders must be an array');
+  if (body.next_cursor !== null && typeof body.next_cursor !== 'string') {
+    throw new TypeError('next_cursor must be a string or null');
+  }
+  return {
+    orders: body.orders.map((value, index) => {
+      const order = objectBody(value, `orders[${index}]`);
+      const currency = stringField(order.currency, `orders[${index}].currency`);
+      if (!CURRENCY.test(currency)) throw new TypeError(`orders[${index}].currency must be an ISO code`);
+      return {
+        order_id: uuidField(order.order_id, `orders[${index}].order_id`),
+        guest_order_ref: uuidField(order.guest_order_ref, `orders[${index}].guest_order_ref`),
+        purchased_at: dateTimeField(order.purchased_at, `orders[${index}].purchased_at`),
+        quantity: integerField(order.quantity, `orders[${index}].quantity`, 1, 50),
+        // Commerce totals use the full int64 range after quantity and fee
+        // composition. This number-based wallet has a narrower capability and
+        // fails closed when JSON cannot represent the exact minor-unit value.
+        total_amount: integerField(
+          order.total_amount,
+          `orders[${index}].total_amount`,
+          0,
+          Number.MAX_SAFE_INTEGER,
+        ),
+        currency,
+        event_name: nullableString(order.event_name, `orders[${index}].event_name`),
+        starts_at: nullableDateTime(order.starts_at, `orders[${index}].starts_at`),
+      };
+    }),
+    next_cursor: body.next_cursor,
+  };
+}
+
+function decodeOrderClaim(
+  value: unknown,
+  expectedGuestOrderRef: string,
+  expectedCustomerId: string,
+): OrderClaimResponse {
+  const body = objectBody(value, 'order claim');
+  const result = {
+    order_id: uuidField(body.order_id, 'order_id'),
+    guest_order_ref: uuidField(body.guest_order_ref, 'guest_order_ref'),
+    customer_id: uuidField(body.customer_id, 'customer_id'),
+  };
+  if (
+    !sameUuid(result.guest_order_ref, expectedGuestOrderRef) ||
+    !sameUuid(result.customer_id, expectedCustomerId)
+  ) {
+    throw new TypeError('order claim identity does not match the request');
+  }
+  return result;
+}
+
+function decodePasswordReset(value: unknown): PasswordResetResponse {
+  const body = objectBody(value, 'password reset');
+  return { customer_id: uuidField(body.customer_id, 'customer_id') };
+}
+
+function errorCode(value: unknown): string | undefined {
+  if (!isObject(value)) return undefined;
+  return typeof value.error === 'string' ? value.error : undefined;
+}
 
 /** What the caller needs to know, without leaking commerce's wire shape upward. */
 export type CustomerResult =
@@ -51,7 +195,7 @@ export async function registerCustomer(email: string, password: string): Promise
     return await withUpstreamDeadline(async (signal) => {
       const response = await post('/customers', { email, password }, signal);
       if (response.status === 201) {
-        return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+        return { ok: true, principal: decodeCustomerPrincipal(await response.json()) };
       }
       if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
       if (response.status === 409) return { ok: false, reason: 'taken' };
@@ -73,7 +217,7 @@ export async function authenticateCustomer(
     return await withUpstreamDeadline(async (signal) => {
       const response = await post('/customers/authenticate', { email, password }, signal);
       if (response.status === 200) {
-        return { ok: true, principal: (await response.json()) as CustomerPrincipalResponse };
+        return { ok: true, principal: decodeCustomerPrincipal(await response.json()) };
       }
       // 401 and 400 collapse to one answer on purpose. Commerce does not reveal
       // whether the account or password was wrong, and this layer must not infer it.
@@ -91,7 +235,6 @@ export async function authenticateCustomer(
 // --- the wallet (TKT-222) ---
 
 export type CustomerOrderPage = components['schemas']['CustomerOrderPage'];
-export type CustomerOrderSummary = components['schemas']['CustomerOrderSummary'];
 
 /**
  * One page of the signed-in customer's purchases.
@@ -128,7 +271,7 @@ export async function listCustomerOrders(
         },
       );
       if (response.status !== 200) return undefined;
-      return (await response.json()) as CustomerOrderPage;
+      return decodeCustomerOrderPage(await response.json());
     });
   } catch {
     return undefined;
@@ -153,6 +296,7 @@ export type ClaimResult =
  */
 export async function claimGuestOrder(
   guestOrderRef: string,
+  customerId: string,
   assertion: string,
 ): Promise<ClaimResult> {
   try {
@@ -168,7 +312,7 @@ export async function claimGuestOrder(
         signal,
       });
       if (response.status === 200) {
-        const body = (await response.json()) as { order_id: string };
+        const body = decodeOrderClaim(await response.json(), guestOrderRef, customerId);
         return { ok: true, orderId: body.order_id };
       }
       if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
@@ -231,7 +375,7 @@ export async function completePasswordReset(
     return await withUpstreamDeadline(async (signal) => {
       const response = await post('/customers/password-reset/complete', { token, password }, signal);
       if (response.status === 200) {
-        const body = (await response.json()) as { customer_id: string };
+        const body = decodePasswordReset(await response.json());
         return { ok: true, customerId: body.customer_id };
       }
       if (response.status === THROTTLED) return { ok: false, reason: 'throttled' };
@@ -239,8 +383,8 @@ export async function completePasswordReset(
         // Commerce distinguishes a dead link from a rejected password. A dead
         // link sends the buyer back for another, while a rejected password keeps
         // the still-valid token on this form.
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        return { ok: false, reason: body.error === 'invalid request' ? 'invalid' : 'refused' };
+        const code = errorCode(await response.json().catch(() => undefined));
+        return { ok: false, reason: code === 'invalid request' ? 'invalid' : 'refused' };
       }
       return { ok: false, reason: 'unavailable' };
     });

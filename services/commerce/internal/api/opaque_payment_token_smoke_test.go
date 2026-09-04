@@ -58,7 +58,7 @@ func TestCheckoutTreatsThePaymentTokenAsOpaque(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 
-	srv := New(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
+	srv := newTestServer(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
 	r := chi.NewRouter()
 	r.Post("/reservations/{id}/checkout", srv.checkout)
 
@@ -102,7 +102,7 @@ func TestCheckoutStillRefusesAnEmptyPaymentTokenLocally(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"captured"}`))
 	})
 
-	srv := New(db, http.DefaultClient, "", "", payments.server.URL, "tok")
+	srv := newTestServer(db, http.DefaultClient, "", "", payments.server.URL, "tok")
 	r := chi.NewRouter()
 	r.Post("/reservations/{id}/checkout", srv.checkout)
 
@@ -288,7 +288,7 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 
-	srv := New(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
+	srv := newTestServer(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
 	r := chi.NewRouter()
 	r.Post("/reservations/{id}/checkout", srv.checkout)
 	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Bad Token","email":"bad@example.test","payment_token":"pm_not_a_real_one"}`,

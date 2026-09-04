@@ -27,7 +27,7 @@ const (
 	// notices. The literal is assembled by three pieces of production code and
 	// asserted here verbatim on purpose — it is the whole discriminator (see
 	// TestAccessDurableDeletionTerminatesAndRecovers):
-	//   consumer/run.go       "%s: consume context closed (durable deleted)" via WaitWithCause
+	//   durableconsumer       "%s: consume context closed (durable deleted)" via WaitWithCause
 	//   consumer/policy.go    passes "access-slot-policy" as %s, returns the error unwrapped
 	//   cmd/access/main.go    fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err) then os.Exit(1)
 	// Changing any of the three should break this test loudly rather than
@@ -56,12 +56,12 @@ type accessFailureEvent struct {
 }
 
 // TestAccessDurableDeletionTerminatesAndRecovers is the broker-level half of
-// TKT-97 (TKT-99). TKT-97 unit-tested the *reaction* to ConsumeContext.Closed()
-// firing (consumer.waitConsume) against a hand-closed channel; nothing proved
-// that nats.go actually fires Closed() when the durable is deleted underneath a
-// live consumer. That needs a real JetStream, so it lives here.
+// TKT-97 (TKT-99). Shared unit tests cover the reaction to a closed consume
+// context, and service Run tests cover production wiring. Nothing below that
+// tier proves that nats.go closes the context when a live durable is deleted.
+// That needs a real JetStream, so it lives here.
 //
-// What is asserted, and why not /readyz. waitConsume latches ready false AND
+// What is asserted, and why not /readyz. WaitWithCause latches ready false and
 // returns an error that tears the process down. ADR-017 §236-241 is explicit
 // that Compose does not act on an unhealthy container, so the 503 window lasts
 // only from ready.Store(false) to os.Exit(1) — a few scheduling turns. Polling
@@ -69,16 +69,15 @@ type accessFailureEvent struct {
 // observables are the process exit (a container restart, since every Go service
 // runs restart: unless-stopped) and the exact diagnostic on stderr. Both are
 // required: a restart alone is satisfied by any crash, and only the
-// durable-named message ties the restart to waitConsume.
+// durable-named message ties the restart to WaitWithCause.
 //
-// The half this does NOT cover: removing only ready.Store(false) is invisible
-// from here, because the process exits before any host-side probe could see the
-// 503. TestWaitConsumeAsyncTerminationLatchesUnreadyAndErrors
-// (services/access/internal/consumer/run_test.go) pins that half. Two tests,
-// two halves — neither is sufficient alone.
+// Removing only the readiness latch is invisible here because the process exits
+// before a host-side probe can reliably observe the 503. Shared
+// durableconsumer tests own that state transition; the service Run tests own
+// the call-site wiring; this smoke test owns broker behavior and classification.
 //
 // access-slot-policy rather than access-ticket-issuer, deliberately: identical
-// CreateOrUpdateConsumer → Consume → cc.Closed() → waitConsume path, so nothing
+// CreateOrUpdateConsumer → Consume → cc.Closed() → WaitWithCause path, so nothing
 // about the library mechanism is lost, but the DeliverAll replay on recreation
 // is an idempotent projection upsert (store.UpsertSlotPolicy, keyed by envelope
 // id) instead of re-running signed lifecycle issuance.

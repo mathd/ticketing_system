@@ -26,6 +26,7 @@ import (
 	"ticketing/services/payments/internal/api"
 	"ticketing/services/payments/internal/psp"
 	paymentstore "ticketing/services/payments/internal/store"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
@@ -34,33 +35,44 @@ import (
 const serviceName = "payments"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := migrate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, err)
-			os.Exit(1)
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		switch result.Name {
+		case "":
+			fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
+		case "migrate":
+			fmt.Fprintf(os.Stderr, "%s migrate: %v\n", serviceName, result.Err)
+		default:
+			fmt.Fprintln(os.Stderr, result.Err)
 		}
-		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "verify-concurrent-append" {
-		if err := verifyConcurrentAppend(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
-	if len(os.Args) > 1 && os.Args[1] == "verify-journal" {
-		if err := verifyJournal(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
+}
+
+type commandCallbacks struct {
+	migrate, verifyConcurrentAppend, verifyJournal func() error
+	healthcheck                                    func() int
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		migrate: migrate, verifyConcurrentAppend: verifyConcurrentAppend,
+		verifyJournal: verifyJournal, healthcheck: healthcheck,
 	}
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
-	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"migrate":                  cmdline.WithoutArgs(callbacks.migrate),
+		"verify-concurrent-append": cmdline.WithoutArgs(callbacks.verifyConcurrentAppend),
+		"verify-journal":           cmdline.WithoutArgs(callbacks.verifyJournal),
+		"healthcheck":              cmdline.ExitStatus(callbacks.healthcheck),
 	}
 }
 
@@ -407,7 +419,12 @@ func run() error {
 	)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
-	r.Mount("/", api.NewWithPSPRetention(paymentstore.New(db, keys), internalToken, provider, retention).Router(log, validateResponses))
+	r.Mount("/", api.New(api.ServerConfig{
+		Journal:               paymentstore.New(db, keys),
+		Credential:            internalToken,
+		Provider:              provider,
+		StatusReplayRetention: retention,
+	}).Router(log, validateResponses))
 
 	srv := &http.Server{
 		Addr:    ":" + port(),

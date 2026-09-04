@@ -115,7 +115,7 @@ func reserveThroughCommerceUnvalidated(t *testing.T, channel *string, requestBod
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(requestBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "seam-"+t.Name())
@@ -165,7 +165,7 @@ func reserveThroughCommerce(t *testing.T, channel *string, requestBody string) c
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	req := httptest.NewRequest(http.MethodPost, "/reservations", bytes.NewBufferString(requestBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "seam-"+t.Name())

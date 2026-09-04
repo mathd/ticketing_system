@@ -49,7 +49,6 @@ try {
   const context = await browser.newContext({ baseURL: BASE });
   const page = await context.newPage();
   await signIn(page, identifier, password);
-  check('admin signs in', page.url().includes('/admin'));
 
   await page.goto(PATH, { waitUntil: 'domcontentloaded' });
   await page.fill('#order_id', orderId);

@@ -19,16 +19,6 @@ import (
 // can spend, so each one is argued in its own ticket rather than inherited.
 const staffWriteHeader = "X-Commerce-Staff-Write-Token"
 
-// WithStaffWriteCredential supplies the back office's credential.
-//
-// An option rather than a New parameter: New already takes six positional
-// strings, and a seventh would be one more thing for a call site to pass in the
-// wrong order — with a credential, silently.
-func (s *Server) WithStaffWriteCredential(token string) *Server {
-	s.staffWriteToken = token
-	return s
-}
-
 // staffOrInternal reports whether the caller may drive a staff-reachable
 // internal operation: either the shared internal token, or the back office's
 // commerce credential.
@@ -46,13 +36,6 @@ func (s *Server) WithStaffWriteCredential(token string) *Server {
 // returns early on the first wrong byte answers a different question than the
 // one it was asked.
 func (s *Server) staffOrInternal(r *http.Request) bool {
-	return credentialMatches(r.Header.Get("X-Internal-Token"), s.token) ||
-		credentialMatches(r.Header.Get(staffWriteHeader), s.staffWriteToken)
-}
-
-// The body moved to shared/go/httpx (ai-review S9): five services were comparing
-// this same class of credential with `==`, and the fix was to give them all the
-// one implementation that was already right rather than a sixth copy of it.
-func credentialMatches(presented, configured string) bool {
-	return httpx.CredentialMatches(presented, configured)
+	return httpx.HeaderCredentialMatches(r, httpx.InternalToken, s.token) ||
+		httpx.HeaderCredentialMatches(r, staffWriteHeader, s.staffWriteToken)
 }

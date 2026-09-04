@@ -16,7 +16,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
 
 # `make check` IS the wrapper. It holds .gate.lock so nothing edits the tree
 # mid-run (TKT-240), captures the log, and writes .gate.verdict from the exit
@@ -27,7 +27,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 check:
 	@./scripts/gate.sh
 
-check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint test build smoke
+check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-go-standalone test build smoke
 
 # The lock must be THIS run's, not merely present: a hand-made or stale lock is
 # not evidence that a wrapper is holding the tree still. GATE_LOCK is a variable
@@ -45,23 +45,13 @@ deps:
 
 ## ---- generate (contract-first, ADR-009: spec is the source of truth) ----
 generate:
-	cd services/catalog/api && go tool oapi-codegen -config codegen.yaml openapi.yaml
-	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../inventory/internal/api/openapi_gen.go ../inventory/api/openapi.yaml
-	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../commerce/internal/api/openapi_gen.go ../commerce/api/openapi.yaml
-	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../payments/internal/api/openapi_gen.go ../payments/api/openapi.yaml
-	cd services/catalog && go tool oapi-codegen -package api -generate models -o ../access/internal/api/openapi_gen.go ../access/api/openapi.yaml
-	# Runs from the workspace root: openapi-typescript drives the TS compiler API, which
-	# TypeScript 7 does not ship, so it keeps its own TS 6 there instead of in the web apps.
-	pnpm run generate:api
+	./scripts/generate-api.sh
 
 # The gate fails when committed generated code drifts from the spec.
-#
-# This list must name EVERY file `generate:api` writes. A generated file added to
-# the generator but not to this diff is regenerated and then never compared, so
-# the gate goes green over a client that has drifted from its contract — the
-# exact failure ADR-009 has this target for. Edit the two together (TKT-220).
+GENERATED_API_OUTPUTS := $(shell ./scripts/generate-api.sh outputs)
 check-generate: generate
-	@git diff --exit-code -- services/*/internal/api/openapi_gen.go web/storefront/src/lib/api-types.gen.ts web/storefront/src/lib/commerce-api-types.gen.ts web/backoffice/src/lib/api-types.gen.ts web/backoffice/src/lib/inventory-api-types.gen.ts web/storefront/src/lib/access-api-types.gen.ts web/backoffice/src/lib/access-api-types.gen.ts web/scanner/src/access-api-types.gen.ts \
+	@./scripts/generate-api.sh verify-tracked
+	@git diff --exit-code HEAD -- $(GENERATED_API_OUTPUTS) \
 		|| { echo "generated code drifted from the OpenAPI spec — commit the output of 'make generate'" >&2; exit 1; }
 
 ## ---- dependency declarations (TKT-129, ADR-035: one version per shared dep) ----
@@ -77,6 +67,12 @@ check-dep-drift:
 # cold clone, so the gate loses nothing it had.
 check-build-list-lag:
 	@./scripts/check-go-build-list-lag.sh $(GO_MODULES)
+
+# lint-go loads the workspace dependency graph first. The standalone pass then
+# disables the workspace and the network, so every module must carry its own
+# complete readonly manifest and checksums.
+check-go-standalone: lint-go
+	@./scripts/check-go-standalone.sh $(GO_MODULES)
 
 ## ---- workflow triggers ----
 check-security-workflow-trigger:

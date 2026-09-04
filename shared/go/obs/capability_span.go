@@ -8,13 +8,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// NewTracerProviderForTest builds a provider through the SAME code path Setup
-// uses, so a regression test observes the production wiring rather than a chain
-// it assembled itself. Not part of the operational surface.
-func NewTracerProviderForTest(exportProcessor sdktrace.SpanProcessor) *sdktrace.TracerProvider {
-	return newTracerProvider(exportProcessor, nil)
-}
-
 // The span sink (TKT-202).
 //
 // # Why this exists at all

@@ -2,9 +2,9 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -75,6 +75,9 @@ var (
 	// seat the current version does not contain — together they close the
 	// edit-vs-sale race (ADR-018 two-sided lock).
 	ErrSeatIdentityNotFound = errors.New("seat identity not in current published version")
+	// ErrSeatIdentityTooLong rejects a composed identity that the Commerce and
+	// Inventory request contracts cannot carry.
+	ErrSeatIdentityTooLong = errors.New("seat identity exceeds 200 characters")
 	// ErrIdempotencyConflict reports a create whose idempotency key already
 	// belongs to a DIFFERENT request for this organizer (TKT-200). Replaying the
 	// first result would hand the caller a resource it did not ask for, so the
@@ -82,6 +85,21 @@ var (
 	// checkout and refund paths.
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different terms")
 )
+
+// MaxSeatIdentityCharacters is shared by Catalog's producer contract and the
+// Commerce and Inventory consumers. OpenAPI maxLength and Postgres char_length
+// both count Unicode characters, so this check counts runes rather than bytes.
+const MaxSeatIdentityCharacters = 200
+
+// ComposeSeatIdentity builds the stable identity and enforces the bound every
+// consumer accepts. Call it before any write that persists a composed identity.
+func ComposeSeatIdentity(section, row, seat string) (string, error) {
+	identity := section + "/" + row + "/" + seat
+	if utf8.RuneCountInString(identity) > MaxSeatIdentityCharacters {
+		return "", ErrSeatIdentityTooLong
+	}
+	return identity, nil
+}
 
 type SeriesTransitionConflict struct {
 	PerformanceID uuid.UUID
@@ -533,243 +551,4 @@ type SeasonAggregate struct {
 type FestivalAggregate struct {
 	Festival     Festival
 	Performances []PerformanceAggregate
-}
-
-// Store is the persistence port. Referential and tenancy checks live behind
-// it (they need the data); shape/locale validation lives in the API layer.
-type Store interface {
-	CreateVenue(ctx context.Context, in VenueInput) (Venue, error)
-	// ListVenues returns an organizer's venues, name-ordered (US-018). Tenant
-	// scoping is a query predicate, not a post-filter (ADR-002).
-	ListVenues(ctx context.Context, organizerID uuid.UUID) ([]Venue, error)
-	CreateEvent(ctx context.Context, in EventInput) (Event, error)
-	// Seat-map authoring (US-019), draft-only. Each Add* scopes its parent by
-	// (id, organizer_id) and requires the map status='draft' in one INSERT ...
-	// SELECT, so cross-map/cross-organizer parentage and writes to a non-draft
-	// map are unrepresentable through the store. A no-match yields ErrNotFound;
-	// any uniqueness collision yields ErrSeatMapConflict.
-	CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap, error)
-	AddSeatMapSection(ctx context.Context, in SeatMapSectionInput) (SeatMapSection, error)
-	AddSeatMapRow(ctx context.Context, in SeatMapRowInput) (SeatMapRow, error)
-	AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (SeatMapSeat, error)
-	// PublishSeatMap flips a seat map draft->published (TKT-103, idempotent,
-	// monotonic/lock-free per ADR-018). needsEmit is true while the
-	// seat_map.published domain event has not been ack'd (event_emitted_at is
-	// null) — the caller emits, then marks. A published version is immutable:
-	// the Add* write gate (status='draft') refuses further authoring.
-	// organizerID is the VERIFIED organizer (ADR-058's assertion), and it is part
-	// of the update predicate rather than a check beside it: a row belonging to
-	// another organizer is ErrNotFound, indistinguishable from an unknown id, so
-	// the refusal never confirms a guessed id is real (TKT-251).
-	PublishSeatMap(ctx context.Context, organizerID, id uuid.UUID) (m SeatMap, needsEmit bool, err error)
-	MarkSeatMapEventEmitted(ctx context.Context, id uuid.UUID) error
-	// EditSeatMap safely edits a published seat map (TKT-104). Under a family-
-	// scoped advisory lock (NOT a current-row FOR UPDATE — see ADR-029/§lock), in
-	// one transaction it re-resolves the family's current published version,
-	// validates that every currently-pinned seat identity survives exactly once in
-	// the submitted geometry, then creates a new published version (version+1, same
-	// map_family_id) with the new geometry and commits. An edit that would orphan a
-	// pinned identity is rejected with ErrSeatMapEditOrphansPinned; the predecessor
-	// is never mutated. needsEmit is true while the new version's seat_map.published
-	// event is still owed — the caller emits, then marks (same discipline as
-	// PublishSeatMap). The lock is state-deriving per ADR-018 (the outcome depends
-	// on the current pinned set), and PinSeat takes the SAME family lock so an edit
-	// and a concurrent pin serialize.
-	EditSeatMap(ctx context.Context, in EditSeatMapInput) (m SeatMap, needsEmit bool, err error)
-	// PinSeat records that a seat identity is referenced by a sale/hold — the
-	// write path TKT-80 consumes (COS-5). Under the SAME family advisory lock
-	// EditSeatMap takes, it re-resolves the current published version, validates the
-	// identity exists in that version (else ErrSeatIdentityNotFound), and inserts
-	// the pin idempotently on (map_family_id, seat_identity, pinned_by). Taking the
-	// same family lock as the edit is what closes the edit-vs-sale race (ADR-029).
-	PinSeat(ctx context.Context, in PinSeatInput) error
-	// PinSeats pins a whole seat set atomically under one family advisory lock (TKT-80).
-	// Every identity must exist in the current published version or the batch fails with
-	// ErrSeatIdentityNotFound and nothing is pinned. Idempotent per (family, seat, pinned_by).
-	PinSeats(ctx context.Context, in BatchPinInput) error
-	// UnpinSeats clears a whole seat set atomically under the same family lock. Idempotent:
-	// absent pins are a no-op.
-	//
-	// Returns ErrSeatMapFamilyNotFound when the (seat_map_id, organizer_id) pair resolves
-	// no family (TKT-306). That is NOT a failure — nothing needed unpinning — and callers
-	// must keep treating the operation as successful. It exists so "the pins were already
-	// gone" and "you named a map that is not yours" stop being the same answer.
-	UnpinSeats(ctx context.Context, in BatchPinInput) error
-	// UnpinSeat clears a pin (sale cancelled / hold released), so a later edit may
-	// drop that seat. Idempotent: removing an absent pin is a no-op. Same
-	// ErrSeatMapFamilyNotFound contract as UnpinSeats.
-	UnpinSeat(ctx context.Context, in PinSeatInput) error
-	// ListSeatMapPins returns one bounded page of pin rows, ordered by primary key,
-	// starting strictly after `after` (uuid.Nil for the first page). It is the read
-	// behind inventory's one-shot `reconcile-pins` (TKT-112): the reconciler drains
-	// pages, decides liveness against its own claims, and unpins the dead ones over
-	// the existing batch-unpin route. Every kind of pin is returned — `hold:*` and
-	// `sale:*` alike — because the caller, not catalog, owns the classification.
-	ListSeatMapPins(ctx context.Context, after uuid.UUID, limit int) ([]SeatMapPin, error)
-	// GetSeatMapGeometry returns a map's full nested geometry, each level
-	// ordered by position; ErrNotFound if the map does not exist.
-	GetSeatMapGeometry(ctx context.Context, seatMapID uuid.UUID) (SeatMapGeometry, error)
-	// ListVenueSeatMaps returns a venue's seat-map summaries (no geometry),
-	// version-then-name ordered. Tenant/venue scoping is a query predicate
-	// backed by seat_maps_by_venue (ADR-019).
-	ListVenueSeatMaps(ctx context.Context, venueID uuid.UUID) ([]SeatMap, error)
-	// ListSeatMapVersions returns every version of the family that seatMapID
-	// belongs to (any version resolves the family), newest first, each carrying
-	// its PublishedAt. It is the read behind the TKT-105 version-history UI
-	// (COS-3); "current" is the caller's job to derive (highest published
-	// version). ErrNotFound if seatMapID is unknown.
-	ListSeatMapVersions(ctx context.Context, seatMapID uuid.UUID) ([]SeatMap, error)
-	// UpdateVenueGACapacity sets a venue's GA capacity (TKT-105 COS-5) — until
-	// now it was write-once at CreateVenue. Organizer-scoped as a query predicate
-	// (ADR-002); ErrNotFound when the (id, organizer_id) pair matches no row.
-	UpdateVenueGACapacity(ctx context.Context, in VenueGACapacityInput) (Venue, error)
-	CreatePerformance(ctx context.Context, in PerformanceInput) (Performance, error)
-	CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error)
-	CreateSeries(ctx context.Context, in SeriesInput) (Series, error)
-	// The attach operations take the verified organizer and scope BOTH row
-	// lookups by it (TKT-251). Comparing the two rows' organizer_id to EACH OTHER
-	// is not authorization: two resources of the same victim tenant satisfy it,
-	// which is exactly the position a forged request is in. The same-organizer
-	// comparison stays for the legitimate case (attaching two of your OWN
-	// resources that belong to different events) and still yields
-	// ErrOrganizerMismatch.
-	AttachPerformanceToSeries(ctx context.Context, organizerID, seriesID, performanceID uuid.UUID, position int32) (Series, error)
-	CreateSeason(ctx context.Context, in SeasonInput) (Season, error)
-	AttachSeriesToSeason(ctx context.Context, organizerID, seasonID, seriesID uuid.UUID) (Season, error)
-	AttachEventToSeason(ctx context.Context, organizerID, seasonID, eventID uuid.UUID) (Season, error)
-	CreateFestival(ctx context.Context, in FestivalInput) (Festival, error)
-	AttachDayToFestival(ctx context.Context, organizerID, festivalID, performanceID uuid.UUID) (Festival, error)
-	GetTicketType(ctx context.Context, id uuid.UUID) (TicketType, error)
-	// CreatePriceRule attaches a pricing rule to one of ADR-036 §1's five scope
-	// levels. scope_id carries no FK (the target table depends on the level), so
-	// the store validates it: a scope_id that names no row of that kind owned by
-	// the organizer yields ErrNotFound and nothing is inserted.
-	CreatePriceRule(ctx context.Context, in PriceRuleInput) (PriceRule, error)
-	// ResolveTicketTypePrice returns the unit price for a ticket type at `at`
-	// plus the provenance of that answer: the winning rule and every candidate
-	// that lost, with its reason (ADR-036 §5). With no applicable rule the
-	// ticket type's own price is the answer and FallbackReason says so, so
-	// existing data resolves exactly as it did before this table existed.
-	// A rule whose currency differs from the ticket type's fails the resolution
-	// with ErrPriceRuleCurrencyMismatch rather than being skipped (§2).
-	// `channel` nil is the default/public context, where only channel-agnostic
-	// rules are eligible — omitting it is not a wildcard (TKT-237, mirroring
-	// ADR-046 §4). A rule belonging to a different channel is absent from
-	// provenance entirely rather than reported as a loser: this read is public.
-	ResolveTicketTypePrice(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (RuleSelection, error)
-	// CreateFeeRule attaches a fee rule to one of the same five scope levels
-	// (TKT-214 / ADR-046), with the same write gate and the same ErrNotFound
-	// disposition as CreatePriceRule.
-	CreateFeeRule(ctx context.Context, in FeeRuleInput) (FeeRule, error)
-	// ResolveTicketTypeFees returns every fee that applies to a ticket type in a
-	// channel at `at`, one winner PER FEE CODE, plus the losers and their
-	// reasons. `channel` nil is the default/public context, where only
-	// channel-agnostic rules are eligible — omitting it is not a wildcard.
-	// A rule whose currency differs from the ticket type's fails the resolution
-	// with ErrFeeRuleCurrencyMismatch rather than being skipped, whatever its
-	// channel.
-	ResolveTicketTypeFees(ctx context.Context, ticketTypeID uuid.UUID, channel *string, at time.Time) (FeeSelection, error)
-	// ListRuleCurrencyMismatches sweeps price and fee rules for currencies that
-	// disagree with the ticket type they would apply to (TKT-243). Resolution
-	// filters by channel before it checks currency, so a rule misconfigured for
-	// a channel nobody is buying through is invisible until a sale arrives on
-	// it; this read finds it first. It applies no channel and no
-	// effective_from predicate for exactly that reason, and excludes rules whose
-	// window has closed, which are inert and unrecoverable (ADR-036 §4 step 1).
-	// Operator-facing: it reports, and gates nothing.
-	ListRuleCurrencyMismatches(ctx context.Context) ([]RuleCurrencyMismatch, error)
-	// CreatePayee registers someone a fee can be owed to (TKT-216 / ADR-047).
-	CreatePayee(ctx context.Context, in Payee) (Payee, error)
-	// CreateSplitSchedule writes a schedule and its parts in ONE transaction —
-	// the balance trigger is deferred, so a schedule is unbalanced for the whole
-	// of its own creation and two transactions would commit that state.
-	CreateSplitSchedule(ctx context.Context, in SplitSchedule) (uuid.UUID, error)
-	// CreateChannel registers a sales channel (TKT-235 / epic TKT-17): an exact
-	// opaque code, a display name, a kind and an enabled flag, scoped to one
-	// organizer. The registry is a LOOKUP, NOT A CONSTRAINT — nothing that
-	// stores a channel_code references it, so an unregistered code sells exactly
-	// as it did before this table existed (ADR-024's no-FK rule, which exists so
-	// historical attribution survives a channel being retired).
-	CreateChannel(ctx context.Context, in ChannelInput) (Channel, error)
-	// UpdateChannel replaces a channel's display name, kind and enabled flag.
-	// The code is IMMUTABLE: it is submitted so the caller states which channel
-	// it believes it is updating, and a value differing from the stored one is
-	// ErrChannelCodeImmutable rather than a rename. Renaming would orphan the
-	// code already recorded on live claims, fee rules and split schedules —
-	// none of which reference this table, so nothing would cascade.
-	// organizerID scopes the write to one tenant: an id alone is not an
-	// authorization boundary, and callers take it from a form field. A channel
-	// belonging to another organizer is ErrNotFound, indistinguishable from one
-	// that does not exist.
-	UpdateChannel(ctx context.Context, organizerID, id uuid.UUID, in ChannelUpdate) (Channel, error)
-	GetChannel(ctx context.Context, id uuid.UUID) (Channel, error)
-	// ListChannels is the operator read: enabled AND disabled, full definitions.
-	ListChannels(ctx context.Context, organizerID uuid.UUID) ([]Channel, error)
-	// ListEnabledChannels is the public read: enabled only, code + display name.
-	// The filter is in the SQL, not applied afterwards, so a disabled channel is
-	// never loaded into a response the public can see.
-	ListEnabledChannels(ctx context.Context, organizerID uuid.UUID) ([]PublicChannel, error)
-	// AuthenticateStaff verifies a back-office sign-in (TKT-190, staff.go).
-	// Every credential failure is ErrStaffCredentialsInvalid — an unknown
-	// identifier and a wrong password are indistinguishable *by construction*,
-	// not by convention, so no caller can branch them apart and leak which
-	// accounts exist. Any other error is a lookup failure, not a verdict.
-	AuthenticateStaff(ctx context.Context, identifier, password string) (StaffAccount, error)
-	GetPublishedPerformance(ctx context.Context, id uuid.UUID) (Performance, error)
-	// PerformanceDisplayNames resolves a bounded SET of performances to the name
-	// a buyer would recognise (TKT-222). Deliberately unfiltered by publication
-	// state: a wallet is mostly PAST purchases, and a resolver that only sees
-	// on-sale performances goes blank exactly where it is needed. Publication
-	// controls what may be SOLD, not what may be named.
-	//
-	// An id that names nothing is absent from the result rather than an error.
-	PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID) ([]PerformanceDisplayName, error)
-	// GetPoolOfferState answers for an inventory pool id whatever it is — a
-	// performance in ANY lifecycle or a festival capacity group — so the
-	// reconciliation pass (TKT-90) only ever acts on positive assertions.
-	GetPoolOfferState(ctx context.Context, id uuid.UUID) (PoolOfferState, error)
-	// PublishPerformance flips draft->published (idempotent). needsEmit is
-	// true while the domain event for this publication has not been ack'd
-	// (event_emitted_at is null) — the caller emits, then marks.
-	// The organizer is part of the atomic update predicate AND of the fallback
-	// read that classifies why nothing flipped (TKT-251). Scoping only the update
-	// would still let a cross-tenant caller learn the victim row's status through
-	// the error code.
-	PublishPerformance(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, needsEmit bool, err error)
-	MarkPerformanceEventEmitted(ctx context.Context, id uuid.UUID) error
-	// ArchivePerformance flips published->archived (idempotent). The two
-	// marker booleans report whether the publication and archive events are
-	// still owed, respectively.
-	ArchivePerformance(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, publishNeedsEmit, archiveNeedsEmit bool, err error)
-	MarkPerformanceArchiveEmitted(ctx context.Context, id uuid.UUID) error
-	// CloseSlot / ReopenSlot toggle the orthogonal closure attribute while the
-	// slot is published (spike §Case 3). Each toggle bumps closure_version;
-	// closureNeedsEmit is true while that version's closed/reopened event is
-	// owed. publishNeedsEmit reports whether the publication event is still owed
-	// — the caller emits it BEFORE the closure event so a closure can never
-	// overtake the publication of the same slot. A toggle is refused with
-	// ErrClosurePending while a prior closure event is still owed, so the single
-	// marker never loses one. Idempotent: closing an already-closed slot (or
-	// reopening an open one) does not bump the version.
-	CloseSlot(ctx context.Context, organizerID, id uuid.UUID, reason *string) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
-	ReopenSlot(ctx context.Context, organizerID, id uuid.UUID) (perf Performance, publishNeedsEmit, closureNeedsEmit bool, err error)
-	MarkClosureEmitted(ctx context.Context, id uuid.UUID, version int32) error
-	// The group transitions carry the verified organizer into the locked lookup
-	// of the group row itself (TKT-251). The members are reached through that
-	// row, so scoping the parent scopes the cascade.
-	PublishSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
-	ArchiveSeries(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
-	PublishFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
-	ArchiveFestival(ctx context.Context, organizerID, id uuid.UUID) ([]SeriesTransition, error)
-	// ListPublishedEvents returns events having at least one published
-	// performance, each appearing once with all its published slots.
-	ListPublishedEvents(ctx context.Context) ([]EventAggregate, error)
-	GetPublishedEvent(ctx context.Context, id uuid.UUID) (EventAggregate, error)
-	GetPublishedSeason(ctx context.Context, id uuid.UUID) (SeasonAggregate, error)
-	GetPublishedFestival(ctx context.Context, id uuid.UUID) (FestivalAggregate, error)
-	// RegisterPublicReadInvalidator wires the cache that fronts the four public
-	// reads above (TKT-206). On the interface rather than only on *Postgres so
-	// there is no path where a Server is built with a store that silently
-	// announces nothing — a cache nobody invalidates looks like it works.
-	RegisterPublicReadInvalidator(func(PublicReadScope))
 }

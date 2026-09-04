@@ -30,6 +30,7 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/commerce/internal/store"
+	"ticketing/services/commerce/internal/worklease"
 )
 
 // Store is the durable state the runner decides against. A port rather than a *sql.DB so
@@ -41,7 +42,7 @@ type Store interface {
 	// Release takes the obligations as OBSERVED AT CLAIM TIME and decides progress in SQL
 	// against the row as it stands. It does not take a `progressed bool`: this runner does
 	// not hold a monopoly on discharging a reversal, so a verdict computed from its own
-	// before/after would be wrong exactly when a concurrent replay helped (ai-review F2).
+	// before/after would be wrong exactly when a concurrent replay helped.
 	Release(ctx context.Context, org, refundID, claimID uuid.UUID, voidedAtClaim, capacityAtClaim bool, cause string) error
 	Finish(ctx context.Context, org, refundID, claimID uuid.UUID) error
 	Abandon(ctx context.Context, org, refundID, claimID uuid.UUID) error
@@ -60,28 +61,15 @@ type Reverser interface {
 // chain grow together rather than drifting apart.
 const MaxCallsPerRefund = 2
 
-// LeaseFor sizes the batch lease from the I/O budget of the client that will actually make
-// the calls. A batch is driven sequentially and each refund can make MaxCallsPerRefund
-// calls, each bounded only by that client's timeout, so the pass's worst case is
-// batch × calls × timeout.
-//
-// **Pass the timeout of the transport DriveReversal really uses**, which is
-// `obs.Client()`'s (`shared/go/obs`), not some other worker's constant. The first version of
-// this call site borrowed `recoveryCallTimeout` (10s) while the refund service runs on
-// obs.Client (30s), giving a 380s lease over work that can take 960s (ai-review F1). A lease
-// shorter than the work it protects is worse than no lease: a second replica reclaims rows
-// the first is still driving, and the claim token fences only the final database write —
-// never the access or inventory call already in flight. `LeaseIsNotShorterThanItsBatch`
-// pins the relationship so the two cannot drift apart again.
-func LeaseFor(batch int, callTimeout time.Duration) time.Duration {
+// LeaseFor sizes a sequential batch from the refund service client's timeout.
+func LeaseFor(batch int, callTimeout time.Duration) (time.Duration, error) {
 	if batch <= 0 {
 		batch = 1
 	}
 	if callTimeout <= 0 {
 		callTimeout = 30 * time.Second
 	}
-	// Plus a margin for database work and scheduling between calls.
-	return time.Duration(batch)*MaxCallsPerRefund*callTimeout + 60*time.Second
+	return worklease.ForBatch(batch, MaxCallsPerRefund, callTimeout, 60*time.Second)
 }
 
 // Runner reconciles outstanding refund reversals.
@@ -125,18 +113,9 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 // RunOnce drains the claimable backlog in bounded batches. Returns how many reversals it
-// drove to completion, for tests and for callers draining to quiescence.
-//
-// It drains rather than doing one batch per tick: a backlog deeper than one batch would
-// otherwise wait a whole interval per batch, which after a long outage is exactly when the
-// backlog is deepest and the wait is least affordable.
-// MaxBatchesPerPass bounds one drain (ai-review pass 3).
-//
-// A pass drains rather than doing one batch per tick, because after an outage the backlog is
-// deepest exactly when waiting an interval per batch is least affordable. But an UNBOUNDED
-// drain is two defects at once: the per-pass `driven` set grows for as long as the loop runs,
-// and a workload arriving at or above processing rate means the loop never returns at all —
-// so the set grows for the life of the process and the ticker never fires again.
+// drove to completion, for tests and for callers draining to quiescence. Draining avoids
+// waiting a full interval between batches after an outage. The bound keeps the `driven` map
+// finite and guarantees that a continuously replenished queue cannot monopolize the runner.
 //
 // A bound makes both finite. What is left undrained is not lost: it is claimable, and the
 // next tick is a minute away at most. The number is deliberately generous — 64 batches of 16
@@ -144,8 +123,8 @@ func (r *Runner) Run(ctx context.Context) {
 // and the bound should only ever bite on a genuinely pathological queue.
 const MaxBatchesPerPass = 64
 
-// ONE DRIVE PER REFUND PER PASS, enforced here rather than left to the backoff (ai-review
-// pass 2). A released row becomes due again after its floor or its backoff — both of which
+// ONE DRIVE PER REFUND PER PASS, enforced here rather than left to the backoff. A released
+// row becomes due again after its floor or its backoff — both of which
 // can be shorter than the time the rest of a slow batch takes — so a drain loop that only
 // re-claimed would happily pick the same refund up again in a later batch of the same pass.
 // At the extreme that lets one row spend its whole attempt budget and PARK inside a single
@@ -194,7 +173,7 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 				// 5s timeout per duplicate that cancellation cannot interrupt.
 				// The ctx.Err() check above is NOT atomic with this call: a shutdown landing
 				// between them, or while the write is in flight, fails it on a cancelled
-				// context (ai-review pass 4). Logging and moving on would leave the row
+				// context. Logging and moving on would leave the row
 				// leased for the full lease — ~17 minutes at the defaults — with its
 				// obligation outstanding the whole time. So a cancellation here falls back
 				// to the detached path, which is exactly the case that path exists for.
@@ -248,7 +227,7 @@ func (r *Runner) drive(ctx context.Context, c store.ClaimedReversal) bool {
 	// progress is decided by the store, against the row as it stands, from the obligations
 	// observed at claim time — because a concurrent staff replay or cancellation run can
 	// discharge one of these obligations without this runner's knowledge, and calling that
-	// "no progress" would park a recovering refund (ai-review F2).
+	// "no progress" would park a recovering refund.
 	//
 	// Progress is what decides between backing off with the budget reset and spending it
 	// down toward parking. Commerce cannot see WHY a downstream refused — inventory's

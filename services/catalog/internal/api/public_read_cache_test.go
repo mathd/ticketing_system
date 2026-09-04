@@ -168,7 +168,15 @@ func (c *testClock) advance(d time.Duration) {
 func newTestCache(t *testing.T, src publicReadSource) (*publicReadCache, *testClock) {
 	t.Helper()
 	clk := &testClock{t: time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)}
-	return newPublicReadCache(src, withPublicReadClock(clk.now)), clk
+	config := defaultPublicReadCacheConfig()
+	config.now = clk.now
+	return newPublicReadCache(src, config), clk
+}
+
+func configuredTestCache(src publicReadSource, configure func(*publicReadCacheConfig)) *publicReadCache {
+	config := defaultPublicReadCacheConfig()
+	configure(&config)
+	return newPublicReadCache(src, config)
 }
 
 // TestPublicReadCacheServesRepeatedReadsFromMemory is COS 1, across all four
@@ -413,7 +421,10 @@ func TestPublicReadCacheBoundsConcurrentSourceLoads(t *testing.T) {
 		const ceiling = 3
 		src := newCountingSource()
 		src.release = make(chan struct{})
-		c := newPublicReadCache(src, withPublicReadBounds(64, ceiling))
+		c := configuredTestCache(src, func(config *publicReadCacheConfig) {
+			config.maxEntries = 64
+			config.maxInFlight = ceiling
+		})
 
 		var wg sync.WaitGroup
 		for range 20 {
@@ -440,11 +451,14 @@ func TestPublicReadCacheBoundsConcurrentSourceLoads(t *testing.T) {
 // distinct ids.
 func TestPublicReadCacheIsBounded(t *testing.T) {
 	src := newCountingSource()
-	c := newPublicReadCache(src, withPublicReadBounds(8, 16))
+	c := configuredTestCache(src, func(config *publicReadCacheConfig) {
+		config.maxEntries = 8
+		config.maxInFlight = 16
+	})
 	for range 100 {
 		_, _ = c.GetPublishedEvent(context.Background(), uuid.New())
 	}
-	if got := c.entryCount(); got > 8 {
+	if got := c.Status().Entries; got > 8 {
 		t.Fatalf("cache holds %d entries, want at most the bound of 8", got)
 	}
 }
@@ -459,7 +473,9 @@ func TestPublicReadCacheIsBounded(t *testing.T) {
 func TestPublicReadCacheSlowLoadFailsRatherThanWedging(t *testing.T) {
 	src := newCountingSource()
 	src.release = make(chan struct{}) // never closed: the query never returns
-	c := newPublicReadCache(src, withPublicReadTimeout(30*time.Millisecond))
+	c := configuredTestCache(src, func(config *publicReadCacheConfig) {
+		config.loadTimeout = 30 * time.Millisecond
+	})
 
 	_, err := c.ListPublishedEvents(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {

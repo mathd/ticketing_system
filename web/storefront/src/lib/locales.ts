@@ -13,8 +13,7 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   fr: 'Français',
 };
 
-export const UI_STRINGS: Record<Locale, Record<string, string>> = {
-  en: {
+const ENGLISH_UI_STRINGS = {
     events: 'Events',
     from: 'From',
     tickets: 'Tickets',
@@ -114,11 +113,8 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     // address holds an account — the wording is identical either way, which is
     // the whole point of refusing before commerce looks.
     tooManyAttempts: 'Too many attempts. Wait a minute and try again.',
-    // Registration commits in commerce BEFORE the session is minted, so at
-    // capacity the account genuinely EXISTS and only sign-in failed. Saying
-    // "unavailable" there reads as "registration failed", and the buyer's retry
-    // then answers "already exists" — which looks like a contradiction and is a
-    // support call (ai-review pass 3).
+    // Registration commits before the session is minted. At session capacity the
+    // account exists, so the message must distinguish creation from sign-in.
     accountCreatedSignInLater:
       'Your account was created, but signing in is temporarily unavailable. Try signing in shortly.',
     reserve: 'Reserve',
@@ -135,8 +131,11 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     checkoutRetryShortly: 'This order is being finalised — try again in a moment.',
     nameLabel: 'Name',
     emailLabel: 'Email',
-  },
-  fr: {
+} as const;
+
+export type MessageKey = keyof typeof ENGLISH_UI_STRINGS;
+
+const FRENCH_UI_STRINGS = {
     events: 'Événements',
     from: 'À partir de',
     tickets: 'Billets',
@@ -228,5 +227,9 @@ export const UI_STRINGS: Record<Locale, Record<string, string>> = {
     checkoutRetryShortly: 'Cette commande est en cours de finalisation — réessayez dans un instant.',
     nameLabel: 'Nom',
     emailLabel: 'Courriel',
-  },
-};
+} satisfies Record<MessageKey, string>;
+
+export const UI_STRINGS = {
+  en: ENGLISH_UI_STRINGS,
+  fr: FRENCH_UI_STRINGS,
+} satisfies Record<Locale, Record<MessageKey, string>>;

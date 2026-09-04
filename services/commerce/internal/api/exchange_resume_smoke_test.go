@@ -531,7 +531,7 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 		}
 	})
 
-	srv := New(db, http.DefaultClient, catalog.server.URL, inventory.server.URL, payments.server.URL, token)
+	srv := newTestServer(db, http.DefaultClient, catalog.server.URL, inventory.server.URL, payments.server.URL, token)
 	// Mounted on a bare chi router rather than through Router(): this exercises the
 	// HANDLER, and Router() would additionally impose the OpenAPI request/response
 	// validator. That validator is worth having and it is not what this file is about —

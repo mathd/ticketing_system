@@ -98,7 +98,7 @@ func TestPublicListEmitsAgeWithinTheTier(t *testing.T) {
 // "no other handler can".
 //
 // Two things depend on it. Writes must never read a cached number. And the
-// seat-map reads must keep calling s.store directly: their tier is decided per
+// seat-map reads must keep calling s.seatMaps directly: their tier is decided per
 // response by cacheControlForSeatMaps (ADR-004 § TKT-107), and a draft-bearing
 // payload is no-store — which has to mean not stored HERE either, not merely
 // not stored downstream.

@@ -63,7 +63,9 @@ if ! (set -o noclobber; printf '%s %s\n' "$TOKEN" "$(date -u +%FT%TZ)" > "$LOCK"
   echo "gate already running (started $(cut -d' ' -f2 < "$LOCK" 2>/dev/null)). If it is not, rm $LOCK" >&2
   exit 2
 fi
-trap 'owns_lock && rm -f "$LOCK"' EXIT INT TERM
+trap 'owns_lock && rm -f "$LOCK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 HEAD_SHA="$(git rev-parse HEAD)"
 BEFORE="$(tree_digest)"

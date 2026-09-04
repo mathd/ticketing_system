@@ -54,11 +54,8 @@ export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
  * fourth device ends the oldest — normal for a shift-based staff tool, and it
  * is what actually BOUNDS the session map.
  *
- * Without it the map is bounded by nothing (ai-review pass 2, S1): every
- * sign-in mints a new token and the old ones stay live for the full eight
- * hours, so one valid credential can accumulate entries without limit, and the
- * sweep below degrades with them. With it, `sessions.size` is at most
- * `staff headcount x MAX_SESSIONS_PER_STAFF`.
+ * Every sign-in mints a fresh token, so this cap bounds both the map and the
+ * creation-time sweep by staff headcount.
  */
 export const MAX_SESSIONS_PER_STAFF = 5;
 
@@ -67,22 +64,8 @@ interface Entry {
   expiresAt: number;
 }
 
-const sessions = new Map<string, Entry>();
-
-/** Test-only: sessions are module state, so suites must not leak into each other. */
-export function resetSessionsForTest(): void {
-  sessions.clear();
-}
-
-/** Test-only: proves a sweep actually reclaimed entries rather than hiding them. */
-export function sessionCountForTest(): number {
-  return sessions.size;
-}
-
 /**
- * The clock in-process session lifetimes are measured on (TKT-302, mirroring the
- * storefront's `monotonicNow`, whose comment records the reasoning from TKT-220's
- * ai-review).
+ * The clock used to measure in-process session lifetimes.
  *
  * `Date.now()` is wall-clock and can step BACKWARDS — NTP correction, a VM
  * migration, an operator setting the clock. When it does, a session stamped
@@ -103,137 +86,139 @@ function monotonicNow(): number {
 }
 
 /**
- * TWO clocks, deliberately, and merging them is the trap (TKT-302 plan-final).
+ * Two clocks are deliberate here.
  *
  * `now` is a MONOTONIC reading and measures this process's own TTL.
  * `wallClockNow` is a Unix timestamp and exists ONLY for assertionLifetimeMs,
  * which computes `expiry * 1000 - wallClockNow` against a value catalog stamped.
  * Pass a monotonic reading there and the subtraction compares milliseconds since
  * process start against the Unix epoch: `remaining` becomes astronomically large,
- * the Math.min clamp below never binds, and the session outlives the assertion it
- * carries — silently restoring the 401-on-a-live-looking-session that the clamp
- * exists to prevent. TestSessionClampsToAssertionExpiryUnderAMonotonicClock is
- * the test that fails if they are ever merged.
+ * the Math.min clamp below never binds, and the session can outlive the assertion
+ * it carries.
  */
-export function createSession(
-  principal: StaffPrincipal,
-  now = monotonicNow(),
-  wallClockNow = Date.now(),
-): string {
-  // One pass over the map does both jobs, because both need the same walk.
-  //
-  //  - Reclaim expired entries (ai-review pass 1, F4). Expiry-on-read alone only
-  //    collects a token that is presented again, and the ones that never come
-  //    back — the tab someone closed — are the common case, so the map would
-  //    otherwise grow for the life of the process.
-  //  - Collect this principal's live tokens for the cap below (ai-review pass 2,
-  //    S1). The cap is what makes this walk's cost bounded. An earlier version of
-  //    this comment claimed the map was "the staff headcount" and that was simply
-  //    wrong: every sign-in mints a new token and old ones live out their full
-  //    eight hours, so one credential could inflate `sessions.size` without
-  //    limit — and this very loop is what degraded with it.
-  //
-  // Deleting from a Map while iterating it is well-defined in JS: entries already
-  // visited are gone, and no entry is skipped.
-  //
-  // `mine` comes out in Map INSERTION order, which is issuance order, and that is
-  // the ordering the cap uses. An earlier version sorted by `expiresAt` on the
-  // reasoning that a fixed TTL makes expiry a proxy for issue time — it is not
-  // (ai-review pass 3, T1). `Date.now()` is wall-clock and not monotonic: let the
-  // host clock step backwards between two sign-ins and the NEWER session carries
-  // the SMALLER expiry, so the next sign-in evicts the session just issued while
-  // older ones survive. Insertion order cannot be moved by a clock at all, and no
-  // token is ever re-inserted (each is fresh), so it stays true.
-  const mine: string[] = [];
-  for (const [token, entry] of sessions) {
-    if (now >= entry.expiresAt) {
-      sessions.delete(token);
-    } else if (entry.principal.staffId === principal.staffId) {
-      mine.push(token);
-    }
-  }
-
-  // Make room for the new one: drop this principal's oldest sessions until it is
-  // under the cap. Per principal, never global — a global cap would let one busy
-  // account evict another staff member's live session, turning a safety limit
-  // into a denial of service against colleagues.
-  for (let i = 0; i <= mine.length - MAX_SESSIONS_PER_STAFF; i++) {
-    sessions.delete(mine[i]!);
-  }
-
-  // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
-  const token = randomBytes(32).toString('base64url');
-  // The session never outlives the assertion it carries (TKT-245). Equal TTLs are
-  // not enough on their own — see assertionLifetimeMs.
-  const assertionMs = assertionLifetimeMs(principal.organizerAssertion, wallClockNow);
-  const lifetime = assertionMs === undefined ? SESSION_TTL_MS : Math.min(SESSION_TTL_MS, assertionMs);
-  sessions.set(token, { principal, expiresAt: now + lifetime });
-  return token;
+export interface StaffSessionStore {
+  create(principal: StaffPrincipal, now?: number, wallClockNow?: number): string;
+  lookup(token: string, now?: number): StaffPrincipal | undefined;
+  destroy(token: string): void;
 }
 
 /**
- * The expiry catalog stamped into an assertion, in milliseconds from `now`.
- *
- * Why it is needed at all, when both TTLs are eight hours: catalog mints the
- * assertion at T1 on ITS clock and this process stamps the session at T2, after
- * the round trip. A session created at T2 with an 8h assertion outlives it by the
- * round trip plus any clock skew. Near the boundary that surfaces as a 401 from
- * catalog on a session this process still considers live — a staff member told
- * their write failed, with a session that looks fine, and nothing to point at.
- *
- * Clamping closes the window. Catalog remains the authority on whether an
- * assertion is valid; this only ensures the session cannot promise more than the
- * credential it holds.
- *
- * An unparseable or absent assertion falls back to the session TTL rather than
- * refusing: whether a token is well-formed is catalog's verdict to give, not this
- * process's to pre-empt. (Same shape, same reasoning, as the storefront's
- * customer assertion — web/storefront/src/lib/session.ts.)
+ * Creates an independent session store. Production owns one process-wide instance;
+ * unit tests create their own instances so state cannot leak between cases.
  */
-function assertionLifetimeMs(assertion: string, wallClockNow: number): number | undefined {
-  const parts = assertion.split('.');
-  // v1.<staff>.<organizer>.<unix expiry>.<mac>
-  if (parts.length !== 5) return undefined;
-  const expiry = Number(parts[3]);
-  if (!Number.isFinite(expiry)) return undefined;
-  const remaining = expiry * 1000 - wallClockNow;
-  return remaining > 0 ? remaining : 0;
-}
+export function createSessionStore(): StaffSessionStore {
+  const sessions = new Map<string, Entry>();
 
-export function lookupSession(token: string, now = monotonicNow()): StaffPrincipal | undefined {
-  if (!token) return undefined;
-  const entry = sessions.get(token);
-  if (!entry) return undefined;
-  if (now >= entry.expiresAt) {
-    // Delete on read rather than leave it: the map is the only thing holding the
-    // principal, so dropping it here bounds how long an expired entry occupies
-    // memory between sweeps.
+  function createSession(
+    principal: StaffPrincipal,
+    now = monotonicNow(),
+    wallClockNow = Date.now(),
+  ): string {
+    // One pass reclaims expired entries and collects this principal's live tokens.
+    // Expiry-on-read cannot collect abandoned tokens, while the per-staff cap
+    // bounds both the map and this sweep.
     //
-    // It does NOT prevent a clock adjustment from resurrecting a session, and an
-    // earlier version of this comment claimed it did (TKT-302). Delete-on-read
-    // fires only when a token is PRESENTED, and the case that mattered was
-    // exactly the one that is not: a token expired while nobody used it, then a
-    // backwards wall-clock step puts its expiry in the future again, and the
-    // next presentation finds it live. What closes that is measuring the TTL on
-    // a monotonic clock (see monotonicNow), not this delete.
-    sessions.delete(token);
-    return undefined;
+    // Deleting from a Map while iterating it is well-defined in JS: entries already
+    // visited are gone, and no entry is skipped.
+    //
+    // Map iteration preserves insertion order, which is issuance order because
+    // every token is fresh and is never reinserted. Eviction must use that order:
+    // expiry timestamps can reorder when the wall clock moves backwards.
+    const mine: string[] = [];
+    for (const [token, entry] of sessions) {
+      if (now >= entry.expiresAt) {
+        sessions.delete(token);
+      } else if (entry.principal.staffId === principal.staffId) {
+        mine.push(token);
+      }
+    }
+
+    // Make room for the new one: drop this principal's oldest sessions until it is
+    // under the cap. Per principal, never global — a global cap would let one busy
+    // account evict another staff member's live session, turning a safety limit
+    // into a denial of service against colleagues.
+    for (let i = 0; i <= mine.length - MAX_SESSIONS_PER_STAFF; i++) {
+      sessions.delete(mine[i]!);
+    }
+
+    // 32 bytes = 256 bits. base64url so it survives a cookie value untouched.
+    const token = randomBytes(32).toString('base64url');
+    // The session never outlives the assertion it carries (TKT-245). Equal TTLs are
+    // not enough on their own — see assertionLifetimeMs.
+    const assertionMs = assertionLifetimeMs(principal.organizerAssertion, wallClockNow);
+    const lifetime = assertionMs === undefined ? SESSION_TTL_MS : Math.min(SESSION_TTL_MS, assertionMs);
+    sessions.set(token, { principal, expiresAt: now + lifetime });
+    return token;
   }
-  return entry.principal;
+
+  /**
+   * The expiry catalog stamped into an assertion, in milliseconds from `now`.
+   *
+   * Why it is needed at all, when both TTLs are eight hours: catalog mints the
+   * assertion at T1 on ITS clock and this process stamps the session at T2, after
+   * the round trip. A session created at T2 with an 8h assertion outlives it by the
+   * round trip plus any clock skew. Near the boundary that surfaces as a 401 from
+   * catalog on a session this process still considers live — a staff member told
+   * their write failed, with a session that looks fine, and nothing to point at.
+   *
+   * Clamping closes the window. Catalog remains the authority on whether an
+   * assertion is valid; this only ensures the session cannot promise more than the
+   * credential it holds.
+   *
+   * An unparseable assertion can only arrive through a hand-built principal or a
+   * future construction path: authenticateStaff rejects that shape before creating
+   * a production session. Falling back here keeps this store from becoming a second
+   * assertion parser while catalog remains the authority on signatures and expiry.
+   */
+  function assertionLifetimeMs(assertion: string, wallClockNow: number): number | undefined {
+    const parts = assertion.split('.');
+    // v1.<staff>.<organizer>.<unix expiry>.<mac>
+    if (parts.length !== 5) return undefined;
+    const expiry = Number(parts[3]);
+    if (!Number.isFinite(expiry)) return undefined;
+    const remaining = expiry * 1000 - wallClockNow;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  function lookupSession(token: string, now = monotonicNow()): StaffPrincipal | undefined {
+    if (!token) return undefined;
+    const entry = sessions.get(token);
+    if (!entry) return undefined;
+    if (now >= entry.expiresAt) {
+      // Delete on read rather than leave it: the map is the only thing holding the
+      // principal, so dropping it here bounds how long an expired entry occupies
+      // memory between sweeps.
+      //
+      // This only reclaims a presented token. Monotonic expiry prevents an
+      // unpresented token from becoming live again after a wall-clock rewind.
+      sessions.delete(token);
+      return undefined;
+    }
+    return entry.principal;
+  }
+
+  /**
+   * Server-side invalidation — the half that matters. Expiring the browser's
+   * cookie only asks the browser to forget; anyone who captured the value still
+   * holds it, and replay is exactly what COS-3 is about.
+   */
+  function destroySession(token: string): void {
+    sessions.delete(token);
+  }
+
+  return {
+    create: createSession,
+    lookup: lookupSession,
+    destroy: destroySession,
+  };
 }
 
-/**
- * Server-side invalidation — the half that matters. Expiring the browser's
- * cookie only asks the browser to forget; anyone who captured the value still
- * holds it, and replay is exactly what COS-3 is about.
- */
-export function destroySession(token: string): void {
-  sessions.delete(token);
-}
+/** The session store owned by this back-office process. */
+export const sessionStore = createSessionStore();
 
 /**
- * The cookie is scoped to the back office, NOT to the whole origin (ai-review
- * F3). The gateway serves the storefront at `/`, the scanner at `/scanner/` and
+ * The cookie is scoped to the back office, not to the whole origin. The gateway
+ * serves the storefront at `/`, the scanner at `/scanner/` and
  * the service APIs at `/api/*` — all the SAME origin. A `Path=/` cookie is
  * therefore attached by the browser to every storefront page view, every scanner
  * request and every API call, so any access log, error report or diagnostic echo

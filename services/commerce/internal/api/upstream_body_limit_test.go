@@ -47,7 +47,7 @@ func TestUpstreamCallBodyLimitBoundary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := bodyServer(t, int(tc.size))
-			s := New(nil, http.DefaultClient, srv.URL, srv.URL, srv.URL, "secret")
+			s := newTestServer(nil, http.DefaultClient, srv.URL, srv.URL, srv.URL, "secret")
 
 			code, body, err := s.call(context.Background(), http.MethodGet, srv.URL+"/anything", "", nil, true)
 			if tc.wantErr {
@@ -82,7 +82,7 @@ func TestUpstreamCallBodyLimitBoundary(t *testing.T) {
 // number and looks like nothing happened (ADR-028 fail-closed).
 func TestAnOversizePriceResolutionIsUnavailableNotAWrongPrice(t *testing.T) {
 	catalog := bodyServer(t, int(maxUpstreamResponseBytes)+1)
-	s := New(nil, http.DefaultClient, catalog.URL, catalog.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, catalog.URL, "", "secret")
 
 	org, tt := uuid.MustParse(pricingOrg), uuid.MustParse(pricingTT)
 	_, err := s.resolveTicketTypePrice(context.Background(), tt, org, 2, nil)

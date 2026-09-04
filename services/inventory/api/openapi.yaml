@@ -697,7 +697,7 @@ components:
         slot_id: {type: string, format: uuid}
         seat_map_id: {type: string, format: uuid, description: 'The published seat-map version this slot is seated against, as inventory holds it. Catalog publishes its own view on the performance; the two agreeing is what makes projection skew detectable rather than hidden.'}
         offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"'}
-        remaining_capacity: {type: integer, minimum: 0, description: 'The pool''s remaining aggregate headroom under exactly the test the seated claim path applies (target_capacity when a cut is pending, else capacity, minus confirmed and live held), and 0 on a slot that is not open. A CEILING, not a seat count — inventory does not hold the seat universe, that is the seat map in catalog, and a seated pool is provisioned from the venue''s GA snapshot. So it reads high when a small map sits in a large venue, and 0 when a capacity cut has drained a pool whose seats are free. Deliberately NOT the availability read''s `available`, which additionally subtracts unsold channel reservations that the seated claim path never consults. A picker must gate on BOTH this and unavailable_seat_identities; neither is sufficient alone.'}
+        remaining_capacity: {type: integer, minimum: 0, maximum: 9007199254740991, description: 'The pool''s remaining aggregate headroom under exactly the test the seated claim path applies (target_capacity when a cut is pending, else capacity, minus confirmed and live held), and 0 on a slot that is not open. A CEILING, not a seat count — inventory does not hold the seat universe, that is the seat map in catalog, and a seated pool is provisioned from the venue''s GA snapshot. So it reads high when a small map sits in a large venue, and 0 when a capacity cut has drained a pool whose seats are free. Deliberately NOT the availability read''s `available`, which additionally subtracts unsold channel reservations that the seated claim path never consults. A picker must gate on BOTH this and unavailable_seat_identities; neither is sufficient alone.'}
         unavailable_seat_identities:
           type: array
           description: 'Sorted, and [] rather than null on an empty seated pool — which is a different answer from 404 on an unknown slot'
@@ -817,9 +817,11 @@ components:
       type: object
       additionalProperties: false
       required: [channel, cap]
+      # The back office round-trips these JSON numbers. Keep them within the
+      # largest integer JavaScript can represent exactly.
       properties:
         channel: {type: string, minLength: 1, maxLength: 100}
-        cap: {type: integer, minimum: 1}
+        cap: {type: integer, minimum: 1, maximum: 9007199254740991}
         release_at: {type: string, format: date-time, description: 'When the unsold allocation returns to the public channel; omitted means never'}
         opens_at:
           type: string
@@ -867,6 +869,7 @@ components:
           type: integer
           format: int64
           minimum: 0
+          maximum: 9007199254740991
           description: >
             The allocation set revision this replacement is based on (TKT-250), as read from
             StaffAvailability. Compared under the pool row lock; a mismatch refuses with 409
@@ -888,7 +891,7 @@ components:
       required: [channel, cap, released, held, confirmed, available, window_open]
       properties:
         channel: {type: string}
-        cap: {type: integer}
+        cap: {type: integer, minimum: 1, maximum: 9007199254740991}
         release_at: {type: string, format: date-time}
         released: {type: boolean}
         opens_at:
@@ -930,29 +933,32 @@ components:
             the claim paths under the pool row lock, so an editor that dropped it
             would return a reseller's stock to the public pool — an authorization
             change, not a display bug.
-        held: {type: integer}
-        confirmed: {type: integer}
-        available: {type: integer}
+        held: {type: integer, minimum: 0, maximum: 9007199254740991}
+        confirmed: {type: integer, minimum: 0, maximum: 9007199254740991}
+        available: {type: integer, minimum: 0, maximum: 9007199254740991}
     StaffAvailability:
       type: object
       additionalProperties: false
       required: [slot_id, capacity, buyer_held, operational_held, reservation_held, confirmed, available, public_available, offering_status, channels]
+      # These counters become editable form state in the back office. The upper
+      # bounds prevent JSON parsing from silently rounding them.
       properties:
         slot_id: {type: string, format: uuid}
-        capacity: {type: integer, description: 'Effective capacity: the clamp floor while a cut drains (TKT-76)'}
-        target_capacity: {type: integer, description: 'Requested target while a clamped cut drains; absent otherwise'}
-        buyer_held: {type: integer}
-        operational_held: {type: integer}
-        reservation_held: {type: integer, description: 'Live group/agency reservation quantity (TKT-79)'}
-        confirmed: {type: integer}
-        available: {type: integer}
-        public_available: {type: integer}
+        capacity: {type: integer, minimum: 1, maximum: 9007199254740991, description: 'Effective capacity: the clamp floor while a cut drains (TKT-76)'}
+        target_capacity: {type: integer, minimum: 1, maximum: 9007199254740991, description: 'Requested target while a clamped cut drains; absent otherwise'}
+        buyer_held: {type: integer, minimum: 0, maximum: 9007199254740991}
+        operational_held: {type: integer, minimum: 0, maximum: 9007199254740991}
+        reservation_held: {type: integer, minimum: 0, maximum: 9007199254740991, description: 'Live group/agency reservation quantity (TKT-79)'}
+        confirmed: {type: integer, minimum: 0, maximum: 9007199254740991}
+        available: {type: integer, minimum: 0, maximum: 9007199254740991}
+        public_available: {type: integer, minimum: 0, maximum: 9007199254740991}
         offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open'}
         channels: {type: array, items: {$ref: '#/components/schemas/ChannelAvailability'}}
         allocation_revision:
           type: integer
           format: int64
           minimum: 0
+          maximum: 9007199254740991
           description: >
             The allocation set's current revision (TKT-250). An editor reads it here and presents
             it back on ChannelAllocationSet; the replace compares it under the pool row lock and
