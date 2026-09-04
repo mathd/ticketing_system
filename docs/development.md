@@ -87,7 +87,7 @@ credential; republishes the stored envelopes byte-identically to their original 
 deterministic `Nats-Msg-Id`s, marks rows only after the broker accepts):
 
 ```bash
-NATS_INVENTORY_REPROCESS_PASSWORD="$(grep '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)" \
+export NATS_INVENTORY_REPROCESS_PASSWORD="$(grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)"
 docker compose run --rm \
   -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
   inventory reprocess-quarantine
@@ -919,7 +919,7 @@ seven principals receives an independent `/dev/urandom` draw stored in `.env`:
 To run `inventory reprocess-quarantine`, pass `NATS_URL` with the operator password:
 
 ```bash
-NATS_INVENTORY_REPROCESS_PASSWORD="$(grep '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)" \
+export NATS_INVENTORY_REPROCESS_PASSWORD="$(grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)"
 docker compose run --rm \
   -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
   inventory reprocess-quarantine

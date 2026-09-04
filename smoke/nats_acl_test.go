@@ -520,15 +520,41 @@ func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
 			"scripts/smoke.sh must export it (a name-only check would pass while a renamed "+
 			"copy of the credential sat in a service's environment)", operatorVar)
 	}
-	for _, service := range []string{"inventory", "catalog", "commerce", "access", "payments"} {
-		env := envOf(service)
+	// EVERY container in the project, not a hand-listed subset. A fixed list of the five Go
+	// services would pass while the credential sat in the gateway, a web app, or a one-shot job
+	// (ai-review pass 2) — and the property being asserted is "nothing but the broker holds it",
+	// so the target set has to be discovered, not enumerated. Anything added to the stack later
+	// is covered without editing this test.
+	listed, err := dockerRun(ctx, "compose", "-p", project, "ps", "--all", "--format", "{{.Name}}")
+	if err != nil {
+		t.Fatalf("docker compose ps: %v: %s", err, listed)
+	}
+	containers := strings.Fields(listed)
+	if len(containers) < 5 {
+		t.Fatalf("found only %d containers in project %s; the sweep below would prove almost nothing", len(containers), project)
+	}
+	broker := fmt.Sprintf("%s-nats-1", project)
+	swept := 0
+	for _, container := range containers {
+		if container == broker {
+			continue // the broker is the one component that MUST hold it
+		}
+		env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
+		if err != nil {
+			continue // a container that vanished between ps and inspect (one-shot jobs do)
+		}
+		swept++
 		if strings.Contains(env, operatorVar+"=") {
-			t.Errorf("%s holds %s; the operator credential must reach only the nats container", service, operatorVar)
+			t.Errorf("%s holds %s; the operator credential must reach only %s", container, operatorVar, broker)
 		}
 		if strings.Contains(env, operatorPassword) {
-			t.Errorf("%s holds the operator password VALUE; it must reach only the nats container", service)
+			t.Errorf("%s holds the operator password VALUE; it must reach only %s", container, broker)
 		}
 	}
+	if swept == 0 {
+		t.Fatalf("swept no containers; the assertions above proved nothing")
+	}
+	t.Logf("swept %d containers (excluding %s)", swept, broker)
 
 	// And the inventory server must hold its OWN credential, so the check above is not passing
 	// merely because the service has no NATS credential at all.
