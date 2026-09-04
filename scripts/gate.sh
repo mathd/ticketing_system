@@ -40,7 +40,7 @@ VERDICT="$ROOT/.gate.verdict"
 tree_digest() {
   {
     git rev-parse HEAD
-    git diff HEAD
+    git diff HEAD --
     # Not `xargs`: with no untracked files it can still run the command once,
     # and `shasum` with no arguments reads stdin and blocks the gate forever.
     git ls-files --others --exclude-standard -z |
