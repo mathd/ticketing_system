@@ -158,7 +158,7 @@ func (p *Postgres) SwitchExchange(ctx context.Context, in SwitchExchangeInput) e
 		}
 		// Checked under the same row lock as the void, so a scan cannot commit between
 		// the two. Without the lock this would be a read that both paths could lose.
-		admitted, err := ticketAdmitted(ctx, tx, id)
+		admitted, err := ticketAdmittedUnion(ctx, tx, id)
 		if err != nil {
 			return err
 		}
@@ -209,16 +209,4 @@ func ticketExchanged(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (bool,
 	var exists bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE ticket_id=$1 AND event_type='exchanged')`, ticketID).Scan(&exists)
 	return exists, err
-}
-
-// ticketAdmitted reports whether a ticket has been used to go through a door.
-//
-// It asks the UNION (ADR-025 §D2), not the trail: a §D6 degraded admission is recorded only
-// as `lifecycle_integrity_quarantine.admitted_at`, so a trail-only reader saw an unadmitted
-// ticket, and SwitchExchange voided it and issued a fresh unredeemed replacement — the
-// double admission ErrSourceTicketsAlreadyAdmitted exists to prevent (TKT-299). The rule and
-// the vocabularies that satisfy it, `duplicate_admit`'s exclusion included, live in
-// admission.go so this guard and the live scan path cannot drift apart again.
-func ticketAdmitted(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (bool, error) {
-	return ticketAdmittedUnion(ctx, tx, ticketID)
 }

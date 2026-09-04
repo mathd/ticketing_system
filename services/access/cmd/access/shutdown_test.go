@@ -41,9 +41,9 @@ func TestAwaitShutdownIgnoresCancellationRace(t *testing.T) {
 // swallowing. A consumer that died of something real still takes the process
 // down, and so does a context.Canceled that did not come from our own signal.
 func TestAwaitShutdownReturnsRealConsumerFailure(t *testing.T) {
-	// The shape consumer.waitConsume returns when a durable disappears — the
+	// The shape durableconsumer.WaitWithCause returns when a durable disappears:
 	// failure that most needs to survive this filter.
-	durableGone := errors.New("access-ticket-issuer: consume context closed (durable deleted or subscription terminated)")
+	durableGone := errors.New("access-ticket-issuer: consume context closed (durable deleted)")
 
 	tests := []struct {
 		name     string
@@ -88,7 +88,7 @@ func TestAwaitShutdownReturnsRealConsumerFailure(t *testing.T) {
 // producer: at capacity 1 the second failure blocks on the send and nothing can
 // observe it (ai-review R1).
 func TestAwaitShutdownPrefersRealFailureOverCancellation(t *testing.T) {
-	durableGone := errors.New("access-slot-policy: consume context closed (durable deleted or subscription terminated)")
+	durableGone := errors.New("access-slot-policy: consume context closed (durable deleted)")
 	canceled := fmt.Errorf("consumer stopped: %w", context.Canceled)
 
 	orders := map[string][]error{

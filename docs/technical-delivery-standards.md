@@ -9,8 +9,8 @@ working agreement; accepted ADRs bind architectural choices.
 - Architecture decisions: `docs/adr/`
 - Current topology and ownership: `docs/architecture.md`
 - Ticket state and delivery context: the sdlc board (`~/sources/sdlc-board`), backed by a Fast
-  Note Sync vault — not this repo. The `.sdlc/` directory here is a superseded rollback stub and
-  must not be run.
+  Note Sync vault, not this repository. The former `.sdlc/` rollback stub was removed; git history
+  remains the rollback mechanism.
 - API behavior: `services/*/api/openapi.yaml` plus implementation conformance tests
 - Dependencies and executable versions: manifests, lockfiles, Dockerfiles, Compose, and workflows
 
@@ -26,6 +26,7 @@ Run `make deps` on a clean clone, then `make check`. CI invokes the same gate.
 | Generate | `oapi-codegen`, `openapi-typescript` | Detect committed contract/type drift |
 | Dependency declarations | `go mod edit -json` over every module | One version per shared Go dependency, horizontally (ADR-035) |
 | Build-list lag | `go list -m` against every module's declarations | No manifest declares below the workspace-selected version (ADR-035 §Amendment) |
+| Standalone Go modules | workspace-disabled, network-disabled `go list` | Every workspace module has a complete readonly manifest and checksum set |
 | Go lint | pinned `golangci-lint` | Static analysis for every Go module |
 | TypeScript lint | `oxlint` | Frontend static analysis |
 | Tests | `go test`, Vitest | Package and component behavior |

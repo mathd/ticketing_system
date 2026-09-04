@@ -16,15 +16,23 @@ import type { components } from './api-types.gen';
 /**
  * The vocabulary, taken from the generated contract rather than re-typed.
  * `StaffRole` in `services/catalog/api/openapi.yaml` is the single source; if a
- * role is added there and not handled here, `ROUTE_MATRIX`'s exhaustive typing
+ * role is added there and not handled here, `STAFF_ROLE_MEMBERS`' exhaustive typing
  * stops compiling. That is deliberate: a new role must not default to anything.
  */
 export type StaffRole = components['schemas']['StaffRole'];
 
-export const STAFF_ROLES = ['admin', 'box_office', 'finance'] as const satisfies readonly StaffRole[];
+const STAFF_ROLE_MEMBERS = {
+  admin: true,
+  box_office: true,
+  finance: true,
+} as const satisfies Record<StaffRole, true>;
 
-export function isRecognisedRole(role: string): role is StaffRole {
-  return (STAFF_ROLES as readonly string[]).includes(role);
+export const STAFF_ROLES: readonly StaffRole[] = Object.freeze(
+  Object.keys(STAFF_ROLE_MEMBERS) as StaffRole[],
+);
+
+export function isRecognisedRole(role: unknown): role is StaffRole {
+  return typeof role === 'string' && Object.hasOwn(STAFF_ROLE_MEMBERS, role);
 }
 
 export interface RouteRule {
@@ -224,7 +232,7 @@ export function classifyRoute(pathname: string): RouteRule | undefined {
  * and an authenticated route with no role list all answer `false`. A route
  * nobody classified must not be a route everybody can reach.
  */
-export function canAccessRoute(pathname: string, role: StaffRole): boolean {
+export function canAccessRoute(pathname: string, role: unknown): boolean {
   const rule = classifyRoute(pathname);
   if (!rule) return false;
   if (rule.anonymous) return true;

@@ -1,9 +1,9 @@
 # Plan: move the SDLC board from git to a Fast Note Sync vault
 
 > **Historical record — this migration shipped.** Ticket state now lives in an FNS vault served by
-> `~/sources/sdlc-board`, and `.sdlc/` is a superseded rollback stub that must not be run (AGENTS.md).
-> Kept for the reasoning behind the move, not as live instructions. Retained under `docs/` in
-> TKT-312, having sat untracked inside the stub it replaced.
+> `~/sources/sdlc-board`. The superseded `.sdlc/` stub has been removed; git history is the rollback
+> mechanism. This document is kept for the reasoning behind the move, not as live instructions.
+> It was retained under `docs/` in TKT-312 after sitting untracked inside the stub it replaced.
 
 Implementation plan. Replaces the `sdlc-state` git branch as the board's source of truth with a
 Fast Note Sync (FNS) vault, keeps a local per-dev board server, and adds a multi-project vault
@@ -590,4 +590,3 @@ Each of these must be shown to fail before it is trusted.
 The board is a web UI with write forms, so `AGENTS.md`'s browser rule applies: a drag that moves a
 card is not verified until a browser has performed it and the vault has been re-read to confirm
 the write landed.
-

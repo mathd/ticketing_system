@@ -73,7 +73,7 @@ func everyInternalOperationExceptRefund() []internalOp {
 
 func serveWithStaffCredential(t *testing.T, op internalOp) *httptest.ResponseRecorder {
 	t.Helper()
-	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 	req := httptest.NewRequest(op.method, op.path, bytes.NewBufferString(op.body))
 	if op.body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -99,7 +99,7 @@ func serveWithStaffCredential(t *testing.T, op internalOp) *httptest.ResponseRec
 func internalRoutesFromRouter(t *testing.T) []string {
 	t.Helper()
 	r := chi.NewRouter()
-	New(nil, http.DefaultClient, "", "", "", internalTok).registerRoutes(r)
+	newTestServer(nil, http.DefaultClient, "", "", "", internalTok).registerRoutes(r)
 	var found []string
 	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasPrefix(route, "/internal/") {
@@ -185,12 +185,12 @@ func TestStaffCredentialOpensNoInternalOperationButTheRefund(t *testing.T) {
 }
 
 // The complement: the refund is not refused for want of a credential. It cannot
-// complete here — New(nil, …) has no database — so this asserts only that the
+// complete here — newTestServer(nil, …) has no database — so this asserts only that the
 // request gets PAST the credential check, which is the half this file owns.
 // That it then refunds correctly is proven end to end in the smoke suite.
 func TestStaffCredentialIsAcceptedByTheRefund(t *testing.T) {
 	body := `{"organizer_id":"` + someUUID + `","quantity":1,"actor":"staff:amy","reason":"customer called"}`
-	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/refunds", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "tkt-194-accepted")
@@ -215,7 +215,7 @@ func TestStaffCredentialIsAcceptedByTheRefund(t *testing.T) {
 // it. This is what proves the classification true.
 func TestStaffCredentialIsAcceptedByTheVoid(t *testing.T) {
 	body := `{"organizer_id":"` + someUUID + `","actor":"staff:amy","reason":"event cancelled"}`
-	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/voids", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "tkt-171-accepted")
@@ -244,7 +244,7 @@ func TestVoidRefusesAWrongOrMissingStaffCredential(t *testing.T) {
 		"the internal token in the staff header": internalTok,
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+			s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/voids", bytes.NewBufferString(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "tkt-171-refused")
@@ -271,7 +271,7 @@ func TestRefundRefusesAWrongOrMissingStaffCredential(t *testing.T) {
 		"the internal token in the staff header": internalTok,
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+			s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/refunds", bytes.NewBufferString(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "tkt-194-refused")
@@ -291,7 +291,7 @@ func TestRefundRefusesAWrongOrMissingStaffCredential(t *testing.T) {
 // the internal token already follows.
 func TestAnUnconfiguredStaffCredentialOpensNothing(t *testing.T) {
 	body := `{"organizer_id":"` + someUUID + `","quantity":1,"actor":"staff:amy","reason":"customer called"}`
-	s := New(nil, http.DefaultClient, "", "", "", internalTok) // no WithStaffWriteCredential
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok) // no WithStaffWriteCredential
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/refunds", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "tkt-194-unconfigured")
@@ -348,7 +348,7 @@ func TestInternalTokenIsChosenByDestination(t *testing.T) {
 // is CLASSIFIED as staff-openable, and a route classified as open that is in fact closed
 // would pass it. This is what proves the classification true.
 func TestStaffCredentialIsAcceptedByTheOrderDetail(t *testing.T) {
-	s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 	req := httptest.NewRequest(http.MethodGet, "/internal/orders/"+someUUID+"?organizer_id="+someUUID, nil)
 	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
 	res := httptest.NewRecorder()
@@ -389,7 +389,7 @@ func TestOrderDetailRefusesAWrongOrMissingStaffCredential(t *testing.T) {
 		{"a prefix of the staff credential", "X-Commerce-Staff-Write-Token", staffTok[:len(staffTok)-1]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := New(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
+			s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok).WithStaffWriteCredential(staffTok)
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			if tc.header != "" {
 				req.Header.Set(tc.header, tc.value)

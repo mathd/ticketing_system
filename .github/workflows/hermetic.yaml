@@ -1,5 +1,6 @@
-# Hermetic smoke: the full in-Docker build path (compose.yaml only, no
-# host-built artifacts). Per-PR `make check` uses the fast host-built path
+# Hermetic smoke: full in-Docker builds with no host-built artifacts. It uses
+# the shared runtime overlays for direct ports, load instrumentation, and test
+# cadence. Per-PR `make check` uses the fast host-built path
 # (TKT-42), so this workflow keeps the hermetic builds honest: weekly on
 # main, and on any PR that touches the build files themselves.
 name: hermetic-smoke
@@ -11,7 +12,9 @@ on:
     paths:
       - build/go.Dockerfile
       - compose.yaml
+      - compose.direct-ports.yaml
       - compose.smoke.yaml
+      - compose.smoke-cadence.yaml
       - compose.onsale-load.yaml
       - deploy/nats/nats-server.conf
       - .dockerignore

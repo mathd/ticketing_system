@@ -40,8 +40,16 @@ func (s *Server) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 	if !s.allowStaffAuth(w, r, in.Identifier) {
 		return
 	}
+	if len(s.organizerAssertionKey) == 0 {
+		// Startup refuses this configuration. Keep the handler fail-closed too,
+		// because a separately constructed server must not report a successful
+		// principal that cannot satisfy StaffPrincipal's assertion contract.
+		s.log.ErrorContext(r.Context(), "staff authentication has no organizer assertion key")
+		writeJSON(w, http.StatusInternalServerError, Error{Error: "authentication unavailable"})
+		return
+	}
 
-	principal, err := s.store.AuthenticateStaff(r.Context(), in.Identifier, in.Password)
+	principal, err := s.staff.AuthenticateStaff(r.Context(), in.Identifier, in.Password)
 	switch {
 	case errors.Is(err, store.ErrStaffCredentialsInvalid):
 		writeJSON(w, http.StatusUnauthorized, Error{Error: invalidStaffCredentials})

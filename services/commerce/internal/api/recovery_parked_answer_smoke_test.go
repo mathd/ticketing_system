@@ -112,7 +112,7 @@ func TestParkedReleasePendingGetsTheSameAnswerFromBothPaths(t *testing.T) {
 					tc.name, marker.Valid, tc.parked)
 			}
 
-			srv := New(db, http.DefaultClient, "", "", "", "tok")
+			srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
 
 			// Path A — answerRecovered, called directly. This is the guarded-write loser's
 			// answer: the path a checkout takes when recovery won the race for its order.
@@ -274,7 +274,7 @@ func TestCheckoutConsultsTheParkedTruthWhenItsGuardedWriteLoses(t *testing.T) {
 	}))
 	defer inventory.Close()
 
-	srv := New(db, http.DefaultClient, "", inventory.URL, payments.URL, "tok")
+	srv := newTestServer(db, http.DefaultClient, "", inventory.URL, payments.URL, "tok")
 	r := chi.NewRouter()
 	r.Post("/reservations/{id}/checkout", srv.checkout)
 

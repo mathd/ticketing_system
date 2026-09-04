@@ -21,6 +21,7 @@
 // leaves everything else intact, which is why this page must both SHOW disabled
 // channels and be able to re-enable them.
 import Layout from '../layouts/Layout.astro';
+import { AmbiguousMutationError } from '../lib/upstream';
 import {
   CatalogApiError,
   type Channel,
@@ -69,7 +70,7 @@ if (Astro.request.method === 'POST') {
         // `default: true` applies, and sent explicitly as false when it is not.
         // An unchecked checkbox submits NOTHING — see checkboxChecked.
         const enabled = checkboxChecked(form.get('enabled'));
-        await createChannel(staff.organizerAssertion, {
+        await createChannel(staff.organizerAssertion, staff.organizerId, {
           code: input.code,
           displayName: input.displayName,
           kind: asChannelKind(input.kind)!,
@@ -87,7 +88,7 @@ if (Astro.request.method === 'POST') {
         errors = local;
         failedChannelId = field('channel_id');
       } else {
-        await updateChannel(staff.organizerAssertion, field('channel_id'), {
+        await updateChannel(staff.organizerAssertion, staff.organizerId, field('channel_id'), {
           code: input.code,
           displayName: input.displayName,
           kind: asChannelKind(input.kind)!,
@@ -104,7 +105,7 @@ if (Astro.request.method === 'POST') {
       // kind ride along in hidden fields. `enabled` here is an explicit value
       // rather than a checkbox: the button states which way it is going, so
       // there is no unchecked-box ambiguity to resolve.
-      await updateChannel(staff.organizerAssertion, field('channel_id'), {
+      await updateChannel(staff.organizerAssertion, staff.organizerId, field('channel_id'), {
         code: field('code'),
         displayName: field('display_name'),
         kind: asChannelKind(field('kind'))!,
@@ -116,13 +117,17 @@ if (Astro.request.method === 'POST') {
     if (action === 'update' || action === 'set-enabled') {
       failedChannelId = field('channel_id');
     }
-    errors =
-      e instanceof CatalogApiError
-        ? classifyCatalogError(e.status, e.message, {
+    errors = e instanceof CatalogApiError
+      ? classifyCatalogError(e.status, e.message, {
             code: String(submitted.code ?? ''),
             displayName: String(submitted.display_name ?? ''),
             kind: String(submitted.kind ?? ''),
           })
+      : e instanceof AmbiguousMutationError
+        ? {
+            fields: {},
+            form: 'Catalog may have saved this channel change, but its response could not be verified. Reload and reconcile the channel list before retrying.',
+          }
         : { fields: {}, form: 'Catalog could not be reached. The change was not saved — try again.' };
   }
 }
@@ -132,7 +137,7 @@ if (Astro.request.method === 'POST') {
 let channels: Channel[] = [];
 let readFailed = false;
 try {
-  channels = await listChannelsForOperator(staff.organizerAssertion);
+  channels = await listChannelsForOperator(staff.organizerAssertion, staff.organizerId);
 } catch {
   readFailed = true;
 }

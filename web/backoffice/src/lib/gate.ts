@@ -4,7 +4,7 @@
 // Kept separate from middleware.ts and free of Astro imports so both rules are
 // unit-testable as plain functions — the middleware is only the wiring.
 
-import { canAccessRoute, isAnonymousRoute, type StaffRole } from './authorization';
+import { canAccessRoute, isAnonymousRoute } from './authorization';
 
 /** Astro's `base`. Every path this app serves is under it, healthz included. */
 export const BASE = '/admin';
@@ -140,7 +140,7 @@ export async function gateRequest<P extends { role: string }>(deps: GateDeps<P>)
     // TKT-197. Fail closed on everything: an unclassified route, an
     // unrecognised role, and a role not on the route's list all refuse. A route
     // nobody classified must not be a route everybody can reach.
-    if (!canAccessRoute(deps.pathname, principal.role as StaffRole)) {
+    if (!canAccessRoute(deps.pathname, principal.role)) {
       // The SAME generic refusal as an untrusted origin — it names neither the
       // required role nor whether the route exists, so a signed-in box-office
       // member cannot map the admin surface by probing it.

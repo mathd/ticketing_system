@@ -40,7 +40,7 @@ func (s *Server) ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, i
 	// pointer is what carries that distinction all the way to the comparator —
 	// a "" sentinel would be indistinguishable from a caller who sent an empty
 	// channel, which the contract's minLength refuses anyway.
-	sel, err := s.store.ResolveTicketTypeFees(r.Context(), id, params.ChannelCode, time.Now().UTC())
+	sel, err := s.pricing.ResolveTicketTypeFees(r.Context(), id, params.ChannelCode, time.Now().UTC())
 	if err != nil {
 		// A rule whose currency differs from the ticket type's is invalid
 		// configuration in OUR data, not something the caller can fix by

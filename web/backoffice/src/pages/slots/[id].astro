@@ -35,11 +35,11 @@ import Layout from '../../layouts/Layout.astro';
 import {
   type AllocationFormErrors,
   type AllocationRow,
+  allocationRowsFromAvailability,
   allocationErrors,
   parseAllocationForm,
   parseAllocationRevision,
   toAllocationRequest,
-  toMinuteInput,
   MissingAllocationChannel,
   UnknownAllocationChannel,
   UnzonedReleaseTime,
@@ -53,6 +53,7 @@ import {
   getStaffAvailability,
   replaceChannelAllocations,
 } from '../../lib/inventory';
+import { AmbiguousMutationError } from '../../lib/upstream';
 
 const staff = Astro.locals.staff;
 if (!staff) throw new Error('unauthenticated request reached the slot allocations page');
@@ -84,12 +85,12 @@ let submittedRevision: number | undefined;
 // can be stale or forged, so treating them as evidence of stored state would let a crafted
 // POST write an `opens_at`/`closes_at` this screen does not even expose for editing.
 let availability: StaffAvailability | null = null;
-let readFailed = false;
 try {
   availability = await getStaffAvailability(slotId, staff.organizerId);
 } catch {
-  readFailed = true;
+  // The null value drives both the POST refusal and the rendered outage message.
 }
+const readFailed = availability === null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -108,7 +109,7 @@ if (Astro.request.method === 'POST') {
   const local = allocationErrors(null, rows);
   if (Object.keys(local.rows).length > 0 || local.form) {
     errors = local;
-  } else if (readFailed) {
+  } else if (availability === null) {
     // Refusing is the only safe answer: without the current set this save could only
     // reconstruct the untouched fields from the form, which is the forgeable path above.
     errors = {
@@ -129,7 +130,7 @@ if (Astro.request.method === 'POST') {
     try {
       await replaceChannelAllocations(
         slotId,
-        toAllocationRequest(staff.organizerId, rows, availability?.channels ?? [], submittedRevision),
+        toAllocationRequest(staff.organizerId, rows, availability.channels, submittedRevision),
       );
       return Astro.redirect(here, 303);
     } catch (e) {
@@ -167,6 +168,11 @@ if (Astro.request.method === 'POST') {
         };
       } else if (e instanceof InventoryApiError) {
         errors = allocationErrors({ error: e.message, code: e.code, channel: e.channel }, rows);
+      } else if (e instanceof AmbiguousMutationError) {
+        errors = {
+          rows: {},
+          form: 'Inventory may have saved this allocation set, but its response could not be verified. Reload and reconcile the current allocations before retrying.',
+        };
       } else {
         errors = {
           rows: {},
@@ -182,7 +188,11 @@ if (Astro.request.method === 'POST') {
 // never registered. So a registry miss marks the row, and never hides or disables it.
 let registered = new Set<string>();
 try {
-  registered = new Set((await listChannelsForOperator(staff.organizerAssertion)).map((c: Channel) => c.code));
+  registered = new Set(
+    (await listChannelsForOperator(staff.organizerAssertion, staff.organizerId)).map(
+      (c: Channel) => c.code,
+    ),
+  );
 } catch {
   // A registry outage costs the display names only. Editing must still work, so this is
   // deliberately not `readFailed`.
@@ -191,19 +201,10 @@ try {
 
 const stored: ChannelAvailability[] = availability?.channels ?? [];
 
-// The rendering and the "did the operator touch this?" comparison MUST agree, so both use
-// the one formatter in allocation-form.ts. Two copies would drift, and the drift would
-// read as an edit — silently truncating a boundary on an untouched field.
-const localInput = toMinuteInput;
-
 // What the form renders: the submitted rows after a refusal, otherwise the stored set.
 const rows: AllocationRow[] =
   submitted ??
-  stored.map((c) => ({
-    channel: c.channel,
-    cap: String(c.cap),
-    releaseAt: localInput(c.release_at),
-  }));
+  allocationRowsFromAvailability(stored);
 
 /** Live consumption for a row, by channel code — held plus confirmed. */
 const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confirmed: c.confirmed }]));

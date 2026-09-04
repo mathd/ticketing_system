@@ -232,7 +232,7 @@ func (c *PolicyConsumer) Run(ctx context.Context) error {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-slot-policy", &cause); err != nil {
+	if err := durableconsumer.WaitWithCause(ctx, cc.Closed(), &c.ready, "access-slot-policy", &cause); err != nil {
 		return err
 	}
 	return fmt.Errorf("policy consumer stopped: %w", ctx.Err())

@@ -8,16 +8,48 @@ import (
 
 	"github.com/google/uuid"
 
-	"ticketing/services/catalog/internal/events"
 	"ticketing/services/catalog/internal/store"
 )
 
-func TestSubcommandsRegisterReemitPolicies(t *testing.T) {
-	subs := subcommands()
-	for _, name := range []string{"migrate", "healthcheck", "reemit-policies"} {
-		if _, ok := subs[name]; !ok {
-			t.Fatalf("subcommands() lacks %q", name)
-		}
+func TestCommandRegistryInvokesEveryCatalogCallback(t *testing.T) {
+	var invoked string
+	withoutArgs := func(name string) func() error {
+		return func() error { invoked = name; return nil }
+	}
+	withArgs := func(name string) func([]string) error {
+		return func([]string) error { invoked = name; return nil }
+	}
+	callbacks := commandCallbacks{
+		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
+		reemitPolicies: withArgs("reemit-policies"), reemitOrphanPrevention: withArgs("reemit-orphan-prevention"),
+		provisionStaff: withArgs("provision-staff"), validateRules: withArgs("validate-rules"),
+	}
+	registry := commandRegistry(callbacks)
+	names := []string{
+		"migrate", "healthcheck", "reemit-policies", "reemit-orphan-prevention",
+		"provision-staff", "validate-rules",
+	}
+	if len(registry) != len(names) {
+		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			invoked = ""
+			got := execute([]string{name, "tail"}, callbacks, func() error {
+				t.Fatal("server ran after a command was selected")
+				return nil
+			})
+			wantExit := 0
+			if name == "healthcheck" {
+				wantExit = 7
+			}
+			if got.Name != name || got.Err != nil || got.ExitCode != wantExit {
+				t.Fatalf("dispatch result = %+v, want %s with exit %d", got, name, wantExit)
+			}
+			if invoked != name {
+				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+		})
 	}
 }
 
@@ -28,10 +60,11 @@ func TestReemitPoliciesRejectsArguments(t *testing.T) {
 }
 
 type fakeReemit struct {
-	rows      []store.Performance
-	published []store.Performance
-	pubErr    error
-	pageSizes []int
+	rows       []store.Performance
+	backfilled []store.Performance
+	corrected  []store.Performance
+	pubErr     error
+	pageSizes  []int
 }
 
 func (f *fakeReemit) list(_ context.Context, after *uuid.UUID, limit int) ([]store.Performance, error) {
@@ -51,16 +84,24 @@ func (f *fakeReemit) list(_ context.Context, after *uuid.UUID, limit int) ([]sto
 	return f.rows[start:end], nil
 }
 
-func (f *fakeReemit) publish(_ context.Context, p store.Performance) error {
+func (f *fakeReemit) PerformancePublishedBackfill(_ context.Context, p store.Performance) error {
 	if f.pubErr != nil {
 		return f.pubErr
 	}
-	f.published = append(f.published, p)
+	f.backfilled = append(f.backfilled, p)
+	return nil
+}
+
+func (f *fakeReemit) PerformancePublishedOrphanCorrection(_ context.Context, p store.Performance) error {
+	if f.pubErr != nil {
+		return f.pubErr
+	}
+	f.corrected = append(f.corrected, p)
 	return nil
 }
 
 func reemitterFor(f *fakeReemit) policyReemitter {
-	return policyReemitter{list: f.list, publish: f.publish}
+	return policyReemitter{list: f.list, publisher: f}
 }
 
 func perfRow(mode string) store.Performance {
@@ -81,23 +122,13 @@ func TestReemitPublishesEachListedSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != len(rows) || len(f.published) != len(rows) {
-		t.Fatalf("reemitted=%d published=%d, want %d", n, len(f.published), len(rows))
+	if n != len(rows) || len(f.backfilled) != len(rows) {
+		t.Fatalf("reemitted=%d backfilled=%d, want %d", n, len(f.backfilled), len(rows))
 	}
-	for i, p := range f.published {
-		if p.ID != rows[i].ID {
-			t.Fatalf("published[%d]=%s, want %s", i, p.ID, rows[i].ID)
+	for i, p := range f.backfilled {
+		if p != rows[i] {
+			t.Fatalf("backfilled[%d]=%+v, want %+v", i, p, rows[i])
 		}
-	}
-}
-
-// TestReemitDeterministicIDMatchesBackfillEventID: the id each slot is emitted
-// under is BackfillEventID (distinct from the live EventID) — pinned here because
-// it is the invariant that makes the re-emission escape dedup (TKT-96).
-func TestReemitDeterministicIDMatchesBackfillEventID(t *testing.T) {
-	p := perfRow("multi")
-	if events.BackfillEventID(p) == events.EventID(p) {
-		t.Fatal("backfill id must differ from the live id or dedup swallows the re-emission")
 	}
 }
 

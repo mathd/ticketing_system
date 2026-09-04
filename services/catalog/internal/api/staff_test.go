@@ -115,11 +115,9 @@ func TestAuthenticateStaffMintsNothingWhenTheCredentialsAreRefused(t *testing.T)
 	}
 }
 
-// With no key configured the server mints nothing rather than minting something
-// unverifiable. Startup refuses that configuration, so this pins the behaviour of
-// a construction path that forgets -- the alternative is a token the back office
-// stores and forwards forever, which catalog then refuses on every write.
-func TestAuthenticateStaffWithNoAssertionKeyMintsNothing(t *testing.T) {
+// Startup refuses a missing key. The handler also fails closed so a separate
+// construction path cannot return a contract-invalid successful principal.
+func TestAuthenticateStaffWithNoAssertionKeyFailsClosed(t *testing.T) {
 	// The construction path that forgets the key.
 	e := newEnvWithAssertionKey(t, "")
 	staffID, org := uuid.New(), uuid.New()
@@ -130,11 +128,14 @@ func TestAuthenticateStaffWithNoAssertionKeyMintsNothing(t *testing.T) {
 
 	rec := e.do("POST", "/staff/authenticate", StaffCredentials{
 		Identifier: "ada@example.test", Password: "correct horse"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500: %s", rec.Code, rec.Body.String())
 	}
-	if got := decode[StaffPrincipal](t, rec).OrganizerAssertion; got != "" {
-		t.Fatalf("an unkeyed server minted %q, want no assertion at all", got)
+	if body := rec.Body.String(); !strings.Contains(body, "authentication unavailable") {
+		t.Fatalf("unkeyed server returned the wrong failure: %s", body)
+	}
+	if strings.Contains(rec.Body.String(), organizerAssertionVersion+".") {
+		t.Fatalf("an unkeyed server returned something assertion-shaped: %s", rec.Body.String())
 	}
 }
 

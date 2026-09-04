@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,19 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 )
+
+type countingReadCloser struct {
+	reader io.Reader
+	read   int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+func (*countingReadCloser) Close() error { return nil }
 
 var testSpec = []byte(`openapi: 3.0.3
 info:
@@ -116,6 +130,32 @@ func TestRequestValidationRemainsEnabledWhenResponseValidationIsDisabled(t *test
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRequestValidationBoundsBodyBeforeReadingIt(t *testing.T) {
+	handler, err := RequestValidator(testSpec, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("oversized request reached handler")
+	}), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := `{"name":"` + strings.Repeat("a", int(maxValidatedRequestBodyBytes)) + `"}`
+	body := &countingReadCloser{reader: strings.NewReader(payload)}
+	request := httptest.NewRequest(http.MethodPost, "/things", nil)
+	request.Body = body
+	request.ContentLength = -1
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if body.read != maxValidatedRequestBodyBytes+1 {
+		t.Fatalf("validator read %d body bytes, want exactly %d", body.read, maxValidatedRequestBodyBytes+1)
 	}
 }
 

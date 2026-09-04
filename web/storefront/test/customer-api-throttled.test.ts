@@ -41,7 +41,11 @@ describe('a 429 from commerce is its own reason, never a neighbouring one', () =
 
   it('claiming a guest order does not report it as refused', async () => {
     respondWith(429);
-    const result = await claimGuestOrder('11111111-1111-1111-1111-111111111111', 'assertion');
+    const result = await claimGuestOrder(
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+      'assertion',
+    );
     expect(result).toEqual({ ok: false, reason: 'throttled' });
   });
 

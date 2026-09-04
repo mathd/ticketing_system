@@ -9,6 +9,37 @@ function jsonResponse(body: unknown, cacheControl: string): Response {
   });
 }
 
+function decodeId(value: unknown): { id: string } {
+  if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string') {
+    throw new TypeError('id response is malformed');
+  }
+  return { id: value.id };
+}
+
+function decodeOK(value: unknown): { ok: boolean } {
+  if (typeof value !== 'object' || value === null || !('ok' in value) || typeof value.ok !== 'boolean') {
+    throw new TypeError('ok response is malformed');
+  }
+  return { ok: value.ok };
+}
+
+function decodeNested(value: unknown): { nested: { label: string } } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('nested' in value) ||
+    typeof value.nested !== 'object' ||
+    value.nested === null ||
+    !('label' in value.nested) ||
+    typeof value.nested.label !== 'string'
+  ) {
+    throw new TypeError('nested response is malformed');
+  }
+  return value as { nested: { label: string } };
+}
+
+const decodeRaw = (value: unknown): unknown => value;
+
 describe('parseMaxAge', () => {
   it('reads max-age and treats no-store/absent as uncacheable', () => {
     expect(parseMaxAge('public, max-age=300, s-maxage=300')).toBe(300);
@@ -23,9 +54,9 @@ describe('PageDataCache', () => {
     let nowMs = 1_000_000;
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => nowMs);
 
-    const first = await cache.get('http://gw/api/catalog/public/events?locale=fr');
+    const first = await cache.get('http://gw/api/catalog/public/events?locale=fr', decodeRaw);
     nowMs += 200_000; // 200s later: still inside the 300s window
-    const second = await cache.get('http://gw/api/catalog/public/events?locale=fr');
+    const second = await cache.get('http://gw/api/catalog/public/events?locale=fr', decodeRaw);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(first.ageSeconds).toBe(0);
@@ -38,9 +69,9 @@ describe('PageDataCache', () => {
     let nowMs = 0;
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => nowMs);
 
-    await cache.get('http://gw/x');
+    await cache.get('http://gw/x', decodeRaw);
     nowMs = 300_000; // exactly at expiry: stale
-    const result = await cache.get('http://gw/x');
+    const result = await cache.get('http://gw/x', decodeRaw);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(result.ageSeconds).toBe(0);
@@ -52,9 +83,9 @@ describe('PageDataCache', () => {
     );
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
 
-    const a = await cache.get<{ id: string }>('http://gw/public/events/A?locale=fr');
-    const b = await cache.get<{ id: string }>('http://gw/public/events/B?locale=fr');
-    const aEn = await cache.get<{ id: string }>('http://gw/public/events/A?locale=en');
+    const a = await cache.get('http://gw/public/events/A?locale=fr', decodeId);
+    const b = await cache.get('http://gw/public/events/B?locale=fr', decodeId);
+    const aEn = await cache.get('http://gw/public/events/A?locale=en', decodeId);
 
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(a.data.id).toBe('/public/events/A');
@@ -71,13 +102,96 @@ describe('PageDataCache', () => {
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
 
     const burst = Promise.all(
-      Array.from({ length: 5 }, () => cache.get<{ ok: boolean }>('http://gw/hot')),
+      Array.from({ length: 5 }, () => cache.get('http://gw/hot', decodeOK)),
     );
     release(jsonResponse({ ok: true }, 'public, max-age=300'));
     const results = await burst;
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(results.every((r) => r.data.ok)).toBe(true);
+  });
+
+  it('runs a non-idempotent projection exactly once for the miss caller and each cache-hit caller', async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ ok: true }, 'public, max-age=300'));
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+    let projection = 0;
+    const decode = vi.fn((value: unknown) => ({ ...decodeOK(value), projection: ++projection }));
+
+    const miss = await cache.get('http://gw/projected', decode);
+    const hit = await cache.get('http://gw/projected', decode);
+
+    expect(miss.data.projection).toBe(1);
+    expect(hit.data.projection).toBe(2);
+    expect(decode).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('shares raw JSON while concurrent callers choose and run their own representation once', async () => {
+    let release!: (response: Response) => void;
+    const upstream = new Promise<Response>((resolve) => { release = resolve; });
+    const fetchSpy = vi.fn(() => upstream);
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+    const asLabel = vi.fn((value: unknown) => `label:${decodeOK(value).ok}`);
+    const asCount = vi.fn((value: unknown) => ({ count: decodeOK(value).ok ? 1 : 0 }));
+
+    const first = cache.get('http://gw/representations', asLabel);
+    const joined = cache.get('http://gw/representations', asCount);
+    release(jsonResponse({ ok: true }, 'public, max-age=300'));
+
+    await expect(first).resolves.toMatchObject({ data: 'label:true' });
+    await expect(joined).resolves.toMatchObject({ data: { count: 1 } });
+    expect(asLabel).toHaveBeenCalledOnce();
+    expect(asCount).toHaveBeenCalledOnce();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a miss decoder mutate the raw entry', async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse({ nested: { label: 'original' } }, 'public, max-age=300'));
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+
+    const miss = await cache.get('http://gw/isolated-miss', (value) => {
+      const decoded = decodeNested(value);
+      decoded.nested.label = 'changed by miss decoder';
+      return decoded;
+    });
+    const hit = await cache.get('http://gw/isolated-miss', decodeNested);
+
+    expect(miss.data.nested.label).toBe('changed by miss decoder');
+    expect(hit.data.nested.label).toBe('original');
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not retain a reference returned to a cache-hit caller', async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse({ nested: { label: 'original' } }, 'public, max-age=300'));
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+    await cache.get('http://gw/isolated-hit', decodeNested);
+
+    const firstHit = await cache.get('http://gw/isolated-hit', decodeNested);
+    firstHit.data.nested.label = 'changed after return';
+    const secondHit = await cache.get('http://gw/isolated-hit', decodeNested);
+
+    expect(secondHit.data.nested.label).toBe('original');
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('gives joined single-flight callers independent values', async () => {
+    let release!: (response: Response) => void;
+    const upstream = new Promise<Response>((resolve) => { release = resolve; });
+    const fetchSpy = vi.fn(() => upstream);
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+
+    const first = cache.get('http://gw/isolated-join', decodeNested);
+    const joined = cache.get('http://gw/isolated-join', decodeNested);
+    release(jsonResponse({ nested: { label: 'original' } }, 'public, max-age=300'));
+    const [firstResult, joinedResult] = await Promise.all([first, joined]);
+
+    firstResult.data.nested.label = 'changed after return';
+    expect(joinedResult.data.nested.label).toBe('original');
+    const hit = await cache.get('http://gw/isolated-join', decodeNested);
+    expect(hit.data.nested.label).toBe('original');
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   it('aborts a stalled shared load, removes it, and retries upstream', async () => {
@@ -97,8 +211,8 @@ describe('PageDataCache', () => {
       });
       const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
 
-      const first = cache.get<{ ok: boolean }>('http://gw/hot');
-      const joined = cache.get<{ ok: boolean }>('http://gw/hot');
+      const first = cache.get('http://gw/hot', decodeOK);
+      const joined = cache.get('http://gw/hot', decodeOK);
       let settled = false;
       const failures = Promise.allSettled([first, joined]).then((results) => {
         settled = true;
@@ -114,7 +228,7 @@ describe('PageDataCache', () => {
       ]);
       expect(signals[0]?.aborted).toBe(true);
 
-      await expect(cache.get<{ ok: boolean }>('http://gw/hot')).resolves.toMatchObject({
+      await expect(cache.get('http://gw/hot', decodeOK)).resolves.toMatchObject({
         data: { ok: true },
       });
       expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -133,23 +247,40 @@ describe('PageDataCache', () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true }, 'public, max-age=300'));
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
 
-    const [a, b] = await Promise.allSettled([cache.get('http://gw/hot'), cache.get('http://gw/hot')]);
+    const [a, b] = await Promise.allSettled([
+      cache.get('http://gw/hot', decodeRaw),
+      cache.get('http://gw/hot', decodeRaw),
+    ]);
     expect(a.status).toBe('rejected');
     expect(b.status).toBe('rejected');
     expect(fetchSpy).toHaveBeenCalledTimes(1); // the failure was shared...
 
-    await expect(cache.get<{ ok: boolean }>('http://gw/hot')).resolves.toMatchObject({
+    await expect(cache.get('http://gw/hot', decodeOK)).resolves.toMatchObject({
       data: { ok: true },
     }); // ...but never cached
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let one caller\'s rejecting decoder choose the cached representation', async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ ok: 'yes' }, 'public, max-age=300'));
+    const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
+
+    await expect(cache.get('http://gw/hot', decodeOK)).rejects.toThrow('ok response is malformed');
+    await expect(cache.get('http://gw/hot', (value) => {
+      if (typeof value !== 'object' || value === null || !('ok' in value)) throw new TypeError();
+      return String(value.ok);
+    })).resolves.toMatchObject({
+      data: 'yes',
+    });
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
   it('never caches no-store responses', async () => {
     const fetchSpy = vi.fn(async () => jsonResponse({}, 'no-store'));
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
 
-    await cache.get('http://gw/y');
-    await cache.get('http://gw/y');
+    await cache.get('http://gw/y', decodeRaw);
+    await cache.get('http://gw/y', decodeRaw);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
@@ -158,8 +289,8 @@ describe('PageDataCache', () => {
     const fetchSpy = vi.fn(async () => new Response('nope', { status: 404 }));
     const cache = new PageDataCache(fetchSpy as unknown as typeof fetch, () => 0);
 
-    await expect(cache.get('http://gw/z')).rejects.toThrow(UpstreamError);
-    await expect(cache.get('http://gw/z')).rejects.toMatchObject({ status: 404 });
+    await expect(cache.get('http://gw/z', decodeRaw)).rejects.toThrow(UpstreamError);
+    await expect(cache.get('http://gw/z', decodeRaw)).rejects.toMatchObject({ status: 404 });
   });
 });
 
@@ -180,7 +311,7 @@ describe('upstream Age propagation', () => {
       new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '120') }),
     );
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
-    const result = await cache.get('http://catalog/public/events');
+    const result = await cache.get('http://catalog/public/events', decodeRaw);
     expect(result.ageSeconds).toBe(120);
   });
 
@@ -190,9 +321,9 @@ describe('upstream Age propagation', () => {
     );
     let now = 0;
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    await cache.get('http://catalog/public/events');
+    await cache.get('http://catalog/public/events', decodeRaw);
     now = 30_000;
-    const hit = await cache.get('http://catalog/public/events');
+    const hit = await cache.get('http://catalog/public/events', decodeRaw);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     // 200 upstream + 30 local. Without propagation this would report 30, and the
     // middleware would grant the page 270 seconds it does not have.
@@ -205,9 +336,9 @@ describe('upstream Age propagation', () => {
     );
     let now = 0;
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    await cache.get('http://catalog/public/events');
+    await cache.get('http://catalog/public/events', decodeRaw);
     now = 20_000; // 290 + 20 = 310 > 300
-    await cache.get('http://catalog/public/events');
+    await cache.get('http://catalog/public/events', decodeRaw);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -216,8 +347,8 @@ describe('upstream Age propagation', () => {
       new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, '300') }),
     );
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
-    await cache.get('http://catalog/public/events');
-    await cache.get('http://catalog/public/events');
+    await cache.get('http://catalog/public/events', decodeRaw);
+    await cache.get('http://catalog/public/events', decodeRaw);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -227,7 +358,7 @@ describe('upstream Age propagation', () => {
         new Response(JSON.stringify({ ok: true }), { status: 200, headers: headers(300, age) }),
       );
       const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => 0);
-      const result = await cache.get(`http://catalog/public/events?a=${age}`);
+      const result = await cache.get(`http://catalog/public/events?a=${age}`, decodeRaw);
       expect(result.ageSeconds).toBe(0);
     }
   });
@@ -256,14 +387,14 @@ describe('expired entries are swept', () => {
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
 
     for (let i = 0; i < 50; i += 1) {
-      await cache.get(`http://catalog/public/events/${i}`);
+      await cache.get(`http://catalog/public/events/${i}`, decodeRaw);
     }
     expect(cache.size).toBe(50);
 
     // Past every one of their max-ages, and none of those 50 URLs is ever asked for
     // again — the crawl case. The insert below is the only thing that runs.
     now = 301_000;
-    await cache.get('http://catalog/public/events/fresh');
+    await cache.get('http://catalog/public/events/fresh', decodeRaw);
     expect(cache.size).toBe(1);
   });
 
@@ -275,11 +406,11 @@ describe('expired entries are swept', () => {
     const fetchImpl = vi.fn(async () => cacheable(300, '290'));
     let now = 0;
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    await cache.get('http://catalog/public/events/stale-on-arrival');
+    await cache.get('http://catalog/public/events/stale-on-arrival', decodeRaw);
     expect(cache.size).toBe(1);
 
     now = 11_000; // 290 + 11 = 301 > 300, but only 11s of LOCAL time have passed
-    await cache.get('http://catalog/public/events/other');
+    await cache.get('http://catalog/public/events/other', decodeRaw);
     expect(cache.size).toBe(1); // the stale one went, the new one stayed
   });
 
@@ -287,9 +418,9 @@ describe('expired entries are swept', () => {
     const fetchImpl = vi.fn(async () => cacheable(300));
     let now = 0;
     const cache = new PageDataCache(fetchImpl as unknown as typeof fetch, () => now);
-    await cache.get('http://catalog/public/events/a');
+    await cache.get('http://catalog/public/events/a', decodeRaw);
     now = 100_000; // well inside 300s
-    await cache.get('http://catalog/public/events/b');
+    await cache.get('http://catalog/public/events/b', decodeRaw);
     expect(cache.size).toBe(2);
   });
 });
@@ -327,14 +458,14 @@ describe('entry aging is monotonic and the wall clock cannot move it', () => {
       Date.now = () => 10_000_000;
       const fetchImpl = vi.fn(async () => cacheable(10));
       const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
-      await cache.get('http://catalog/public/events');
+      await cache.get('http://catalog/public/events', decodeRaw);
 
       // Five monotonic seconds on, with the WALL clock stepped five seconds
       // BACKWARD underneath it. At HEAD the elapsed term clamps to zero and the
       // entry reports age 0 — five seconds of freshness it has already spent.
       perf.mockReturnValue(6_000);
       Date.now = () => 9_995_000;
-      const hit = await cache.get('http://catalog/public/events');
+      const hit = await cache.get('http://catalog/public/events', decodeRaw);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(hit.ageSeconds).toBe(5);
 
@@ -342,7 +473,7 @@ describe('entry aging is monotonic and the wall clock cannot move it', () => {
       // wall clock STILL rolled back, so nothing here is attributable to it.
       // This is the leg that stops "never expires" from passing.
       perf.mockReturnValue(11_500);
-      await cache.get('http://catalog/public/events');
+      await cache.get('http://catalog/public/events', decodeRaw);
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     } finally {
       Date.now = realDateNow;
@@ -368,14 +499,14 @@ describe('entry aging is monotonic and the wall clock cannot move it', () => {
       Date.now = () => 1_000;
       const fetchImpl = vi.fn(async () => cacheable(10));
       const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
-      await cache.get('http://catalog/public/events/stranded');
+      await cache.get('http://catalog/public/events/stranded', decodeRaw);
       expect(cache.size).toBe(1);
 
       // 11 monotonic seconds past a 10-second max-age, wall clock rolled back.
       // The insert below is the only thing that runs the sweep.
       perf.mockReturnValue(12_000);
       Date.now = () => 500;
-      await cache.get('http://catalog/public/events/other');
+      await cache.get('http://catalog/public/events/other', decodeRaw);
       expect(cache.size).toBe(1);
     } finally {
       Date.now = realDateNow;
@@ -395,11 +526,11 @@ describe('entry aging is monotonic and the wall clock cannot move it', () => {
       Date.now = () => 10_000_000;
       const fetchImpl = vi.fn(async () => cacheable(300, '200'));
       const cache = new PageDataCache(fetchImpl as unknown as typeof fetch);
-      const miss = await cache.get('http://catalog/public/events');
+      const miss = await cache.get('http://catalog/public/events', decodeRaw);
       expect(miss.ageSeconds).toBe(200);
 
       Date.now = () => 9_940_000; // a 60-second backward wall step
-      const hit = await cache.get('http://catalog/public/events');
+      const hit = await cache.get('http://catalog/public/events', decodeRaw);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(hit.ageSeconds).toBe(200);
       expect(hit.ageSeconds).toBeGreaterThanOrEqual(miss.ageSeconds);

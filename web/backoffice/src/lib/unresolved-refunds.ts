@@ -1,10 +1,10 @@
-// Refunds commerce may have applied without telling us (TKT-194, ai-review pass 4).
+// Refunds commerce may have applied without telling us (TKT-194).
 //
 // When a refund request times out or answers 5xx, the money may have moved. The
-// only safe next step is replaying the SAME idempotency key, so the page must
-// keep offering that key until commerce settles it — and it must keep offering
-// it across a new lookup, a reload, a navigation, and a shift change to another
-// operator.
+// only safe next step is replaying the SAME idempotency key. This process keeps
+// offering that key until commerce settles it, for at most 24 hours and while it
+// remains within the 1,000-entry bound. During that window it survives a new
+// lookup, reload, navigation, and shift change to another operator.
 //
 // Holding that in the page, or in a hidden form field, does neither: request
 // state dies with the request, and a browser-supplied field is not evidence of
@@ -35,8 +35,6 @@ import type { RefundInput } from './order-console';
 
 type Entry = { request: RefundInput; recordedAt: number };
 
-const outstanding = new Map<string, Entry>();
-
 /**
  * How long an unresolved refund keeps blocking new ones.
  *
@@ -50,56 +48,56 @@ export const UNRESOLVED_TTL_MS = 24 * 60 * 60 * 1000;
 /**
  * A bound, so a pathological run of outages cannot grow this without limit.
  *
- * Both this and the TTL were added defensively rather than from a measured
- * need, and both were re-examined in the TKT-22 refactor and kept. The bound
- * costs six lines in a process that runs for weeks; the test that pins it is
- * not testing that a number exists, it is testing the eviction DIRECTION —
- * dropping the oldest and keeping the newest — and getting that backwards would
- * silently discard the entry most likely to still be unsettled. That is the
- * half worth a test, and it is not self-evident from the code.
+ * This and the TTL are defensive rather than based on measured demand. The
+ * eviction direction matters: dropping the oldest keeps the newest ambiguous
+ * request available for recovery.
  */
 export const MAX_UNRESOLVED = 1000;
 
-const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;
-
-export function resetUnresolvedForTest(): void {
-  outstanding.clear();
+export interface UnresolvedRefundTracker {
+  note(organizerId: string, request: RefundInput): void;
+  find(organizerId: string, orderId: string): RefundInput | undefined;
+  clear(organizerId: string, orderId: string, idempotencyKey: string): boolean;
 }
 
-export function noteUnresolvedRefund(
-  organizerId: string,
-  request: RefundInput,
-  now = Date.now(),
-): void {
-  const k = key(organizerId, request.orderId);
-  // Never overwrite an existing entry: the FIRST unresolved key is the one that
-  // may have moved money, and a later attempt's key does not replace it.
-  if (outstanding.has(k)) return;
-  if (outstanding.size >= MAX_UNRESOLVED) {
-    // Drop the oldest rather than refuse to record — failing to record is the
-    // outcome that costs money. Map iterates in insertion order.
-    const oldest = outstanding.keys().next();
-    if (!oldest.done) outstanding.delete(oldest.value);
-  }
-  outstanding.set(k, { request, recordedAt: now });
+/** Creates one isolated tracker. Production owns the instance exported below. */
+export function createUnresolvedRefundTracker(
+  clock: () => number = Date.now,
+): UnresolvedRefundTracker {
+  const outstanding = new Map<string, Entry>();
+  const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;
+
+  return {
+    note(organizerId, request) {
+      const k = key(organizerId, request.orderId);
+      // Keep the first key. It is the request that may have moved money.
+      if (outstanding.has(k)) return;
+      if (outstanding.size >= MAX_UNRESOLVED) {
+        // Dropping the oldest keeps the new ambiguous request recoverable.
+        const oldest = outstanding.keys().next();
+        if (!oldest.done) outstanding.delete(oldest.value);
+      }
+      outstanding.set(k, { request, recordedAt: clock() });
+    },
+
+    find(organizerId, orderId) {
+      const k = key(organizerId, orderId);
+      const entry = outstanding.get(k);
+      if (!entry) return undefined;
+      if (clock() - entry.recordedAt > UNRESOLVED_TTL_MS) {
+        outstanding.delete(k);
+        return undefined;
+      }
+      return entry.request;
+    },
+
+    clear(organizerId, orderId, idempotencyKey) {
+      const k = key(organizerId, orderId);
+      if (outstanding.get(k)?.request.idempotencyKey !== idempotencyKey) return false;
+      return outstanding.delete(k);
+    },
+  };
 }
 
-export function unresolvedRefundFor(
-  organizerId: string,
-  orderId: string,
-  now = Date.now(),
-): RefundInput | undefined {
-  const k = key(organizerId, orderId);
-  const entry = outstanding.get(k);
-  if (!entry) return undefined;
-  if (now - entry.recordedAt > UNRESOLVED_TTL_MS) {
-    outstanding.delete(k);
-    return undefined;
-  }
-  return entry.request;
-}
-
-/** Called only when commerce has told us what happened to the original key. */
-export function clearUnresolvedRefund(organizerId: string, orderId: string): void {
-  outstanding.delete(key(organizerId, orderId));
-}
+/** Unresolved refunds held by this back-office process. */
+export const unresolvedRefunds = createUnresolvedRefundTracker();

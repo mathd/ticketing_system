@@ -2,14 +2,14 @@
 # Smoke stage lifecycle: isolated compose project (own name + shifted ports),
 # trap-based teardown, logs dumped on startup failure.
 # Default: host-built artifacts via compose.smoke.yaml (fast path; binaries
-# from `make build-gate-linux`, scanner dist from `make build-ts`).
-# SMOKE_HERMETIC=1: original in-Docker builds only (compose.yaml), used by
+# from `make build-gate-linux`, web application dist directories from `make build-ts`).
+# SMOKE_HERMETIC=1: in-Docker builds plus the shared smoke cadence, used by
 # the hermetic-smoke workflow and available locally.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Project name, ports and the four service credentials, isolated per checkout.
+# Project name, ports and runtime credentials, isolated per checkout.
 # Shared with scripts/browser.sh so the two stacks cannot pick the same ports —
 # the browser gate's first, per-ticket copy of these lines hardcoded 18099,
 # which is this stack's own gateway port at slot 19 (TKT-228). The reasoning
@@ -20,21 +20,24 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # smoke stack — hermetic or fast path — so the gate's on-sale profile can always
 # report the claim_history INSERT overhead.
 # compose.direct-ports.yaml republishes what compose.yaml stopped publishing
-# (ai-review S11): this suite drives the staff and internal surfaces directly,
+# because this suite drives the staff and internal surfaces directly,
 # and connects to PostgreSQL, NATS and Prometheus from the host.
-COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml")
+COMPOSE_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/compose.direct-ports.yaml" -f "$ROOT/compose.onsale-load.yaml" -f "$ROOT/compose.smoke-cadence.yaml")
 if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
   for b in catalog inventory commerce payments access gateway; do
     [ -x "$ROOT/bin/gate/$b" ] || { echo "smoke: missing bin/gate/$b — run 'make smoke' (or 'make build-gate-linux')" >&2; exit 1; }
   done
   [ -f "$ROOT/web/scanner/dist/index.html" ] || { echo "smoke: missing web/scanner/dist — run 'make build-ts'" >&2; exit 1; }
   [ -f "$ROOT/web/storefront/dist/server/entry.mjs" ] || { echo "smoke: missing web/storefront/dist — run 'make build-ts'" >&2; exit 1; }
+  [ -f "$ROOT/web/backoffice/dist/server/entry.mjs" ] || { echo "smoke: missing web/backoffice/dist — run 'make build-ts'" >&2; exit 1; }
   COMPOSE_FILES+=(-f "$ROOT/compose.smoke.yaml")
 fi
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Pre-clean, between the trap install and `up`: a hard-killed previous run
 # (SIGKILL, crashed daemon, killed CI runner) never fires the trap and leaves
@@ -295,7 +298,7 @@ provision_staff "$SMOKE_STAFF_IDENTIFIER"     "$SMOKE_STAFF_PASSWORD"     admin
 provision_staff "$SMOKE_BOXOFFICE_IDENTIFIER" "$SMOKE_BOXOFFICE_PASSWORD" box_office
 provision_staff "$SMOKE_FINANCE_IDENTIFIER"   "$SMOKE_FINANCE_PASSWORD"   finance
 
-# ai-review S1: the scan routes admit only ENROLLED devices, so the suite pairs
+# The scan routes admit only ENROLLED devices, so the suite pairs
 # one gate per run exactly as an operator would — through the CLI, reading the
 # token off its output. It is printed once and never recoverable, which is the
 # property being exercised as much as it is a constraint on this script.
@@ -438,7 +441,7 @@ go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 # commerce runs background tickers -- recovery (internal/recovery/runner.go), bulk
 # refunds, reversals, the exchange sweep -- and the recovery runner's OrderFailed POSTs
 # payments /internal/facts, which appends to this journal for the seeded organizer. It
-# ticks every RECOVERY_INTERVAL, which compose.smoke.yaml pins at 2s for this stack, and
+# ticks every RECOVERY_INTERVAL, which compose.smoke-cadence.yaml pins at 2s for this stack, and
 # it always has work: smoke/psp_recovery_test.go deliberately backdates orders past the
 # claim grace period so the runner picks them up.
 #
@@ -469,13 +472,13 @@ go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
 compose stop -t 45 commerce
 
 # ...and then WAIT FOR PAYMENTS TO DRAIN, which stopping commerce does not prove
-# (ai-review pass 1, [medium]). `compose stop` closes the door on NEW calls; it cannot
+# because `compose stop` closes the door on NEW calls; it cannot
 # recall one payments has already accepted. A worker that sent /internal/facts and was
 # then cancelled leaves payments committing an append after `stop` has returned — and an
 # append that commits after the backup below is exactly the row the restore deletes and
 # never puts back. The barrier has to be on the PAYMENTS side, not the caller's.
 #
-# `state IS DISTINCT FROM 'idle'`, NOT `state <> 'idle'` (ai-review pass 2). A pooled
+# `state IS DISTINCT FROM 'idle'`, NOT `state <> 'idle'`. A pooled
 # connection sitting idle holds no statement and cannot append; anything else (active,
 # idle in transaction) is work that can still reach journal_entries. But `state` is
 # NULLABLE -- a backend whose state has not been published yet, or any backend at all if
@@ -486,7 +489,7 @@ compose stop -t 45 commerce
 # 'idle')` is true.
 #
 # backend_type='client backend' is the other half, and it is about FALSE POSITIVES rather
-# than false negatives (ai-review pass 3). Most server processes carry datname NULL and are
+# than false negatives. Most server processes carry datname NULL and are
 # already excluded -- verified: checkpointer, walwriter, background writer, io worker and
 # both launchers all report NULL. An AUTOVACUUM WORKER does not: it runs with datname set to
 # the database it is vacuuming and a non-idle state, so it would be counted as a journal
@@ -505,8 +508,7 @@ compose stop -t 45 commerce
 # thing to investigate is what is still writing, not this timeout.
 #
 # THE RESIDUAL, AND WHAT IS *NOT* BOUNDED. Stated plainly because an earlier version of this
-# comment claimed a bound that does not exist, and a false reassurance in a comment is worse
-# than an admitted gap (ai-review pass 3, [high]).
+# comment claiming an absent bound would be worse than stating the gap.
 #
 # A handler payments accepted but that has not yet reached BeginTx is invisible to this poll:
 # it holds no backend, so a zero sample does not prove it is gone.
@@ -662,7 +664,7 @@ psql_access "TRUNCATE lifecycle_heads; INSERT INTO lifecycle_heads SELECT * FROM
 # restore below only covers backup ids, so such a row was corrupted and then never
 # restored, failing the final verify-lifecycle for a reason this block caused. That
 # is the same misdiagnosis the round-trip checks exist to prevent, so the corruption
-# must not be able to reach a row the restore cannot reach (ai-review [high]).
+# must not be able to reach a row the restore cannot reach.
 psql_access "UPDATE lifecycle_checkpoints c SET root=decode(repeat('22',32),'hex') FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
 expect_lifecycle_failure "checkpoint root"
 psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_checkpoints_smoke_backup b WHERE c.checkpoint_id=b.checkpoint_id;"
@@ -692,7 +694,7 @@ psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_check
 #
 # EVERY CHECK ASKS ONE QUESTION: did the backed-up rows survive the restore intact?
 # NONE of them demands that the tables be unchanged, and that distinction is the whole
-# design (ai-review [high] -- the first version got it wrong).
+# design.
 #
 # A healthy append during this block writes its event, integrity row and head IN ONE
 # TRANSACTION (appendLifecycle), so it leaves a COHERENT state: nothing was lost, and
@@ -711,7 +713,7 @@ psql_access "UPDATE lifecycle_checkpoints c SET root=b.root FROM lifecycle_check
 #     with its own integrity chain. The second is not redundant -- the restores are
 #     separate statements, so an append landing BETWEEN them keeps its integrity row and
 #     loses its head to the backup, and the restored head equals the backup, so survival
-#     alone passes while the chain is broken (ai-review pass 2).
+#     alone passes while the chain is broken.
 #   - lifecycle_checkpoints: restored by UPDATE on `root` ALONE (see the note above), so
 #     only backup rows must still carry their original root. A checkpoint the live
 #     checkpointer added is expected.
@@ -738,7 +740,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_heads -- a backed-up head is missing or REGRESSED below its backed-up sequence. Investigate THIS restore, not the trail.';
   END IF;
-  -- HEAD/CHAIN COHERENCE. Survival alone is not enough (ai-review pass 2, [high]):
+  -- HEAD/CHAIN COHERENCE. Survival alone is not enough:
   -- the integrity restore and the head restore are SEPARATE statements, so an append
   -- committing between them keeps its integrity row (written after the integrity
   -- restore, and permitted above as a suffix) while its advanced head is overwritten
@@ -766,7 +768,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'smoke: lifecycle restore did not round-trip lifecycle_checkpoints roots -- the UPDATE restore left a backed-up checkpoint missing or with a different root. Investigate THIS restore, not the trail.';
   END IF;
-  -- CHECKPOINT CHAIN COHERENCE (ai-review pass 3, [high]). The checks above look only
+  -- CHECKPOINT CHAIN COHERENCE. The checks above look only
   -- at backed-up ids, which leaves one shape open: while a backed-up root is corrupt,
   -- the live checkpointer can read that corrupt value as previous_root and commit a
   -- SUCCESSOR. The restore repairs the predecessor and never touches the successor, so

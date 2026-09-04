@@ -50,7 +50,7 @@ func TestPaymentFailureResponse(t *testing.T) {
 }
 
 func TestReserveRejectsNonStrictJSON(t *testing.T) {
-	s := New(nil, http.DefaultClient, "", "", "", "")
+	s := newTestServer(nil, http.DefaultClient, "", "", "", "")
 	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1}`
 	for name, body := range map[string]string{
 		"unknown field":  strings.TrimSuffix(valid, "}") + `,"amount":1}`,
@@ -116,9 +116,9 @@ func TestPersistenceReadProblem(t *testing.T) {
 func TestConvertOperationalRequiresInternalToken(t *testing.T) {
 	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
 	for name, s := range map[string]*Server{
-		"wrong token": New(nil, http.DefaultClient, "", "", "", "secret"),
+		"wrong token": newTestServer(nil, http.DefaultClient, "", "", "", "secret"),
 		// An unconfigured token must fail closed, never open.
-		"empty configured token": New(nil, http.DefaultClient, "", "", "", ""),
+		"empty configured token": newTestServer(nil, http.DefaultClient, "", "", "", ""),
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
@@ -135,7 +135,7 @@ func TestConvertOperationalRequiresInternalToken(t *testing.T) {
 }
 
 func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
-	s := New(nil, http.DefaultClient, "", "", "", "secret")
+	s := newTestServer(nil, http.DefaultClient, "", "", "", "secret")
 	valid := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
 	for name, body := range map[string]string{
 		"unknown field":  strings.TrimSuffix(valid, "}") + `,"unit_amount":1}`,
@@ -158,8 +158,8 @@ func TestConvertOperationalRejectsNonStrictJSON(t *testing.T) {
 func TestDrawDownGroupReservationRequiresInternalToken(t *testing.T) {
 	body := `{"organizer_id":"00000000-0000-0000-0000-000000000001","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
 	for name, s := range map[string]*Server{
-		"wrong token":            New(nil, http.DefaultClient, "", "", "", "secret"),
-		"empty configured token": New(nil, http.DefaultClient, "", "", "", ""),
+		"wrong token":            newTestServer(nil, http.DefaultClient, "", "", "", "secret"),
+		"empty configured token": newTestServer(nil, http.DefaultClient, "", "", "", ""),
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
@@ -198,7 +198,7 @@ func TestDrawDownForwardsSlotPreconditionToInventory(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"conflicting terminal state"}`))
 	}))
 	defer inventory.Close()
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
 	req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -242,7 +242,7 @@ func TestDrawDownReplayJudgedByChildLifecycle(t *testing.T) {
 				_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,` + tc.hold + `},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
 			}))
 			defer inventory.Close()
-			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 			body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"batch"}`
 			req := httptest.NewRequest(http.MethodPost, "/internal/group-reservations/00000000-0000-0000-0000-000000000003/draw-down", bytes.NewBufferString(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -283,7 +283,7 @@ func TestConvertOperationalForwardsSlotPreconditionToInventory(t *testing.T) {
 		w.WriteHeader(201)
 	}))
 	defer inventory.Close()
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
 	req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -331,7 +331,7 @@ func TestConvertOperationalReplayJudgedByChildLifecycle(t *testing.T) {
 				_, _ = w.Write([]byte(`{"hold":{"hold_id":"00000000-0000-0000-0000-000000000007","organizer_id":"` + org + `","slot_id":"00000000-0000-0000-0000-000000000009","quantity":1,` + tc.hold + `},"source_id":"00000000-0000-0000-0000-000000000003","source_remaining":4,"source_status":"held"}`))
 			}))
 			defer inventory.Close()
-			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 			body := `{"organizer_id":"` + org + `","ticket_type_id":"00000000-0000-0000-0000-000000000002","quantity":1,"actor":"staff:amy","reason":"walk-up"}`
 			req := httptest.NewRequest(http.MethodPost, "/internal/operational-holds/00000000-0000-0000-0000-000000000003/convert", bytes.NewBufferString(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -475,7 +475,7 @@ func TestRefundProblemMapsEveryStoreError(t *testing.T) {
 func TestRefundOrderRequiresInternalToken(t *testing.T) {
 	for name, token := range map[string]string{"no token configured": "", "wrong token": "expected"} {
 		t.Run(name, func(t *testing.T) {
-			s := New(nil, http.DefaultClient, "", "", "", token)
+			s := newTestServer(nil, http.DefaultClient, "", "", "", token)
 			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+uuid.Nil.String()+"/refunds",
 				bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","quantity":1,"actor":"a","reason":"r"}`))
 			req.Header.Set("Content-Type", "application/json")
@@ -567,7 +567,7 @@ func TestCancellationRefundEndpointsRequireInternalToken(t *testing.T) {
 	slot, run := uuid.New(), uuid.New()
 	for name, token := range map[string]string{"no token configured": "", "wrong token": "expected"} {
 		t.Run(name, func(t *testing.T) {
-			s := New(nil, http.DefaultClient, "", "", "", token)
+			s := newTestServer(nil, http.DefaultClient, "", "", "", token)
 			router := s.Router(nil, true)
 
 			create := httptest.NewRequest(http.MethodPost, "/internal/slots/"+slot.String()+"/cancellation-refunds",
@@ -599,7 +599,7 @@ func TestCancellationRefundRequestRejectionsAreDeclaredStatuses(t *testing.T) {
 	const token = "t"
 	declaredCreate := map[int]bool{200: true, 201: true, 400: true, 404: true, 409: true, 500: true}
 	declaredReport := map[int]bool{200: true, 202: true, 400: true, 404: true, 500: true}
-	s := New(nil, http.DefaultClient, "", "", "", token)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", token)
 	router := s.Router(nil, true)
 	slot, run := uuid.New(), uuid.New()
 
@@ -675,7 +675,7 @@ func TestCancellationRefundRequestRejectionsAreDeclaredStatuses(t *testing.T) {
 // enforce minProperties/maxProperties on this path then the Go check is the only
 // thing standing. Either way the caller must see a 400, and that is what this pins.
 func TestReserveRequiresExactlyOneOfQuantityOrSeats(t *testing.T) {
-	s := New(nil, http.DefaultClient, "", "", "", "")
+	s := newTestServer(nil, http.DefaultClient, "", "", "", "")
 	const org = `"organizer_id":"00000000-0000-0000-0000-000000000001"`
 	const tt = `"ticket_type_id":"00000000-0000-0000-0000-000000000002"`
 	for name, body := range map[string]string{

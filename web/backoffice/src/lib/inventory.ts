@@ -19,7 +19,20 @@
 
 import type { components } from './inventory-api-types.gen';
 import type { ChannelAllocationSet } from './allocation-form';
-import { withUpstreamDeadline } from './upstream';
+import {
+  decodeMutationResponse,
+  fetchMutation,
+  boolean,
+  dateTime,
+  nonNegativeWholeNumber,
+  positiveWholeNumber,
+  required,
+  responseArray,
+  responseObject,
+  sameIdentity,
+  uuid,
+  withUpstreamDeadline,
+} from './upstream';
 
 export type StaffAvailability = components['schemas']['StaffAvailability'];
 export type ChannelAvailability = components['schemas']['ChannelAvailability'];
@@ -64,19 +77,109 @@ export class InventoryApiError extends Error {
 }
 
 async function refuse(res: Response): Promise<never> {
-  let body: { error?: string; code?: string; channel?: string } = {};
+  let body: Record<string, unknown> = {};
   try {
-    body = (await res.json()) as typeof body;
+    body = responseObject(await res.json(), 'inventory error');
   } catch {
     // A body that is not JSON is not a refusal this client can attribute; the status
     // still has to reach the caller.
   }
   throw new InventoryApiError(
     res.status,
-    body.error ?? `inventory answered ${res.status}`,
-    body.code,
-    body.channel,
+    typeof body.error === 'string' && body.error !== ''
+      ? body.error
+      : `inventory answered ${res.status}`,
+    typeof body.code === 'string' && body.code !== '' ? body.code : undefined,
+    typeof body.channel === 'string' && body.channel !== '' ? body.channel : undefined,
   );
+}
+
+function decodeChannelAllocation(value: unknown): ChannelAllocations['allocations'][number] {
+  const body = responseObject(value, 'channel allocation');
+  return {
+    channel: required(body.channel, 'allocation channel'),
+    cap: positiveWholeNumber(body.cap, 'allocation cap'),
+    ...(body.release_at === undefined
+      ? {}
+      : { release_at: dateTime(body.release_at, 'allocation release_at') }),
+    ...(body.opens_at === undefined
+      ? {}
+      : { opens_at: dateTime(body.opens_at, 'allocation opens_at') }),
+    ...(body.closes_at === undefined
+      ? {}
+      : { closes_at: dateTime(body.closes_at, 'allocation closes_at') }),
+    requires_code:
+      body.requires_code === undefined
+        ? false
+        : boolean(body.requires_code, 'allocation requires_code'),
+    ...(body.sold_by === undefined ? {} : { sold_by: uuid(body.sold_by, 'allocation sold_by') }),
+  };
+}
+
+function decodeChannelAvailability(value: unknown): ChannelAvailability {
+  const body = responseObject(value, 'channel availability');
+  return {
+    channel: required(body.channel, 'channel availability channel'),
+    cap: positiveWholeNumber(body.cap, 'channel availability cap'),
+    ...(body.release_at === undefined
+      ? {}
+      : { release_at: dateTime(body.release_at, 'channel availability release_at') }),
+    released: boolean(body.released, 'channel availability released'),
+    ...(body.opens_at === undefined
+      ? {}
+      : { opens_at: dateTime(body.opens_at, 'channel availability opens_at') }),
+    ...(body.closes_at === undefined
+      ? {}
+      : { closes_at: dateTime(body.closes_at, 'channel availability closes_at') }),
+    window_open: boolean(body.window_open, 'channel availability window_open'),
+    ...(body.requires_code === undefined
+      ? {}
+      : { requires_code: boolean(body.requires_code, 'channel availability requires_code') }),
+    ...(body.sold_by === undefined
+      ? {}
+      : { sold_by: uuid(body.sold_by, 'channel availability sold_by') }),
+    held: nonNegativeWholeNumber(body.held, 'channel availability held'),
+    confirmed: nonNegativeWholeNumber(body.confirmed, 'channel availability confirmed'),
+    available: nonNegativeWholeNumber(body.available, 'channel availability available'),
+  };
+}
+
+function decodeStaffAvailability(value: unknown, expectedSlotId: string): StaffAvailability {
+  const body = responseObject(value, 'staff availability');
+  const slotId = uuid(body.slot_id, 'staff availability slot_id');
+  sameIdentity(slotId, expectedSlotId, 'staff availability slot_id');
+  const offeringStatus = body.offering_status;
+  if (offeringStatus !== 'open' && offeringStatus !== 'closed' && offeringStatus !== 'archived') {
+    throw new Error('response offering_status is not recognized');
+  }
+  return {
+    slot_id: slotId,
+    capacity: positiveWholeNumber(body.capacity, 'staff availability capacity'),
+    ...(body.target_capacity === undefined
+      ? {}
+      : { target_capacity: positiveWholeNumber(body.target_capacity, 'staff availability target_capacity') }),
+    buyer_held: nonNegativeWholeNumber(body.buyer_held, 'staff availability buyer_held'),
+    operational_held: nonNegativeWholeNumber(body.operational_held, 'staff availability operational_held'),
+    reservation_held: nonNegativeWholeNumber(body.reservation_held, 'staff availability reservation_held'),
+    confirmed: nonNegativeWholeNumber(body.confirmed, 'staff availability confirmed'),
+    available: nonNegativeWholeNumber(body.available, 'staff availability available'),
+    public_available: nonNegativeWholeNumber(body.public_available, 'staff availability public_available'),
+    offering_status: offeringStatus,
+    channels: responseArray(body.channels, 'staff availability channels').map(decodeChannelAvailability),
+    ...(body.allocation_revision === undefined
+      ? {}
+      : { allocation_revision: nonNegativeWholeNumber(body.allocation_revision, 'allocation_revision') }),
+  };
+}
+
+function decodeChannelAllocations(value: unknown, expectedSlotId: string): ChannelAllocations {
+  const body = responseObject(value, 'channel allocations');
+  const slotId = uuid(body.slot_id, 'channel allocations slot_id');
+  sameIdentity(slotId, expectedSlotId, 'channel allocations slot_id');
+  return {
+    slot_id: slotId,
+    allocations: responseArray(body.allocations, 'channel allocations').map(decodeChannelAllocation),
+  };
 }
 
 /**
@@ -99,7 +202,7 @@ export async function getStaffAvailability(
   return withUpstreamDeadline(async (signal) => {
     const res = await fetch(url, { headers: { [headerName]: credential }, signal });
     if (!res.ok) return refuse(res);
-    return (await res.json()) as StaffAvailability;
+    return decodeStaffAvailability(await res.json(), slotId);
   });
 }
 
@@ -116,7 +219,8 @@ export async function replaceChannelAllocations(
 ): Promise<ChannelAllocations> {
   const credential = inventoryStaffCredential();
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(
+    const res = await fetchMutation(
+      'Inventory',
       `${INVENTORY_URL}/internal/slots/${encodeURIComponent(slotId)}/channel-allocations`,
       {
         method: 'PUT',
@@ -126,6 +230,8 @@ export async function replaceChannelAllocations(
       },
     );
     if (!res.ok) return refuse(res);
-    return (await res.json()) as ChannelAllocations;
+    return decodeMutationResponse(res, 'Inventory', (value) =>
+      decodeChannelAllocations(value, slotId),
+    );
   });
 }

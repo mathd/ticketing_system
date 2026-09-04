@@ -20,7 +20,7 @@ import (
 
 func unclaimRequest(t *testing.T, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	s := New(nil, http.DefaultClient, "", "", "", internalTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok)
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "tkt-225-test")
@@ -87,7 +87,7 @@ func TestUnclaimRefusesABodyThatDescribesNothing(t *testing.T) {
 // The key is REQUIRED: without it a retry could detach whoever claimed the order
 // in between (ai-review [high]).
 func TestUnclaimRefusesAMissingIdempotencyKey(t *testing.T) {
-	s := New(nil, http.DefaultClient, "", "", "", internalTok)
+	s := newTestServer(nil, http.DefaultClient, "", "", "", internalTok)
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+someUUID+"/unclaim",
 		bytes.NewBufferString(validUnclaimBody))
 	req.Header.Set("Content-Type", "application/json")

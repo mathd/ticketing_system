@@ -9,6 +9,7 @@
 // backend rule (pinning contract, versioning) lives in catalog — the UI adds none.
 import Layout from '../../layouts/Layout.astro';
 import SeatMapEditor from '../../components/SeatMapEditor';
+import { AmbiguousMutationError } from '../../lib/upstream';
 import {
   addSeatMapRow,
   addSeatMapSeat,
@@ -91,7 +92,13 @@ if (Astro.request.method === 'POST') {
     } else if (action === 'edit-map') {
       // The React editor serializes the full replacement geometry into `geometry`.
       const edit = JSON.parse(String(form.get('geometry') ?? '{}')) as SeatMapEdit;
-      const nv = await editSeatMap(mapId, edit, staff.organizerAssertion);
+      const nv = await editSeatMap(
+        mapId,
+        edit,
+        staff.organizerId,
+        venueId,
+        staff.organizerAssertion,
+      );
       // Show the NEW version after a successful edit.
       return Astro.redirect(`${here}?map=${nv.id}`);
     } else if (action === 'set-ga') {
@@ -99,7 +106,9 @@ if (Astro.request.method === 'POST') {
       return Astro.redirect(here);
     }
   } catch (e) {
-    error = e instanceof Error ? e.message : 'request failed';
+    error = e instanceof AmbiguousMutationError
+      ? 'Catalog may have saved this venue change, but its response could not be verified. Reload and reconcile the venue before retrying.'
+      : `Could not save: ${e instanceof Error ? e.message : 'request failed'}`;
   }
 }
 
@@ -114,7 +123,7 @@ if (selectedId) {
     geometry = null;
   }
   try {
-    versions = await listSeatMapVersions(selectedId);
+    versions = await listSeatMapVersions(selectedId, staff.organizerId, venueId);
   } catch {
     versions = null;
   }
@@ -131,7 +140,7 @@ const rowOptions =
   <p><a href={base + '/'}>← Venues</a></p>
   <h1>{venue?.name ?? 'Venue'} — seat maps</h1>
 
-  {error && <p class="error" role="alert">Could not save: {error}</p>}
+  {error && <p class="error" role="alert">{error}</p>}
 
   <section class="panel">
     <h2>General admission</h2>

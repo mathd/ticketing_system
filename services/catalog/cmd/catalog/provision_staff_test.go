@@ -12,12 +12,6 @@ import (
 	"ticketing/services/catalog/internal/store"
 )
 
-func TestSubcommandsRegisterProvisionStaff(t *testing.T) {
-	if _, ok := subcommands()["provision-staff"]; !ok {
-		t.Fatal(`subcommands() lacks "provision-staff"`)
-	}
-}
-
 // The password is read from stdin and nowhere else. An --password flag would put
 // the credential in the shell history, the process table and any command log
 // that captures argv — three places it can never be removed from afterwards.

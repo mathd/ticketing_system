@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -82,35 +81,6 @@ type Server struct {
 	redeliveries redeliveryStore
 }
 
-// WithRedelivery supplies the staff redelivery route's outbound ports: the buyer
-// address lookup, the transport, and the origin the capability link is built on.
-//
-// One option for all three, deliberately: a server holding two of them cannot send,
-// and three separate setters would let a call site configure a partial path that
-// looks wired and refuses at request time.
-func (s *Server) WithRedelivery(addresses delivery.AddressBook, mailer delivery.Mailer, publicURL string) *Server {
-	s.addresses, s.mailer, s.publicURL = addresses, mailer, publicURL
-	return s
-}
-
-// WithQRLinkKey supplies the HMAC key for signed QR image links. An option rather
-// than a New parameter: New's variadic token argument is already carrying one
-// optional value, and a second positional string next to it is exactly the kind
-// of call site that gets the two the wrong way round.
-func (s *Server) WithQRLinkKey(key string) *Server {
-	s.qrLinks = qrLinkSigner{key: []byte(key)}
-	return s
-}
-
-// WithFeedCursorKey supplies the HMAC key that authenticates voided-feed
-// cursors. Same shape and same reasoning as WithQRLinkKey, and a DIFFERENT key:
-// one key making both claims spends a leak of the cheaper one at the price of
-// the dearer.
-func (s *Server) WithFeedCursorKey(key string) *Server {
-	s.cursors = feedCursorSigner{key: []byte(key)}
-	return s
-}
-
 // WithClock replaces the link signer's time source. Tests only.
 func (s *Server) WithClock(now func() time.Time) *Server {
 	s.now = now
@@ -124,21 +94,43 @@ func (s *Server) clock() time.Time {
 	return time.Now()
 }
 
-func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server {
-	s := &Server{st: st, verifier: verifier}
+// ServerConfig contains every dependency and setting fixed for a server's lifetime.
+type ServerConfig struct {
+	Store             *store.Postgres
+	Verifier          *ticket.Verifier
+	InternalToken     string
+	StaffWriteToken   string
+	QRLinkKey         string
+	FeedCursorKey     string
+	ScannerTelemetry  *scannerTelemetry
+	RedeliveryAddress delivery.AddressBook
+	RedeliveryMailer  delivery.Mailer
+	PublicURL         string
+}
+
+func New(config ServerConfig) *Server {
+	s := &Server{
+		st:              config.Store,
+		verifier:        config.Verifier,
+		telemetry:       config.ScannerTelemetry,
+		token:           config.InternalToken,
+		staffWriteToken: config.StaffWriteToken,
+		cursors:         feedCursorSigner{key: []byte(config.FeedCursorKey)},
+		qrLinks:         qrLinkSigner{key: []byte(config.QRLinkKey)},
+		addresses:       config.RedeliveryAddress,
+		mailer:          config.RedeliveryMailer,
+		publicURL:       config.PublicURL,
+	}
 	// A typed nil in an interface is not nil, so the assignment is guarded rather
 	// than unconditional: `Server{devices: (*store.Postgres)(nil)}` would pass a
 	// `!= nil` check and then panic inside the auth path, which is the worst of
 	// both — a guard that looks present and fails open on the way to failing hard.
-	if st != nil {
-		s.devices = st
+	if config.Store != nil {
+		s.devices = config.Store
 		// Same typed-nil guard as devices above, and for the same reason: a typed nil
 		// in an interface is not nil, so an unguarded assignment would pass a != nil
 		// check and then panic inside the handler.
-		s.redeliveries = st
-	}
-	if len(token) > 0 {
-		s.token = token[0]
+		s.redeliveries = config.Store
 	}
 	return s
 }
@@ -147,14 +139,6 @@ func New(st *store.Postgres, verifier *ticket.Verifier, token ...string) *Server
 // passes the store to New and gets it from there.
 func (s *Server) WithScannerDevices(devices scannerDeviceStore) *Server {
 	s.devices = devices
-	return s
-}
-
-// WithScannerTelemetry injects the abuse-telemetry emitter for the polling
-// surface (TKT-272). Production wires it in main so the counter reaches the
-// real meter; a Server without it serves identically and emits nothing.
-func (s *Server) WithScannerTelemetry(t *scannerTelemetry) *Server {
-	s.telemetry = t
 	return s
 }
 
@@ -239,12 +223,9 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		validated.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), scannerOrganizerKey{}, new(scannerIdentity))))
 	})
 }
-func write(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
+
+var write = httpx.WriteJSONNoStore
+
 func parseRef(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	ref, err := uuid.Parse(chi.URLParam(r, "ref"))
 	if err != nil {

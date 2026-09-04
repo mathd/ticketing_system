@@ -147,7 +147,7 @@ func pricingStack(t *testing.T, status int, body string) (*Server, *int64, func(
 		w.WriteHeader(409)
 		_, _ = w.Write([]byte(`{"error":"stop here — the hold amount is what this test is about"}`))
 	}))
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	return s, &heldUnitAmount, func() { catalog.Close(); inventory.Close() }
 }
 
@@ -420,7 +420,7 @@ func seatedStack(t *testing.T, invStatus int, invBody string) (*Server, *string,
 		w.WriteHeader(invStatus)
 		_, _ = w.Write([]byte(invBody))
 	}))
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	return s, &path, &seats, func() { catalog.Close(); inventory.Close() }
 }
 
@@ -675,7 +675,7 @@ func TestReserveSendsTheChannelToPriceResolution(t *testing.T) {
 	}))
 	defer inventory.Close()
 
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	reserveInChannel(t, s, "price-chan-1", "reseller")
 	if asked != "channel_code=reseller" {
 		t.Errorf("catalog's price resolution was asked %q, want channel_code=reseller", asked)
@@ -705,7 +705,7 @@ func TestReserveWithoutAChannelSendsNoPriceParameter(t *testing.T) {
 	}))
 	defer inventory.Close()
 
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	reserveInChannel(t, s, "price-chan-2", "")
 	if asked != "" {
 		t.Errorf("catalog was asked %q, want no query at all", asked)
@@ -751,7 +751,7 @@ func TestReserveRefusesAPriceResolutionEchoingTheWrongChannel(t *testing.T) {
 			}))
 			defer inventory.Close()
 
-			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 			res := reserveInChannel(t, s, "echo-"+tc.name, tc.asked)
 			// 500, not 502, and the distinction is the one ADR-028 draws and
 			// this file documents: errResolveUnavailable (no answer) is 502,
@@ -841,7 +841,7 @@ func TestChannelEchoGuardAcrossResolverVersions(t *testing.T) {
 			}))
 			defer inventory.Close()
 
-			s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+			s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 			res := reserveInChannel(t, s, "mixed-"+tc.name, tc.asked)
 			if tc.wantFail && res.Code != http.StatusInternalServerError {
 				t.Fatalf("status = %d, want 500 — this resolution is unusable: %s", res.Code, res.Body.String())
@@ -905,7 +905,7 @@ func TestAV2ResolverCannotPriceAChannelledSaleFromAForeignChannelRule(t *testing
 	}))
 	defer inventory.Close()
 
-	s := New(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
+	s := newTestServer(nil, http.DefaultClient, catalog.URL, inventory.URL, "", "secret")
 	res := reserveInChannel(t, s, "v2-foreign-rule", "reseller")
 
 	if len(inventoryAskedFor) != 0 {

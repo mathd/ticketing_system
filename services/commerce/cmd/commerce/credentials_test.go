@@ -5,16 +5,8 @@ import (
 	"testing"
 )
 
-// Commerce holds three credentials with three different blast radii:
-// INTERNAL_SERVICE_TOKEN opens every service's internal surface,
-// COMMERCE_STAFF_WRITE_TOKEN opens the staff refund, and
-// COMMERCE_CUSTOMER_ASSERTION_KEY signs proofs that a checkout belongs to a
-// customer. They are only three credentials if they hold three values, and
-// nothing else in the system compares them — identical values look configured.
-//
-// The pairs are enumerated EXHAUSTIVELY rather than each new credential being
-// checked against the first, because a credential added to the wiring and not to
-// the check is the one whose separation is never verified (TKT-221 plan-review F2).
+// Four credentials produce six unordered pairs. Every pair must be refused when
+// its values collide, and the diagnostic must identify the affected privileges.
 func TestCredentialsAreDistinctRefusesEveryCollidingPair(t *testing.T) {
 	const shared = "the-same-value"
 
@@ -26,9 +18,6 @@ func TestCredentialsAreDistinctRefusesEveryCollidingPair(t *testing.T) {
 		{"staff write == internal", shared, shared, "assertion", "payments", []string{"COMMERCE_STAFF_WRITE_TOKEN", "INTERNAL_SERVICE_TOKEN"}},
 		{"assertion key == internal", shared, "staff", shared, "payments", []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "INTERNAL_SERVICE_TOKEN"}},
 		{"assertion key == staff write", "internal", shared, shared, "payments", []string{"COMMERCE_CUSTOMER_ASSERTION_KEY", "COMMERCE_STAFF_WRITE_TOKEN"}},
-		// The fourth credential's three pairs (ai-review S8). Enumerated for the
-		// same reason the others are: the one left out of this table is the one
-		// whose separation is never verified.
 		{"payments == internal", shared, "staff", "assertion", shared, []string{"PAYMENTS_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"}},
 		{"payments == staff write", "internal", shared, "assertion", shared, []string{"PAYMENTS_INTERNAL_TOKEN", "COMMERCE_STAFF_WRITE_TOKEN"}},
 		{"payments == assertion key", "internal", "staff", shared, shared, []string{"PAYMENTS_INTERNAL_TOKEN", "COMMERCE_CUSTOMER_ASSERTION_KEY"}},

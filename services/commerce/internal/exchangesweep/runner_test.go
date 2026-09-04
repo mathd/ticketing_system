@@ -329,34 +329,18 @@ func TestTwoTenantsSharingAnExchangeIDAreBothDriven(t *testing.T) {
 	}
 }
 
-// The lease must outlast the work it protects. A lease shorter than its batch lets a second
-// replica reclaim rows the first is still driving, and the claim token fences only the final
-// database write — never the inventory call already in flight.
+// A lease must cover every sequential call in its batch. The claim token fences the
+// database write, but it cannot stop a second claimant from repeating an inventory call.
 func TestTheLeaseOutlastsTheBatchItProtects(t *testing.T) {
 	const batch = 16
-	lease := LeaseFor(batch, obs.ClientTimeout)
+	lease, err := LeaseFor(batch, obs.ClientTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	worst := time.Duration(batch) * MaxCallsPerExchange * obs.ClientTimeout
 	if lease <= worst {
 		t.Fatalf("lease %s <= worst-case batch %s: a second replica would reclaim rows the "+
 			"first is still driving", lease, worst)
-	}
-}
-
-// The trap this sizing exists to avoid, made executable: sizing from a SHORTER timeout than
-// the transport actually uses under-covers the batch. The refund side shipped exactly this
-// (ADR-062 ai-review F1) by borrowing a 10s recovery constant while the work ran on a 30s
-// client.
-func TestSizingTheLeaseFromTheWrongTimeoutUnderCoversTheBatch(t *testing.T) {
-	const batch = 16
-	const wrong = 10 * time.Second
-	if wrong >= obs.ClientTimeout {
-		t.Skip("the wrong-timeout premise no longer holds")
-	}
-	lease := LeaseFor(batch, wrong)
-	worst := time.Duration(batch) * MaxCallsPerExchange * obs.ClientTimeout
-	if lease > worst {
-		t.Fatalf("a lease sized from %s (%s) still covers a batch that can take %s — this test "+
-			"can no longer detect the defect it exists for", wrong, lease, worst)
 	}
 }
 

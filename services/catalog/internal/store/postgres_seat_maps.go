@@ -163,6 +163,21 @@ func lockCurrentPublishedVersion(ctx context.Context, tx *sql.Tx, seatMapID, org
 // ErrSeatMapConflict. Organizer scoping is enforced in the lock resolution and
 // on every insert (ADR-002).
 func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMap, bool, error) {
+	// Check every identity before opening the transaction. A rejected edit must
+	// not insert a new map version or any partial geometry.
+	submitted := map[string]struct{}{}
+	for _, s := range in.Sections {
+		for _, r := range s.Rows {
+			for _, seat := range r.Seats {
+				identity, err := ComposeSeatIdentity(s.Name, r.Label, seat.Label)
+				if err != nil {
+					return SeatMap{}, false, err
+				}
+				submitted[identity] = struct{}{}
+			}
+		}
+	}
+
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SeatMap{}, false, err
@@ -172,17 +187,6 @@ func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMa
 	curID, curVersion, family, err := lockCurrentPublishedVersion(ctx, tx, in.SeatMapID, in.OrganizerID)
 	if err != nil {
 		return SeatMap{}, false, err
-	}
-
-	// The set of identities the submitted geometry will compose, server-side, the
-	// same way AddSeatMapSeat does: "section/row/seat".
-	submitted := map[string]struct{}{}
-	for _, s := range in.Sections {
-		for _, r := range s.Rows {
-			for _, seat := range r.Seats {
-				submitted[s.Name+"/"+r.Label+"/"+seat.Label] = struct{}{}
-			}
-		}
 	}
 
 	// Pins are family-scoped and version-independent: read them under the lock so
@@ -533,20 +537,38 @@ func (p *Postgres) AddSeatMapRow(ctx context.Context, in SeatMapRowInput) (SeatM
 }
 
 func (p *Postgres) AddSeatMapSeat(ctx context.Context, in SeatMapSeatInput) (SeatMapSeat, error) {
-	seat := SeatMapSeat{Label: in.Label, Position: in.Position}
-	// seat_identity is composed here from the parent labels — "section/row/seat"
-	// — so it is deterministic and stable (the TKT-104 contract) and never
-	// caller-supplied.
+	// Resolve the immutable parent labels first so an overlong identity is refused
+	// before the INSERT. The INSERT repeats the ownership and draft predicates in
+	// case the map is published between these two statements.
+	var sectionName, rowLabel string
 	err := p.db.QueryRowContext(ctx,
-		`INSERT INTO seat_map_seats (organizer_id, seat_map_id, row_id, seat_identity, label, position)
-		 SELECT $1, r.seat_map_id, r.id, sec.name || '/' || r.label || '/' || $4, $4, $5
+		`SELECT sec.name, r.label
 		 FROM seat_map_rows r
 		 JOIN seat_map_sections sec ON sec.id = r.section_id
 		 JOIN seat_maps m ON m.id = r.seat_map_id
+		 WHERE r.id = $3 AND r.seat_map_id = $2 AND r.organizer_id = $1 AND m.status = 'draft'`,
+		in.OrganizerID, in.SeatMapID, in.RowID).Scan(&sectionName, &rowLabel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatMapSeat{}, fmt.Errorf("row: %w", ErrNotFound)
+	}
+	if err != nil {
+		return SeatMapSeat{}, fmt.Errorf("resolve seat identity: %w", err)
+	}
+	identity, err := ComposeSeatIdentity(sectionName, rowLabel, in.Label)
+	if err != nil {
+		return SeatMapSeat{}, err
+	}
+
+	seat := SeatMapSeat{Label: in.Label, Position: in.Position, SeatIdentity: identity}
+	err = p.db.QueryRowContext(ctx,
+		`INSERT INTO seat_map_seats (organizer_id, seat_map_id, row_id, seat_identity, label, position)
+		 SELECT $1, r.seat_map_id, r.id, $4, $5, $6
+		 FROM seat_map_rows r
+		 JOIN seat_maps m ON m.id = r.seat_map_id
 		 WHERE r.id = $3 AND r.seat_map_id = $2 AND r.organizer_id = $1 AND m.status = 'draft'
-		 RETURNING id, seat_identity`,
-		in.OrganizerID, in.SeatMapID, in.RowID, in.Label, in.Position).
-		Scan(&seat.ID, &seat.SeatIdentity)
+		 RETURNING id`,
+		in.OrganizerID, in.SeatMapID, in.RowID, identity, in.Label, in.Position).
+		Scan(&seat.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SeatMapSeat{}, fmt.Errorf("row: %w", ErrNotFound)
 	}

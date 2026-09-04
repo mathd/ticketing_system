@@ -671,7 +671,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return err
 	}
 	defer cc.Stop()
-	if err := waitConsume(ctx, cc.Closed(), &c.ready, "access-ticket-issuer", &cause); err != nil {
+	if err := durableconsumer.WaitWithCause(ctx, cc.Closed(), &c.ready, "access-ticket-issuer", &cause); err != nil {
 		return err
 	}
 	return fmt.Errorf("consumer stopped: %w", ctx.Err())

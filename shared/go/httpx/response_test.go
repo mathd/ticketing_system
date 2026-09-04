@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// The boundary is the whole point, so it is tested as a boundary: exactly the
-// limit is accepted, exactly one byte more is refused. A test that only fed a
-// hugely oversized body would pass against an off-by-one ceiling.
 func TestReadResponseBodyBoundary(t *testing.T) {
 	const max = 64
 	for _, tc := range []struct {
@@ -30,8 +29,6 @@ func TestReadResponseBodyBoundary(t *testing.T) {
 				if !errors.Is(err, ErrResponseTooLarge) {
 					t.Fatalf("want ErrResponseTooLarge, got %v", err)
 				}
-				// An oversize body must not come back truncated: a caller that
-				// ignored the error would otherwise classify partial evidence.
 				if got != nil {
 					t.Fatalf("want no body on refusal, got %d bytes", len(got))
 				}
@@ -47,11 +44,8 @@ func TestReadResponseBodyBoundary(t *testing.T) {
 	}
 }
 
-// A reader that never ends is the case a duration timeout does not cover. The
-// helper must return from it, which io.ReadAll alone would not do.
 func TestReadResponseBodyRefusesAnEndlessBody(t *testing.T) {
-	endless := endlessReader{}
-	if _, err := ReadResponseBody(endless, 1<<10); !errors.Is(err, ErrResponseTooLarge) {
+	if _, err := ReadResponseBody(endlessReader{}, 1<<10); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("want ErrResponseTooLarge, got %v", err)
 	}
 }
@@ -64,8 +58,6 @@ func TestReadResponseBodyRejectsNonPositiveLimit(t *testing.T) {
 	}
 }
 
-// A transport error must surface as itself, not as a size refusal: the two
-// carry opposite meanings for a caller classifying a payment side effect.
 func TestReadResponseBodyPropagatesReadErrors(t *testing.T) {
 	want := errors.New("connection reset")
 	_, err := ReadResponseBody(errReader{err: want}, 1<<10)
@@ -91,3 +83,83 @@ type errReader struct{ err error }
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 var _ io.Reader = endlessReader{}
+
+func TestWriteJSONNoStoreOwnsTheCachePolicy(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	recorder.Header().Set("Cache-Control", "public, max-age=300")
+
+	WriteJSONNoStore(recorder, http.StatusCreated, map[string]string{"status": "created"})
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusCreated)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := recorder.Body.String(); got != "{\"status\":\"created\"}\n" {
+		t.Fatalf("body = %q", got)
+	}
+}
+
+func TestWriteJSONDefaultNoStorePreservesAnExplicitPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial, want string
+	}{
+		{name: "missing policy", want: "no-store"},
+		{name: "explicit public policy", initial: "public, max-age=5", want: "public, max-age=5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			if tc.initial != "" {
+				recorder.Header().Set("Cache-Control", tc.initial)
+			}
+
+			WriteJSONDefaultNoStore(recorder, http.StatusOK, struct{}{})
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != tc.want {
+				t.Fatalf("Cache-Control = %q, want %q", got, tc.want)
+			}
+			if got := recorder.Body.String(); got != "{}\n" {
+				t.Fatalf("body = %q, want an encoded empty object", got)
+			}
+		})
+	}
+}
+
+func TestJSONWritersPreserveCommittedResponseWhenEncodingFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(http.ResponseWriter, int, any)
+	}{
+		{name: "forced no-store", write: WriteJSONNoStore},
+		{name: "default no-store", write: WriteJSONDefaultNoStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+
+			tc.write(recorder, http.StatusAccepted, make(chan int))
+
+			if recorder.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusAccepted)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if recorder.Body.Len() != 0 {
+				t.Fatalf("body = %q, want no bytes from an unsupported value", recorder.Body.String())
+			}
+		})
+	}
+}

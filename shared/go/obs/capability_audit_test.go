@@ -69,7 +69,7 @@ func TestNoEmitterWritesARawRequestPath(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "node_modules", "dist", "vendor", ".sdlc":
+			case ".git", "node_modules", "dist", "vendor":
 				return fs.SkipDir
 			}
 			return nil

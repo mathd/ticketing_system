@@ -16,7 +16,7 @@ import { defineMiddleware } from 'astro:middleware';
 
 import { assertCredentialSeparation } from '../credentials.mjs';
 import { LOGIN_PATH, gateRequest } from './lib/gate';
-import { SESSION_COOKIE, lookupSession } from './lib/session';
+import { SESSION_COOKIE, sessionStore } from './lib/session';
 
 // Defence in depth, NOT the mechanism (TKT-194, ai-review pass 2).
 //
@@ -37,7 +37,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     request: context.request,
     pathname: context.url.pathname,
     sessionToken: context.cookies.get(SESSION_COOKIE)?.value ?? '',
-    lookup: (token) => lookupSession(token),
+    lookup: (token) => sessionStore.lookup(token),
     onAuthenticated: (principal) => {
       // Everything downstream reads the organizer from here rather than from a
       // hard-coded constant.

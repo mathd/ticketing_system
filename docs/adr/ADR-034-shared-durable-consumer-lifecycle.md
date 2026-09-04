@@ -97,10 +97,13 @@ and investigated, not edited. Three of those pin things a move can silently brea
 ## Decision
 
 We adopt **Option 3 minus its readiness half** — that is, the narrowest form that removes the
-defect: `ticketing/shared/durableconsumer` exports exactly **one function**.
+defect: `ticketing/shared/durableconsumer` exports a narrow wait operation. The
+cause-aware form is the production entry point; `Wait` preserves the simpler API
+for callers without a broker cause handler.
 
 ```go
 func Wait(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string) error
+func WaitWithCause(ctx context.Context, closed <-chan struct{}, ready *atomic.Bool, name string, cause *TerminationCause) error
 ```
 
 It distinguishes parent cancellation from asynchronous consume-context termination, returns `nil`
@@ -108,10 +111,10 @@ and touches nothing on the former, and on the latter latches `ready` false **and
 diagnostic. It never stores `true`: termination does not self-heal. The package imports `context`,
 `fmt` and `sync/atomic` — no JetStream, no `domainevent`, no database.
 
-**Each service keeps an unexported `waitConsume` delegating to it.** This is load-bearing, not a
-compatibility shim: TKT-97's tests and both access call sites go through that one symbol, so the
-guarantee is tested on the path that ships. Point the call sites straight at `durableconsumer.Wait`
-and the tests still pass while testing a façade.
+**Each service calls `WaitWithCause` directly from `Run`.** Shared-package tests own the wait
+semantics. Service tests enter each production `Run` path and prove that a closed consume context
+reaches the shared operation. This keeps production wiring observable without retaining a facade
+whose direct tests could pass after production bypassed it.
 
 **Inventory adopts it** — a deliberate behaviour addition, not a refactor, with its own test. Clean
 shutdown is unchanged (`Wait` returns `nil`, and `Run`'s existing tail returns the same
@@ -154,8 +157,9 @@ consumer does stays with the service.**
       a single place to renegotiate the TKT-99 smoke contract.
     - TKT-99's verbatim string is now pinned by a unit test as well as a broker test.
     - No `go.mod` changes anywhere — `go.work` already wires all eight modules.
-    - Every pinned test (TKT-90, TKT-97, TKT-99) passes byte-for-byte unmodified, so the guarantees
-      are proven by the same assertions as before the move rather than by rewritten ones.
+    - The original TKT-127 move preserved the existing assertions. R15 later replaced facade-level
+      tests with shared-helper tests for wait semantics and service `Run` tests for production
+      wiring.
 
 - **Negative:**
     - `shared/go` gains a second domain-adjacent package, and the kernel now holds *behaviour* as
@@ -165,10 +169,10 @@ consumer does stays with the service.**
       it is a new production exit path, and it interacts with TKT-121 (inventory's `main` does not
       filter cancellation-caused consumer errors) which remains open.
     - ~~**Inventory's adoption has a startup-shaped hole, and this ADR should not be read as
-      claiming otherwise.**~~ ***Closed by TKT-122.*** `Run` now starts one `waitConsume` observer
+      claiming otherwise.**~~ ***Closed by TKT-122.*** `Run` now starts one `WaitWithCause` observer
       immediately after `Consume` and passes `startupConverge` a context that observer cancels, so a
       durable deleted during the pass unwinds it promptly instead of at the next retry boundary. On
-      termination `Run` returns `waitConsume`'s durable-named diagnostic rather than
+      termination `Run` returns `WaitWithCause`'s durable-named diagnostic rather than
       `startupConverge`'s `context.Canceled`, which is what keeps `main`'s
       `isShutdownConsumerError` from filtering a real failure away as a clean stop.
       `refreshStartupReadiness` additionally refuses to latch `true` once termination has been
@@ -192,8 +196,8 @@ consumer does stays with the service.**
       That is a design decision, so it is **TKT-135**, not a line in this refactor. The adversarial
       review of TKT-127 raised this and it was triaged incidental on the reasoning above; recorded
       here rather than only on the board, because the gap is invisible from the code.
-    - The delegate indirection means a reader of `Run` must follow one more hop to find the
-      behaviour. The alternative — testing a façade — is worse.
+    - Each service needs a production-path test for every `Run` call site. Shared helper tests
+      prove the mechanism but cannot prove that a service wired it into the running consumer.
     - The reviewed finding's other four claims are **not** addressed, because they were not true.
       Anyone re-reading R13 will find it broader than what shipped; this ADR's Context table is the
       record of why.

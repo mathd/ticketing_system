@@ -16,6 +16,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // their per-performance scaling is TKT-177's, not this ticket's.
 
 const GATEWAY = 'http://localhost:8080';
+const CONTENT_ID = '00000000-0000-0000-0000-000000000001';
+const ORGANIZER_ID = '00000000-0000-0000-0000-000000000002';
+const EVENT_TWO_ID = '00000000-0000-0000-0000-000000000003';
+const EVENT_THREE_ID = '00000000-0000-0000-0000-000000000004';
+const PERFORMANCE_IDS = [
+  '00000000-0000-0000-0000-000000000005',
+  '00000000-0000-0000-0000-000000000006',
+  '00000000-0000-0000-0000-000000000007',
+];
+const VENUE_IDS = [
+  '00000000-0000-0000-0000-000000000008',
+  '00000000-0000-0000-0000-000000000009',
+  '00000000-0000-0000-0000-000000000010',
+];
+const TICKET_TYPE_IDS = [
+  '00000000-0000-0000-0000-000000000011',
+  '00000000-0000-0000-0000-000000000012',
+  '00000000-0000-0000-0000-000000000013',
+];
+const SERIES_ID = '00000000-0000-0000-0000-000000000014';
 
 // Any fixed instant. Its value is irrelevant; that it never advances is the point.
 const FROZEN_NOW_MS = 1_780_000_000_000;
@@ -39,40 +59,44 @@ const minutesTier = { 'content-type': 'application/json', 'cache-control': 'publ
 // Non-trivial on purpose: an empty payload renders no children, so a future
 // per-child fetch would have nothing to fetch FOR and the budget would pass
 // while the regression shipped.
-const perf = (id: string, amount: number, venue: string) => ({
+const perf = (id: string, venueId: string, ticketTypeId: string, amount: number, venue: string) => ({
   id,
   starts_at: '2026-09-01T18:00:00Z',
   timezone: 'UTC',
   // Distinct venue per performance: it is the marker that proves each repeated
   // child was actually emitted, on every page that renders performances.
   venue_name: venue,
-  venue: { id: `v-${id}`, name: venue },
+  venue: { id: venueId, name: venue },
   from_price: { amount, currency: 'EUR' },
-  ticket_types: [{ id: `t-${id}`, name: 'GA', price: { amount, currency: 'EUR' } }],
+  ticket_types: [{ id: ticketTypeId, name: 'GA', price: { amount, currency: 'EUR' } }],
 });
 
-const performances = [perf('p1', 1000, 'Alpha'), perf('p2', 2000, 'Bravo'), perf('p3', 3000, 'Charlie')];
+const performances = [
+  perf(PERFORMANCE_IDS[0], VENUE_IDS[0], TICKET_TYPE_IDS[0], 1000, 'Alpha'),
+  perf(PERFORMANCE_IDS[1], VENUE_IDS[1], TICKET_TYPE_IDS[1], 2000, 'Bravo'),
+  perf(PERFORMANCE_IDS[2], VENUE_IDS[2], TICKET_TYPE_IDS[2], 3000, 'Charlie'),
+];
 
 // One payload serving every page shape. Non-trivial on purpose: an empty payload
 // renders no children, so a future per-child fetch would have nothing to fetch
 // FOR and the budget would pass while the regression shipped.
 const payload = {
   // Event DETAIL shape.
-  id: 'e1',
-  organizer_id: 'org-1',
+  id: CONTENT_ID,
+  organizer_id: ORGANIZER_ID,
   name: 'One',
   description: 'desc',
   performances,
-  series: [{ id: 's1', name: 'Series', performance_ids: ['p1'] }],
+  series: [{ id: SERIES_ID, name: 'Series', performance_ids: [PERFORMANCE_IDS[0]] }],
   // Festival DETAIL shape.
-  festival: { id: 'f1', name: 'Fest', shared_capacity: 100 },
+  festival: { id: CONTENT_ID, name: 'Fest', shared_capacity: 100 },
   days: performances,
   // Event LIST shape — three events, each with performances, so a per-child
   // fetch would have children to fetch for.
   events: [
-    { id: 'e1', organizer_id: 'org-1', name: 'One', description: '', series: [], performances },
-    { id: 'e2', organizer_id: 'org-1', name: 'Two', description: '', series: [], performances },
-    { id: 'e3', organizer_id: 'org-1', name: 'Three', description: '', series: [], performances },
+    { id: CONTENT_ID, organizer_id: ORGANIZER_ID, name: 'One', description: '', series: [], performances },
+    { id: EVENT_TWO_ID, organizer_id: ORGANIZER_ID, name: 'Two', description: '', series: [], performances },
+    { id: EVENT_THREE_ID, organizer_id: ORGANIZER_ID, name: 'Three', description: '', series: [], performances },
   ],
 };
 
@@ -143,8 +167,8 @@ describe('storefront SSR call budget (ADR-004 rule 3)', () => {
     // The point is the same everywhere: prove the tree was actually emitted,
     // three times over, not that a number came back.
     ['event list', '../src/pages/[locale]/events/index.astro', { locale: 'en' }, ['One', 'Two', 'Three']],
-    ['event detail', '../src/pages/[locale]/events/[eventId].astro', { locale: 'en', eventId: 'e1' }, ['Alpha', 'Bravo', 'Charlie']],
-    ['festival detail', '../src/pages/[locale]/festivals/[festivalId].astro', { locale: 'en', festivalId: 'f1' }, ['Alpha', 'Bravo', 'Charlie']],
+    ['event detail', '../src/pages/[locale]/events/[eventId].astro', { locale: 'en', eventId: CONTENT_ID }, ['Alpha', 'Bravo', 'Charlie']],
+    ['festival detail', '../src/pages/[locale]/festivals/[festivalId].astro', { locale: 'en', festivalId: CONTENT_ID }, ['Alpha', 'Bravo', 'Charlie']],
   ])('%s renders on exactly one upstream call', async (_name, page, params, children) => {
     const calls = stubFetch(() => new Response(JSON.stringify(payload), { status: 200, headers: minutesTier }));
     const res = await renderPage(page, params as Record<string, string>);

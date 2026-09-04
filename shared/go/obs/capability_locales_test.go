@@ -1,4 +1,4 @@
-package obs_test
+package obs
 
 import (
 	"os"
@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"ticketing/shared/obs"
 )
 
 // The Go locale list must match the storefront's, and this test is the only
@@ -26,7 +24,10 @@ import (
 //
 // Mutation this must catch: add or remove a locale on either side.
 func TestStorefrontLocalesMatchTheStorefront(t *testing.T) {
-	root := repoRoot(t)
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
 	src, err := os.ReadFile(filepath.Join(root, "web", "storefront", "src", "lib", "locales.ts"))
 	if err != nil {
 		t.Fatalf("cannot read the storefront locale list: %v", err)
@@ -48,7 +49,7 @@ func TestStorefrontLocalesMatchTheStorefront(t *testing.T) {
 		t.Fatal("parsed an empty locale list from locales.ts — the comparison below would be vacuous")
 	}
 
-	fromGo := obs.StorefrontLocalesForTest()
+	fromGo := append([]string(nil), storefrontLocales...)
 	sort.Strings(fromTS)
 	sort.Strings(fromGo)
 

@@ -1,8 +1,8 @@
 # Ticketing platform — local stack (US-001).
 # `docker compose up` from a clean clone brings up: postgres + NATS JetStream
 # + otel-lgtm + the five Go services + gateway + storefront + scanner.
-# Published ports are env-overridable so `make smoke` can run an isolated
-# copy (-p ticketing-smoke) next to a running dev stack.
+# Published ports are env-overridable so `make smoke` can run a path-isolated
+# Compose project next to a running dev stack.
 name: ticketing
 
 # One-shot migration job (ADR-022): runs the service's own binary with the
@@ -327,7 +327,8 @@ services:
       #
       # It lived in compose.smoke.yaml until TKT-184 follow-up, and that file is about
       # the BUILD METHOD — host-built binaries vs in-Docker — not about the PSP. So the
-      # hermetic path, which loads only this file, ran with retention 0 and failed
+      # hermetic path, which loads the base file and shared runtime overlays but not
+      # compose.smoke.yaml, ran with retention 0 and failed
       # TestStatusReplayWindowExpiryAnswers409 while the fast path passed. A precondition
       # that only one of two stacks loads is a test that only one of two stacks can pass.
       #

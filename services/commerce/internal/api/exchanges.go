@@ -101,10 +101,8 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A SETTLED replay answers first, before any external call (ai-review pass 2).
-	// Resolving the price on every request meant a settled exchange could not be replayed
-	// while catalog was unreachable — an operation that already happened failing because
-	// of a dependency it no longer needs.
+	// A settled replay answers before any external call. Its result is already durable,
+	// so replay must not depend on catalog availability.
 	exchangeID := commercestore.ExchangeID(in.OrganizerID, key)
 	request := commercestore.ExchangeRequest{
 		SourceOrderID: order, OrganizerID: in.OrganizerID, TargetTicketTypeID: in.TargetTicketTypeID,
@@ -120,17 +118,9 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found && existing.Settled {
-		// The replay re-drives settlement, which is idempotent and — on a row that already
-		// owes its event — a no-op that costs one locked read (ai-review pass 4).
-		//
-		// It is here to make a premise unnecessary rather than to fix a reachable bug.
-		// Settlement and the outbox row share one transaction, so this branch cannot
-		// currently observe `settled_at` set with no event owed; the only way to produce
-		// one is data written by the pre-TKT-166 code, and TKT-158 is merged but never
-		// released (no tags, no deploy workflow, and it reached `main` the same day). But
-		// "unreachable given how it was rolled out" is a claim that has to be re-argued
-		// every time this path is touched, and the replay is the natural place to repair a
-		// settled exchange that owes nothing — so it repairs one.
+		// Re-driving settlement is idempotent. It is normally a locked read, and it also
+		// repairs a settled row whose outbox obligation is absent without relying on rollout
+		// history to make that state impossible.
 		if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID); err != nil {
 			slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", existing.ID, "err", err)
 			write(w, 500, map[string]string{"error": "persist exchange"})

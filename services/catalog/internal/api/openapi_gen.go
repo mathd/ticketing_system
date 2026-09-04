@@ -1033,10 +1033,12 @@ type SeasonSeriesAttach struct {
 
 // Seat defines model for Seat.
 type Seat struct {
-	Id           openapi_types.UUID `json:"id"`
-	Label        string             `json:"label"`
-	Position     int32              `json:"position"`
-	SeatIdentity string             `json:"seat_identity"`
+	Id       openapi_types.UUID `json:"id"`
+	Label    string             `json:"label"`
+	Position int32              `json:"position"`
+
+	// SeatIdentity Stable "section/row/seat" identity accepted by Commerce and Inventory.
+	SeatIdentity string `json:"seat_identity"`
 }
 
 // SeatMap defines model for SeatMap.
@@ -1253,8 +1255,8 @@ type StaffCredentials struct {
 // The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
 // organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
 type StaffPrincipal struct {
-	// OrganizerAssertion Opaque to the holder in the sense that matters: it is signed, so any field it names can be read but none can be changed. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
-	// Empty only when the server has no signing key configured, which startup refuses -- a client receiving an empty value should treat sign-in as failed rather than proceeding to writes that will 401.
+	// OrganizerAssertion Version 1 wire form is `v1.<staff UUID>.<organizer UUID>.<Unix expiry>.<43-character base64url HMAC>`. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the HMAC signs the complete prefix. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+	// A server without a signing key refuses authentication; a successful response always carries this non-empty value.
 	OrganizerAssertion string             `json:"organizer_assertion"`
 	OrganizerId        openapi_types.UUID `json:"organizer_id"`
 

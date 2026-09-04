@@ -24,7 +24,7 @@
 // sets BASE, POSTGRES_CONTAINER and CATALOG_CONTAINER.
 
 import { chromium } from 'playwright-core';
-import { provisionAdmin, resultRecorder } from './lib/support.mjs';
+import { provisionAdmin, resultRecorder, signIn } from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const CATALOG = process.env.CATALOG_CONTAINER;
@@ -54,11 +54,7 @@ try {
 
   // --- 1. Sign in. A real submit, so the session cookie is set by the server on
   // the /admin path rather than fabricated here.
-  await page.goto('/admin/login', { waitUntil: 'domcontentloaded' });
-  await page.fill('#identifier', identifier);
-  await page.fill('#password', password);
-  await Promise.all([page.waitForURL('**/admin**'), page.click('button[type=submit]')]);
-  check('admin signs in and lands in the back office', page.url().includes('/admin'));
+  await signIn(page, identifier, password);
 
   // --- 2. The page is reachable and linked. The link is a courtesy; the route
   // gate is the control — but a page nobody can find is not shipped.

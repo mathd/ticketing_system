@@ -1,4 +1,4 @@
-// Resends access may have performed without telling us (TKT-203, ai-review F1).
+// Resends access may have performed without telling us (TKT-203).
 //
 // When a resend times out or answers 5xx, access may already have handed some or all of
 // the order's tickets to the transport. The only safe next step is replaying the SAME
@@ -37,8 +37,6 @@ import type { RedeliveryInput } from './order-console';
 
 type Entry = { request: RedeliveryInput; recordedAt: number };
 
-const outstanding = new Map<string, Entry>();
-
 /**
  * How long an unsettled resend keeps being offered as a retry.
  *
@@ -54,46 +52,47 @@ export const UNRESOLVED_REDELIVERY_TTL_MS = 60 * 60 * 1000;
 /** A bound, so a run of outages cannot grow this without limit. */
 export const MAX_UNRESOLVED_REDELIVERIES = 1000;
 
-const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;
-
-export function resetUnresolvedRedeliveriesForTest(): void {
-  outstanding.clear();
+export interface UnresolvedRedeliveryTracker {
+  note(organizerId: string, request: RedeliveryInput): void;
+  find(organizerId: string, orderId: string): RedeliveryInput | undefined;
+  clear(organizerId: string, orderId: string): void;
 }
 
-export function noteUnresolvedRedelivery(
-  organizerId: string,
-  request: RedeliveryInput,
-  now = Date.now(),
-): void {
-  const k = key(organizerId, request.orderId);
-  // Never overwrite an existing entry: the FIRST unsettled key is the one access may
-  // have partially executed, and it is the only key that can RESUME that work. A later
-  // attempt's key would start a fresh request and leave the partial one stranded.
-  if (outstanding.has(k)) return;
-  if (outstanding.size >= MAX_UNRESOLVED_REDELIVERIES) {
-    // Drop the oldest rather than refuse to record. Map iterates in insertion order.
-    const oldest = outstanding.keys().next();
-    if (!oldest.done) outstanding.delete(oldest.value);
-  }
-  outstanding.set(k, { request, recordedAt: now });
+/** Creates one isolated tracker. Production owns the instance exported below. */
+export function createUnresolvedRedeliveryTracker(
+  clock: () => number = Date.now,
+): UnresolvedRedeliveryTracker {
+  const outstanding = new Map<string, Entry>();
+  const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;
+
+  return {
+    note(organizerId, request) {
+      const k = key(organizerId, request.orderId);
+      // Keep the first key. Only that request can resume partially completed work.
+      if (outstanding.has(k)) return;
+      if (outstanding.size >= MAX_UNRESOLVED_REDELIVERIES) {
+        const oldest = outstanding.keys().next();
+        if (!oldest.done) outstanding.delete(oldest.value);
+      }
+      outstanding.set(k, { request, recordedAt: clock() });
+    },
+
+    find(organizerId, orderId) {
+      const k = key(organizerId, orderId);
+      const entry = outstanding.get(k);
+      if (!entry) return undefined;
+      if (clock() - entry.recordedAt > UNRESOLVED_REDELIVERY_TTL_MS) {
+        outstanding.delete(k);
+        return undefined;
+      }
+      return entry.request;
+    },
+
+    clear(organizerId, orderId) {
+      outstanding.delete(key(organizerId, orderId));
+    },
+  };
 }
 
-export function unresolvedRedeliveryFor(
-  organizerId: string,
-  orderId: string,
-  now = Date.now(),
-): RedeliveryInput | undefined {
-  const k = key(organizerId, orderId);
-  const entry = outstanding.get(k);
-  if (!entry) return undefined;
-  if (now - entry.recordedAt > UNRESOLVED_REDELIVERY_TTL_MS) {
-    outstanding.delete(k);
-    return undefined;
-  }
-  return entry.request;
-}
-
-/** Called when access has told us what happened to the original key. */
-export function clearUnresolvedRedelivery(organizerId: string, orderId: string): void {
-  outstanding.delete(key(organizerId, orderId));
-}
+/** Unresolved redeliveries held by this back-office process. */
+export const unresolvedRedeliveries = createUnresolvedRedeliveryTracker();

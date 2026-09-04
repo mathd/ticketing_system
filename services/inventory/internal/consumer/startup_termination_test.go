@@ -97,20 +97,8 @@ func (r *blockingResolver) PublishedPerformance(context.Context, uuid.UUID) (Pub
 	return PublishedPerformance{}, nil
 }
 
-// TKT-122 half B. Run began observing ConsumeContext.Closed() only AFTER
-// startupConverge returned, and that pass retries reconcileAttempts times with
-// retryBackoff between them plus a serial catalog call per published pool. A
-// durable deleted inside that window went unnoticed until the pass ended.
-//
-// Not a false-ready lie — refreshStartupReadiness stores true as its last act, so
-// the service is honestly unready throughout — but a detection-latency gap: the
-// process stays alive, unready, consuming nothing, and compose does not restart an
-// unhealthy container (ADR-017 §236-241), so the late process exit is the signal
-// that matters.
-//
-// This enters through Consumer.Run deliberately. TKT-127's tests call waitConsume
-// directly and by construction cannot express this: the defect is not in
-// waitConsume but in WHEN Run starts calling it.
+// The test enters through Consumer.Run so it covers the production ordering:
+// WaitWithCause must observe termination while startup reconciliation is blocked.
 func TestRunObservesTerminationDuringStartupConverge(t *testing.T) {
 	cc := &fakeConsumeContext{closed: make(chan struct{})}
 	resolver := &blockingResolver{entered: make(chan struct{})}

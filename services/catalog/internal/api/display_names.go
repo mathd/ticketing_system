@@ -31,7 +31,7 @@ func (s *Server) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.R
 	// conversion — kept explicit so the store port keeps its own type.
 	ids := append(make([]uuid.UUID, 0, len(params.Ids)), params.Ids...)
 
-	found, err := s.store.PerformanceDisplayNames(r.Context(), ids)
+	found, err := s.displayName.PerformanceDisplayNames(r.Context(), ids)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return

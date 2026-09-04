@@ -128,6 +128,48 @@ func TestSeatMapAuthoringRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAddSeatMapSeatRejectsOverlongIdentityBeforeInsert(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	m := seedDraftMap(ctx, t, st, "Identity limit")
+	section, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: strings.Repeat("🎟", 196), Position: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: section.ID, Label: "R", Position: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = st.AddSeatMapSeat(ctx, SeatMapSeatInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "12", Position: 1,
+	})
+	if !errors.Is(err, ErrSeatIdentityTooLong) {
+		t.Fatalf("overlong identity error = %v, want ErrSeatIdentityTooLong", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_map_seats WHERE seat_map_id=$1`, m.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("rejected identity inserted %d seats", count)
+	}
+
+	seat, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1,
+	})
+	if err != nil {
+		t.Fatalf("200-character identity: %v", err)
+	}
+	if got := len([]rune(seat.SeatIdentity)); got != MaxSeatIdentityCharacters {
+		t.Fatalf("boundary identity has %d characters, want %d", got, MaxSeatIdentityCharacters)
+	}
+}
+
 // TestSeatMapRejectsDuplicateIdentity: re-adding the same section/row/seat is a
 // conflict (COS-5) — the composed identity collides on UNIQUE(seat_map_id,
 // seat_identity), surfaced as ErrSeatMapConflict, not a raw 500-shaped error.

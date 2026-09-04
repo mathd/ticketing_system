@@ -149,11 +149,47 @@ func TestVerifyOnlyStoreCannotAppend(t *testing.T) {
 	}
 }
 
-func TestSubcommandsAreWired(t *testing.T) {
-	for _, name := range []string{"migrate", "lifecycle-backfill", "verify-lifecycle", "seal-lifecycle-epoch", "set-lifecycle-mode"} {
-		if _, ok := subcommands()[name]; !ok {
-			t.Fatalf("subcommand %q is not wired", name)
-		}
+func TestCommandRegistryInvokesEveryAccessCallback(t *testing.T) {
+	var invoked string
+	withoutArgs := func(name string) func() error {
+		return func() error { invoked = name; return nil }
+	}
+	withArgs := func(name string) func([]string) error {
+		return func([]string) error { invoked = name; return nil }
+	}
+	callbacks := commandCallbacks{
+		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
+		lifecycleBackfill: withoutArgs("lifecycle-backfill"), verifyLifecycle: withoutArgs("verify-lifecycle"),
+		sealLifecycleEpoch: withoutArgs("seal-lifecycle-epoch"), setLifecycleMode: withArgs("set-lifecycle-mode"),
+		keygen: withoutArgs("keygen"), enrolScanner: withArgs("enrol-scanner"),
+		revokeScanner: withArgs("revoke-scanner"), listScanners: withArgs("list-scanners"),
+	}
+	registry := commandRegistry(callbacks)
+	names := []string{
+		"migrate", "healthcheck", "lifecycle-backfill", "verify-lifecycle", "seal-lifecycle-epoch",
+		"set-lifecycle-mode", "keygen", "enrol-scanner", "revoke-scanner", "list-scanners",
+	}
+	if len(registry) != len(names) {
+		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			invoked = ""
+			got := execute([]string{name, "tail"}, callbacks, func() error {
+				t.Fatal("server ran after a command was selected")
+				return nil
+			})
+			wantExit := 0
+			if name == "healthcheck" {
+				wantExit = 7
+			}
+			if got.Name != name || got.Err != nil || got.ExitCode != wantExit {
+				t.Fatalf("dispatch result = %+v, want %s with exit %d", got, name, wantExit)
+			}
+			if invoked != name {
+				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+		})
 	}
 }
 

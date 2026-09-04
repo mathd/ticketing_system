@@ -48,7 +48,7 @@ func capturedExchangeHold(t *testing.T, src commercestore.ExchangeSource) exchan
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, "", inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, "", inventory.URL, "", "secret")
 	req := httptest.NewRequest(http.MethodPost, "/exchanges", nil)
 	res := priceResolution{
 		PerformanceID: uuid.New(),
@@ -210,7 +210,7 @@ func TestExchangeRepricingTakesTheChannelOnlyFromAResellerSource(t *testing.T) {
 			}))
 			defer catalog.Close()
 
-			srv := New(nil, http.DefaultClient, catalog.URL, "", "", "secret")
+			srv := newTestServer(nil, http.DefaultClient, catalog.URL, "", "", "secret")
 			req := httptest.NewRequest(http.MethodPost, "/exchanges", nil)
 			if _, err := srv.repriceExchangeTarget(req, uuid.MustParse(pricingTT),
 				uuid.MustParse(pricingOrg), tc.src); err != nil {

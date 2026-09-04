@@ -1,7 +1,7 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
 import { isLocale, UI_STRINGS } from '../../../lib/locales';
-import { SESSION_COOKIE, lookupSession } from '../../../lib/session';
+import { SESSION_COOKIE, sessionStore } from '../../../lib/session';
 import { getTicketBundle, ticketsForDisplay } from '../../../lib/ticket-api';
 
 const locale = Astro.params.locale;
@@ -50,7 +50,7 @@ const voidedReason = (history: Array<{ type: string }>) => {
 // Nothing about the session is rendered: no address, no principal, and above all
 // no assertion. The form carries the order reference — which is already in the URL
 // the buyer is looking at — and the locale.
-const signedIn = Boolean(lookupSession(Astro.cookies.get(SESSION_COOKIE)?.value ?? ''));
+const signedIn = Boolean(sessionStore.lookup(Astro.cookies.get(SESSION_COOKIE)?.value ?? ''));
 const claimOutcome = Astro.url.searchParams.get('claim');
 const claimMessage =
   claimOutcome === 'refused'

@@ -89,7 +89,7 @@ func serveWith(t *testing.T, op internalOp, header, value string) *httptest.Resp
 // credentialServer builds the Server with BOTH credentials configured and distinct.
 func credentialServer(t *testing.T) *Server {
 	t.Helper()
-	return New(nil, nil, internalTok).WithStaffWriteCredential(staffTok)
+	return newTestServer(nil, nil, internalTok).WithStaffWriteCredential(staffTok)
 }
 
 // internalRoutesFromRouter walks the REAL chi router. A hand-maintained list cannot
@@ -282,7 +282,7 @@ func TestRedeliveryRefusesEveryWrongCredential(t *testing.T) {
 // exercises being the one that admits everybody.
 func TestUnconfiguredStaffCredentialRefusesRatherThanAdmits(t *testing.T) {
 	r := chi.NewRouter()
-	unconfigured := New(nil, nil, internalTok) // no WithStaffWriteCredential
+	unconfigured := newTestServer(nil, nil, internalTok) // no WithStaffWriteCredential
 	unconfigured.registerRoutes(r)
 
 	for _, presented := range []string{"", "anything", staffTok} {

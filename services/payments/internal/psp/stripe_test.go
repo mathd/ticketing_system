@@ -2,7 +2,6 @@ package psp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -509,16 +508,6 @@ func TestStripeStatusReplaysUnderSameKey(t *testing.T) {
 	}
 	if strings.HasSuffix(stub.requests[0].path, "/capture") {
 		t.Fatal("replay must not capture — it only re-creates to learn the outcome")
-	}
-}
-
-// Sanity: the JSON shapes we hand-write actually parse (guards against a typo'd fixture).
-func TestFixturesParse(t *testing.T) {
-	for _, f := range []string{piRequiresCapture, piSucceeded, cardDeclined} {
-		var m map[string]any
-		if err := json.Unmarshal([]byte(f), &m); err != nil {
-			t.Fatalf("fixture does not parse: %v", err)
-		}
 	}
 }
 

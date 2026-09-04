@@ -41,7 +41,7 @@ back office in `web/backoffice` (served under `/admin/`, ADR-042), and the React
 - **The integration seam is the gateway**: `smoke/` asserts everything observable from
   outside — health fan-out, web applications, trace propagation, JetStream persistence, DB
   credential isolation, metrics ingestion. `make smoke` owns the stack lifecycle
-  (isolated project `ticketing-smoke`, shifted ports, trap-based teardown).
+  (path-derived Compose project, deterministic shifted ports, trap-based teardown).
 - **The gate polices itself**: `scripts/gate-selftest.sh` seeds one failure per stage in a
   disposable git worktree and requires each to fail. CI runs both jobs.
 - **Two smoke build paths** (TKT-42): `make smoke` packages host-built artifacts (fast,
@@ -962,8 +962,10 @@ make browser              # up, run every spec, tear down
 
 A spec gets `BASE` (the gateway URL) and `POSTGRES_CONTAINER` (for the operator-style `psql`
 reads a mailbox or an audit check needs) from the script; it must never hardcode a port. Ports and
-the compose project name come from `scripts/stack-env.sh`, shared with `scripts/smoke.sh` so the
-two stacks can be up at once and cannot collide.
+the Compose project name come from `scripts/stack-env.sh`, shared with `scripts/smoke.sh`. Project
+identities are distinct by default for each checkout and stack kind. Ports use one of 40
+deterministic slots; a rare slot collision fails at startup without letting either stack remove the
+other's resources.
 
 ## Customer accounts (TKT-220)
 

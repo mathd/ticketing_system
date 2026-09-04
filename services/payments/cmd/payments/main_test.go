@@ -13,6 +13,42 @@ import (
 	"ticketing/shared/runtimecfg"
 )
 
+func TestCommandRegistryInvokesEveryPaymentsCallback(t *testing.T) {
+	var invoked string
+	callback := func(name string) func() error {
+		return func() error { invoked = name; return nil }
+	}
+	callbacks := commandCallbacks{
+		migrate: callback("migrate"), verifyConcurrentAppend: callback("verify-concurrent-append"),
+		verifyJournal: callback("verify-journal"),
+		healthcheck:   func() int { invoked = "healthcheck"; return 7 },
+	}
+	registry := commandRegistry(callbacks)
+	names := []string{"migrate", "verify-concurrent-append", "verify-journal", "healthcheck"}
+	if len(registry) != len(names) {
+		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			invoked = ""
+			got := execute([]string{name, "tail"}, callbacks, func() error {
+				t.Fatal("server ran after a command was selected")
+				return nil
+			})
+			wantExit := 0
+			if name == "healthcheck" {
+				wantExit = 7
+			}
+			if got.Name != name || got.Err != nil || got.ExitCode != wantExit {
+				t.Fatalf("dispatch result = %+v, want %s with exit %d", got, name, wantExit)
+			}
+			if invoked != name {
+				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+		})
+	}
+}
+
 // Provider selection is fail-fast config (mirrors signingConfig): the fake is chosen only
 // by the explicit sentinel (or unset), a test-mode key selects Stripe, and a LIVE key or
 // an unrecognized value refuses to start — a typo'd key must never silently charge the

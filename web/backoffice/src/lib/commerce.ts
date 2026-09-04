@@ -6,11 +6,15 @@ import {
   GATEWAY_URL,
   type Read,
   boolean,
+  currency,
+  nonNegativeWholeNumber,
+  positiveWholeNumber,
   readJson,
   required,
+  responseObject,
   sameIdentity,
   withUpstreamDeadline,
-  wholeNumber,
+  uuid,
 } from './upstream';
 
 const commerce = (path: string) => `${GATEWAY_URL}/api/commerce${path}`;
@@ -20,8 +24,8 @@ export type OrderState = { orderId: string; status: string };
 /** Commerce's order state: `{order_id, status}` and, by contract, nothing else. */
 export function getOrderState(orderId: string): Promise<Read<OrderState>> {
   return readJson(commerce(`/orders/${encodeURIComponent(orderId)}`), (body) => {
-    const b = body as { order_id?: unknown; status?: unknown };
-    const got = required(b.order_id, 'order_id');
+    const b = responseObject(body, 'order state');
+    const got = uuid(b.order_id, 'order_id');
     sameIdentity(got, orderId, 'order_id');
     return { orderId: got, status: required(b.status, 'status') };
   });
@@ -136,26 +140,36 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
       if (!res.ok) return { ok: false, kind: 'ambiguous', message };
 
       try {
-        const b = (await res.json()) as Record<string, unknown>;
-        const orderId = required(b.order_id, 'order_id');
+        const b = responseObject(await res.json(), 'refund');
+        const orderId = uuid(b.order_id, 'order_id');
         sameIdentity(orderId, req.orderId, 'order_id');
         const status = required(b.refund_status, 'refund_status');
         if (status !== 'none' && status !== 'partial' && status !== 'full') {
           throw new Error('refund_status is outside the contract enum');
         }
+        const quantity = positiveWholeNumber(b.quantity, 'quantity');
+        if (quantity > 50) throw new Error('quantity is above the contract maximum');
+        const refundedQuantity = nonNegativeWholeNumber(
+          b.refunded_quantity,
+          'refunded_quantity',
+        );
+        if (refundedQuantity > 50) {
+          throw new Error('refunded_quantity is above the contract maximum');
+        }
         return {
           ok: true,
           value: {
-            refundId: required(b.refund_id, 'refund_id'),
+            refundId: uuid(b.refund_id, 'refund_id'),
             orderId,
-            // Integer minor units throughout (ADR-001). A fractional amount here
-            // means someone put a float on a money path.
-            quantity: wholeNumber(b.quantity, 'quantity'),
-            amount: wholeNumber(b.amount, 'amount'),
-            currency: required(b.currency, 'currency'),
+            // Commerce refund amounts inherit the full int64 order-total range.
+            // This number-based console has a narrower capability and treats an
+            // amount it cannot represent exactly as an ambiguous result.
+            quantity,
+            amount: nonNegativeWholeNumber(b.amount, 'amount'),
+            currency: currency(b.currency, 'currency'),
             refundStatus: status,
-            refundedQuantity: wholeNumber(b.refunded_quantity, 'refunded_quantity'),
-            refundedAmount: wholeNumber(b.refunded_amount, 'refunded_amount'),
+            refundedQuantity,
+            refundedAmount: nonNegativeWholeNumber(b.refunded_amount, 'refunded_amount'),
             replay: boolean(b.replay, 'replay'),
             ticketsVoided: boolean(b.tickets_voided, 'tickets_voided'),
             capacityReturned: boolean(b.capacity_returned, 'capacity_returned'),
@@ -180,7 +194,7 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
 
 async function commerceMessage(res: Response): Promise<string> {
   try {
-    const b = (await res.clone().json()) as { error?: unknown };
+    const b = responseObject(await res.clone().json(), 'commerce error');
     if (typeof b.error === 'string' && b.error !== '') return b.error;
   } catch {
     /* fall through to the generic line */

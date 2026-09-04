@@ -55,9 +55,9 @@ and signing in an ADR and workflow before calling the process continuous deliver
 ## Deployment
 
 There are no dev, staging, or production environments. `docker compose up` starts a local stack;
-`make smoke` owns and removes a separate `ticketing-smoke` project. Cloud credentials, deployment
-approvals, environment secrets, and production rollback procedures are therefore not current
-repository concepts.
+`make smoke` owns and removes a path-derived Compose project with deterministic shifted ports.
+Cloud credentials, deployment approvals, environment secrets, and production rollback procedures
+are therefore not current repository concepts.
 
 ## Failures and reruns
 

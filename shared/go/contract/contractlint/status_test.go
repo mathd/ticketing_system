@@ -1,4 +1,4 @@
-package statusaudit
+package contractlint
 
 import (
 	"testing"
@@ -6,14 +6,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// The matcher's arms, exercised on synthetic documents because the live specs cannot reach
-// them all: no service operation declares `4XX`, `5XX` or `default:`, so those arms would
-// ship as unfalsifiable claims if only the real documents tested them. That is the shape
-// TKT-142's ai-review found twice on the sibling 400 invariant.
-//
-// Every document is run through Validate first. The services build their routers from these
-// documents and panic on an invalid one, so an invariant "proved" on a document no router
-// could serve would be proved about nothing.
+// Synthetic documents cover response forms absent from the live service contracts.
 func loadOp(t *testing.T, responses string) *openapi3.Operation {
 	t.Helper()
 	doc := "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /p:\n    get:\n      operationId: probe\n      responses:\n" + responses
@@ -59,47 +52,25 @@ func TestDeclaresMirrorsTheValidatorsResolution(t *testing.T) {
 		{"exact 500 does not cover 502", "        '200': {description: ok}\n        '500': {description: boom}\n", 502, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Declares(loadOp(t, tc.responses).Responses, tc.status); got != tc.want {
+			if got := declares(loadOp(t, tc.responses).Responses, tc.status); got != tc.want {
 				t.Fatalf("Declares(%d) = %v, want %v", tc.status, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestAuditSplitsTheTwoDirections(t *testing.T) {
+func TestAuditReportsOnlyMissingDeclarations(t *testing.T) {
 	op := loadOp(t, "        '200': {description: ok}\n        '404': {description: nope}\n        '500': {description: boom}\n")
 
 	// An emitted status with no declaration is the failure ADR-028 punishes.
-	d := Audit("probe", "GET /p", op, []int{200, 409})
+	d := audit("probe", "GET /p", op, []int{200, 409})
 	if len(d.Missing) != 1 || d.Missing[0] != 409 {
 		t.Fatalf("an emitted-but-undeclared 409 must be reported missing, got %v", d.Missing)
 	}
-	if Report([]Diff{d}) == "" {
-		t.Fatal("Report must render a diff carrying a missing status; an empty report is how a "+
-			"caller decides the audit passed")
-	}
 
-	// The reverse direction is reported and must NOT be a failure: the adapters
-	// under-approximate on purpose, so an unemitted declaration is at least as likely to be
-	// an adapter blind spot as a stale document entry.
-	d = Audit("probe", "GET /p", op, []int{200})
+	// Extra declarations are allowed because source derivation is intentionally conservative.
+	d = audit("probe", "GET /p", op, []int{200})
 	if len(d.Missing) != 0 {
 		t.Fatalf("declared-but-unemitted statuses must not be reported missing, got %v", d.Missing)
-	}
-	if len(d.Unemitted) != 2 || d.Unemitted[0] != 404 || d.Unemitted[1] != 500 {
-		t.Fatalf("unemitted declarations must be reported for review, got %v", d.Unemitted)
-	}
-	if Report([]Diff{d}) != "" {
-		t.Fatalf("a diff with no missing status must render an empty report, got %q", Report([]Diff{d}))
-	}
-
-	// Unemitted walks LITERAL keys only. A `default:` or `5XX` is not a claim about any one
-	// status, so asking "was this declaration emitted?" through Declares would answer yes
-	// for every code and the field would be permanently empty — inert, and inert in a way a
-	// reader would mistake for "nothing is over-declared".
-	ranged := loadOp(t, "        '200': {description: ok}\n        '5XX': {description: boom}\n")
-	if d := Audit("probe", "GET /p", ranged, []int{200}); len(d.Unemitted) != 0 {
-		t.Fatalf("a patterned declaration is not a claim about one status and must not be "+
-			"reported unemitted, got %v", d.Unemitted)
 	}
 }

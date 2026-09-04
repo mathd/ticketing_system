@@ -12,6 +12,7 @@ import { getTicketBundle, ISSUANCE_TOTAL_BUDGET_MS } from '../src/lib/ticket-api
 import { UPSTREAM_DEADLINE_MS } from '../src/lib/upstream';
 
 type CapturedCall = { signal?: AbortSignal | null };
+const ORDER_REF = '00000000-0000-0000-0000-000000000001';
 
 function stallUpstream(): CapturedCall[] {
   const calls: CapturedCall[] = [];
@@ -60,7 +61,11 @@ describe('storefront upstream operation deadlines', () => {
     ],
     [
       'guest-order claim',
-      () => claimGuestOrder('11111111-1111-1111-1111-111111111111', 'assertion'),
+      () => claimGuestOrder(
+        '11111111-1111-1111-1111-111111111111',
+        '22222222-2222-2222-2222-222222222222',
+        'assertion',
+      ),
       { ok: false, reason: 'unavailable' },
       UPSTREAM_DEADLINE_MS,
     ],
@@ -78,7 +83,7 @@ describe('storefront upstream operation deadlines', () => {
     ],
     [
       'ticket-bundle read',
-      () => getTicketBundle('guest-order-ref'),
+      () => getTicketBundle(ORDER_REF),
       { ok: false, status: 503 },
       // A read that retries carries its own budget. Advancing the shared default
       // here would assert that it aborts EARLIER than it is allowed to.
@@ -144,17 +149,17 @@ describe('storefront upstream operation deadlines', () => {
       vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
         signals.push(init?.signal);
         if (signals.length < 3) return new Response('{}', { status: 404 });
-        return new Response(JSON.stringify({ tickets: [] }), {
+        return new Response(JSON.stringify({ order_ref: ORDER_REF, tickets: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
       }),
     );
 
-    const result = getTicketBundle('guest-order-ref');
+    const result = getTicketBundle(ORDER_REF);
     await vi.advanceTimersByTimeAsync(500);
 
-    await expect(result).resolves.toEqual({ ok: true, value: { tickets: [] } });
+    await expect(result).resolves.toEqual({ ok: true, value: { order_ref: ORDER_REF, tickets: [] } });
     expect(signals).toHaveLength(3);
     expect(signals[0]).toBe(signals[1]);
     expect(signals[1]).toBe(signals[2]);
@@ -187,19 +192,19 @@ describe('storefront upstream operation deadlines', () => {
           );
         });
         if (mine < 12) return new Response('{}', { status: 404 });
-        return new Response(JSON.stringify({ tickets: [{ ticket_id: 't-1' }] }), {
+        return new Response(JSON.stringify({ order_ref: ORDER_REF, tickets: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
       }),
     );
 
-    const result = getTicketBundle('guest-order-ref');
+    const result = getTicketBundle(ORDER_REF);
     await vi.advanceTimersByTimeAsync(30_000);
 
     await expect(result).resolves.toEqual({
       ok: true,
-      value: { tickets: [{ ticket_id: 't-1' }] },
+      value: { order_ref: ORDER_REF, tickets: [] },
     });
     expect(attempts).toBe(12);
   });
@@ -222,7 +227,7 @@ describe('storefront upstream operation deadlines', () => {
       }),
     );
 
-    const result = getTicketBundle('guest-order-ref');
+    const result = getTicketBundle(ORDER_REF);
     await vi.advanceTimersByTimeAsync(60_000);
 
     await expect(result).resolves.toEqual({ ok: false, status: 503 });

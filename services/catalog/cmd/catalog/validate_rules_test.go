@@ -12,12 +12,6 @@ import (
 	"ticketing/services/catalog/internal/store"
 )
 
-func TestSubcommandsRegisterValidateRules(t *testing.T) {
-	if _, ok := subcommands()["validate-rules"]; !ok {
-		t.Fatal(`subcommands() lacks "validate-rules"`)
-	}
-}
-
 func fakeFindings() []store.RuleCurrencyMismatch {
 	return []store.RuleCurrencyMismatch{
 		{

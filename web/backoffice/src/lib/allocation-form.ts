@@ -5,8 +5,6 @@
 // allocation" satisfies a naive assertion and fails this ticket's COS, which asks for
 // the message beside the field the operator has to fix.
 //
-// THE ONE THING THIS MODULE EXISTS TO GET RIGHT, and it took three review passes.
-//
 // The write is a FULL-SET ATOMIC REPLACE under the pool lock (ADR-024): inventory DELETEs
 // every allocation row and re-INSERTs from what was submitted. So a field the request does
 // not carry is a field the save DESTROYS, and a field it DOES carry is a field the client
@@ -22,18 +20,19 @@
 //   * every other field comes from inventory's CURRENT set, read on the same request;
 //   * a submitted row must match a current one by EXACT channel code, or it is refused.
 //
-// The three passes each broke a weaker version: carrying the values in hidden inputs let a
-// crafted POST supply them; sourcing them from the server but keying on the client's
-// channel let an unmatched row fall back to client values. A field that cannot be
-// submitted cannot be forged.
+// These fields must be absent from the form type, not merely hidden or validated after
+// submission. A field that cannot be submitted cannot be forged.
 
 import type { components } from './inventory-api-types.gen';
 
 export type ChannelAllocation = components['schemas']['ChannelAllocation'];
 export type ChannelAllocationSet = components['schemas']['ChannelAllocationSet'];
+export type StaffChannelAllocationSet = Omit<ChannelAllocationSet, 'allocation_revision'> & {
+  allocation_revision: number;
+};
 
 /**
- * One editor row — ONLY what this screen lets an operator change (ai-review pass 3).
+ * One editor row: only what this screen lets an operator change.
  *
  * There is deliberately no `requiresCode` and no `soldBy` here, and no window. This
  * screen edits **caps and release times on allocations that already exist**; it does not
@@ -42,9 +41,7 @@ export type ChannelAllocationSet = components['schemas']['ChannelAllocationSet']
  * That is a security boundary, not a scope note. The write is a full-set replace, so any
  * field this type can carry is a field a crafted POST can choose — and inventory
  * validates only the channel, the cap, duplicates, pool capacity and consumption. It
- * never constrains `sold_by`, so the back office is the ONLY place that boundary exists.
- * Pass 2 moved these fields to a server merge keyed on the channel; pass 3 found the key
- * itself is client-supplied, so a row whose code matches nothing restored client control.
+ * never constrains `sold_by`, so the back office is the only place that boundary exists.
  * A field that cannot be submitted cannot be forged.
  */
 export interface AllocationRow {
@@ -52,7 +49,7 @@ export interface AllocationRow {
   cap: string;
   releaseAt: string;
   /**
-   * The operator asked to REMOVE this release gate (ai-review pass 2, [medium]).
+   * The operator asked to remove this release gate.
    *
    * A real checkbox, so absent-means-false holds: `form.get` returns null when it
    * is unticked, which is reachable. A hidden input would always submit and
@@ -61,9 +58,15 @@ export interface AllocationRow {
   clearRelease: boolean;
 }
 
+export interface StoredAllocationRow {
+  channel: string;
+  cap: number;
+  release_at?: string;
+}
+
 /**
  * One allocation as inventory reports it right now — the trustworthy source for every
- * field this screen does not render (ai-review pass 2, [high]).
+ * field this screen does not render.
  *
  * Structurally the subset of `ChannelAvailability` the write needs, declared here rather
  * than imported so this module stays free of the generated client.
@@ -288,17 +291,6 @@ function parseZonedInstant(value: string): string | undefined {
 }
 
 /**
- * Whether an RFC 3339 date-time carries a zone: a trailing `Z`, or `+HH:MM` /
- * `-HH:MM` after the time.
- *
- * Anchored to the END so the `-` separators in the DATE cannot satisfy it —
- * `2026-09-01T10:00` must not read as zoned because it contains dashes.
- */
-export function hasExplicitZone(value: string): boolean {
-  return /(?:Z|[+-]\d{2}:\d{2})$/.test(value.trim());
-}
-
-/**
  * How an instant is rendered back into the editable field: UTC, with an explicit
  * `Z`, to the second.
  *
@@ -321,6 +313,17 @@ export function toMinuteInput(value: string | undefined): string {
   // toISOString is always UTC with a trailing Z; drop the milliseconds, which no
   // operator types and which the round-trip comparison does not need.
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+export function allocationRowsFromAvailability(
+  stored: readonly StoredAllocationRow[],
+): AllocationRow[] {
+  return stored.map((allocation) => ({
+    channel: allocation.channel,
+    cap: String(allocation.cap),
+    releaseAt: toMinuteInput(allocation.release_at),
+    clearRelease: false,
+  }));
 }
 
 /**
@@ -473,9 +476,9 @@ export class MissingAllocationChannel extends Error {
 export function toAllocationRequest(
   organizerId: string,
   rows: AllocationRow[],
-  current: CurrentAllocation[] = [],
-  revision?: number,
-): ChannelAllocationSet {
+  current: CurrentAllocation[],
+  revision: number,
+): StaffChannelAllocationSet {
   const byChannel = new Map(current.map((c) => [c.channel, c]));
   // Every current allocation must be present in the submission. Omission is DELETION on a
   // full-set replace, so a sparse or empty form would silently destroy rows — and their
@@ -488,10 +491,7 @@ export function toAllocationRequest(
   }
   return {
     organizer_id: organizerId,
-    // Omitted when undefined rather than sent as null: inventory distinguishes absent
-    // (replace unconditionally) from present (compare), and the back office is the
-    // caller that must always be in the second case.
-    ...(revision === undefined ? {} : { allocation_revision: revision }),
+    allocation_revision: revision,
     allocations: rows.map((r) => {
       const held = byChannel.get(r.channel);
       if (!held) {

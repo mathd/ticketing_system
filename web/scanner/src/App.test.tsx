@@ -2,16 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
-// Every scan and reconciliation needs an enrolled device (ai-review S1). The
+// Every scan and reconciliation needs an enrolled device. The
 // suites below are about SCAN behaviour, so they pair once here — otherwise each
 // of them would be re-asserting the pairing screen and its own subject not at
 // all. The pairing screen has its own tests, in App.test.tsx.
 beforeEach(() => {
+  sessionStorage.clear()
   localStorage.setItem('scanner.device-token', 'paired-device-token')
 })
 
 afterEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -43,6 +45,13 @@ function fakeStream() {
 function stubIdleDetector() {
   vi.stubGlobal('BarcodeDetector', class {
     detect = vi.fn().mockResolvedValue([])
+  })
+}
+
+function stubCamera(getUserMedia: () => Promise<MediaStream>) {
+  vi.stubGlobal('navigator', {
+    locks: navigator.locks,
+    mediaDevices: { getUserMedia },
   })
 }
 
@@ -82,7 +91,7 @@ describe('App', () => {
     vi.stubGlobal('BarcodeDetector', class {
       detect = detect
     })
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 })))
 
@@ -102,7 +111,7 @@ describe('App', () => {
     const pending = deferred<MediaStream>()
     const getUserMedia = vi.fn().mockReturnValue(pending.promise)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     // jsdom's HTMLMediaElement has no srcObject accessor; install a spyable one for this test.
     const srcSetter = vi.fn()
@@ -138,7 +147,7 @@ describe('App', () => {
       .mockReturnValueOnce(pending1.promise)
       .mockReturnValueOnce(pending2.promise)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
 
     render(<App />)
@@ -168,7 +177,7 @@ describe('App', () => {
       .mockReturnValueOnce(gum1.promise)
       .mockResolvedValueOnce(second.stream)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     // First start's play() hangs (pending) so it stays mid-flight; later starts resolve immediately.
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play')
     play.mockReturnValueOnce(play1.promise).mockResolvedValue()
@@ -203,7 +212,7 @@ describe('App', () => {
       .mockReturnValueOnce(rejecting.promise)
       .mockResolvedValueOnce(active.stream)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
 
     render(<App />)
@@ -232,7 +241,7 @@ describe('App', () => {
       .mockResolvedValueOnce(first.stream)
       .mockResolvedValueOnce(second.stream)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
 
     render(<App />)
@@ -259,7 +268,7 @@ describe('App', () => {
     const { stop, stream } = fakeStream()
     const getUserMedia = vi.fn().mockResolvedValue(stream)
     stubIdleDetector()
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     // play() rejecting exercises the post-attach failure path: the acquired stream must be released.
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('play failed'))
 
@@ -278,7 +287,7 @@ describe('App', () => {
         throw new Error('detector construction failed')
       }
     })
-    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
 
     render(<App />)
@@ -289,8 +298,8 @@ describe('App', () => {
   })
 })
 
-// ai-review S1. The scan routes now require an enrolled device, so the app has to
-// have somewhere to keep one and something to do when it does not.
+// The scan routes require an enrolled device, so the app has to keep its
+// credential and present a clear unpaired state.
 describe('device pairing', () => {
   it('asks to be paired instead of scanning, and never sends a scan unpaired', async () => {
     localStorage.clear()
@@ -361,45 +370,30 @@ describe('device pairing', () => {
     expect(await screen.findByText(/offline scan/i)).toBeDefined()
   })
 
-  // The third cause, and the one the first version of this fix got wrong (ai-review
-  // [medium]). The catch also covers store.actuate and refreshQueued, which run AFTER
-  // a perfectly good reply — so a failure there was reported as "the server answered
-  // badly", the same unsupported claim one step along. Blaming a device fault on the
-  // server is exactly as wrong as blaming it on the network.
+  // A valid accepted response does not prove that this device recorded the
+  // actuation. Report the local write failure without blaming the network or server.
   it('blames this device, not the server, when the reply was fine and the local write failed', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-30T20:00:00Z' }), { status: 200 }),
-    ))
-    // Break IndexedDB only for the write that happens AFTER the reply is parsed. The
-    // mint must still succeed — it runs before the request leaves (ADR-025 §D3), and a
-    // scan whose occurrence was never minted would fail for a different reason and
-    // prove nothing about this branch. So: let the mint through, fail the next one.
-    // Break storage on the write that follows the MINT, deterministically.
-    //
-    // The mint must succeed: the occurrence is durably committed before the request
-    // leaves (ADR-025 §D3), and a scan whose mint failed takes a different path
-    // entirely and would prove nothing about this branch. Every later write —
-    // actuate on the accepted path, markQueued in the catch — is a `readwrite`.
-    //
-    // Counting READWRITE transactions is what makes this deterministic. An earlier
-    // version armed the failure after a setTimeout(0) and was genuinely flaky: it
-    // failed roughly one run in five, because whether the mint had opened its
-    // transaction by then depended on microtask scheduling. `readonly` reads (the
-    // queue-count refresh on mount) are irrelevant and deliberately not counted, so
-    // this does not depend on how many of those happen or when.
+    const reply = deferred<Response>()
+    const fetchMock = vi.fn().mockReturnValue(reply.promise)
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    pasteCredential()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+
+    // Mint has committed before fetch starts. Failing every later write targets
+    // actuation and its fail-closed queue attempt without relying on transaction counts.
     const realTransaction = IDBDatabase.prototype.transaction
-    let writes = 0
     vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof realTransaction>) {
       if (args[1] === 'readwrite') {
-        writes += 1
-        // 1 is the mint; everything after it is what this test breaks.
-        if (writes > 1) throw new DOMException('device storage unavailable', 'InvalidStateError')
+        throw new DOMException('device storage unavailable', 'InvalidStateError')
       }
       return realTransaction.apply(this, args)
     })
 
-    render(<App />)
-    pasteCredential()
+    reply.resolve(
+      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-30T20:00:00Z' }), { status: 200 }),
+    )
 
     expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
     expect(await screen.findByText(/could not be recorded on this device/i)).toBeDefined()

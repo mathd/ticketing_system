@@ -21,6 +21,8 @@ import (
 	"ticketing/shared/obs"
 )
 
+const maxValidatedRequestBodyBytes int64 = 1 << 20
+
 // RequestValidator validates every documented service request. The served
 // source document is deliberately bypassed because it is checked byte-for-byte
 // by the smoke gate and is not part of the service's JSON operation surface.
@@ -199,6 +201,7 @@ func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validate
 			next.ServeHTTP(w, r)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxValidatedRequestBodyBytes)
 		validatedHandler.ServeHTTP(w, r)
 	}), nil
 }

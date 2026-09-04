@@ -486,7 +486,10 @@ export interface components {
             hold_id: string;
             /** Format: uuid */
             buyer_id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description The composed order total in integer minor units. It may exceed a JavaScript Number's safe-integer range because individually bounded unit prices and fees are multiplied by quantity. Number-based clients must reject a value they cannot represent exactly.
+             */
             amount: number;
             currency: string;
             /** Format: date-time */
@@ -498,12 +501,12 @@ export interface components {
             /**
              * Format: int64
              * @description The rule-resolved price times quantity, before any fee (TKT-215). `amount` minus `face_value` is exactly the passed-on fee total.
-             *     OPTIONAL, like `seats` and for the same reason: every reservation created before this field existed lacks it, and the response validator fails closed (ADR-028), so requiring it would turn those valid responses into runtime 500s. It is absent on a reservation with no fee snapshot -- a pre-TKT-215 row or a staff-created one -- and absence means "this sale had no fee concept", which is a different fact from "its fees totalled nothing".
+             *     OPTIONAL, like `seats` and for the same reason: every reservation created before this field existed lacks it, and the response validator fails closed (ADR-028), so requiring it would turn those valid responses into runtime 500s. It is absent on a reservation with no fee snapshot -- a pre-TKT-215 row or a staff-created one -- and absence means "this sale had no fee concept", which is a different fact from "its fees totalled nothing". Multiplication by quantity can put this value beyond a JavaScript Number's safe-integer range.
              */
             face_value?: number;
             /**
              * Format: int64
-             * @description The part of `amount` that is fees the buyer pays. Absorbed fees are NOT here and never reach `amount`: they are borne by the organizer out of the face value, and charging them to the buyer would be charging for the organizer's cost. They are recorded in the persisted snapshot because TKT-217 still owes them to a payee.
+             * @description The part of `amount` that is fees the buyer pays. Absorbed fees are NOT here and never reach `amount`: they are borne by the organizer out of the face value, and charging them to the buyer would be charging for the organizer's cost. They are recorded in the persisted snapshot because TKT-217 still owes them to a payee. Their sum can exceed a JavaScript Number's safe-integer range.
              */
             passed_on_fees?: number;
             /** @description One entry per fee code that applied, INCLUDING any whose computed amount is zero (ADR-046 §2) -- a code that vanished as a function of price would leave settlement with a payee that is sometimes owed nothing and sometimes absent. A fee code that was considered but had no live rule produces no entry at all. */
@@ -513,7 +516,10 @@ export interface components {
                 basis: "per_ticket_fixed" | "per_order_fixed" | "percentage_bps";
                 /** @enum {string} */
                 incidence: "passed_on" | "absorbed";
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description The fee after applying its basis to the reservation quantity. This composed amount may exceed a JavaScript Number's safe-integer range.
+                 */
                 amount: number;
                 currency: string;
             }[];
@@ -606,7 +612,10 @@ export interface components {
             /** Format: date-time */
             purchased_at: string;
             quantity: number;
-            /** @description Integer minor units (ADR-001). Never a float, never divided here. */
+            /**
+             * Format: int64
+             * @description The composed order total in integer minor units (ADR-001). It may exceed a JavaScript Number's safe-integer range; number-based clients must reject a value they cannot represent exactly.
+             */
             total_amount: number;
             currency: string;
             /** @description Resolved from catalog in one call per page. Null when catalog cannot name the performance — a row the buyer can still open beats a wallet that will not load. */
@@ -621,6 +630,7 @@ export interface components {
             email: string;
             /**
              * @description A commerce-signed, expiring proof that the holder authenticated as this customer, presented on checkout in `X-Customer-Assertion` (TKT-221, ADR-049).
+             *     Version 1 wire form is `v1.<non-nil customer UUID>.<positive Unix expiry>.<43-character base64url HMAC>`. The expiry fits a JavaScript safe integer.
              *     This is a BEARER CREDENTIAL: anyone holding it can attribute a checkout to this customer until it expires. It is returned only to a caller who has just proven the password, and the storefront keeps it server-side inside its in-process session — never in a cookie, a rendered prop, or a log. Its lifetime is deliberately equal to that session's, so "the session is alive" and "the assertion is valid" cannot disagree and strand a buyer at the payment button.
              */
             customer_assertion: string;
@@ -764,13 +774,19 @@ export interface components {
             /** Format: uuid */
             order_id: string;
             quantity: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description This refund's integer minor-unit amount: the persisted face-value unit amount multiplied by the refunded quantity. Passed-on fees are not part of this value. The product can exceed a JavaScript Number's safe-integer range, so number-based clients must reject a value they cannot represent exactly.
+             */
             amount: number;
             currency: string;
             /** @enum {string} */
             refund_status: "none" | "partial" | "full";
             refunded_quantity: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description The cumulative sum of face-value refund amounts in integer minor units. It can exceed a JavaScript Number's safe-integer range, so number-based clients must reject a value they cannot represent exactly.
+             */
             refunded_amount: number;
             replay: boolean;
             tickets_voided: boolean;

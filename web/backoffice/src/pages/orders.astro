@@ -16,16 +16,8 @@ import Layout from '../layouts/Layout.astro';
 import { loadOrderConsole, parseLookup, parseRedelivery, parseRefund, unresolvedRefund, type RedeliveryInput, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
 import { refundOrder, type Refund } from '../lib/commerce';
 import { redeliverOrderTickets, type Redelivery } from '../lib/access';
-import {
-  clearUnresolvedRedelivery,
-  noteUnresolvedRedelivery,
-  unresolvedRedeliveryFor,
-} from '../lib/unresolved-redeliveries';
-import {
-  clearUnresolvedRefund,
-  noteUnresolvedRefund,
-  unresolvedRefundFor,
-} from '../lib/unresolved-refunds';
+import { unresolvedRedeliveries } from '../lib/unresolved-redeliveries';
+import { unresolvedRefunds } from '../lib/unresolved-refunds';
 import { randomUUID } from 'node:crypto';
 
 const staff = Astro.locals.staff;
@@ -88,53 +80,75 @@ if (Astro.request.method === 'POST') {
     const parsed = parseRefund(field);
     if (!parsed.ok) {
       action = { kind: 'refund-refused', message: parsed.message, ambiguous: false };
-      // The key comes from the SERVER, never from the submitted form. Nothing
-      // has reached commerce on this branch so no money is at stake, but an
-      // order that already has an outstanding key must be offered the retry
-      // rather than a fresh form — and browser-supplied provenance is not
-      // evidence of which key that is (ai-review pass 4).
-      unresolved = unresolvedRefundFor(staff.organizerId, submitted.order_id.trim()) ?? null;
+      // The key comes from the SERVER, never from the submitted form. This
+      // submission has not reached commerce, but an earlier unresolved refund
+      // may already have moved money. Offer its retry rather than a fresh form.
+      // Browser-supplied provenance cannot identify that key.
+      unresolved = unresolvedRefunds.find(staff.organizerId, submitted.order_id.trim()) ?? null;
     } else {
-      const outcome = await refundOrder({
-        orderId: parsed.value.orderId,
-        quantity: parsed.value.quantity,
-        reason: parsed.value.reason,
-        idempotencyKey: parsed.value.idempotencyKey,
-        // From the session, never the form (COS-5).
-        actor: staff.staffId,
-        organizerId: staff.organizerId,
-      });
-      // Provenance comes from the SERVER, never the browser. An earlier version
-      // read a hidden `retry_of` field, which is not evidence of anything: a
-      // forged or stale value could name a key other than the one that actually
-      // became ambiguous, discarding the only replay-safe key there was
-      // (ai-review pass 4).
-      const outstanding = unresolvedRefundFor(staff.organizerId, parsed.value.orderId);
-      if (outcome.ok) {
-        action = { kind: 'refunded', refund: outcome.value };
-        // Clear the prefill. Re-rendering the previous quantity and reason into
-        // a freshly keyed form leaves a second refund one click away, on an
-        // order that stays `completed` with quantity still refundable
-        // (ai-review pass 3).
-        submitted = { ...submitted, quantity: '', reason: '' };
-      } else {
+      const outstandingBeforeDispatch = unresolvedRefunds.find(
+        staff.organizerId,
+        parsed.value.orderId,
+      );
+      if (
+        outstandingBeforeDispatch &&
+        outstandingBeforeDispatch.idempotencyKey !== parsed.value.idempotencyKey
+      ) {
         action = {
           kind: 'refund-refused',
-          message: outcome.message,
-          ambiguous: outcome.kind === 'ambiguous',
+          message: 'This order already has an unresolved refund. Retry the saved request below.',
+          ambiguous: true,
         };
-        Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
-      }
-      unresolved = unresolvedRefund(
-        outcome,
-        outstanding ?? parsed.value,
-        outstanding?.idempotencyKey ?? null,
-      );
-      if (unresolved) {
-        noteUnresolvedRefund(staff.organizerId, unresolved);
+        unresolved = outstandingBeforeDispatch;
       } else {
-        // Commerce told us what happened to this order's outstanding key.
-        clearUnresolvedRefund(staff.organizerId, parsed.value.orderId);
+        // Claim the order before yielding to Commerce. Two forms rendered before
+        // either response arrives can carry different keys; only the first one is
+        // allowed to leave this process. A matching retry uses the stored terms,
+        // not browser fields that could change Commerce's idempotency fingerprint.
+        const request = outstandingBeforeDispatch ?? parsed.value;
+        unresolvedRefunds.note(staff.organizerId, request);
+        const outcome = await refundOrder({
+          orderId: request.orderId,
+          quantity: request.quantity,
+          reason: request.reason,
+          idempotencyKey: request.idempotencyKey,
+          // From the session, never the form (COS-5).
+          actor: staff.staffId,
+          organizerId: staff.organizerId,
+        });
+        // Provenance comes from the SERVER, never the browser. An earlier version
+        // read a hidden `retry_of` field, which is not evidence of anything: a
+        // forged or stale value could name a key other than the one that actually
+        // became ambiguous, discarding the only replay-safe key there was
+        // (ai-review pass 4).
+        if (outcome.ok) {
+          action = { kind: 'refunded', refund: outcome.value };
+          // Clear the prefill. Re-rendering the previous quantity and reason into
+          // a freshly keyed form leaves a second refund one click away, on an
+          // order that stays `completed` with quantity still refundable
+          // (ai-review pass 3).
+          submitted = { ...submitted, quantity: '', reason: '' };
+        } else {
+          action = {
+            kind: 'refund-refused',
+            message: outcome.message,
+            ambiguous: outcome.kind === 'ambiguous',
+          };
+          Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
+        }
+        unresolved = unresolvedRefund(
+          outcome,
+          request,
+          outstandingBeforeDispatch?.idempotencyKey ?? null,
+        );
+        if (unresolved) {
+          unresolvedRefunds.note(staff.organizerId, unresolved);
+        } else {
+          // A long request can outlive the tracker's TTL. If another request has
+          // claimed the order since, this response must not clear that newer key.
+          unresolvedRefunds.clear(staff.organizerId, request.orderId, request.idempotencyKey);
+          unresolved = unresolvedRefunds.find(staff.organizerId, request.orderId) ?? null;
+        }
       }
     }
   }
@@ -154,7 +168,7 @@ if (Astro.request.method === 'POST') {
       // Provenance comes from the SERVER, never the browser: the key that may have
       // partially executed is the one this process sent, and a form field claiming to
       // name it is not evidence of anything.
-      const outstandingResend = unresolvedRedeliveryFor(staff.organizerId, parsed.value.orderId);
+      const outstandingResend = unresolvedRedeliveries.find(staff.organizerId, parsed.value.orderId);
       // Clear ONLY when this response settled the key that was outstanding. A stale
       // tab or a back-button submit carries an older key, and clearing on its outcome
       // would discard the entry for a request access has NOT settled — stranding the
@@ -169,7 +183,7 @@ if (Astro.request.method === 'POST') {
         // Access answered about THIS key — a fresh send or a resumed replay both mean
         // nothing is left hanging for it.
         if (settledTheOutstandingKey) {
-          clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
+          unresolvedRedeliveries.clear(staff.organizerId, parsed.value.orderId);
         }
       } else {
         action = {
@@ -185,15 +199,15 @@ if (Astro.request.method === 'POST') {
         if (outcome.kind === 'ambiguous') {
           // Keep the FIRST unsettled key, not this attempt's: only the original can
           // resume the work access may have half-done.
-          noteUnresolvedRedelivery(staff.organizerId, outstandingResend ?? parsed.value);
+          unresolvedRedeliveries.note(staff.organizerId, outstandingResend ?? parsed.value);
         } else if (settledTheOutstandingKey) {
           // A decided refusal means access did nothing under THIS key. Only that
           // clears it — a refusal of some other key says nothing about the one still
           // outstanding.
-          clearUnresolvedRedelivery(staff.organizerId, parsed.value.orderId);
+          unresolvedRedeliveries.clear(staff.organizerId, parsed.value.orderId);
         }
       }
-      unresolvedResend = unresolvedRedeliveryFor(staff.organizerId, parsed.value.orderId) ?? null;
+      unresolvedResend = unresolvedRedeliveries.find(staff.organizerId, parsed.value.orderId) ?? null;
     }
   }
 
@@ -208,11 +222,11 @@ if (Astro.request.method === 'POST') {
       // simplest possible recovery from an ambiguous result ("look it up
       // again") is the one that offers a freshly keyed refund form.
       if (lookup.value.orderId) {
-        unresolved = unresolvedRefundFor(staff.organizerId, lookup.value.orderId) ?? null;
+        unresolved = unresolvedRefunds.find(staff.organizerId, lookup.value.orderId) ?? null;
         // A plain lookup must surface an outstanding RESEND too — otherwise the
         // simplest recovery from an ambiguous result ("look it up again") is the one
         // that offers a freshly keyed form, which is a second request.
-        unresolvedResend = unresolvedRedeliveryFor(staff.organizerId, lookup.value.orderId) ?? null;
+        unresolvedResend = unresolvedRedeliveries.find(staff.organizerId, lookup.value.orderId) ?? null;
       }
     }
   } else if (!refunding && !resending) {

@@ -683,7 +683,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	defer cc.Stop()
 	// TKT-122: observe termination from HERE, not after the pass below.
 	//
-	// waitConsume used to be called only once startupConverge returned, and that
+	// Termination used to be observed only once startupConverge returned, and that
 	// pass retries reconcileAttempts times with retryBackoff between them plus a
 	// serial catalog call per published pool. A durable deleted inside that window
 	// went unnoticed until the pass ended: honestly unready throughout (the true
@@ -700,7 +700,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	defer cancelStartup()
 	consumeDone := make(chan error, 1)
 	go func() {
-		err := waitConsume(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering", &cause)
+		err := durableconsumer.WaitWithCause(ctx, cc.Closed(), &c.ready, "inventory-catalog-offering", &cause)
 		if err != nil {
 			// BEFORE the cancellation, so a startup pass that is about to publish
 			// readiness cannot observe "not cancelled yet" and then store true
@@ -720,7 +720,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// closure row changes nothing the read path can see.
 	if err := c.startupConverge(startupCtx); err != nil {
 		// Cancellation here is ambiguous by itself — it means either "the durable
-		// died" or "we were asked to stop". waitConsume already knows which, and
+		// died" or "we were asked to stop". WaitWithCause already knows which, and
 		// its answer is the one main can act on: a termination carries the durable
 		// diagnostic and does NOT wrap context.Canceled, so isShutdownConsumerError
 		// cannot filter it away. Returning startupConverge's context.Canceled
@@ -746,24 +746,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		return err
 	}
-	// TKT-127: observe async termination, not just cancellation. Blocking on
-	// <-ctx.Done() alone left a deleted durable invisible — the process stayed up
-	// and READY with nothing consuming (ADR-017 §236-241 forbids exactly that
-	// silent stall). waitConsume returns nil on clean shutdown, so the tail below
-	// is unchanged for an ordinary stop; on termination it latches unready and
-	// returns, and main exits. Arbitrating that error against a cancellation race
-	// in main is TKT-121, still open and untouched here.
-	//
-	// The observation starts HERE, not at Consume above, so a durable deleted
-	// while startupConverge is still running is not noticed until the pass ends —
-	// and that pass retries up to reconcileAttempts times with retryBackoff
-	// between them. Readiness is false throughout it (refreshStartupReadiness
-	// stores true as its last act, immediately below), so the service is honestly
-	// unready rather than falsely ready; the cost is a late process exit, not a
-	// wrong answer. Closing that window means racing termination against the pass,
-	// which entangles the pass's error with shutdown cancellation and so with
-	// TKT-121 — deliberately deferred to TKT-135 rather than done here
-	// (TKT-127 ai-review, triaged incidental).
+	// The observer has been running since consumption started. Its result now
+	// decides whether this was a clean shutdown or a durable termination.
 	if err := <-consumeDone; err != nil {
 		return err
 	}

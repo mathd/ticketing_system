@@ -1,4 +1,4 @@
-package obs_test
+package obs
 
 import (
 	"net/http"
@@ -9,8 +9,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"ticketing/shared/obs"
 )
 
 // The OTel server span is a SECOND sink for the same capability, and the one a
@@ -33,10 +31,10 @@ func TestServerSpanDoesNotCarryTheCapability(t *testing.T) {
 	// F7). The wiring is proven on the wire, in
 	// capability_setup_test.go's TestSetupExportsNoCapabilityOnTheWire.
 	exp := tracetest.NewInMemoryExporter()
-	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(exp))
+	tp := newTracerProvider(sdktrace.NewSimpleSpanProcessor(exp), nil)
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
-	h := obs.MiddlewareWithTracerProvider("svc", tp,
+	h := MiddlewareWithTracerProvider("svc", tp,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	for _, path := range []string{
@@ -85,10 +83,10 @@ func TestServerSpanKeepsOrdinaryPathsIntact(t *testing.T) {
 	// calls), not by installing the processor here: a test that assembles its
 	// own chain stays green when the processor is deleted from Setup, which is
 	// exactly what happened (ai-review F3).
-	tp := obs.NewTracerProviderForTest(sdktrace.NewSimpleSpanProcessor(exp))
+	tp := newTracerProvider(sdktrace.NewSimpleSpanProcessor(exp), nil)
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
-	h := obs.MiddlewareWithTracerProvider("svc", tp,
+	h := MiddlewareWithTracerProvider("svc", tp,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)

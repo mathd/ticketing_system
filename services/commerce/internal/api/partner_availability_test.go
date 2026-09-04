@@ -47,7 +47,7 @@ func availabilityAsPartnerForSlot(t *testing.T, status int, body func(slot strin
 	}))
 	defer inventory.Close()
 
-	srv := New(nil, http.DefaultClient, "", inventory.URL, "", "secret")
+	srv := newTestServer(nil, http.DefaultClient, "", inventory.URL, "", "secret")
 	req := httptest.NewRequest(http.MethodGet,
 		"/partners/availability?slot_id="+slot, nil)
 	scope := &partnerScope{

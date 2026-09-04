@@ -129,7 +129,7 @@ func (f *fakeRedeliveryStore) MarkRedelivered(_ context.Context, _ uuid.UUID, _ 
 // or to iterate claim.Tickets instead of Outstanding(), left them all green. The
 // assertions are worth something only if the code under test is the code that ships.
 func redeliverWith(f *fakeRedeliveryStore, m *countingMailer, a staticAddressBook, publicURL string) (int, bool, error) {
-	s := New(nil, nil).WithRedeliveryStore(f).WithRedelivery(a, m, publicURL)
+	s := newTestServer(nil, nil).WithRedeliveryStore(f).WithRedelivery(a, m, publicURL)
 	out, err := s.redeliver(context.Background(), uuid.New(), uuid.New(), "the-key")
 	return out.TicketCount, out.Replay, err
 }

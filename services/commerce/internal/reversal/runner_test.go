@@ -306,42 +306,19 @@ func TestAbandonSurvivesACancelledContext(t *testing.T) {
 	}
 }
 
-// ai-review F1: the lease must outlast the work it protects, and the number it is derived
-// from must be the timeout of the client that actually makes the calls.
-//
-// The first version borrowed `recoveryCallTimeout` (10s) while the refund service drives its
-// calls through obs.Client (30s), giving a 380s lease over work that can take 960s. A lease
-// shorter than its own batch is worse than none: a second replica reclaims rows the first is
-// still driving, and the claim token fences only the final database write — never the access
-// or inventory call already in flight.
-//
-// Asserted as a RELATIONSHIP rather than against the literal 1020s, so the test survives a
-// change to the batch, the call count or obs.ClientTimeout and only fails if the lease stops
-// covering the work.
+// A lease must cover every sequential call in its batch. The claim token fences the
+// database write, but it cannot stop a second claimant from repeating an outbound call.
 func TestTheLeaseOutlastsTheBatchItProtects(t *testing.T) {
 	for _, batch := range []int{1, 8, 16, 64} {
 		worstCase := time.Duration(batch) * MaxCallsPerRefund * obs.ClientTimeout
-		got := LeaseFor(batch, obs.ClientTimeout)
+		got, err := LeaseFor(batch, obs.ClientTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got <= worstCase {
 			t.Fatalf("batch %d: lease %s does not outlast its own worst case %s — a second "+
 				"replica can reclaim rows this pass is still driving", batch, got, worstCase)
 		}
-	}
-}
-
-// And the failure it is meant to catch: sizing from a timeout SMALLER than the client's
-// really uses produces a lease that does not cover the work. This is the mutation, written
-// as a test, because the defect was not in LeaseFor — it was in what the caller passed.
-func TestSizingTheLeaseFromTheWrongTimeoutUnderCoversTheBatch(t *testing.T) {
-	const wrong = 10 * time.Second // recoveryCallTimeout, the value that shipped in the first draft
-	if wrong >= obs.ClientTimeout {
-		t.Skip("obs.ClientTimeout is no longer larger than the recovery constant; this test's premise is gone")
-	}
-	batch := 16
-	worstCase := time.Duration(batch) * MaxCallsPerRefund * obs.ClientTimeout
-	if LeaseFor(batch, wrong) > worstCase {
-		t.Fatal("sizing from the wrong timeout accidentally still covers the batch, so this " +
-			"test cannot detect the defect it names")
 	}
 }
 

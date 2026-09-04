@@ -106,10 +106,27 @@ blocks_with guard-bash.py "$(b "$MERGE")" "not on HEAD" "merge on a revision the
 # The verdict must describe this TREE, not just this commit: a gate that passed
 # over uncommitted edits says nothing about the clean commit left behind.
 HEAD_SHA="$(git -C "$TMP" rev-parse HEAD)"
+mkdir "$TMP/HEAD"
 printf 'package main // dirty\n' > "$TMP/main.go"
-DIRTY="$(cd "$TMP" && ./scripts/gate.sh --digest)"
+digest_status=0
+DIRTY="$(cd "$TMP" && ./scripts/gate.sh --digest 2>scripts/digest.err)" || digest_status=$?
+if [ "$digest_status" -ne 0 ]; then
+  echo "FAIL: dirty-tree digest exited $digest_status"
+  fail=1
+elif [ -s "$TMP/scripts/digest.err" ]; then
+  echo "FAIL: dirty-tree digest wrote a diagnostic: $(cat "$TMP/scripts/digest.err")"
+  fail=1
+fi
 git -C "$TMP" checkout -q -- main.go
-CLEAN="$(cd "$TMP" && ./scripts/gate.sh --digest)"
+digest_status=0
+CLEAN="$(cd "$TMP" && ./scripts/gate.sh --digest 2>scripts/digest.err)" || digest_status=$?
+if [ "$digest_status" -ne 0 ]; then
+  echo "FAIL: clean-tree digest exited $digest_status"
+  fail=1
+elif [ -s "$TMP/scripts/digest.err" ]; then
+  echo "FAIL: clean-tree digest wrote a diagnostic: $(cat "$TMP/scripts/digest.err")"
+  fail=1
+fi
 [ "$DIRTY" != "$CLEAN" ] && echo "ok: the digest distinguishes those trees" \
   || { echo "FAIL: dirty and clean trees digest the same — the check can see nothing"; fail=1; }
 echo "PASS exit=0 head=$HEAD_SHA tree=$DIRTY log=x" > "$TMP/.gate.verdict"

@@ -2,108 +2,92 @@ package consumer
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-// TestWaitConsumeAsyncTerminationLatchesUnreadyAndErrors is the COS #1 proof:
-// when the consume context closes underneath a running consumer (durable
-// deleted / subscription dropped), waitConsume latches ready false and returns
-// a non-nil error, so /readyz fails and main tears the process down instead of
-// the consumer stalling silently while ready stays true.
-func TestWaitConsumeAsyncTerminationLatchesUnreadyAndErrors(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
-	closed := make(chan struct{})
+type terminatingJS struct {
+	jetstream.JetStream
+	consumer jetstream.Consumer
+}
 
-	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(context.Background(), closed, &ready, "test-consumer", nil) }()
+func (f terminatingJS) Stream(context.Context, string) (jetstream.Stream, error) {
+	return terminatingStream{consumer: f.consumer}, nil
+}
 
-	close(closed) // durable deleted → library Stop() → Closed() fires
+type terminatingStream struct {
+	jetstream.Stream
+	consumer jetstream.Consumer
+}
 
-	select {
-	case err := <-errc:
-		if err == nil {
-			t.Fatal("expected non-nil error on async termination, got nil")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("waitConsume did not return after the consume context closed")
+func (f terminatingStream) CreateOrUpdateConsumer(context.Context, jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	return f.consumer, nil
+}
+
+type terminatingConsumer struct {
+	jetstream.Consumer
+	consumeContext *terminatingConsumeContext
+}
+
+func (f terminatingConsumer) Consume(jetstream.MessageHandler, ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
+	return f.consumeContext, nil
+}
+
+func (f terminatingConsumer) Info(context.Context) (*jetstream.ConsumerInfo, error) {
+	return &jetstream.ConsumerInfo{}, nil
+}
+
+type terminatingConsumeContext struct {
+	closed  chan struct{}
+	stopped atomic.Bool
+}
+
+func (f *terminatingConsumeContext) Stop()                   { f.stopped.Store(true) }
+func (f *terminatingConsumeContext) Drain()                  {}
+func (f *terminatingConsumeContext) Closed() <-chan struct{} { return f.closed }
+
+func terminatedJetStream() (jetstream.JetStream, *terminatingConsumeContext) {
+	consumeContext := &terminatingConsumeContext{closed: make(chan struct{})}
+	close(consumeContext.closed)
+	consumer := terminatingConsumer{consumeContext: consumeContext}
+	return terminatingJS{consumer: consumer}, consumeContext
+}
+
+func TestTicketIssuerRunObservesConsumerTermination(t *testing.T) {
+	js, consumeContext := terminatedJetStream()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	consumer := New(js, nil, nil, nil, "", "", "", nil, log)
+
+	err := consumer.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "access-ticket-issuer") {
+		t.Fatalf("Run error = %v, want the terminated durable name", err)
 	}
-	if ready.Load() {
-		t.Fatal("expected ready to be latched false after async termination")
+	if consumer.Ready() {
+		t.Fatal("terminated ticket issuer remained ready")
+	}
+	if !consumeContext.stopped.Load() {
+		t.Fatal("Run returned without stopping the consume context")
 	}
 }
 
-// TestWaitConsumeCleanShutdownStaysLatchedAndReturnsNil pins the no-spurious-latch
-// / no-self-heal guarantee: a plain ctx cancellation is a clean shutdown, so
-// waitConsume returns nil and does NOT touch readiness — Run's own deferred
-// c.ready.Store(false) owns clean-shutdown latching. If the helper flipped
-// readiness here it would flap on every ordinary restart.
-func TestWaitConsumeCleanShutdownStaysLatchedAndReturnsNil(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
-	closed := make(chan struct{}) // never closed
-	ctx, cancel := context.WithCancel(context.Background())
+func TestPolicyRunObservesConsumerTermination(t *testing.T) {
+	js, consumeContext := terminatedJetStream()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	consumer := NewPolicyConsumer(js, nil, log)
 
-	errc := make(chan error, 1)
-	go func() { errc <- waitConsume(ctx, closed, &ready, "test-consumer", nil) }()
-
-	cancel()
-
-	select {
-	case err := <-errc:
-		if err != nil {
-			t.Fatalf("expected nil error on clean shutdown, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("waitConsume did not return after ctx cancellation")
+	err := consumer.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "access-slot-policy") {
+		t.Fatalf("Run error = %v, want the terminated durable name", err)
 	}
-	if !ready.Load() {
-		t.Fatal("waitConsume must not touch readiness on clean shutdown; Run's defer owns it")
+	if consumer.Ready() {
+		t.Fatal("terminated policy consumer remained ready")
 	}
-}
-
-// TestWaitConsumeTerminationErrorNamesConsumer locks the contract that the two
-// call sites (access-ticket-issuer, access-slot-policy) produce distinguishable
-// errors, so an operator can tell which consumer terminated from the log.
-func TestWaitConsumeTerminationErrorNamesConsumer(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
-	closed := make(chan struct{})
-	close(closed)
-
-	err := waitConsume(context.Background(), closed, &ready, "access-slot-policy", nil)
-	if err == nil {
-		t.Fatal("expected non-nil error on termination")
-	}
-	if !strings.Contains(err.Error(), "access-slot-policy") {
-		t.Fatalf("error should name the consumer, got %q", err.Error())
-	}
-}
-
-// TestWaitConsumeTerminationWinsOverLiveContext pins that the termination arm is
-// taken deterministically when only `closed` is ready and the context is still
-// live — the real running-consumer scenario, where ctx.Done() is NOT ready. This
-// is the deterministic counterpart to the async-termination test: it proves the
-// select does not require ctx to be cancelled to observe termination. (A test
-// that closes both channels cannot assert an arm — Go picks a ready case at
-// random — so it would only prove "no deadlock", which the tests above already
-// prove; this one asserts the outcome instead.)
-func TestWaitConsumeTerminationWinsOverLiveContext(t *testing.T) {
-	var ready atomic.Bool
-	ready.Store(true)
-	closed := make(chan struct{})
-	close(closed)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // ctx stays live; only `closed` is ready
-
-	err := waitConsume(ctx, closed, &ready, "access-ticket-issuer", nil)
-	if err == nil {
-		t.Fatal("expected the termination arm to win when only closed is ready")
-	}
-	if ready.Load() {
-		t.Fatal("termination arm must latch ready false")
+	if !consumeContext.stopped.Load() {
+		t.Fatal("Run returned without stopping the consume context")
 	}
 }

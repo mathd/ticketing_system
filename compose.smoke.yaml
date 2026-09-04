@@ -10,10 +10,6 @@ services:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: inventory } }
   commerce:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: commerce } }
-    environment:
-      # TKT-115 recovery smoke: drive the runner fast enough to observe a drained
-      # order without waiting out the production 30s interval.
-      RECOVERY_INTERVAL: 2s
   payments:
     build: { context: ., dockerfile: build/go-bin.Dockerfile, args: { BIN: payments } }
     # PAYMENTS_STATUS_REPLAY_RETENTION used to be injected here and now lives in

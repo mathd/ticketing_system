@@ -29,10 +29,25 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+diagnostic_workspace_copy=""
+if [ "${1:-}" = "--diagnostic-workspace-copy" ]; then
+  if [ "$#" -lt 3 ] || [ -z "$2" ]; then
+    echo "usage: $(basename "$0") [--diagnostic-workspace-copy <path>] <module-dir>..." >&2
+    exit 2
+  fi
+  diagnostic_workspace_copy="$2"
+  shift 2
+fi
+
 if [ "$#" -eq 0 ]; then
-  echo "usage: $(basename "$0") <module-dir>..." >&2
+  echo "usage: $(basename "$0") [--diagnostic-workspace-copy <path>] <module-dir>..." >&2
   exit 2
 fi
+
+# The build list comes from the whole workspace, so comparing declarations from
+# only a caller-selected subset would produce a true answer about the wrong set.
+# Refuse missing, extra, or duplicate canonical module paths before resolving it.
+python3 scripts/check-go-workspace-module-set.py check-go-build-list-lag "$PWD" "$@"
 
 work=$(mktemp -d)
 # Cleanup on EXIT only. Bash *resumes* after an INT/TERM handler that does not
@@ -65,7 +80,7 @@ trap 'exit 143' TERM
 #
 # Workspace-level `replace` directives with relative targets need the same
 # treatment, for the same reason.
-if ! go work edit -json > "$work/workspace.json" 2>"$work/workspace.err"; then
+if ! GOWORK="$PWD/go.work" go work edit -json > "$work/workspace.json" 2>"$work/workspace.err"; then
   echo "check-go-build-list-lag: cannot parse go.work — refusing to report a verdict" >&2
   sed 's/^/  /' "$work/workspace.err" >&2
   exit 2
@@ -139,7 +154,7 @@ export GOWORK="$work/go.work"
 # different module set — so prove it rather than assume it. Compared as sorted
 # absolute paths: the copy is generated from Go's own parse, so this asserts the
 # generation, not the parser.
-go work edit -json | python3 -c "
+GOWORK="$PWD/go.work" go work edit -json | python3 -c "
 import json,sys,os
 root=os.getcwd()
 d=json.load(sys.stdin)
@@ -167,33 +182,62 @@ if ! cmp -s "$work/want-dirs" "$work/got-dirs"; then
   exit 2
 fi
 
-# A `replace` directive makes the comparison below meaningless: the selected
-# VERSION can match the declared one while the build links entirely different
-# source (another version, or a local directory). Comparing versions would then
-# report "none" and imply a guarantee that is false — the manifest would not
-# describe what is built, which is the very property this check exists to defend.
-# Refuse rather than report. ADR-035's register scopes the guarantee to
-# unreplaced modules for the same reason.
-# Detected from the DECLARATIONS (go.work and every go.mod), not from
-# `go list -m all`. That command reports a replacement only for a module already in
-# the build list, so a replace naming a module nothing currently requires is
-# invisible to it — a false negative that would let the next requirement of that
-# module land silently replaced. Read the manifests instead.
+# The self-test can inspect the exact workspace copy used below. The checker
+# continues after writing it, so a diagnostic cannot hide a refused or lagging
+# verdict.
+if [ -n "$diagnostic_workspace_copy" ]; then
+  if ! cp "$work/go.work" "$diagnostic_workspace_copy"; then
+    echo "check-go-build-list-lag: cannot write diagnostic workspace copy to $diagnostic_workspace_copy" >&2
+    exit 2
+  fi
+  echo "check-go-build-list-lag: wrote diagnostic workspace copy to $diagnostic_workspace_copy"
+fi
+
+# External replacements make version comparison meaningless. A narrow exception
+# is safe for an exact path to another module already named by this workspace:
+# its module identity and source directory can both be verified. Those local
+# requirements exist so each module also resolves with GOWORK=off.
 : > "$work/replaces"
-go work edit -json 2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-for r in (d.get('Replace') or []):
-    print('  go.work: %s => %s' % (r['Old']['Path'], r['New']['Path']))
-" >> "$work/replaces" 2>/dev/null || true
-for m in "$@"; do
-  go mod edit -json "$m/go.mod" 2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-for r in (d.get('Replace') or []):
-    print('  $m: %s => %s' % (r['Old']['Path'], r['New']['Path']))
-" >> "$work/replaces" 2>/dev/null || true
-done
+if ! python3 - "$work/workspace.json" "$PWD" "$work/workspace-module-paths" "$@" > "$work/replaces" <<'PY'
+import json, os, subprocess, sys
+
+workspace_file, root, paths_file, *modules = sys.argv[1:]
+documents = [("go.work", root, json.load(open(workspace_file)))]
+workspace_modules = {}
+for module in modules:
+    path = os.path.join(root, module, "go.mod")
+    parsed = subprocess.run(
+        ["go", "mod", "edit", "-json", path], capture_output=True, text=True
+    )
+    if parsed.returncode != 0:
+        raise SystemExit(parsed.returncode)
+    document = json.loads(parsed.stdout)
+    module_path = document.get("Module", {}).get("Path")
+    if not module_path:
+        raise SystemExit(2)
+    workspace_modules[module_path] = os.path.realpath(os.path.join(root, module))
+    documents.append((module, os.path.join(root, module), document))
+
+with open(paths_file, "w") as output:
+    for module_path in sorted(workspace_modules):
+        output.write(module_path + "\n")
+
+for label, base, document in documents:
+    for replacement in document.get("Replace") or []:
+        old, new = replacement["Old"], replacement["New"]
+        target = os.path.realpath(os.path.join(base, new["Path"]))
+        safe = (
+            not old.get("Version")
+            and not new.get("Version")
+            and workspace_modules.get(old["Path"]) == target
+        )
+        if not safe:
+            print(f"  {label}: {old['Path']} => {new['Path']}")
+PY
+then
+  echo "check-go-build-list-lag: cannot validate replace directives — refusing to report a verdict" >&2
+  exit 2
+fi
 if [ -s "$work/replaces" ]; then
   echo "check-go-build-list-lag: a 'replace' directive is in effect — refusing to report a verdict" >&2
   echo "  A replaced module can match on version while linking different source, so a version" >&2
@@ -269,6 +313,9 @@ fi
 : > "$work/lagging"
 : > "$work/uncompared"
 while read -r path version mod; do
+  if grep -Fqx "$path" "$work/workspace-module-paths"; then
+    continue
+  fi
   selected=$(awk -v p="$path" '$1 == p { print $2; exit }' "$work/selected")
   if [ -z "$selected" ]; then
     # A declared requirement absent from the build list is NOT evidence of safety.

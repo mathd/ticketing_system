@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { components } from '../lib/commerce-api-types.gen';
 import { formatMoney } from '../lib/format';
 import { UI_STRINGS } from '../lib/locales';
+import { dateTimeField, uuidField } from '../lib/wire-primitives';
 import SeatMapPicker, { type SeatMapHandle, type SeatSelection } from './SeatMapPicker';
 
 // slotId + seatMapId together mean "this performance is seated" (TKT-174). Their
@@ -15,8 +17,167 @@ type Props = {
   slotId?: string;
   seatMapId?: string;
 };
-type Hold = { hold_id: string; expires_at: string; server_time: string; status: string };
-type Reservation = Hold & { reservation_id: string; buyer_id: string; amount: number; currency: string };
+type Reservation = components['schemas']['Reservation'];
+type OrderResult = components['schemas']['OrderResult'];
+type ReservationRefusal =
+  | { error: string; code: 'seat_taken'; seat_identities: string[] }
+  | {
+      error: string;
+      code: 'orphaned_seats' | 'seated_pool_unsupported';
+      seat_identities?: string[];
+    };
+type FeeEntry = NonNullable<Reservation['fee_breakdown']>[number];
+type Hold = Pick<Reservation, 'hold_id' | 'expires_at' | 'server_time'>;
+
+const CURRENCY = /^[A-Z]{3}$/;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function objectBody(value: unknown, name: string): Record<string, unknown> {
+  if (!isObject(value)) throw new TypeError(`${name} must be an object`);
+  return value;
+}
+
+function stringField(value: unknown, name: string, maximumLength?: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    (maximumLength !== undefined && [...value].length > maximumLength)
+  ) {
+    throw new TypeError(`${name} must be a non-empty string${maximumLength ? ` of at most ${maximumLength} characters` : ''}`);
+  }
+  return value;
+}
+
+/**
+ * This storefront stores displayed money in a JavaScript number. Commerce can
+ * return larger int64 totals after multiplying bounded units by quantity, so
+ * this client has a narrower capability and rejects values it cannot represent
+ * exactly. The service contract must still describe the producer's full range.
+ */
+function moneyAmount(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be a non-negative safe integer this storefront can represent exactly`);
+  }
+  return value;
+}
+
+function currencyField(value: unknown, name: string): string {
+  const result = stringField(value, name);
+  if (!CURRENCY.test(result)) throw new TypeError(`${name} must be an ISO currency code`);
+  return result;
+}
+
+function stringArray(value: unknown, name: string, maximumLength: number): string[] {
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`);
+  const result = value.map((item, index) => stringField(item, `${name}[${index}]`, maximumLength));
+  if (new Set(result).size !== result.length) throw new TypeError(`${name} must not contain duplicates`);
+  return result;
+}
+
+function decodeFee(value: unknown, index: number): FeeEntry {
+  const fee = objectBody(value, `fee_breakdown[${index}]`);
+  const basis = fee.basis;
+  if (
+    basis !== 'per_ticket_fixed' &&
+    basis !== 'per_order_fixed' &&
+    basis !== 'percentage_bps'
+  ) {
+    throw new TypeError(`fee_breakdown[${index}].basis is invalid`);
+  }
+  const incidence = fee.incidence;
+  if (incidence !== 'passed_on' && incidence !== 'absorbed') {
+    throw new TypeError(`fee_breakdown[${index}].incidence is invalid`);
+  }
+  return {
+    fee_code: stringField(fee.fee_code, `fee_breakdown[${index}].fee_code`, 64),
+    basis,
+    incidence,
+    amount: moneyAmount(fee.amount, `fee_breakdown[${index}].amount`),
+    currency: currencyField(fee.currency, `fee_breakdown[${index}].currency`),
+  };
+}
+
+function decodeReservation(value: unknown, requestedSeats: readonly string[] | undefined): Reservation {
+  const body = objectBody(value, 'reservation');
+  const result: Reservation = {
+    reservation_id: uuidField(body.reservation_id, 'reservation_id'),
+    hold_id: uuidField(body.hold_id, 'hold_id'),
+    buyer_id: uuidField(body.buyer_id, 'buyer_id'),
+    amount: moneyAmount(body.amount, 'amount'),
+    currency: currencyField(body.currency, 'currency'),
+    expires_at: dateTimeField(body.expires_at, 'expires_at'),
+    server_time: dateTimeField(body.server_time, 'server_time'),
+  };
+  if (requestedSeats === undefined) {
+    if (body.seats !== undefined) throw new TypeError('a general-admission reservation must omit seats');
+  } else {
+    const seats = stringArray(body.seats, 'seats', 200);
+    const expected = new Set(requestedSeats);
+    if (
+      seats.length === 0 ||
+      seats.length !== expected.size ||
+      seats.some((seat) => !expected.has(seat))
+    ) {
+      throw new TypeError('reservation seats do not match the request');
+    }
+    result.seats = seats;
+  }
+  if (body.face_value !== undefined) result.face_value = moneyAmount(body.face_value, 'face_value');
+  if (body.passed_on_fees !== undefined) {
+    result.passed_on_fees = moneyAmount(body.passed_on_fees, 'passed_on_fees');
+  }
+  if (body.fee_breakdown !== undefined) {
+    if (!Array.isArray(body.fee_breakdown)) throw new TypeError('fee_breakdown must be an array');
+    result.fee_breakdown = body.fee_breakdown.map(decodeFee);
+  }
+  return result;
+}
+
+function decodeReservationRefusal(
+  value: unknown,
+  requestedSeats: readonly string[],
+): ReservationRefusal | null {
+  if (!isObject(value) || typeof value.error !== 'string') return null;
+  if (
+    value.code !== 'seat_taken' &&
+    value.code !== 'orphaned_seats' &&
+    value.code !== 'seated_pool_unsupported'
+  ) {
+    return null;
+  }
+  let seatIdentities: string[] | undefined;
+  if (value.seat_identities !== undefined) {
+    try {
+      seatIdentities = stringArray(value.seat_identities, 'seat_identities', 200);
+    } catch {
+      return null;
+    }
+  }
+  if (value.code === 'seat_taken') {
+    if (!seatIdentities?.length || seatIdentities.some((seat) => !requestedSeats.includes(seat))) {
+      return null;
+    }
+    return { error: value.error, code: value.code, seat_identities: seatIdentities };
+  }
+  return {
+    error: value.error,
+    code: value.code,
+    ...(seatIdentities ? { seat_identities: seatIdentities } : {}),
+  };
+}
+
+function decodeOrderResult(value: unknown): OrderResult {
+  const body = objectBody(value, 'order result');
+  if (body.status !== 'completed') throw new TypeError('order result status must be completed');
+  return {
+    order_id: uuidField(body.order_id, 'order_id'),
+    guest_order_ref: uuidField(body.guest_order_ref, 'guest_order_ref'),
+    status: body.status,
+  };
+}
 
 export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_time'>): number {
   return Math.max(0, Date.parse(hold.expires_at) - Date.parse(hold.server_time));
@@ -103,10 +264,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   async function reserve() {
     setBusy(true); setStatus('');
     try {
+      const requestedSeats = seated ? [...selection.seats] : undefined;
       // Exactly one of quantity or seat_identities — the contract rejects both and
       // neither, and so does the handler.
       const claim = seated
-        ? { organizer_id: organizerId, ticket_type_id: ticketTypeId, seat_identities: selection.seats }
+        ? { organizer_id: organizerId, ticket_type_id: ticketTypeId, seat_identities: requestedSeats }
         : { organizer_id: organizerId, ticket_type_id: ticketTypeId, quantity };
       const response = await fetch('/api/commerce/reservations', {
         method: 'POST',
@@ -122,9 +284,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         // exactly which seats they lost, keeps the ones they did not, and the map
         // re-renders rather than going stale under a generic error.
         if (seated && response.status === 409) {
-          const refusal = await response.json().catch(() => null) as
-            { code?: string; seat_identities?: string[] } | null;
-          if (refusal?.code === 'seat_taken' && refusal.seat_identities?.length) {
+          const refusal = decodeReservationRefusal(
+            await response.json().catch(() => null),
+            requestedSeats ?? [],
+          );
+          if (refusal?.code === 'seat_taken') {
             map.current?.applyConflict(refusal.seat_identities);
             setStatus(t.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
             return;
@@ -139,7 +303,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         }
         setStatus(t.quantityUnavailable); return;
       }
-      const hold = await response.json() as Reservation;
+      const hold = decodeReservation(await response.json(), requestedSeats);
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
       setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold); setStatus(t.heldFor);
@@ -166,9 +330,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       });
       // Tolerant parse: the error bodies are JSON but a proxy failure page is not, and
       // throwing here would report a decided outcome as an unknown one.
-      const result = await response.json().catch(() => ({})) as
-        { order_id?: string; guest_order_ref?: string; status?: string };
-      if (response.ok && result.status === 'completed' && result.guest_order_ref) { setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return; }
+      const body: unknown = await response.json().catch(() => undefined);
+      if (response.ok) {
+        const result = decodeOrderResult(body);
+        setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
+      }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return; }
       // 401 = the customer assertion was refused (expired, or signed with a key
       // that has since rotated). It is NOT the payment-uncertainty answer, which

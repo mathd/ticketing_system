@@ -12,7 +12,7 @@ import type { APIRoute } from 'astro';
 
 import { claimGuestOrder } from '../lib/customer-api';
 import { LOCALES, type Locale } from '../lib/locales';
-import { SESSION_COOKIE, lookupSession } from '../lib/session';
+import { SESSION_COOKIE, sessionStore } from '../lib/session';
 
 export const POST: APIRoute = async ({ request, cookies, redirect }) => {
   const form = await request.formData();
@@ -20,7 +20,7 @@ export const POST: APIRoute = async ({ request, cookies, redirect }) => {
   const locale: Locale = LOCALES.includes(raw as Locale) ? (raw as Locale) : 'en';
   const ref = String(form.get('guest_order_ref') ?? '');
 
-  const principal = lookupSession(cookies.get(SESSION_COOKIE)?.value ?? '');
+  const principal = sessionStore.lookup(cookies.get(SESSION_COOKIE)?.value ?? '');
   if (!principal) {
     // Signed out — or a session that has since expired. Send them to sign in
     // rather than refusing: the claim is the whole reason they are here, and the
@@ -29,7 +29,7 @@ export const POST: APIRoute = async ({ request, cookies, redirect }) => {
   }
   if (!ref) return redirect(`/${locale}/account`, 303);
 
-  const result = await claimGuestOrder(ref, principal.assertion);
+  const result = await claimGuestOrder(ref, principal.customerId, principal.assertion);
 
   // Outcome as a query flag on the page the buyer came from, and the flag is a
   // fixed vocabulary rather than a message: anything reflected from a response

@@ -79,6 +79,28 @@ func TestEditSeatMapCreatesNewPublishedVersion(t *testing.T) {
 	}
 }
 
+func TestEditSeatMapRejectsOverlongIdentityBeforeCreatingVersion(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Identity bound venue")
+	m := seedPublishedMap(t, e, venueID, "Identity bound map")
+	before := len(e.store.seatMaps)
+	body := SeatMapEdit{Sections: []SeatMapEditSection{{
+		Name: strings.Repeat("S", 196), Position: 1,
+		Rows: []SeatMapEditRow{{
+			Label: "R", Position: 1,
+			Seats: []SeatMapEditSeat{{Label: "12", Position: 1}},
+		}},
+	}}}
+
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/edit", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("overlong edit status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if got := len(e.store.seatMaps); got != before {
+		t.Fatalf("rejected edit left %d map versions, want %d", got, before)
+	}
+}
+
 func TestEditSeatMapUnknownMap(t *testing.T) {
 	e := newEnv(t)
 	rec := e.do("POST", "/seat-maps/"+orgID.String()+"/edit", editBody(false)) // not a map id

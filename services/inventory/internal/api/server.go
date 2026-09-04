@@ -142,14 +142,9 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/internal/cache-control", s.internalOnly(s.cacheControlStatus))
 	r.Put("/internal/cache-control", s.internalOnly(s.cacheControlSet))
 }
-func write(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if w.Header().Get("Cache-Control") == "" {
-		w.Header().Set("Cache-Control", "no-store")
-	}
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
+
+var write = httpx.WriteJSONDefaultNoStore
+
 // belowConsumption extracts the cap-below-consumption refusal, or nil.
 //
 // Matched by BEHAVIOUR (it carries a channel) rather than by concrete type, so the store
@@ -270,6 +265,7 @@ func problem(w http.ResponseWriter, err error) {
 	write(w, code, map[string]string{"error": err.Error()})
 }
 func parseUUID(v string) (uuid.UUID, error) { return uuid.Parse(strings.TrimSpace(v)) }
+
 // create is the PUBLIC hold. It cannot name a reseller (TKT-246, ai-review pass 3).
 //
 // `POST /holds` is NOT under /internal/, so the gateway proxies it and any caller on

@@ -411,10 +411,9 @@ func checkFeeValue(w resolvedFeeRule) error {
 // the face value, and adding them here would charge the buyer for the
 // organizer's cost.
 func composedTotal(faceValue, passedOn int64) (int64, error) {
-	// checkedAdd already bounds the result at the contract's Money cap, which is
-	// well below MaxInt64 — so there is deliberately no second int64 check here.
-	// One existed and staticcheck correctly called it unreachable: a check that
-	// cannot fire is not defence in depth, it is a comment that compiles.
+	// checkedAdd bounds the composed total at MaxInt64. The unit amounts crossing
+	// from catalog have a narrower contract bound, but multiplication by quantity
+	// and fee addition deliberately use the full int64 domain.
 	return checkedAdd(faceValue, passedOn)
 }
 

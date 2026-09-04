@@ -192,9 +192,9 @@ const organizerAssertionSecurityScheme = "CatalogOrganizerAssertion"
 // mintForStaff is the one place an assertion is created, so the TTL cannot drift
 // between call sites.
 //
-// Returns "" when no key is configured, rather than an error: startup already
-// refuses that configuration, and a server built without a key verifies nothing
-// (see the empty-key check above) rather than verifying everything.
+// AuthenticateStaff checks for the key before calling this. Keep the empty-key
+// return as a defence for direct construction paths; it must never enter a
+// StaffPrincipal response.
 func (s *Server) mintForStaff(staffID, organizerID uuid.UUID) string {
 	if len(s.organizerAssertionKey) == 0 {
 		return ""

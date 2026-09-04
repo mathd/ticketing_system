@@ -90,14 +90,6 @@ func capSeg() segment      { return segment{kind: segCapability} }
 
 func oneOf(values ...string) segment { return segment{oneOf: values, kind: segOneOf} }
 
-// StorefrontLocalesForTest exposes the locale set so the drift test can compare
-// it against the storefront's own source. Not part of the operational surface.
-func StorefrontLocalesForTest() []string {
-	out := make([]string, len(storefrontLocales))
-	copy(out, storefrontLocales)
-	return out
-}
-
 // storefrontLocales mirrors LOCALES in web/storefront/src/lib/locales.ts.
 //
 // Duplicated across a language boundary, and the drift FAILS OPEN: a locale

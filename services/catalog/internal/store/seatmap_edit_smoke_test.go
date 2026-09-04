@@ -114,6 +114,35 @@ func TestEditSeatMapPreservesPinnedSeats(t *testing.T) {
 	}
 }
 
+func TestEditSeatMapRejectsOverlongIdentityBeforeNewVersion(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	m := seedPublishedMap(ctx, t, st, "Identity limit")
+	var before int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_maps WHERE map_family_id=$1`, m.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := st.EditSeatMap(ctx, EditSeatMapInput{
+		OrganizerID: seatMapOrg,
+		SeatMapID:   m.ID,
+		Sections: []EditSectionInput{
+			sect(strings.Repeat("🎟", 196), 1, rw("R", 1, st1("12", 1))),
+		},
+	})
+	if !errors.Is(err, ErrSeatIdentityTooLong) {
+		t.Fatalf("overlong edit error = %v, want ErrSeatIdentityTooLong", err)
+	}
+	var after int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_maps WHERE map_family_id=$1`, m.ID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("rejected edit left %d versions, want %d", after, before)
+	}
+}
+
 // TestEditSeatMapVersionBumpAndImmutability (COS-1): editing produces a new
 // version; the predecessor stays published and immutable; the new version is
 // itself immutable (published, not draft).

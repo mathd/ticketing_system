@@ -212,11 +212,3 @@ func storableText(s string, maxChars int) error {
 	}
 	return nil
 }
-
-// ValidateChannelWriteForTest exposes the write gate to the api package's
-// in-memory fake store, so the fake refuses exactly what Postgres refuses. A
-// fake that accepted an over-long code or an unknown kind would let the handler
-// tests agree with a store the real one would reject.
-func ValidateChannelWriteForTest(code, displayName string, kind ChannelKind) (string, error) {
-	return validateChannelWrite(code, displayName, kind)
-}

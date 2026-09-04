@@ -65,7 +65,10 @@ func collect(t *testing.T, st Store) (map[string]int64, error) {
 	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	r := New(st, nil, nil, nil, nil, time.Minute, 1, time.Second, slog.Default())
+	r, err := New(st, nil, nil, nil, nil, time.Minute, 1, time.Second, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := r.ObserveMetrics(mp.Meter("test")); err != nil {
 		return nil, err
 	}

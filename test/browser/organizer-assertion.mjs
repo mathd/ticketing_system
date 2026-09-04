@@ -38,6 +38,7 @@ import {
   ORGANIZER,
   provisionAdmin as provisionAdminIn,
   resultRecorder,
+  signIn,
   sql,
 } from './lib/support.mjs';
 
@@ -75,11 +76,7 @@ try {
 
   // --- 1. Sign in. This is the request that MINTS the assertion; the session
   // cookie is set by the server, and the assertion is parked behind it.
-  await page.goto('/admin/login', { waitUntil: 'domcontentloaded' });
-  await page.fill('#identifier', identifier);
-  await page.fill('#password', password);
-  await Promise.all([page.waitForURL('**/admin**'), page.click('button[type=submit]')]);
-  check('sign-in succeeds and mints a session', page.url().includes('/admin'));
+  await signIn(page, identifier, password);
 
   // --- 2. The credential must not have come with it. The assertion is a bearer
   // token: anything that reaches the browser can be read by a script, an

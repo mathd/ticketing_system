@@ -20,6 +20,7 @@ import (
 
 	"ticketing/services/commerce/internal/refunds"
 	"ticketing/services/commerce/internal/store"
+	"ticketing/services/commerce/internal/worklease"
 )
 
 // Store is the durable state the runner decides against and writes back to. A port rather
@@ -50,6 +51,21 @@ type Refunder interface {
 	// have a money leg), and splitting the seam would let a caller hold one
 	// without the other.
 	Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error)
+}
+
+// MaxCallsPerOrder covers the longest refund path: payments, the refund fact,
+// ticket voiding, and the capacity return. Comped-order voids use only the last two.
+const MaxCallsPerOrder = 4
+
+// LeaseFor sizes a sequential batch from the refund service client's timeout.
+func LeaseFor(batch int, callTimeout time.Duration) (time.Duration, error) {
+	if batch <= 0 {
+		batch = 1
+	}
+	if callTimeout <= 0 {
+		callTimeout = 30 * time.Second
+	}
+	return worklease.ForBatch(batch, MaxCallsPerOrder, callTimeout, 60*time.Second)
 }
 
 // Runner enumerates and refunds cancellation books.
@@ -174,7 +190,7 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 // abandon releases a claim without a verdict, on a context detached from the cancelled one
 // — the whole point is to record the release, and a cancelled context cannot.
 func (r *Runner) abandon(w store.CancellationWork, refundAttempt bool) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.store.Abandon(ctx, w, refundAttempt); err != nil {
 		slog.Default().ErrorContext(ctx, "abandon cancellation claim", "order_id", w.OrderID, "err", err)

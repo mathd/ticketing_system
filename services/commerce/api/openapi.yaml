@@ -811,12 +811,23 @@ components:
         reservation_id: {type: string, format: uuid}
         hold_id: {type: string, format: uuid}
         buyer_id: {type: string, format: uuid}
-        amount: {type: integer, format: int64}
-        currency: {type: string}
-        expires_at: {type: string, format: date-time}
-        server_time: {type: string, format: date-time}
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            The composed order total in integer minor units. It may exceed a
+            JavaScript Number's safe-integer range because individually bounded
+            unit prices and fees are multiplied by quantity. Number-based clients
+            must reject a value they cannot represent exactly.
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        # Go time.Time and browser Date cannot represent leap seconds, so these
+        # wire values limit seconds to 00..59.
+        expires_at: {type: string, format: date-time, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9]([.][0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$'}
+        server_time: {type: string, format: date-time, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9]([.][0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$'}
         seats:
           type: array
+          maxItems: 50
           description: >
             The seats actually claimed, sorted and de-duplicated — inventory's
             canonical set, never the request's array (TKT-173). Present on a
@@ -838,7 +849,8 @@ components:
             valid responses into runtime 500s. It is absent on a reservation with
             no fee snapshot -- a pre-TKT-215 row or a staff-created one -- and
             absence means "this sale had no fee concept", which is a different
-            fact from "its fees totalled nothing".
+            fact from "its fees totalled nothing". Multiplication by quantity
+            can put this value beyond a JavaScript Number's safe-integer range.
           type: integer
           format: int64
           minimum: 0
@@ -848,7 +860,8 @@ components:
             NOT here and never reach `amount`: they are borne by the organizer out
             of the face value, and charging them to the buyer would be charging
             for the organizer's cost. They are recorded in the persisted snapshot
-            because TKT-217 still owes them to a payee.
+            because TKT-217 still owes them to a payee. Their sum can exceed a
+            JavaScript Number's safe-integer range.
           type: integer
           format: int64
           minimum: 0
@@ -871,7 +884,14 @@ components:
               incidence:
                 type: string
                 enum: [passed_on, absorbed]
-              amount: {type: integer, format: int64, minimum: 0}
+              amount:
+                type: integer
+                format: int64
+                minimum: 0
+                description: >
+                  The fee after applying its basis to the reservation quantity.
+                  This composed amount may exceed a JavaScript Number's
+                  safe-integer range.
               currency: {type: string, pattern: '^[A-Z]{3}$'}
     OperationalConversionCreate:
       type: object
@@ -1018,10 +1038,19 @@ components:
           type: string
           format: uuid
           description: 'A bearer credential for the ticket bundle (ADR-012). Present so the wallet can LINK to the existing ticket page; never log it.'
-        purchased_at: {type: string, format: date-time}
-        quantity: {type: integer, minimum: 1}
-        total_amount: {type: integer, description: 'Integer minor units (ADR-001). Never a float, never divided here.'}
-        currency: {type: string, minLength: 3, maxLength: 3}
+        # Commerce emits Go time.Time values and the wallet uses browser Date;
+        # neither can represent a leap second.
+        purchased_at: {type: string, format: date-time, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9]([.][0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$'}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        total_amount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            The composed order total in integer minor units (ADR-001). It may
+            exceed a JavaScript Number's safe-integer range; number-based clients
+            must reject a value they cannot represent exactly.
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
         event_name:
           type: string
           nullable: true
@@ -1029,7 +1058,7 @@ components:
             Resolved from catalog in one call per page. Null when catalog cannot
             name the performance — a row the buyer can still open beats a wallet
             that will not load.
-        starts_at: {type: string, format: date-time, nullable: true}
+        starts_at: {type: string, format: date-time, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9]([.][0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$', nullable: true}
     CustomerPrincipal:
       description: >
         A signed-in buyer. `email` is the address in the spelling the buyer
@@ -1043,10 +1072,15 @@ components:
         email: {type: string}
         customer_assertion:
           type: string
+          pattern: '^v1\.[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.[1-9][0-9]{0,15}\.[A-Za-z0-9_-]{43}$'
           description: >
             A commerce-signed, expiring proof that the holder authenticated as
             this customer, presented on checkout in `X-Customer-Assertion`
             (TKT-221, ADR-049).
+
+            Version 1 wire form is
+            `v1.<non-nil customer UUID>.<positive Unix expiry>.<43-character
+            base64url HMAC>`. The expiry fits a JavaScript safe integer.
 
             This is a BEARER CREDENTIAL: anyone holding it can attribute a
             checkout to this customer until it expires. It is returned only to a
@@ -1281,12 +1315,29 @@ components:
       properties:
         refund_id: {type: string, format: uuid}
         order_id: {type: string, format: uuid}
-        quantity: {type: integer}
-        amount: {type: integer, format: int64}
-        currency: {type: string}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            This refund's integer minor-unit amount: the persisted face-value
+            unit amount multiplied by the refunded quantity. Passed-on fees are
+            not part of this value. The product can exceed a JavaScript Number's
+            safe-integer range, so number-based clients must reject a value they
+            cannot represent exactly.
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
         refund_status: {type: string, enum: [none, partial, full]}
-        refunded_quantity: {type: integer}
-        refunded_amount: {type: integer, format: int64}
+        refunded_quantity: {type: integer, minimum: 0, maximum: 50}
+        refunded_amount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            The cumulative sum of face-value refund amounts in integer minor
+            units. It can exceed a JavaScript Number's safe-integer range, so
+            number-based clients must reject a value they cannot represent
+            exactly.
         replay: {type: boolean}
         # False means the tickets are still valid at the gate — the money moved but
         # the reversal is outstanding. Required, not optional: a caller that cannot

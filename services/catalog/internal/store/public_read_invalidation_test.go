@@ -5,18 +5,21 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
 
-// publicReadEffect classifies every mutating method on the Store interface by
+// publicReadEffect classifies every exported mutating method on Postgres by
 // what it does to the four cached public reads.
 //
 // This map is the ticket's real risk control. The cache is correct only if every
 // write that changes a public answer announces it, and nothing in Go's type
 // system makes forgetting impossible. So the classification is pinned: adding a
-// method to Store without a decision here fails the build's tests, and the
+// exported method on Postgres without a decision here fails the build's tests, and the
 // decision has to be written down rather than assumed.
 //
 // "none" is a claim, not a default, and each one below was checked against the
@@ -68,6 +71,7 @@ var publicReadEffect = map[string]PublicReadScope{
 	"CreateFeeRule":                 0,
 	"CreatePayee":                   0,
 	"CreateSplitSchedule":           0,
+	"CreateStaffAccount":            0,
 	"CreateChannel":                 0,
 	"UpdateChannel":                 0,
 	"CloseSlot":                     0,
@@ -94,14 +98,14 @@ var publicReadEffect = map[string]PublicReadScope{
 	"MarkPerformanceArchiveEmitted": 0,
 }
 
-// readOnlyStoreMethods are the Store methods that only read. Listed so the
+// readOnlyStoreMethods are the exported Postgres methods that only read. Listed so the
 // completeness check below can tell "this is a read" from "nobody classified
 // this write yet" — the distinction the whole guard exists to force.
 var readOnlyStoreMethods = map[string]bool{
 	"ListVenues": true, "ListVenueSeatMaps": true, "ListSeatMapVersions": true,
 	"ListSeatMapPins": true, "GetSeatMapGeometry": true, "GetTicketType": true,
 	"ResolveTicketTypePrice": true, "ResolveTicketTypeFees": true,
-	"AuthenticateStaff": true,
+	"AuthenticateStaff":       true,
 	"GetPublishedPerformance": true, "GetPoolOfferState": true,
 	"ListPublishedEvents": true, "GetPublishedEvent": true,
 	"GetPublishedSeason": true, "GetPublishedFestival": true,
@@ -113,6 +117,9 @@ var readOnlyStoreMethods = map[string]bool{
 	// /public/channels, which is public but NOT cached — it reads through to
 	// Postgres on every request, so it participates in no cached payload.
 	"GetChannel": true, "ListChannels": true, "ListEnabledChannels": true,
+	// Operator and migration reads that never feed a cached public response.
+	"ListOrphanPreventionCandidates":     true,
+	"ListPublishedUngroupedPerformances": true,
 	// TKT-243. An operator sweep over price and fee rule currencies. A pure
 	// read, and one that touches no published payload — it reports
 	// misconfiguration to a CLI, so it neither invalidates a public read nor
@@ -120,7 +127,7 @@ var readOnlyStoreMethods = map[string]bool{
 	"ListRuleCurrencyMismatches": true,
 }
 
-// TestEveryStoreMethodIsClassifiedForPublicReads is the anti-rot guard.
+// TestEveryPostgresMethodIsClassifiedForPublicReads is the anti-rot guard.
 //
 // What it does NOT do (ADR-021 — name the adversary): it stops an honest
 // omission. It does not stop someone editing this map in the same commit, and it
@@ -131,34 +138,41 @@ var readOnlyStoreMethods = map[string]bool{
 // would mean call-graph analysis through unexported workers (toggleClosure,
 // transitionSeries, attachSeasonMember), and a guard hard enough to get wrong is
 // a poor guard. The behavioural tests cover that half.
-func TestEveryStoreMethodIsClassifiedForPublicReads(t *testing.T) {
+func TestEveryPostgresMethodIsClassifiedForPublicReads(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "store.go", nil, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var methods []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		ts, ok := n.(*ast.TypeSpec)
-		if !ok || ts.Name.Name != "Store" {
-			return true
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
-		iface, ok := ts.Type.(*ast.InterfaceType)
-		if !ok {
-			return false
+		file, parseErr := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
 		}
-		for _, m := range iface.Methods.List {
-			for _, name := range m.Names {
-				methods = append(methods, name.Name)
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 || !function.Name.IsExported() {
+				continue
+			}
+			receiver, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			if name, ok := receiver.X.(*ast.Ident); ok && name.Name == "Postgres" {
+				methods = append(methods, function.Name.Name)
 			}
 		}
-		return false
-	})
+	}
 
-	// A scan that finds no interface is a test that cannot fail.
+	// A scan that finds no implementation is a test that cannot fail.
 	if len(methods) < 20 {
-		t.Fatalf("found %d methods on store.Store — the AST walk is not reaching the interface", len(methods))
+		t.Fatalf("found %d exported methods on *Postgres; the AST walk is not reaching the implementation", len(methods))
 	}
 
 	var unclassified, stale []string
@@ -179,13 +193,13 @@ func TestEveryStoreMethodIsClassifiedForPublicReads(t *testing.T) {
 	sort.Strings(unclassified)
 	sort.Strings(stale)
 	if len(unclassified) > 0 {
-		t.Errorf("store.Store methods with no public-read classification: %v\n"+
+		t.Errorf("*Postgres methods with no public-read classification: %v\n"+
 			"Every write must declare what it does to the four cached public reads — "+
 			"PublicReadAll, PublicReadDetail, or 0 with a reason in the doc comment. "+
 			"If it only reads, add it to readOnlyStoreMethods.", unclassified)
 	}
 	if len(stale) > 0 {
-		t.Errorf("classified methods that no longer exist on store.Store: %v — "+
+		t.Errorf("classified methods that no longer exist on *Postgres: %v — "+
 			"a stale entry hides the fact that nothing is enforcing it", stale)
 	}
 }

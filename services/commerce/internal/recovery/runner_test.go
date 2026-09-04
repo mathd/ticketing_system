@@ -272,21 +272,30 @@ func run(t *testing.T, orders []store.StuckOrder, tune func(*ports)) (*ports, in
 	if tune != nil {
 		tune(p)
 	}
-	r := New(p.store, p.payments, p.inventory, p.journal, p.completer,
-		time.Minute, 8, 10*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lease, err := LeaseFor(8, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(p.store, p.payments, p.inventory, p.journal, p.completer,
+		time.Minute, 8, lease, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return p, r.RunOnce(context.Background())
 }
 
-// The lease must outlast the pass it protects. If it lapses mid-batch a second runner
-// claims rows the first is still driving, and the claim token fences only the final
-// database write — not the inventory call or journal submission already in flight.
+// A lease must cover every sequential call in its batch. The claim token fences the
+// database write, but it cannot stop a second claimant from repeating an outbound call.
 func TestLeaseOutlastsTheBatchsWorstCaseIO(t *testing.T) {
 	for _, tc := range []struct {
 		batch   int
 		timeout time.Duration
 	}{{1, 10 * time.Second}, {16, 10 * time.Second}, {64, 30 * time.Second}} {
 		worst := time.Duration(tc.batch) * MaxCallsPerOrder * tc.timeout
-		got := LeaseFor(tc.batch, tc.timeout)
+		got, err := LeaseFor(tc.batch, tc.timeout)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got <= worst {
 			t.Errorf("LeaseFor(%d, %s) = %s, which does not outlast the worst-case pass of %s",
 				tc.batch, tc.timeout, got, worst)
@@ -316,14 +325,29 @@ func TestMaxCallsPerOrderCoversTheLongestChain(t *testing.T) {
 	}
 }
 
-// Zero/negative inputs must not collapse the lease to something shorter than a single
-// call — New falls back to a default batch, and the lease has to match that reality.
+// Zero/negative sizing inputs use this domain's one-item and 10-second defaults.
 func TestLeaseForRejectsDegenerateInputs(t *testing.T) {
-	if got := LeaseFor(0, 0); got < time.Minute {
+	got, err := LeaseFor(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < time.Minute {
 		t.Errorf("LeaseFor(0,0) = %s, want at least the 60s margin", got)
 	}
-	if got := LeaseFor(-5, -1); got < time.Minute {
+	got, err = LeaseFor(-5, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < time.Minute {
 		t.Errorf("LeaseFor(-5,-1) = %s, want at least the 60s margin", got)
+	}
+}
+
+func TestNewRequiresAValidatedLease(t *testing.T) {
+	for _, lease := range []time.Duration{0, -time.Second} {
+		if _, err := New(nil, nil, nil, nil, nil, time.Minute, 1, lease, nil); err == nil {
+			t.Fatalf("New() accepted lease %s", lease)
+		}
 	}
 }
 
@@ -348,8 +372,15 @@ func TestShutdownHandsBackUndrivenClaims(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.completer.onComplete = cancel
 
-	r := New(p.store, p.payments, p.inventory, p.journal, p.completer,
-		time.Minute, 8, 10*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	lease, err := LeaseFor(8, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(p.store, p.payments, p.inventory, p.journal, p.completer,
+		time.Minute, 8, lease, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolved := r.RunOnce(ctx)
 
 	if resolved != 1 {

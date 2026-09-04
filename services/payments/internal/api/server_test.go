@@ -16,7 +16,7 @@ import (
 // strict-JSON tests, which need no journal.
 
 func TestFactRejectsNonStrictJSON(t *testing.T) {
-	server := New(nil, "secret")
+	server := newTestServer(nil, "secret")
 	valid := `{"id":"00000000-0000-0000-0000-000000000001","organizer_id":"00000000-0000-0000-0000-000000000002","type":"order.created"}`
 	for name, body := range map[string]string{
 		"unknown field":  valid[:len(valid)-1] + `,"unexpected":true}`,

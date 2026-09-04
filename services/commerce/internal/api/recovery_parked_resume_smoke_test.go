@@ -87,7 +87,7 @@ func TestAParkedResumableOrderIsRefusedBeforeTheMoneyPath(t *testing.T) {
 				_, _ = w.Write([]byte(`{"status":"captured","fact_id":"` + uuid.NewString() + `"}`))
 			})
 
-			srv := New(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
+			srv := newTestServer(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
 			r := chi.NewRouter()
 			r.Post("/reservations/{id}/checkout", srv.checkout)
 
@@ -257,7 +257,7 @@ func TestAnUnparkedResumableOrderStillResumesCheckout(t *testing.T) {
 				_, _ = w.Write([]byte(`{"status":"captured","fact_id":"` + uuid.NewString() + `"}`))
 			})
 
-			srv := New(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
+			srv := newTestServer(db, http.DefaultClient, "", inventory.server.URL, payments.server.URL, "tok")
 			r := chi.NewRouter()
 			r.Post("/reservations/{id}/checkout", srv.checkout)
 

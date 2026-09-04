@@ -2,10 +2,26 @@
 // consumes the public contract, ADR-002/ADR-009). Types are generated from the
 // catalog's OpenAPI document — regenerate with `make generate`.
 //
-// The other two service clients are commerce.ts and access.ts; the response
-// validators all three share are in upstream.ts.
+// Primitive response validators shared with the other service clients live in
+// upstream.ts; this file assembles catalog's generated response shapes.
 import type { components } from './api-types.gen';
-import { GATEWAY_URL, withUpstreamDeadline } from './upstream';
+import {
+  boolean,
+  boundedString,
+  currency,
+  dateTime,
+  decodeMutationResponse,
+  fetchMutation,
+  GATEWAY_URL,
+  nonNegativeWholeNumber,
+  positiveInt32,
+  required,
+  responseArray,
+  responseObject,
+  sameIdentity,
+  uuid,
+  withUpstreamDeadline,
+} from './upstream';
 import { isRecognisedRole, type StaffRole } from './authorization';
 
 export type Venue = components['schemas']['Venue'];
@@ -59,20 +75,23 @@ function staffWriteCredential(): string {
 /**
  * Headers for every catalog write. One helper, so no call site can forget.
  *
- * `assertion` is the session's organizer assertion (TKT-245). It is REQUIRED on
- * every write except the sign-in that issues one — catalog reads the organizer
- * from it and accepts none in a request body — so it is a positional parameter
- * rather than an option: a call site that forgets it does not compile.
+ * `assertion` is the session's organizer assertion (TKT-245). Catalog reads the
+ * organizer from it and accepts none in a request body, so omission does not
+ * compile.
  */
-function writeHeaders(assertion?: string): Record<string, string> {
-  const headers: Record<string, string> = {
+function writeHeaders(assertion: string): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    'X-Catalog-Staff-Write-Token': staffWriteCredential(),
+    'X-Catalog-Organizer-Assertion': assertion,
+  };
+}
+
+function authenticationHeaders(): Record<string, string> {
+  return {
     'content-type': 'application/json',
     'X-Catalog-Staff-Write-Token': staffWriteCredential(),
   };
-  if (assertion) {
-    headers['X-Catalog-Organizer-Assertion'] = assertion;
-  }
-  return headers;
 }
 
 // A READ scoped by an explicit organizer parameter — not authorization.
@@ -90,8 +109,8 @@ export async function getVenues(organizerId: string): Promise<Venue[]> {
     if (!res.ok) {
       throw new Error(`catalog venue read failed: ${res.status}`);
     }
-    const body = (await res.json()) as PublicVenueList;
-    return body.venues;
+    const body = responseObject(await res.json(), 'venue list');
+    return responseArray(body.venues, 'venues').map((value) => decodeVenue(value, organizerId));
   });
 }
 
@@ -101,10 +120,310 @@ export async function getVenue(
   organizerId: string,
 ): Promise<Venue | undefined> {
   const venues = await getVenues(organizerId);
-  return venues.find((v) => v.id === venueId);
+  return venues.find((venue) => venue.id.toLowerCase() === venueId.toLowerCase());
 }
 
 const catalog = (path: string) => `${GATEWAY_URL}/api/catalog${path}`;
+
+function optional<T>(value: unknown, field: string, decode: (value: unknown, field: string) => T): T | undefined {
+  return value === undefined ? undefined : decode(value, field);
+}
+
+function nullable<T>(value: unknown, field: string, decode: (value: unknown, field: string) => T): T | null {
+  return value === null ? null : decode(value, field);
+}
+
+function dateOnly(value: unknown, field: string): string {
+  const text = required(value, field);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) throw new Error(`response ${field} is not an ISO date`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1]) {
+    throw new Error(`response ${field} is not an ISO date`);
+  }
+  return text;
+}
+
+function timeOfDay(value: unknown, field: string): string {
+  const text = required(value, field);
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) {
+    throw new Error(`response ${field} is not an HH:MM time`);
+  }
+  return text;
+}
+
+function localizedString(value: unknown, field: string): LocalizedStringDto {
+  const body = responseObject(value, field);
+  const result: Record<string, string> = {};
+  for (const [locale, text] of Object.entries(body)) {
+    result[locale] = required(text, `${field}.${locale}`);
+  }
+  return result;
+}
+
+function decodeVenue(value: unknown, expectedOrganizerId?: string): Venue {
+  const body = responseObject(value, 'venue');
+  const venue: Venue = {
+    id: uuid(body.id, 'venue id'),
+    organizer_id: uuid(body.organizer_id, 'venue organizer_id'),
+    name: required(body.name, 'venue name'),
+    ga_capacity: positiveInt32(body.ga_capacity, 'venue ga_capacity'),
+    created_at: dateTime(body.created_at, 'venue created_at'),
+  };
+  if (expectedOrganizerId !== undefined) {
+    sameIdentity(venue.organizer_id, expectedOrganizerId, 'venue organizer_id');
+  }
+  return venue;
+}
+
+function seatMapStatus(value: unknown): SeatMap['status'] {
+  if (value === 'draft' || value === 'published' || value === 'archived') return value;
+  throw new Error('response seat-map status is not recognized');
+}
+
+function decodeSeatMap(
+  value: unknown,
+  expected?: { id?: string; organizerId?: string; venueId?: string },
+): SeatMap {
+  const body = responseObject(value, 'seat map');
+  const map: SeatMap = {
+    id: uuid(body.id, 'seat-map id'),
+    organizer_id: uuid(body.organizer_id, 'seat-map organizer_id'),
+    venue_id: uuid(body.venue_id, 'seat-map venue_id'),
+    name: required(body.name, 'seat-map name'),
+    version: positiveInt32(body.version, 'seat-map version'),
+    status: seatMapStatus(body.status),
+    published_at: optional(body.published_at, 'seat-map published_at', dateTime),
+    orphan_prevention_enabled: boolean(
+      body.orphan_prevention_enabled,
+      'seat-map orphan_prevention_enabled',
+    ),
+    created_at: dateTime(body.created_at, 'seat-map created_at'),
+  };
+  if (expected?.id !== undefined) sameIdentity(map.id, expected.id, 'seat-map id');
+  if (expected?.organizerId !== undefined) {
+    sameIdentity(map.organizer_id, expected.organizerId, 'seat-map organizer_id');
+  }
+  if (expected?.venueId !== undefined) sameIdentity(map.venue_id, expected.venueId, 'seat-map venue_id');
+  return map;
+}
+
+function decodeSeat(value: unknown): Seat {
+  const body = responseObject(value, 'seat');
+  return {
+    id: uuid(body.id, 'seat id'),
+    seat_identity: boundedString(body.seat_identity, 'seat identity', 200),
+    label: required(body.label, 'seat label'),
+    position: positiveInt32(body.position, 'seat position'),
+  };
+}
+
+function decodeSeatRow(value: unknown): SeatRow {
+  const body = responseObject(value, 'seat row');
+  return {
+    id: uuid(body.id, 'seat-row id'),
+    label: required(body.label, 'seat-row label'),
+    position: positiveInt32(body.position, 'seat-row position'),
+    ...(body.seats === undefined
+      ? {}
+      : { seats: responseArray(body.seats, 'seat-row seats').map(decodeSeat) }),
+  };
+}
+
+function decodeSeatSection(value: unknown): SeatSection {
+  const body = responseObject(value, 'seat section');
+  return {
+    id: uuid(body.id, 'seat-section id'),
+    name: required(body.name, 'seat-section name'),
+    position: positiveInt32(body.position, 'seat-section position'),
+    ...(body.rows === undefined
+      ? {}
+      : { rows: responseArray(body.rows, 'seat-section rows').map(decodeSeatRow) }),
+  };
+}
+
+function decodeSeatMapGeometry(value: unknown, expectedId: string): SeatMapGeometry {
+  const body = responseObject(value, 'seat-map geometry');
+  return {
+    map: decodeSeatMap(body.map, { id: expectedId }),
+    sections: responseArray(body.sections, 'seat-map sections').map(decodeSeatSection),
+  };
+}
+
+function decodeSeatMapVersions(
+  value: unknown,
+  requestedId: string,
+  expectedOrganizerId: string,
+  expectedVenueId: string,
+): SeatMapVersionHistory {
+  const body = responseObject(value, 'seat-map version history');
+  const versions = responseArray(body.versions, 'seat-map versions').map((item) =>
+    decodeSeatMap(item, { organizerId: expectedOrganizerId, venueId: expectedVenueId }),
+  );
+  if (versions.length === 0 || !versions.some((version) => version.id.toLowerCase() === requestedId.toLowerCase())) {
+    throw new Error('response seat-map versions do not contain the requested map');
+  }
+
+  const familyName = versions[0].name;
+  for (const [index, version] of versions.entries()) {
+    if (version.name !== familyName || version.version !== versions.length - index) {
+      throw new Error('response seat-map versions do not describe one complete family');
+    }
+  }
+
+  const published = versions.filter((version) => version.status === 'published');
+  const currentVersion = optional(body.current_version, 'current_version', positiveInt32);
+  if (published.length === 0) {
+    if (currentVersion !== undefined) {
+      throw new Error('response current_version does not name a published member');
+    }
+  } else {
+    const highestPublished = Math.max(...published.map((version) => version.version));
+    if (currentVersion !== highestPublished) {
+      throw new Error('response current_version does not name the highest published member');
+    }
+  }
+  return {
+    ...(currentVersion === undefined ? {} : { current_version: currentVersion }),
+    versions,
+  };
+}
+
+function decodeEvent(value: unknown, expectedOrganizerId: string): Event {
+  const body = responseObject(value, 'event');
+  const event: Event = {
+    id: uuid(body.id, 'event id'),
+    organizer_id: uuid(body.organizer_id, 'event organizer_id'),
+    name: localizedString(body.name, 'event name'),
+    ...(body.description === undefined
+      ? {}
+      : { description: localizedString(body.description, 'event description') }),
+    created_at: dateTime(body.created_at, 'event created_at'),
+  };
+  sameIdentity(event.organizer_id, expectedOrganizerId, 'event organizer_id');
+  return event;
+}
+
+function decodeReEntry(value: unknown): Performance['re_entry'] {
+  const body = responseObject(value, 're-entry policy');
+  const mode = body.mode;
+  if (mode !== 'single' && mode !== 'multi' && mode !== 'count_limited') {
+    throw new Error('response re-entry mode is not recognized');
+  }
+  const maxEntries = body.max_entries === undefined
+    ? undefined
+    : nullable(body.max_entries, 're-entry max_entries', positiveInt32);
+  if (mode === 'count_limited' && (maxEntries === undefined || maxEntries === null)) {
+    throw new Error('response count-limited re-entry policy has no max_entries');
+  }
+  return {
+    mode,
+    ...(maxEntries === undefined ? {} : { max_entries: maxEntries }),
+    requires_exit: boolean(body.requires_exit, 're-entry requires_exit'),
+  };
+}
+
+function decodeClosure(value: unknown): Performance['closure'] {
+  const body = responseObject(value, 'closure');
+  if (body.status !== 'open' && body.status !== 'closed') {
+    throw new Error('response closure status is not recognized');
+  }
+  return {
+    status: body.status,
+    ...(body.closed_at === undefined
+      ? {}
+      : { closed_at: nullable(body.closed_at, 'closure closed_at', dateTime) }),
+    ...(body.reason === undefined
+      ? {}
+      : { reason: nullable(body.reason, 'closure reason', required) }),
+  };
+}
+
+function decodePerformance(
+  value: unknown,
+  expected: { organizerId: string; id?: string; eventId?: string; venueId?: string },
+): Performance {
+  const body = responseObject(value, 'performance');
+  const kind = body.kind;
+  if (kind !== 'performance' && kind !== 'festival_day' && kind !== 'operating_day') {
+    throw new Error('response performance kind is not recognized');
+  }
+  const status = body.status;
+  if (status !== 'draft' && status !== 'published' && status !== 'archived') {
+    throw new Error('response performance status is not recognized');
+  }
+  const performance: Performance = {
+    id: uuid(body.id, 'performance id'),
+    organizer_id: uuid(body.organizer_id, 'performance organizer_id'),
+    event_id: uuid(body.event_id, 'performance event_id'),
+    venue_id: uuid(body.venue_id, 'performance venue_id'),
+    kind,
+    ...(body.starts_at === undefined ? {} : { starts_at: dateTime(body.starts_at, 'performance starts_at') }),
+    ...(body.operating_date === undefined
+      ? {}
+      : { operating_date: dateOnly(body.operating_date, 'performance operating_date') }),
+    ...(body.opens_at === undefined ? {} : { opens_at: timeOfDay(body.opens_at, 'performance opens_at') }),
+    ...(body.closes_at === undefined ? {} : { closes_at: timeOfDay(body.closes_at, 'performance closes_at') }),
+    timezone: required(body.timezone, 'performance timezone'),
+    re_entry: decodeReEntry(body.re_entry),
+    closure: decodeClosure(body.closure),
+    status,
+    ...(body.published_at === undefined
+      ? {}
+      : { published_at: dateTime(body.published_at, 'performance published_at') }),
+    ...(body.archived_at === undefined
+      ? {}
+      : { archived_at: nullable(body.archived_at, 'performance archived_at', dateTime) }),
+    ...(body.capacity_group_id === undefined
+      ? {}
+      : { capacity_group_id: uuid(body.capacity_group_id, 'performance capacity_group_id') }),
+    ...(body.seat_map_id === undefined
+      ? {}
+      : { seat_map_id: uuid(body.seat_map_id, 'performance seat_map_id') }),
+    created_at: dateTime(body.created_at, 'performance created_at'),
+  };
+  if (kind === 'performance' && performance.starts_at === undefined) {
+    throw new Error('response performance has no starts_at');
+  }
+  if (
+    kind !== 'performance' &&
+    (performance.operating_date === undefined || performance.opens_at === undefined || performance.closes_at === undefined)
+  ) {
+    throw new Error('response day slot has no operating window');
+  }
+  if (expected.id !== undefined) sameIdentity(performance.id, expected.id, 'performance id');
+  sameIdentity(performance.organizer_id, expected.organizerId, 'performance organizer_id');
+  if (expected.eventId !== undefined) sameIdentity(performance.event_id, expected.eventId, 'performance event_id');
+  if (expected.venueId !== undefined) sameIdentity(performance.venue_id, expected.venueId, 'performance venue_id');
+  return performance;
+}
+
+function decodeTicketType(
+  value: unknown,
+  expectedPerformanceId: string,
+  expectedOrganizerId: string,
+): TicketType {
+  const body = responseObject(value, 'ticket type');
+  const price = responseObject(body.price, 'ticket price');
+  const ticketType: TicketType = {
+    id: uuid(body.id, 'ticket-type id'),
+    organizer_id: uuid(body.organizer_id, 'ticket-type organizer_id'),
+    performance_id: uuid(body.performance_id, 'ticket-type performance_id'),
+    name: localizedString(body.name, 'ticket-type name'),
+    price: {
+      amount: nonNegativeWholeNumber(price.amount, 'ticket price amount'),
+      currency: currency(price.currency, 'ticket price currency'),
+    },
+    created_at: dateTime(body.created_at, 'ticket-type created_at'),
+  };
+  sameIdentity(ticketType.performance_id, expectedPerformanceId, 'ticket-type performance_id');
+  sameIdentity(ticketType.organizer_id, expectedOrganizerId, 'ticket-type organizer_id');
+  return ticketType;
+}
 
 // parseError pulls the catalog's { error } message off a non-2xx response so the
 // UI can surface it; falls back to a generic line if the body is not the shared
@@ -112,8 +431,8 @@ const catalog = (path: string) => `${GATEWAY_URL}/api/catalog${path}`;
 async function parseError(res: Response): Promise<CatalogApiError> {
   let message = `catalog request failed: ${res.status}`;
   try {
-    const body = (await res.json()) as { error?: unknown };
-    if (body && typeof body.error === 'string' && body.error) {
+    const body = responseObject(await res.json(), 'catalog error');
+    if (typeof body.error === 'string' && body.error) {
       message = body.error;
     }
   } catch {
@@ -126,6 +445,7 @@ async function postCatalog<T>(
   path: string,
   assertion: string,
   body: unknown,
+  decode: (value: unknown) => T,
   // TKT-200: an optional idempotency key, forwarded verbatim when present.
   //
   // It is a PARAMETER, not something minted here. A key generated inside this
@@ -140,7 +460,7 @@ async function postCatalog<T>(
     if (idempotencyKey) {
       headers['Idempotency-Key'] = idempotencyKey;
     }
-    const res = await fetch(catalog(path), {
+    const res = await fetchMutation('Catalog', catalog(path), {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -149,7 +469,7 @@ async function postCatalog<T>(
     if (!res.ok) {
       throw await parseError(res);
     }
-    return (await res.json()) as T;
+    return decodeMutationResponse(res, 'Catalog', decode);
   });
 }
 
@@ -165,10 +485,12 @@ export function createSeatMap(
   // omits it inherits rather than clears.
   orphanPreventionEnabled = false,
 ): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/venues/${encodeURIComponent(venueId)}/seat-maps`, assertion, {
-    name,
-    orphan_prevention_enabled: orphanPreventionEnabled,
-  });
+  return postCatalog(
+    `/venues/${encodeURIComponent(venueId)}/seat-maps`,
+    assertion,
+    { name, orphan_prevention_enabled: orphanPreventionEnabled },
+    (value) => decodeSeatMap(value, { venueId }),
+  );
 }
 
 export function addSeatMapSection(
@@ -176,9 +498,12 @@ export function addSeatMapSection(
   section: { name: string; position: number },
   assertion: string,
 ): Promise<SeatSection> {
-  return postCatalog<SeatSection>(`/seat-maps/${encodeURIComponent(seatMapId)}/sections`, assertion, {
-    ...section,
-  });
+  return postCatalog(
+    `/seat-maps/${encodeURIComponent(seatMapId)}/sections`,
+    assertion,
+    { ...section },
+    decodeSeatSection,
+  );
 }
 
 export function addSeatMapRow(
@@ -186,9 +511,12 @@ export function addSeatMapRow(
   row: { section_id: string; label: string; position: number },
   assertion: string,
 ): Promise<SeatRow> {
-  return postCatalog<SeatRow>(`/seat-maps/${encodeURIComponent(seatMapId)}/rows`, assertion, {
-    ...row,
-  });
+  return postCatalog(
+    `/seat-maps/${encodeURIComponent(seatMapId)}/rows`,
+    assertion,
+    { ...row },
+    decodeSeatRow,
+  );
 }
 
 export function addSeatMapSeat(
@@ -196,9 +524,12 @@ export function addSeatMapSeat(
   seat: { row_id: string; label: string; position: number },
   assertion: string,
 ): Promise<Seat> {
-  return postCatalog<Seat>(`/seat-maps/${encodeURIComponent(seatMapId)}/seats`, assertion, {
-    ...seat,
-  });
+  return postCatalog(
+    `/seat-maps/${encodeURIComponent(seatMapId)}/seats`,
+    assertion,
+    { ...seat },
+    decodeSeat,
+  );
 }
 
 /**
@@ -214,7 +545,10 @@ export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
     if (!res.ok) {
       throw new Error(`seat-map list failed: ${res.status}`);
     }
-    return ((await res.json()) as SeatMapList).seat_maps;
+    const body = responseObject(await res.json(), 'seat-map list');
+    return responseArray(body.seat_maps, 'seat maps').map((value) =>
+      decodeSeatMap(value, { venueId }),
+    );
   });
 }
 
@@ -228,7 +562,7 @@ export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeom
     if (!res.ok) {
       throw new Error(`seat-map geometry read failed: ${res.status}`);
     }
-    return (await res.json()) as SeatMapGeometry;
+    return decodeSeatMapGeometry(await res.json(), seatMapId);
   });
 }
 
@@ -243,10 +577,11 @@ export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeom
  * the verified organizer, so a map belonging to another tenant answers 404.
  */
 export function publishSeatMap(seatMapId: string, assertion: string): Promise<SeatMap> {
-  return postCatalog<SeatMap>(
+  return postCatalog(
     `/seat-maps/${encodeURIComponent(seatMapId)}/publish`,
     assertion,
     null,
+    (value) => decodeSeatMap(value, { id: seatMapId }),
   );
 }
 
@@ -259,16 +594,27 @@ export function publishSeatMap(seatMapId: string, assertion: string): Promise<Se
 export function editSeatMap(
   seatMapId: string,
   edit: SeatMapEdit,
+  organizerId: string,
+  venueId: string,
   assertion: string,
 ): Promise<SeatMap> {
-  return postCatalog<SeatMap>(`/seat-maps/${encodeURIComponent(seatMapId)}/edit`, assertion, edit);
+  return postCatalog(
+    `/seat-maps/${encodeURIComponent(seatMapId)}/edit`,
+    assertion,
+    edit,
+    (value) => decodeSeatMap(value, { organizerId, venueId }),
+  );
 }
 
 /**
  * A seat-map family's version history; resolves from any version id. Cache tier is
  * status-driven (TKT-107): hours only when every version listed is published.
  */
-export async function listSeatMapVersions(seatMapId: string): Promise<SeatMapVersionHistory> {
+export async function listSeatMapVersions(
+  seatMapId: string,
+  organizerId: string,
+  venueId: string,
+): Promise<SeatMapVersionHistory> {
   return withUpstreamDeadline(async (signal) => {
     const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`), {
       signal,
@@ -276,7 +622,7 @@ export async function listSeatMapVersions(seatMapId: string): Promise<SeatMapVer
     if (!res.ok) {
       throw await parseError(res);
     }
-    return (await res.json()) as SeatMapVersionHistory;
+    return decodeSeatMapVersions(await res.json(), seatMapId, organizerId, venueId);
   });
 }
 
@@ -286,9 +632,16 @@ export function updateVenueGaCapacity(
   gaCapacity: number,
   assertion: string,
 ): Promise<Venue> {
-  return postCatalog<Venue>(`/venues/${encodeURIComponent(venueId)}/ga-capacity`, assertion, {
-    ga_capacity: gaCapacity,
-  });
+  return postCatalog(
+    `/venues/${encodeURIComponent(venueId)}/ga-capacity`,
+    assertion,
+    { ga_capacity: gaCapacity },
+    (value) => {
+      const venue = decodeVenue(value);
+      sameIdentity(venue.id, venueId, 'venue id');
+      return venue;
+    },
+  );
 }
 
 // --- Staff sign-in (TKT-190 / US-B1) ---
@@ -328,7 +681,7 @@ export async function authenticateStaff(
       // this process; a catalog-only credential removes that objection, and
       // leaving it unguarded would mean an exception list inside a fail-closed
       // scheme.
-      headers: writeHeaders(),
+      headers: authenticationHeaders(),
       // In the body, never the URL: a query string lands in access logs, proxy
       // logs and browser history.
       body: JSON.stringify({ identifier, password }),
@@ -340,31 +693,59 @@ export async function authenticateStaff(
     if (!res.ok) {
       throw await parseError(res);
     }
-    const body = (await res.json()) as {
-      staff_id: string;
-      organizer_id: string;
-      role: string;
-      organizer_assertion: string;
-    };
+    const body = responseObject(await res.json(), 'staff principal');
     if (!isRecognisedRole(body.role)) {
       // Catalog validates the stored role too, so reaching this means the contract
       // and this client disagree about the vocabulary, a deployment skew. Refuse
       // rather than mint a session carrying a role the matrix cannot classify.
       throw new Error(`catalog returned an unrecognised staff role`);
     }
-    // An empty assertion means catalog has no signing key configured (TKT-245).
-    // Refuse the sign-in rather than mint a session that cannot write. Every
-    // subsequent write would 401 and leave the failure harder to diagnose.
-    if (!body.organizer_assertion) {
-      throw new Error('catalog returned no organizer assertion; it is running without a signing key');
-    }
+    const staffId = uuid(body.staff_id, 'staff id');
+    const organizerId = uuid(body.organizer_id, 'organizer id');
+    const organizerAssertion = decodeOrganizerAssertion(
+      body.organizer_assertion,
+      staffId,
+      organizerId,
+    );
     return {
-      staffId: body.staff_id,
-      organizerId: body.organizer_id,
+      staffId,
+      organizerId,
       role: body.role,
-      organizerAssertion: body.organizer_assertion,
+      organizerAssertion,
     };
   });
+}
+
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+const MAX_INT64 = 9_223_372_036_854_775_807n;
+
+/** Validate the readable fields in catalog's signed v1 assertion. */
+function decodeOrganizerAssertion(
+  value: unknown,
+  expectedStaffId: string,
+  expectedOrganizerId: string,
+): string {
+  const assertion = required(value, 'organizer assertion');
+  const parts = assertion.split('.');
+  if (parts.length !== 5 || parts[0] !== 'v1') {
+    throw new Error('response organizer assertion is malformed');
+  }
+
+  const staffId = uuid(parts[1], 'organizer assertion staff id');
+  const organizerId = uuid(parts[2], 'organizer assertion organizer id');
+  if (staffId.toLowerCase() === NIL_UUID || organizerId.toLowerCase() === NIL_UUID) {
+    throw new Error('response organizer assertion contains a nil identity');
+  }
+  sameIdentity(staffId, expectedStaffId, 'organizer assertion staff id');
+  sameIdentity(organizerId, expectedOrganizerId, 'organizer assertion organizer id');
+
+  if (!/^\d{1,19}$/.test(parts[3]) || BigInt(parts[3]) > MAX_INT64) {
+    throw new Error('response organizer assertion expiry is malformed');
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(parts[4])) {
+    throw new Error('response organizer assertion signature is malformed');
+  }
+  return assertion;
 }
 
 // --- Event authoring (TKT-192 / US-B3) ---
@@ -375,9 +756,9 @@ export async function authenticateStaff(
 // verbatim, so a refusal catalog decides (ADR-018) reads as a sentence rather
 // than a status code.
 //
-// The organizer is a parameter on every one of these, never a default: it comes
-// from the session (TKT-190), and a default here is how one organizer's staff
-// would author into another's tenant.
+// The assertion supplies write authority. The organizer id is also required,
+// from the same session, so every success response is checked against the
+// tenant the page is rendering before its identifiers become page state.
 
 export type Event = components['schemas']['Event'];
 export type Performance = components['schemas']['Performance'];
@@ -389,41 +770,66 @@ export type LocalizedStringDto = components['schemas']['LocalizedString'];
 // the same defect as no key at all, discovered later and by a duplicate row.
 export function createEvent(
   assertion: string,
+  organizerId: string,
   name: LocalizedStringDto,
   idempotencyKey: string,
 ): Promise<Event> {
-  return postCatalog<Event>('/events', assertion, { name }, idempotencyKey);
+  return postCatalog(
+    '/events',
+    assertion,
+    { name },
+    (value) => decodeEvent(value, organizerId),
+    idempotencyKey,
+  );
 }
 
 export function createPerformance(
   assertion: string,
+  organizerId: string,
   input: { eventId: string; venueId: string; startsAt: string; timezone: string },
   idempotencyKey: string,
 ): Promise<Performance> {
-  return postCatalog<Performance>('/performances', assertion, {
-    event_id: input.eventId,
-    venue_id: input.venueId,
-    // RFC 3339 with an explicit offset, and the IANA zone alongside it. A
-    // `datetime-local` value carries no zone, and converting one in the SERVER's
-    // zone would shift every slot for any organizer who is not sitting next to
-    // the server — silently, and only for them.
-    starts_at: input.startsAt,
-    timezone: input.timezone,
-  }, idempotencyKey);
+  return postCatalog(
+    '/performances',
+    assertion,
+    {
+      event_id: input.eventId,
+      venue_id: input.venueId,
+      // RFC 3339 with an explicit offset, and the IANA zone alongside it. A
+      // `datetime-local` value carries no zone, and converting one in the SERVER's
+      // zone would shift every slot for any organizer who is not sitting next to
+      // the server — silently, and only for them.
+      starts_at: input.startsAt,
+      timezone: input.timezone,
+    },
+    (value) => decodePerformance(value, {
+      organizerId,
+      eventId: input.eventId,
+      venueId: input.venueId,
+    }),
+    idempotencyKey,
+  );
 }
 
 export function createTicketType(
   assertion: string,
+  organizerId: string,
   input: { performanceId: string; name: LocalizedStringDto; amount: number; currency: string },
   idempotencyKey: string,
 ): Promise<TicketType> {
-  return postCatalog<TicketType>('/ticket-types', assertion, {
-    performance_id: input.performanceId,
-    name: input.name,
-    // Integer minor units + ISO code, parsed as such (ADR-001). Nothing on this
-    // path has ever been a float.
-    price: { amount: input.amount, currency: input.currency },
-  }, idempotencyKey);
+  return postCatalog(
+    '/ticket-types',
+    assertion,
+    {
+      performance_id: input.performanceId,
+      name: input.name,
+      // Integer minor units + ISO code, parsed as such (ADR-001). Nothing on this
+      // path has ever been a float.
+      price: { amount: input.amount, currency: input.currency },
+    },
+    (value) => decodeTicketType(value, input.performanceId, organizerId),
+    idempotencyKey,
+  );
 }
 
 /**
@@ -435,11 +841,13 @@ export function createTicketType(
 export function publishPerformance(
   performanceId: string,
   assertion: string,
+  organizerId: string,
 ): Promise<Performance> {
-  return postCatalog<Performance>(
+  return postCatalog(
     `/performances/${encodeURIComponent(performanceId)}/publish`,
     assertion,
     null,
+    (value) => decodePerformance(value, { organizerId, id: performanceId }),
   );
 }
 
@@ -467,6 +875,41 @@ export function publishPerformance(
 export type Channel = components['schemas']['Channel'];
 export type ChannelKind = components['schemas']['ChannelKind'];
 
+function channelKind(value: unknown): ChannelKind {
+  if (value === 'web' || value === 'pos' || value === 'presale' || value === 'reseller') return value;
+  throw new Error('response channel kind is not recognized');
+}
+
+function decodeChannel(
+  value: unknown,
+  expected: { organizerId: string; id?: string; code?: string },
+): Channel {
+  const body = responseObject(value, 'channel');
+  const channel: Channel = {
+    id: uuid(body.id, 'channel id'),
+    organizer_id: uuid(body.organizer_id, 'channel organizer_id'),
+    code: boundedString(body.code, 'channel code', 100),
+    display_name: required(body.display_name, 'channel display_name'),
+    kind: channelKind(body.kind),
+    enabled: boolean(body.enabled, 'channel enabled'),
+    created_at: dateTime(body.created_at, 'channel created_at'),
+    updated_at: dateTime(body.updated_at, 'channel updated_at'),
+  };
+  if (expected.id !== undefined) sameIdentity(channel.id, expected.id, 'channel id');
+  sameIdentity(channel.organizer_id, expected.organizerId, 'channel organizer_id');
+  if (expected.code !== undefined && channel.code !== expected.code) {
+    throw new Error('response channel code is not the one requested');
+  }
+  return channel;
+}
+
+function decodeChannelList(value: unknown, expectedOrganizerId: string): Channel[] {
+  const body = responseObject(value, 'channel list');
+  return responseArray(body.channels, 'channels').map((item) =>
+    decodeChannel(item, { organizerId: expectedOrganizerId }),
+  );
+}
+
 // Catalog's host on the container network. Only used for the operator read; every
 // other call in this file goes through the gateway.
 const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8081';
@@ -479,7 +922,10 @@ const CATALOG_URL = process.env.CATALOG_URL ?? 'http://localhost:8081';
  * to name whose channels it wants — and every call site takes it from the
  * session.
  */
-export async function listChannelsForOperator(assertion: string): Promise<Channel[]> {
+export async function listChannelsForOperator(
+  assertion: string,
+  organizerId: string,
+): Promise<Channel[]> {
   // No organizer in the URL (TKT-245). This read returns every channel of an
   // organizer — ids, codes and disabled rows that appear nowhere public — and
   // naming the tenant in a query string is exactly the enumeration ADR-053
@@ -496,25 +942,29 @@ export async function listChannelsForOperator(assertion: string): Promise<Channe
     if (!res.ok) {
       throw await parseError(res);
     }
-    const body = (await res.json()) as { channels?: Channel[] };
-    // Defensive: a contract-shaped body with no array must not become `undefined`
-    // and crash the page's map. The operator read is hand-mounted and therefore
-    // outside catalog's response validation (ADR-009), so nothing upstream
-    // guarantees the key is present.
-    return body.channels ?? [];
+    // This route is hand-mounted outside catalog's response validation
+    // (ADR-009). Decode it here so a malformed 200 reaches the page's existing
+    // unavailable path instead of looking like an empty channel registry.
+    return decodeChannelList(await res.json(), organizerId);
   });
 }
 
 export function createChannel(
   assertion: string,
+  organizerId: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled?: boolean },
 ): Promise<Channel> {
-  return postCatalog<Channel>('/channels', assertion, {
-    code: input.code,
-    display_name: input.displayName,
-    kind: input.kind,
-    ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-  });
+  return postCatalog(
+    '/channels',
+    assertion,
+    {
+      code: input.code,
+      display_name: input.displayName,
+      kind: input.kind,
+      ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+    },
+    (value) => decodeChannel(value, { organizerId, code: input.code }),
+  );
 }
 
 /**
@@ -529,11 +979,12 @@ export function createChannel(
  */
 export async function updateChannel(
   assertion: string,
+  organizerId: string,
   channelId: string,
   input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
 ): Promise<Channel> {
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(catalog(`/channels/${encodeURIComponent(channelId)}`), {
+    const res = await fetchMutation('Catalog', catalog(`/channels/${encodeURIComponent(channelId)}`), {
       method: 'PUT',
       headers: writeHeaders(assertion),
       body: JSON.stringify({
@@ -550,6 +1001,8 @@ export async function updateChannel(
     if (!res.ok) {
       throw await parseError(res);
     }
-    return (await res.json()) as Channel;
+    return decodeMutationResponse(res, 'Catalog', (value) =>
+      decodeChannel(value, { organizerId, id: channelId, code: input.code }),
+    );
   });
 }

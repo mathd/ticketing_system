@@ -1,12 +1,13 @@
-import { defineConfig } from 'vitest/config';
+import { getViteConfig } from 'astro/config';
 
-// The backoffice is an Astro app; its unit tests split by kind:
+// The back office's tests split by kind:
 //  - lib/api client tests (*.test.ts) are fetch-stubbed pure functions → node env
 //  - React component tests (*.test.tsx) need a DOM → jsdom, opted in per-file via
 //    a `// @vitest-environment jsdom` docblock (vitest v4 removed
-//    environmentMatchGlobs). node stays the default so the client tests are
-//    unaffected (Fable plan risk note).
-export default defineConfig({
+//    environmentMatchGlobs).
+// Astro's Vite plugin is required by the mutation-page tests, which render the
+// real `.astro` modules. Node remains the default environment.
+export default getViteConfig({
   test: {
     environment: 'node',
   },

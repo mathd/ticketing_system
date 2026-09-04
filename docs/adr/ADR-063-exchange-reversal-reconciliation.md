@@ -178,10 +178,11 @@ reconciler made its absence newly dangerous. Nothing analogous applies here: `IN
 already fail-fast at startup (commerce refuses to boot without it), so there is no new configuration
 under which this sweep silently cannot work. `/healthz` and `/readyz` are untouched.
 
-`EXCHANGE_REVERSAL_INTERVAL` (default `1m`) and `EXCHANGE_REVERSAL_BATCH` (default `16`) are read with
-`os.Getenv` and given no `${VAR:?}` marker in compose. A mandatory marker with no matching emitter in
-`scripts/env-bootstrap.sh` fails `make check`'s `check-required-env` stage (TKT-227), and these are
-tuning knobs, not credentials.
+`EXCHANGE_REVERSAL_INTERVAL` (default `1m`) and `EXCHANGE_REVERSAL_BATCH` (default `16`) are read once
+with the other worker settings during startup. Unset values use those defaults; explicitly empty,
+malformed, or non-positive values fail startup. They have no `${VAR:?}` marker in compose: a mandatory
+marker with no matching emitter in `scripts/env-bootstrap.sh` fails `make check`'s
+`check-required-env` stage (TKT-227), and these are tuning knobs, not credentials.
 
 ## Consequences
 

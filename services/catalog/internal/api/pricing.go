@@ -32,7 +32,7 @@ func (s *Server) ResolveTicketTypePrice(w http.ResponseWriter, r *http.Request, 
 	// channel-agnostic rules are eligible. Passed straight through: no trimming,
 	// no case folding, and no validation against the channel registry (TKT-235),
 	// which is a lookup and not a constraint.
-	sel, err := s.store.ResolveTicketTypePrice(r.Context(), ticketTypeID, params.ChannelCode, time.Now().UTC())
+	sel, err := s.pricing.ResolveTicketTypePrice(r.Context(), ticketTypeID, params.ChannelCode, time.Now().UTC())
 	if err != nil {
 		// A rule whose currency differs from the ticket type's is invalid
 		// configuration in OUR data, not something the caller can fix by
