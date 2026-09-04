@@ -520,11 +520,15 @@ func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
 			"scripts/smoke.sh must export it (a name-only check would pass while a renamed "+
 			"copy of the credential sat in a service's environment)", operatorVar)
 	}
-	// EVERY container in the project, not a hand-listed subset. A fixed list of the five Go
-	// services would pass while the credential sat in the gateway, a web app, or a one-shot job
-	// (ai-review pass 2) — and the property being asserted is "nothing but the broker holds it",
-	// so the target set has to be discovered, not enumerated. Anything added to the stack later
-	// is covered without editing this test.
+	// Sweep every container the project has INSTANTIATED, not a hand-listed subset. A fixed list
+	// of the five Go services would pass while the credential sat in the gateway, a web app, or a
+	// one-shot job (ai-review pass 2), and the property is "nothing but the broker holds it", so
+	// the target set is discovered rather than enumerated.
+	//
+	// The bound is honest: `compose ps --all` reports containers that EXIST, so a service behind
+	// an inactive profile, or one never started, is not covered (ai-review pass 3). Within the
+	// gate that is the whole stack, and an inspect failure now fails the test rather than
+	// silently reducing the sweep.
 	listed, err := dockerRun(ctx, "compose", "-p", project, "ps", "--all", "--format", "{{.Name}}")
 	if err != nil {
 		t.Fatalf("docker compose ps: %v: %s", err, listed)
@@ -541,7 +545,11 @@ func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
 		}
 		env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
 		if err != nil {
-			continue // a container that vanished between ps and inspect (one-shot jobs do)
+			// FAIL rather than skip. A one-shot job is exactly the kind of container that could
+			// receive the credential and then exit, and a `continue` here would let the sweep
+			// report success having never looked at it (ai-review pass 3).
+			t.Errorf("cannot inspect %s, so its environment is unchecked: %v: %s", container, err, env)
+			continue
 		}
 		swept++
 		if strings.Contains(env, operatorVar+"=") {

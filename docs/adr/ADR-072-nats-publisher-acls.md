@@ -38,9 +38,13 @@ We require per-principal publish and subscribe permissions to isolate service ca
       complexity and conflicts with [ADR-007](ADR-007-postgres-nats.md) durability.
 
 - **Option 3: Single default account (`$G`) with per-user publish and subscribe authorization rules (chosen).**
-    - Pros: Preserves the single `PLATFORM` stream. Implements exact publish and subscribe subject boundaries.
+    - Pros: Preserves the single `PLATFORM` stream. Implements exact PUBLISH subject boundaries.
       Delivers credentials through `NATS_URL` without Go code modifications.
-    - Cons: Requires explicit JetStream API permissions (`$JS.API.>`) for consumers and publishers.
+    - Cons: Requires explicit JetStream API permissions for CONSUMERS (pure publishers need none —
+      see §6). And it does **not** deliver an exact SUBSCRIBE boundary against a compromised
+      principal: two durables declare plural `FilterSubjects`, whose create subject carries no
+      filter token, so their filter is body-controlled and cannot be constrained by subject
+      permission. See §Residual risk. That limit is accepted here, not solved.
 
 ## Decision
 
@@ -89,7 +93,7 @@ container environment or the shared Compose environment anchor. Operators provid
 the one-shot quarantine reprocess command:
 
 ```bash
-export NATS_INVENTORY_REPROCESS_PASSWORD="$(grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' .env | cut -d= -f2-)"
+export NATS_INVENTORY_REPROCESS_PASSWORD="$(docker compose config --environment | grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' | cut -d= -f2-)"
 docker compose run --rm \
   -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
   inventory reprocess-quarantine
@@ -135,8 +139,12 @@ holding only inventory's grants re-created its OWN durable filtered on
 `platform.commerce.order.completed` and read the payload back. **So the subscribe column above
 bounds an honest client, not a compromised one.** Closing it means pre-provisioning both durables in
 `nats-init` and removing the services' `CreateOrUpdateConsumer` calls — a change to consumer startup
-behaviour that also touches ADR-034, tracked as **TKT-327**. `access-slot-policy` is unaffected: it
-uses a single `FilterSubject`, so its create subject encodes the filter and the grant pins it.
+behaviour that also touches ADR-034, tracked as **TKT-327**. `access-slot-policy` is **not** affected, and the reason is worth stating because it was wrong once:
+it declares a SINGLE `FilterSubject`, so its create subject carries the filter as a suffix token —
+but that only helps if the UNSUFFIXED create subject is not also granted. It was, in the first fix
+round, which left the same body-controlled path open on a third durable (ai-review pass 3). Only the
+suffixed grant remains, verified by watching the real client create the durable with the suffixed
+grant as its only CREATE permission.
 
 The grant `$JS.API.CONSUMER.INFO.PLATFORM.*` for the `access` user is a deliberate wildcard.
 Access configures three alarm consumer durable names from environment variables (`ACCESS_LIFECYCLE_ALARM_DURABLE`,
@@ -146,6 +154,21 @@ cause service startup failure if an operator configured custom durable names. Re
 publish authority.
 
 ### 6. Residual Risk and Pinned Gap
+
+**Two residuals, both accepted, both tracked. Neither is closed by this ADR.**
+
+**(a) Cross-service READS by a compromised principal — TKT-327.** Demonstrated, not theoretical: a
+principal holding exactly inventory's grants re-created its own durable
+(`inventory-catalog-offering`) with a filter of `platform.commerce.order.completed` and read the
+payload back. `access-ticket-issuer` has the same shape. The cause is a NATS property rather than a
+configuration mistake — a durable declared with plural `FilterSubjects` has no filter token in its
+create subject, so the filter is body-controlled. **Therefore the subscribe column of the matrix
+above is a boundary for an honest client only.** The adversary this ADR binds on the read side is
+one WITHOUT credentials; a compromised service principal is explicitly NOT bound. Closing it means
+removing body-controlled CREATE (pre-provision the durables, drop `CreateOrUpdateConsumer`), which
+touches ADR-034.
+
+**(b) Forged events within a principal's own publish boundary — TKT-296.**
 
 A compromised service can forge events within its own subject boundary. For example, a compromised commerce
 service can publish an `order.completed` event for a slot without creating an order in its database. Access
@@ -158,7 +181,9 @@ limitation as present. Do not remove this test.
 
 - **Positive:**
     - Unauthenticated clients cannot publish or subscribe to any subject.
-    - Service compromises are contained to their respective event subjects.
+    - A service compromise is contained to its own **publish** subjects: a compromised principal
+      cannot publish another service's events. It is **not** contained on the read side — see the
+      residual below, which is demonstrated rather than theoretical.
     - Long-running inventory cannot forge catalog events.
     - No changes to Go application source code or event envelope wire format.
 - **Negative:**
