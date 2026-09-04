@@ -136,25 +136,23 @@ expect_fail "go dependency drift" check-dep-drift
 printf 'this is not a go.mod\n' > shared/go/go.mod
 expect_fail "go dependency drift (unreadable non-final module)" check-dep-drift
 
-# 8b. Build-list LAG (TKT-265) — the vertical direction check-dep-drift is blind to.
-#     The seed MUST be a dependency declared by exactly ONE module, or it diverges
-#     horizontally and check-dep-drift — which runs earlier in `check` — fires first;
-#     the seeded case would then go red for the wrong reason and this stage would
-#     never execute. `golang.org/x/net` is declared only by shared/go, so lowering it
-#     produces lag with no horizontal divergence: a mutation only this checker catches.
-#     That isolation is asserted, not assumed — check-dep-drift must stay GREEN on the
-#     same seeded tree, which is the pairing that proves the two stages are distinct.
+# 8b. Build-list lag (TKT-265), the vertical direction check-dep-drift cannot see.
+#     The seed must use a dependency declared by exactly one module. Otherwise it
+#     creates horizontal drift, and check-dep-drift runs first for the wrong reason.
+#     Only Catalog declares golang.org/x/mod. Lowering it to v0.38.0 leaves x/tools
+#     selecting v0.39.0 for the workspace, so only the build-list checker catches it.
+#     The paired check-dep-drift pass proves that isolation.
 expect_pass "go build-list lag (clean baseline)" check-build-list-lag
 #     The isolation assertion below would pass vacuously if the seed silently failed
-#     to apply — "check-dep-drift is green" is equally true of an unseeded tree. So
+#     to apply. "check-dep-drift is green" is equally true of an unseeded tree. So
 #     confirm the seed is actually present before asserting anything about it.
-(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
-grep -q 'golang.org/x/net v0.50.0' shared/go/go.mod || {
-  echo "FAIL: build-list-lag seed did not apply — the isolation assertion would be vacuous"
+(cd services/catalog && go mod edit -require=golang.org/x/mod@v0.38.0)
+grep -q 'golang.org/x/mod v0.38.0' services/catalog/go.mod || {
+  echo "FAIL: build-list-lag seed did not apply; the isolation assertion would be vacuous"
   fail_count=$((fail_count + 1))
 }
 expect_pass "go build-list lag seed does not disturb check-dep-drift" check-dep-drift
-(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+(cd services/catalog && go mod edit -require=golang.org/x/mod@v0.38.0)
 expect_fail "go build-list lag" check-build-list-lag
 
 # 8c. An unreadable module must fail closed here too, for the same reason as case 8:
@@ -167,9 +165,9 @@ expect_fail "go build-list lag (unreadable module)" check-build-list-lag
 #     it — the write targets the workspace sum file, which that flag does not govern.
 #     The first implementation of this checker did exactly that, which is the whole
 #     reason `go work sync && git diff` was rejected as the gate in the first place.
-#     The seeded requirement forces a checksum the cache does not have, so this
-#     asserts the property in the state where it actually fails.
-(cd shared/go && go mod edit -require=golang.org/x/net@v0.50.0)
+#     The seeded lag sends the checker through graph resolution while the checksum
+#     comparison proves that any workspace writes went to its temporary copy.
+(cd services/catalog && go mod edit -require=golang.org/x/mod@v0.38.0)
 git checkout -- go.work.sum 2>/dev/null || true
 echo "=== selftest: go build-list lag leaves go.work.sum unchanged ==="
 #     Both hashes would be EMPTY if go.work.sum were missing, and empty equals
