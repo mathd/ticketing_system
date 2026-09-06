@@ -270,6 +270,26 @@ func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
 	// Per row: 2 braces, one comma between each pair of fields, and for every field a quoted name,
 	// a colon and a quoted value. The three uuid-format fields contribute 36 characters each.
 	const uuidChars = 36
+
+	// The derivation below walks direct properties only, so it is valid only for a CLOSED, FLAT
+	// object. Both conditions are load-bearing and neither is implied by the other:
+	//
+	//   - An open object (no additionalProperties: false) may carry fields this loop never sees,
+	//     so the row can grow while the arithmetic stays at 186.
+	//   - A composed schema (allOf/anyOf/oneOf) keeps its composed properties in a separate list
+	//     that Properties does not include, with the same effect. kin-openapi preserves them
+	//     rather than flattening, so an allOf-added required integer would be invisible here.
+	//
+	// Refuse either shape instead of computing a number that no longer describes the response.
+	if rowSchema.Value.AdditionalProperties.Has == nil || *rowSchema.Value.AdditionalProperties.Has {
+		t.Fatal("SeatMapPin must set additionalProperties: false; an open object can carry fields " +
+			"this derivation cannot see, so the byte cap would not bound the real response")
+	}
+	if len(rowSchema.Value.AllOf) > 0 || len(rowSchema.Value.AnyOf) > 0 || len(rowSchema.Value.OneOf) > 0 {
+		t.Fatal("SeatMapPin uses schema composition; the derivation walks direct properties only " +
+			"and must be extended before the cap can be trusted")
+	}
+
 	required := rowSchema.Value.Required
 	if len(required) != len(rowSchema.Value.Properties) {
 		t.Fatalf("SeatMapPin has %d required of %d properties; the cap assumes every field is always present",
@@ -282,10 +302,25 @@ func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
 		if prop == nil || prop.Value == nil {
 			t.Fatalf("SeatMapPin.%s missing", name)
 		}
-		fixedRowBytes += len(name) + 2 + 1 + 2 // "name" : "value" quotes and colon
-		if prop.Value.Format == "uuid" {
+		// REFUSE anything this arithmetic cannot account for, rather than guessing at it. The
+		// +2 below is the quotes JSON puts round a STRING value; an integer, boolean, array or
+		// object field has no quotes and no length this loop knows, so it would silently compute
+		// a wrong number. A wrong-but-green derivation is worse than the literal it replaced, so
+		// a field shape we have not thought about has to stop the test, not be approximated.
+		if !prop.Value.Type.Is("string") {
+			t.Fatalf("SeatMapPin.%s is not a string; this derivation only accounts for string fields "+
+				"and must be extended before the cap can be trusted", name)
+		}
+		fixedRowBytes += len(name) + 2 + 1 + 2 // "name" : plus the quotes round the value
+		switch {
+		case prop.Value.Format == "uuid":
 			uuidFields++
 			fixedRowBytes += uuidChars
+		case prop.Value.MaxLength != nil:
+			// A bounded string: its content is counted in boundedStrings below, not here.
+		default:
+			t.Fatalf("SeatMapPin.%s is an unbounded string; the cap cannot be derived while a "+
+				"served field has no maxLength", name)
 		}
 	}
 	if uuidFields != 3 {
