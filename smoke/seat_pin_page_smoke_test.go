@@ -14,14 +14,27 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestSeatPinPageLive501WorstCaseRows exercises the full 500-plus-one page cap boundary against live services (TKT-143).
-// It seeds a published seat map with 501 seats, pins all 501 seats with exact-limit values (200-char seat identities
-// and 45-char pinned_by, constructed from '&'), fetches a full page of 500 rows, asserts the raw body contains '&'
-// (HTML-escaped into 6-byte \u0026 sequences), confirms the payload fits under maxSeatPinPageBytes (828511),
-// verifies decoding through the consumer model, and fetches page 2 using the keyset cursor to assert row 501 is reachable.
+// maxSeatPinPageBytes mirrors the consumer's derived cap (TKT-143). Catalog cannot serve a
+// conforming page larger than this, so a page that exceeds it means a bound moved without the
+// cap following.
+const maxSeatPinPageBytes = 828511
+
+// TestSeatPinPageLive501WorstCaseRows exercises the 500-plus-one page cap boundary against live
+// services (TKT-143). It seeds a published seat map with 501 seats, pins all 501 with exact-limit
+// values (200-character seat identities and a 45-character pinned_by, built from '&'), fetches a
+// full page of 500 rows, asserts the raw body carries the six-byte escapes the cap's arithmetic
+// assumes, confirms the payload fits under maxSeatPinPageBytes, and walks the keyset cursor to the
+// end to prove every one of its 501 rows is reachable.
 //
-// Mutation that makes this test red:
-// Setting maxSeatPinPageBytes expectation below 828511 (e.g. 800000) causes the 500-row page size check to fail.
+// Why a walk rather than "row 501 is on page two": seat_map_pins.id is gen_random_uuid()
+// (migration 0011) and the read is keyset ordered by it, so these rows sort arbitrarily among the
+// pins other smoke tests leave in the same database. Asserting a position would test where a
+// random uuid landed, not whether the cursor advances.
+//
+// Mutations that make this test red:
+//  1. Lowering maxSeatPinPageBytes below the real worst-case page: the 500-row body exceeds it.
+//  2. Breaking cursor advancement in ListSeatMapPins: the walk never reaches all 501.
+//  3. Truncating either bounded field: the 200/45 length assertions fail.
 func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	suffixBytes := make([]byte, 4)
@@ -101,7 +114,6 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 	}
 
 	// Assert the raw body does not exceed the derived cap (828511 bytes)
-	const maxSeatPinPageBytes = 828511
 	if len(rawBody) > maxSeatPinPageBytes {
 		t.Fatalf("raw body length %d exceeds maxSeatPinPageBytes %d", len(rawBody), maxSeatPinPageBytes)
 	}
@@ -122,44 +134,81 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 	if len(firstPage.Pins) != 500 {
 		t.Fatalf("first page pins = %d, want 500", len(firstPage.Pins))
 	}
-	if len(firstPage.Pins[0].SeatIdentity) != 200 {
-		t.Fatalf("seat identity length = %d, want 200", len(firstPage.Pins[0].SeatIdentity))
-	}
-	if len(firstPage.Pins[0].PinnedBy) != 45 {
-		t.Fatalf("pinned_by length = %d, want 45", len(firstPage.Pins[0].PinnedBy))
-	}
-
-	// 2. Fetch the next page and assert row 501 is reachable
-	after := firstPage.Pins[499].ID
-	nextURL := fmt.Sprintf("%s/internal/seat-map-pins?after=%s&limit=500", catalogURL, after)
-	code2, rawBody2 := internalJSON(t, http.MethodGet, nextURL, "", nil)
-	if code2 != http.StatusOK {
-		t.Fatalf("second page GET: %d %s", code2, rawBody2)
-	}
-	var secondPage struct {
-		Pins []struct {
-			ID           uuid.UUID `json:"id"`
-			OrganizerID  uuid.UUID `json:"organizer_id"`
-			SeatMapID    uuid.UUID `json:"seat_map_id"`
-			SeatIdentity string    `json:"seat_identity"`
-			PinnedBy     string    `json:"pinned_by"`
-		} `json:"pins"`
-	}
-	if err := json.Unmarshal(rawBody2, &secondPage); err != nil {
-		t.Fatalf("decode second page: %v", err)
-	}
-	if len(secondPage.Pins) < 1 {
-		t.Fatalf("second page pins = %d, want >= 1", len(secondPage.Pins))
-	}
-
-	found501 := false
-	for _, p := range secondPage.Pins {
-		if p.SeatIdentity == identities[500] && p.PinnedBy == pinnedBy {
-			found501 = true
-			break
+	// Measure one of THIS test's rows, not firstPage.Pins[0]. Row zero is whichever pin has the
+	// lowest random uuid table-wide, which is routinely a pin some other smoke test left behind
+	// and carries that test's much shorter values.
+	var measured int
+	for _, p := range firstPage.Pins {
+		if p.PinnedBy != pinnedBy {
+			continue
+		}
+		measured++
+		if got := len([]rune(p.SeatIdentity)); got != 200 {
+			t.Fatalf("seat identity length = %d, want 200", got)
+		}
+		if got := len([]rune(p.PinnedBy)); got != 45 {
+			t.Fatalf("pinned_by length = %d, want 45", got)
 		}
 	}
-	if !found501 {
-		t.Fatalf("row 501 (%s) not found on second page", identities[500])
+	if measured == 0 {
+		t.Fatal("no row on page one belonged to this test, so the exact-limit lengths went unmeasured")
+	}
+
+	// 2. Walk the keyset cursor to the end and assert every one of THIS test's 501 rows is
+	// reachable, row 501 included.
+	//
+	// The walk cannot assume this test's rows are the first 501, or that row 501 sits on page
+	// two. seat_map_pins.id is gen_random_uuid() (migration 0011) and ListSeatMapPins is keyset
+	// ordered by that id, so these 501 rows are scattered arbitrarily among the pins every other
+	// smoke test leaves in the same database. An earlier version of this test asserted row 501
+	// was on page two and failed for that reason: the assertion was about where a random uuid
+	// sorted, not about whether the cursor advances.
+	//
+	// What IS this test's to assert: a cursor walk reaches all 501, and no page exceeds the cap.
+	seen := make(map[string]bool, rowCount)
+	cursor := firstPage.Pins[len(firstPage.Pins)-1].ID
+	for _, p := range firstPage.Pins {
+		if p.PinnedBy == pinnedBy {
+			seen[p.SeatIdentity] = true
+		}
+	}
+	// 501 own rows plus whatever else is in the table; the bound stops a runaway walk without
+	// assuming how many foreign rows exist.
+	for page := 0; page < 200 && len(seen) < rowCount; page++ {
+		nextURL := fmt.Sprintf("%s/internal/seat-map-pins?after=%s&limit=500", catalogURL, cursor)
+		codeN, rawBodyN := internalJSON(t, http.MethodGet, nextURL, "", nil)
+		if codeN != http.StatusOK {
+			t.Fatalf("page %d GET: %d %s", page+2, codeN, rawBodyN)
+		}
+		if len(rawBodyN) > maxSeatPinPageBytes {
+			t.Fatalf("page %d body length %d exceeds maxSeatPinPageBytes %d", page+2, len(rawBodyN), maxSeatPinPageBytes)
+		}
+		var next struct {
+			Pins []struct {
+				ID           uuid.UUID `json:"id"`
+				SeatIdentity string    `json:"seat_identity"`
+				PinnedBy     string    `json:"pinned_by"`
+			} `json:"pins"`
+		}
+		if err := json.Unmarshal(rawBodyN, &next); err != nil {
+			t.Fatalf("decode page %d: %v", page+2, err)
+		}
+		if len(next.Pins) == 0 {
+			break // drained
+		}
+		for _, p := range next.Pins {
+			if p.PinnedBy == pinnedBy {
+				seen[p.SeatIdentity] = true
+			}
+		}
+		cursor = next.Pins[len(next.Pins)-1].ID
+	}
+
+	if len(seen) != rowCount {
+		t.Fatalf("cursor walk reached %d of this test's %d pins; row 501 is %s",
+			len(seen), rowCount, identities[500])
+	}
+	if !seen[identities[500]] {
+		t.Fatalf("row 501 (%s) was never reached by the cursor walk", identities[500])
 	}
 }
