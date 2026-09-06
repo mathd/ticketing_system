@@ -210,9 +210,15 @@ type SeatPin struct {
 // maxSeatPinPageBytes bounds a pin page's response body so a runaway body cannot be read into
 // memory. Derived from catalog's declared OpenAPI contract and store bounds (TKT-143):
 //
-//   fixed row bytes  = 2 braces + 5 field names with quotes/colons + 4 commas + 3x36 UUID = 186
-//   bounded strings  = 6 x (200 + 45) = 1470       (6 bytes/char worst case: json.NewEncoder HTML-escapes
-//                                                  '&', '<', '>', U+2028, U+2029 into 6-byte sequences)
+//   fixed row bytes  = 2 braces + 4 commas + 3x36 UUID chars + 47 field-name chars
+//                      + 10 quotes round the names + 5 colons + 10 quotes round the values
+//                      = 2 + 4 + 108 + 47 + 10 + 5 + 10 = 186
+//   bounded strings  = 6 x (200 + 45) = 1470       (6 bytes/char worst case: json.NewEncoder escapes
+//                                                  '&', '<', '>', U+2028, U+2029 and most control
+//                                                  characters into 6-byte \uXXXX sequences. \b \f \n
+//                                                  \r \t take 2 bytes, and multi-byte runes encode as
+//                                                  raw UTF-8 at 4 bytes or fewer, so none of those
+//                                                  beat 6 bytes per character.)
 //   max row          = 186 + 1470 = 1656
 //   page             = len(`{"pins":[`)=9 + 500*1656 + 499 commas + len("]}\n")=3 = 828511
 //

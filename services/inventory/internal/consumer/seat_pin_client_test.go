@@ -245,21 +245,55 @@ func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
 		t.Fatalf("load catalog openapi.yaml: %v", err)
 	}
 
-	reqSchema, ok := doc.Components.Schemas["SeatPinRequest"]
-	if !ok || reqSchema.Value == nil {
-		t.Fatal("SeatPinRequest schema missing from catalog openapi.yaml")
+	// Read the RESPONSE row schema, not SeatPinRequest. The cap bounds what catalog SERVES, so the
+	// bounds that govern it are SeatMapPin's. Reading the request schema would leave the cap green
+	// while the response bounds moved underneath it.
+	rowSchema, ok := doc.Components.Schemas["SeatMapPin"]
+	if !ok || rowSchema.Value == nil {
+		t.Fatal("SeatMapPin schema missing from catalog openapi.yaml")
 	}
-	identProp := reqSchema.Value.Properties["seat_identities"]
-	if identProp == nil || identProp.Value == nil || identProp.Value.Items == nil || identProp.Value.Items.Value == nil || identProp.Value.Items.Value.MaxLength == nil {
-		t.Fatal("seat_identities items maxLength missing from SeatPinRequest")
+	strLen := func(field string) int {
+		t.Helper()
+		prop := rowSchema.Value.Properties[field]
+		if prop == nil || prop.Value == nil || prop.Value.MaxLength == nil {
+			t.Fatalf("SeatMapPin.%s maxLength missing from catalog openapi.yaml", field)
+		}
+		return int(*prop.Value.MaxLength)
 	}
-	maxIdentityLen := int(*identProp.Value.Items.Value.MaxLength)
+	maxIdentityLen := strLen("seat_identity")
+	maxPinnedByLen := strLen("pinned_by")
 
-	pinnedProp := reqSchema.Value.Properties["pinned_by"]
-	if pinnedProp == nil || pinnedProp.Value == nil || pinnedProp.Value.MaxLength == nil {
-		t.Fatal("pinned_by maxLength missing from SeatPinRequest")
+	// Derive the fixed per-row overhead from the schema's own field set rather than hardcoding
+	// 186. A new required field, or a renamed one, then moves this number and the test notices;
+	// with a literal it would stay green while the production cap went stale.
+	//
+	// Per row: 2 braces, one comma between each pair of fields, and for every field a quoted name,
+	// a colon and a quoted value. The three uuid-format fields contribute 36 characters each.
+	const uuidChars = 36
+	required := rowSchema.Value.Required
+	if len(required) != len(rowSchema.Value.Properties) {
+		t.Fatalf("SeatMapPin has %d required of %d properties; the cap assumes every field is always present",
+			len(required), len(rowSchema.Value.Properties))
 	}
-	maxPinnedByLen := int(*pinnedProp.Value.MaxLength)
+	fixedRowBytes := 2 + (len(required) - 1)
+	uuidFields := 0
+	for _, name := range required {
+		prop := rowSchema.Value.Properties[name]
+		if prop == nil || prop.Value == nil {
+			t.Fatalf("SeatMapPin.%s missing", name)
+		}
+		fixedRowBytes += len(name) + 2 + 1 + 2 // "name" : "value" quotes and colon
+		if prop.Value.Format == "uuid" {
+			uuidFields++
+			fixedRowBytes += uuidChars
+		}
+	}
+	if uuidFields != 3 {
+		t.Fatalf("SeatMapPin has %d uuid fields, want 3", uuidFields)
+	}
+	if fixedRowBytes != 186 {
+		t.Fatalf("fixed row bytes derived from the spec = %d, want 186", fixedRowBytes)
+	}
 
 	pathItem := doc.Paths.Find("/internal/seat-map-pins")
 	if pathItem == nil || pathItem.Get == nil {
@@ -282,7 +316,6 @@ func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
 	// bounded strings  = 6 x (200 + 45) = 1470 (6 bytes/char worst case: json.NewEncoder HTML-escapes)
 	// max row          = 186 + 1470 = 1656
 	// page             = len(`{"pins":[`)=9 + 500*1656 + 499 commas + len("]}\n")=3 = 828511
-	fixedRowBytes := 186
 	boundedStrings := 6 * (maxIdentityLen + maxPinnedByLen)
 	maxRow := fixedRowBytes + boundedStrings
 	pageEnvelopePrefix := len(`{"pins":[`) // 9

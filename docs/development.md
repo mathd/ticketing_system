@@ -162,9 +162,12 @@ Catalog enforces length bounds in its database schema and OpenAPI contract: `sea
 constrained to 1..200 characters, and `pinned_by` is constrained to 1..45 characters. The inventory
 consumer bounds response bodies with `maxSeatPinPageBytes = 828511`, derived from these limits:
 
-- Fixed row bytes: 186 bytes (JSON envelope, field names, colons, commas, and 3 UUIDs of 36 bytes).
-- Bounded strings worst-case: 6 × (200 + 45) = 1470 bytes (`json.NewEncoder` HTML-escapes `&`, `<`,
-  `>`, and control characters to 6-byte sequences).
+- Fixed row bytes: 2 braces + 4 commas + 3 UUIDs of 36 characters + 47 field-name characters +
+  10 quotes round the names + 5 colons + 10 quotes round the values = 186 bytes.
+- Bounded strings worst-case: 6 × (200 + 45) = 1470 bytes. `json.NewEncoder` escapes `&`, `<`, `>`,
+  U+2028, U+2029 and most control characters into 6-byte `\uXXXX` sequences. `\b`, `\f`, `\n`,
+  `\r` and `\t` take 2 bytes, and a multi-byte rune encodes as raw UTF-8 in 4 bytes or fewer, so
+  no input beats 6 bytes per character.
 - Maximum row bytes: 186 + 1470 = 1656 bytes.
 - Full page of 500 rows: 9 (prefix `{"pins":[`) + 500 × 1656 + 499 (commas) + 3 (suffix `]}\n`) = 828511 bytes.
 

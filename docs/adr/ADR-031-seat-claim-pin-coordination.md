@@ -170,8 +170,10 @@ Catalog now enforces field bounds and declares the pin operations in OpenAPI:
    `POST /internal/seat-maps/{id}/unpins`, and `GET /internal/seat-map-pins` are now declared in
    catalog's OpenAPI specification (with `security: []` and runtime `X-Internal-Token` enforcement).
    This moves 3 internal operations from hand-mounted to declared.
-3. **Response byte cap.** Inventory derives `maxSeatPinPageBytes = 828511` directly from catalog's
-   documented bounds (186 fixed bytes + 1470 worst-case bounded strings per row across 500 rows).
+3. **Response byte cap.** Inventory bounds a pin page at `maxSeatPinPageBytes = 828511`, computed
+   from catalog's documented bounds: 186 fixed bytes plus 1470 worst-case bounded-string bytes give
+   a 1656-byte row, and 500 of those plus the page envelope give 828511. The per-term arithmetic is
+   in the constant's comment; a test re-derives the field bounds from the committed spec.
    Adaptive page halving is retained as defence in depth against deployment skew.
 
 ## References

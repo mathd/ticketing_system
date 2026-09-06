@@ -549,6 +549,17 @@ func (s *Server) decodeSeatPinRequest(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pin request"})
 		return store.BatchPinInput{}, false
 	}
+	// Refuse a whitespace-only seat identity here, matching the pinned_by check above.
+	//
+	// This is a DELIBERATE contract change introduced by TKT-143, not a port of the old
+	// behaviour: previously such an identity reached the store, where pin answered 409
+	// (ErrSeatIdentityNotFound, since no seat has that identity) and unpin answered an
+	// idempotent 200. Now both answer 400.
+	//
+	// Why refuse rather than forward: the schema can only say minLength: 1, which "   " passes,
+	// so without this the API would accept a value no seat map can ever contain and report it as
+	// a missing seat rather than a malformed request. No current producer can emit one —
+	// identities are composed server-side from labels — so nothing legitimate changes.
 	for _, id := range body.SeatIdentities {
 		if strings.TrimSpace(id) == "" {
 			writeJSON(w, http.StatusBadRequest, Error{Error: "invalid pin request"})

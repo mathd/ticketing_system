@@ -2837,15 +2837,15 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 
 // TestInternalSeatMapPinWriteBounds tests both pin and unpin operations against the real router.
 // It verifies:
-// 1. Unauthenticated requests return 401, not 400 (the schema oracle guard).
-// 2. Valid 200/45 values reach the fake store exactly once.
-// 3. Malformation classes (syntax, type, absence, identity, range) are rejected without store calls,
-//    or map to appropriate statuses (404, 409) when reaching the store.
+//  1. Unauthenticated requests return 401, not 400 (the schema oracle guard).
+//  2. Valid 200/45 values reach the fake store exactly once.
+//  3. Malformation classes (syntax, type, absence, identity, range) are rejected without store calls,
+//     or map to appropriate statuses (404, 409) when reaching the store.
 //
 // Mutation that makes this test red:
-// 1. In services/catalog/api/openapi.yaml, changing SeatPinRequest.pinned_by.maxLength from 45 to 46
-//    makes the 46-char limit+1 test expect 400 but receive 200.
-// 2. Removing guardInternalSurface makes unauthenticated malformed requests return 400 instead of 401.
+//  1. In services/catalog/api/openapi.yaml, changing SeatPinRequest.pinned_by.maxLength from 45 to 46
+//     makes the 46-char limit+1 test expect 400 but receive 200.
+//  2. Removing guardInternalSurface makes unauthenticated malformed requests return 400 instead of 401.
 func TestInternalSeatMapPinWriteBounds(t *testing.T) {
 	operations := []struct {
 		name       string
@@ -3086,6 +3086,10 @@ func TestInternalSeatMapPinWriteBounds(t *testing.T) {
 					}
 				})
 
+				// Pins TKT-143's deliberate contract change: a whitespace-only identity was
+				// forwarded to the store (409 on pin, idempotent 200 on unpin) and is now
+				// refused as malformed. See decodeSeatPinRequest for why. This assertion is
+				// about the new rule, not about preserved behaviour.
 				t.Run("seat_identities element whitespace only", func(t *testing.T) {
 					e := setup()
 					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["   "],"pinned_by":"hold:1"}`, orgID)

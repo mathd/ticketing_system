@@ -101,6 +101,14 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 		})
 	})
 
+	// The list read resolves seat_map_id per FAMILY to the newest version (ADR-029), and this map
+	// is never edited, so that is this map's own id. Parsed once here; every membership test below
+	// compares against it.
+	ownMapID, err := uuid.Parse(mapID)
+	if err != nil {
+		t.Fatalf("parse seat map id %q: %v", mapID, err)
+	}
+
 	// 1. Fetch full page of 500 pins
 	listURL := fmt.Sprintf("%s/internal/seat-map-pins?limit=500", catalogURL)
 	code, rawBody := internalJSON(t, http.MethodGet, listURL, "", nil)
@@ -113,12 +121,28 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 		t.Fatalf("expected raw body to contain & or \\u0026")
 	}
 
-	// Assert the raw body does not exceed the derived cap (828511 bytes)
+	// Assert the raw body does not exceed the derived cap (828511 bytes).
+	//
+	// Read this for what it is. The endpoint pages the table GLOBALLY, so page one is a mixture of
+	// this test's 1656-byte rows and whatever shorter pins other smoke tests left behind. The body
+	// is therefore SMALLER than a true all-worst-case page, and this assertion alone would not
+	// catch a cap set slightly under the real maximum. It is a live sanity check on a real
+	// catalog's real encoder, not the proof of the bound.
+	//
+	// The bound itself is proved two other ways, both of which can fail:
+	// TestSeatPinPageCapMatchesCatalogContract re-derives the number from the committed spec, and
+	// the arithmetic was verified by encoding 500 synthetic worst-case rows and measuring 828511
+	// bytes exactly. What THIS test adds is that catalog really serves exact-limit values, really
+	// escapes them the way the arithmetic assumes, and really keeps paging past them.
 	if len(rawBody) > maxSeatPinPageBytes {
 		t.Fatalf("raw body length %d exceeds maxSeatPinPageBytes %d", len(rawBody), maxSeatPinPageBytes)
 	}
 
-	// Assert decodes through the real consumer path
+	// Decode with a local mirror of the consumer's row shape. This suite is its own module and
+	// inventory's consumer package is internal/, so CatalogResolver.ListSeatPins is not importable
+	// here. What this test proves is what catalog SERVES: the wire shape, the exact-limit values and
+	// the byte size. The consumer's own decode, byte limiter and exactly-one-value check are covered
+	// by seat_pin_client_test.go against synthetic bodies.
 	var firstPage struct {
 		Pins []struct {
 			ID           uuid.UUID `json:"id"`
@@ -137,9 +161,14 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 	// Measure one of THIS test's rows, not firstPage.Pins[0]. Row zero is whichever pin has the
 	// lowest random uuid table-wide, which is routinely a pin some other smoke test left behind
 	// and carries that test's much shorter values.
+	// Membership is decided by seat_map_id, NOT by pinned_by or seat_identity. Every run of this
+	// test uses the same 45 ampersands and the same 501 identities, so matching on those would let
+	// a previous run's leftover pins satisfy every assertion below while this run's pins were
+	// missing entirely. The seat map is created fresh per run with a random suffix, so its id is
+	// the only field that distinguishes this run's rows.
 	var measured int
 	for _, p := range firstPage.Pins {
-		if p.PinnedBy != pinnedBy {
+		if p.SeatMapID != ownMapID {
 			continue
 		}
 		measured++
@@ -168,7 +197,7 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 	seen := make(map[string]bool, rowCount)
 	cursor := firstPage.Pins[len(firstPage.Pins)-1].ID
 	for _, p := range firstPage.Pins {
-		if p.PinnedBy == pinnedBy {
+		if p.SeatMapID == ownMapID {
 			seen[p.SeatIdentity] = true
 		}
 	}
@@ -186,6 +215,7 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 		var next struct {
 			Pins []struct {
 				ID           uuid.UUID `json:"id"`
+				SeatMapID    uuid.UUID `json:"seat_map_id"`
 				SeatIdentity string    `json:"seat_identity"`
 				PinnedBy     string    `json:"pinned_by"`
 			} `json:"pins"`
@@ -197,7 +227,7 @@ func TestSeatPinPageLive501WorstCaseRows(t *testing.T) {
 			break // drained
 		}
 		for _, p := range next.Pins {
-			if p.PinnedBy == pinnedBy {
+			if p.SeatMapID == ownMapID {
 				seen[p.SeatIdentity] = true
 			}
 		}
