@@ -131,8 +131,10 @@ implementation that looks obviously right.
 
 2. **Neither service reads the other's database** (ADR-010, ADR-002), so catalog exposes the
    *read* side of the pin contract — `GET /internal/seat-map-pins`, keyset-paged over the
-   primary key, hand-mounted and outside the public contract like its pin/unpin siblings
-   (ADR-009). It returns every `pinned_by` namespace; the classification belongs to the caller,
+   primary key. It was hand-mounted and outside the contract; TKT-143 declared it, with its
+   pin/unpin siblings, in catalog's OpenAPI under `security: []` (see the amendment below).
+   It stays internal and token-guarded either way. It returns every `pinned_by` namespace;
+   the classification belongs to the caller,
    because a catalog-side filter would define which pins are reclaimable in the service that
    has no way to know.
 
@@ -179,7 +181,8 @@ Catalog now enforces field bounds and declares the pin operations in OpenAPI:
 - [ADR-005](ADR-005-unified-dated-slot-admission.md) — seated is an adapter, not a fork.
 - [ADR-026](ADR-026-inventory-capacity-adjustment-clamp.md) — never-strand-a-confirmed-claim spirit.
 - [ADR-021](ADR-021-ticket-lifecycle-trail-integrity.md) — name-the-adversary discipline.
-- [ADR-009](ADR-009-contract-first-apis.md) — internal service-to-service routes follow the
-  hand-mounted convention, outside the public contract.
+- [ADR-009](ADR-009-contract-first-apis.md) — contract-first APIs. Catalog declares some
+  internal service-to-service routes and hand-mounts others; the pin routes are declared
+  (TKT-143), and ADR-046 section 6 records why declaring an internal route is permitted.
 - TKT-80 (US-017: seat-level claims).
 - TKT-143 (Seat map pin length bounds and response cap).
