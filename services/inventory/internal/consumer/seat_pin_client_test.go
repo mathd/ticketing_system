@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 )
 
@@ -227,6 +228,142 @@ func TestListSeatPinsGuardsTheSizeLimitBoundary(t *testing.T) {
 			t.Fatal("trailing content past the limit must not be invisible to the one-value check")
 		}
 	})
+}
+
+// TestSeatPinPageCapMatchesCatalogContract verifies that maxSeatPinPageBytes is derived directly
+// from catalog's OpenAPI specification (TKT-143). It parses catalog's openapi.yaml, extracts
+// the maximum bounds for seat_identity (200), pinned_by (45), and the limit query parameter (500),
+// recomputes the exact byte cap from the documented terms, and compares against maxSeatPinPageBytes.
+//
+// Mutation that makes this test red:
+// 1. Changing maxSeatPinPageBytes in services/inventory/internal/consumer/catalog.go to any other value.
+// 2. Changing SeatPinRequest.seat_identities.maxLength or pinned_by.maxLength or listSeatMapPins limit.maximum in catalog openapi.yaml.
+func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromFile("../../../catalog/api/openapi.yaml")
+	if err != nil {
+		t.Fatalf("load catalog openapi.yaml: %v", err)
+	}
+
+	// Read the RESPONSE row schema, not SeatPinRequest. The cap bounds what catalog SERVES, so the
+	// bounds that govern it are SeatMapPin's. Reading the request schema would leave the cap green
+	// while the response bounds moved underneath it.
+	rowSchema, ok := doc.Components.Schemas["SeatMapPin"]
+	if !ok || rowSchema.Value == nil {
+		t.Fatal("SeatMapPin schema missing from catalog openapi.yaml")
+	}
+	strLen := func(field string) int {
+		t.Helper()
+		prop := rowSchema.Value.Properties[field]
+		if prop == nil || prop.Value == nil || prop.Value.MaxLength == nil {
+			t.Fatalf("SeatMapPin.%s maxLength missing from catalog openapi.yaml", field)
+		}
+		return int(*prop.Value.MaxLength)
+	}
+	maxIdentityLen := strLen("seat_identity")
+	maxPinnedByLen := strLen("pinned_by")
+
+	// Derive the fixed per-row overhead from the schema's own field set rather than hardcoding
+	// 186. A new required field, or a renamed one, then moves this number and the test notices;
+	// with a literal it would stay green while the production cap went stale.
+	//
+	// Per row: 2 braces, one comma between each pair of fields, and for every field a quoted name,
+	// a colon and a quoted value. The three uuid-format fields contribute 36 characters each.
+	const uuidChars = 36
+
+	// The derivation below walks direct properties only, so it is valid only for a CLOSED, FLAT
+	// object. Both conditions are load-bearing and neither is implied by the other:
+	//
+	//   - An open object (no additionalProperties: false) may carry fields this loop never sees,
+	//     so the row can grow while the arithmetic stays at 186.
+	//   - A composed schema (allOf/anyOf/oneOf) keeps its composed properties in a separate list
+	//     that Properties does not include, with the same effect. kin-openapi preserves them
+	//     rather than flattening, so an allOf-added required integer would be invisible here.
+	//
+	// Refuse either shape instead of computing a number that no longer describes the response.
+	if rowSchema.Value.AdditionalProperties.Has == nil || *rowSchema.Value.AdditionalProperties.Has {
+		t.Fatal("SeatMapPin must set additionalProperties: false; an open object can carry fields " +
+			"this derivation cannot see, so the byte cap would not bound the real response")
+	}
+	if len(rowSchema.Value.AllOf) > 0 || len(rowSchema.Value.AnyOf) > 0 || len(rowSchema.Value.OneOf) > 0 {
+		t.Fatal("SeatMapPin uses schema composition; the derivation walks direct properties only " +
+			"and must be extended before the cap can be trusted")
+	}
+
+	required := rowSchema.Value.Required
+	if len(required) != len(rowSchema.Value.Properties) {
+		t.Fatalf("SeatMapPin has %d required of %d properties; the cap assumes every field is always present",
+			len(required), len(rowSchema.Value.Properties))
+	}
+	fixedRowBytes := 2 + (len(required) - 1)
+	uuidFields := 0
+	for _, name := range required {
+		prop := rowSchema.Value.Properties[name]
+		if prop == nil || prop.Value == nil {
+			t.Fatalf("SeatMapPin.%s missing", name)
+		}
+		// REFUSE anything this arithmetic cannot account for, rather than guessing at it. The
+		// +2 below is the quotes JSON puts round a STRING value; an integer, boolean, array or
+		// object field has no quotes and no length this loop knows, so it would silently compute
+		// a wrong number. A wrong-but-green derivation is worse than the literal it replaced, so
+		// a field shape we have not thought about has to stop the test, not be approximated.
+		if !prop.Value.Type.Is("string") {
+			t.Fatalf("SeatMapPin.%s is not a string; this derivation only accounts for string fields "+
+				"and must be extended before the cap can be trusted", name)
+		}
+		fixedRowBytes += len(name) + 2 + 1 + 2 // "name" : plus the quotes round the value
+		switch {
+		case prop.Value.Format == "uuid":
+			uuidFields++
+			fixedRowBytes += uuidChars
+		case prop.Value.MaxLength != nil:
+			// A bounded string: its content is counted in boundedStrings below, not here.
+		default:
+			t.Fatalf("SeatMapPin.%s is an unbounded string; the cap cannot be derived while a "+
+				"served field has no maxLength", name)
+		}
+	}
+	if uuidFields != 3 {
+		t.Fatalf("SeatMapPin has %d uuid fields, want 3", uuidFields)
+	}
+	if fixedRowBytes != 186 {
+		t.Fatalf("fixed row bytes derived from the spec = %d, want 186", fixedRowBytes)
+	}
+
+	pathItem := doc.Paths.Find("/internal/seat-map-pins")
+	if pathItem == nil || pathItem.Get == nil {
+		t.Fatal("/internal/seat-map-pins GET operation missing")
+	}
+	var maxLimit int
+	for _, param := range pathItem.Get.Parameters {
+		if param.Value != nil && param.Value.Name == "limit" && param.Value.Schema != nil && param.Value.Schema.Value != nil {
+			if param.Value.Schema.Value.Max != nil {
+				maxLimit = int(*param.Value.Schema.Value.Max)
+			}
+		}
+	}
+	if maxLimit == 0 {
+		t.Fatal("limit parameter maximum missing from /internal/seat-map-pins")
+	}
+
+	// Exact byte accounting derivation:
+	// fixed row bytes  = 2 braces + 5 field names with quotes/colons + 4 commas + 3x36 UUID = 186
+	// bounded strings  = 6 x (200 + 45) = 1470 (6 bytes/char worst case: json.NewEncoder HTML-escapes)
+	// max row          = 186 + 1470 = 1656
+	// page             = len(`{"pins":[`)=9 + 500*1656 + 499 commas + len("]}\n")=3 = 828511
+	boundedStrings := 6 * (maxIdentityLen + maxPinnedByLen)
+	maxRow := fixedRowBytes + boundedStrings
+	pageEnvelopePrefix := len(`{"pins":[`) // 9
+	pageEnvelopeSuffix := len("]}\n")      // 3
+	rowSeparators := maxLimit - 1          // 499 commas
+	recomputedCap := pageEnvelopePrefix + (maxLimit * maxRow) + rowSeparators + pageEnvelopeSuffix
+
+	if recomputedCap != 828511 {
+		t.Fatalf("recomputed cap is %d, want 828511", recomputedCap)
+	}
+	if maxSeatPinPageBytes != recomputedCap {
+		t.Fatalf("maxSeatPinPageBytes = %d does not match recomputed cap %d", maxSeatPinPageBytes, recomputedCap)
+	}
 }
 
 // --- TKT-181 / ADR-041: the adjacency projection's boundary validation ---

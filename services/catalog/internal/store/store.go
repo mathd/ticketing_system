@@ -471,6 +471,10 @@ type SeatMapPin struct {
 // the HTTP payload.
 const MaxSeatMapPinPage = 500
 
+// MaxPinnedByCharacters bounds the pinned_by reference string in seat_map_pins.
+// Derivation: 8 namespace chars + 1 colon + 36 UUID chars (TKT-143).
+const MaxPinnedByCharacters = 45
+
 type PerformanceInput struct {
 	OrganizerID   uuid.UUID
 	EventID       uuid.UUID

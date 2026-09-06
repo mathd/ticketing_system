@@ -49,6 +49,17 @@ func TestCatalogSpecGuardsEveryUnsafeOperationAndOnlyThose(t *testing.T) {
 			}
 			required, declares401 := securityRequires(doc, op, staffWriteSecurityScheme), declaresStatus(op, "401")
 
+			if strings.HasPrefix(path, "/internal/") {
+				if required {
+					t.Errorf("%s (%s %s) is an internal operation but requires %s — ADR-043: declared security: guards the public contract, an inline check guards the internal surface",
+						id, method, path, staffWriteSecurityScheme)
+				}
+				if !isSafeMethod(method) && !declares401 {
+					t.Errorf("%s (%s %s) is an unsafe internal operation but declares no 401", id, method, path)
+				}
+				continue
+			}
+
 			if isSafeMethod(method) {
 				safeSeen++
 				if required {
@@ -480,7 +491,7 @@ func TestCatalogWritesTakeTheOrganizerFromTheAssertionAndNotTheBody(t *testing.T
 	// would leave the model unchanged and the claim still unearned").
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
-			if isSafeMethod(method) || op.RequestBody == nil || op.RequestBody.Value == nil {
+			if strings.HasPrefix(path, "/internal/") || isSafeMethod(method) || op.RequestBody == nil || op.RequestBody.Value == nil {
 				continue
 			}
 			media := op.RequestBody.Value.Content.Get("application/json")

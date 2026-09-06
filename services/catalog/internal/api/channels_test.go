@@ -530,6 +530,8 @@ func TestTheStaffWriteCredentialOpensNothingElseOnTheInternalSurface(t *testing.
 		{"published performance", http.MethodGet, "/internal/performances/" + uuid.New().String()},
 		{"pool offer state", http.MethodGet, "/internal/pools/" + uuid.New().String() + "/offer-state"},
 		{"seat map pins", http.MethodGet, "/internal/seat-map-pins"},
+		{"pin seat map seats", http.MethodPost, "/internal/seat-maps/" + uuid.New().String() + "/pins"},
+		{"unpin seat map seats", http.MethodPost, "/internal/seat-maps/" + uuid.New().String() + "/unpins"},
 		// The cache kill-switch — a control surface, and the one whose accidental
 		// exposure would be worst.
 		{"cache control status", http.MethodGet, "/internal/cache-control"},

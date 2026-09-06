@@ -90,12 +90,11 @@ func (s *Server) CreateChannel(w http.ResponseWriter, r *http.Request) {
 // fails that test, and declaring them public would publish the disabled-channel
 // list.
 //
-// So they follow catalog's other guarded reads (getTicketType,
-// getPublishedPerformance, getPoolOfferState, listSeatMapPins): hand-mounted,
-// undeclared, 401 on refusal, behind guardInternalSurface. cache_control.go
-// records why catalog keeps its internal surface out of the contract —
-// declaring one route would make it the only declared internal route, a new
-// inconsistency rather than a fix.
+// So they follow catalog's other hand-mounted guarded reads (getTicketType,
+// getPublishedPerformance, getPoolOfferState): hand-mounted, undeclared,
+// 401 on refusal, behind guardInternalSurface. Catalog declares some internal
+// operations and hand-mounts others; TKT-143 moves 3 declared to 6, against 7
+// that stay hand-mounted. It does not unify the convention and must not claim to.
 //
 // The cost, stated: no generated types and no ADR-028 response validation on
 // these two, and the back office (TKT-236) must reach them through the same

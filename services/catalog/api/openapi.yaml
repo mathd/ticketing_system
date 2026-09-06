@@ -1175,6 +1175,142 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /internal/seat-maps/{id}/pins:
+    post:
+      operationId: pinSeatMapSeats
+      security: []
+      summary: Pin a set of seats on a seat map (ADR-029)
+      description: >
+        Inventory pins a seat-hold's seats here. Internal service-to-service operation,
+        guarded by the inline X-Internal-Token check (ADR-043).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: >
+            Seat map ID. Named `id` rather than `seatMapId` to match the sibling
+            /internal/seat-maps/{id}/... routes it shares a router with.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatPinRequest'
+      responses:
+        '200':
+          description: Seats pinned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    example: pinned
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InternalRouteUnauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conflict (e.g. seat identity not found in published version)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /internal/seat-maps/{id}/unpins:
+    post:
+      operationId: unpinSeatMapSeats
+      security: []
+      summary: Unpin a set of seats on a seat map (ADR-029)
+      description: >
+        Inventory unpins seats here when a hold terminates or during reconciliation.
+        Internal service-to-service operation, guarded by the inline X-Internal-Token check (ADR-043).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: >
+            Seat map ID. Named `id` rather than `seatMapId` to match the sibling
+            /internal/seat-maps/{id}/... routes it shares a router with.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatPinRequest'
+      responses:
+        '200':
+          description: Seats unpinned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    example: unpinned
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InternalRouteUnauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /internal/seat-map-pins:
+    get:
+      operationId: listSeatMapPins
+      security: []
+      summary: List seat-map pins for reconciliation (TKT-112)
+      description: >
+        Keyset page of the pin table for inventory's reconcile-pins sweep.
+        Internal service-to-service operation, guarded by the inline X-Internal-Token check (ADR-043).
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Keyset cursor (pin ID).
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of pins to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: One page of seat map pins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatMapPinPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InternalRouteUnauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /staff/authenticate:
     post:
       operationId: authenticateStaff
@@ -1953,6 +2089,57 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    SeatPinRequest:
+      type: object
+      additionalProperties: false
+      required: [organizer_id, seat_identities, pinned_by]
+      properties:
+        organizer_id:
+          type: string
+          format: uuid
+        seat_identities:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        pinned_by:
+          type: string
+          minLength: 1
+          maxLength: 45
+    SeatMapPin:
+      type: object
+      additionalProperties: false
+      required: [id, organizer_id, seat_map_id, seat_identity, pinned_by]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizer_id:
+          type: string
+          format: uuid
+        seat_map_id:
+          type: string
+          format: uuid
+        seat_identity:
+          type: string
+          minLength: 1
+          maxLength: 200
+        pinned_by:
+          type: string
+          minLength: 1
+          maxLength: 45
+    SeatMapPinPage:
+      type: object
+      additionalProperties: false
+      required: [pins]
+      properties:
+        pins:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/SeatMapPin'
     PerformanceDisplayNames:
       type: object
       additionalProperties: false

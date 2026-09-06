@@ -69,10 +69,12 @@ type unpinGroup struct {
 func (r pinReconciler) run(ctx context.Context) (pinReconcileStats, error) {
 	var stats pinReconcileStats
 	after := uuid.Nil
-	// Shrinks (never grows) when a page overflows the client's byte cap. Monotone, so it cannot
-	// oscillate, and it is what keeps one oversized page from wedging the whole drain: the keyset
-	// cursor only advances past rows that were read, so aborting there would make every later
-	// page permanently unreachable (ai-review pass 3).
+	// Adaptive halving is defence in depth (TKT-143): catalog's schema and OpenAPI contract now bound
+	// seat_identity (1..200) and pinned_by (1..45), and the byte cap accepts one conforming full page.
+	// Halving provides defence in depth against deployment skew or a producer regression that yields
+	// an oversized multi-row body. They accept different input classes, so they are not redundant.
+	// Halving still cannot rescue a single oversized row (pageSize == 1).
+	// Shrinks monotonically (never grows), so it cannot oscillate.
 	pageSize := reconcilePinPageSize
 	for {
 		page, err := r.listPins(ctx, after, pageSize)

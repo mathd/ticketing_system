@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -274,5 +275,116 @@ func TestUnpinDistinguishesNoFamilyFromNothingToUnpin(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("%d pins remain after a real unpin, want 0", n)
+	}
+}
+
+// TestBatchPinLengthBoundaries (TKT-143):
+// 1. A 200-char identity and a 45-char pinned_by persist byte for byte through PinSeats.
+// 2. An empty or 46-char pinned_by fails at the CHECK constraint.
+// 3. The seat_identity CHECK constraint is exercised by a DIRECT INSERT against seat_map_pins,
+//    not through PinSeats. Both write paths validate the identity against seat_map_seats first
+//    (postgres_seat_maps.go:300-308 and :386-392), and that table already carries 0022's 1..200
+//    CHECK, so an over-limit identity returns ErrSeatIdentityNotFound and never reaches the new constraint.
+//
+// Mutation: drop seat_map_pins_identity_length, direct insert of 201-char identity succeeds (red).
+// Mutation: drop seat_map_pins_pinned_by_length, 46-char pinned_by succeeds (red).
+func TestBatchPinLengthBoundaries(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+
+	// Build a published seat map with an exact 200-character seat identity:
+	// Section name (196 chars) + "/" + row label (1 char) + "/" + seat label (1 char) = 200 chars.
+	m, err := st.CreateSeatMap(ctx, SeatMapInput{OrganizerID: seatMapOrg, VenueID: seatMapVenue, Name: "Boundary-Map"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: strings.Repeat("S", 196), Position: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "R", Position: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{
+		OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len([]rune(seat.SeatIdentity)); got != MaxSeatIdentityCharacters {
+		t.Fatalf("seat identity length = %d, want %d", got, MaxSeatIdentityCharacters)
+	}
+	if _, _, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Exact limits: 200-character seat identity and 45-character pinned_by persist byte for byte.
+	exactPinnedBy := strings.Repeat("P", MaxPinnedByCharacters)
+	if err := st.PinSeats(ctx, BatchPinInput{
+		OrganizerID:    seatMapOrg,
+		SeatMapID:      m.ID,
+		SeatIdentities: []string{seat.SeatIdentity},
+		PinnedBy:       exactPinnedBy,
+	}); err != nil {
+		t.Fatalf("exact-boundary PinSeats failed: %v", err)
+	}
+
+	var storedIdentity, storedPinnedBy string
+	if err := db.QueryRowContext(ctx,
+		`SELECT seat_identity, pinned_by FROM seat_map_pins WHERE organizer_id=$1 AND pinned_by=$2`,
+		seatMapOrg, exactPinnedBy).Scan(&storedIdentity, &storedPinnedBy); err != nil {
+		t.Fatalf("query stored pin: %v", err)
+	}
+	if storedIdentity != seat.SeatIdentity {
+		t.Fatalf("stored identity mutated: got len %d, want len %d", len(storedIdentity), len(seat.SeatIdentity))
+	}
+	if storedPinnedBy != exactPinnedBy {
+		t.Fatalf("stored pinned_by mutated: got len %d, want len %d", len(storedPinnedBy), len(exactPinnedBy))
+	}
+
+	// 2. Empty pinned_by fails at the CHECK constraint.
+	if err := st.PinSeats(ctx, BatchPinInput{
+		OrganizerID:    seatMapOrg,
+		SeatMapID:      m.ID,
+		SeatIdentities: []string{seat.SeatIdentity},
+		PinnedBy:       "",
+	}); err == nil {
+		t.Fatal("empty pinned_by was accepted; want CHECK failure")
+	}
+
+	// 3. 46-character pinned_by fails at the CHECK constraint.
+	overPinnedBy := strings.Repeat("P", MaxPinnedByCharacters+1)
+	if err := st.PinSeats(ctx, BatchPinInput{
+		OrganizerID:    seatMapOrg,
+		SeatMapID:      m.ID,
+		SeatIdentities: []string{seat.SeatIdentity},
+		PinnedBy:       overPinnedBy,
+	}); err == nil {
+		t.Fatal("46-character pinned_by was accepted; want CHECK failure")
+	}
+
+	// 4. CRITICAL: The seat_identity CHECK constraint must be exercised by a DIRECT INSERT against seat_map_pins.
+	var familyID uuid.UUID
+	if err := db.QueryRowContext(ctx, `SELECT map_family_id FROM seat_maps WHERE id=$1`, m.ID).Scan(&familyID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4a. Direct insert with empty seat_identity fails at CHECK constraint.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO seat_map_pins (organizer_id, map_family_id, seat_identity, pinned_by) VALUES ($1, $2, $3, $4)`,
+		seatMapOrg, familyID, "", "hold:test"); err == nil {
+		t.Fatal("direct INSERT with empty seat_identity succeeded; want CHECK failure")
+	}
+
+	// 4b. Direct insert with 201-character seat_identity fails at CHECK constraint.
+	overIdentity := strings.Repeat("X", MaxSeatIdentityCharacters+1)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO seat_map_pins (organizer_id, map_family_id, seat_identity, pinned_by) VALUES ($1, $2, $3, $4)`,
+		seatMapOrg, familyID, overIdentity, "hold:test"); err == nil {
+		t.Fatal("direct INSERT with 201-character seat_identity succeeded; want CHECK failure")
 	}
 }

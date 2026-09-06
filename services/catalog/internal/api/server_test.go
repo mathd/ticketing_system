@@ -73,6 +73,10 @@ type fakeStore struct {
 	seatSeats      map[uuid.UUID]fakeSeat
 	pinPage        []store.SeatMapPin // what ListSeatMapPins hands back (TKT-112)
 	pinLimits      []int              // the limits it was asked for
+	pinCalls       []store.BatchPinInput
+	pinErr         error
+	unpinCalls     []store.BatchPinInput
+	unpinErr       error
 	// TKT-151 pricing. The fake holds rules keyed by the ticket type they were
 	// seeded against, and runs the REAL pure comparator over them — the point of
 	// the API tests is the handler and the contract mapping, not a second
@@ -338,11 +342,15 @@ func (f *fakeStore) UpdateVenueGACapacity(_ context.Context, in store.VenueGACap
 	return v, nil
 }
 
-func (f *fakeStore) PinSeats(_ context.Context, _ store.BatchPinInput) error {
-	return fmt.Errorf("seat map: %w", store.ErrNotFound)
+func (f *fakeStore) PinSeats(_ context.Context, in store.BatchPinInput) error {
+	f.pinCalls = append(f.pinCalls, in)
+	return f.pinErr
 }
 
-func (f *fakeStore) UnpinSeats(_ context.Context, _ store.BatchPinInput) error { return nil }
+func (f *fakeStore) UnpinSeats(_ context.Context, in store.BatchPinInput) error {
+	f.unpinCalls = append(f.unpinCalls, in)
+	return f.unpinErr
+}
 
 func (f *fakeStore) ListSeatMapPins(_ context.Context, _ uuid.UUID, limit int) ([]store.SeatMapPin, error) {
 	f.pinLimits = append(f.pinLimits, limit)
@@ -1500,11 +1508,20 @@ func (e *env) doWithHeaders(method, path string, body any, hdr map[string]string
 	e.t.Helper()
 	var buf io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			e.t.Fatalf("marshal body: %v", err)
+		switch v := body.(type) {
+		case []byte:
+			buf = bytes.NewReader(v)
+		case string:
+			buf = strings.NewReader(v)
+		case io.Reader:
+			buf = v
+		default:
+			b, err := json.Marshal(body)
+			if err != nil {
+				e.t.Fatalf("marshal body: %v", err)
+			}
+			buf = bytes.NewReader(b)
 		}
-		buf = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, "http://catalog.local"+path, buf)
 	if body != nil {
@@ -1531,11 +1548,20 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 	e.t.Helper()
 	var buf io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			e.t.Fatalf("marshal body: %v", err)
+		switch v := body.(type) {
+		case []byte:
+			buf = bytes.NewReader(v)
+		case string:
+			buf = strings.NewReader(v)
+		case io.Reader:
+			buf = v
+		default:
+			b, err := json.Marshal(body)
+			if err != nil {
+				e.t.Fatalf("marshal body: %v", err)
+			}
+			buf = bytes.NewReader(b)
 		}
-		buf = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, "http://catalog.local"+path, buf)
 	if body != nil {
@@ -2748,38 +2774,34 @@ func TestListPublicVenuesRejectsBadOrganizer(t *testing.T) {
 
 // TestInternalSeatMapPinsRead covers the reconciliation read route (TKT-112): it is
 // credential-guarded like every other /internal path, it bounds the page, and it hands back
-// the pin fields the reconciler needs. The route is hand-mounted and deliberately outside
-// the OpenAPI contract (ADR-009), so the response validator skips it.
+// the pin fields the reconciler needs. Catalog declares some internal operations and hand-mounts
+// others; this ticket moves 3 declared to 6, against 7 that stay hand-mounted. It does not
+// unify the convention and must not claim to.
 func TestInternalSeatMapPinsRead(t *testing.T) {
-	st := newFakeStore()
+	e := newEnv(t)
 	pinID, org, seatMap := uuid.New(), uuid.New(), uuid.New()
-	st.pinPage = []store.SeatMapPin{{ID: pinID, OrganizerID: org, SeatMapID: seatMap,
+	e.store.pinPage = []store.SeatMapPin{{ID: pinID, OrganizerID: org, SeatMapID: seatMap,
 		SeatIdentity: "Orchestra/A/1", PinnedBy: "hold:" + uuid.New().String()}}
-	h, err := NewRouter(NewServer(st, &fakePublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "secret", testStaffWriteToken), true)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tt := range []struct {
 		name, token, query string
 		want               int
 	}{
 		{name: "missing credential", query: "", want: http.StatusUnauthorized},
 		{name: "wrong credential", token: "wrong", want: http.StatusUnauthorized},
-		{name: "first page", token: "secret", want: http.StatusOK},
-		{name: "explicit cursor and limit", token: "secret", query: "?after=" + uuid.New().String() + "&limit=10", want: http.StatusOK},
-		{name: "malformed cursor", token: "secret", query: "?after=not-a-uuid", want: http.StatusBadRequest},
-		{name: "non-numeric limit", token: "secret", query: "?limit=lots", want: http.StatusBadRequest},
-		{name: "zero limit", token: "secret", query: "?limit=0", want: http.StatusBadRequest},
-		{name: "limit over the bound", token: "secret",
+		{name: "first page", token: "test-internal-token", want: http.StatusOK},
+		{name: "explicit cursor and limit", token: "test-internal-token", query: "?after=" + uuid.New().String() + "&limit=10", want: http.StatusOK},
+		{name: "malformed cursor", token: "test-internal-token", query: "?after=not-a-uuid", want: http.StatusBadRequest},
+		{name: "non-numeric limit", token: "test-internal-token", query: "?limit=lots", want: http.StatusBadRequest},
+		{name: "zero limit", token: "test-internal-token", query: "?limit=0", want: http.StatusBadRequest},
+		{name: "limit over the bound", token: "test-internal-token",
 			query: fmt.Sprintf("?limit=%d", store.MaxSeatMapPinPage+1), want: http.StatusBadRequest},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/internal/seat-map-pins"+tt.query, nil)
+			hdr := map[string]string{}
 			if tt.token != "" {
-				req.Header.Set("X-Internal-Token", tt.token)
+				hdr["X-Internal-Token"] = tt.token
 			}
-			res := httptest.NewRecorder()
-			h.ServeHTTP(res, req)
+			res := e.doWithHeaders(http.MethodGet, "/internal/seat-map-pins"+tt.query, nil, hdr)
 			if res.Code != tt.want {
 				t.Fatalf("status=%d want=%d body=%s", res.Code, tt.want, res.Body.String())
 			}
@@ -2808,8 +2830,351 @@ func TestInternalSeatMapPinsRead(t *testing.T) {
 			}
 		})
 	}
-	if st.pinLimits[0] != reconcileDefaultPinPage {
-		t.Fatalf("default limit = %d want %d", st.pinLimits[0], reconcileDefaultPinPage)
+	if e.store.pinLimits[0] != reconcileDefaultPinPage {
+		t.Fatalf("default limit = %d want %d", e.store.pinLimits[0], reconcileDefaultPinPage)
+	}
+}
+
+// TestInternalSeatMapPinWriteBounds tests both pin and unpin operations against the real router.
+// It verifies:
+//  1. Unauthenticated requests return 401, not 400 (the schema oracle guard).
+//  2. Valid 200/45 values reach the fake store exactly once.
+//  3. Malformation classes (syntax, type, absence, identity, range) are rejected without store calls,
+//     or map to appropriate statuses (404, 409) when reaching the store.
+//
+// Mutation that makes this test red:
+//  1. In services/catalog/api/openapi.yaml, changing SeatPinRequest.pinned_by.maxLength from 45 to 46
+//     makes the 46-char limit+1 test expect 400 but receive 200.
+//  2. Removing guardInternalSurface makes unauthenticated malformed requests return 400 instead of 401.
+func TestInternalSeatMapPinWriteBounds(t *testing.T) {
+	operations := []struct {
+		name       string
+		pathSuffix string
+		isPin      bool
+	}{
+		{name: "pin", pathSuffix: "/pins", isPin: true},
+		{name: "unpin", pathSuffix: "/unpins", isPin: false},
+	}
+
+	for _, op := range operations {
+		t.Run(op.name, func(t *testing.T) {
+			setup := func() *env {
+				return newEnv(t)
+			}
+
+			doReq := func(e *env, token, path, body string) *httptest.ResponseRecorder {
+				hdr := map[string]string{}
+				if token != "" {
+					hdr["X-Internal-Token"] = token
+				}
+				return e.doWithHeaders(http.MethodPost, path, body, hdr)
+			}
+
+			getCalls := func(e *env) []store.BatchPinInput {
+				if op.isPin {
+					return e.store.pinCalls
+				}
+				return e.store.unpinCalls
+			}
+
+			orgID := uuid.New()
+			seatMapID := uuid.New()
+			path := "/internal/seat-maps/" + seatMapID.String() + op.pathSuffix
+
+			// 1. Schema oracle guard: unauthenticated or bad-token requests must return 401, NOT 400,
+			// even when the request body or path is malformed.
+			t.Run("schema oracle guard returns 401", func(t *testing.T) {
+				for _, tc := range []struct {
+					name  string
+					token string
+					body  string
+				}{
+					{name: "missing token with valid body", token: "", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":"hold:1"}`, orgID)},
+					{name: "missing token with syntax error body", token: "", body: `{"broken_json`},
+					{name: "missing token with over-limit identity", token: "", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["%s"],"pinned_by":"hold:1"}`, orgID, strings.Repeat("A", 201))},
+					{name: "wrong token with syntax error body", token: "wrong", body: `{"broken_json`},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						e := setup()
+						rec := doReq(e, tc.token, path, tc.body)
+						if rec.Code != http.StatusUnauthorized {
+							t.Fatalf("status=%d want 401 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 0 {
+							t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+						}
+					})
+				}
+			})
+
+			// 2. Valid exact-limit values (200-char seat identity and 45-char pinned_by) reach fake store exactly once.
+			t.Run("valid exact-limit reaches fake store once", func(t *testing.T) {
+				e := setup()
+				identity200 := strings.Repeat("s", 200)
+				pinnedBy45 := strings.Repeat("p", 45)
+				body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["%s"],"pinned_by":"%s"}`, orgID, identity200, pinnedBy45)
+
+				rec := doReq(e, "test-internal-token", path, body)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+				}
+				calls := getCalls(e)
+				if len(calls) != 1 {
+					t.Fatalf("expected 1 store call, got %d", len(calls))
+				}
+				call := calls[0]
+				if call.OrganizerID != orgID || call.SeatMapID != seatMapID || len(call.SeatIdentities) != 1 ||
+					call.SeatIdentities[0] != identity200 || call.PinnedBy != pinnedBy45 {
+					t.Fatalf("unexpected call input: %+v", call)
+				}
+			})
+
+			// 3. Malformation classes
+			// Class: syntax
+			t.Run("class syntax", func(t *testing.T) {
+				for _, tc := range []struct {
+					name string
+					body string
+				}{
+					{name: "malformed json", body: `{"organizer_id":`},
+					{name: "truncated json array", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"`, orgID)},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						e := setup()
+						rec := doReq(e, "test-internal-token", path, tc.body)
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 0 {
+							t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+						}
+					})
+				}
+			})
+
+			// Class: type
+			t.Run("class type", func(t *testing.T) {
+				for _, tc := range []struct {
+					name string
+					body string
+				}{
+					{name: "pinned_by is number", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":7}`, orgID)},
+					{name: "organizer_id is number", body: `{"organizer_id":123,"seat_identities":["A1"],"pinned_by":"hold:1"}`},
+					{name: "seat_identities is string", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":"A1","pinned_by":"hold:1"}`, orgID)},
+					{name: "seat_identities element is number", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":[123],"pinned_by":"hold:1"}`, orgID)},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						e := setup()
+						rec := doReq(e, "test-internal-token", path, tc.body)
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 0 {
+							t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+						}
+					})
+				}
+			})
+
+			// Class: absence
+			t.Run("class absence", func(t *testing.T) {
+				for _, tc := range []struct {
+					name string
+					body string
+				}{
+					{name: "missing organizer_id", body: `{"seat_identities":["A1"],"pinned_by":"hold:1"}`},
+					{name: "missing seat_identities", body: fmt.Sprintf(`{"organizer_id":"%s","pinned_by":"hold:1"}`, orgID)},
+					{name: "missing pinned_by", body: fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"]}`, orgID)},
+					{name: "nil organizer_id uuid", body: `{"organizer_id":"00000000-0000-0000-0000-000000000000","seat_identities":["A1"],"pinned_by":"hold:1"}`},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						e := setup()
+						rec := doReq(e, "test-internal-token", path, tc.body)
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 0 {
+							t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+						}
+					})
+				}
+			})
+
+			// Class: identity
+			t.Run("class identity", func(t *testing.T) {
+				validBody := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":"hold:1"}`, orgID)
+
+				t.Run("malformed path uuid", func(t *testing.T) {
+					e := setup()
+					rec := doReq(e, "test-internal-token", "/internal/seat-maps/not-a-uuid"+op.pathSuffix, validBody)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				if op.isPin {
+					t.Run("identity not found in store returns 409", func(t *testing.T) {
+						e := setup()
+						e.store.pinErr = store.ErrSeatIdentityNotFound
+						rec := doReq(e, "test-internal-token", path, validBody)
+						if rec.Code != http.StatusConflict {
+							t.Fatalf("status=%d want 409 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 1 {
+							t.Fatalf("expected 1 store call, got %d", len(getCalls(e)))
+						}
+					})
+				}
+
+				t.Run("seat map not found in store returns 404", func(t *testing.T) {
+					e := setup()
+					if op.isPin {
+						e.store.pinErr = store.ErrNotFound
+					} else {
+						e.store.unpinErr = store.ErrNotFound
+					}
+					rec := doReq(e, "test-internal-token", path, validBody)
+					if rec.Code != http.StatusNotFound {
+						t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 1 {
+						t.Fatalf("expected 1 store call, got %d", len(getCalls(e)))
+					}
+				})
+
+				if !op.isPin {
+					t.Run("unpin family not found in store returns 200 idempotent", func(t *testing.T) {
+						e := setup()
+						e.store.unpinErr = store.ErrSeatMapFamilyNotFound
+						rec := doReq(e, "test-internal-token", path, validBody)
+						if rec.Code != http.StatusOK {
+							t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(getCalls(e)) != 1 {
+							t.Fatalf("expected 1 store call, got %d", len(getCalls(e)))
+						}
+					})
+				}
+			})
+
+			// Class: range
+			t.Run("class range", func(t *testing.T) {
+				t.Run("seat_identities empty array", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":[],"pinned_by":"hold:1"}`, orgID)
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("seat_identities element empty string", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":[""],"pinned_by":"hold:1"}`, orgID)
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				// Pins TKT-143's deliberate contract change: a whitespace-only identity was
+				// forwarded to the store (409 on pin, idempotent 200 on unpin) and is now
+				// refused as malformed. See decodeSeatPinRequest for why. This assertion is
+				// about the new rule, not about preserved behaviour.
+				t.Run("seat_identities element whitespace only", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["   "],"pinned_by":"hold:1"}`, orgID)
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("seat_identities element exact limit 200 chars", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["%s"],"pinned_by":"hold:1"}`, orgID, strings.Repeat("s", 200))
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 1 {
+						t.Fatalf("expected 1 store call, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("seat_identities element limit+1 201 chars", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["%s"],"pinned_by":"hold:1"}`, orgID, strings.Repeat("s", 201))
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("pinned_by empty string", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":""}`, orgID)
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("pinned_by whitespace only", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":"   "}`, orgID)
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("pinned_by exact limit 45 chars", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":"%s"}`, orgID, strings.Repeat("p", 45))
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 1 {
+						t.Fatalf("expected 1 store call, got %d", len(getCalls(e)))
+					}
+				})
+
+				t.Run("pinned_by limit+1 46 chars", func(t *testing.T) {
+					e := setup()
+					body := fmt.Sprintf(`{"organizer_id":"%s","seat_identities":["A1"],"pinned_by":"%s"}`, orgID, strings.Repeat("p", 46))
+					rec := doReq(e, "test-internal-token", path, body)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(getCalls(e)) != 0 {
+						t.Fatalf("expected 0 store calls, got %d", len(getCalls(e)))
+					}
+				})
+			})
+		})
 	}
 }
 

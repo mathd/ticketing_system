@@ -1107,6 +1107,20 @@ type SeatMapList struct {
 	SeatMaps []SeatMap `json:"seat_maps"`
 }
 
+// SeatMapPin defines model for SeatMapPin.
+type SeatMapPin struct {
+	Id           openapi_types.UUID `json:"id"`
+	OrganizerId  openapi_types.UUID `json:"organizer_id"`
+	PinnedBy     string             `json:"pinned_by"`
+	SeatIdentity string             `json:"seat_identity"`
+	SeatMapId    openapi_types.UUID `json:"seat_map_id"`
+}
+
+// SeatMapPinPage defines model for SeatMapPinPage.
+type SeatMapPinPage struct {
+	Pins []SeatMapPin `json:"pins"`
+}
+
 // SeatMapRowCreate defines model for SeatMapRowCreate.
 type SeatMapRowCreate struct {
 	Label     string             `json:"label"`
@@ -1132,6 +1146,13 @@ type SeatMapVersionHistory struct {
 	// CurrentVersion Highest published version — the one an edit targets. Absent when the family has no published version yet (draft-only).
 	CurrentVersion *int32    `json:"current_version,omitempty"`
 	Versions       []SeatMap `json:"versions"`
+}
+
+// SeatPinRequest defines model for SeatPinRequest.
+type SeatPinRequest struct {
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	PinnedBy       string             `json:"pinned_by"`
+	SeatIdentities []string           `json:"seat_identities"`
 }
 
 // SeatRow defines model for SeatRow.
@@ -1390,6 +1411,15 @@ type ResolvePerformanceDisplayNamesParams struct {
 	Locale Locale `form:"locale" json:"locale"`
 }
 
+// ListSeatMapPinsParams defines parameters for ListSeatMapPins.
+type ListSeatMapPinsParams struct {
+	// After Keyset cursor (pin ID).
+	After *openapi_types.UUID `form:"after,omitempty" json:"after,omitempty"`
+
+	// Limit Maximum number of pins to return.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ResolveTicketTypeFeesParams defines parameters for ResolveTicketTypeFees.
 type ResolveTicketTypeFeesParams struct {
 	// ChannelCode The sales channel to resolve for. An exact opaque string (ADR-024). A channel registry now exists (TKT-235) but is a LOOKUP, NOT A CONSTRAINT: nothing validates this value against it, and an unregistered code resolves exactly as it always has. OMITTING it is the default/public context, in which only channel-agnostic rules are eligible; it is NOT a wildcard, and a channel-specific rule never applies to a sale that named no channel.
@@ -1472,6 +1502,12 @@ type CreateFestivalJSONRequestBody = FestivalCreate
 // AttachDayToFestivalJSONRequestBody defines body for AttachDayToFestival for application/json ContentType.
 type AttachDayToFestivalJSONRequestBody = FestivalDayAttach
 
+// PinSeatMapSeatsJSONRequestBody defines body for PinSeatMapSeats for application/json ContentType.
+type PinSeatMapSeatsJSONRequestBody = SeatPinRequest
+
+// UnpinSeatMapSeatsJSONRequestBody defines body for UnpinSeatMapSeats for application/json ContentType.
+type UnpinSeatMapSeatsJSONRequestBody = SeatPinRequest
+
 // CreatePerformanceJSONRequestBody defines body for CreatePerformance for application/json ContentType.
 type CreatePerformanceJSONRequestBody = PerformanceCreate
 
@@ -1546,6 +1582,15 @@ type ServerInterface interface {
 	// Resolve event display names for a set of performances, in one call (TKT-222)
 	// (GET /internal/performances/display-names)
 	ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.Request, params ResolvePerformanceDisplayNamesParams)
+	// List seat-map pins for reconciliation (TKT-112)
+	// (GET /internal/seat-map-pins)
+	ListSeatMapPins(w http.ResponseWriter, r *http.Request, params ListSeatMapPinsParams)
+	// Pin a set of seats on a seat map (ADR-029)
+	// (POST /internal/seat-maps/{id}/pins)
+	PinSeatMapSeats(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
+	// Unpin a set of seats on a seat map (ADR-029)
+	// (POST /internal/seat-maps/{id}/unpins)
+	UnpinSeatMapSeats(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
 	// Resolve which fees apply to a ticket type, in a channel, with provenance
 	// (GET /internal/ticket-types/{id}/fee-resolution)
 	ResolveTicketTypeFees(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params ResolveTicketTypeFeesParams)
@@ -1699,6 +1744,24 @@ func (_ Unimplemented) PublishFestival(w http.ResponseWriter, r *http.Request, f
 // Resolve event display names for a set of performances, in one call (TKT-222)
 // (GET /internal/performances/display-names)
 func (_ Unimplemented) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.Request, params ResolvePerformanceDisplayNamesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List seat-map pins for reconciliation (TKT-112)
+// (GET /internal/seat-map-pins)
+func (_ Unimplemented) ListSeatMapPins(w http.ResponseWriter, r *http.Request, params ListSeatMapPinsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Pin a set of seats on a seat map (ADR-029)
+// (POST /internal/seat-maps/{id}/pins)
+func (_ Unimplemented) PinSeatMapSeats(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Unpin a set of seats on a seat map (ADR-029)
+// (POST /internal/seat-maps/{id}/unpins)
+func (_ Unimplemented) UnpinSeatMapSeats(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2185,6 +2248,104 @@ func (siw *ServerInterfaceWrapper) ResolvePerformanceDisplayNames(w http.Respons
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResolvePerformanceDisplayNames(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSeatMapPins operation middleware
+func (siw *ServerInterfaceWrapper) ListSeatMapPins(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSeatMapPinsParams
+
+	// ------------- Optional query parameter "after" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "after", r.URL.Query(), &params.After, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "after"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "after", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSeatMapPins(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PinSeatMapSeats operation middleware
+func (siw *ServerInterfaceWrapper) PinSeatMapSeats(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PinSeatMapSeats(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnpinSeatMapSeats operation middleware
+func (siw *ServerInterfaceWrapper) UnpinSeatMapSeats(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnpinSeatMapSeats(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3467,6 +3628,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/internal/performances/display-names", wrapper.ResolvePerformanceDisplayNames)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/internal/seat-map-pins", wrapper.ListSeatMapPins)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/internal/seat-maps/{id}/pins", wrapper.PinSeatMapSeats)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/internal/seat-maps/{id}/unpins", wrapper.UnpinSeatMapSeats)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/internal/ticket-types/{id}/fee-resolution", wrapper.ResolveTicketTypeFees)
