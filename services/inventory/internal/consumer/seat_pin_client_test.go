@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 )
 
@@ -227,6 +228,74 @@ func TestListSeatPinsGuardsTheSizeLimitBoundary(t *testing.T) {
 			t.Fatal("trailing content past the limit must not be invisible to the one-value check")
 		}
 	})
+}
+
+// TestSeatPinPageCapMatchesCatalogContract verifies that maxSeatPinPageBytes is derived directly
+// from catalog's OpenAPI specification (TKT-143). It parses catalog's openapi.yaml, extracts
+// the maximum bounds for seat_identity (200), pinned_by (45), and the limit query parameter (500),
+// recomputes the exact byte cap from the documented terms, and compares against maxSeatPinPageBytes.
+//
+// Mutation that makes this test red:
+// 1. Changing maxSeatPinPageBytes in services/inventory/internal/consumer/catalog.go to any other value.
+// 2. Changing SeatPinRequest.seat_identities.maxLength or pinned_by.maxLength or listSeatMapPins limit.maximum in catalog openapi.yaml.
+func TestSeatPinPageCapMatchesCatalogContract(t *testing.T) {
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromFile("../../../catalog/api/openapi.yaml")
+	if err != nil {
+		t.Fatalf("load catalog openapi.yaml: %v", err)
+	}
+
+	reqSchema, ok := doc.Components.Schemas["SeatPinRequest"]
+	if !ok || reqSchema.Value == nil {
+		t.Fatal("SeatPinRequest schema missing from catalog openapi.yaml")
+	}
+	identProp := reqSchema.Value.Properties["seat_identities"]
+	if identProp == nil || identProp.Value == nil || identProp.Value.Items == nil || identProp.Value.Items.Value == nil || identProp.Value.Items.Value.MaxLength == nil {
+		t.Fatal("seat_identities items maxLength missing from SeatPinRequest")
+	}
+	maxIdentityLen := int(*identProp.Value.Items.Value.MaxLength)
+
+	pinnedProp := reqSchema.Value.Properties["pinned_by"]
+	if pinnedProp == nil || pinnedProp.Value == nil || pinnedProp.Value.MaxLength == nil {
+		t.Fatal("pinned_by maxLength missing from SeatPinRequest")
+	}
+	maxPinnedByLen := int(*pinnedProp.Value.MaxLength)
+
+	pathItem := doc.Paths.Find("/internal/seat-map-pins")
+	if pathItem == nil || pathItem.Get == nil {
+		t.Fatal("/internal/seat-map-pins GET operation missing")
+	}
+	var maxLimit int
+	for _, param := range pathItem.Get.Parameters {
+		if param.Value != nil && param.Value.Name == "limit" && param.Value.Schema != nil && param.Value.Schema.Value != nil {
+			if param.Value.Schema.Value.Max != nil {
+				maxLimit = int(*param.Value.Schema.Value.Max)
+			}
+		}
+	}
+	if maxLimit == 0 {
+		t.Fatal("limit parameter maximum missing from /internal/seat-map-pins")
+	}
+
+	// Exact byte accounting derivation:
+	// fixed row bytes  = 2 braces + 5 field names with quotes/colons + 4 commas + 3x36 UUID = 186
+	// bounded strings  = 6 x (200 + 45) = 1470 (6 bytes/char worst case: json.NewEncoder HTML-escapes)
+	// max row          = 186 + 1470 = 1656
+	// page             = len(`{"pins":[`)=9 + 500*1656 + 499 commas + len("]}\n")=3 = 828511
+	fixedRowBytes := 186
+	boundedStrings := 6 * (maxIdentityLen + maxPinnedByLen)
+	maxRow := fixedRowBytes + boundedStrings
+	pageEnvelopePrefix := len(`{"pins":[`) // 9
+	pageEnvelopeSuffix := len("]}\n")      // 3
+	rowSeparators := maxLimit - 1          // 499 commas
+	recomputedCap := pageEnvelopePrefix + (maxLimit * maxRow) + rowSeparators + pageEnvelopeSuffix
+
+	if recomputedCap != 828511 {
+		t.Fatalf("recomputed cap is %d, want 828511", recomputedCap)
+	}
+	if maxSeatPinPageBytes != recomputedCap {
+		t.Fatalf("maxSeatPinPageBytes = %d does not match recomputed cap %d", maxSeatPinPageBytes, recomputedCap)
+	}
 }
 
 // --- TKT-181 / ADR-041: the adjacency projection's boundary validation ---

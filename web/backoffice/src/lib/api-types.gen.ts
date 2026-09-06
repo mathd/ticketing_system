@@ -2893,6 +2893,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["InternalRouteUnauthorized"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };

@@ -16,16 +16,11 @@ import (
 // and the failure would be the quiet one: the switch reports disabled, an
 // operator believes the cache is off, and reads keep coming from memory.
 //
-// HAND-MOUNTED AND UNDECLARED, matching every other internal route in this
-// service — `getTicketType`, `getPublishedPerformance`, `getPoolOfferState`,
-// `pinSeats`. Catalog's internal surface is deliberately not part of its public
-// OpenAPI contract (see Router's comment: "service-to-service, not part of the
-// public OpenAPI contract; the response validator skips undeclared paths").
-// Declaring this one route would make it the only declared internal route in
-// catalog — a new inconsistency, not a fix. Inventory declares its internal
-// routes because that is ITS convention, and this ticket follows each service's
-// own. The behaviour is identical either way; what differs is which convention
-// each service keeps.
+// HAND-MOUNTED AND UNDECLARED. Catalog declares some internal operations and
+// hand-mounts others; TKT-143 moves 3 declared to 6, against 10 that stay
+// hand-mounted. It does not unify the convention and must not claim to.
+// Undeclared internal routes are service-to-service and outside the OpenAPI
+// contract, so the response validator skips them.
 //
 // Guarded by the shared INTERNAL_SERVICE_TOKEN with a 401 refusal, matching
 // catalog's other internal routes. No new credential: its holder can already

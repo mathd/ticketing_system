@@ -157,6 +157,21 @@ Scope is unchanged from §Negative: this is **honest-writer consistency, not tam
 (ADR-021). The reconciler derives its verdict from inventory's own tables and acts on catalog's;
 a writer with access to either can defeat it, and it is not built to notice.
 
+## Amendment — pin bounds and declared internal contract (TKT-143, 2026-09-06)
+
+Catalog now enforces field bounds and declares the pin operations in OpenAPI:
+
+1. **Explicit field bounds.** `seat_identity` is bounded to 1..200 characters and `pinned_by`
+   to 1..45 characters in catalog's database schema (CHECK constraints via migration 0023) and OpenAPI
+   spec (`SeatPinRequest` and `SeatMapPin`).
+2. **Declared internal routes.** `POST /internal/seat-maps/{id}/pins`,
+   `POST /internal/seat-maps/{id}/unpins`, and `GET /internal/seat-map-pins` are now declared in
+   catalog's OpenAPI specification (with `security: []` and runtime `X-Internal-Token` enforcement).
+   This moves 3 internal operations from hand-mounted to declared.
+3. **Response byte cap.** Inventory derives `maxSeatPinPageBytes = 828511` directly from catalog's
+   documented bounds (186 fixed bytes + 1470 worst-case bounded strings per row across 500 rows).
+   Adaptive page halving is retained as defence in depth against deployment skew.
+
 ## References
 
 - [ADR-029](ADR-029-seat-identity-pinning-contract.md) — the pin contract this consumes.
@@ -167,3 +182,4 @@ a writer with access to either can defeat it, and it is not built to notice.
 - [ADR-009](ADR-009-contract-first-apis.md) — internal service-to-service routes follow the
   hand-mounted convention, outside the public contract.
 - TKT-80 (US-017: seat-level claims).
+- TKT-143 (Seat map pin length bounds and response cap).

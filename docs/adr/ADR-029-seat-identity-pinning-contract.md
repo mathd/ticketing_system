@@ -57,11 +57,12 @@ must not be overclaimed.
 We adopt **Option 1 (hard-reject)**, with a **two-sided row lock** closing the race.
 
 1. **The pin is the fact-source.** A `seat_map_pins (map_family_id, seat_identity, pinned_by)`
-   row records that a seat identity is referenced by a sale/hold. `pinned_by` is free-form
-   text (`"sale:<order_id>"`, `"hold:<hold_id>"`) so TKT-80 writes real references without a
-   catalog migration. A pin is **version-independent**: it applies to the whole map *family*
-   (all versions of one edited map share a `map_family_id`), never to a specific version row —
-   a version bump must not drop a pin.
+   row records that a seat identity is referenced by a sale/hold. `pinned_by` is bounded text
+   (1..45 characters, enforced by CHECK constraint and OpenAPI contract in TKT-143; `"sale:<order_id>"`,
+   `"hold:<hold_id>"`) so TKT-80 writes real references without a catalog migration. The `sale:`
+   namespace remains documented-but-unimplemented. A pin is **version-independent**: it applies to the
+   whole map *family* (all versions of one edited map share a `map_family_id`), never to a specific
+   version row — a version bump must not drop a pin.
 
 2. **`EditSeatMap` is state-deriving, so it decides under a lock (ADR-018 rule 1) — a
    FAMILY-scoped advisory lock, not a row lock.** In one transaction it: takes

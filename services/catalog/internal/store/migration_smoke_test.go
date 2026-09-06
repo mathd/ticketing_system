@@ -35,6 +35,7 @@ const (
 	versionBeforePriceRuleChannel   = 18 // roll 0019_price_rule_channels down (TKT-237)
 	versionBeforeMoneyBounds        = 20 // roll 0021_ticket_type_money_bounds down (TKT-154)
 	versionBeforeSeatIdentityLength = 21 // roll 0022_seat_identity_length down
+	versionBeforeSeatMapPinLengths  = 22 // roll 0023_seat_map_pin_lengths down
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -834,6 +835,155 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if constraints != 0 {
 			t.Fatalf("0022 down left %d seat-identity constraints", constraints)
+		}
+	})
+
+	t.Run("seat-map-pins length migration refuses legacy overflow and installs the bounds", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.UpTo(ctx, versionBeforeSeatMapPinLengths); err != nil {
+			t.Fatal(err)
+		}
+		var mapID uuid.UUID
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_maps(organizer_id,venue_id,name)
+			VALUES($1,$2,'legacy pin map') RETURNING id`, seatMapOrg, seatMapVenue).Scan(&mapID); err != nil {
+			t.Fatal(err)
+		}
+		var familyID uuid.UUID
+		if err := db.QueryRowContext(ctx, `SELECT map_family_id FROM seat_maps WHERE id=$1`, mapID).Scan(&familyID); err != nil {
+			t.Fatal(err)
+		}
+
+		// 1. Fixture with over-limit seat_identity (201 chars).
+		overIdentity := strings.Repeat("S", 201)
+		var pinID1 uuid.UUID
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4) RETURNING id`, seatMapOrg, familyID, overIdentity, "hold:test1").Scan(&pinID1); err != nil {
+			t.Fatal(err)
+		}
+
+		// Migration Up should fail and name field ('seat_identity'), row id, length (201).
+		_, err := provider.Up(ctx)
+		if err == nil {
+			t.Fatal("0023 with over-limit seat_identity succeeded; want error")
+		}
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "seat_identity") || !strings.Contains(errMsg, "201") || !strings.Contains(errMsg, pinID1.String()) {
+			t.Fatalf("0023 error message = %q, want it to name field 'seat_identity', length 201, and row id %s", errMsg, pinID1)
+		}
+
+		// Assert seeded bytes are unchanged (no truncation).
+		var preservedIdentity string
+		if err := db.QueryRowContext(ctx, `SELECT seat_identity FROM seat_map_pins WHERE id=$1`, pinID1).Scan(&preservedIdentity); err != nil {
+			t.Fatal(err)
+		}
+		if preservedIdentity != overIdentity {
+			t.Fatalf("failed migration mutated seat_identity: got len %d, want len %d", len(preservedIdentity), len(overIdentity))
+		}
+
+		// Remove the over-limit seat_identity row.
+		if _, err := db.ExecContext(ctx, `DELETE FROM seat_map_pins WHERE id=$1`, pinID1); err != nil {
+			t.Fatal(err)
+		}
+
+		// 2. Fixture with over-limit pinned_by (46 chars).
+		overPinnedBy := strings.Repeat("P", 46)
+		var pinID2 uuid.UUID
+		if err := db.QueryRowContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4) RETURNING id`, seatMapOrg, familyID, "Orchestra/A/1", overPinnedBy).Scan(&pinID2); err != nil {
+			t.Fatal(err)
+		}
+
+		// Migration Up should fail and name field ('pinned_by'), row id, length (46).
+		_, err = provider.Up(ctx)
+		if err == nil {
+			t.Fatal("0023 with over-limit pinned_by succeeded; want error")
+		}
+		errMsg = err.Error()
+		if !strings.Contains(errMsg, "pinned_by") || !strings.Contains(errMsg, "46") || !strings.Contains(errMsg, pinID2.String()) {
+			t.Fatalf("0023 error message = %q, want it to name field 'pinned_by', length 46, and row id %s", errMsg, pinID2)
+		}
+
+		// Assert seeded bytes are unchanged (no truncation).
+		var preservedPinnedBy string
+		if err := db.QueryRowContext(ctx, `SELECT pinned_by FROM seat_map_pins WHERE id=$1`, pinID2).Scan(&preservedPinnedBy); err != nil {
+			t.Fatal(err)
+		}
+		if preservedPinnedBy != overPinnedBy {
+			t.Fatalf("failed migration mutated pinned_by: got len %d, want len %d", len(preservedPinnedBy), len(overPinnedBy))
+		}
+
+		// Remove the over-limit pinned_by row.
+		if _, err := db.ExecContext(ctx, `DELETE FROM seat_map_pins WHERE id=$1`, pinID2); err != nil {
+			t.Fatal(err)
+		}
+
+		// Now migration Up should succeed.
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatalf("0023 Up after removing offenders: %v", err)
+		}
+
+		// Assert both named constraints exist on seat_map_pins.
+		var constraints int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint
+			WHERE conrelid=(current_schema() || '.seat_map_pins')::regclass
+			AND conname IN ('seat_map_pins_identity_length', 'seat_map_pins_pinned_by_length')`).Scan(&constraints); err != nil {
+			t.Fatal(err)
+		}
+		if constraints != 2 {
+			t.Fatalf("0023 installed %d named constraints on seat_map_pins, want 2", constraints)
+		}
+
+		// Exact-limit insert succeeds (200-char identity, 45-char pinned_by).
+		exactIdentity := strings.Repeat("S", MaxSeatIdentityCharacters)
+		exactPinnedBy := strings.Repeat("P", MaxPinnedByCharacters)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4)`, seatMapOrg, familyID, exactIdentity, exactPinnedBy); err != nil {
+			t.Fatalf("exact-limit insert failed: %v", err)
+		}
+
+		// Over-limit seat_identity fails.
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4)`, seatMapOrg, familyID, overIdentity, "hold:test"); err == nil {
+			t.Fatal("database accepted a 201-character seat identity into seat_map_pins")
+		}
+
+		// Over-limit pinned_by fails.
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4)`, seatMapOrg, familyID, "Orchestra/A/2", overPinnedBy); err == nil {
+			t.Fatal("database accepted a 46-character pinned_by into seat_map_pins")
+		}
+
+		// Empty seat_identity fails.
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4)`, seatMapOrg, familyID, "", "hold:test"); err == nil {
+			t.Fatal("database accepted an empty seat identity into seat_map_pins")
+		}
+
+		// Empty pinned_by fails.
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO seat_map_pins(organizer_id,map_family_id,seat_identity,pinned_by)
+			VALUES($1,$2,$3,$4)`, seatMapOrg, familyID, "Orchestra/A/3", ""); err == nil {
+			t.Fatal("database accepted an empty pinned_by into seat_map_pins")
+		}
+
+		// DownTo(22) rolls back 0023 and removes both constraints.
+		if _, err := provider.DownTo(ctx, versionBeforeSeatMapPinLengths); err != nil {
+			t.Fatalf("down to before 0023: %v", err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint
+			WHERE conrelid=(current_schema() || '.seat_map_pins')::regclass
+			AND conname IN ('seat_map_pins_identity_length', 'seat_map_pins_pinned_by_length')`).Scan(&constraints); err != nil {
+			t.Fatal(err)
+		}
+		if constraints != 0 {
+			t.Fatalf("0023 down left %d seat_map_pins constraints", constraints)
 		}
 	})
 }

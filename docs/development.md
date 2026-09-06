@@ -157,14 +157,19 @@ against our own bugs and against concurrent honest writers. A writer with catalo
 can insert or delete pins at will and nothing here detects it; a writer with inventory database
 access can forge the claims the verdict is derived from. It is not tamper-evidence.
 
-**Known limitation (TKT-143).** A pin whose `seat_identity` or `pinned_by` is megabyte-scale can
-stop a run at that row. The command pages the pin table and shrinks the page on overflow, but a
-single row that exceeds the 4 MiB response cap cannot be read, and the keyset cursor cannot
-advance past a row it never read — so later pins stay unreclaimed until the offending pin is
-removed by hand. Nothing this system writes can produce such a row (`pinned_by` is `hold:` plus a
-uuid; identities are composed server-side from labels), and catalog enforces no length limit on
-those columns, which is what TKT-143 is for. The failure is loud and names the cursor; no pin is
-wrongly removed.
+**Enforced limits and response cap (TKT-143).** The megabyte-scale row limitation is closed.
+Catalog enforces length bounds in its database schema and OpenAPI contract: `seat_identity` is
+constrained to 1..200 characters, and `pinned_by` is constrained to 1..45 characters. The inventory
+consumer bounds response bodies with `maxSeatPinPageBytes = 828511`, derived from these limits:
+
+- Fixed row bytes: 186 bytes (JSON envelope, field names, colons, commas, and 3 UUIDs of 36 bytes).
+- Bounded strings worst-case: 6 × (200 + 45) = 1470 bytes (`json.NewEncoder` HTML-escapes `&`, `<`,
+  `>`, and control characters to 6-byte sequences).
+- Maximum row bytes: 186 + 1470 = 1656 bytes.
+- Full page of 500 rows: 9 (prefix `{"pins":[`) + 500 × 1656 + 499 (commas) + 3 (suffix `]}\n`) = 828511 bytes.
+
+A conforming single row cannot exceed 1656 bytes. Adaptive page halving in `reconcile-pins` provides
+defence in depth against deployment skew or producer regressions that yield an oversized multi-row page.
 
 ## Parked recovery orders (TKT-146)
 

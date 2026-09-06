@@ -208,33 +208,27 @@ type SeatPin struct {
 }
 
 // maxSeatPinPageBytes bounds a pin page's response body so a runaway body cannot be read into
-// memory. It is NOT derived from a producer contract, because there isn't one: `seat_identity`
-// and `pinned_by` are unbounded `text` (migration 0011), and catalog bounds only the whole pin
-// REQUEST at 1 MiB — so a single identity can approach that on its own. 4 MiB therefore leaves
-// room for one worst-case row plus JSON overhead, and a page that still overflows is reported as
+// memory. Derived from catalog's declared OpenAPI contract and store bounds (TKT-143):
+//
+//   fixed row bytes  = 2 braces + 5 field names with quotes/colons + 4 commas + 3x36 UUID = 186
+//   bounded strings  = 6 x (200 + 45) = 1470       (6 bytes/char worst case: json.NewEncoder HTML-escapes
+//                                                  '&', '<', '>', U+2028, U+2029 into 6-byte sequences)
+//   max row          = 186 + 1470 = 1656
+//   page             = len(`{"pins":[`)=9 + 500*1656 + 499 commas + len("]}\n")=3 = 828511
+//
+// 500 is catalog's store.MaxSeatMapPinPage. If a page overflows this cap, it is reported as
 // ErrSeatPinPageTooLarge so the caller can ask for fewer rows instead of giving up.
-const maxSeatPinPageBytes = 4 << 20
+const maxSeatPinPageBytes = 828511
 
 // ErrSeatPinPageTooLarge reports that the page did not fit the byte cap. It is a RETRYABLE
 // signal, not a dead end: the caller re-asks for fewer rows. Aborting instead would wedge the
 // drain permanently, since the keyset cursor only advances past rows that were read — one
 // oversized page would make every later page unreachable (ai-review pass 3).
 //
-// KNOWN LIMITATION, accepted at the review churn cap (ai-review pass 4), tracked by TKT-143.
-// A SINGLE row can still exceed the cap, and then the drain does stop at that cursor. The 4 MiB
-// figure above is not a proof: catalog serializes with json.NewEncoder, which HTML-escapes
-// '<', '>' and '&' into six-byte sequences, so a ~1 MiB field of those lists as ~6 MiB (control
-// characters expand the same way, which is why disabling HTML escaping would narrow this rather
-// than close it). Closing it needs a producer-side length bound and a cap derived from it — a
-// public-contract change with a migration story for existing data, which is TKT-143's decision,
-// not this command's.
-//
-// Why it is a limitation and not a defect worth blocking on: nothing this system writes can
-// trigger it. `pinned_by` is `"hold:" + uuid` (fixed length) and seat identities are composed
-// server-side from labels. It takes a caller with the internal token deliberately writing a
-// megabyte-scale identity. If that ever happens the failure is loud and names the cursor, no pin
-// is wrongly deleted, and the pre-existing manual batch-unpin remedy still works — the tool
-// stops early rather than doing damage.
+// TKT-143 closed the previous megabyte-scale row limitation: seat_identity (1..200) and
+// pinned_by (1..45) are now bounded in catalog's schema, migrations, and contract. A conforming
+// single row cannot exceed 1656 bytes. An overflow signals deployment skew or a producer
+// regression, and halving the page size recovers when the total page exceeds 828511 bytes.
 var ErrSeatPinPageTooLarge = errors.New("catalog seat pin page exceeds the response cap")
 
 // ListSeatPins reads one bounded, keyset-ordered page of catalog's pin table (TKT-112).

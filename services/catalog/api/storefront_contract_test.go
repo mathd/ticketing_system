@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"ticketing/services/catalog/internal/store"
 )
 
 func storefrontProperty(t *testing.T, doc *openapi3.T, schemaName, propertyName string) *openapi3.Schema {
@@ -145,5 +147,175 @@ func TestBackofficeOrganizerAssertionWireFormat(t *testing.T) {
 		if pattern.MatchString(malformed) {
 			t.Errorf("organizer assertion pattern accepts %q", malformed)
 		}
+	}
+}
+
+// TestInternalSeatMapPinContract (TKT-143):
+// Asserts that the catalog contract declares the internal pin operations and schemas with exact bounds,
+// required fields, maxItems matching store.MaxSeatMapPinPage, and additionalProperties: false.
+// Mutation check: changing any bound, removing a required field, or toggling additionalProperties fails this test.
+func TestInternalSeatMapPinContract(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqSchemaRef := doc.Components.Schemas["SeatPinRequest"]
+	if reqSchemaRef == nil || reqSchemaRef.Value == nil {
+		t.Fatal("schema SeatPinRequest is missing")
+	}
+	reqSchema := reqSchemaRef.Value
+
+	pinSchemaRef := doc.Components.Schemas["SeatMapPin"]
+	if pinSchemaRef == nil || pinSchemaRef.Value == nil {
+		t.Fatal("schema SeatMapPin is missing")
+	}
+	pinSchema := pinSchemaRef.Value
+
+	pageSchemaRef := doc.Components.Schemas["SeatMapPinPage"]
+	if pageSchemaRef == nil || pageSchemaRef.Value == nil {
+		t.Fatal("schema SeatMapPinPage is missing")
+	}
+	pageSchema := pageSchemaRef.Value
+
+	// 1. additionalProperties: false
+	for _, pair := range []struct {
+		name   string
+		schema *openapi3.Schema
+	}{
+		{"SeatPinRequest", reqSchema},
+		{"SeatMapPin", pinSchema},
+		{"SeatMapPinPage", pageSchema},
+	} {
+		if pair.schema.AdditionalProperties.Has == nil || *pair.schema.AdditionalProperties.Has {
+			t.Errorf("schema %s must have additionalProperties: false", pair.name)
+		}
+	}
+
+	// 2. Required lists
+	assertRequired := func(s *openapi3.Schema, name string, expected []string) {
+		t.Helper()
+		if len(s.Required) != len(expected) {
+			t.Fatalf("%s required = %v, want %v", name, s.Required, expected)
+		}
+		for _, req := range expected {
+			found := false
+			for _, r := range s.Required {
+				if r == req {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("%s missing required field %q", name, req)
+			}
+		}
+	}
+	assertRequired(reqSchema, "SeatPinRequest", []string{"organizer_id", "seat_identities", "pinned_by"})
+	assertRequired(pinSchema, "SeatMapPin", []string{"id", "organizer_id", "seat_map_id", "seat_identity", "pinned_by"})
+	assertRequired(pageSchema, "SeatMapPinPage", []string{"pins"})
+
+	// 3. Field bounds
+	// SeatPinRequest.seat_identities
+	seatIdentsProp := reqSchema.Properties["seat_identities"]
+	if seatIdentsProp == nil || seatIdentsProp.Value == nil {
+		t.Fatal("SeatPinRequest.seat_identities is missing")
+	}
+	if seatIdentsProp.Value.MinItems != 1 {
+		t.Fatalf("SeatPinRequest.seat_identities minItems = %d, want 1", seatIdentsProp.Value.MinItems)
+	}
+	if seatIdentsProp.Value.Items == nil || seatIdentsProp.Value.Items.Value == nil {
+		t.Fatal("SeatPinRequest.seat_identities.items is missing")
+	}
+	itemSchema := seatIdentsProp.Value.Items.Value
+	if itemSchema.MinLength != 1 || itemSchema.MaxLength == nil || *itemSchema.MaxLength != store.MaxSeatIdentityCharacters {
+		t.Fatalf("SeatPinRequest.seat_identities item bounds = [%d, %v], want [1, %d]",
+			itemSchema.MinLength, itemSchema.MaxLength, store.MaxSeatIdentityCharacters)
+	}
+
+	// SeatPinRequest.pinned_by
+	pinnedByProp := reqSchema.Properties["pinned_by"]
+	if pinnedByProp == nil || pinnedByProp.Value == nil {
+		t.Fatal("SeatPinRequest.pinned_by is missing")
+	}
+	if pinnedByProp.Value.MinLength != 1 || pinnedByProp.Value.MaxLength == nil || *pinnedByProp.Value.MaxLength != store.MaxPinnedByCharacters {
+		t.Fatalf("SeatPinRequest.pinned_by bounds = [%d, %v], want [1, %d]",
+			pinnedByProp.Value.MinLength, pinnedByProp.Value.MaxLength, store.MaxPinnedByCharacters)
+	}
+
+	// SeatMapPin.seat_identity
+	pinIdentityProp := pinSchema.Properties["seat_identity"]
+	if pinIdentityProp == nil || pinIdentityProp.Value == nil {
+		t.Fatal("SeatMapPin.seat_identity is missing")
+	}
+	if pinIdentityProp.Value.MinLength != 1 || pinIdentityProp.Value.MaxLength == nil || *pinIdentityProp.Value.MaxLength != store.MaxSeatIdentityCharacters {
+		t.Fatalf("SeatMapPin.seat_identity bounds = [%d, %v], want [1, %d]",
+			pinIdentityProp.Value.MinLength, pinIdentityProp.Value.MaxLength, store.MaxSeatIdentityCharacters)
+	}
+
+	// SeatMapPin.pinned_by
+	pinPinnedByProp := pinSchema.Properties["pinned_by"]
+	if pinPinnedByProp == nil || pinPinnedByProp.Value == nil {
+		t.Fatal("SeatMapPin.pinned_by is missing")
+	}
+	if pinPinnedByProp.Value.MinLength != 1 || pinPinnedByProp.Value.MaxLength == nil || *pinPinnedByProp.Value.MaxLength != store.MaxPinnedByCharacters {
+		t.Fatalf("SeatMapPin.pinned_by bounds = [%d, %v], want [1, %d]",
+			pinPinnedByProp.Value.MinLength, pinPinnedByProp.Value.MaxLength, store.MaxPinnedByCharacters)
+	}
+
+	// SeatMapPinPage.pins maxItems == store.MaxSeatMapPinPage
+	pinsProp := pageSchema.Properties["pins"]
+	if pinsProp == nil || pinsProp.Value == nil {
+		t.Fatal("SeatMapPinPage.pins is missing")
+	}
+	if pinsProp.Value.MaxItems == nil || *pinsProp.Value.MaxItems != store.MaxSeatMapPinPage {
+		t.Fatalf("SeatMapPinPage.pins maxItems = %v, want %d", pinsProp.Value.MaxItems, store.MaxSeatMapPinPage)
+	}
+
+	// 4. Query parameters on listSeatMapPins
+	listOp := doc.Paths.Find("/internal/seat-map-pins")
+	if listOp == nil || listOp.Get == nil {
+		t.Fatal("GET /internal/seat-map-pins is missing")
+	}
+	limitParam := listOp.Get.Parameters.GetByInAndName("query", "limit")
+	if limitParam == nil || limitParam.Schema == nil || limitParam.Schema.Value == nil {
+		t.Fatal("query param limit on listSeatMapPins is missing")
+	}
+	limitSchema := limitParam.Schema.Value
+	if limitSchema.Max == nil || *limitSchema.Max != float64(store.MaxSeatMapPinPage) {
+		t.Fatalf("listSeatMapPins limit maximum = %v, want %d", limitSchema.Max, store.MaxSeatMapPinPage)
+	}
+	if limitSchema.Min == nil || *limitSchema.Min != 1 {
+		t.Fatalf("listSeatMapPins limit minimum = %v, want 1", limitSchema.Min)
+	}
+
+	// 5. Check the operations exist with security: []
+	pinPath := doc.Paths.Find("/internal/seat-maps/{id}/pins")
+	if pinPath == nil || pinPath.Post == nil {
+		t.Fatal("POST /internal/seat-maps/{id}/pins is missing")
+	}
+	if pinPath.Post.OperationID != "pinSeatMapSeats" {
+		t.Fatalf("operationId = %q, want pinSeatMapSeats", pinPath.Post.OperationID)
+	}
+	if pinPath.Post.Security == nil || len(*pinPath.Post.Security) != 0 {
+		t.Fatal("POST /internal/seat-maps/{id}/pins must declare security: []")
+	}
+
+	unpinPath := doc.Paths.Find("/internal/seat-maps/{id}/unpins")
+	if unpinPath == nil || unpinPath.Post == nil {
+		t.Fatal("POST /internal/seat-maps/{id}/unpins is missing")
+	}
+	if unpinPath.Post.OperationID != "unpinSeatMapSeats" {
+		t.Fatalf("operationId = %q, want unpinSeatMapSeats", unpinPath.Post.OperationID)
+	}
+	if unpinPath.Post.Security == nil || len(*unpinPath.Post.Security) != 0 {
+		t.Fatal("POST /internal/seat-maps/{id}/unpins must declare security: []")
+	}
+
+	if listOp.Get.OperationID != "listSeatMapPins" {
+		t.Fatalf("operationId = %q, want listSeatMapPins", listOp.Get.OperationID)
+	}
+	if listOp.Get.Security == nil || len(*listOp.Get.Security) != 0 {
+		t.Fatal("GET /internal/seat-map-pins must declare security: []")
 	}
 }

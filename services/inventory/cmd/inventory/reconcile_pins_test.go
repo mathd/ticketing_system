@@ -346,12 +346,11 @@ func TestReconcilePinsGroupsUnpinsPerClaim(t *testing.T) {
 	}
 }
 
-// TestReconcilePinsShrinksThePageRatherThanStalling closes ai-review pass 3's finding. The
-// consumer caps a page's bytes, but catalog bounds neither `seat_identity` nor `pinned_by` (both
-// unbounded text; the pin request is capped at 1 MiB, so ONE identity can be nearly that big).
-// A page that overflows the byte cap used to abort the run at that cursor — and since the cursor
-// only advances past rows that were successfully read, the drain could never get past it. One
-// oversized page permanently disabled the tool built to reclaim pins.
+// TestReconcilePinsShrinksThePageRatherThanStalling verifies adaptive page shrinking as defence in depth
+// (TKT-143). While catalog's contract bounds seat_identity (200) and pinned_by (45) such that a conforming
+// 500-row page fits within the consumer's byte cap, adaptive halving recovers when a multi-row page overflows
+// due to deployment skew or producer regression. Halving cannot rescue a single oversized row; in that case
+// it aborts loudly rather than spinning or skipping.
 func TestReconcilePinsShrinksThePageRatherThanStalling(t *testing.T) {
 	dead := uuid.New()
 	pins := []consumer.SeatPin{}
