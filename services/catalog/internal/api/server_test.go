@@ -2775,7 +2775,7 @@ func TestListPublicVenuesRejectsBadOrganizer(t *testing.T) {
 // TestInternalSeatMapPinsRead covers the reconciliation read route (TKT-112): it is
 // credential-guarded like every other /internal path, it bounds the page, and it hands back
 // the pin fields the reconciler needs. Catalog declares some internal operations and hand-mounts
-// others; this ticket moves 3 declared to 6, against 10 that stay hand-mounted. It does not
+// others; this ticket moves 3 declared to 6, against 7 that stay hand-mounted. It does not
 // unify the convention and must not claim to.
 func TestInternalSeatMapPinsRead(t *testing.T) {
 	e := newEnv(t)

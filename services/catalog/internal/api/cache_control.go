@@ -17,7 +17,7 @@ import (
 // operator believes the cache is off, and reads keep coming from memory.
 //
 // HAND-MOUNTED AND UNDECLARED. Catalog declares some internal operations and
-// hand-mounts others; TKT-143 moves 3 declared to 6, against 10 that stay
+// hand-mounts others; TKT-143 moves 3 declared to 6, against 7 that stay
 // hand-mounted. It does not unify the convention and must not claim to.
 // Undeclared internal routes are service-to-service and outside the OpenAPI
 // contract, so the response validator skips them.

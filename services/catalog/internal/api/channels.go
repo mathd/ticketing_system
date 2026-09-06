@@ -93,7 +93,7 @@ func (s *Server) CreateChannel(w http.ResponseWriter, r *http.Request) {
 // So they follow catalog's other hand-mounted guarded reads (getTicketType,
 // getPublishedPerformance, getPoolOfferState): hand-mounted, undeclared,
 // 401 on refusal, behind guardInternalSurface. Catalog declares some internal
-// operations and hand-mounts others; TKT-143 moves 3 declared to 6, against 10
+// operations and hand-mounts others; TKT-143 moves 3 declared to 6, against 7
 // that stay hand-mounted. It does not unify the convention and must not claim to.
 //
 // The cost, stated: no generated types and no ADR-028 response validation on
