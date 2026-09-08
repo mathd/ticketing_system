@@ -19,13 +19,137 @@ package api
 // the scope rather than trusting it -- see reserveWithScope.
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// ResellerCommissionFeeCode is the fee code for reseller commission.
+const ResellerCommissionFeeCode = "reseller_commission"
+
+// partnerIdempotencyKey derives an isolated idempotency key for partner confirms.
+// It scopes the key by organizer and reseller so different partners using the same
+// raw key do not collide. Rotated credentials for the same partner replay correctly
+// because credential ID is not included.
+func partnerIdempotencyKey(organizerID, resellerID uuid.UUID, rawKey string) string {
+	sum := sha256.Sum256([]byte(rawKey))
+	return fmt.Sprintf("partner:%s:%s:%x", organizerID, resellerID, sum)
+}
+
+// validatePartnerCommission validates that the persisted fee resolution snapshot
+// carries an explicit, valid reseller commission split for the authenticated reseller.
+func validatePartnerCommission(snapshot []byte, channelCode string, resellerID uuid.UUID) error {
+	if len(snapshot) == 0 {
+		return errors.New("missing fee resolution snapshot")
+	}
+
+	var env struct {
+		Breakdown []struct {
+			FeeCode   string `json:"fee_code"`
+			Incidence string `json:"incidence"`
+			Amount    int64  `json:"amount"`
+			Currency  string `json:"currency"`
+		} `json:"breakdown"`
+		Resolution struct {
+			Fees []struct {
+				FeeCode string `json:"fee_code"`
+				Split   struct {
+					Mode   string `json:"mode"`
+					Winner *struct {
+						ChannelCode *string `json:"channel_code"`
+						Parts       []struct {
+							Payee struct {
+								PayeeID           string  `json:"payee_id"`
+								Kind              string  `json:"kind"`
+								DisplayName       string  `json:"display_name"`
+								ExternalReference *string `json:"external_reference"`
+							} `json:"payee"`
+							ShareBps int32 `json:"share_bps"`
+						} `json:"parts"`
+					} `json:"winner"`
+				} `json:"split"`
+			} `json:"fees"`
+		} `json:"resolution"`
+	}
+
+	if err := json.Unmarshal(snapshot, &env); err != nil {
+		return fmt.Errorf("unreadable fee snapshot: %w", err)
+	}
+
+	hasBreakdown := false
+	for _, b := range env.Breakdown {
+		if b.FeeCode == ResellerCommissionFeeCode {
+			hasBreakdown = true
+			break
+		}
+	}
+	if !hasBreakdown {
+		return fmt.Errorf("missing %s in fee breakdown", ResellerCommissionFeeCode)
+	}
+
+	var matchedFee *struct {
+		FeeCode string `json:"fee_code"`
+		Split   struct {
+			Mode   string `json:"mode"`
+			Winner *struct {
+				ChannelCode *string `json:"channel_code"`
+				Parts       []struct {
+					Payee struct {
+						PayeeID           string  `json:"payee_id"`
+						Kind              string  `json:"kind"`
+						DisplayName       string  `json:"display_name"`
+						ExternalReference *string `json:"external_reference"`
+					} `json:"payee"`
+					ShareBps int32 `json:"share_bps"`
+				} `json:"parts"`
+			} `json:"winner"`
+		} `json:"split"`
+	}
+
+	for i := range env.Resolution.Fees {
+		if env.Resolution.Fees[i].FeeCode == ResellerCommissionFeeCode {
+			matchedFee = &env.Resolution.Fees[i]
+			break
+		}
+	}
+	if matchedFee == nil {
+		return fmt.Errorf("missing %s in fee resolution", ResellerCommissionFeeCode)
+	}
+
+	if matchedFee.Split.Mode != "split" || matchedFee.Split.Winner == nil {
+		return fmt.Errorf("reseller commission has no winning split schedule")
+	}
+
+	winner := matchedFee.Split.Winner
+	if winner.ChannelCode == nil || *winner.ChannelCode != channelCode {
+		return fmt.Errorf("commission winning split channel %v does not match reservation channel %q", winner.ChannelCode, channelCode)
+	}
+
+	expectedRef := fmt.Sprintf("reseller:%s", resellerID)
+	var matches int
+	for _, part := range winner.Parts {
+		if part.Payee.ExternalReference != nil && *part.Payee.ExternalReference == expectedRef {
+			matches++
+		}
+	}
+
+	if matches == 0 {
+		return fmt.Errorf("no commission payee matches reseller %s (expected external_reference %q)", resellerID, expectedRef)
+	}
+	if matches > 1 {
+		return fmt.Errorf("ambiguous commission payees: %d payees match reseller %s", matches, resellerID)
+	}
+
+	return nil
+}
 
 // requirePartnerScope resolves the authenticated scope, refusing when there is
 // none.
@@ -195,4 +319,95 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		ChannelCode: scope.ChannelCode,
 		Available:   available,
 	})
+}
+
+// partnerConfirm completes a sale on merchant-of-record terms for an authenticated partner.
+func (s *Server) partnerConfirm(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requirePartnerScope(w, r)
+	if !ok {
+		return
+	}
+	if !s.limitPartner(w, scope) {
+		return
+	}
+	s.confirmWithScope(w, r, scope)
+}
+
+func (s *Server) confirmWithScope(w http.ResponseWriter, r *http.Request, scope partnerScope) {
+	// The same bound every other idempotent write applies (checkout, reserve, the
+	// exchange). A partner-only spelling of this guard would drift from its three
+	// siblings, and the header is attacker-controlled on a write path.
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 200 {
+		write(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key required"})
+		return
+	}
+	// decode(), not a bare json.Decoder, and the difference is load-bearing twice
+	// over. It bounds the body at 1MB, and it sets DisallowUnknownFields -- which is
+	// the GO-tier half of "a partner cannot name its own reseller or channel". The
+	// contract refuses those fields too, and this must not depend on the contract:
+	// reserveWithScope makes the same argument for overwriting rather than trusting
+	// the body's channel, as the second line of defence for the day the contract is
+	// edited.
+	var in checkoutRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" ||
+		!strings.Contains(in.Email, "@") || strings.TrimSpace(in.PaymentToken) == "" {
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid checkout"})
+		return
+	}
+	x, err := s.loadPartnerReservation(r.Context(), in.ReservationID, scope.OrganizerID, scope.ResellerID, scope.ChannelCode)
+	if err != nil {
+		code, message := persistenceReadProblem(err)
+		if code != http.StatusNotFound {
+			slog.Default().ErrorContext(r.Context(), "load partner reservation", "err", err)
+			write(w, code, map[string]string{"error": message})
+			return
+		}
+		write(w, code, map[string]string{"error": "reservation " + message})
+		return
+	}
+	if x.IsSeated {
+		write(w, http.StatusConflict, map[string]string{
+			"error": "this slot is seated and cannot be sold by quantity. A seated claim carries " +
+				"no channel and does not consume a channel allocation -- TKT-176 owns that seam.",
+			"code": string(SeatedPoolUnsupported),
+		})
+		return
+	}
+	// A commission the snapshot cannot support is a CONFIGURATION conflict, not a
+	// malformed request: the partner sent a valid confirm for a reservation whose
+	// fee resolution does not name it. 409 says "the state is wrong", which is the
+	// true statement and the one the contract declares for this case; 400 would tell
+	// an integrator to fix a request that is already correct.
+	//
+	// The reason is logged, never returned. The message names schedules, channels and
+	// payees, which is the payout matrix -- the same thing SelectSplitSchedule drops
+	// ineligible schedules to avoid publishing (splits.go), and split shares are the
+	// most sensitive configuration in this epic.
+	if err := validatePartnerCommission(x.FeeSnapshot, x.ChannelCode, scope.ResellerID); err != nil {
+		slog.Default().WarnContext(r.Context(), "partner commission unusable",
+			"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "err", err)
+		write(w, http.StatusConflict, map[string]string{
+			"error": "this reservation has no reseller commission configured for your channel",
+		})
+		return
+	}
+	// The buyer attribution, resolved exactly as public checkout resolves it. A
+	// partner sale can still carry a customer assertion: the partner is the SELLER,
+	// and the buyer is whoever the assertion names.
+	//
+	// Passing uuid.NullUUID{} unconditionally instead would silently downgrade a
+	// forged or expired assertion to a guest order -- the exact failure checkout
+	// answers 401 for, so that a buyer is never told a purchase succeeded under an
+	// attribution that did not. The operation declares 401 and this is what returns it.
+	customer, err := customerFromRequest(s.assertionKey, r.Header.Get(assertionHeader), time.Now())
+	if err != nil {
+		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid customer assertion"})
+		return
+	}
+	internalKey := partnerIdempotencyKey(scope.OrganizerID, scope.ResellerID, key)
+	s.executeCheckout(w, r, x.reservation, internalKey, in, customer)
 }

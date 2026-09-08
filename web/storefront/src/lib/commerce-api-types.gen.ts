@@ -240,6 +240,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/partners/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a partner reservation under merchant-of-record terms.
+         * @description The confirm a reseller partner calls to complete an held reservation (TKT-277). Like the reserve above, the channel and reseller are not parameters: they are read from the credential and verified against the reservation. Our PSP charges the buyer under merchant-of-record terms, so payment.captured is recorded and the reseller commission settles as a fee line to the partner payee.
+         */
+        post: operations["confirmPartnerOrder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/operational-holds/{id}/convert": {
         parameters: {
             query?: never;
@@ -1374,6 +1394,74 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
+        };
+    };
+    confirmPartnerOrder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Checkout"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderResult"];
+                };
+            };
+            /** @description Recovery pending */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderPending"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthorized"];
+            /** @description Declined */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderFailure"];
+                };
+            };
+            404: components["responses"]["Error"];
+            /** @description No-side-effect timeout */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderFailure"];
+                };
+            };
+            /** @description Checkout conflict or payment in progress, or seated pool unsupported */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderConflict"] | components["schemas"]["Error"];
+                };
+            };
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     convertOperationalHold: {

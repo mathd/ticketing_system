@@ -6,9 +6,10 @@ Date: 2026-08-10
 
 Accepted
 
-Ticket: TKT-240 (epic TKT-17, US-CH6). Extends ADR-043 (where a service auth guard lives) and
-ADR-051/ADR-055 (rate limiting) to a new surface; amends neither. Positions the new class against
-ADR-042 (staff), ADR-043 (internal service token) and ADR-049 (customer).
+Ticket: TKT-240 (epic TKT-17, US-CH6); extended by TKT-277 (partner confirm and settlement leg).
+Extends ADR-043 (where a service auth guard lives) and ADR-051/ADR-055 (rate limiting) to a new
+surface; amends neither. Positions the new class against ADR-042 (staff), ADR-043 (internal service
+token) and ADR-049 (customer).
 
 **Number note:** this is 056 and not 055 because at the time `ADR-055` was used *twice* —
 the on-sale write rate limiting ADR from the security review and TKT-239's presale unlock codes,
@@ -169,6 +170,30 @@ working feature.
 No foreign key to `reseller_credentials`: attribution is the historical fact of who sold this, and an
 FK would let revoking or rotating a credential rewrite or block the record of past sales.
 
+### 7. Partner confirm write operation and settlement leg (TKT-277)
+
+Partner confirm is a write operation at `POST /partners/orders`. The operation completes sales on merchant-of-record terms.
+
+**SQL scope predicate:**
+The handler loads the target reservation with one SQL query that binds all scope terms at the same time:
+`WHERE id = $1 AND organizer_id = $2 AND channel_code = $3 AND reseller_id = $4`.
+A missing row, a row for a different organizer, a row for a different channel, a row for a different reseller, or a public reservation with a null reseller, returns `404 Not Found`. The endpoint does not return `403 Forbidden` for a reservation that belongs to another caller. A `403` status confirms that the reservation exists.
+
+**Public route isolation:**
+Public checkout at `POST /orders` selects reservations with `WHERE id = $1 AND reseller_id IS NULL`. A caller cannot confirm a partner reservation through the public route.
+
+**Idempotency namespace:**
+The handler builds an isolated idempotency key before it starts checkout:
+`partner:<organizer_id>:<reseller_id>:<sha256(rawKey)>`.
+This key has a length of 146 characters. It remains below the 200 character limit enforced by the payments service and the platform payment service provider. The key namespace prevents collision and prevents probing between partners and organizers.
+
+**Beneficiary matching stopgap:**
+The partner confirm handler validates the fee resolution snapshot from catalog. The `reseller_commission` fee line must include a split schedule with a matching channel code. The schedule must contain exactly one beneficiary whose `external_reference` equals `reseller:<UUID>`.
+Matching on `external_reference` is a temporary mechanism. A formal reseller-to-payee binding model (TKT-23) will replace it.
+
+**Adversary model:**
+The ledger and confirm path enforce honest-writer consistency (ADR-021). They do not give tamper evidence.
+
 ## What this does not protect against
 
 Named explicitly, per ADR-021, because "secure" without an adversary is not a claim:
@@ -207,7 +232,20 @@ Named explicitly, per ADR-021, because "secure" without an adversary is not a cl
   Until then, **do not describe a partner as confined to its channel on any write path.** There is
   no write path. Adding one without TKT-246 would ship an operation whose stated security property
   is false.
+- **Write path completion (TKT-246 and TKT-277):** TKT-246 delivered partner holds against channel
+  allocations. TKT-277 delivered partner confirm (`POST /partners/orders`) on merchant-of-record
+  terms, completing the sale and settling the reseller commission leg.
 - The **seated** half of that seam stays open and stays TKT-176's. A seated claim carries no channel
   at all, so the partner surface refuses a seated pool (`seated_pool_unsupported`) rather than
   half-fixing it. A test pins the seated hold body as channel-free; if it fails, TKT-176 was closed
-  by accident.
+  by accident. Partner confirm (TKT-277) checks `seat_identities` and returns `409 OrderConflict`
+  with code `seated_pool_unsupported` if a partner reservation is seated.
+
+## References
+
+- TKT-240 (partner credential identity)
+- TKT-246 (partner hold against channel allocation)
+- TKT-277 (partner confirm and reseller settlement leg)
+- [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) (honest-writer consistency model)
+- [ADR-043](./ADR-043-where-a-service-auth-guard-lives.md) (service auth guard)
+- [ADR-048](./ADR-048-settlement-ledger.md) (settlement ledger)

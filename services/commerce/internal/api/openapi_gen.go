@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -850,6 +851,16 @@ type GetPartnerAvailabilityParams struct {
 	SlotId openapi_types.UUID `form:"slot_id" json:"slot_id"`
 }
 
+// ConfirmPartnerOrderParams defines parameters for ConfirmPartnerOrder.
+type ConfirmPartnerOrderParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// ConfirmPartnerOrder409JSONResponseBody defines parameters for ConfirmPartnerOrder.
+type ConfirmPartnerOrder409JSONResponseBody struct {
+	union json.RawMessage
+}
+
 // CreatePartnerReservationParams defines parameters for CreatePartnerReservation.
 type CreatePartnerReservationParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
@@ -901,6 +912,9 @@ type CheckoutJSONRequestBody = Checkout
 
 // ClaimGuestOrderJSONRequestBody defines body for ClaimGuestOrder for application/json ContentType.
 type ClaimGuestOrderJSONRequestBody = OrderClaim
+
+// ConfirmPartnerOrderJSONRequestBody defines body for ConfirmPartnerOrder for application/json ContentType.
+type ConfirmPartnerOrderJSONRequestBody = Checkout
 
 // CreatePartnerReservationJSONRequestBody defines body for CreatePartnerReservation for application/json ContentType.
 type CreatePartnerReservationJSONRequestBody = PartnerReservationCreate
@@ -1000,4 +1014,66 @@ func (a OrderFailure) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(object)
+}
+
+// AsOrderConflict returns the union data inside the ConfirmPartnerOrder409JSONResponseBody as a OrderConflict
+func (t ConfirmPartnerOrder409JSONResponseBody) AsOrderConflict() (OrderConflict, error) {
+	var body OrderConflict
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromOrderConflict overwrites any union data inside the ConfirmPartnerOrder409JSONResponseBody as the provided OrderConflict
+func (t *ConfirmPartnerOrder409JSONResponseBody) FromOrderConflict(v OrderConflict) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeOrderConflict performs a merge with any union data inside the ConfirmPartnerOrder409JSONResponseBody, using the provided OrderConflict
+func (t *ConfirmPartnerOrder409JSONResponseBody) MergeOrderConflict(v OrderConflict) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsError returns the union data inside the ConfirmPartnerOrder409JSONResponseBody as a Error
+func (t ConfirmPartnerOrder409JSONResponseBody) AsError() (Error, error) {
+	var body Error
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromError overwrites any union data inside the ConfirmPartnerOrder409JSONResponseBody as the provided Error
+func (t *ConfirmPartnerOrder409JSONResponseBody) FromError(v Error) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeError performs a merge with any union data inside the ConfirmPartnerOrder409JSONResponseBody, using the provided Error
+func (t *ConfirmPartnerOrder409JSONResponseBody) MergeError(v Error) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ConfirmPartnerOrder409JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ConfirmPartnerOrder409JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
 }

@@ -58,9 +58,11 @@ restructured the most sensitive path in the system to buy something it already h
 
 ### 3. Sum-exactness at two levels, deliberately
 
-- **Application** (`BuildSettlementEntries`) refuses a plan before the provider is called: an
-  unattributable fee, a persisted split that does not balance, a currency mismatch, totals that
-  disagree with the fees they claim to describe, a captured amount that differs from the plan.
+- **Application** (`BuildSettlementEntries`) refuses an invalid plan before the provider is called: a
+  persisted split that does not balance, a currency mismatch, totals that disagree with the fees they
+  claim to describe, or a captured amount that differs from the plan. A fee that resolved `unsplit` is
+  accepted as collected-and-unattributed (one fee entry without a payee), while partner confirm
+  (TKT-277) requires an explicit reseller commission payee.
 - **Database**, two deferred constraint triggers: the entry set for a capture must sum to the
   journalled amount, **and** a `payment.captured` fact must have entries at all.
 
@@ -185,25 +187,36 @@ entries into the signed payload and deciding what a chain over two tables means 
 That is a decision worth taking on its own evidence, not as a side effect of building the ledger.
 Until then, do not describe these entries as tamper-evident.
 
+### 5. Reseller commission on merchant-of-record terms (TKT-277)
+
+Partner sales operate on merchant-of-record terms. The platform PSP charges the buyer, which creates
+a standard `payment.captured` fact. The partner commission is a fee line with a payee in the
+settlement plan. Partner confirm (`POST /partners/orders`) checks the fee resolution snapshot to
+ensure `reseller_commission` carries a split with a payee whose external reference matches the
+reseller. Generic settlement still permits unattributed fees, but partner checkout strictly requires
+the commission leg. The ledger enforces honest-writer consistency through database triggers; it is
+not tamper-evident, and records an obligation rather than a payout.
+
 ## Consequences
 
 - **Positive:** a capture and its attribution commit together, so "captured but unattributed" is not
   a state the database can hold · the absorbed-fee case is proved by an identity rather than by
   inspection · replay writes nothing new, by construction · the allocator is reused, not
-  reimplemented.
+  reimplemented · reseller commission leg settles seamlessly in the existing ledger.
 - **Negative:** every captured charge must now carry a settlement plan, so a caller that omits one is
-  refused — including direct `/internal/charges` fixtures, which had to be updated · the ledger is
+  refused (including direct `/internal/charges` fixtures, which had to be updated) · the ledger is
   not tamper-evident, and says so · there is no settlement read surface for operators yet (TKT-23) ·
-  a fee that resolved `unsplit` refuses the capture, which means payout configuration **can** stop a
-  capture even though it deliberately cannot stop a reserve.
+  an unsplit fee in generic checkout is recorded as collected-and-unattributed so that payout
+  configuration does not stop a purchase, but partner confirm (TKT-277) enforces a valid reseller
+  commission split before charge.
 - **Not decided here:** reversal. Nothing un-attributes a settled fee on refund, exchange or
   cancellation. TKT-215 left a refund returning face value only, and ADR-046 records that; this
-  ledger now makes the other half concrete — the payee attribution of a refunded fee stands. That is
+  ledger now makes the other half concrete: the payee attribution of a refunded fee stands. That is
   the epic's largest remaining open question and it is named, not hidden.
 
 ## References
 
-- TKT-217 (this ticket) · TKT-6 (epic) · TKT-214, TKT-215, TKT-216
+- TKT-217 (this ticket) · TKT-277 (partner confirm and settlement leg) · TKT-6 (epic) · TKT-214, TKT-215, TKT-216
 - [ADR-047](./ADR-047-payees-and-split-schedules.md) — the allocator, and §5's two integrity escapes
 - [ADR-046](./ADR-046-fee-rules-representation.md) — §2 zero-amount fees, §3 incidence
 - [ADR-003](./ADR-003-append-only-audit-trail.md) · [ADR-011](./ADR-011-checkout-journal-protocol.md)

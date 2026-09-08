@@ -355,6 +355,44 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
+  /partners/orders:
+    post:
+      operationId: confirmPartnerOrder
+      summary: Confirm a partner reservation under merchant-of-record terms.
+      description: >
+        The confirm a reseller partner calls to complete an held reservation
+        (TKT-277). Like the reserve above, the channel and reseller are not
+        parameters: they are read from the credential and verified against the
+        reservation. Our PSP charges the buyer under merchant-of-record terms,
+        so payment.captured is recorded and the reseller commission settles as
+        a fee line to the partner payee.
+      security: [{PartnerCredential: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Checkout'}
+      responses:
+        '200': {description: Completed, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResult'}}}}
+        '202': {description: Recovery pending, content: {application/json: {schema: {$ref: '#/components/schemas/OrderPending'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '402': {description: Declined, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '408': {description: No-side-effect timeout, content: {application/json: {schema: {$ref: '#/components/schemas/OrderFailure'}}}}
+        '409':
+          description: Checkout conflict or payment in progress, or seated pool unsupported
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - {$ref: '#/components/schemas/OrderConflict'}
+                  - {$ref: '#/components/schemas/Error'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /internal/operational-holds/{id}/convert:
     post:
       operationId: convertOperationalHold

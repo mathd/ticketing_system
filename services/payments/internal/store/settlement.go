@@ -66,9 +66,10 @@ type FeeLine struct {
 	Incidence string
 	Amount    int64
 	Currency  string
-	// Shares are the winning split's parts. Empty means the fee resolved
-	// `unsplit`, which this ledger refuses — an unattributable fee is exactly
-	// what it exists to prevent.
+	// Shares are the parts of the winning split. When empty, the fee resolved
+	// `unsplit`. Generic settlement records an unattributed fee entry without a payee,
+	// so the sale completes and the ledger stays balanced. Partner confirm requires
+	// a winning split with a payee for reseller commissions.
 	Shares []splits.Share
 	// Payees carries the snapshotted identity for each share, keyed by payee id.
 	Payees map[uuid.UUID]PayeeRef
