@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -390,4 +391,159 @@ func TestPartnerConfirmBoundsTheIdempotencyKey(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for an over-long Idempotency-Key", rec.Code)
 	}
+}
+
+// unsplitCommissionSnapshot is a COHERENT snapshot whose commission resolved unsplit:
+// the fee was charged and no schedule claimed it. This is the realistic "absent"
+// case, and the one settlement records as collected-and-unattributed.
+//
+// It exists because seeding no snapshot at all cannot show a sale completing
+// (ai-review pass 2, [medium]): a reservation whose total exceeds its face with no
+// snapshot to explain the difference is refused outright by settlementPlanFromSnapshot
+// (catalog_fees.go:583), so that fixture proves the commission guard let it past and
+// nothing more. The amounts here match sampleCommissionSnapshot so the two fixtures
+// differ only in what the resolution says.
+func unsplitCommissionSnapshot() []byte {
+	snap := map[string]any{
+		"face_value":     int64(5000),
+		"passed_on_fees": int64(600),
+		"total_amount":   int64(5600),
+		"breakdown": []map[string]any{
+			{
+				"fee_code":  ResellerCommissionFeeCode,
+				"incidence": "passed_on",
+				"amount":    int64(600),
+				"currency":  "EUR",
+			},
+		},
+		"resolution": map[string]any{
+			"fees": []map[string]any{
+				{
+					"fee_code": ResellerCommissionFeeCode,
+					"split": map[string]any{
+						"mode":   "unsplit",
+						"reason": "no_schedule",
+						"winner": nil,
+					},
+				},
+			},
+		},
+	}
+	out, err := json.Marshal(snap)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// The two ways a snapshot could name another party while reading as "absent"
+// (ai-review pass 2, both [high]). Both are unit-tier because they are properties of
+// validatePartnerCommission's classification, and the classification is what decides.
+//
+// The shared mistake in both: the validator was checking a DERIVATION of the snapshot
+// rather than the thing settlementPlanFromSnapshot actually consumes.
+func TestCommissionClassificationFollowsWhatSettlementWouldUse(t *testing.T) {
+	channel := "reseller-channel"
+	selling := uuid.New()
+
+	// A populated winner naming `other`, reachable by settlement, under each mode.
+	winnerNaming := func(mode string, ref string, shareBps int32) []byte {
+		snap := map[string]any{
+			"face_value": int64(5000), "passed_on_fees": int64(600), "total_amount": int64(5600),
+			"breakdown": []map[string]any{{"fee_code": ResellerCommissionFeeCode,
+				"incidence": "passed_on", "amount": int64(600), "currency": "EUR"}},
+			"resolution": map[string]any{"fees": []map[string]any{{
+				"fee_code": ResellerCommissionFeeCode,
+				"split": map[string]any{"mode": mode, "winner": map[string]any{
+					"channel_code": channel,
+					"parts": []map[string]any{{
+						"payee": map[string]any{"payee_id": uuid.NewString(), "kind": "reseller",
+							"display_name": "Other Partner", "external_reference": ref},
+						"share_bps": shareBps,
+					}},
+				}},
+			}}},
+		}
+		out, err := json.Marshal(snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// settlementPlanFromSnapshot forwards a winner's parts on `Winner != nil` alone
+	// and never reads `mode` (catalog_fees.go:628). So a mode that disagrees with a
+	// populated winner must not be read as "nothing is configured".
+	// The winner names the SELLING reseller and is otherwise perfect, so every later
+	// check passes and ONLY the mode guard can refuse it. Naming another party here
+	// instead would reach the same sentinel through the beneficiary check and the
+	// fixture could not tell the two guards apart -- which is what the first version
+	// of this test did, and deleting the mode guard left it green.
+	sellingRef := fmt.Sprintf("reseller:%s", selling)
+	for _, mode := range []string{"unsplit", "", "bogus"} {
+		t.Run("mode "+mode+" with a populated winner is misplaced, not absent", func(t *testing.T) {
+			err := validatePartnerCommission(winnerNaming(mode, sellingRef, 10000), channel, selling)
+			if !errors.Is(err, errCommissionMisplaced) {
+				t.Fatalf("mode %q carrying a populated winner classified as %v. Settlement ignores "+
+					"mode and forwards any non-nil winner, so a snapshot whose mode and winner "+
+					"disagree must fail closed", mode, err)
+			}
+		})
+	}
+
+	// A zero share is a name on a document, not a beneficiary. splits.Allocate permits
+	// 0 bps, and an omitted share decodes to zero.
+	t.Run("this reseller present at 0 bps is misplaced", func(t *testing.T) {
+		err := validatePartnerCommission(winnerNaming("split", sellingRef, 0), channel, selling)
+		if !errors.Is(err, errCommissionMisplaced) {
+			t.Fatalf("a beneficiary owed 0 bps was accepted (%v): the whole commission goes elsewhere", err)
+		}
+	})
+
+	// splitByCode[f.FeeCode] = parts overwrites per iteration, so settlement takes the
+	// LAST entry for a code while this validator used to take the first.
+	t.Run("duplicate commission entries are misplaced", func(t *testing.T) {
+		part := func(ref string) map[string]any {
+			return map[string]any{
+				"fee_code": ResellerCommissionFeeCode,
+				"split": map[string]any{"mode": "split", "winner": map[string]any{
+					"channel_code": channel,
+					"parts": []map[string]any{{
+						"payee": map[string]any{"payee_id": uuid.NewString(), "kind": "reseller",
+							"display_name": "P", "external_reference": ref},
+						"share_bps": int32(10000),
+					}},
+				}},
+			}
+		}
+		snap, err := json.Marshal(map[string]any{
+			"face_value": int64(5000), "passed_on_fees": int64(600), "total_amount": int64(5600),
+			"breakdown": []map[string]any{{"fee_code": ResellerCommissionFeeCode,
+				"incidence": "passed_on", "amount": int64(600), "currency": "EUR"}},
+			// BOTH entries name the selling reseller, so every later check passes on
+			// whichever one is picked and ONLY the duplicate guard can refuse this.
+			// Naming another party in the second entry would be caught by the
+			// beneficiary check instead, and deleting the duplicate guard would leave
+			// this green -- the real hazard is that first-wins and last-wins can
+			// disagree at all, not any particular pair of payees.
+			"resolution": map[string]any{"fees": []map[string]any{part(sellingRef), part(sellingRef)}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e := validatePartnerCommission(snap, channel, selling); !errors.Is(e, errCommissionMisplaced) {
+			t.Fatalf("two %s entries accepted as %v. This validator takes the FIRST and "+
+				"settlementPlanFromSnapshot takes the LAST, so a snapshot carrying two can be "+
+				"checked against one entry and settled from the other", ResellerCommissionFeeCode, e)
+		}
+	})
+
+	// The coherent unsplit case must STILL be absent, or the fix has simply banned
+	// the state ADR-024 requires to remain sellable.
+	t.Run("a genuinely unsplit commission is still absent", func(t *testing.T) {
+		if err := validatePartnerCommission(unsplitCommissionSnapshot(), channel, selling); !errors.Is(err, errCommissionAbsent) {
+			t.Fatalf("an unsplit commission with no winner classified as %v, want absent: "+
+				"a channel nobody configured a schedule for must still sell (ADR-024)", err)
+		}
+	})
 }

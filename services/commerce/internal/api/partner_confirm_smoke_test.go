@@ -264,8 +264,12 @@ func TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission(t *testing.T) {
 	resellerID := uuid.New()
 	channelCode := "reseller-uncommissioned"
 
-	// No fee snapshot at all: the first thing validatePartnerCommission refuses.
-	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil, nil)
+	// A COHERENT snapshot whose commission resolved unsplit: the fee was charged and
+	// no schedule claimed it. Seeding no snapshot at all would be refused downstream
+	// for an unrelated reason, since a total above the face with nothing to explain it
+	// is rejected by settlementPlanFromSnapshot (ai-review pass 2, [medium]).
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil,
+		unsplitCommissionSnapshot())
 
 	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Uncommissioned Buyer","email":"unc@example.test","payment_token":"tok"}`, resID)
 	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
@@ -290,14 +294,17 @@ func TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission(t *testing.T) {
 		t.Fatalf("fixture no longer reaches the commission check: got 404, %s", rec.Body.String())
 	}
 
-	var errResp struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
-	if rec.Code == http.StatusConflict && errResp.Code != string(SeatedPoolUnsupported) {
-		t.Fatalf("a missing reseller commission refused the sale with 409 (%s). ADR-024 makes the "+
-			"channel registry a lookup, and a payout misconfiguration must not refuse a purchase: "+
-			"record the gap as collected-and-unattributed instead", rec.Body.String())
+	// NOT "any status except a seated 409". That exemption made this test satisfiable
+	// by an unconditional seated refusal ahead of the commission check, which would
+	// refuse every sale and keep both commission tests green (ai-review pass 2,
+	// [medium]). The reservation seeded here is NOT seated, so a seated refusal is
+	// wrong whatever produced it, and any 409 at all means the handler refused a sale
+	// it must have allowed.
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("a missing reseller commission refused the sale with 409 (%s). This reservation "+
+			"is not seated, so no 409 is correct here. ADR-024 makes the channel registry a "+
+			"lookup, and a payout misconfiguration must not refuse a purchase: record the gap as "+
+			"collected-and-unattributed instead", rec.Body.String())
 	}
 }
 
@@ -351,6 +358,24 @@ func TestPartnerConfirmRefusesACommissionNamingAnotherReseller(t *testing.T) {
 			"The snapshot reaches settlementPlanFromSnapshot verbatim and payments accepts any "+
 			"balanced set, so this writes an append-only obligation to the wrong partner",
 			otherReseller, sellingReseller, rec.Code, rec.Body.String())
+	}
+	// Refused for the COMMISSION, not for seating. Without this an unconditional
+	// seated refusal ahead of the commission check satisfies this test as well as the
+	// absent one above, while refusing every sale in the system (ai-review pass 2,
+	// [medium]). This reservation carries no seat identities.
+	var refusal struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("unmarshal refusal: %v", err)
+	}
+	if refusal.Code == string(SeatedPoolUnsupported) {
+		t.Fatalf("refused as SEATED (%s), but this reservation has no seat identities. "+
+			"The commission guard is not what stopped this sale", rec.Body.String())
+	}
+	if !strings.Contains(refusal.Error, "commission") {
+		t.Fatalf("refusal does not name the commission: %s", rec.Body.String())
 	}
 
 	// And no order may exist: refusing after the row is written is not refusing.

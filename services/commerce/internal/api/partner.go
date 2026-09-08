@@ -135,30 +135,79 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 		} `json:"split"`
 	}
 
+	// Select the resolution entry SETTLEMENT will use, not the one that reads
+	// naturally, and refuse the snapshot outright if the two could differ.
+	//
+	// Both halves are load-bearing (ai-review pass 2, two [high] findings), and both
+	// come from the same mistake: validating a DERIVATION of the snapshot instead of
+	// the thing the money path actually consumes.
+	//
+	// DUPLICATES. settlementPlanFromSnapshot builds `splitByCode[f.FeeCode] = parts`
+	// in a loop (catalog_fees.go:642), so for two entries sharing a code the LAST one
+	// wins. Taking the first match here meant a snapshot could satisfy this check with
+	// entry one naming the selling reseller while settlement paid entry two's payee.
+	// The reservation path already refuses duplicate codes for this exact reason and
+	// says so (catalog_fees.go:347: "which one wins would depend on iteration order").
+	// That check does not cover a snapshot already persisted, which is the boundary
+	// this function guards, so it is applied again here.
+	var duplicates int
 	for i := range env.Resolution.Fees {
 		if env.Resolution.Fees[i].FeeCode == ResellerCommissionFeeCode {
 			matchedFee = &env.Resolution.Fees[i]
-			break
+			duplicates++
 		}
+	}
+	if duplicates > 1 {
+		return fmt.Errorf("%w: the fee resolution carries %d %s entries and settlement would take the last",
+			errCommissionMisplaced, duplicates, ResellerCommissionFeeCode)
 	}
 	if matchedFee == nil {
 		return fmt.Errorf("%w: %s is not in the fee resolution", errCommissionAbsent, ResellerCommissionFeeCode)
 	}
 
-	if matchedFee.Split.Mode != "split" || matchedFee.Split.Winner == nil {
+	// MODE. settlementPlanFromSnapshot forwards a winner's parts on `Winner != nil`
+	// alone and never reads `mode` (catalog_fees.go:628). So treating any non-"split"
+	// mode as absent let a snapshot say `mode:"unsplit"` while carrying a populated
+	// winner naming another party: classified absent, allowed through, and settled to
+	// that party. A mode and a winner that disagree is a snapshot nobody should act
+	// on, so it fails closed rather than being read as either state.
+	winner := matchedFee.Split.Winner
+	if winner == nil {
+		if matchedFee.Split.Mode == "split" {
+			return fmt.Errorf("%w: the commission resolved %q with no winning schedule",
+				errCommissionMisplaced, matchedFee.Split.Mode)
+		}
 		return fmt.Errorf("%w: the commission fee resolved unsplit", errCommissionAbsent)
 	}
-
-	winner := matchedFee.Split.Winner
+	if matchedFee.Split.Mode != "split" {
+		return fmt.Errorf("%w: the commission resolved %q yet carries a winning schedule settlement would pay",
+			errCommissionMisplaced, matchedFee.Split.Mode)
+	}
 	if winner.ChannelCode == nil || *winner.ChannelCode != channelCode {
 		return fmt.Errorf("%w: the winning split is scoped to channel %v, not %q", errCommissionMisplaced, winner.ChannelCode, channelCode)
 	}
 
+	// The beneficiary must be this reseller, and must actually be owed something.
+	//
+	// Counting matches alone answers "is this reseller among the payees?", which is a
+	// weaker question than the one that matters (ai-review pass 2, and the same gap
+	// found independently while briefing it). splits.Allocate permits a 0 bps share,
+	// and an omitted or null share_bps decodes to zero, so a part naming this reseller
+	// at 0 alongside another party at 10000 passed while the whole commission went
+	// elsewhere. A share of zero is not a beneficiary; it is a name on a document.
+	//
+	// This does NOT re-check that the shares total 10000. splits.Allocate refuses an
+	// unbalanced set (ErrUnbalanced) and the database defers a balance check over the
+	// schedule, so duplicating that here would be a second, drifting copy of a rule
+	// that already has an owner. What is checked is only what this function is for:
+	// that the sale's own reseller is the one being paid.
 	expectedRef := fmt.Sprintf("reseller:%s", resellerID)
 	var matches int
+	var share int32
 	for _, part := range winner.Parts {
 		if part.Payee.ExternalReference != nil && *part.Payee.ExternalReference == expectedRef {
 			matches++
+			share = part.ShareBps
 		}
 	}
 
@@ -167,6 +216,10 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 	}
 	if matches > 1 {
 		return fmt.Errorf("%w: %d beneficiaries carry external_reference %q", errCommissionMisplaced, matches, expectedRef)
+	}
+	if share <= 0 {
+		return fmt.Errorf("%w: the beneficiary carrying %q is owed %d bps",
+			errCommissionMisplaced, expectedRef, share)
 	}
 
 	return nil
