@@ -44,11 +44,32 @@ func partnerIdempotencyKey(organizerID, resellerID uuid.UUID, rawKey string) str
 	return fmt.Sprintf("partner:%s:%s:%x", organizerID, resellerID, sum)
 }
 
+// The two ways a reseller commission can be unusable, and they are NOT the same
+// question. ADR-024 makes the channel registry a lookup, so a channel nobody has
+// configured a commission for must still sell -- that is errCommissionAbsent, and
+// the sale completes with the money recorded as collected-and-unattributed.
+//
+// A commission that EXISTS and names the wrong party is the opposite case. The
+// snapshot travels verbatim into settlementPlanFromSnapshot, which forwards whatever
+// payee it names, and payments accepts any set that balances: a sum cannot see who
+// it credits. So letting this through settles a real obligation to a partner who did
+// not make the sale, and the ledger is append-only. "Absent is tolerated" does not
+// extend to "wrong is tolerated", and conflating the two was this handler's first
+// version of the bug in the other direction (ai-review pass 1, [high]).
+var (
+	errCommissionAbsent    = errors.New("no reseller commission is configured")
+	errCommissionMisplaced = errors.New("the configured reseller commission names another party")
+)
+
 // validatePartnerCommission validates that the persisted fee resolution snapshot
 // carries an explicit, valid reseller commission split for the authenticated reseller.
+//
+// Returns errCommissionAbsent when nothing is configured and errCommissionMisplaced
+// when something is configured and does not belong to this reseller. Callers must
+// treat the two differently; see the sentinels above.
 func validatePartnerCommission(snapshot []byte, channelCode string, resellerID uuid.UUID) error {
 	if len(snapshot) == 0 {
-		return errors.New("missing fee resolution snapshot")
+		return fmt.Errorf("%w: missing fee resolution snapshot", errCommissionAbsent)
 	}
 
 	var env struct {
@@ -81,7 +102,7 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 	}
 
 	if err := json.Unmarshal(snapshot, &env); err != nil {
-		return fmt.Errorf("unreadable fee snapshot: %w", err)
+		return fmt.Errorf("%w: unreadable fee snapshot: %v", errCommissionMisplaced, err)
 	}
 
 	hasBreakdown := false
@@ -92,7 +113,7 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 		}
 	}
 	if !hasBreakdown {
-		return fmt.Errorf("missing %s in fee breakdown", ResellerCommissionFeeCode)
+		return fmt.Errorf("%w: %s is not in the fee breakdown", errCommissionAbsent, ResellerCommissionFeeCode)
 	}
 
 	var matchedFee *struct {
@@ -121,16 +142,16 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 		}
 	}
 	if matchedFee == nil {
-		return fmt.Errorf("missing %s in fee resolution", ResellerCommissionFeeCode)
+		return fmt.Errorf("%w: %s is not in the fee resolution", errCommissionAbsent, ResellerCommissionFeeCode)
 	}
 
 	if matchedFee.Split.Mode != "split" || matchedFee.Split.Winner == nil {
-		return fmt.Errorf("reseller commission has no winning split schedule")
+		return fmt.Errorf("%w: the commission fee resolved unsplit", errCommissionAbsent)
 	}
 
 	winner := matchedFee.Split.Winner
 	if winner.ChannelCode == nil || *winner.ChannelCode != channelCode {
-		return fmt.Errorf("commission winning split channel %v does not match reservation channel %q", winner.ChannelCode, channelCode)
+		return fmt.Errorf("%w: the winning split is scoped to channel %v, not %q", errCommissionMisplaced, winner.ChannelCode, channelCode)
 	}
 
 	expectedRef := fmt.Sprintf("reseller:%s", resellerID)
@@ -142,10 +163,10 @@ func validatePartnerCommission(snapshot []byte, channelCode string, resellerID u
 	}
 
 	if matches == 0 {
-		return fmt.Errorf("no commission payee matches reseller %s (expected external_reference %q)", resellerID, expectedRef)
+		return fmt.Errorf("%w: no beneficiary carries external_reference %q", errCommissionMisplaced, expectedRef)
 	}
 	if matches > 1 {
-		return fmt.Errorf("ambiguous commission payees: %d payees match reseller %s", matches, resellerID)
+		return fmt.Errorf("%w: %d beneficiaries carry external_reference %q", errCommissionMisplaced, matches, expectedRef)
 	}
 
 	return nil
@@ -402,7 +423,26 @@ func (s *Server) confirmWithScope(w http.ResponseWriter, r *http.Request, scope 
 	// which is the payout matrix -- the same thing SelectSplitSchedule drops ineligible
 	// schedules to avoid publishing (splits.go:120-127).
 	if err := validatePartnerCommission(x.FeeSnapshot, x.ChannelCode, scope.ResellerID); err != nil {
-		slog.Default().WarnContext(r.Context(), "partner sale has no usable reseller commission",
+		if errors.Is(err, errCommissionMisplaced) {
+			// Refuse BEFORE the charge, which is the only place refusing is free.
+			// The snapshot names a beneficiary that is not this reseller, and it
+			// travels verbatim into settlementPlanFromSnapshot -- so completing
+			// here writes an append-only obligation to the wrong partner, and the
+			// balance trigger cannot see it because a sum cannot see who it
+			// credits. Refusing an unsold hold costs the partner a retry; settling
+			// to the wrong payee costs somebody real money and cannot be reversed
+			// by this system (ADR-048 leaves reversal undecided).
+			slog.Default().ErrorContext(r.Context(), "partner commission names another party",
+				"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "reason", err)
+			write(w, http.StatusConflict, map[string]string{
+				"error": "the commission configured for this sale does not belong to your channel",
+			})
+			return
+		}
+		// errCommissionAbsent: nothing is configured, and that must not stop a sale.
+		// The ledger records the fee as collected-and-unattributed and the gap stays
+		// queryable, which is what an operator can act on.
+		slog.Default().WarnContext(r.Context(), "partner sale has no reseller commission configured",
 			"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "reason", err)
 	}
 	// The buyer attribution, resolved exactly as public checkout resolves it. A

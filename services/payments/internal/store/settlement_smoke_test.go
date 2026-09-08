@@ -5,6 +5,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -468,45 +469,78 @@ func TestCommittedLedgerFromSeparateConnectionAndOffByOneRefusedAtCommit(t *test
 		t.Errorf("ledger sum = %d, want captured %d", sum, f.Amount)
 	}
 
-	// Prove an off-by-one-minor-unit set is REFUSED at commit.
-	// The ledger's balance trigger is a deferred constraint trigger, so it fires
-	// at tx.Commit. A test that does not reach Commit cannot observe the refusal.
-	offFact := capturedFact(uuid.New(), uuid.New())
-	tx, err := sepDB.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// Prove an off-by-one-minor-unit set is REFUSED at commit, and refused BY THE
+	// AMOUNT COMPARISON rather than by something else.
+	//
+	// That distinction is the whole test (ai-review pass 1, [medium]). The first
+	// version inserted the capture with payload '{}', so the fact's order_id was
+	// NULL while the entries carried a real one. settlement_must_balance checks
+	// organizer/order/currency identity BEFORE it compares sums and raises there, so
+	// the transaction was rejected for the wrong reason and the test accepted any
+	// commit error. Deleting the amount comparison left it green: it proved the
+	// identity check, which is a different guard.
+	//
+	// So the fact now carries the SAME order_id as its entries, and the assertion
+	// reads the message. A control case with a balanced set commits, which is what
+	// shows the fixture can reach the amount comparison at all.
+	assertOffByOneRefused := func(t *testing.T, faceAmount int64, wantCommit bool) {
+		t.Helper()
+		offFact := capturedFact(uuid.New(), uuid.New())
+		offOrder := uuid.New()
 
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
-		 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, '{}'::jsonb, decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
-		offFact.ID, offFact.OrganizerID, offFact.Type, offFact.OccurredAt, offFact.BuyerID, offFact.Amount, offFact.Currency)
-	if err != nil {
-		t.Fatalf("insert journal fact: %v", err)
+		tx, err := sepDB.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		// payload carries the order_id, so the identity check passes and the amount
+		// comparison is what decides. Without this the trigger never gets that far.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
+			 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, jsonb_build_object('order_id', $8::text), decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
+			offFact.ID, offFact.OrganizerID, offFact.Type, offFact.OccurredAt, offFact.BuyerID,
+			offFact.Amount, offFact.Currency, offOrder); err != nil {
+			t.Fatalf("insert journal fact: %v", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
+			 VALUES ($1, $2, $3, 'face_value', $4, 'EUR')`,
+			offFact.OrganizerID, offOrder, offFact.ID, faceAmount); err != nil {
+			t.Fatalf("insert face entry: %v", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+			 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'booking', 'passed_on', 600, 'EUR')`,
+			offFact.OrganizerID, offOrder, offFact.ID, uuid.New()); err != nil {
+			t.Fatalf("insert fee entry: %v", err)
+		}
+
+		err = tx.Commit()
+		if wantCommit {
+			if err != nil {
+				t.Fatalf("a BALANCED set must commit, got %v. If this fails the fixture cannot "+
+					"reach the amount comparison and the off-by-one case below proves nothing", err)
+			}
+			return
+		}
+		if err == nil {
+			t.Fatal("an off-by-one minor unit settlement set committed; the deferred balance trigger did not fire")
+		}
+		// The message names the sums, which is how we know the AMOUNT comparison
+		// rejected this and not the identity or fact-type guard above it.
+		if !strings.Contains(err.Error(), "sums to") {
+			t.Fatalf("refused for the wrong reason: %v. Want the balance failure "+
+				"(\"settlement for X sums to Y, but Z was captured\"); another message means the "+
+				"trigger raised before it reached the amount comparison", err)
+		}
 	}
 
-	// Insert entries summing to 5601 (off by +1 minor unit).
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
-		 VALUES ($1, $2, $3, 'face_value', 5001, 'EUR')`,
-		offFact.OrganizerID, order, offFact.ID)
-	if err != nil {
-		t.Fatalf("insert face entry: %v", err)
-	}
-	payeeID := uuid.New()
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
-		 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'booking', 'passed_on', 600, 'EUR')`,
-		offFact.OrganizerID, order, offFact.ID, payeeID)
-	if err != nil {
-		t.Fatalf("insert fee entry: %v", err)
-	}
-
-	// The INSERT succeeds because the constraint is deferred; tx.Commit MUST fail.
-	if err := tx.Commit(); err == nil {
-		t.Fatal("an off-by-one minor unit settlement set was committed; deferred balance trigger did not fire")
-	}
+	// capturedFact mints a 5600 capture. 5000 + 600 balances; 5001 + 600 is off by one.
+	t.Run("balanced commits", func(t *testing.T) { assertOffByOneRefused(t, 5000, true) })
+	t.Run("off by one is refused by the amount comparison", func(t *testing.T) {
+		assertOffByOneRefused(t, 5001, false)
+	})
 }
 
 // COS 7: A partially nulled payee (payee_id NULL, kind/name retained) is refused with

@@ -300,3 +300,66 @@ func TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission(t *testing.T) {
 			"record the gap as collected-and-unattributed instead", rec.Body.String())
 	}
 }
+
+// A commission that EXISTS and names another party REFUSES the sale, before the charge.
+//
+// The counterpart to TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission above,
+// and the two together are the whole rule: absent is tolerated, wrong is not.
+//
+// Found by ai-review pass 1 [high]. Removing the blanket refusal (D13) was right for
+// an ABSENT commission and wrong for a misattributed one, because the snapshot travels
+// verbatim into settlementPlanFromSnapshot and payments accepts any set that balances.
+// A sum cannot see WHO it credits, so a sale completed here writes an append-only
+// obligation to a partner who did not make it.
+//
+// The fixture gives reseller A's reservation a fully valid commission belonging to
+// reseller B: a winning split, correct channel, one beneficiary, 10000 bps. Nothing
+// is malformed. The only thing wrong is who it names.
+func TestPartnerConfirmRefusesACommissionNamingAnotherReseller(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	sellingReseller := uuid.New()
+	otherReseller := uuid.New()
+	channelCode := "reseller-misattributed"
+
+	// Valid in every respect except the beneficiary, who is the OTHER reseller.
+	feeSnap := sampleCommissionSnapshot(channelCode, otherReseller, 10000,
+		fmt.Sprintf("reseller:%s", otherReseller))
+
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, sellingReseller, &channelCode, nil, feeSnap)
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Misattributed Buyer","email":"mis@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-mis-"+uuid.NewString())
+
+	scope := &partnerScope{
+		CredentialID: uuid.New(),
+		ResellerID:   sellingReseller,
+		OrganizerID:  orgID,
+		ChannelCode:  channelCode,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+	rec := httptest.NewRecorder()
+	srv.partnerConfirm(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a commission naming reseller %s settled a sale by reseller %s: status %d, %s. "+
+			"The snapshot reaches settlementPlanFromSnapshot verbatim and payments accepts any "+
+			"balanced set, so this writes an append-only obligation to the wrong partner",
+			otherReseller, sellingReseller, rec.Code, rec.Body.String())
+	}
+
+	// And no order may exist: refusing after the row is written is not refusing.
+	var orders int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM orders WHERE reservation_id=$1`, resID).Scan(&orders); err != nil {
+		t.Fatal(err)
+	}
+	if orders != 0 {
+		t.Fatalf("orders created = %d, want 0: the refusal must land before the order", orders)
+	}
+}
