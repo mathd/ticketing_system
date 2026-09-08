@@ -377,23 +377,33 @@ func (s *Server) confirmWithScope(w http.ResponseWriter, r *http.Request, scope 
 		})
 		return
 	}
-	// A commission the snapshot cannot support is a CONFIGURATION conflict, not a
-	// malformed request: the partner sent a valid confirm for a reservation whose
-	// fee resolution does not name it. 409 says "the state is wrong", which is the
-	// true statement and the one the contract declares for this case; 400 would tell
-	// an integrator to fix a request that is already correct.
+	// A commission the snapshot cannot support is OBSERVED AND LOGGED, never refused.
 	//
-	// The reason is logged, never returned. The message names schedules, channels and
-	// payees, which is the payout matrix -- the same thing SelectSplitSchedule drops
-	// ineligible schedules to avoid publishing (splits.go), and split shares are the
-	// most sensitive configuration in this epic.
+	// The first version of this handler refused it, and the gate said what that meant:
+	// two TKT-241 tests went red, both of which exist to prove that catalog's channel
+	// registry is a LOOKUP AND NOT A CONSTRAINT -- an unregistered channel sells
+	// exactly as a registered one does (ADR-024). A partner sale that cannot complete
+	// because nobody authored a split schedule for its channel turns that lookup back
+	// into a constraint, one layer up, and does it after the buyer has paid.
+	//
+	// It is also the trade this epic has now declined three times. BuildSettlementEntries
+	// says it in its own comment: a fee with no split is unattributed, not invalid,
+	// because refusing would fail sales at CHECKOUT after the buyer committed, and "a
+	// payout misconfiguration must not refuse a purchase". The settlement path already
+	// records the money as collected-and-unattributed and leaves the gap QUERYABLE,
+	// which is what an operator needs. Refusing here would have been a worse answer to
+	// a problem the ledger already answers well.
+	//
+	// So the ticket's requirement is read exactly as written: a CONFIGURED commission
+	// must settle to the reseller payee and be derived from the schedule's share_bps.
+	// Nothing in the COS asks for a sale to be refused when it is absent.
+	//
+	// The reason is logged and never returned. It names schedules, channels and payees,
+	// which is the payout matrix -- the same thing SelectSplitSchedule drops ineligible
+	// schedules to avoid publishing (splits.go:120-127).
 	if err := validatePartnerCommission(x.FeeSnapshot, x.ChannelCode, scope.ResellerID); err != nil {
-		slog.Default().WarnContext(r.Context(), "partner commission unusable",
-			"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "err", err)
-		write(w, http.StatusConflict, map[string]string{
-			"error": "this reservation has no reseller commission configured for your channel",
-		})
-		return
+		slog.Default().WarnContext(r.Context(), "partner sale has no usable reseller commission",
+			"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "reason", err)
 	}
 	// The buyer attribution, resolved exactly as public checkout resolves it. A
 	// partner sale can still carry a customer assertion: the partner is the SELLER,

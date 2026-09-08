@@ -233,3 +233,70 @@ func TestPublicCheckoutRefusesPartnerReservation(t *testing.T) {
 		t.Fatalf("expected 'reservation not found', got %s", rec.Body.String())
 	}
 }
+
+// A partner sale whose channel has NO reseller commission configured is not refused.
+//
+// This pins a decision the gate forced, and it must not be quietly reverted. The
+// first version of confirmWithScope answered 409 when validatePartnerCommission
+// failed, and two TKT-241 smoke tests went red. Both exist to prove catalog's
+// sales-channel registry is a LOOKUP AND NOT A CONSTRAINT (ADR-024): an
+// unregistered channel sells exactly as a registered one does. Refusing here
+// rebuilt that constraint one layer up, and did it after the buyer had paid.
+//
+// BuildSettlementEntries had already declined the same trade twice, and says so in
+// its own comment: a fee with no split is unattributed rather than invalid, because
+// refusing would fail sales at checkout after the buyer committed, and "a payout
+// misconfiguration must not refuse a purchase". The ledger records the money as
+// collected-and-unattributed and leaves the gap queryable, which is the answer an
+// operator can act on.
+//
+// The reservation carries an EMPTY fee snapshot, so validatePartnerCommission fails
+// for the most basic reason there is. The assertion is that the handler proceeds
+// PAST it: no 4xx of its own. It gets as far as the checkout orchestration, which
+// then fails on the unreachable upstreams this fixture does not run, and any 5xx or
+// 402/408/409 from THAT point is a pass. What must never appear is the 409 the
+// commission refusal used to return before any of it.
+func TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	resellerID := uuid.New()
+	channelCode := "reseller-uncommissioned"
+
+	// No fee snapshot at all: the first thing validatePartnerCommission refuses.
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil, nil)
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Uncommissioned Buyer","email":"unc@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-unc-"+uuid.NewString())
+
+	scope := &partnerScope{
+		CredentialID: uuid.New(),
+		ResellerID:   resellerID,
+		OrganizerID:  orgID,
+		ChannelCode:  channelCode,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+	rec := httptest.NewRecorder()
+	srv.partnerConfirm(rec, req)
+
+	// The reservation was found and was not seated, so a 404 or a seated 409 here
+	// would mean the fixture stopped being able to reach the commission check at
+	// all, and the test would be proving nothing.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("fixture no longer reaches the commission check: got 404, %s", rec.Body.String())
+	}
+
+	var errResp struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if rec.Code == http.StatusConflict && errResp.Code != string(SeatedPoolUnsupported) {
+		t.Fatalf("a missing reseller commission refused the sale with 409 (%s). ADR-024 makes the "+
+			"channel registry a lookup, and a payout misconfiguration must not refuse a purchase: "+
+			"record the gap as collected-and-unattributed instead", rec.Body.String())
+	}
+}

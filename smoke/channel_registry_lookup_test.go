@@ -406,6 +406,35 @@ func checkoutReservation(t *testing.T, reservationID, key string) {
 	}
 }
 
+// confirmPartnerReservation completes a PARTNER reservation through the partner
+// confirm, which is the only route that can complete one since TKT-277.
+//
+// checkoutReservation below drives the public POST /orders, and that route now
+// refuses any reservation carrying a reseller_id: a partner sale completed there
+// would skip the credential scope check, the GA-only refusal and the commission
+// attribution, which is the bypass TKT-277 exists to close. The two tests here that
+// buy through a CREDENTIAL therefore confirm through the credential, and the
+// property each proves is untouched -- the channel code still reaches the claim and
+// the order verbatim, whether or not the registry has a row for it (ADR-024).
+func confirmPartnerReservation(t *testing.T, reservationID, key string) {
+	t.Helper()
+	code, body := partnerDo(t, http.MethodPost, "/api/commerce/partners/orders", key,
+		map[string]any{"reservation_id": reservationID, "name": "TKT-241 Buyer",
+			"email": "tkt241@example.test", "payment_token": "fake-ok"})
+	if code != http.StatusOK {
+		t.Fatalf("partner confirm: %d %s", code, body)
+	}
+	var out struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("order status %q, want completed: %s", out.Status, body)
+	}
+}
+
 // TestAPublicSaleMayNotNameAChannelAtAll is the public half, NARROWED by TKT-248.
 //
 // It used to assert that a public sale on an UNREGISTERED channel priced, reserved,
@@ -513,7 +542,7 @@ func TestAPartnerSaleOnAnUnregisteredChannelCompletesEndToEnd(t *testing.T) {
 	// The split half of the traversal, observed rather than assumed (ai-review
 	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
 	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
-	checkoutReservation(t, reservation.ID, "tkt241-partner-order-"+slot)
+	confirmPartnerReservation(t, reservation.ID, "tkt241-partner-order-"+slot)
 
 	// The claim: the half the public path cannot reach.
 	if got := mustString(t, claimAttribution(t, ctx, reservation.HoldID), "claims.channel_code"); got != channel {
@@ -601,7 +630,7 @@ func TestASaleOnADISABLEDRegisteredChannelCompletesEndToEnd(t *testing.T) {
 	// The split half of the traversal, observed rather than assumed (ai-review
 	// pass 1, [high]): the fee assertion above cannot see split resolution at all.
 	assertSplitAwardedTo(t, ctx, reservation.ID, payeeID, channel)
-	checkoutReservation(t, reservation.ID, "tkt248-disabled-order-"+slot)
+	confirmPartnerReservation(t, reservation.ID, "tkt248-disabled-order-"+slot)
 
 	_, orderChannel := commerceAttribution(t, ctx, reservation.ID)
 	if got := mustString(t, orderChannel, "orders.channel_code"); got != channel {
