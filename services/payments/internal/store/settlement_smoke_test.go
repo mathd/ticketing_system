@@ -473,74 +473,67 @@ func TestCommittedLedgerFromSeparateConnectionAndOffByOneRefusedAtCommit(t *test
 	// AMOUNT COMPARISON rather than by something else.
 	//
 	// That distinction is the whole test (ai-review pass 1, [medium]). The first
-	// version inserted the capture with payload '{}', so the fact's order_id was
-	// NULL while the entries carried a real one. settlement_must_balance checks
+	// version inserted the capture with payload '{}', so the fact's order_id was NULL
+	// while its entries carried a real one. settlement_must_balance checks
 	// organizer/order/currency identity BEFORE it compares sums and raises there, so
-	// the transaction was rejected for the wrong reason and the test accepted any
-	// commit error. Deleting the amount comparison left it green: it proved the
+	// the transaction was refused for the wrong reason and the test accepted any
+	// commit error. Deleting the amount comparison left it green: it was proving the
 	// identity check, which is a different guard.
 	//
-	// So the fact now carries the SAME order_id as its entries, and the assertion
-	// reads the message. A control case with a balanced set commits, which is what
-	// shows the fixture can reach the amount comparison at all.
-	assertOffByOneRefused := func(t *testing.T, faceAmount int64, wantCommit bool) {
-		t.Helper()
-		offFact := capturedFact(uuid.New(), uuid.New())
-		offOrder := uuid.New()
+	// The CONTROL is the balanced set already committed above through
+	// AppendWithSettlement, not a second hand-built transaction. A hand-built one has
+	// to write journal_entries directly with a made-up entry_hash, and the journal is
+	// append-only, so that row cannot be cleaned up afterwards: Journal.Verify scans
+	// the WHOLE table and one unsigned row fails every other test in this database
+	// (journal_smoke_test.go:103). The gate said so. So the fixture below differs from
+	// the committed case above in exactly one value, the face amount, and the identity
+	// fields are built to match.
+	offOrder := uuid.New()
+	offFact := capturedFact(uuid.New(), offOrder)
 
-		tx, err := sepDB.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatalf("begin tx: %v", err)
-		}
-		defer func() { _ = tx.Rollback() }()
+	tx, err := sepDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
-		// payload carries the order_id, so the identity check passes and the amount
-		// comparison is what decides. Without this the trigger never gets that far.
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
-			 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, jsonb_build_object('order_id', $8::text), decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
-			offFact.ID, offFact.OrganizerID, offFact.Type, offFact.OccurredAt, offFact.BuyerID,
-			offFact.Amount, offFact.Currency, offOrder); err != nil {
-			t.Fatalf("insert journal fact: %v", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
-			 VALUES ($1, $2, $3, 'face_value', $4, 'EUR')`,
-			offFact.OrganizerID, offOrder, offFact.ID, faceAmount); err != nil {
-			t.Fatalf("insert face entry: %v", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
-			 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'booking', 'passed_on', 600, 'EUR')`,
-			offFact.OrganizerID, offOrder, offFact.ID, uuid.New()); err != nil {
-			t.Fatalf("insert fee entry: %v", err)
-		}
-
-		err = tx.Commit()
-		if wantCommit {
-			if err != nil {
-				t.Fatalf("a BALANCED set must commit, got %v. If this fails the fixture cannot "+
-					"reach the amount comparison and the off-by-one case below proves nothing", err)
-			}
-			return
-		}
-		if err == nil {
-			t.Fatal("an off-by-one minor unit settlement set committed; the deferred balance trigger did not fire")
-		}
-		// The message names the sums, which is how we know the AMOUNT comparison
-		// rejected this and not the identity or fact-type guard above it.
-		if !strings.Contains(err.Error(), "sums to") {
-			t.Fatalf("refused for the wrong reason: %v. Want the balance failure "+
-				"(\"settlement for X sums to Y, but Z was captured\"); another message means the "+
-				"trigger raised before it reached the amount comparison", err)
-		}
+	// payload carries the order_id the entries name, so the identity check passes and
+	// the amount comparison is what decides. Without this the trigger never gets there.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
+		 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, jsonb_build_object('order_id', $8::text), decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
+		offFact.ID, offFact.OrganizerID, offFact.Type, offFact.OccurredAt, offFact.BuyerID,
+		offFact.Amount, offFact.Currency, offOrder); err != nil {
+		t.Fatalf("insert journal fact: %v", err)
+	}
+	// 5001 + 600 = 5601 against a captured 5600: off by one.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
+		 VALUES ($1, $2, $3, 'face_value', 5001, 'EUR')`,
+		offFact.OrganizerID, offOrder, offFact.ID); err != nil {
+		t.Fatalf("insert face entry: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+		 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'booking', 'passed_on', 600, 'EUR')`,
+		offFact.OrganizerID, offOrder, offFact.ID, uuid.New()); err != nil {
+		t.Fatalf("insert fee entry: %v", err)
 	}
 
-	// capturedFact mints a 5600 capture. 5000 + 600 balances; 5001 + 600 is off by one.
-	t.Run("balanced commits", func(t *testing.T) { assertOffByOneRefused(t, 5000, true) })
-	t.Run("off by one is refused by the amount comparison", func(t *testing.T) {
-		assertOffByOneRefused(t, 5001, false)
-	})
+	// The INSERTs succeed because the constraint is deferred. COMMIT must not.
+	err = tx.Commit()
+	if err == nil {
+		t.Fatal("an off-by-one minor unit settlement set committed; the deferred balance trigger did not fire")
+	}
+	// The message names the sums, which is how we know the AMOUNT comparison rejected
+	// this rather than the identity or fact-type guard ahead of it. Without this the
+	// test passes when the balance check is deleted, which is what it did at first.
+	if !strings.Contains(err.Error(), "sums to") {
+		t.Fatalf("refused for the wrong reason: %v. Want the balance failure "+
+			"(\"settlement for X sums to Y, but Z was captured\"); another message means the "+
+			"trigger raised before it reached the amount comparison, and this test would stay "+
+			"green with that comparison deleted", err)
+	}
 }
 
 // COS 7: A partially nulled payee (payee_id NULL, kind/name retained) is refused with
