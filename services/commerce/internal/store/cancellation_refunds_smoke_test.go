@@ -587,6 +587,69 @@ func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
 		}
 	})
 
+	// The compare-and-set, proved where it LIVES. The runner-tier test for this exercises
+	// the fake's own comparison, so removing `AND attempts=$5` from the SQL leaves it
+	// green -- a mutation that changes both the SQL and the fake hides exactly that.
+	// Found by the verification pass over the audit fix.
+	t.Run("charging twice on one claim charges once", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-cas", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-cas-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := claimed[0]
+
+		// The second call is the retry after a write that committed and lost its
+		// acknowledgement: same claim, same observed count, and it must change nothing.
+		if err := ChargeCancellationAttempt(ctx, db, w); err != nil {
+			t.Fatal(err)
+		}
+		if err := ChargeCancellationAttempt(ctx, db, w); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, w); n != 1 {
+			t.Fatalf("two charges on one claim left %d attempts, want 1: a retry after a "+
+				"committed-but-unacknowledged write must find the count already moved, or a "+
+				"recoverable row parks early", n)
+		}
+
+		// And the guard must not jam the NEXT claimant: after the lease lapses, a
+		// successor observing the new count charges normally.
+		if _, err := db.ExecContext(ctx,
+			`UPDATE cancellation_refund_orders SET lease_until=now()-interval '1 minute' WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3`,
+			w.OrganizerID, w.RunID, w.OrderID); err != nil {
+			t.Fatal(err)
+		}
+		next, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(next) != 1 {
+			t.Fatalf("reclaimed %d rows, want 1", len(next))
+		}
+		if next[0].Attempts != 1 {
+			t.Fatalf("the successor observed %d attempts, want 1", next[0].Attempts)
+		}
+		if err := ChargeCancellationAttempt(ctx, db, next[0]); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, w); n != 2 {
+			t.Errorf("after a successor drove and charged, attempts = %d, want 2: the guard "+
+				"must stop a repeat, never a genuine next attempt", n)
+		}
+		// The superseded claimant is still powerless, by the claim fence rather than by
+		// the count -- the two guards cover different adversaries.
+		if err := ChargeCancellationAttempt(ctx, db, w); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, w); n != 2 {
+			t.Errorf("a superseded claimant charged, leaving %d attempts, want 2", n)
+		}
+	})
+
 	t.Run("a stale claimant cannot spend its successor's budget", func(t *testing.T) {
 		db, ctx := outboxDB(t)
 		org, slot := uuid.New(), uuid.New()

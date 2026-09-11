@@ -239,6 +239,14 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 // An earlier version of this retried a write WITHOUT that guard and claimed the claim-id
 // fence made it safe — it did not, and the fix for that was first to drop the retry, which
 // traded a double charge for an unbounded loss. The guard is what lets both go.
+//
+// COST, since the context is detached and so cannot be cancelled: up to 10s per row, and
+// at the default batch of 8 up to 80s added to a shutdown. That is only reachable while
+// the database is refusing THIS write and the refund unit is still healthy, since a row
+// reaches here only after a drive returned a retryable failure. It can also push a pass
+// past its lease, whose margin is 60s — harmless in itself, because every write in this
+// file is claim-id fenced, so a pass that outlives its lease writes nothing rather than
+// racing its successor.
 func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
 	var err error
 	for try := 0; try < 2; try++ {
