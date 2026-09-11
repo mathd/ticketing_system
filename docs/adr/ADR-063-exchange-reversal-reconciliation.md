@@ -63,10 +63,16 @@ touching either.
 > the store ports stay per-runner, and each store still decides in SQL what an outcome costs — which is
 > what keeps §3's awaiting-switch rule where it belongs rather than in a caller's boolean.
 >
-> Two runners deliberately do not use `Drain`. Recovery claims one batch per tick, and bulk refund's
-> retryable failure keeps its lease as the backoff so a row cannot come round twice in a pass; giving
-> either the duplicate map and the pass bound would add mechanisms that could never fire. They share
-> the hand-back and the charging discipline, and nothing else.
+> Two runners deliberately do not use `Drain`, for different reasons. Recovery claims one batch per
+> tick, so a duplicate map and a pass bound could never fire there. Bulk refund keeps its own loop
+> because its enumeration prelude and completion postlude are its own and its retained lease is its
+> backoff — **not** because a row cannot be revisited inside a pass. An earlier draft of this
+> paragraph claimed that, and it is false: `RunOnce` drains until the book is empty while a retained
+> lease expires at a fixed time, so a slow later batch can make an earlier failed row claimable again
+> in the same pass. That gap predates TKT-300 and is carried by **TKT-331**; adopting `Drain`'s
+> duplicate map there would change bulk refund's retry behaviour rather than merely share its
+> lifecycle, which is a decision that needs its own evidence. Both runners share the hand-back and
+> the charging discipline.
 
 ### 2. The sweep NEVER writes `tickets_exchanged_at` — and that is a safety property, not a scope note
 

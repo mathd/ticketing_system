@@ -34,15 +34,16 @@ type fakeOrder struct {
 }
 
 type fakeStore struct {
-	runs     []store.CancellationRun
-	work     []store.CancellationWork
-	orders   map[uuid.UUID]*fakeOrder
-	fixed    map[uuid.UUID]int32
-	final    map[uuid.UUID]store.CancellationOutcome
-	abandon  map[uuid.UUID]int
-	cleared  map[uuid.UUID]int
-	prior    map[uuid.UUID]bool
-	attempts map[uuid.UUID]int
+	runs           []store.CancellationRun
+	work           []store.CancellationWork
+	orders         map[uuid.UUID]*fakeOrder
+	fixed          map[uuid.UUID]int32
+	final          map[uuid.UUID]store.CancellationOutcome
+	abandon        map[uuid.UUID]int
+	cleared        map[uuid.UUID]int
+	prior          map[uuid.UUID]bool
+	chargeFailures int
+	attempts       map[uuid.UUID]int
 	// leased models the real lease: a claimed row is NOT claimable again until it is
 	// abandoned or its lease expires. Without this the fake re-claims instantly and a
 	// retry budget meant to be spread over lease-length intervals burns inside one pass —
@@ -168,7 +169,18 @@ func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, charge 
 
 // ChargeAttempt mirrors the store's charge-without-releasing: a retryable failure keeps
 // its lease, because the lease is the backoff.
-func (f *fakeStore) ChargeAttempt(_ context.Context, w store.CancellationWork) error {
+// ChargeAttempt mirrors a real driver in two ways that matter: it REFUSES on a dead
+// context, so the fake can tell whether the runner charged on the caller's context or a
+// detached one, and it can be made to fail a bounded number of times, which is how a
+// transient database error is expressed.
+func (f *fakeStore) ChargeAttempt(ctx context.Context, w store.CancellationWork) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.chargeFailures > 0 {
+		f.chargeFailures--
+		return errors.New("charge write failed")
+	}
 	f.attempts[w.OrderID]++
 	return nil
 }
@@ -887,5 +899,37 @@ func TestResumedSecondRunStillReportsAlreadyRefunded(t *testing.T) {
 	}
 	if f.orders[order].moved != 1 {
 		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
+	}
+}
+
+// A driven attempt that the charge WRITE fails to record is still owed, and the row must
+// not come back with its old count. Found by ai-review pass 1 [high], narrowed by tracing.
+//
+// The reviewer's stated route -- a cancellation between the ctx.Err() check and the charge
+// -- turns out not to exist: `record` checks cancellation FIRST and routes to
+// `abandon(w, drove)`, which charges through the detached hand-back. That path was already
+// correct. What is genuinely new is a transient DATABASE error on the charge write, which
+// was previously impossible to lose because the attempt had been banked at claim time.
+//
+// One lost charge is one extra drive of an AMBIGUOUS failure, one where the money may
+// already have moved, so the budget that bounds those drives quietly stops bounding them.
+//
+// This test asserts the row is not left claimable with an unchanged count after a driven
+// failure whose charge did not land. Mutation: make ChargeAttempt's error path return
+// without the retry and this goes RED.
+func TestADrivenAttemptSurvivesAFailedChargeWrite(t *testing.T) {
+	order := uuid.New()
+	f := newFakeStore()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+	f.work = append(f.work, work(order))
+	// The first charge write fails the way a transient database error does.
+	f.chargeFailures = 1
+
+	New(f, newFakeRefunder(f), time.Minute, 4, time.Minute).RunOnce(context.Background())
+
+	if got := f.attempts[order]; got != 1 {
+		t.Fatalf("attempts = %d after a driven retryable failure whose first charge write failed, want 1: "+
+			"the drive happened, so the attempt is owed; losing it lets the row exceed its budget "+
+			"against work that may already have moved money", got)
 	}
 }

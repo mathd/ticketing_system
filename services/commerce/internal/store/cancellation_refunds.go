@@ -507,7 +507,9 @@ func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWor
 // along on the abandon or the finalize the way the other outcomes' charges do.
 //
 // Fenced on the claim id like every other write here, so a claimant whose lease lapsed
-// mid-drive cannot spend its successor's budget.
+// mid-drive cannot spend its successor's budget. The fence is also what makes the caller
+// safe to retry on a detached context: a retry that arrives after a successor claimed the
+// row matches nothing and charges nobody.
 func ChargeCancellationAttempt(ctx context.Context, db *sql.DB, w CancellationWork) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders SET attempts=attempts+1

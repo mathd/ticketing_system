@@ -196,16 +196,43 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 // caller's context is already cancelled.
 //
 // Like recovery, and unlike the draining runners, this one does NOT use worklease.Drain.
-// Its claim predicate is `outcome IS NULL AND (lease_until IS NULL OR lease_until <=
-// now())`, and a retryable failure deliberately KEEPS its lease as the backoff, so a row
-// cannot come back round inside one pass. The lease is what bounds this loop, which is why
-// there is no duplicate map and no per-pass batch bound to share — giving it either would
-// add a mechanism that could never fire.
+// The enumeration prelude and the CompleteRuns postlude are its own, and the retained
+// lease on a retryable failure is its backoff rather than a thing the loop manages.
+//
+// It does NOT follow that a row cannot be revisited inside one pass, and an earlier
+// version of this comment claimed exactly that (ai-review pass 1 [medium] refuted it).
+// `RunOnce` claims until the book is drained, while a retained lease expires at a fixed
+// time: if later batches take longer than that lease, an earlier failed row becomes
+// claimable again in the SAME pass and can spend more of its budget than the backoff
+// intends. That gap predates this ticket and is untouched by it -- the loop is unchanged
+// -- but it is a real one, and TKT-331 carries it rather than leaving it implied by a
+// comment that says the opposite.
+//
+// What is true, and is why Drain is not simply dropped in here: Drain's duplicate map is
+// per-pass and would suppress the SECOND drive of such a row, which changes this runner's
+// retry behaviour rather than merely sharing its lifecycle. That is a decision with its
+// own evidence, and it belongs in TKT-331 with a test, not in a refactor.
 func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 	worklease.HandBackUndriven([]store.CancellationWork{w},
 		func(ctx context.Context, w store.CancellationWork) error {
 			return r.store.Abandon(ctx, w, charge)
 		}, slog.Default(), "cancellation")
+}
+
+// chargeDriven records one driven attempt on a detached, bounded context, retrying once.
+// See the call site in `record` for why the charge must survive the caller's context and
+// why a retry cannot double-charge.
+func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
+	var err error
+	for try := 0; try < 2; try++ {
+		charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err = r.store.ChargeAttempt(charge, w)
+		cancel()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // process resolves one order, and never returns an error: a failure is an OUTCOME of this
@@ -349,8 +376,24 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 	// ambiguous failure, one where the money may already have moved. That is the off-by-one
 	// the accounting move creates, and it is the whole reason this line changed.
 	if attempts := w.Attempts + 1; retryable(out) && attempts < maxAttempts {
-		if err := r.store.ChargeAttempt(ctx, w); err != nil {
-			slog.Default().ErrorContext(ctx, "charge cancellation attempt",
+		// The drive already happened, so this attempt is OWED, and losing it is not a
+		// cosmetic miscount: the row comes back after its lease with its old count, which
+		// is one more drive of an ambiguous failure than the budget allows. Under the old
+		// claim-time accounting the charge was banked before the drive and could not be
+		// lost this way, so this window belongs to the accounting move and is closed here
+		// rather than left as a known gap.
+		//
+		// Detached from the caller's context for the same reason the hand-back is, and
+		// retried once, because the realistic loss is a transient database error rather
+		// than a cancellation (a cancellation is caught by the ctx.Err() check above and
+		// charged through the abandon path instead).
+		//
+		// Retrying cannot double-charge: the write is fenced on the claim id, so a retry
+		// arriving after a successor claimed the row matches nothing. If both attempts
+		// fail the row keeps its lease and its old count, and the next claimant re-drives
+		// it -- the same place the pre-existing lost-verdict window already leaves it.
+		if err := r.chargeDriven(ctx, w); err != nil {
+			slog.Default().ErrorContext(ctx, "charge cancellation attempt after two tries",
 				"order_id", w.OrderID, "err", err)
 		}
 		slog.Default().WarnContext(ctx, "cancellation order left for retry",
