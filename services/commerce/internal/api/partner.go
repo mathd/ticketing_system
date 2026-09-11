@@ -19,13 +19,211 @@ package api
 // the scope rather than trusting it -- see reserveWithScope.
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// ResellerCommissionFeeCode is the fee code for reseller commission.
+const ResellerCommissionFeeCode = "reseller_commission"
+
+// partnerIdempotencyKey derives an isolated idempotency key for partner confirms.
+// It scopes the key by organizer and reseller so different partners using the same
+// raw key do not collide. Rotated credentials for the same partner replay correctly
+// because credential ID is not included.
+func partnerIdempotencyKey(organizerID, resellerID uuid.UUID, rawKey string) string {
+	sum := sha256.Sum256([]byte(rawKey))
+	return fmt.Sprintf("partner:%s:%s:%x", organizerID, resellerID, sum)
+}
+
+// The two ways a reseller commission can be unusable, and they are NOT the same
+// question. ADR-024 makes the channel registry a lookup, so a channel nobody has
+// configured a commission for must still sell -- that is errCommissionAbsent, and
+// the sale completes with the money recorded as collected-and-unattributed.
+//
+// A commission that EXISTS and names the wrong party is the opposite case. The
+// snapshot travels verbatim into settlementPlanFromSnapshot, which forwards whatever
+// payee it names, and payments accepts any set that balances: a sum cannot see who
+// it credits. So letting this through settles a real obligation to a partner who did
+// not make the sale, and the ledger is append-only. "Absent is tolerated" does not
+// extend to "wrong is tolerated", and conflating the two was this handler's first
+// version of the bug in the other direction (ai-review pass 1, [high]).
+var (
+	errCommissionAbsent    = errors.New("no reseller commission is configured")
+	errCommissionMisplaced = errors.New("the configured reseller commission names another party")
+)
+
+// validatePartnerCommission validates that the persisted fee resolution snapshot
+// carries an explicit, valid reseller commission split for the authenticated reseller.
+//
+// Returns errCommissionAbsent when nothing is configured and errCommissionMisplaced
+// when something is configured and does not belong to this reseller. Callers must
+// treat the two differently; see the sentinels above.
+func validatePartnerCommission(snapshot []byte, channelCode string, resellerID uuid.UUID) error {
+	if len(snapshot) == 0 {
+		return fmt.Errorf("%w: missing fee resolution snapshot", errCommissionAbsent)
+	}
+
+	var env struct {
+		Breakdown []struct {
+			FeeCode   string `json:"fee_code"`
+			Incidence string `json:"incidence"`
+			Amount    int64  `json:"amount"`
+			Currency  string `json:"currency"`
+		} `json:"breakdown"`
+		Resolution struct {
+			Fees []struct {
+				FeeCode string `json:"fee_code"`
+				Split   struct {
+					Mode   string `json:"mode"`
+					Winner *struct {
+						ChannelCode *string `json:"channel_code"`
+						Parts       []struct {
+							Payee struct {
+								PayeeID           string  `json:"payee_id"`
+								Kind              string  `json:"kind"`
+								DisplayName       string  `json:"display_name"`
+								ExternalReference *string `json:"external_reference"`
+							} `json:"payee"`
+							ShareBps int32 `json:"share_bps"`
+						} `json:"parts"`
+					} `json:"winner"`
+				} `json:"split"`
+			} `json:"fees"`
+		} `json:"resolution"`
+	}
+
+	if err := json.Unmarshal(snapshot, &env); err != nil {
+		return fmt.Errorf("%w: unreadable fee snapshot: %v", errCommissionMisplaced, err)
+	}
+
+	hasBreakdown := false
+	for _, b := range env.Breakdown {
+		if b.FeeCode == ResellerCommissionFeeCode {
+			hasBreakdown = true
+			break
+		}
+	}
+	if !hasBreakdown {
+		return fmt.Errorf("%w: %s is not in the fee breakdown", errCommissionAbsent, ResellerCommissionFeeCode)
+	}
+
+	var matchedFee *struct {
+		FeeCode string `json:"fee_code"`
+		Split   struct {
+			Mode   string `json:"mode"`
+			Winner *struct {
+				ChannelCode *string `json:"channel_code"`
+				Parts       []struct {
+					Payee struct {
+						PayeeID           string  `json:"payee_id"`
+						Kind              string  `json:"kind"`
+						DisplayName       string  `json:"display_name"`
+						ExternalReference *string `json:"external_reference"`
+					} `json:"payee"`
+					ShareBps int32 `json:"share_bps"`
+				} `json:"parts"`
+			} `json:"winner"`
+		} `json:"split"`
+	}
+
+	// Select the resolution entry SETTLEMENT will use, not the one that reads
+	// naturally, and refuse the snapshot outright if the two could differ.
+	//
+	// Both halves are load-bearing (ai-review pass 2, two [high] findings), and both
+	// come from the same mistake: validating a DERIVATION of the snapshot instead of
+	// the thing the money path actually consumes.
+	//
+	// DUPLICATES. settlementPlanFromSnapshot builds `splitByCode[f.FeeCode] = parts`
+	// in a loop (catalog_fees.go:642), so for two entries sharing a code the LAST one
+	// wins. Taking the first match here meant a snapshot could satisfy this check with
+	// entry one naming the selling reseller while settlement paid entry two's payee.
+	// The reservation path already refuses duplicate codes for this exact reason and
+	// says so (catalog_fees.go:347: "which one wins would depend on iteration order").
+	// That check does not cover a snapshot already persisted, which is the boundary
+	// this function guards, so it is applied again here.
+	var duplicates int
+	for i := range env.Resolution.Fees {
+		if env.Resolution.Fees[i].FeeCode == ResellerCommissionFeeCode {
+			matchedFee = &env.Resolution.Fees[i]
+			duplicates++
+		}
+	}
+	if duplicates > 1 {
+		return fmt.Errorf("%w: the fee resolution carries %d %s entries and settlement would take the last",
+			errCommissionMisplaced, duplicates, ResellerCommissionFeeCode)
+	}
+	if matchedFee == nil {
+		return fmt.Errorf("%w: %s is not in the fee resolution", errCommissionAbsent, ResellerCommissionFeeCode)
+	}
+
+	// MODE. settlementPlanFromSnapshot forwards a winner's parts on `Winner != nil`
+	// alone and never reads `mode` (catalog_fees.go:628). So treating any non-"split"
+	// mode as absent let a snapshot say `mode:"unsplit"` while carrying a populated
+	// winner naming another party: classified absent, allowed through, and settled to
+	// that party. A mode and a winner that disagree is a snapshot nobody should act
+	// on, so it fails closed rather than being read as either state.
+	winner := matchedFee.Split.Winner
+	if winner == nil {
+		if matchedFee.Split.Mode == "split" {
+			return fmt.Errorf("%w: the commission resolved %q with no winning schedule",
+				errCommissionMisplaced, matchedFee.Split.Mode)
+		}
+		return fmt.Errorf("%w: the commission fee resolved unsplit", errCommissionAbsent)
+	}
+	if matchedFee.Split.Mode != "split" {
+		return fmt.Errorf("%w: the commission resolved %q yet carries a winning schedule settlement would pay",
+			errCommissionMisplaced, matchedFee.Split.Mode)
+	}
+	if winner.ChannelCode == nil || *winner.ChannelCode != channelCode {
+		return fmt.Errorf("%w: the winning split is scoped to channel %v, not %q", errCommissionMisplaced, winner.ChannelCode, channelCode)
+	}
+
+	// The beneficiary must be this reseller, and must actually be owed something.
+	//
+	// Counting matches alone answers "is this reseller among the payees?", which is a
+	// weaker question than the one that matters (ai-review pass 2, and the same gap
+	// found independently while briefing it). splits.Allocate permits a 0 bps share,
+	// and an omitted or null share_bps decodes to zero, so a part naming this reseller
+	// at 0 alongside another party at 10000 passed while the whole commission went
+	// elsewhere. A share of zero is not a beneficiary; it is a name on a document.
+	//
+	// This does NOT re-check that the shares total 10000. splits.Allocate refuses an
+	// unbalanced set (ErrUnbalanced) and the database defers a balance check over the
+	// schedule, so duplicating that here would be a second, drifting copy of a rule
+	// that already has an owner. What is checked is only what this function is for:
+	// that the sale's own reseller is the one being paid.
+	expectedRef := fmt.Sprintf("reseller:%s", resellerID)
+	var matches int
+	var share int32
+	for _, part := range winner.Parts {
+		if part.Payee.ExternalReference != nil && *part.Payee.ExternalReference == expectedRef {
+			matches++
+			share = part.ShareBps
+		}
+	}
+
+	if matches == 0 {
+		return fmt.Errorf("%w: no beneficiary carries external_reference %q", errCommissionMisplaced, expectedRef)
+	}
+	if matches > 1 {
+		return fmt.Errorf("%w: %d beneficiaries carry external_reference %q", errCommissionMisplaced, matches, expectedRef)
+	}
+	if share <= 0 {
+		return fmt.Errorf("%w: the beneficiary carrying %q is owed %d bps",
+			errCommissionMisplaced, expectedRef, share)
+	}
+
+	return nil
+}
 
 // requirePartnerScope resolves the authenticated scope, refusing when there is
 // none.
@@ -195,4 +393,124 @@ func (s *Server) partnerAvailability(w http.ResponseWriter, r *http.Request) {
 		ChannelCode: scope.ChannelCode,
 		Available:   available,
 	})
+}
+
+// partnerConfirm completes a sale on merchant-of-record terms for an authenticated partner.
+func (s *Server) partnerConfirm(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requirePartnerScope(w, r)
+	if !ok {
+		return
+	}
+	if !s.limitPartner(w, scope) {
+		return
+	}
+	s.confirmWithScope(w, r, scope)
+}
+
+func (s *Server) confirmWithScope(w http.ResponseWriter, r *http.Request, scope partnerScope) {
+	// The same bound every other idempotent write applies (checkout, reserve, the
+	// exchange). A partner-only spelling of this guard would drift from its three
+	// siblings, and the header is attacker-controlled on a write path.
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 200 {
+		write(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key required"})
+		return
+	}
+	// decode(), not a bare json.Decoder, and the difference is load-bearing twice
+	// over. It bounds the body at 1MB, and it sets DisallowUnknownFields -- which is
+	// the GO-tier half of "a partner cannot name its own reseller or channel". The
+	// contract refuses those fields too, and this must not depend on the contract:
+	// reserveWithScope makes the same argument for overwriting rather than trusting
+	// the body's channel, as the second line of defence for the day the contract is
+	// edited.
+	var in checkoutRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.ReservationID == uuid.Nil || strings.TrimSpace(in.Name) == "" ||
+		!strings.Contains(in.Email, "@") || strings.TrimSpace(in.PaymentToken) == "" {
+		write(w, http.StatusBadRequest, map[string]string{"error": "invalid checkout"})
+		return
+	}
+	x, err := s.loadPartnerReservation(r.Context(), in.ReservationID, scope.OrganizerID, scope.ResellerID, scope.ChannelCode)
+	if err != nil {
+		code, message := persistenceReadProblem(err)
+		if code != http.StatusNotFound {
+			slog.Default().ErrorContext(r.Context(), "load partner reservation", "err", err)
+			write(w, code, map[string]string{"error": message})
+			return
+		}
+		write(w, code, map[string]string{"error": "reservation " + message})
+		return
+	}
+	if x.IsSeated {
+		write(w, http.StatusConflict, map[string]string{
+			"error": "this slot is seated and cannot be sold by quantity. A seated claim carries " +
+				"no channel and does not consume a channel allocation -- TKT-176 owns that seam.",
+			"code": string(SeatedPoolUnsupported),
+		})
+		return
+	}
+	// A commission the snapshot cannot support is OBSERVED AND LOGGED, never refused.
+	//
+	// The first version of this handler refused it, and the gate said what that meant:
+	// two TKT-241 tests went red, both of which exist to prove that catalog's channel
+	// registry is a LOOKUP AND NOT A CONSTRAINT -- an unregistered channel sells
+	// exactly as a registered one does (ADR-024). A partner sale that cannot complete
+	// because nobody authored a split schedule for its channel turns that lookup back
+	// into a constraint, one layer up, and does it after the buyer has paid.
+	//
+	// It is also the trade this epic has now declined three times. BuildSettlementEntries
+	// says it in its own comment: a fee with no split is unattributed, not invalid,
+	// because refusing would fail sales at CHECKOUT after the buyer committed, and "a
+	// payout misconfiguration must not refuse a purchase". The settlement path already
+	// records the money as collected-and-unattributed and leaves the gap QUERYABLE,
+	// which is what an operator needs. Refusing here would have been a worse answer to
+	// a problem the ledger already answers well.
+	//
+	// So the ticket's requirement is read exactly as written: a CONFIGURED commission
+	// must settle to the reseller payee and be derived from the schedule's share_bps.
+	// Nothing in the COS asks for a sale to be refused when it is absent.
+	//
+	// The reason is logged and never returned. It names schedules, channels and payees,
+	// which is the payout matrix -- the same thing SelectSplitSchedule drops ineligible
+	// schedules to avoid publishing (splits.go:120-127).
+	if err := validatePartnerCommission(x.FeeSnapshot, x.ChannelCode, scope.ResellerID); err != nil {
+		if errors.Is(err, errCommissionMisplaced) {
+			// Refuse BEFORE the charge, which is the only place refusing is free.
+			// The snapshot names a beneficiary that is not this reseller, and it
+			// travels verbatim into settlementPlanFromSnapshot -- so completing
+			// here writes an append-only obligation to the wrong partner, and the
+			// balance trigger cannot see it because a sum cannot see who it
+			// credits. Refusing an unsold hold costs the partner a retry; settling
+			// to the wrong payee costs somebody real money and cannot be reversed
+			// by this system (ADR-048 leaves reversal undecided).
+			slog.Default().ErrorContext(r.Context(), "partner commission names another party",
+				"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "reason", err)
+			write(w, http.StatusConflict, map[string]string{
+				"error": "the commission configured for this sale does not belong to your channel",
+			})
+			return
+		}
+		// errCommissionAbsent: nothing is configured, and that must not stop a sale.
+		// The ledger records the fee as collected-and-unattributed and the gap stays
+		// queryable, which is what an operator can act on.
+		slog.Default().WarnContext(r.Context(), "partner sale has no reseller commission configured",
+			"reseller_id", scope.ResellerID, "channel", x.ChannelCode, "reason", err)
+	}
+	// The buyer attribution, resolved exactly as public checkout resolves it. A
+	// partner sale can still carry a customer assertion: the partner is the SELLER,
+	// and the buyer is whoever the assertion names.
+	//
+	// Passing uuid.NullUUID{} unconditionally instead would silently downgrade a
+	// forged or expired assertion to a guest order -- the exact failure checkout
+	// answers 401 for, so that a buyer is never told a purchase succeeded under an
+	// attribution that did not. The operation declares 401 and this is what returns it.
+	customer, err := customerFromRequest(s.assertionKey, r.Header.Get(assertionHeader), time.Now())
+	if err != nil {
+		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid customer assertion"})
+		return
+	}
+	internalKey := partnerIdempotencyKey(scope.OrganizerID, scope.ResellerID, key)
+	s.executeCheckout(w, r, x.reservation, internalKey, in, customer)
 }

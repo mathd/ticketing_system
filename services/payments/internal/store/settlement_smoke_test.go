@@ -3,10 +3,14 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"ticketing/services/payments/internal/splits"
 )
@@ -399,3 +403,233 @@ func TestALiveCaptureCannotBeRecordedAsLegacy(t *testing.T) {
 			"is not a runtime disposition for money that has a real composition")
 	}
 }
+
+// COS 3: Read the committed ledger from a separate connection: exactly one face
+// line, expected fee lines, sum equals capture. Also prove an off-by-one-minor-unit
+// set is REFUSED at commit (reaching tx.Commit).
+func TestCommittedLedgerFromSeparateConnectionAndOffByOneRefusedAtCommit(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order) // 5600 EUR
+
+	// 1 face value (4600) + 1 passed-on fee (600) + 1 absorbed fee (400) = 5600
+	entries := balancedEntries(5000, 600, 400)
+	if _, _, err := j.AppendWithSettlement(ctx, f, entries); err != nil {
+		t.Fatalf("balanced entries must settle: %v", err)
+	}
+
+	// Read from a separate connection to prove committed visibility.
+	sepDB, err := sql.Open("pgx", testDSN(t))
+	if err != nil {
+		t.Fatalf("open separate connection: %v", err)
+	}
+	t.Cleanup(func() { _ = sepDB.Close() })
+
+	rows, err := sepDB.QueryContext(ctx,
+		`SELECT entry_kind, amount, currency FROM settlement_entries WHERE capture_fact_id=$1`,
+		f.ID)
+	if err != nil {
+		t.Fatalf("query separate connection: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var faceLines, feeLines int
+	var sum int64
+	for rows.Next() {
+		var kind, curr string
+		var amt int64
+		if err := rows.Scan(&kind, &amt, &curr); err != nil {
+			t.Fatalf("scan entry: %v", err)
+		}
+		if curr != "EUR" {
+			t.Errorf("entry currency = %q, want EUR", curr)
+		}
+		sum += amt
+		switch kind {
+		case string(EntryFaceValue):
+			faceLines++
+		case string(EntryFee):
+			feeLines++
+		default:
+			t.Errorf("unexpected entry kind %q", kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows iteration: %v", err)
+	}
+
+	if faceLines != 1 {
+		t.Errorf("face_value lines = %d, want exactly 1", faceLines)
+	}
+	if feeLines != 2 {
+		t.Errorf("fee lines = %d, want exactly 2", feeLines)
+	}
+	if sum != f.Amount {
+		t.Errorf("ledger sum = %d, want captured %d", sum, f.Amount)
+	}
+
+	// Prove an off-by-one-minor-unit set is REFUSED at commit, and refused BY THE
+	// AMOUNT COMPARISON rather than by something else.
+	//
+	// That distinction is the whole test (ai-review pass 1, [medium]). The first
+	// version inserted the capture with payload '{}', so the fact's order_id was NULL
+	// while its entries carried a real one. settlement_must_balance checks
+	// organizer/order/currency identity BEFORE it compares sums and raises there, so
+	// the transaction was refused for the wrong reason and the test accepted any
+	// commit error. Deleting the amount comparison left it green: it was proving the
+	// identity check, which is a different guard.
+	//
+	// The CONTROL is the balanced set already committed above through
+	// AppendWithSettlement, not a second hand-built transaction. A hand-built one has
+	// to write journal_entries directly with a made-up entry_hash, and the journal is
+	// append-only, so that row cannot be cleaned up afterwards: Journal.Verify scans
+	// the WHOLE table and one unsigned row fails every other test in this database
+	// (journal_smoke_test.go:103). The gate said so. So the fixture below differs from
+	// the committed case above in exactly one value, the face amount, and the identity
+	// fields are built to match.
+	offOrder := uuid.New()
+	offFact := capturedFact(uuid.New(), offOrder)
+
+	tx, err := sepDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// payload carries the order_id the entries name, so the identity check passes and
+	// the amount comparison is what decides. Without this the trigger never gets there.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
+		 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, jsonb_build_object('order_id', $8::text), decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
+		offFact.ID, offFact.OrganizerID, offFact.Type, offFact.OccurredAt, offFact.BuyerID,
+		offFact.Amount, offFact.Currency, offOrder); err != nil {
+		t.Fatalf("insert journal fact: %v", err)
+	}
+	// 5001 + 600 = 5601 against a captured 5600: off by one.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, amount, currency)
+		 VALUES ($1, $2, $3, 'face_value', 5001, 'EUR')`,
+		offFact.OrganizerID, offOrder, offFact.ID); err != nil {
+		t.Fatalf("insert face entry: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+		 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'booking', 'passed_on', 600, 'EUR')`,
+		offFact.OrganizerID, offOrder, offFact.ID, uuid.New()); err != nil {
+		t.Fatalf("insert fee entry: %v", err)
+	}
+
+	// The INSERTs succeed because the constraint is deferred. COMMIT must not.
+	err = tx.Commit()
+	if err == nil {
+		t.Fatal("an off-by-one minor unit settlement set committed; the deferred balance trigger did not fire")
+	}
+	// The message names the sums, which is how we know the AMOUNT comparison rejected
+	// this rather than the identity or fact-type guard ahead of it. Without this the
+	// test passes when the balance check is deleted, which is what it did at first.
+	if !strings.Contains(err.Error(), "sums to") {
+		t.Fatalf("refused for the wrong reason: %v. Want the balance failure "+
+			"(\"settlement for X sums to Y, but Z was captured\"); another message means the "+
+			"trigger raised before it reached the amount comparison, and this test would stay "+
+			"green with that comparison deleted", err)
+	}
+}
+
+// COS 7: A partially nulled payee (payee_id NULL, kind/name retained) is refused with
+// SQLSTATE 23514 (settlement_entries_shape CHECK constraint).
+func TestSettlementShapePartiallyNulledPayeeRefused(t *testing.T) {
+	db, ctx := journalDB(t)
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
+		 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, '{}'::jsonb, decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
+		f.ID, f.OrganizerID, f.Type, f.OccurredAt, f.BuyerID, f.Amount, f.Currency)
+	if err != nil {
+		t.Fatalf("insert journal fact: %v", err)
+	}
+
+	// payee_id is NULL, but payee_kind and payee_display_name are provided.
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+		 VALUES ($1, $2, $3, 'fee', NULL, 'reseller', 'Partner', 'reseller_commission', 'passed_on', 600, 'EUR')`,
+		f.OrganizerID, order, f.ID)
+	if err == nil {
+		t.Fatal("partially nulled payee must be refused by CHECK constraint")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("err = %v, want SQLSTATE 23514 check_violation", err)
+	}
+}
+
+// COS 7: An all-null payee is ACCEPTED by generic settlement (deliberate: collected and unattributed).
+func TestSettlementAllNullPayeeAcceptedByGenericSettlement(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	// An entry with Payee == nil yields all-null payee columns.
+	unattributed := []SettlementEntry{
+		{Kind: EntryFaceValue, Amount: 5000, Currency: "EUR"},
+		{Kind: EntryFee, FeeCode: "unsplit_fee", Incidence: "passed_on", Amount: 600, Currency: "EUR", Payee: nil},
+	}
+	if _, _, err := j.AppendWithSettlement(ctx, f, unattributed); err != nil {
+		t.Fatalf("generic settlement must accept an all-null payee entry: %v", err)
+	}
+}
+
+// COS 7: A balanced duplicate commission (one beneficiary's amount split across two rows with
+// the same capture/payee/code) must be refused by the UNIQUE constraint (SQLSTATE 23505).
+func TestBalancedDuplicateCommissionRefusedByUniqueConstraint(t *testing.T) {
+	db, ctx := journalDB(t)
+	org, order := uuid.New(), uuid.New()
+	f := capturedFact(org, order)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO journal_entries (fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload, previous_hash, entry_hash, key_id, signature)
+		 VALUES ($1, $2, 1, $3, $4, $5, $6, $7, '{}'::jsonb, decode(repeat('00',32),'hex'), decode(repeat('11',32),'hex'), 'k1', decode(repeat('22',32),'hex'))`,
+		f.ID, f.OrganizerID, f.Type, f.OccurredAt, f.BuyerID, f.Amount, f.Currency)
+	if err != nil {
+		t.Fatalf("insert journal fact: %v", err)
+	}
+
+	payeeID := uuid.New()
+	// First row of duplicate commission: 300 EUR
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+		 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'reseller_commission', 'passed_on', 300, 'EUR')`,
+		f.OrganizerID, order, f.ID, payeeID)
+	if err != nil {
+		t.Fatalf("insert first commission row: %v", err)
+	}
+
+	// Second row with same capture_fact_id, payee_id, fee_code: 300 EUR (balanced).
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO settlement_entries (organizer_id, order_id, capture_fact_id, entry_kind, payee_id, payee_kind, payee_display_name, fee_code, incidence, amount, currency)
+		 VALUES ($1, $2, $3, 'fee', $4, 'reseller', 'Partner', 'reseller_commission', 'passed_on', 300, 'EUR')`,
+		f.OrganizerID, order, f.ID, payeeID)
+	if err == nil {
+		t.Fatal("duplicate commission row with identical (capture_fact_id, payee_id, fee_code) must be refused by UNIQUE constraint")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("err = %v, want SQLSTATE 23505 unique_violation", err)
+	}
+}
+

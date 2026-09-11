@@ -226,6 +226,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// compared in a handler (ADR-043).
 	r.Get("/partners/availability", s.partnerAvailability)
 	r.Post("/partners/reservations", s.partnerReserve)
+	r.Post("/partners/orders", s.partnerConfirm)
 	// The staff order read (TKT-201). A GET beside the writes on the same order, behind
 	// the same inline guard, and NOT a widening of the public GET /orders/{id} above.
 	r.Get("/internal/orders/{id}", s.staffOrderDetail)
@@ -1209,6 +1210,36 @@ func (s *Server) load(ctx context.Context, id uuid.UUID) (reservation, error) {
 	return x, err
 }
 
+type scopedReservation struct {
+	reservation
+	ChannelCode string
+	IsSeated    bool
+}
+
+// loadPublicCheckout loads a reservation for public checkout, refusing any partner reservation.
+func (s *Server) loadPublicCheckout(ctx context.Context, id uuid.UUID) (reservation, error) {
+	var x reservation
+	err := s.db.QueryRowContext(ctx, `SELECT id,organizer_id,hold_id,buyer_id,slot_id,ticket_type_id,quantity,total_amount,face_value_amount,currency,status,fee_resolution_snapshot FROM reservations WHERE id=$1 AND reseller_id IS NULL`, id).Scan(&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.SlotID, &x.TicketTypeID, &x.Quantity, &x.Amount, &x.FaceValue, &x.Currency, &x.Status, &x.FeeSnapshot)
+	return x, err
+}
+
+// loadPartnerReservation loads a reservation scoped to the authenticated partner's
+// organizer, channel, and reseller.
+func (s *Server) loadPartnerReservation(ctx context.Context, id, organizerID, resellerID uuid.UUID, channelCode string) (scopedReservation, error) {
+	var x scopedReservation
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id,organizer_id,hold_id,buyer_id,slot_id,ticket_type_id,quantity,total_amount,face_value_amount,currency,status,fee_resolution_snapshot,channel_code,seat_identities IS NOT NULL
+		 FROM reservations
+		 WHERE id=$1 AND organizer_id=$2 AND channel_code=$3 AND reseller_id=$4`,
+		id, organizerID, channelCode, resellerID,
+	).Scan(
+		&x.ID, &x.OrganizerID, &x.HoldID, &x.BuyerID, &x.SlotID, &x.TicketTypeID,
+		&x.Quantity, &x.Amount, &x.FaceValue, &x.Currency, &x.Status, &x.FeeSnapshot,
+		&x.ChannelCode, &x.IsSeated,
+	)
+	return x, err
+}
+
 // publishOwed sends an order's committed envelope inline, for promptness only. It is
 // best-effort by design: the outbox already owes the event, so every failure path here
 // is recoverable by the drainer and none of them may fail the buyer's request.
@@ -1566,7 +1597,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid checkout"})
 		return
 	}
-	x, err := s.load(r.Context(), in.ReservationID)
+	x, err := s.loadPublicCheckout(r.Context(), in.ReservationID)
 	if err != nil {
 		code, message := persistenceReadProblem(err)
 		if code != http.StatusNotFound {
@@ -1593,6 +1624,10 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnauthorized, map[string]string{"error": "invalid customer assertion"})
 		return
 	}
+	s.executeCheckout(w, r, x, key, in, customer)
+}
+
+func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reservation, key string, in checkoutRequest, customer uuid.NullUUID) {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
 	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
 	if err != nil {

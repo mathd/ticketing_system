@@ -1,0 +1,390 @@
+//go:build smoke
+
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// seedPartnerReservationFixture inserts a reservation in 'held' status with partner attribution.
+func seedPartnerReservationFixture(t *testing.T, db *sql.DB, ctx context.Context, orgID, resellerID uuid.UUID, channelCode *string, seatIdentities []string, feeSnapshot []byte) uuid.UUID {
+	t.Helper()
+	resID := uuid.New()
+	const faceValue, totalAmount, quantity = 5000, 5600, 1
+
+	var seatsJSON []byte
+	if len(seatIdentities) > 0 {
+		var err error
+		seatsJSON, err = json.Marshal(seatIdentities)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var resellerParam any
+	if resellerID != uuid.Nil {
+		resellerParam = resellerID
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id, quantity,
+		                         unit_amount, total_amount, face_value_amount, currency, status,
+		                         channel_code, reseller_id, seat_identities, fee_resolution_snapshot)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'EUR', 'held', $11, $12, $13, $14)`,
+		resID, orgID, uuid.New(), uuid.New(), uuid.New(), uuid.New(),
+		quantity, int64(totalAmount), int64(totalAmount), int64(faceValue), channelCode, resellerParam, seatsJSON, feeSnapshot); err != nil {
+		t.Fatalf("seed partner reservation: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM order_facts WHERE organizer_id=$1`, orgID)
+		_, _ = db.Exec(`DELETE FROM orders WHERE reservation_id=$1`, resID)
+		_, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, resID)
+	})
+
+	return resID
+}
+
+// COS 5: Scoped Lookup Query.
+// A partner confirm MUST verify (id, organizer_id, channel_code, reseller_id) in ONE SQL query.
+// Any mismatch (or an unchannelled public reservation) must return a uniform 404 with no side effects.
+func TestPartnerConfirmScopedLookup5CasesUniform404(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	resellerID := uuid.New()
+	channelCode := "reseller-alpha"
+	feeSnap := sampleCommissionSnapshot(channelCode, resellerID, 10000, fmt.Sprintf("reseller:%s", resellerID))
+
+	// Base reservation matching (orgID, resellerID, channelCode)
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil, feeSnap)
+
+	// Public reservation (NULL reseller_id, NULL channel_code)
+	publicResID := seedPartnerReservationFixture(t, db, ctx, orgID, uuid.Nil, nil, nil, feeSnap)
+
+	cases := []struct {
+		name      string
+		resID     uuid.UUID
+		scopeOrg  uuid.UUID
+		scopeRes  uuid.UUID
+		scopeChan string
+	}{
+		{
+			name:      "wrong organizer",
+			resID:     resID,
+			scopeOrg:  uuid.New(),
+			scopeRes:  resellerID,
+			scopeChan: channelCode,
+		},
+		{
+			name:      "wrong channel",
+			resID:     resID,
+			scopeOrg:  orgID,
+			scopeRes:  resellerID,
+			scopeChan: "reseller-beta",
+		},
+		{
+			name:      "wrong reseller",
+			resID:     resID,
+			scopeOrg:  orgID,
+			scopeRes:  uuid.New(),
+			scopeChan: channelCode,
+		},
+		{
+			name:      "unknown reservation id",
+			resID:     uuid.New(),
+			scopeOrg:  orgID,
+			scopeRes:  resellerID,
+			scopeChan: channelCode,
+		},
+		{
+			name:      "public reservation with null reseller attribution",
+			resID:     publicResID,
+			scopeOrg:  orgID,
+			scopeRes:  resellerID,
+			scopeChan: channelCode,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"reservation_id":%q,"name":"Buyer","email":"buyer@example.test","payment_token":"tok"}`, tc.resID)
+			req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "idemp-"+uuid.NewString())
+
+			scope := &partnerScope{
+				CredentialID: uuid.New(),
+				ResellerID:   tc.scopeRes,
+				OrganizerID:  tc.scopeOrg,
+				ChannelCode:  tc.scopeChan,
+			}
+			req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+			rec := httptest.NewRecorder()
+			srv.partnerConfirm(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("case %q: expected status 404, got %d: %s", tc.name, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "reservation not found") {
+				t.Fatalf("case %q: expected uniform 'reservation not found', got %s", tc.name, rec.Body.String())
+			}
+
+			// Verify no side effects: zero orders created
+			var orderCount int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM orders WHERE reservation_id=$1`, tc.resID).Scan(&orderCount); err != nil {
+				t.Fatalf("count orders: %v", err)
+			}
+			if orderCount != 0 {
+				t.Fatalf("case %q: expected 0 orders created, got %d", tc.name, orderCount)
+			}
+		})
+	}
+}
+
+// COS 6: Seated Reservation Unsupported.
+// If a partner attempts to confirm a seated reservation, the handler refuses with
+// 409 Conflict and machine-readable code seated_pool_unsupported.
+func TestPartnerConfirmSeatedReservationRefusedWith409(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	resellerID := uuid.New()
+	channelCode := "reseller-seated"
+	feeSnap := sampleCommissionSnapshot(channelCode, resellerID, 10000, fmt.Sprintf("reseller:%s", resellerID))
+
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, []string{"SEC-A-1"}, feeSnap)
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Seated Buyer","email":"seated@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-seated-"+uuid.NewString())
+
+	scope := &partnerScope{
+		CredentialID: uuid.New(),
+		ResellerID:   resellerID,
+		OrganizerID:  orgID,
+		ChannelCode:  channelCode,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+	rec := httptest.NewRecorder()
+	srv.partnerConfirm(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+
+	if errResp.Code != string(SeatedPoolUnsupported) {
+		t.Fatalf("expected code %q, got %q", SeatedPoolUnsupported, errResp.Code)
+	}
+	if !strings.Contains(errResp.Error, "seated") {
+		t.Fatalf("expected error message mentioning seated, got %q", errResp.Error)
+	}
+}
+
+// Public Checkout Restriction:
+// A partner reservation (reseller_id IS NOT NULL) cannot be completed through the public POST /orders.
+func TestPublicCheckoutRefusesPartnerReservation(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	resellerID := uuid.New()
+	channelCode := "reseller-public-attempt"
+	feeSnap := sampleCommissionSnapshot(channelCode, resellerID, 10000, fmt.Sprintf("reseller:%s", resellerID))
+
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil, feeSnap)
+
+	// Attempt checkout through public endpoint (s.checkout)
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Public Attempter","email":"attempter@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-public-"+uuid.NewString())
+
+	rec := httptest.NewRecorder()
+	srv.checkout(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for public checkout of partner reservation, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reservation not found") {
+		t.Fatalf("expected 'reservation not found', got %s", rec.Body.String())
+	}
+}
+
+// A partner sale whose channel has NO reseller commission configured is not refused.
+//
+// This pins a decision the gate forced, and it must not be quietly reverted. The
+// first version of confirmWithScope answered 409 when validatePartnerCommission
+// failed, and two TKT-241 smoke tests went red. Both exist to prove catalog's
+// sales-channel registry is a LOOKUP AND NOT A CONSTRAINT (ADR-024): an
+// unregistered channel sells exactly as a registered one does. Refusing here
+// rebuilt that constraint one layer up, and did it after the buyer had paid.
+//
+// BuildSettlementEntries had already declined the same trade twice, and says so in
+// its own comment: a fee with no split is unattributed rather than invalid, because
+// refusing would fail sales at checkout after the buyer committed, and "a payout
+// misconfiguration must not refuse a purchase". The ledger records the money as
+// collected-and-unattributed and leaves the gap queryable, which is the answer an
+// operator can act on.
+//
+// The reservation carries an EMPTY fee snapshot, so validatePartnerCommission fails
+// for the most basic reason there is. The assertion is that the handler proceeds
+// PAST it: no 4xx of its own. It gets as far as the checkout orchestration, which
+// then fails on the unreachable upstreams this fixture does not run, and any 5xx or
+// 402/408/409 from THAT point is a pass. What must never appear is the 409 the
+// commission refusal used to return before any of it.
+func TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	resellerID := uuid.New()
+	channelCode := "reseller-uncommissioned"
+
+	// A COHERENT snapshot whose commission resolved unsplit: the fee was charged and
+	// no schedule claimed it. Seeding no snapshot at all would be refused downstream
+	// for an unrelated reason, since a total above the face with nothing to explain it
+	// is rejected by settlementPlanFromSnapshot (ai-review pass 2, [medium]).
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, resellerID, &channelCode, nil,
+		unsplitCommissionSnapshot())
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Uncommissioned Buyer","email":"unc@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-unc-"+uuid.NewString())
+
+	scope := &partnerScope{
+		CredentialID: uuid.New(),
+		ResellerID:   resellerID,
+		OrganizerID:  orgID,
+		ChannelCode:  channelCode,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+	rec := httptest.NewRecorder()
+	srv.partnerConfirm(rec, req)
+
+	// The reservation was found and was not seated, so a 404 or a seated 409 here
+	// would mean the fixture stopped being able to reach the commission check at
+	// all, and the test would be proving nothing.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("fixture no longer reaches the commission check: got 404, %s", rec.Body.String())
+	}
+
+	// NOT "any status except a seated 409". That exemption made this test satisfiable
+	// by an unconditional seated refusal ahead of the commission check, which would
+	// refuse every sale and keep both commission tests green (ai-review pass 2,
+	// [medium]). The reservation seeded here is NOT seated, so a seated refusal is
+	// wrong whatever produced it, and any 409 at all means the handler refused a sale
+	// it must have allowed.
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("a missing reseller commission refused the sale with 409 (%s). This reservation "+
+			"is not seated, so no 409 is correct here. ADR-024 makes the channel registry a "+
+			"lookup, and a payout misconfiguration must not refuse a purchase: record the gap as "+
+			"collected-and-unattributed instead", rec.Body.String())
+	}
+}
+
+// A commission that EXISTS and names another party REFUSES the sale, before the charge.
+//
+// The counterpart to TestPartnerConfirmDoesNotRefuseAnUnconfiguredCommission above,
+// and the two together are the whole rule: absent is tolerated, wrong is not.
+//
+// Found by ai-review pass 1 [high]. Removing the blanket refusal (D13) was right for
+// an ABSENT commission and wrong for a misattributed one, because the snapshot travels
+// verbatim into settlementPlanFromSnapshot and payments accepts any set that balances.
+// A sum cannot see WHO it credits, so a sale completed here writes an append-only
+// obligation to a partner who did not make it.
+//
+// The fixture gives reseller A's reservation a fully valid commission belonging to
+// reseller B: a winning split, correct channel, one beneficiary, 10000 bps. Nothing
+// is malformed. The only thing wrong is who it names.
+func TestPartnerConfirmRefusesACommissionNamingAnotherReseller(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	srv := newTestServer(db, http.DefaultClient, "", "", "", "tok")
+
+	orgID := uuid.New()
+	sellingReseller := uuid.New()
+	otherReseller := uuid.New()
+	channelCode := "reseller-misattributed"
+
+	// Valid in every respect except the beneficiary, who is the OTHER reseller.
+	feeSnap := sampleCommissionSnapshot(channelCode, otherReseller, 10000,
+		fmt.Sprintf("reseller:%s", otherReseller))
+
+	resID := seedPartnerReservationFixture(t, db, ctx, orgID, sellingReseller, &channelCode, nil, feeSnap)
+
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":"Misattributed Buyer","email":"mis@example.test","payment_token":"tok"}`, resID)
+	req := httptest.NewRequest(http.MethodPost, "/partners/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idemp-mis-"+uuid.NewString())
+
+	scope := &partnerScope{
+		CredentialID: uuid.New(),
+		ResellerID:   sellingReseller,
+		OrganizerID:  orgID,
+		ChannelCode:  channelCode,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), partnerScopeKey{}, scope))
+
+	rec := httptest.NewRecorder()
+	srv.partnerConfirm(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a commission naming reseller %s settled a sale by reseller %s: status %d, %s. "+
+			"The snapshot reaches settlementPlanFromSnapshot verbatim and payments accepts any "+
+			"balanced set, so this writes an append-only obligation to the wrong partner",
+			otherReseller, sellingReseller, rec.Code, rec.Body.String())
+	}
+	// Refused for the COMMISSION, not for seating. Without this an unconditional
+	// seated refusal ahead of the commission check satisfies this test as well as the
+	// absent one above, while refusing every sale in the system (ai-review pass 2,
+	// [medium]). This reservation carries no seat identities.
+	var refusal struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("unmarshal refusal: %v", err)
+	}
+	if refusal.Code == string(SeatedPoolUnsupported) {
+		t.Fatalf("refused as SEATED (%s), but this reservation has no seat identities. "+
+			"The commission guard is not what stopped this sale", rec.Body.String())
+	}
+	if !strings.Contains(refusal.Error, "commission") {
+		t.Fatalf("refusal does not name the commission: %s", rec.Body.String())
+	}
+
+	// And no order may exist: refusing after the row is written is not refusing.
+	var orders int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM orders WHERE reservation_id=$1`, resID).Scan(&orders); err != nil {
+		t.Fatal(err)
+	}
+	if orders != 0 {
+		t.Fatalf("orders created = %d, want 0: the refusal must land before the order", orders)
+	}
+}
