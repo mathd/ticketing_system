@@ -35,37 +35,52 @@ type Adapter[T any, K comparable] struct {
 // opposite of what a bounded budget spread over passes is for.
 //
 // `driven` is per-pass, bounded by MaxBatchesPerPass × Batch, and discarded on return.
+// HandBackUndriven returns claims a pass never got to, so the next pass (or the next
+// boot) picks them up immediately rather than waiting out the lease.
+//
+// It uses a FRESH, BOUNDED context rather than the caller's. This is the whole point of
+// the function and not a detail: it is called when the caller's context is already
+// cancelled, so reusing that context would fail every one of these writes and leave the
+// rows leased for the full lease — minutes of nothing happening, for work that is
+// already overdue. The lease exists to survive a crash, not to be the cost of an orderly
+// restart.
+//
+// `abandon` must be conditional on the claim token in SQL, so a lease that lapsed and
+// was re-claimed by a successor mid-shutdown is left alone.
+//
+// Exported because it is shared by two shapes of runner: the draining loop below, and
+// single-batch runners that do not drain at all. Those runners share this mechanism and
+// the per-row cancellation check, and nothing else — giving them the whole loop would
+// hand them a duplicate map, a freshness count and a pass bound that can never fire.
+func HandBackUndriven[T any](claims []T, abandon func(context.Context, T) error, log *slog.Logger, name string) {
+	if len(claims) == 0 {
+		return
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var released int
+	for _, c := range claims {
+		if err := abandon(ctx, c); err != nil {
+			log.WarnContext(ctx, fmt.Sprintf("abandon undriven %s claim", name), "err", err)
+			continue
+		}
+		released++
+	}
+	log.InfoContext(ctx, fmt.Sprintf("released undriven %s claims on shutdown", name),
+		"released", released, "of", len(claims))
+}
+
 func Drain[T any, K comparable](ctx context.Context, a Adapter[T, K]) int {
 	log := a.Log
 	if log == nil {
 		log = slog.Default()
 	}
 
-	// abandonUndriven hands back claims the pass never got to, so the next pass (or
-	// the next boot) picks them up immediately rather than waiting out the lease,
-	// and refunds the attempt charged at claim time.
-	//
-	// It uses a fresh, bounded context: the caller's is already cancelled, so reusing
-	// it would fail every one of these writes and defeat the point.
 	abandonUndriven := func(claims []T) {
-		if len(claims) == 0 {
-			return
-		}
-		detachCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var released int
-		for _, c := range claims {
-			// Conditional on the claim token in SQL, so a lease that lapsed and was
-			// re-claimed by a successor mid-shutdown is left alone.
-			if err := a.Abandon(detachCtx, c); err != nil {
-				log.WarnContext(detachCtx, fmt.Sprintf("abandon undriven %s claim", a.Name),
-					"key", a.Key(c), "err", err)
-				continue
-			}
-			released++
-		}
-		log.InfoContext(detachCtx, fmt.Sprintf("released undriven %s claims on shutdown", a.Name),
-			"released", released, "of", len(claims))
+		HandBackUndriven(claims, a.Abandon, log, a.Name)
 	}
 
 	var resolved int
