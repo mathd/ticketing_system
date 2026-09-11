@@ -251,7 +251,7 @@ func TestFinalizeCancellationOrderIsClaimFencedAndOnceOnly(t *testing.T) {
 	stale.ClaimID = uuid.New()
 	if err := FinalizeCancellationOrder(ctx, db, stale, CancellationOutcome{
 		Outcome: "failed", FailureCode: "internal", FailureReason: "stale claimant",
-	}); !errors.Is(err, ErrCancellationClaimLost) {
+	}, false); !errors.Is(err, ErrCancellationClaimLost) {
 		t.Fatalf("stale claim finalize = %v, want ErrCancellationClaimLost", err)
 	}
 
@@ -262,14 +262,14 @@ func TestFinalizeCancellationOrderIsClaimFencedAndOnceOnly(t *testing.T) {
 		Outcome: "refunded", RefundID: uuid.New(),
 		MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
 		RefundedQuantity: 1, RefundedAmount: 1000,
-	}); err != nil {
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 	// A second finalize by the SAME claimant is refused too: the row is terminal, and a
 	// terminal outcome is not something a retry gets to revise.
 	if err := FinalizeCancellationOrder(ctx, db, w, CancellationOutcome{
 		Outcome: "failed", FailureCode: "internal", FailureReason: "second verdict",
-	}); !errors.Is(err, ErrCancellationClaimLost) {
+	}, false); !errors.Is(err, ErrCancellationClaimLost) {
 		t.Fatalf("re-finalize = %v, want ErrCancellationClaimLost", err)
 	}
 
@@ -307,7 +307,7 @@ func TestSuccessfulOutcomeCannotHideAnOutstandingObligation(t *testing.T) {
 	err = FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{
 		Outcome: "refunded", RefundID: uuid.New(),
 		MoneyRefunded: true, TicketsVoided: false, CapacityReturned: false,
-	})
+	}, false)
 	if err == nil {
 		t.Fatal("a `refunded` outcome with the reversal outstanding was accepted — the ADR-039 check is missing")
 	}
@@ -349,7 +349,7 @@ func TestRunCompletesOnlyWhenEveryRowIsTerminal(t *testing.T) {
 		for _, w := range claimed {
 			if err := FinalizeCancellationOrder(ctx, db, w, CancellationOutcome{
 				Outcome: "already_refunded", MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
-			}); err != nil {
+			}, false); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -526,7 +526,11 @@ func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("a verdict charges one", func(t *testing.T) {
+	// Both directions of the verdict charge. A verdict that ENDED a retryable attempt
+	// spends one; a definite refusal is terminal on its first attempt and spends none
+	// (0012_cancellation_refunds.sql:95-99). Asserting only the first would let an
+	// unconditional increment pass, which is what the earlier version of this did.
+	t.Run("a verdict that ended a retryable attempt charges one", func(t *testing.T) {
 		db, ctx := outboxDB(t)
 		org, slot := uuid.New(), uuid.New()
 		seedBook(t, db, ctx, "charge-final", org, slot, 1, 1, 1000)
@@ -548,11 +552,38 @@ func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
 			Outcome: "refunded", RefundID: uuid.New(),
 			MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
 			RefundedQuantity: 1, RefundedAmount: 1000,
-		}); err != nil {
+		}, true); err != nil {
 			t.Fatal(err)
 		}
 		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
-			t.Errorf("a verdict charged %d attempts, want 1: an operator reads this to see how many tries it took", n)
+			t.Errorf("a verdict ending a retryable attempt charged %d, want 1: an operator reads "+
+				"this to see how many tries it took", n)
+		}
+	})
+
+	t.Run("a definite refusal costs one, the same as any other verdict", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-refusal", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-refusal-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{
+			Outcome: "failed", FailureCode: "refund_refused", FailureReason: "not refundable",
+		}, true); err != nil {
+			t.Fatal(err)
+		}
+		// PRESERVED, not chosen: before TKT-300 this count came from the claim, so a row
+		// reaching any verdict ended with at least one. The migration comment used to say a
+		// refusal "never consumes this" and never matched the code; the comment is what was
+		// corrected, because what a refusal costs is a business outcome and changing it is
+		// outside this ticket. `TestDefiniteRefusalIsTerminalOnTheFirstAttempt` is the
+		// runner-tier test that pins the same value.
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
+			t.Errorf("a definite refusal left %d attempts, want 1: TKT-300 preserves what a "+
+				"verdict has always left behind", n)
 		}
 	})
 

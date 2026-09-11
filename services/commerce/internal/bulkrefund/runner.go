@@ -36,7 +36,10 @@ type Store interface {
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
 	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error
 	ClearQuantity(ctx context.Context, w store.CancellationWork) error
-	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error
+	// `charge` says whether this verdict ended a RETRYABLE attempt. A definite refusal
+	// is terminal on the first attempt and never consumes the budget
+	// (0012_cancellation_refunds.sql:95-99).
+	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error
 	Abandon(ctx context.Context, w store.CancellationWork, charge bool) error
 	// ChargeAttempt records one driven attempt WITHOUT releasing the lease, which is what
 	// a retryable failure needs: the lease is the backoff and must stay.
@@ -219,46 +222,34 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 		}, slog.Default(), "cancellation")
 }
 
-// chargeDriven records one driven attempt on a detached, bounded context.
+// chargeDriven records one driven attempt on a detached, bounded context, retrying once.
 //
-// EXACTLY ONE WRITE, AND NO RETRY, deliberately. An earlier version retried a failed write
-// and claimed the claim-id fence made that safe. It does not: the fence stops a SUCCESSOR
-// from charging, not this claimant from charging twice. A write that commits and then
-// reports a timeout leaves `claim_id`, `lease_until` and `outcome` untouched -- the
-// retryable path keeps its lease on purpose -- so the retry's WHERE still matches and
-// increments again (ai-review pass 2 [high]).
+// Both halves matter and each closes a loss the other cannot:
 //
-// The two failures are not symmetric, which is what decides it:
+//   - DETACHED, because `record`'s cancellation check and this call are not atomic. A
+//     shutdown landing between them does not reach the abandon path; it reaches here, and
+//     `WithoutCancel` is the only reason the charge still lands.
+//   - RETRIED, because the realistic other loss is a transient database error, and a lost
+//     charge is not self-correcting: nothing else bounds re-drives, so a row whose charges
+//     keep failing exceeds `maxAttempts` drives of a failure whose money may already have
+//     moved, and its run never completes.
 //
-//   - A LOST charge gives the row one extra drive of an ambiguous failure PER LOST
-//     WRITE, and that is not a bound on the row. ai-review pass 3 refuted the earlier
-//     claim that it was: nothing else limits drives (the claim predicate reads only
-//     `outcome` and the lease, there is no deadline and no drive counter), so charge
-//     writes that fail repeatedly — a statement timeout on a contended row, say, while
-//     claims keep succeeding — let a row exceed `maxAttempts` drives of a failure whose
-//     money may already have moved, and its run never completes.
-//
-// **That gap is real, is NOT closed here, and is TKT-332.** Closing it needs a durable
-// per-claim marker (`charged_claim_id`, so the write is idempotent by construction),
-// which is a migration on a money-path table. The approved plan for this ticket says no
-// migration is needed and its scope excludes changing these durable schemas, so taking
-// it here would be an unreviewed schema change on the money path — exactly the thing the
-// plan gate exists to look at. It goes to its own ticket with its own gate.
-//   - A DOUBLE charge parks a recoverable row EARLY: money possibly gone, tickets still
-//     valid, nothing driving the reversal, and only a human can clear it.
-//
-// The loss is the cheaper mistake, so this takes it. Charging exactly once per claim needs
-// a durable per-claim marker (a `charged_claim_id`, or a comparison against the claim-time
-// count) -- a schema change with its own failure modes, for a window narrower than one
-// already beside it: a crash between the refund unit running and the verdict committing
-// loses the VERDICT, which is worse than losing a count. TKT-331 owns that neighbourhood.
-//
-// What this DOES fix is the pass-1 finding: the charge no longer dies with the caller's
-// context, which is the loss the accounting move introduced.
+// The retry is safe only because `ChargeCancellationAttempt` is a compare-and-set on the
+// claim-time count: a retry after a committed-but-unacknowledged write matches nothing.
+// An earlier version of this retried a write WITHOUT that guard and claimed the claim-id
+// fence made it safe — it did not, and the fix for that was first to drop the retry, which
+// traded a double charge for an unbounded loss. The guard is what lets both go.
 func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
-	charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	return r.store.ChargeAttempt(charge, w)
+	var err error
+	for try := 0; try < 2; try++ {
+		charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err = r.store.ChargeAttempt(charge, w)
+		cancel()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // process resolves one order, and never returns an error: a failure is an OUTCOME of this
@@ -409,16 +400,9 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 		// lost this way, so this window belongs to the accounting move and is closed here
 		// rather than left as a known gap.
 		//
-		// Detached from the caller's context, which guards TWO losses and not one. The
-		// ctx.Err() check above and this call are not atomic, so a cancellation landing
-		// between them is NOT sent to the abandon path -- it arrives here, and
-		// WithoutCancel is the only reason the charge still lands. (An earlier version of
-		// this comment claimed the check catches every cancellation. It does not, and
-		// that window is currently untested: see TKT-332.) The other loss is a database
-		// error on the write, which detachment cannot prevent.
-		//
-		// Written exactly once -- chargeDriven says why a retry would be worse, and names
-		// the bound this does NOT provide.
+		// Charged on a detached context and retried once; chargeDriven carries the
+		// reasoning, and ChargeCancellationAttempt's compare-and-set on the claim-time
+		// count is what makes the retry safe.
 		if err := r.chargeDriven(ctx, w); err != nil {
 			slog.Default().ErrorContext(ctx, "charge cancellation attempt",
 				"order_id", w.OrderID, "err", err)
@@ -650,7 +634,13 @@ func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out sto
 	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := r.store.Finalize(write, w, out); err != nil {
+	// Charged unconditionally, which PRESERVES the count a verdict has always left behind
+	// (see Finalize's contract). Charging only retryable verdicts would read better against
+	// the schema comment, and it is what a first pass at this did -- but a definite refusal
+	// has always left `attempts` at 1, from the claim-time charge this ticket removed, and
+	// `TestDefiniteRefusalIsTerminalOnTheFirstAttempt` pins that. Changing it is a business
+	// outcome, which this ticket's scope excludes.
+	if err := r.store.Finalize(write, w, out, true); err != nil {
 		if !errors.Is(err, store.ErrCancellationClaimLost) {
 			slog.Default().ErrorContext(write, "finalize cancellation order", "order_id", w.OrderID, "err", err)
 		}

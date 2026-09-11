@@ -48,10 +48,12 @@ type Adapter[T any, K comparable] struct {
 // `abandon` must be conditional on the claim token in SQL, so a lease that lapsed and
 // was re-claimed by a successor mid-shutdown is left alone.
 //
-// Exported because it is shared by two shapes of runner: the draining loop below, and
-// single-batch runners that do not drain at all. Those runners share this mechanism and
-// the per-row cancellation check, and nothing else — giving them the whole loop would
-// hand them a duplicate map, a freshness count and a pass bound that can never fire.
+// Exported because it is shared by runners that do NOT use the loop below: recovery, which
+// claims a single batch per tick, and bulk refund, which drains its own book around an
+// enumeration prelude and a completion postlude. Both share this mechanism and the per-row
+// cancellation discipline and nothing else — giving recovery the whole loop would hand it a
+// duplicate map, a freshness count and a pass bound that can never fire, and bulk refund's
+// loop is shaped around work the loop below knows nothing about.
 func HandBackUndriven[T any](claims []T, abandon func(context.Context, T) error, log *slog.Logger, name string) {
 	if len(claims) == 0 {
 		return

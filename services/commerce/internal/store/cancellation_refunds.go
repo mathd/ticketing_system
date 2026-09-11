@@ -438,7 +438,7 @@ func ClearCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w Cance
 // claimant whose lease lapsed mid-drive, and whose work was taken over, cannot overwrite
 // its successor. The database's own CHECK refuses a successful outcome with an obligation
 // outstanding (ADR-039), so a runner bug cannot report money-back-tickets-valid as done.
-func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWork, out CancellationOutcome) error {
+func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWork, out CancellationOutcome, charge bool) error {
 	var refund uuid.NullUUID
 	if out.RefundID != uuid.Nil {
 		refund = uuid.NullUUID{UUID: out.RefundID, Valid: true}
@@ -447,21 +447,27 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 	if out.FailureCode != "" {
 		code, reason = &out.FailureCode, &out.FailureReason
 	}
-	// The attempt is charged here too (TKT-300): reaching a verdict means the row was
-	// driven. It matters even though the row is going terminal, because `attempts` is what
-	// an operator reads afterwards to see how many tries a cancellation took, and a
-	// terminal row that reports one fewer attempt than it made is simply wrong.
+	// `charge` says whether this verdict costs an attempt. Every caller passes true today,
+	// which PRESERVES what a verdict has always left behind: before TKT-300 the count came
+	// from the claim, so a row reaching any verdict — including a definite refusal — ended
+	// with at least one. `TestDefiniteRefusalIsTerminalOnTheFirstAttempt` pins that.
+	//
+	// The parameter exists rather than a hardcoded +1 because the migration comment at
+	// `0012_cancellation_refunds.sql:95-99` says a definite refusal "never consumes this",
+	// which has never matched the shipped behaviour. That comment is corrected rather than
+	// the behaviour changed: what a refusal costs is a business outcome, and TKT-300's
+	// scope excludes changing those. The seam is here for whoever settles it.
 	res, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders
 		SET outcome=$5, refund_id=COALESCE($6, refund_id), failure_code=$7, failure_reason=$8,
 		    money_refunded=$9, tickets_voided=$10, capacity_returned=$11,
 		    refunded_quantity=$12, refunded_amount=$13,
-		    attempts=attempts+1,
+		    attempts = CASE WHEN $14 THEN attempts + 1 ELSE attempts END,
 		    claim_id=NULL, lease_until=NULL, completed_at=now()
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
 		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, out.Outcome, refund, code, reason,
 		out.MoneyRefunded, out.TicketsVoided, out.CapacityReturned,
-		out.RefundedQuantity, out.RefundedAmount)
+		out.RefundedQuantity, out.RefundedAmount, charge)
 	if err != nil {
 		return err
 	}
@@ -506,15 +512,29 @@ func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWor
 // retained lease is the backoff (see the runner's `record`), so the charge cannot ride
 // along on the abandon or the finalize the way the other outcomes' charges do.
 //
-// Fenced on the claim id like every other write here, so a claimant whose lease lapsed
-// mid-drive cannot spend its successor's budget. The fence is also what makes the caller
-// safe to retry on a detached context: a retry that arrives after a successor claimed the
-// row matches nothing and charges nobody.
+// IDEMPOTENT PER CLAIM, by compare-and-set on the count the claim observed. `attempts=$5`
+// is `w.Attempts`, the value this claimant was handed, so:
+//
+//   - the first write matches (the row still holds N) and sets N+1;
+//   - a retry after a write that COMMITTED but whose acknowledgement was lost finds N+1,
+//     does not match, and changes nothing;
+//   - a retry after a write that genuinely failed finds N, matches, and recovers the
+//     attempt that would otherwise have been lost.
+//
+// One predicate therefore closes both failures the naive version had — the lost charge and
+// the double charge — which is what makes the caller safe to retry. Without it the two are
+// a genuine dilemma: retrying double-counts a committed-but-unacknowledged write, and not
+// retrying loses attempts with nothing else bounding re-drives.
+//
+// Still fenced on the claim id as well, for a different reason: that stops a claimant whose
+// lease lapsed mid-drive from spending its SUCCESSOR's budget. The two predicates guard
+// different adversaries and neither replaces the other.
 func ChargeCancellationAttempt(ctx context.Context, db *sql.DB, w CancellationWork) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders SET attempts=attempts+1
-		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
-		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID)
+		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL
+		  AND attempts=$5`,
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, w.Attempts)
 	return err
 }
 
