@@ -187,14 +187,21 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 	return resolved
 }
 
-// abandon releases a claim without a verdict, on a context detached from the cancelled one
-// — the whole point is to record the release, and a cancelled context cannot.
+// abandon releases a claim without a verdict, through worklease.HandBackUndriven, which
+// owns the detached context this needs: the whole point is to record the release, and the
+// caller's context is already cancelled.
+//
+// Like recovery, and unlike the draining runners, this one does NOT use worklease.Drain.
+// Its claim predicate is `outcome IS NULL AND (lease_until IS NULL OR lease_until <=
+// now())`, and a retryable failure deliberately KEEPS its lease as the backoff, so a row
+// cannot come back round inside one pass. The lease is what bounds this loop, which is why
+// there is no duplicate map and no per-pass batch bound to share — giving it either would
+// add a mechanism that could never fire.
 func (r *Runner) abandon(w store.CancellationWork, refundAttempt bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.store.Abandon(ctx, w, refundAttempt); err != nil {
-		slog.Default().ErrorContext(ctx, "abandon cancellation claim", "order_id", w.OrderID, "err", err)
-	}
+	worklease.HandBackUndriven([]store.CancellationWork{w},
+		func(ctx context.Context, w store.CancellationWork) error {
+			return r.store.Abandon(ctx, w, refundAttempt)
+		}, slog.Default(), "cancellation")
 }
 
 // process resolves one order, and never returns an error: a failure is an OUTCOME of this
