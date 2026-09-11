@@ -110,10 +110,33 @@ func (s *Server) WithClock(now func() time.Time) *Server {
 // costs nothing, while the subject key is the one an attacker controls freely.
 func (s *Server) allowStaffAuth(w http.ResponseWriter, r *http.Request, identifier string) bool {
 	l := s.lim()
-	if !l.source.Allow(httpx.ClientIP(r)) || !l.subject.Allow(store.NormalizeStaffIdentifier(identifier)) {
-		w.Header().Set("Retry-After", retryAfterSeconds)
-		writeJSON(w, http.StatusTooManyRequests, Error{Error: staffTooManyRequests})
+
+	// Written as two statements rather than one `||` so the telemetry can say
+	// WHICH budget refused, and shaped to reproduce the short-circuit by
+	// construction rather than by inspection: the subject bucket is touched only
+	// when the source allowed. That ordering is enforcement behaviour, not style —
+	// spending a subject token on a source-refused request would let one noisy
+	// client grind a named account's budget to zero from a source that is itself
+	// being refused, locking the victim out from every other source too.
+	// TestASourceRefusalDoesNotSpendASubjectToken is what holds this.
+	if !l.source.Allow(httpx.ClientIP(r)) {
+		s.staffLoginTelemetry.observeDecision(r.Context(), staffLoginThrottledSource)
+		s.refuseStaffAuth(w)
 		return false
 	}
+	if !l.subject.Allow(store.NormalizeStaffIdentifier(identifier)) {
+		s.staffLoginTelemetry.observeDecision(r.Context(), staffLoginThrottledSubject)
+		s.refuseStaffAuth(w)
+		return false
+	}
+	s.staffLoginTelemetry.observeDecision(r.Context(), staffLoginAllowed)
 	return true
+}
+
+// refuseStaffAuth writes the ONE refusal, so the two paths above cannot drift
+// into saying slightly different things — which is the same reason
+// staffTooManyRequests is a single constant.
+func (s *Server) refuseStaffAuth(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", retryAfterSeconds)
+	writeJSON(w, http.StatusTooManyRequests, Error{Error: staffTooManyRequests})
 }
