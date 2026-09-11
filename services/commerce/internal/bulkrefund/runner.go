@@ -230,8 +230,20 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 //
 // The two failures are not symmetric, which is what decides it:
 //
-//   - A LOST charge gives the row one extra drive of an ambiguous failure. Bounded, and
-//     it is a drive the row would have had a minute later anyway.
+//   - A LOST charge gives the row one extra drive of an ambiguous failure PER LOST
+//     WRITE, and that is not a bound on the row. ai-review pass 3 refuted the earlier
+//     claim that it was: nothing else limits drives (the claim predicate reads only
+//     `outcome` and the lease, there is no deadline and no drive counter), so charge
+//     writes that fail repeatedly — a statement timeout on a contended row, say, while
+//     claims keep succeeding — let a row exceed `maxAttempts` drives of a failure whose
+//     money may already have moved, and its run never completes.
+//
+// **That gap is real, is NOT closed here, and is TKT-332.** Closing it needs a durable
+// per-claim marker (`charged_claim_id`, so the write is idempotent by construction),
+// which is a migration on a money-path table. The approved plan for this ticket says no
+// migration is needed and its scope excludes changing these durable schemas, so taking
+// it here would be an unreviewed schema change on the money path — exactly the thing the
+// plan gate exists to look at. It goes to its own ticket with its own gate.
 //   - A DOUBLE charge parks a recoverable row EARLY: money possibly gone, tickets still
 //     valid, nothing driving the reversal, and only a human can clear it.
 //
@@ -397,10 +409,16 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 		// lost this way, so this window belongs to the accounting move and is closed here
 		// rather than left as a known gap.
 		//
-		// Detached from the caller's context for the same reason the hand-back is: a
-		// cancellation reaching here is caught by the ctx.Err() check above and charged
-		// through the abandon path, so what this guards against is a database error.
-		// Written exactly once -- chargeDriven says why a retry would be worse.
+		// Detached from the caller's context, which guards TWO losses and not one. The
+		// ctx.Err() check above and this call are not atomic, so a cancellation landing
+		// between them is NOT sent to the abandon path -- it arrives here, and
+		// WithoutCancel is the only reason the charge still lands. (An earlier version of
+		// this comment claimed the check catches every cancellation. It does not, and
+		// that window is currently untested: see TKT-332.) The other loss is a database
+		// error on the write, which detachment cannot prevent.
+		//
+		// Written exactly once -- chargeDriven says why a retry would be worse, and names
+		// the bound this does NOT provide.
 		if err := r.chargeDriven(ctx, w); err != nil {
 			slog.Default().ErrorContext(ctx, "charge cancellation attempt",
 				"order_id", w.OrderID, "err", err)
