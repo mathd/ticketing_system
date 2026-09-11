@@ -535,8 +535,15 @@ func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A `refunded` verdict must carry its refund and quantity: the table CHECKs that
-		// this run has a refund to point at (0012_cancellation_refunds.sql:133).
+		// A `refunded` verdict must carry its refund AND the row must already have a
+		// resolved requested_quantity: the table CHECKs both, because `refunded` means this
+		// run moved money and so has something to point at
+		// (0012_cancellation_refunds.sql:133). The quantity is a column resolved by its own
+		// call, not a field of the outcome -- which is why supplying RefundID alone still
+		// trips the constraint.
+		if err := FixCancellationRequestedQuantity(ctx, db, claimed[0], 1, false); err != nil {
+			t.Fatal(err)
+		}
 		if err := FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{
 			Outcome: "refunded", RefundID: uuid.New(),
 			MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
