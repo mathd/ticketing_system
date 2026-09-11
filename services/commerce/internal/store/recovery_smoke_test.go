@@ -317,35 +317,115 @@ func TestOutcomeWriteThatChangesNothingIsAConflict(t *testing.T) {
 	}
 }
 
-// Abandoning an undriven claim refunds the attempt ClaimStuckOrders charged at claim
-// time. Otherwise a few rolling restarts park a healthy order at MaxRecoveryAttempts
-// without a single re-drive having actually been attempted.
-func TestAbandonRefundsTheClaimAttempt(t *testing.T) {
+// TKT-300: the claim is not an attempt. This replaces TestAbandonRefundsTheClaimAttempt,
+// which asserted the opposite — that a claim charges up front and an abandon gives it back.
+// Both properties cannot hold, and this is the one the ticket requires: a crash or a
+// rolling restart between claiming and driving must leave the retry budget untouched.
+func TestClaimingChargesNoAttemptAndAbandoningRefundsNothing(t *testing.T) {
 	db, ctx := outboxDB(t)
 	seeded := seedStuck(t, "created")
 
 	claimed := claimStuckOne(t, seeded.OrderID)
-	var after int
-	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&after); err != nil {
+	var afterClaim int
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&afterClaim); err != nil {
 		t.Fatal(err)
 	}
-	if after != 1 {
-		t.Fatalf("claim charged %d attempts, want 1 — this test is not exercising the refund", after)
+	if afterClaim != 0 {
+		t.Fatalf("claiming charged %d attempts, want 0: a claim is not an attempt", afterClaim)
 	}
 
 	if err := AbandonRecoveryClaim(ctx, db, claimed.OrderID, claimed.ClaimID); err != nil {
 		t.Fatal(err)
 	}
-	var refunded int
+	var afterAbandon int
 	var lease sql.NullTime
-	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts,recovery_lease_until FROM orders WHERE id=$1`, seeded.OrderID).Scan(&refunded, &lease); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts,recovery_lease_until FROM orders WHERE id=$1`, seeded.OrderID).Scan(&afterAbandon, &lease); err != nil {
 		t.Fatal(err)
 	}
-	if refunded != 0 {
-		t.Errorf("recovery_attempts = %d after abandoning an undriven claim, want 0", refunded)
+	// Not merely "still 0": the old shape's GREATEST(attempts-1,0) would also read 0 here,
+	// so this direction alone cannot tell the two designs apart. The claim assertion above
+	// is what does. What this adds is that the abandon does not go NEGATIVE-by-clamping on
+	// a row that has already made real attempts, which is the case the next test covers.
+	if afterAbandon != 0 {
+		t.Errorf("recovery_attempts = %d after abandoning an undriven claim, want 0", afterAbandon)
 	}
 	if lease.Valid {
 		t.Error("abandoning must drop the lease so the next pass can claim immediately")
+	}
+}
+
+// The undriven hand-back must not give back an attempt that a DRIVEN pass paid for. Under
+// the old claim-time accounting this was a refund, and refunding here after a real failure
+// would hand a persistently failing order extra budget on every interrupted deploy.
+func TestAbandoningAfterARealFailureDoesNotGiveBackTheFailedAttempt(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedStuck(t, "created")
+
+	// One real driven failure.
+	first := claimStuckOne(t, seeded.OrderID)
+	if err := ReleaseStuckOrder(ctx, db, first.OrderID, first.ClaimID, errors.New("downstream down")); err != nil {
+		t.Fatal(err)
+	}
+	var charged int
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&charged); err != nil {
+		t.Fatal(err)
+	}
+	if charged != 1 {
+		t.Fatalf("a driven failure charged %d attempts, want 1", charged)
+	}
+
+	// Now a pass claims it and is interrupted before driving.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_next_attempt_at=now()-interval '1 minute' WHERE id=$1`, seeded.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	second := claimStuckOne(t, seeded.OrderID)
+	if err := AbandonRecoveryClaim(ctx, db, second.OrderID, second.ClaimID); err != nil {
+		t.Fatal(err)
+	}
+	var afterAbandon int
+	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&afterAbandon); err != nil {
+		t.Fatal(err)
+	}
+	if afterAbandon != 1 {
+		t.Errorf("recovery_attempts = %d after an undriven abandon following one real failure, want 1: "+
+			"the undriven hand-back must not refund an attempt that was actually made", afterAbandon)
+	}
+}
+
+// The parking boundary, pinned FROM BOTH SIDES. Moving the charge from claim to release
+// changes when the counter advances, so "unchanged in terms of real driven failures" is a
+// claim about an exact boundary and is asserted as one. N comes from the constant, never
+// from observing what the code did.
+func TestParkingBoundaryIsExactlyMaxRecoveryAttemptsDrivenFailures(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedStuck(t, "created")
+
+	fail := func() {
+		if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_next_attempt_at=now()-interval '1 minute' WHERE id=$1`, seeded.OrderID); err != nil {
+			t.Fatal(err)
+		}
+		c := claimStuckOne(t, seeded.OrderID)
+		if err := ReleaseStuckOrder(ctx, db, c.OrderID, c.ClaimID, errors.New("downstream down")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parked := func() bool {
+		var at sql.NullTime
+		if err := db.QueryRowContext(ctx, `SELECT recovery_parked_at FROM orders WHERE id=$1`, seeded.OrderID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at.Valid
+	}
+
+	for i := 1; i < MaxRecoveryAttempts; i++ {
+		fail()
+		if parked() {
+			t.Fatalf("parked after %d driven failures, want park only at %d", i, MaxRecoveryAttempts)
+		}
+	}
+	fail()
+	if !parked() {
+		t.Fatalf("not parked after %d driven failures, want parked", MaxRecoveryAttempts)
 	}
 }
 

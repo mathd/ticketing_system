@@ -265,27 +265,20 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 // releaseUndriven hands back claims the pass never got to, so the next runner (or the
 // next boot) can pick them up immediately rather than waiting out the lease.
 //
-// It uses a fresh, bounded context: the caller's is already cancelled, so reusing it
-// would fail every one of these writes and defeat the point.
+// It hands the claims back through worklease.HandBackUndriven, which is the same
+// mechanism the draining runners use and carries the reasoning for the detached context
+// it needs to do that while the caller's is already cancelled.
+//
+// Recovery shares THAT and the per-row cancellation check, and deliberately not the
+// drain loop: this runner claims one batch per tick and has no duplicate map, no
+// freshness count and no pass bound. Routing it through the full loop would hand it
+// three mechanisms that could never fire, and a dead mechanism with a green test beside
+// it reads as a guarantee. Whether recovery SHOULD drain is a real question and a
+// separate ticket; it is not something to adopt as a side effect of a refactor.
 func (r *Runner) releaseUndriven(orders []store.StuckOrder) {
-	if len(orders) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var released int
-	for _, s := range orders {
-		// Conditional on the claim token, so a lease that lapsed and was re-claimed by a
-		// successor mid-shutdown is left alone.
-		if err := r.store.AbandonRecoveryClaim(ctx, s.OrderID, s.ClaimID); err != nil {
-			r.log.WarnContext(ctx, "release undriven recovery claim",
-				"order_id", s.OrderID, "err", err)
-			continue
-		}
-		released++
-	}
-	r.log.InfoContext(ctx, "released undriven recovery claims on shutdown",
-		"released", released, "of", len(orders))
+	worklease.HandBackUndriven(orders, func(ctx context.Context, s store.StuckOrder) error {
+		return r.store.AbandonRecoveryClaim(ctx, s.OrderID, s.ClaimID)
+	}, r.log, "recovery")
 }
 
 // drive re-drives one order per ADR-016 §Decision 3.
@@ -580,13 +573,20 @@ func (r *Runner) fail(ctx context.Context, s store.StuckOrder, cause error) {
 	if err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause); err != nil {
 		r.log.ErrorContext(ctx, "release stuck order", "order_id", s.OrderID, "err", err)
 	}
-	if s.Attempts >= store.MaxRecoveryAttempts {
+	// s.Attempts is the count as OBSERVED AT CLAIM, and since TKT-300 the claim no longer
+	// charges: the attempt just made is charged by the ReleaseStuckOrder above. So the
+	// count after this failure is s.Attempts+1, and that is what decides whether the row
+	// was parked. Comparing the bare s.Attempts would log "parked" one attempt after the
+	// SQL actually parked the row — and this log line is the last notice anyone gets, so
+	// being a beat late means the first notice is silence.
+	attempts := s.Attempts + 1
+	if attempts >= store.MaxRecoveryAttempts {
 		// Parked: never claimed again, so this is the last notice anyone gets that a
 		// real order is stuck.
 		r.log.ErrorContext(ctx, "stuck order parked after exhausting recovery attempts",
-			"order_id", s.OrderID, "status", s.Status, "attempts", s.Attempts, "err", cause)
+			"order_id", s.OrderID, "status", s.Status, "attempts", attempts, "err", cause)
 		return
 	}
 	r.log.WarnContext(ctx, "re-drive stuck order",
-		"order_id", s.OrderID, "status", s.Status, "attempts", s.Attempts, "err", cause)
+		"order_id", s.OrderID, "status", s.Status, "attempts", attempts, "err", cause)
 }

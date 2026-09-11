@@ -23,7 +23,6 @@ package reversal
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
@@ -112,103 +111,39 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce drains the claimable backlog in bounded batches. Returns how many reversals it
-// drove to completion, for tests and for callers draining to quiescence. Draining avoids
-// waiting a full interval between batches after an outage. The bound keeps the `driven` map
-// finite and guarantees that a continuously replenished queue cannot monopolize the runner.
+// MaxBatchesPerPass bounds one drain. It keeps the loop's per-pass `driven` map finite and
+// guarantees that a continuously replenished queue cannot monopolize the runner.
 //
-// A bound makes both finite. What is left undrained is not lost: it is claimable, and the
-// next tick is a minute away at most. The number is deliberately generous — 64 batches of 16
-// is 1024 refunds per pass — because the common case is a backlog far smaller than one batch
-// and the bound should only ever bite on a genuinely pathological queue.
+// What is left undrained is not lost: it is claimable, and the next tick is a minute away
+// at most. The number is deliberately generous — 64 batches of 16 is 1024 refunds per pass
+// — because the common case is a backlog far smaller than one batch and the bound should
+// only ever bite on a genuinely pathological queue.
 const MaxBatchesPerPass = 64
 
-// ONE DRIVE PER REFUND PER PASS, enforced here rather than left to the backoff. A released
-// row becomes due again after its floor or its backoff — both of which
-// can be shorter than the time the rest of a slow batch takes — so a drain loop that only
-// re-claimed would happily pick the same refund up again in a later batch of the same pass.
-// At the extreme that lets one row spend its whole attempt budget and PARK inside a single
-// RunOnce, which is the opposite of what a bounded budget spread over passes is for.
+// RunOnce drains the claimable backlog in bounded batches. Returns how many reversals it
+// drove to completion, for tests and for callers draining to quiescence. Draining avoids
+// waiting a full interval between batches after an outage.
 //
-// `driven` is per-pass, bounded by MaxBatchesPerPass × batch, and discarded on return.
+// The lifecycle — bounded batching, one drive per refund per pass, per-row cancellation,
+// and the detached hand-back of an undriven suffix — lives in `worklease.Drain`, which
+// carries the reasoning for each of those. What stays here is the part that is reversal's:
+// which refund a claim is, and what `drive` does with it.
 func (r *Runner) RunOnce(ctx context.Context) int {
-	var resolved int
-	driven := make(map[uuid.UUID]struct{})
-	for pass := 0; pass < MaxBatchesPerPass; pass++ {
-		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				r.log.ErrorContext(ctx, "claim outstanding reversals", "err", err)
-			}
-			return resolved
-		}
-		if len(claimed) == 0 {
-			return resolved
-		}
-		var fresh int
-		for i, c := range claimed {
-			// Checked per ROW, not per batch: an interrupted pass must leave the rest of
-			// its claim immediately reclaimable rather than parking it behind the full
-			// lease — with a big batch that is minutes of nothing happening, for
-			// obligations that are already overdue. The lease exists to survive a crash,
-			// not to be the cost of an orderly restart.
-			if ctx.Err() != nil {
-				r.abandonUndriven(claimed[i:])
-				return resolved
-			}
-			if _, seen := driven[c.Refund.ID]; seen {
-				// Already driven this pass. Hand the claim straight back — undriven, so it
-				// costs no attempt.
-				//
-				// It stays DUE, so the store can offer it again immediately: `Abandon`
-				// clears the lease and the token and deliberately does not touch
-				// next_attempt_at, since the row was never tried. That is why a duplicate
-				// must not merely be skipped — a batch made entirely of duplicates would
-				// otherwise spin. The `fresh == 0` exit below is what stops it, and the
-				// bound above is what stops everything else.
-				//
-				// On the CALLER's context, not abandonUndriven's detached one: that exists
-				// because a shutdown's context is already cancelled, and reusing it here
-				// would both mislabel this as a shutdown and let a degraded database burn a
-				// 5s timeout per duplicate that cancellation cannot interrupt.
-				// The ctx.Err() check above is NOT atomic with this call: a shutdown landing
-				// between them, or while the write is in flight, fails it on a cancelled
-				// context. Logging and moving on would leave the row
-				// leased for the full lease — ~17 minutes at the defaults — with its
-				// obligation outstanding the whole time. So a cancellation here falls back
-				// to the detached path, which is exactly the case that path exists for.
-				if err := r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID); err != nil {
-					if ctx.Err() != nil {
-						r.abandonUndriven(claimed[i : i+1])
-					} else {
-						r.log.WarnContext(ctx, "hand back a reversal claim already driven this pass",
-							"refund_id", c.Refund.ID, "err", err)
-					}
-				}
-				continue
-			}
-			driven[c.Refund.ID] = struct{}{}
-			fresh++
-			if r.drive(ctx, c) {
-				resolved++
-			}
-		}
-		// A batch that was full but contained nothing new means the queue is now just this
-		// pass's own releases coming back round; stop rather than spin.
-		//
-		// This can end a drain while genuinely new work sorts behind those duplicates —
-		// accepted, and bounded in cost: the claim is ordered by next_attempt_at, a
-		// duplicate's is in the past and a fresh row's is at most a minute out, so the next
-		// tick reaches them. Trading a bounded delay for a loop that cannot spin is the
-		// right side of that: the obligations are under-selling while they wait, never
-		// over-selling.
-		if len(claimed) < r.batch || fresh == 0 {
-			return resolved
-		}
-	}
-	r.log.InfoContext(ctx, "reversal drain hit its per-pass bound; the rest waits for the next tick",
-		"batches", MaxBatchesPerPass, "driven", len(driven))
-	return resolved
+	return worklease.Drain(ctx, worklease.Adapter[store.ClaimedReversal, uuid.UUID]{
+		Claim: r.store.Claim,
+		Key: func(c store.ClaimedReversal) uuid.UUID {
+			return c.Refund.ID
+		},
+		Process: r.drive,
+		Abandon: func(ctx context.Context, c store.ClaimedReversal) error {
+			return r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID)
+		},
+		Batch:             r.batch,
+		Lease:             r.lease,
+		MaxBatchesPerPass: MaxBatchesPerPass,
+		Log:               r.log,
+		Name:              "reversal",
+	})
 }
 
 // drive discharges what it can of one refund's reversal and records the outcome. It
@@ -243,30 +178,4 @@ func (r *Runner) drive(ctx context.Context, c store.ClaimedReversal) bool {
 		r.log.ErrorContext(ctx, "release reversal claim", "refund_id", c.Refund.ID, "err", err)
 	}
 	return false
-}
-
-// abandonUndriven hands back claims the pass never got to, so the next pass (or the next
-// boot) picks them up immediately rather than waiting out the lease, and refunds the
-// attempt charged at claim time.
-//
-// It uses a fresh, bounded context: the caller's is already cancelled, so reusing it would
-// fail every one of these writes and defeat the point.
-func (r *Runner) abandonUndriven(claims []store.ClaimedReversal) {
-	if len(claims) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var released int
-	for _, c := range claims {
-		// Conditional on the claim token in SQL, so a lease that lapsed and was re-claimed
-		// by a successor mid-shutdown is left alone.
-		if err := r.store.Abandon(ctx, c.Refund.OrganizerID, c.Refund.ID, c.ClaimID); err != nil {
-			r.log.WarnContext(ctx, "abandon undriven reversal claim", "refund_id", c.Refund.ID, "err", err)
-			continue
-		}
-		released++
-	}
-	r.log.InfoContext(ctx, "released undriven reversal claims on shutdown",
-		"released", released, "of", len(claims))
 }

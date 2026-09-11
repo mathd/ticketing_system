@@ -69,8 +69,10 @@ type CancellationWork struct {
 	// first resolved its quantity. Read back on every attempt so a resumed one attributes
 	// the outcome the same way the first one would have.
 	PriorRun bool
-	// Attempts includes THIS claim. The runner uses it to bound retries of ambiguous
-	// failures — the ones where the money may or may not have moved.
+	// Attempts is the number of attempts ALREADY CHARGED, i.e. not counting the one this
+	// claim is about to make. Since TKT-300 the charge happens after a drive, not at claim
+	// time, so a caller bounding retries must compare against Attempts+1 — the count that
+	// will hold once this attempt is charged.
 	Attempts int
 }
 
@@ -368,7 +370,7 @@ func ClaimCancellationOrders(ctx context.Context, db *sql.DB, limit int, lease t
 			FOR UPDATE SKIP LOCKED
 		), claimed AS (
 			UPDATE cancellation_refund_orders c
-			SET claim_id=$3, lease_until = now() + make_interval(secs => $2), attempts = c.attempts + 1
+			SET claim_id=$3, lease_until = now() + make_interval(secs => $2)
 			FROM claimable k
 			WHERE c.organizer_id=k.organizer_id AND c.run_id=k.run_id AND c.order_id=k.order_id
 			RETURNING c.organizer_id, c.run_id, c.order_id, c.requested_quantity, c.currency, c.attempts, c.prior_run
@@ -436,7 +438,7 @@ func ClearCancellationRequestedQuantity(ctx context.Context, db *sql.DB, w Cance
 // claimant whose lease lapsed mid-drive, and whose work was taken over, cannot overwrite
 // its successor. The database's own CHECK refuses a successful outcome with an obligation
 // outstanding (ADR-039), so a runner bug cannot report money-back-tickets-valid as done.
-func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWork, out CancellationOutcome) error {
+func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWork, out CancellationOutcome, charge bool) error {
 	var refund uuid.NullUUID
 	if out.RefundID != uuid.Nil {
 		refund = uuid.NullUUID{UUID: out.RefundID, Valid: true}
@@ -445,16 +447,27 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 	if out.FailureCode != "" {
 		code, reason = &out.FailureCode, &out.FailureReason
 	}
+	// `charge` says whether this verdict costs an attempt. Every caller passes true today,
+	// which PRESERVES what a verdict has always left behind: before TKT-300 the count came
+	// from the claim, so a row reaching any verdict — including a definite refusal — ended
+	// with at least one. `TestDefiniteRefusalIsTerminalOnTheFirstAttempt` pins that.
+	//
+	// The parameter exists rather than a hardcoded +1 because the migration comment at
+	// `0012_cancellation_refunds.sql:95-99` says a definite refusal "never consumes this",
+	// which has never matched the shipped behaviour. That comment is corrected rather than
+	// the behaviour changed: what a refusal costs is a business outcome, and TKT-300's
+	// scope excludes changing those. The seam is here for whoever settles it.
 	res, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders
 		SET outcome=$5, refund_id=COALESCE($6, refund_id), failure_code=$7, failure_reason=$8,
 		    money_refunded=$9, tickets_voided=$10, capacity_returned=$11,
 		    refunded_quantity=$12, refunded_amount=$13,
+		    attempts = CASE WHEN $14 THEN attempts + 1 ELSE attempts END,
 		    claim_id=NULL, lease_until=NULL, completed_at=now()
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
 		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, out.Outcome, refund, code, reason,
 		out.MoneyRefunded, out.TicketsVoided, out.CapacityReturned,
-		out.RefundedQuantity, out.RefundedAmount)
+		out.RefundedQuantity, out.RefundedAmount, charge)
 	if err != nil {
 		return err
 	}
@@ -471,22 +484,57 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 // AbandonCancellationClaim releases a lease without a verdict, so an interrupted runner's
 // work is reclaimable immediately rather than after the lease expires. Context cancellation
 // is an interruption, never a business outcome.
-func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork, refundAttempt bool) error {
-	// The attempt charge is REFUNDED with the claim. Attempts are charged at claim time, so
-	// a row claimed and released without being driven — a shutdown, a lapsed lease — would
-	// otherwise spend its whole retry budget on work that never happened, and its first real
-	// ambiguous failure would arrive already exhausted. Recovery's AbandonRecoveryClaim does
-	// the same for the same reason.
-	// Only an UNDRIVEN claim gets its charge back. A claim released after the refund unit was
-	// already called has done real money-path work, and refunding its attempt would let a
-	// cancellation window that recurs at exactly that point keep the row below the cap
-	// forever — so the run would never complete and its report never become readable.
+//
+// `charge` says whether this claim did real money-path work before it was interrupted, and
+// it is the INVERSE of the old `refundAttempt` flag (TKT-300). Attempts used to be charged
+// at claim time and given back here when the row had not been driven; they are now charged
+// only when something was driven, so the same distinction is expressed by charging rather
+// than by refunding. The distinction itself is unchanged and still matters in both
+// directions: a claim released without the refund unit ever being called must cost nothing,
+// or a rolling restart would spend a row's budget on work that never happened and its first
+// real ambiguous failure would arrive already exhausted; and a claim released AFTER the
+// refund unit ran must cost its attempt, or a cancellation window recurring at exactly that
+// point would hold the row below the cap forever, so the run would never complete and its
+// report never become readable.
+func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork, charge bool) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders
 		SET claim_id=NULL, lease_until=NULL,
-		    attempts = CASE WHEN $5 THEN greatest(attempts - 1, 0) ELSE attempts END
+		    attempts = CASE WHEN $5 THEN attempts + 1 ELSE attempts END
 		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL`,
-		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, refundAttempt)
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, charge)
+	return err
+}
+
+// ChargeCancellationAttempt records one driven attempt and leaves everything else alone.
+//
+// It exists because a retryable failure must be charged WITHOUT releasing its claim: the
+// retained lease is the backoff (see the runner's `record`), so the charge cannot ride
+// along on the abandon or the finalize the way the other outcomes' charges do.
+//
+// IDEMPOTENT PER CLAIM, by compare-and-set on the count the claim observed. `attempts=$5`
+// is `w.Attempts`, the value this claimant was handed, so:
+//
+//   - the first write matches (the row still holds N) and sets N+1;
+//   - a retry after a write that COMMITTED but whose acknowledgement was lost finds N+1,
+//     does not match, and changes nothing;
+//   - a retry after a write that genuinely failed finds N, matches, and recovers the
+//     attempt that would otherwise have been lost.
+//
+// One predicate therefore closes both failures the naive version had — the lost charge and
+// the double charge — which is what makes the caller safe to retry. Without it the two are
+// a genuine dilemma: retrying double-counts a committed-but-unacknowledged write, and not
+// retrying loses attempts with nothing else bounding re-drives.
+//
+// Still fenced on the claim id as well, for a different reason: that stops a claimant whose
+// lease lapsed mid-drive from spending its SUCCESSOR's budget. The two predicates guard
+// different adversaries and neither replaces the other.
+func ChargeCancellationAttempt(ctx context.Context, db *sql.DB, w CancellationWork) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE cancellation_refund_orders SET attempts=attempts+1
+		WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3 AND claim_id=$4 AND outcome IS NULL
+		  AND attempts=$5`,
+		w.OrganizerID, w.RunID, w.OrderID, w.ClaimID, w.Attempts)
 	return err
 }
 

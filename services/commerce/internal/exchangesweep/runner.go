@@ -33,7 +33,6 @@ package exchangesweep
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
@@ -159,76 +158,21 @@ type key struct{ org, id uuid.UUID }
 // PARK inside a single RunOnce, which is the opposite of what a bounded budget spread over
 // passes is for.
 func (r *Runner) RunOnce(ctx context.Context) int {
-	var resolved int
-	driven := make(map[key]struct{})
-	for pass := 0; pass < MaxBatchesPerPass; pass++ {
-		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
-		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				r.log.ErrorContext(ctx, "claim outstanding exchange reversals", "err", err)
-			}
-			return resolved
-		}
-		if len(claimed) == 0 {
-			return resolved
-		}
-		var fresh int
-		for i, c := range claimed {
-			// Checked per ROW, not per batch: an interrupted pass must leave the rest of
-			// its claim immediately reclaimable rather than parking it behind the full
-			// lease. The lease exists to survive a crash, not to be the cost of an orderly
-			// restart.
-			if ctx.Err() != nil {
-				r.abandonUndriven(claimed[i:])
-				return resolved
-			}
-			k := key{c.Exchange.OrganizerID, c.Exchange.ID}
-			if _, seen := driven[k]; seen {
-				// Already driven this pass. Hand the claim straight back — undriven, so it
-				// costs no attempt. It stays DUE, so the store can offer it again
-				// immediately: Abandon clears the lease and the token and deliberately does
-				// not touch next_attempt_at. That is why a duplicate must not merely be
-				// skipped — a batch made entirely of duplicates would otherwise spin. The
-				// `fresh == 0` exit below is what stops it.
-				//
-				// On the CALLER's context, not abandonUndriven's detached one: that exists
-				// because a shutdown's context is already cancelled, and reusing it here
-				// would both mislabel this as a shutdown and let a degraded database burn a
-				// 5s timeout per duplicate that cancellation cannot interrupt. The ctx.Err()
-				// check above is NOT atomic with this call: a shutdown landing between them,
-				// or while the write is in flight, fails it on a cancelled context — and
-				// logging and moving on would leave the row leased for the full lease with
-				// its obligation outstanding the whole time. So a cancellation here falls
-				// back to the detached path, which is what that path exists for.
-				if err := r.store.Abandon(ctx, c.Exchange.OrganizerID, c.Exchange.ID, c.ClaimID); err != nil {
-					if ctx.Err() != nil {
-						r.abandonUndriven(claimed[i : i+1])
-					} else {
-						r.log.WarnContext(ctx, "hand back an exchange claim already driven this pass",
-							"exchange_id", c.Exchange.ID, "err", err)
-					}
-				}
-				continue
-			}
-			driven[k] = struct{}{}
-			fresh++
-			if r.drive(ctx, c) {
-				resolved++
-			}
-		}
-		// A batch that was full but contained nothing new means the queue is now just this
-		// pass's own releases coming back round; stop rather than spin. This can end a drain
-		// while genuinely new work sorts behind those duplicates — accepted, and bounded:
-		// the claim is ordered by next_attempt_at, a duplicate's is in the past and a fresh
-		// row's is at most a minute out, so the next tick reaches them. The obligations are
-		// under-selling while they wait, never over-selling.
-		if len(claimed) < r.batch || fresh == 0 {
-			return resolved
-		}
-	}
-	r.log.InfoContext(ctx, "exchange sweep drain hit its per-pass bound; the rest waits for the next tick",
-		"batches", MaxBatchesPerPass, "driven", len(driven))
-	return resolved
+	return worklease.Drain(ctx, worklease.Adapter[store.ClaimedExchangeReversal, key]{
+		Claim: r.store.Claim,
+		Key: func(c store.ClaimedExchangeReversal) key {
+			return key{c.Exchange.OrganizerID, c.Exchange.ID}
+		},
+		Process: r.drive,
+		Abandon: func(ctx context.Context, c store.ClaimedExchangeReversal) error {
+			return r.store.Abandon(ctx, c.Exchange.OrganizerID, c.Exchange.ID, c.ClaimID)
+		},
+		Batch:             r.batch,
+		Lease:             r.lease,
+		MaxBatchesPerPass: MaxBatchesPerPass,
+		Log:               r.log,
+		Name:              "exchange",
+	})
 }
 
 // drive discharges what it can of one exchange's obligation and records the outcome. It
@@ -271,29 +215,4 @@ func (r *Runner) drive(ctx context.Context, c store.ClaimedExchangeReversal) boo
 		r.log.ErrorContext(ctx, "release exchange claim", "exchange_id", c.Exchange.ID, "err", err)
 	}
 	return false
-}
-
-// abandonUndriven hands back claims the pass never got to, so the next pass (or the next
-// boot) picks them up immediately rather than waiting out the lease.
-//
-// It uses a fresh, bounded context: the caller's is already cancelled, so reusing it would
-// fail every one of these writes and defeat the point.
-func (r *Runner) abandonUndriven(claims []store.ClaimedExchangeReversal) {
-	if len(claims) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var released int
-	for _, c := range claims {
-		// Conditional on the claim token in SQL, so a lease that lapsed and was re-claimed
-		// by a successor mid-shutdown is left alone.
-		if err := r.store.Abandon(ctx, c.Exchange.OrganizerID, c.Exchange.ID, c.ClaimID); err != nil {
-			r.log.WarnContext(ctx, "abandon undriven exchange claim", "exchange_id", c.Exchange.ID, "err", err)
-			continue
-		}
-		released++
-	}
-	r.log.InfoContext(ctx, "released undriven exchange claims on shutdown",
-		"released", released, "of", len(claims))
 }

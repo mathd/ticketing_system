@@ -96,7 +96,11 @@ CREATE TABLE cancellation_refund_orders (
   -- where the money may or may not have moved (a provider timeout, an unavailable journal, a
   -- completion that did not persist). Finalizing those terminally is what strands money with
   -- the tickets still valid; retrying them forever is what stops a run from ever completing.
-  -- A definite refusal is still terminal on the first attempt and never consumes this.
+  -- A definite refusal is still terminal on the first attempt. It does COST one, though:
+  -- the count reaches 1 on the way to any verdict. That was true when this was charged at
+  -- claim time and stays true now it is charged on the verdict (TKT-300). An earlier
+  -- version of this line said a refusal never consumes the budget; it never matched the
+  -- code, and nothing gated the difference.
   attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   -- Recorded when this row first resolves its quantity: a completed cancellation refund for
   -- the order ALREADY existed, so a previous run refunded it and this one only replays it.

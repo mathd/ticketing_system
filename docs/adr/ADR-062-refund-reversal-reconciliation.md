@@ -87,6 +87,33 @@ The lifecycle is `orders`' recovery lifecycle, copied: `FOR UPDATE SKIP LOCKED` 
 lease with a claim token fencing every later write, exponential backoff capped at five minutes,
 `parked_at` at `MaxReversalAttempts = 10`.
 
+> **Amended by TKT-300: copied is no longer accurate, and copying is no longer the recommendation.**
+>
+> This ADR recommended copying the lifecycle, and three later runners did. The recurrence is the
+> point: `internal/recovery`, `internal/reversal`, `internal/bulkrefund` and `internal/exchangesweep`
+> ended up with four copies, and they had drifted. Two charged an attempt when they CLAIMED a row and
+> refunded it if the pass was interrupted; two charged on release. So a crash between claiming and
+> driving consumed retry budget in half the system and not the other half, and only the claim-time
+> pair needed the refund path that made that survivable at all.
+>
+> The sharing happened in two stages, and the boundary moved each time for its own evidence:
+>
+> 1. **PR #369 shared the ARITHMETIC only.** `worklease.ForBatch` owns the overflow-safe lease
+>    formula, because a bulk-refund under-lease showed the same sizing calculation had been derived
+>    four times and got a different answer once. Sharing a formula needs no agreement about lifecycle.
+> 2. **TKT-300 shared the LIFECYCLE, inside Commerce.** `worklease.Drain` owns bounded draining, one
+>    drive per row per pass, per-row cancellation and the detached hand-back of an undriven suffix;
+>    `worklease.HandBackUndriven` owns that hand-back on its own for runners that do not drain.
+>
+> What is deliberately NOT shared: the row state machines, the external calls, the store ports, the
+> durable schemas, and every decision about what an outcome COSTS — that stays in each store's SQL,
+> keyed on the row's own state. ADR-063 §1's three reasons for not sharing a state machine are
+> untouched and still correct.
+>
+> The package stays in `services/commerce/internal`. Moving it to `shared/go` would invite a fifth
+> service to adopt a lifecycle whose invariants were argued from Commerce's rows, and nobody has that
+> evidence yet.
+
 ### 3. Attempts reset on progress — which is what makes a bound safe
 
 A bounded budget and an outage of unknown length are only compatible because **a pass that

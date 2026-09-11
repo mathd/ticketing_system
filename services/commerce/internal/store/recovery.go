@@ -88,8 +88,7 @@ func ClaimStuckOrders(ctx context.Context, db OutboxDB, limit int, lease time.Du
 		), claimed AS (
 			UPDATE orders o
 			SET recovery_lease_until=now()+make_interval(secs => $2),
-			    recovery_claim_id=$3,
-			    recovery_attempts=o.recovery_attempts+1
+			    recovery_claim_id=$3
 			WHERE o.id IN (SELECT id FROM claimable)
 			RETURNING o.id, o.reservation_id, o.status, o.idempotency_key,
 			          o.terminal_outcome, o.recovery_claim_id, o.recovery_attempts
@@ -120,14 +119,27 @@ func ClaimStuckOrders(ctx context.Context, db OutboxDB, limit int, lease time.Du
 // ReleaseStuckOrder returns an order to the claimable set after a failed re-drive,
 // backing off and parking it once attempts are exhausted. Conditional on the claim id,
 // so a claimant whose lease lapsed mid-drive cannot disturb its successor.
+// THE ATTEMPT IS CHARGED HERE, not at claim time (TKT-300). A claim that is handed back
+// undriven — a rolling restart catching a pass mid-batch — must cost nothing, and the way
+// to guarantee that is for the charge to be a consequence of a DRIVE rather than something
+// the claim does and an abandon has to remember to undo. The old shape charged up front and
+// refunded in AbandonRecoveryClaim, which worked only as long as every hand-back path
+// remembered the refund.
+//
+// Backoff and parking read `recovery_attempts+1`, the value this statement is writing:
+// Postgres evaluates the right-hand sides against the row as it was BEFORE the UPDATE, so
+// naming the bare column here would back off and park one attempt behind. This is the
+// off-by-one the move creates, and it is the reason the boundary is pinned from both sides
+// in the store smoke tests.
 func ReleaseStuckOrder(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID, cause error) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE orders
 		SET recovery_lease_until=NULL,
 		    recovery_claim_id=NULL,
 		    recovery_last_error=$3,
-		    recovery_next_attempt_at=now() + least(make_interval(secs => power(2, least(recovery_attempts, 8))::double precision), interval '5 minutes'),
-		    recovery_parked_at=CASE WHEN recovery_attempts>=$4 THEN now() ELSE NULL END
+		    recovery_attempts=recovery_attempts+1,
+		    recovery_next_attempt_at=now() + least(make_interval(secs => power(2, least(recovery_attempts+1, 8))::double precision), interval '5 minutes'),
+		    recovery_parked_at=CASE WHEN recovery_attempts+1>=$4 THEN now() ELSE NULL END
 		WHERE id=$1 AND recovery_claim_id=$2`,
 		orderID, claimID, cause.Error(), MaxRecoveryAttempts)
 	return err
@@ -336,16 +348,22 @@ func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType st
 }
 
 // AbandonRecoveryClaim hands back a claim whose order was never driven — a shutdown
-// caught the pass mid-batch. It refunds the attempt ClaimStuckOrders charged up front.
+// caught the pass mid-batch.
 //
-// The refund is the point, and it is why this is not ClearRecoveryClaim: attempts are
-// incremented at claim time, so an order abandoned by a rolling restart has paid for a
-// re-drive it never received. Left uncounted, a few restarts would park a perfectly
-// healthy order at MaxRecoveryAttempts without a single actual attempt having been made.
+// IT NO LONGER REFUNDS AN ATTEMPT, and must not (TKT-300). It used to, because
+// ClaimStuckOrders charged up front and an order abandoned by a rolling restart had paid
+// for a re-drive it never received; left uncounted, a few restarts would park a perfectly
+// healthy order without a single real attempt. The charge now happens in
+// ReleaseStuckOrder, i.e. only after a drive, so there is nothing to give back — and a
+// decrement here would take the count BELOW the number of attempts actually made,
+// handing a persistently failing order extra budget every time a deploy interrupted it.
+//
+// It is still distinct from ClearRecoveryClaim, which drops the lease after a SUCCESSFUL
+// re-drive. The two say different things about what happened, even though the SQL is now
+// the same, and a reader arriving at one should not have to work out which.
 func AbandonRecoveryClaim(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE orders SET recovery_lease_until=NULL,recovery_claim_id=NULL,
-		    recovery_attempts=GREATEST(recovery_attempts-1,0)
+		UPDATE orders SET recovery_lease_until=NULL,recovery_claim_id=NULL
 		WHERE id=$1 AND recovery_claim_id=$2`, orderID, claimID)
 	return err
 }

@@ -43,12 +43,16 @@ func (d DBStore) ClearQuantity(ctx context.Context, w store.CancellationWork) er
 	return store.ClearCancellationRequestedQuantity(ctx, d.DB, w)
 }
 
-func (d DBStore) Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error {
-	return store.FinalizeCancellationOrder(ctx, d.DB, w, out)
+func (d DBStore) Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error {
+	return store.FinalizeCancellationOrder(ctx, d.DB, w, out, charge)
 }
 
-func (d DBStore) Abandon(ctx context.Context, w store.CancellationWork, refundAttempt bool) error {
-	return store.AbandonCancellationClaim(ctx, d.DB, w, refundAttempt)
+func (d DBStore) Abandon(ctx context.Context, w store.CancellationWork, charge bool) error {
+	return store.AbandonCancellationClaim(ctx, d.DB, w, charge)
+}
+
+func (d DBStore) ChargeAttempt(ctx context.Context, w store.CancellationWork) error {
+	return store.ChargeCancellationAttempt(ctx, d.DB, w)
 }
 
 func (d DBStore) CompleteRuns(ctx context.Context) (int, error) {

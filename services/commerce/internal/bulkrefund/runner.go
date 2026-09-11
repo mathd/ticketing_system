@@ -36,8 +36,14 @@ type Store interface {
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
 	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error
 	ClearQuantity(ctx context.Context, w store.CancellationWork) error
-	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome) error
-	Abandon(ctx context.Context, w store.CancellationWork, refundAttempt bool) error
+	// `charge` says whether this verdict ended a RETRYABLE attempt. A definite refusal
+	// is terminal on the first attempt and never consumes the budget
+	// (0012_cancellation_refunds.sql:95-99).
+	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error
+	Abandon(ctx context.Context, w store.CancellationWork, charge bool) error
+	// ChargeAttempt records one driven attempt WITHOUT releasing the lease, which is what
+	// a retryable failure needs: the lease is the backoff and must stay.
+	ChargeAttempt(ctx context.Context, w store.CancellationWork) error
 	CompleteRuns(ctx context.Context) (int, error)
 }
 
@@ -171,8 +177,9 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 			// The context is checked per ORDER, not per batch: an interrupted runner must
 			// leave the rest of its claim reclaimable rather than half-driving it.
 			if ctx.Err() != nil {
-				// Never driven, so the attempt charge comes back.
-				r.abandon(w, true)
+				// Never driven, so it costs no attempt (TKT-300: the charge follows a
+				// drive rather than the claim, so this is an omission, not a refund).
+				r.abandon(w, false)
 				continue
 			}
 			if r.process(ctx, w) {
@@ -187,14 +194,70 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 	return resolved
 }
 
-// abandon releases a claim without a verdict, on a context detached from the cancelled one
-// — the whole point is to record the release, and a cancelled context cannot.
-func (r *Runner) abandon(w store.CancellationWork, refundAttempt bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.store.Abandon(ctx, w, refundAttempt); err != nil {
-		slog.Default().ErrorContext(ctx, "abandon cancellation claim", "order_id", w.OrderID, "err", err)
+// abandon releases a claim without a verdict, through worklease.HandBackUndriven, which
+// owns the detached context this needs: the whole point is to record the release, and the
+// caller's context is already cancelled.
+//
+// Like recovery, and unlike the draining runners, this one does NOT use worklease.Drain.
+// The enumeration prelude and the CompleteRuns postlude are its own, and the retained
+// lease on a retryable failure is its backoff rather than a thing the loop manages.
+//
+// It does NOT follow that a row cannot be revisited inside one pass, and an earlier
+// version of this comment claimed exactly that (ai-review pass 1 [medium] refuted it).
+// `RunOnce` claims until the book is drained, while a retained lease expires at a fixed
+// time: if later batches take longer than that lease, an earlier failed row becomes
+// claimable again in the SAME pass and can spend more of its budget than the backoff
+// intends. That gap predates this ticket and is untouched by it -- the loop is unchanged
+// -- but it is a real one, and TKT-331 carries it rather than leaving it implied by a
+// comment that says the opposite.
+//
+// What is true, and is why Drain is not simply dropped in here: Drain's duplicate map is
+// per-pass and would suppress the SECOND drive of such a row, which changes this runner's
+// retry behaviour rather than merely sharing its lifecycle. That is a decision with its
+// own evidence, and it belongs in TKT-331 with a test, not in a refactor.
+func (r *Runner) abandon(w store.CancellationWork, charge bool) {
+	worklease.HandBackUndriven([]store.CancellationWork{w},
+		func(ctx context.Context, w store.CancellationWork) error {
+			return r.store.Abandon(ctx, w, charge)
+		}, slog.Default(), "cancellation")
+}
+
+// chargeDriven records one driven attempt on a detached, bounded context, retrying once.
+//
+// Both halves matter and each closes a loss the other cannot:
+//
+//   - DETACHED, because `record`'s cancellation check and this call are not atomic. A
+//     shutdown landing between them does not reach the abandon path; it reaches here, and
+//     `WithoutCancel` is the only reason the charge still lands.
+//   - RETRIED, because the realistic other loss is a transient database error, and a lost
+//     charge is not self-correcting: nothing else bounds re-drives, so a row whose charges
+//     keep failing exceeds `maxAttempts` drives of a failure whose money may already have
+//     moved, and its run never completes.
+//
+// The retry is safe only because `ChargeCancellationAttempt` is a compare-and-set on the
+// claim-time count: a retry after a committed-but-unacknowledged write matches nothing.
+// An earlier version of this retried a write WITHOUT that guard and claimed the claim-id
+// fence made it safe — it did not, and the fix for that was first to drop the retry, which
+// traded a double charge for an unbounded loss. The guard is what lets both go.
+//
+// COST, since the context is detached and so cannot be cancelled: up to 10s per row, and
+// at the default batch of 8 up to 80s added to a shutdown. That is only reachable while
+// the database is refusing THIS write and the refund unit is still healthy, since a row
+// reaches here only after a drive returned a retryable failure. It can also push a pass
+// past its lease, whose margin is 60s — harmless in itself, because every write in this
+// file is claim-id fenced, so a pass that outlives its lease writes nothing rather than
+// racing its successor.
+func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
+	var err error
+	for try := 0; try < 2; try++ {
+		charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err = r.store.ChargeAttempt(charge, w)
+		cancel()
+		if err == nil {
+			return nil
+		}
 	}
+	return err
 }
 
 // process resolves one order, and never returns an error: a failure is an OUTCOME of this
@@ -313,21 +376,47 @@ func voidFailureCode(err error) string {
 // valid and nothing driving the reversal.
 func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, drove bool) bool {
 	// An interruption releases the claim immediately: a successor should pick the row up
-	// now, not after a lease it never used. The attempt charge comes back only if the
-	// refund unit was never called — a claim released after real money-path work keeps it,
-	// or a cancellation window recurring at exactly that point would hold the row below the
-	// cap forever and its run would never complete.
+	// now, not after a lease it never used. It costs an attempt only if the refund unit was
+	// actually called — an undriven claim must cost nothing, or a rolling restart spends a
+	// row's budget on work that never happened, and a driven one must cost its attempt, or
+	// a cancellation window recurring at exactly that point holds the row below the cap
+	// forever and its run never completes.
 	if ctx.Err() != nil {
-		r.abandon(w, !drove)
+		r.abandon(w, drove)
 		return false
 	}
 	// A retryable failure deliberately does NOT release the claim. Leaving the lease in
 	// place IS the backoff — releasing it would let the very next claim in the same pass
 	// re-drive an unavailable downstream, burning the whole attempt budget in a tight loop
 	// instead of spreading it over lease-length intervals.
-	if retryable(out) && w.Attempts < maxAttempts {
+	//
+	// The attempt is charged here, without releasing the lease (TKT-300). The charge and
+	// the lease are separate things: the charge records that a drive happened, the lease
+	// is the backoff. Releasing here to get the charge written would undo the paragraph
+	// above.
+	//
+	// The comparison is against w.Attempts+1 and not w.Attempts. w.Attempts is the count
+	// as observed at claim, and since the charge moved after the drive it no longer
+	// includes this one — so comparing the bare value would allow a SIXTH drive of an
+	// ambiguous failure, one where the money may already have moved. That is the off-by-one
+	// the accounting move creates, and it is the whole reason this line changed.
+	if attempts := w.Attempts + 1; retryable(out) && attempts < maxAttempts {
+		// The drive already happened, so this attempt is OWED, and losing it is not a
+		// cosmetic miscount: the row comes back after its lease with its old count, which
+		// is one more drive of an ambiguous failure than the budget allows. Under the old
+		// claim-time accounting the charge was banked before the drive and could not be
+		// lost this way, so this window belongs to the accounting move and is closed here
+		// rather than left as a known gap.
+		//
+		// Charged on a detached context and retried once; chargeDriven carries the
+		// reasoning, and ChargeCancellationAttempt's compare-and-set on the claim-time
+		// count is what makes the retry safe.
+		if err := r.chargeDriven(ctx, w); err != nil {
+			slog.Default().ErrorContext(ctx, "charge cancellation attempt",
+				"order_id", w.OrderID, "err", err)
+		}
 		slog.Default().WarnContext(ctx, "cancellation order left for retry",
-			"order_id", w.OrderID, "attempt", w.Attempts, "code", out.FailureCode)
+			"order_id", w.OrderID, "attempt", attempts, "code", out.FailureCode)
 		return false
 	}
 	return r.finalize(ctx, w, out)
@@ -546,12 +635,20 @@ func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out sto
 	// as a context error and is handled in `process` before ever reaching here, so a failure
 	// that survives both checks is a genuine one, and committing it is correct.
 	if ctx.Err() != nil && out.Outcome == "failed" {
-		r.abandon(w, false)
+		// Driven: the refund unit already ran, so this attempt is charged even though no
+		// verdict is being recorded.
+		r.abandon(w, true)
 		return false
 	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := r.store.Finalize(write, w, out); err != nil {
+	// Charged unconditionally, which PRESERVES the count a verdict has always left behind
+	// (see Finalize's contract). Charging only retryable verdicts would read better against
+	// the schema comment, and it is what a first pass at this did -- but a definite refusal
+	// has always left `attempts` at 1, from the claim-time charge this ticket removed, and
+	// `TestDefiniteRefusalIsTerminalOnTheFirstAttempt` pins that. Changing it is a business
+	// outcome, which this ticket's scope excludes.
+	if err := r.store.Finalize(write, w, out, true); err != nil {
 		if !errors.Is(err, store.ErrCancellationClaimLost) {
 			slog.Default().ErrorContext(write, "finalize cancellation order", "order_id", w.OrderID, "err", err)
 		}

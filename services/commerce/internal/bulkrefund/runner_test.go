@@ -34,15 +34,17 @@ type fakeOrder struct {
 }
 
 type fakeStore struct {
-	runs     []store.CancellationRun
-	work     []store.CancellationWork
-	orders   map[uuid.UUID]*fakeOrder
-	fixed    map[uuid.UUID]int32
-	final    map[uuid.UUID]store.CancellationOutcome
-	abandon  map[uuid.UUID]int
-	cleared  map[uuid.UUID]int
-	prior    map[uuid.UUID]bool
-	attempts map[uuid.UUID]int
+	runs                []store.CancellationRun
+	work                []store.CancellationWork
+	orders              map[uuid.UUID]*fakeOrder
+	fixed               map[uuid.UUID]int32
+	final               map[uuid.UUID]store.CancellationOutcome
+	abandon             map[uuid.UUID]int
+	cleared             map[uuid.UUID]int
+	prior               map[uuid.UUID]bool
+	chargeFailures      int
+	chargeCommitsAnyway bool
+	attempts            map[uuid.UUID]int
 	// leased models the real lease: a claimed row is NOT claimable again until it is
 	// abandoned or its lease expires. Without this the fake re-claims instantly and a
 	// retry budget meant to be spread over lease-length intervals burns inside one pass —
@@ -84,7 +86,10 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 			w.RequestedQuantity = sql.NullInt32{Int32: q, Valid: true}
 		}
 		w.PriorRun = f.prior[w.OrderID]
-		f.attempts[w.OrderID]++
+		// The claim does NOT charge (TKT-300), and Attempts is the count already charged,
+		// i.e. not counting the attempt this claim is about to make. Mirroring the store
+		// matters here: a fake that still charged at claim would make every post-drive
+		// assertion agree with itself and prove nothing about the shipped SQL.
 		w.Attempts = f.attempts[w.OrderID]
 		w.ClaimID = uuid.New()
 		f.leased[w.OrderID] = true
@@ -142,22 +147,62 @@ func (f *fakeStore) ClearQuantity(_ context.Context, w store.CancellationWork) e
 	return nil
 }
 
-func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out store.CancellationOutcome) error {
+func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error {
 	if _, done := f.final[w.OrderID]; done {
 		return store.ErrCancellationClaimLost
 	}
 	f.final[w.OrderID] = out
 	delete(f.leased, w.OrderID)
+	// Mirrors the store: a verdict that ended a RETRYABLE attempt is charged; a definite
+	// refusal is terminal on its first attempt and never consumes the budget.
+	if charge {
+		f.attempts[w.OrderID]++
+	}
 	return nil
 }
 
-func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, refundAttempt bool) error {
+// Abandon REFUSES on a dead context, as a driver does. Without that the fake cannot tell
+// whether the hand-back ran on the caller's dying context or the detached one, and a test
+// asserting the attempt survived a shutdown would pass either way.
+func (f *fakeStore) Abandon(ctx context.Context, w store.CancellationWork, charge bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: only an UNDRIVEN claim gets its charge back.
-	if refundAttempt && f.attempts[w.OrderID] > 0 {
-		f.attempts[w.OrderID]--
+	// Mirrors the store: only a DRIVEN claim costs an attempt.
+	if charge {
+		f.attempts[w.OrderID]++
 	}
+	return nil
+}
+
+// ChargeAttempt mirrors the store's charge-without-releasing: a retryable failure keeps
+// its lease, because the lease is the backoff.
+// ChargeAttempt mirrors a real driver in two ways that matter: it REFUSES on a dead
+// context, so the fake can tell whether the runner charged on the caller's context or a
+// detached one, and it can be made to fail a bounded number of times, which is how a
+// transient database error is expressed.
+func (f *fakeStore) ChargeAttempt(ctx context.Context, w store.CancellationWork) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Mirrors the store's COMPARE-AND-SET: the write applies only while the row still
+	// holds the count this claimant observed. A fake that incremented unconditionally
+	// would make the retry look safe whatever the SQL did.
+	if f.attempts[w.OrderID] != w.Attempts {
+		return nil
+	}
+	if f.chargeFailures > 0 {
+		f.chargeFailures--
+		if f.chargeCommitsAnyway {
+			// The write COMMITTED and its acknowledgement was lost -- the case the
+			// compare-and-set exists for.
+			f.attempts[w.OrderID]++
+		}
+		return errors.New("charge write failed")
+	}
+	f.attempts[w.OrderID]++
 	return nil
 }
 
@@ -708,12 +753,16 @@ func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
 	}
 }
 
-// Attempts are charged at CLAIM time, so the charge must come back when a claim is released
-// WITHOUT being driven — a shutdown between claim and work, a lapsed lease. Otherwise a row
-// arrives at its first real ambiguous failure with the budget spent on work that never
-// happened. But a claim released AFTER the refund unit was called keeps its charge: refunding
-// that would let a cancellation window recurring at exactly that point hold the row below the
-// cap forever, so the run would never complete and its report never become readable.
+// Only a DRIVEN claim costs an attempt. Since TKT-300 the charge follows the drive rather
+// than the claim, so this is an omission rather than the refund it used to be — but the
+// distinction it protects is unchanged and still matters in both directions. A claim
+// released without the refund unit ever running must cost nothing, or a shutdown between
+// claim and work leaves a row arriving at its first real ambiguous failure with budget
+// spent on work that never happened. And a claim released AFTER the refund unit ran must
+// cost its attempt, or a cancellation window recurring at exactly that point holds the row
+// below the cap forever, so the run never completes and its report never becomes readable.
+//
+// The name is kept: what it asserts is the same partition, read from the other side.
 func TestOnlyAnUndrivenClaimGetsItsAttemptBack(t *testing.T) {
 	f := newFakeStore()
 	driven, undriven := uuid.New(), uuid.New()
@@ -876,4 +925,123 @@ func TestResumedSecondRunStillReportsAlreadyRefunded(t *testing.T) {
 	if f.orders[order].moved != 1 {
 		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
 	}
+}
+
+// A driven attempt is charged on a context that outlives the caller's, so a shutdown
+// landing between the drive and the charge cannot lose it. Found by ai-review pass 1
+// [high]; narrowed twice.
+//
+// What this does NOT claim: that no charge is ever lost. A database error still loses one,
+// and pass 2 established that retrying to close that would be worse — a write that commits
+// and then reports a timeout would be counted twice, parking a recoverable row early. See
+// `chargeDriven`. This test pins the property that actually holds.
+//
+// The fake's ChargeAttempt refuses on a dead context, exactly as a driver does; without
+// that this test passes whichever context the runner uses.
+//
+// Mutation that must make this RED: give `worklease.HandBackUndriven` a dead context
+// instead of its detached one. NOT `chargeDriven` -- this row takes the ABANDON path,
+// because `record` sees the cancellation before reaching the retryable branch, and the
+// charge rides on the hand-back. Naming the wrong mutation is how a test like this ends
+// up believed: the first two mutations tried here both stayed green, once because the
+// path was wrong and once because the fake's Abandon ignored its context.
+func TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller(t *testing.T) {
+	order := uuid.New()
+	f := newFakeStore()
+	// The ambiguous failure: retryable, and the class whose budget actually matters,
+	// because a terminal verdict on it leaves money possibly gone.
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+	f.work = append(f.work, work(order))
+
+	// A caller context that is already dead by the time the charge runs. Cancelling it
+	// before RunOnce would short-circuit the pass, so this cancels it during the drive --
+	// the ordering the detached charge exists for.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drive := &cancelDuringDrive{cancel: cancel, inner: newFakeRefunder(f)}
+
+	New(f, drive, time.Minute, 4, time.Minute).RunOnce(ctx)
+
+	// The drive happened, so the attempt is owed whatever the caller's context is doing.
+	// Note this row takes the ABANDON path (record sees the cancellation first), which
+	// charges through the detached hand-back -- so the assertion covers the route a
+	// shutdown actually takes, not a hypothetical one.
+	if got := f.attempts[order]; got != 1 {
+		t.Fatalf("attempts = %d after a driven failure whose caller context died, want 1: "+
+			"the drive happened, so the attempt is owed; losing it lets the row exceed its "+
+			"budget against work that may already have moved money", got)
+	}
+}
+
+// cancelDuringDrive lets the drive happen and cancels before returning, so whatever
+// follows sees a dead caller context.
+type cancelDuringDrive struct {
+	cancel context.CancelFunc
+	inner  *fakeRefunder
+}
+
+func (c *cancelDuringDrive) Refund(ctx context.Context, in store.RefundRequest) (refunds.Result, error) {
+	res, err := c.inner.Refund(ctx, in)
+	c.cancel()
+	return res, err
+}
+
+func (c *cancelDuringDrive) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
+	return c.inner.DriveReversal(ctx, r)
+}
+
+func (c *cancelDuringDrive) Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	return c.inner.Void(ctx, in)
+}
+
+// The charge write's two failure modes, which are a dilemma unless the write is
+// idempotent. Both reach `chargeDriven` -- unlike the abandon-path test above, these
+// drive a retryable failure to completion without cancelling, so `record` passes its
+// cancellation check and takes the charge branch.
+//
+// Found by ai-review passes 1-3 and the decision audit: the audit established that the
+// compare-and-set needs no migration, which is what lets both of these hold at once.
+func TestTheChargeWriteIsIdempotentPerClaim(t *testing.T) {
+	// A transient failure must not lose the attempt: nothing else bounds re-drives, so a
+	// row whose charges keep failing would exceed maxAttempts drives of a failure whose
+	// money may already have moved.
+	//
+	// Mutation that must make this RED: drop the retry loop in chargeDriven.
+	t.Run("a failed charge write is retried and the attempt is not lost", func(t *testing.T) {
+		order := uuid.New()
+		f := newFakeStore()
+		f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+		f.work = append(f.work, work(order))
+		f.chargeFailures = 1 // fails, no commit
+
+		New(f, newFakeRefunder(f), time.Minute, 4, time.Minute).RunOnce(context.Background())
+
+		if got := f.attempts[order]; got != 1 {
+			t.Fatalf("attempts = %d after a driven failure whose first charge write failed, want 1: "+
+				"the drive happened, so the attempt is owed, and nothing else bounds re-drives", got)
+		}
+	})
+
+	// The other half: a write that COMMITTED and then reported an error must not be
+	// counted twice. Double-charging parks a recoverable row early -- money possibly
+	// gone, tickets still valid, nothing driving the reversal, and only a human clears it.
+	//
+	// Mutation that must make this RED: drop `AND attempts=$5` from
+	// ChargeCancellationAttempt (and the mirroring guard in this fake).
+	t.Run("a committed write whose acknowledgement was lost is not counted twice", func(t *testing.T) {
+		order := uuid.New()
+		f := newFakeStore()
+		f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+		f.work = append(f.work, work(order))
+		f.chargeFailures = 1
+		f.chargeCommitsAnyway = true // the write lands, the ack does not
+
+		New(f, newFakeRefunder(f), time.Minute, 4, time.Minute).RunOnce(context.Background())
+
+		if got := f.attempts[order]; got != 1 {
+			t.Fatalf("attempts = %d after one driven failure whose charge committed but was not "+
+				"acknowledged, want 1: the retry must find the count already moved and change "+
+				"nothing, or a recoverable row parks early", got)
+		}
+	})
 }
