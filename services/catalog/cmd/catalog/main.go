@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 
 	"ticketing/services/catalog/internal/api"
 	"ticketing/services/catalog/internal/events"
@@ -236,9 +237,23 @@ func run() error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
+	// Abuse telemetry for the staff-login limiter (TKT-195). Built here, not
+	// inside NewServer, because registering a counter needs the real meter that
+	// obs.Setup above installed -- the same shape as access's scanner telemetry.
+	//
+	// A failure here is fatal rather than degraded: the limiter still refuses
+	// without it, but a catalog running blind to credential-stuffing pressure is
+	// a state an operator should be told about at boot rather than discover when
+	// they go looking for a metric that was never registered.
+	staffLoginTelemetry, err := api.NewStaffLoginTelemetry(log, otel.Meter("ticketing/catalog/staff"))
+	if err != nil {
+		return fmt.Errorf("staff login telemetry: %w", err)
+	}
+
 	apiHandler, err := api.NewRouter(
 		api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken).
-			WithOrganizerAssertionKey(assertionKey),
+			WithOrganizerAssertionKey(assertionKey).
+			WithStaffLoginTelemetry(staffLoginTelemetry),
 		validateResponses)
 	if err != nil {
 		return fmt.Errorf("api router: %w", err)

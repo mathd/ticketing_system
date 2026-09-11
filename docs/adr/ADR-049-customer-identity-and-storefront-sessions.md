@@ -114,8 +114,10 @@ it at their next sign-in with no way to recover. A generic "invalid request" is 
 distinguishable answer *and* useless to the person who typed the address.
 
 The control that actually addresses submission volume is **rate limiting: TKT-224**, covering both
-operations and the storefront forms. It is not addressed here. TKT-195 is the equivalent still open
-for the back office.
+operations and the storefront forms. It is not addressed here. TKT-195 was the equivalent for the
+back office and has **shipped** — catalog's staff login is limited per identifier and per source
+(ADR-042 § *TKT-195 amendment*) — but it is a separate wiring of the same package in a different
+process and constrains nothing on the customer surface described here.
 
 ### 3. An unknown address and a wrong password are indistinguishable — in the answer *and* in the cost
 

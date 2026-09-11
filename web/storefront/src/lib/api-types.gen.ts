@@ -622,7 +622,7 @@ export interface paths {
         /**
          * Verify back-office staff credentials and return the principal (TKT-190)
          * @description Verifies an identifier/password pair against the staff accounts catalog owns (ADR-002 assigns organizers and tenant-scoped configuration here; ADR-042 records why staff live here rather than in a sixth service). Returns the principal — staff id, organizer and role (TKT-197) — and never any password material.
-         *     This operation is deliberately PUBLIC rather than internal-token guarded. The back-office login form in front of it must be anonymous by construction (a staff member cannot sign in through a page that requires a session), so an unauthenticated caller already has an unlimited credential-submission channel; making this endpoint internal would move the front door without locking it, at the price of handing the public-facing back-office process the shared credential that also opens commerce's refunds and inventory's operational holds. Rate limiting and abuse telemetry are TKT-195 and cover this endpoint AND the form.
+         *     This operation is deliberately PUBLIC rather than internal-token guarded. The back-office login form in front of it must be anonymous by construction (a staff member cannot sign in through a page that requires a session), so an unauthenticated caller already has a credential-submission channel that no session guards; making this endpoint internal would move the front door without locking it, at the price of handing the public-facing back-office process the shared credential that also opens commerce's refunds and inventory's operational holds. Rate limiting and abuse telemetry shipped in TKT-195 and cover this endpoint AND the form: two budgets, per identifier and per source, spent before the account lookup. They are process-local and per-replica, so they bound one scripted client rather than distributed abuse - ADR-042 states the limits precisely.
          *     Unknown identifier and wrong password are the same 401 with the same body, and the store performs the same number of key-derivation comparisons on both paths — status parity alone would still leak account existence through timing.
          */
         post: operations["authenticateStaff"];
@@ -2935,7 +2935,7 @@ export interface operations {
                 };
             };
             /**
-             * @description Rate limited (TKT-195, ADR-042). This status is what the description above promised and did not have: until ai-review S4 the control was named in two comments and installed nowhere, so an unauthenticated caller had an unbounded credential-submission channel.
+             * @description Rate limited (TKT-195, ADR-042). Two budgets guard this endpoint: per normalized identifier, so one account cannot be ground, and per source address, so one client cannot walk a list. A source refusal does not spend a subject token.
              *     Discloses nothing about the submitted identifier. The budget is spent BEFORE the account lookup, so the answer is identical for an identifier that exists and one that does not — a 429 that arrived only for real accounts would be a sharper oracle than the shared 401 this operation goes to some trouble to build.
              */
             429: {

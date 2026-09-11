@@ -26,6 +26,15 @@ import (
 // that cannot catch what it hunts). A test that inspected the emitter would stay
 // green if the emitter were correct and simply never called, or if a value were
 // added to a sink the emitter does not own.
+//
+// WHAT THIS DOES NOT COVER, stated rather than implied: these tests build the
+// server themselves, so they catch the emitter being removed from THIS wiring
+// and not from `cmd/catalog/main.go`. Deleting `WithStaffLoginTelemetry` there
+// ships a binary that emits nothing and leaves this file green. That is the
+// exact edit TKT-202's F3/F7 is about, and closing it needs a test over the real
+// main, which catalog has none of today — nor does access, whose scanner
+// telemetry has the same gap. Not invented here for one emitter: it belongs in a
+// ticket that gives every service's main the same treatment.
 
 type staffTelemetryHarness struct {
 	router http.Handler
