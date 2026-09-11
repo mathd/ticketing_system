@@ -535,7 +535,13 @@ func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{Outcome: "refunded"}); err != nil {
+		// A `refunded` verdict must carry its refund and quantity: the table CHECKs that
+		// this run has a refund to point at (0012_cancellation_refunds.sql:133).
+		if err := FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{
+			Outcome: "refunded", RefundID: uuid.New(),
+			MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
+			RefundedQuantity: 1, RefundedAmount: 1000,
+		}); err != nil {
 			t.Fatal(err)
 		}
 		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
