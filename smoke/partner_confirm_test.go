@@ -142,8 +142,13 @@ func TestPartnerConfirmSucceedsAndSettlesCommissionLeg(t *testing.T) {
 		t.Fatalf("read payment.captured fact: %v", err)
 	}
 
+	// Joined through the capture fact, not the order id. `settlement_must_balance()`
+	// already refuses a set whose order_id disagrees with the fact's payload
+	// (0004_settlement_ledger.sql:134), so the two are equivalent by invariant --
+	// but reading them through the fact is what this assertion is about, and it
+	// keeps the fact id load-bearing rather than scanned and dropped.
 	rows, err := payDB.Query(ctx, `SELECT entry_kind, fee_code, payee_id::text, coalesce(payee_external_ref, ''), amount, currency, coalesce(incidence, '')
-		FROM settlement_entries WHERE order_id = $1`, orderResp.OrderID)
+		FROM settlement_entries WHERE capture_fact_id = $1`, factID)
 	if err != nil {
 		t.Fatalf("read settlement entries: %v", err)
 	}

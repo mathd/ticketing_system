@@ -191,11 +191,26 @@ Until then, do not describe these entries as tamper-evident.
 
 Partner sales operate on merchant-of-record terms. The platform PSP charges the buyer, which creates
 a standard `payment.captured` fact. The partner commission is a fee line with a payee in the
-settlement plan. Partner confirm (`POST /partners/orders`) checks the fee resolution snapshot to
-ensure `reseller_commission` carries a split with a payee whose external reference matches the
-reseller. Generic settlement still permits unattributed fees, but partner checkout strictly requires
-the commission leg. The ledger enforces honest-writer consistency through database triggers; it is
-not tamper-evident, and records an obligation rather than a payout.
+settlement plan. Partner confirm (`POST /partners/orders`) checks the fee resolution snapshot before
+the charge and separates two cases, because they carry opposite costs.
+
+An **absent** commission — no snapshot, the code missing from the breakdown or the resolution, or a
+fee resolved unsplit — **completes the sale**. Catalog's channel registry is a lookup and not a
+constraint (`0018_channels.sql:10-17`, ADR-024), so refusing a paid-for sale because a payout is
+unconfigured would rebuild that constraint one layer up, after the buyer has paid. The ledger records the fee as
+collected-and-unattributed, which is a state generic settlement already permits and an operator can
+query.
+
+A **misattributed** commission — a split whose winning entry names a payee that is not this reseller,
+two entries for the code, a mode that disagrees with its winner, or a snapshot that cannot be read —
+**refuses with 409 before the charge**. `settlementPlanFromSnapshot` forwards whatever payee the
+snapshot names and `settlement_must_balance()` only compares sums, so a set crediting the wrong
+partner balances perfectly and commits. Refusing an unsold hold costs a retry; settling to the wrong
+payee writes an append-only obligation this system cannot reverse, since reversal is left undecided
+below. Unknown is therefore classified as misattributed, not absent.
+
+The ledger enforces honest-writer consistency through database triggers; it is not tamper-evident,
+and records an obligation rather than a payout.
 
 ## Consequences
 
