@@ -259,9 +259,14 @@ func TestAPassThatDischargesNothingIsNotProgress(t *testing.T) {
 	}
 }
 
-// Shutdown mid-batch: the rest of the claim is handed back undriven, and the attempt
-// charged at claim time comes back with it. A row must not reach its first real failure
-// with budget already spent on work that never happened.
+// Shutdown mid-batch: the rest of the claim is handed back undriven, so it costs nothing.
+// A row must not reach its first real failure with budget already spent on work that never
+// happened.
+//
+// Nothing is refunded, because nothing was charged: this runner has always charged on
+// release rather than at claim. (The comment here used to say the attempt "charged at claim
+// time comes back with it", which described the OTHER two runners' old accounting and was
+// never true of this one. TKT-300 moved those two onto this rule and corrected this line.)
 func TestShutdownAbandonsUndrivenClaims(t *testing.T) {
 	first, second := uuid.New(), uuid.New()
 	st := &fakeStore{batches: [][]store.ClaimedReversal{{

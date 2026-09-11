@@ -50,6 +50,24 @@ one drive per row per pass, a bounded drain, and gauges. Reusing the shape witho
 a generic engine is the point: an abstraction over two lifecycles would have to be read by anyone
 touching either.
 
+> **Amended by TKT-300.** The last sentence no longer describes the code, and the reason it gave has
+> to be answered rather than quietly dropped. By the time a fourth runner existed the shape was copied
+> four times, and the duplication had produced a real defect of its own: two of the four charged an
+> attempt at CLAIM time and gave it back on an interrupted pass, so a crash between claiming and
+> driving spent budget on work that never happened — which is exactly the rule this section states
+> and the refund side already followed.
+>
+> The lifecycle is now `services/commerce/internal/worklease`: `Drain` for the two draining runners,
+> and `HandBackUndriven` for the detached hand-back that all four share. The objection stands where it
+> was aimed: the STATE MACHINE is still not shared, and §1's three reasons are untouched. `Process` and
+> the store ports stay per-runner, and each store still decides in SQL what an outcome costs — which is
+> what keeps §3's awaiting-switch rule where it belongs rather than in a caller's boolean.
+>
+> Two runners deliberately do not use `Drain`. Recovery claims one batch per tick, and bulk refund's
+> retryable failure keeps its lease as the backoff so a row cannot come round twice in a pass; giving
+> either the duplicate map and the pass bound would add mechanisms that could never fire. They share
+> the hand-back and the charging discipline, and nothing else.
+
 ### 2. The sweep NEVER writes `tickets_exchanged_at` — and that is a safety property, not a scope note
 
 This is the load-bearing decision, and it is where a sweep copied carelessly from the refund side

@@ -317,9 +317,6 @@ func TestOutcomeWriteThatChangesNothingIsAConflict(t *testing.T) {
 	}
 }
 
-// Abandoning an undriven claim refunds the attempt ClaimStuckOrders charged at claim
-// time. Otherwise a few rolling restarts park a healthy order at MaxRecoveryAttempts
-// without a single re-drive having actually been attempted.
 // TKT-300: the claim is not an attempt. This replaces TestAbandonRefundsTheClaimAttempt,
 // which asserted the opposite — that a claim charges up front and an abandon gives it back.
 // Both properties cannot hold, and this is the one the ticket requires: a crash or a
