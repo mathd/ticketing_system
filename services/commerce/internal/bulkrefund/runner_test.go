@@ -84,7 +84,10 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 			w.RequestedQuantity = sql.NullInt32{Int32: q, Valid: true}
 		}
 		w.PriorRun = f.prior[w.OrderID]
-		f.attempts[w.OrderID]++
+		// The claim does NOT charge (TKT-300), and Attempts is the count already charged,
+		// i.e. not counting the attempt this claim is about to make. Mirroring the store
+		// matters here: a fake that still charged at claim would make every post-drive
+		// assertion agree with itself and prove nothing about the shipped SQL.
 		w.Attempts = f.attempts[w.OrderID]
 		w.ClaimID = uuid.New()
 		f.leased[w.OrderID] = true
@@ -148,16 +151,25 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 	}
 	f.final[w.OrderID] = out
 	delete(f.leased, w.OrderID)
+	// Mirrors the store: reaching a verdict means the row was driven, so it is charged.
+	f.attempts[w.OrderID]++
 	return nil
 }
 
-func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, refundAttempt bool) error {
+func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, charge bool) error {
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: only an UNDRIVEN claim gets its charge back.
-	if refundAttempt && f.attempts[w.OrderID] > 0 {
-		f.attempts[w.OrderID]--
+	// Mirrors the store: only a DRIVEN claim costs an attempt.
+	if charge {
+		f.attempts[w.OrderID]++
 	}
+	return nil
+}
+
+// ChargeAttempt mirrors the store's charge-without-releasing: a retryable failure keeps
+// its lease, because the lease is the backoff.
+func (f *fakeStore) ChargeAttempt(_ context.Context, w store.CancellationWork) error {
+	f.attempts[w.OrderID]++
 	return nil
 }
 

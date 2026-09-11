@@ -573,13 +573,20 @@ func (r *Runner) fail(ctx context.Context, s store.StuckOrder, cause error) {
 	if err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause); err != nil {
 		r.log.ErrorContext(ctx, "release stuck order", "order_id", s.OrderID, "err", err)
 	}
-	if s.Attempts >= store.MaxRecoveryAttempts {
+	// s.Attempts is the count as OBSERVED AT CLAIM, and since TKT-300 the claim no longer
+	// charges: the attempt just made is charged by the ReleaseStuckOrder above. So the
+	// count after this failure is s.Attempts+1, and that is what decides whether the row
+	// was parked. Comparing the bare s.Attempts would log "parked" one attempt after the
+	// SQL actually parked the row — and this log line is the last notice anyone gets, so
+	// being a beat late means the first notice is silence.
+	attempts := s.Attempts + 1
+	if attempts >= store.MaxRecoveryAttempts {
 		// Parked: never claimed again, so this is the last notice anyone gets that a
 		// real order is stuck.
 		r.log.ErrorContext(ctx, "stuck order parked after exhausting recovery attempts",
-			"order_id", s.OrderID, "status", s.Status, "attempts", s.Attempts, "err", cause)
+			"order_id", s.OrderID, "status", s.Status, "attempts", attempts, "err", cause)
 		return
 	}
 	r.log.WarnContext(ctx, "re-drive stuck order",
-		"order_id", s.OrderID, "status", s.Status, "attempts", s.Attempts, "err", cause)
+		"order_id", s.OrderID, "status", s.Status, "attempts", attempts, "err", cause)
 }

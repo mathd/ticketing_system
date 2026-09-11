@@ -419,3 +419,154 @@ func enumerated(t *testing.T, db *sql.DB, ctx context.Context, org, slot uuid.UU
 		}
 	}
 }
+
+// TKT-300, COS-2 and COS-3. The attempt charge moved from the claim to after the drive,
+// and these pin the five outcomes separately, because an assertion that only says "the
+// row was refused" cannot tell them apart. Each case passes the others' preconditions so
+// no one of them is proved by an earlier short-circuit.
+func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
+	attemptsOf := func(t *testing.T, db *sql.DB, ctx context.Context, w CancellationWork) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT attempts FROM cancellation_refund_orders WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3`,
+			w.OrganizerID, w.RunID, w.OrderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	leaseOf := func(t *testing.T, db *sql.DB, ctx context.Context, w CancellationWork) bool {
+		t.Helper()
+		var lease sql.NullTime
+		if err := db.QueryRowContext(ctx,
+			`SELECT lease_until FROM cancellation_refund_orders WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3`,
+			w.OrganizerID, w.RunID, w.OrderID).Scan(&lease); err != nil {
+			t.Fatal(err)
+		}
+		return lease.Valid
+	}
+
+	t.Run("claiming charges nothing", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-claim", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-claim-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("claimed %d rows, want 1", len(claimed))
+		}
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 0 {
+			t.Errorf("claiming charged %d attempts, want 0: a claim is not an attempt", n)
+		}
+		// And the value the runner reads must agree, since it bounds retries with it.
+		if claimed[0].Attempts != 0 {
+			t.Errorf("CancellationWork.Attempts = %d on a first claim, want 0", claimed[0].Attempts)
+		}
+	})
+
+	t.Run("an undriven abandon charges nothing", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-undriven", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-undriven-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := AbandonCancellationClaim(ctx, db, claimed[0], false); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 0 {
+			t.Errorf("an undriven abandon charged %d attempts, want 0", n)
+		}
+		if leaseOf(t, db, ctx, claimed[0]) {
+			t.Error("an abandon must drop the lease so a successor can claim immediately")
+		}
+	})
+
+	t.Run("a driven abandon charges exactly one", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-driven", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-driven-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := AbandonCancellationClaim(ctx, db, claimed[0], true); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
+			t.Errorf("a driven abandon charged %d attempts, want 1: the refund unit already ran", n)
+		}
+	})
+
+	t.Run("a retryable failure charges one and KEEPS its lease", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-retry", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-retry-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ChargeCancellationAttempt(ctx, db, claimed[0]); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
+			t.Errorf("a retryable failure charged %d attempts, want 1", n)
+		}
+		// The lease IS the backoff. Releasing it here would let the very next claim in the
+		// same pass re-drive an unavailable downstream and burn the whole budget at once.
+		if !leaseOf(t, db, ctx, claimed[0]) {
+			t.Error("charging a retryable failure must NOT release the lease: the lease is the backoff")
+		}
+	})
+
+	t.Run("a verdict charges one", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-final", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-final-run")
+		claimed, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := FinalizeCancellationOrder(ctx, db, claimed[0], CancellationOutcome{Outcome: "refunded"}); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, claimed[0]); n != 1 {
+			t.Errorf("a verdict charged %d attempts, want 1: an operator reads this to see how many tries it took", n)
+		}
+	})
+
+	t.Run("a stale claimant cannot spend its successor's budget", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		org, slot := uuid.New(), uuid.New()
+		seedBook(t, db, ctx, "charge-fence", org, slot, 1, 1, 1000)
+		enumerated(t, db, ctx, org, slot, "charge-fence-run")
+		first, err := ClaimCancellationOrders(ctx, db, 1, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stale := first[0]
+		// The lease lapses and a successor takes over.
+		if _, err := db.ExecContext(ctx,
+			`UPDATE cancellation_refund_orders SET lease_until=now()-interval '1 minute' WHERE organizer_id=$1 AND run_id=$2 AND order_id=$3`,
+			stale.OrganizerID, stale.RunID, stale.OrderID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ClaimCancellationOrders(ctx, db, 1, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if err := ChargeCancellationAttempt(ctx, db, stale); err != nil {
+			t.Fatal(err)
+		}
+		if n := attemptsOf(t, db, ctx, stale); n != 0 {
+			t.Errorf("a stale claimant charged %d attempts, want 0: the charge is fenced on the claim id", n)
+		}
+	})
+}
