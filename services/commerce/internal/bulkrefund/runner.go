@@ -219,20 +219,34 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 		}, slog.Default(), "cancellation")
 }
 
-// chargeDriven records one driven attempt on a detached, bounded context, retrying once.
-// See the call site in `record` for why the charge must survive the caller's context and
-// why a retry cannot double-charge.
+// chargeDriven records one driven attempt on a detached, bounded context.
+//
+// EXACTLY ONE WRITE, AND NO RETRY, deliberately. An earlier version retried a failed write
+// and claimed the claim-id fence made that safe. It does not: the fence stops a SUCCESSOR
+// from charging, not this claimant from charging twice. A write that commits and then
+// reports a timeout leaves `claim_id`, `lease_until` and `outcome` untouched -- the
+// retryable path keeps its lease on purpose -- so the retry's WHERE still matches and
+// increments again (ai-review pass 2 [high]).
+//
+// The two failures are not symmetric, which is what decides it:
+//
+//   - A LOST charge gives the row one extra drive of an ambiguous failure. Bounded, and
+//     it is a drive the row would have had a minute later anyway.
+//   - A DOUBLE charge parks a recoverable row EARLY: money possibly gone, tickets still
+//     valid, nothing driving the reversal, and only a human can clear it.
+//
+// The loss is the cheaper mistake, so this takes it. Charging exactly once per claim needs
+// a durable per-claim marker (a `charged_claim_id`, or a comparison against the claim-time
+// count) -- a schema change with its own failure modes, for a window narrower than one
+// already beside it: a crash between the refund unit running and the verdict committing
+// loses the VERDICT, which is worse than losing a count. TKT-331 owns that neighbourhood.
+//
+// What this DOES fix is the pass-1 finding: the charge no longer dies with the caller's
+// context, which is the loss the accounting move introduced.
 func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
-	var err error
-	for try := 0; try < 2; try++ {
-		charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		err = r.store.ChargeAttempt(charge, w)
-		cancel()
-		if err == nil {
-			return nil
-		}
-	}
-	return err
+	charge, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return r.store.ChargeAttempt(charge, w)
 }
 
 // process resolves one order, and never returns an error: a failure is an OUTCOME of this
@@ -383,17 +397,12 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 		// lost this way, so this window belongs to the accounting move and is closed here
 		// rather than left as a known gap.
 		//
-		// Detached from the caller's context for the same reason the hand-back is, and
-		// retried once, because the realistic loss is a transient database error rather
-		// than a cancellation (a cancellation is caught by the ctx.Err() check above and
-		// charged through the abandon path instead).
-		//
-		// Retrying cannot double-charge: the write is fenced on the claim id, so a retry
-		// arriving after a successor claimed the row matches nothing. If both attempts
-		// fail the row keeps its lease and its old count, and the next claimant re-drives
-		// it -- the same place the pre-existing lost-verdict window already leaves it.
+		// Detached from the caller's context for the same reason the hand-back is: a
+		// cancellation reaching here is caught by the ctx.Err() check above and charged
+		// through the abandon path, so what this guards against is a database error.
+		// Written exactly once -- chargeDriven says why a retry would be worse.
 		if err := r.chargeDriven(ctx, w); err != nil {
-			slog.Default().ErrorContext(ctx, "charge cancellation attempt after two tries",
+			slog.Default().ErrorContext(ctx, "charge cancellation attempt",
 				"order_id", w.OrderID, "err", err)
 		}
 		slog.Default().WarnContext(ctx, "cancellation order left for retry",

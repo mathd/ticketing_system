@@ -157,7 +157,13 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 	return nil
 }
 
-func (f *fakeStore) Abandon(_ context.Context, w store.CancellationWork, charge bool) error {
+// Abandon REFUSES on a dead context, as a driver does. Without that the fake cannot tell
+// whether the hand-back ran on the caller's dying context or the detached one, and a test
+// asserting the attempt survived a shutdown would pass either way.
+func (f *fakeStore) Abandon(ctx context.Context, w store.CancellationWork, charge bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
 	// Mirrors the store: only a DRIVEN claim costs an attempt.
@@ -902,34 +908,69 @@ func TestResumedSecondRunStillReportsAlreadyRefunded(t *testing.T) {
 	}
 }
 
-// A driven attempt that the charge WRITE fails to record is still owed, and the row must
-// not come back with its old count. Found by ai-review pass 1 [high], narrowed by tracing.
+// A driven attempt is charged on a context that outlives the caller's, so a shutdown
+// landing between the drive and the charge cannot lose it. Found by ai-review pass 1
+// [high]; narrowed twice.
 //
-// The reviewer's stated route -- a cancellation between the ctx.Err() check and the charge
-// -- turns out not to exist: `record` checks cancellation FIRST and routes to
-// `abandon(w, drove)`, which charges through the detached hand-back. That path was already
-// correct. What is genuinely new is a transient DATABASE error on the charge write, which
-// was previously impossible to lose because the attempt had been banked at claim time.
+// What this does NOT claim: that no charge is ever lost. A database error still loses one,
+// and pass 2 established that retrying to close that would be worse — a write that commits
+// and then reports a timeout would be counted twice, parking a recoverable row early. See
+// `chargeDriven`. This test pins the property that actually holds.
 //
-// One lost charge is one extra drive of an AMBIGUOUS failure, one where the money may
-// already have moved, so the budget that bounds those drives quietly stops bounding them.
+// The fake's ChargeAttempt refuses on a dead context, exactly as a driver does; without
+// that this test passes whichever context the runner uses.
 //
-// This test asserts the row is not left claimable with an unchanged count after a driven
-// failure whose charge did not land. Mutation: make ChargeAttempt's error path return
-// without the retry and this goes RED.
-func TestADrivenAttemptSurvivesAFailedChargeWrite(t *testing.T) {
+// Mutation that must make this RED: give `worklease.HandBackUndriven` a dead context
+// instead of its detached one. NOT `chargeDriven` -- this row takes the ABANDON path,
+// because `record` sees the cancellation before reaching the retryable branch, and the
+// charge rides on the hand-back. Naming the wrong mutation is how a test like this ends
+// up believed: the first two mutations tried here both stayed green, once because the
+// path was wrong and once because the fake's Abandon ignored its context.
+func TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller(t *testing.T) {
 	order := uuid.New()
 	f := newFakeStore()
+	// The ambiguous failure: retryable, and the class whose budget actually matters,
+	// because a terminal verdict on it leaves money possibly gone.
 	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
 	f.work = append(f.work, work(order))
-	// The first charge write fails the way a transient database error does.
-	f.chargeFailures = 1
 
-	New(f, newFakeRefunder(f), time.Minute, 4, time.Minute).RunOnce(context.Background())
+	// A caller context that is already dead by the time the charge runs. Cancelling it
+	// before RunOnce would short-circuit the pass, so this cancels it during the drive --
+	// the ordering the detached charge exists for.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drive := &cancelDuringDrive{cancel: cancel, inner: newFakeRefunder(f)}
 
+	New(f, drive, time.Minute, 4, time.Minute).RunOnce(ctx)
+
+	// The drive happened, so the attempt is owed whatever the caller's context is doing.
+	// Note this row takes the ABANDON path (record sees the cancellation first), which
+	// charges through the detached hand-back -- so the assertion covers the route a
+	// shutdown actually takes, not a hypothetical one.
 	if got := f.attempts[order]; got != 1 {
-		t.Fatalf("attempts = %d after a driven retryable failure whose first charge write failed, want 1: "+
-			"the drive happened, so the attempt is owed; losing it lets the row exceed its budget "+
-			"against work that may already have moved money", got)
+		t.Fatalf("attempts = %d after a driven failure whose caller context died, want 1: "+
+			"the drive happened, so the attempt is owed; losing it lets the row exceed its "+
+			"budget against work that may already have moved money", got)
 	}
+}
+
+// cancelDuringDrive lets the drive happen and cancels before returning, so whatever
+// follows sees a dead caller context.
+type cancelDuringDrive struct {
+	cancel context.CancelFunc
+	inner  *fakeRefunder
+}
+
+func (c *cancelDuringDrive) Refund(ctx context.Context, in store.RefundRequest) (refunds.Result, error) {
+	res, err := c.inner.Refund(ctx, in)
+	c.cancel()
+	return res, err
+}
+
+func (c *cancelDuringDrive) DriveReversal(ctx context.Context, r store.Refund) store.Refund {
+	return c.inner.DriveReversal(ctx, r)
+}
+
+func (c *cancelDuringDrive) Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error) {
+	return c.inner.Void(ctx, in)
 }
