@@ -150,7 +150,7 @@ func (h *staffTelemetryHarness) spanAttrsSetByThisEmitter(t *testing.T) map[stri
 		for _, kv := range s.Attributes {
 			switch string(kv.Key) {
 			case "surface", "subject_type", "outcome":
-				got[string(kv.Key)] = kv.Value.Emit()
+				got[string(kv.Key)] = kv.Value.String()
 			}
 		}
 	}
@@ -237,7 +237,7 @@ func TestStaffLoginMetricCarriesOnlyFixedAttributes(t *testing.T) {
 				series++
 				got := map[string]string{}
 				for _, kv := range dp.Attributes.ToSlice() {
-					got[string(kv.Key)] = kv.Value.Emit()
+					got[string(kv.Key)] = kv.Value.String()
 				}
 				if len(got) != 3 {
 					t.Errorf("data point has %d attributes %v, want exactly surface, subject_type and outcome: "+
