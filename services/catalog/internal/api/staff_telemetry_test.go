@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -46,6 +48,13 @@ type staffTelemetryHarness struct {
 
 func newStaffTelemetryHarness(t *testing.T) *staffTelemetryHarness {
 	t.Helper()
+	return newStaffTelemetryHarnessWithEmitter(t, true)
+}
+
+// withEmitter false builds the identical stack with no telemetry attached, which
+// is what the span diff uses as its control.
+func newStaffTelemetryHarnessWithEmitter(t *testing.T, withEmitter bool) *staffTelemetryHarness {
+	t.Helper()
 
 	logs := &bytes.Buffer{}
 	reader := sdkmetric.NewManualReader()
@@ -62,8 +71,10 @@ func newStaffTelemetryHarness(t *testing.T) *staffTelemetryHarness {
 
 	st := newFakeStore()
 	srv := NewServer(st, &fakePublisher{}, obs.NewLogger("catalog", io.Discard), "test-internal-token", testStaffWriteToken).
-		WithOrganizerAssertionKey(testOrganizerAssertionKey).
-		WithStaffLoginTelemetry(telemetry)
+		WithOrganizerAssertionKey(testOrganizerAssertionKey)
+	if withEmitter {
+		srv = srv.WithStaffLoginTelemetry(telemetry)
+	}
 
 	inner, err := NewRouter(srv, true)
 	if err != nil {
@@ -138,35 +149,53 @@ func (h *staffTelemetryHarness) emitted(t *testing.T) string {
 // spanAttrsSetByThisEmitter returns only the keys this ticket's code adds to the
 // span, so a test can assert their values without asserting anything about the
 // middleware's semantic-convention attributes.
-// It subtracts the middleware's known keys rather than allowlisting the
-// emitter's, which is the difference between a test that can see a new attribute
-// and one that cannot. An earlier version kept only `surface`, `subject_type` and
-// `outcome`, so a fourth attribute was DISCARDED before the assertion and the
-// test claiming to reject one could not: ai-review pass 1 [medium], and it was
-// right. Anything this emitter adds in future shows up here by default and has to
-// be accounted for deliberately.
+// It DIFFS against a control request that ran without the emitter, so the keys
+// it returns are exactly those the emitter added. Nothing here names an
+// attribute, in either direction, and that is the point.
+//
+// Two worse versions were tried first and both are worth recording, because the
+// mistake is easy to repeat:
+//
+//   - An ALLOWLIST of the emitter's three keys. Blind by construction: a fourth
+//     attribute was discarded before the assertion, so the test claiming to
+//     reject one could not (ai-review pass 1).
+//   - SUBTRACTING a hardcoded list of the middleware's keys. Not blind, but
+//     coupled to `otelhttp`'s attribute set — a library this repo does not own,
+//     whose next upgrade would break this test for a reason unrelated to the
+//     code under test.
+//
+// The control request depends only on OUR wiring: whatever `otelhttp` sets, it
+// sets for both requests and cancels out.
 func (h *staffTelemetryHarness) spanAttrsSetByThisEmitter(t *testing.T) map[string]string {
 	t.Helper()
-	// Set by shared/go/obs's middleware on every request in every service (OTel
-	// HTTP semantic conventions). Listed so they can be excluded by NAME; any key
-	// not in this list is something this ticket's code put there.
-	middleware := map[string]bool{
-		"server.address": true, "http.request.method": true, "url.scheme": true,
-		"network.peer.address": true, "network.peer.port": true, "client.address": true,
-		"url.path": true, "network.protocol.version": true, "http.request.body.size": true,
-		"http.response.body.size": true, "http.response.status_code": true,
-		"url.query": true, "user_agent.original": true, "http.route": true,
+
+	baseline := map[string]bool{}
+	for _, s := range newStaffTelemetryControl(t).spans.GetSpans() {
+		for _, kv := range s.Attributes {
+			baseline[string(kv.Key)] = true
+		}
 	}
+
 	got := map[string]string{}
 	for _, s := range h.spans.GetSpans() {
 		for _, kv := range s.Attributes {
-			if middleware[string(kv.Key)] {
+			if baseline[string(kv.Key)] {
 				continue
 			}
 			got[string(kv.Key)] = kv.Value.String()
 		}
 	}
 	return got
+}
+
+// newStaffTelemetryControl builds the same stack WITHOUT the emitter and drives
+// one request through it, so its span carries the middleware's attributes and
+// nothing else.
+func newStaffTelemetryControl(t *testing.T) *staffTelemetryHarness {
+	t.Helper()
+	h := newStaffTelemetryHarnessWithEmitter(t, false)
+	h.login(t, "control@example.test", "pw", "203.0.113.1")
+	return h
 }
 
 // COS-2. Every request-controlled value is a distinct canary, and EVERY one of
@@ -331,5 +360,85 @@ func TestStaffLoginSpanCarriesOnlyThisEmittersAttributes(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("span attribute %s = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// How long a subject lockout actually lasts, pinned with a controlled clock.
+//
+// The bucket refills CONTINUOUSLY at burst/window and admits a request as soon
+// as one token exists, so a victim whose bucket was emptied is admitted again
+// after `window/burst` — 90 seconds here — not after the full 15-minute window.
+// That is the same number `retryAfterSeconds` already advertises.
+//
+// This test exists because the ADR got it wrong in both directions before review
+// caught it: first claiming the short-circuit prevented cross-source denial at
+// all, then that the denial lasted a whole window. A sentence can drift; a
+// clock-controlled assertion cannot. (ai-review passes 1 and 2.)
+//
+// Mutation that must make this RED: change the refill so a token does not arrive
+// by window/burst, or make Allow refuse while a token exists.
+func TestASubjectLockoutRecoversAfterOneTokenRefills(t *testing.T) {
+	const victim = "recovers@example.test"
+	now := time.Now()
+	clock := func() time.Time { return now }
+
+	st := newFakeStore()
+	srv := NewServer(st, &fakePublisher{}, obs.NewLogger("catalog", io.Discard),
+		"test-internal-token", testStaffWriteToken).
+		WithOrganizerAssertionKey(testOrganizerAssertionKey).
+		WithClock(clock)
+	handler, err := NewRouter(srv, true)
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	attempt := func(source string) int {
+		body, err := json.Marshal(StaffCredentials{Identifier: victim, Password: "guess"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "http://catalog.local/staff/authenticate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(staffWriteHeader, testStaffWriteToken)
+		req.Header.Set("X-Forwarded-For", source)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// The attacker empties the victim's subject bucket from its own source.
+	for i := range staffAuthSubjectBurst {
+		if code := attempt("203.0.113.40"); code != http.StatusUnauthorized {
+			t.Fatalf("attacker attempt %d: status %d, want 401 while the budget holds", i+1, code)
+		}
+	}
+
+	// The victim, from a completely different source, is refused: the bucket is
+	// keyed on the identifier alone. This is the cross-source denial the ADR
+	// documents.
+	if code := attempt("198.51.100.40"); code != http.StatusTooManyRequests {
+		t.Fatalf("the victim got %d from a fresh source, want 429: the subject bucket is "+
+			"keyed on the identifier alone, so an attacker CAN deny a named account", code)
+	}
+
+	// Just short of one token's worth of refill, still refused.
+	perToken := staffAuthSubjectWindow / time.Duration(staffAuthSubjectBurst)
+	now = now.Add(perToken - time.Second)
+	if code := attempt("198.51.100.41"); code != http.StatusTooManyRequests {
+		t.Fatalf("the victim got %d one second before a token refills, want 429", code)
+	}
+
+	// One token's worth later, admitted. The `- time.Second` above already
+	// consumed part of the interval, so advance the remainder plus a margin.
+	now = now.Add(2 * time.Second)
+	if code := attempt("198.51.100.42"); code != http.StatusUnauthorized {
+		t.Fatalf("the victim got %d after %s, want 401: the bucket refills continuously, so a "+
+			"lockout lasts one token's worth of time and not the whole window", code, perToken)
+	}
+
+	// And that interval is exactly what the endpoint advertises, so the ADR, the
+	// header and the behaviour cannot drift apart.
+	if got, want := retryAfterSeconds, strconv.Itoa(int(perToken.Seconds())); got != want {
+		t.Errorf("Retry-After advertises %s but a token refills in %s", got, want)
 	}
 }

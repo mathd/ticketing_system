@@ -222,11 +222,20 @@ stating narrowly**: it means a client whose source budget is already exhausted c
 draining a victim's subject budget with the requests it is being refused. It does **not** mean an
 account cannot be locked out. The subject bucket is keyed on the normalized identifier **alone**,
 not on identifier-and-source, so an attacker with a healthy source budget spends ten requests on
-one identifier and that account is refused **from every source on that replica** until the window
-refills. That is the deliberate cost of a budget that protects an account from being ground:
-whoever spends it, the account has spent it. An earlier draft of this paragraph claimed the
-short-circuit prevented this; it does not, and the difference matters to anyone reasoning about
-denial of service against a named staff member.
+one identifier and that account is refused **from every source on that replica**. That is the
+deliberate cost of a budget that protects an account from being ground: whoever spends it, the
+account has spent it.
+
+**How long that lasts, precisely.** The bucket refills continuously at `burst/window` — 10 tokens
+per 900 seconds — and admits a request as soon as one token exists. So a victim whose bucket was
+emptied is admitted again about **90 seconds** later, not after the full 15-minute window; that is
+the same number the endpoint already advertises in `Retry-After`. Sustaining the denial therefore
+costs the attacker one request every 90 seconds indefinitely, which is cheap but not free, and is
+bounded by their own source budget of 300 per 15 minutes.
+
+Two earlier drafts of this paragraph were wrong in opposite directions: the first claimed the
+short-circuit prevented the lockout entirely, the second that it lasted a full window. Both were
+refuted by review, the second by arithmetic the code already performs.
 
 **State the limits rather than the reassurance.** This is an in-process, per-replica limiter:
 

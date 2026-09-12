@@ -122,9 +122,12 @@ func (s *Server) allowStaffAuth(w http.ResponseWriter, r *http.Request, identifi
 	//
 	// It does NOT make the account safe from lockout, and nothing here should be
 	// read that way: the subject bucket is keyed on the identifier ALONE, so an
-	// attacker with a healthy source budget spends ten requests and that account
-	// is refused from every source on this replica until the window refills. That
-	// is the accepted cost of a per-account budget (ADR-042 § TKT-195 amendment).
+	// attacker with a healthy source budget spends ten requests and that account is
+	// refused from every source on this replica. The bucket refills continuously,
+	// so the victim is admitted again once one token exists — the 90 seconds
+	// retryAfterSeconds already advertises, not the full window — and sustaining
+	// the denial costs the attacker one request every 90 seconds. That is the
+	// accepted cost of a per-account budget (ADR-042 § TKT-195 amendment).
 	if !l.source.Allow(httpx.ClientIP(r)) {
 		s.staffLoginTelemetry.observeDecision(r.Context(), staffLoginThrottledSource)
 		s.refuseStaffAuth(w)
