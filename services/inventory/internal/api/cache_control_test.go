@@ -57,15 +57,16 @@ func TestCacheControlRequiresTheInternalCredential(t *testing.T) {
 // addresses the same object the public read uses. A control surface that
 // reported state from somewhere else would look correct and change nothing.
 func TestCacheControlReportsAndTogglesTheLiveCollaborator(t *testing.T) {
-	rd := &countingReader{enabled: true, entries: 3}
-	h := NewWithAvailability(nil, "secret", nil, rd).Router(nil, true)
+	availRd := &countingReader{enabled: true, entries: 3}
+	occRd := &countingOccupancyReader{enabled: true, entries: 2}
+	h := NewWithReaders(nil, "secret", nil, availRd, occRd).Router(nil, true)
 
 	rec := cacheControlReq(t, h, http.MethodGet, "secret", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET: %d %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `"enabled":true`) || !strings.Contains(body, `"entries":3`) {
-		t.Fatalf("GET reported %s, want the collaborator's live state", body)
+	if body := rec.Body.String(); !strings.Contains(body, `"enabled":true`) || !strings.Contains(body, `"entries":5`) {
+		t.Fatalf("GET reported %s, want enabled:true entries:5 (summed across both caches)", body)
 	}
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store — a cached answer about whether a cache is on is the wrong thing to hand an operator", cc)
@@ -75,8 +76,8 @@ func TestCacheControlReportsAndTogglesTheLiveCollaborator(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT: %d %s", rec.Code, rec.Body.String())
 	}
-	if rd.enabled {
-		t.Fatal("PUT did not reach the collaborator the read path uses")
+	if availRd.enabled || occRd.enabled {
+		t.Fatalf("PUT did not toggle both collaborators: avail=%v, occ=%v", availRd.enabled, occRd.enabled)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"enabled":false`) {
 		t.Fatalf("PUT returned %s, want the resulting state", body)
@@ -84,12 +85,12 @@ func TestCacheControlReportsAndTogglesTheLiveCollaborator(t *testing.T) {
 
 	// Idempotent, and re-enabling works.
 	rec = cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":false}`)
-	if rec.Code != http.StatusOK || rd.enabled {
-		t.Fatalf("repeat disable: %d, enabled=%v", rec.Code, rd.enabled)
+	if rec.Code != http.StatusOK || availRd.enabled || occRd.enabled {
+		t.Fatalf("repeat disable: %d, avail.enabled=%v, occ.enabled=%v", rec.Code, availRd.enabled, occRd.enabled)
 	}
 	rec = cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":true}`)
-	if rec.Code != http.StatusOK || !rd.enabled {
-		t.Fatalf("re-enable: %d, enabled=%v", rec.Code, rd.enabled)
+	if rec.Code != http.StatusOK || !availRd.enabled || !occRd.enabled {
+		t.Fatalf("re-enable: %d, avail.enabled=%v, occ.enabled=%v", rec.Code, availRd.enabled, occRd.enabled)
 	}
 }
 

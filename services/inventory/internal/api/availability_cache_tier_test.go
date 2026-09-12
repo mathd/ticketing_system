@@ -89,6 +89,7 @@ func TestSeatOccupancyCacheTierIsContractEnforced(t *testing.T) {
 				if !tc.omit {
 					w.Header().Set("Cache-Control", tc.emitted)
 				}
+				w.Header().Set("Age", "0")
 				w.WriteHeader(http.StatusOK)
 				// Minimal schema-valid SeatOccupancy, so only the header is under test.
 				_, _ = w.Write([]byte(`{"slot_id":"` + uuid.Nil.String() + `","seat_map_id":"` +

@@ -73,6 +73,36 @@ func TestCommitAvailabilityOrdersInvalidationAfterCommit(t *testing.T) {
 	})
 }
 
+// TestRegisterAppendsRatherThanReplacing pins the fan-out seam (TKT-177):
+// both display caches (availability and seat occupancy) register their
+// invalidators with the store. Registration must append so every registered
+// cache is notified, in registration order.
+func TestRegisterAppendsRatherThanReplacing(t *testing.T) {
+	slot := uuid.New()
+	var order []string
+	p := &Postgres{}
+	p.RegisterAvailabilityInvalidator(func(got uuid.UUID) {
+		if got != slot {
+			t.Errorf("cb1: got slot %v, want %v", got, slot)
+		}
+		order = append(order, "cb1")
+	})
+	p.RegisterAvailabilityInvalidator(func(got uuid.UUID) {
+		if got != slot {
+			t.Errorf("cb2: got slot %v, want %v", got, slot)
+		}
+		order = append(order, "cb2")
+	})
+
+	err := p.commitAvailability(committerFunc(func() error { return nil }), slot)
+	if err != nil {
+		t.Fatalf("commitAvailability: %v", err)
+	}
+	if want := []string{"cb1", "cb2"}; !slices.Equal(order, want) {
+		t.Fatalf("callbacks fired = %v, want %v in registration order", order, want)
+	}
+}
+
 // TestAvailabilityMutationsUseInvalidatingCommit is the architecture guard.
 //
 // The cache is only correct if EVERY availability-changing commit invalidates,

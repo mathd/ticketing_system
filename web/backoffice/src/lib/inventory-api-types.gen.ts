@@ -359,9 +359,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Whether this process is serving availability reads from memory, and how many entries it holds (TKT-210) */
+        /** Whether this process is serving display reads from memory, and how many entries it holds (TKT-210, TKT-177) */
         get: operations["getCacheControl"];
-        /** The ADR-004 incident kill-switch. Disabling purges the cache and sends every availability read to the store until re-enabled; re-enabling starts cold. Idempotent. PROCESS-LOCAL - it says nothing about another replica - and NOT durable: a restart comes back enabled. */
+        /** The ADR-004 incident kill-switch. Disabling purges the cache and sends every display read — availability and seat occupancy — to the store until re-enabled; re-enabling starts cold. Idempotent. PROCESS-LOCAL - it says nothing about another replica - and NOT durable: a restart comes back enabled. */
         put: operations["putCacheControl"];
         post?: never;
         delete?: never;
@@ -409,13 +409,13 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         CacheControlUpdate: {
-            /** @description false disables the in-memory availability cache on THIS process */
+            /** @description false disables the in-memory display caches — availability and seat occupancy — on THIS process */
             enabled: boolean;
         };
         CacheControlStatus: {
             /** @description the state the read path itself consults, not a separate flag */
             enabled: boolean;
-            /** @description cached entries held right now. CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory */
+            /** @description cached entries held right now, summed across both display caches (availability and seat occupancy). CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory */
             entries: number;
         };
         Error: {
@@ -889,6 +889,12 @@ export interface components {
         AvailabilityCacheControl: "public, max-age=5, s-maxage=5";
         /** @description The same ADR-004 seconds tier as AvailabilityCacheControl, declared separately on purpose (TKT-172). ADR-028's validator fails closed per declaration, so one shared header component would couple two operations' drift detection: a handler that stopped emitting the tier on one of them could be masked by the other still emitting it. Its handler constant is CacheControlPublicSeatOccupancy; the two can only move together. */
         SeatOccupancyCacheControl: "public, max-age=5, s-maxage=5";
+        /**
+         * @description Seconds this answer has already spent in inventory's in-memory seat-occupancy cache (TKT-177, ADR-044), rounded up. Required, and 0 on a cache miss.
+         *     It exists so the two staleness budgets cannot stack. Cache-Control declares this response publicly cacheable for five seconds; without Age, an entry already four seconds old inside the service would grant a conformant client another full five, so a buyer could observe ten seconds of staleness against a tier that promises five. Age is the RFC 9111 mechanism for exactly that, and it is the only one available here: varying Cache-Control by remaining freshness is what the storefront middleware does for pages, but SeatOccupancyCacheControl is a required single-valued enum, so ADR-028's validator turns a REPLACEMENT value into a 500.
+         *     Bounded by the cachetier.Seconds tier restated: an entry older than max-age is not served.
+         */
+        SeatOccupancyAge: number;
     };
     pathItems: never;
 }
@@ -1038,6 +1044,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control": components["headers"]["SeatOccupancyCacheControl"];
+                    Age: components["headers"]["SeatOccupancyAge"];
                     [name: string]: unknown;
                 };
                 content: {

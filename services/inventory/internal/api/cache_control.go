@@ -27,8 +27,12 @@ import (
 // gateway keeps answering 404 at the edge for /api/inventory/internal/*.
 
 func (s *Server) cacheControlStatus(w http.ResponseWriter, _ *http.Request) {
-	st := s.avail.Status()
-	write(w, http.StatusOK, map[string]any{"enabled": st.Enabled, "entries": st.Entries})
+	stAvail := s.avail.Status()
+	stOcc := s.occupancy.Status()
+	write(w, http.StatusOK, map[string]any{
+		"enabled": stAvail.Enabled && stOcc.Enabled,
+		"entries": stAvail.Entries + stOcc.Entries,
+	})
 }
 
 func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +47,11 @@ func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.avail.SetEnabled(*in.Enabled)
-	st := s.avail.Status()
-	write(w, http.StatusOK, map[string]any{"enabled": st.Enabled, "entries": st.Entries})
+	s.occupancy.SetEnabled(*in.Enabled)
+	stAvail := s.avail.Status()
+	stOcc := s.occupancy.Status()
+	write(w, http.StatusOK, map[string]any{
+		"enabled": stAvail.Enabled && stOcc.Enabled,
+		"entries": stAvail.Entries + stOcc.Entries,
+	})
 }

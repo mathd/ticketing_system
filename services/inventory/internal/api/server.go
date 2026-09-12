@@ -18,6 +18,7 @@ import (
 	apispec "ticketing/services/inventory/api"
 	"ticketing/services/inventory/internal/availability"
 	"ticketing/services/inventory/internal/consumer"
+	"ticketing/services/inventory/internal/seatoccupancy"
 	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/cachetier"
 	"ticketing/shared/contract"
@@ -68,6 +69,13 @@ type availabilityReader interface {
 	Status() availability.Status
 }
 
+// seatOccupancyReader is the public seat-occupancy display read, served from memory (TKT-177).
+type seatOccupancyReader interface {
+	Read(ctx context.Context, org, slot uuid.UUID) (seatoccupancy.Read, error)
+	SetEnabled(bool)
+	Status() seatoccupancy.Status
+}
+
 type Server struct {
 	st         *store.Postgres
 	credential string
@@ -76,16 +84,28 @@ type Server struct {
 	staffWriteToken string
 	pinner          SeatPinner
 	avail           availabilityReader
+	occupancy       seatOccupancyReader
 }
 
 func New(st *store.Postgres, credential string, pinner SeatPinner) *Server {
-	return &Server{st: st, credential: credential, pinner: pinner, avail: availability.New(st)}
+	return &Server{
+		st:         st,
+		credential: credential,
+		pinner:     pinner,
+		avail:      availability.New(st),
+		occupancy:  seatoccupancy.New(st),
+	}
 }
 
 // NewWithAvailability injects the display-read collaborator. Tests use it to
 // count loads and to prove the claim path never touches it.
 func NewWithAvailability(st *store.Postgres, credential string, pinner SeatPinner, avail availabilityReader) *Server {
-	return &Server{st: st, credential: credential, pinner: pinner, avail: avail}
+	return NewWithReaders(st, credential, pinner, avail, seatoccupancy.New(st))
+}
+
+// NewWithReaders injects both display-read collaborators for tests.
+func NewWithReaders(st *store.Postgres, credential string, pinner SeatPinner, avail availabilityReader, occ seatOccupancyReader) *Server {
+	return &Server{st: st, credential: credential, pinner: pinner, avail: avail, occupancy: occ}
 }
 
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
@@ -566,11 +586,12 @@ func (s *Server) seatOccupancy(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "valid slot and organizer required"})
 		return
 	}
-	occ, err := s.st.SeatOccupancy(r.Context(), org, slot)
+	read, err := s.occupancy.Read(r.Context(), org, slot)
 	if err != nil {
 		problem(w, err)
 		return
 	}
 	w.Header().Set("Cache-Control", CacheControlPublicSeatOccupancy)
-	write(w, 200, occ)
+	w.Header().Set("Age", strconv.Itoa(int(math.Ceil(read.Age.Seconds()))))
+	write(w, 200, read.Value)
 }
