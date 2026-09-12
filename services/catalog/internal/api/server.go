@@ -162,6 +162,13 @@ type Server struct {
 	// "allow everything". See ratelimit.go.
 	limiters *staffAuthLimiters
 	limOnce  sync.Once
+
+	// staffLoginTelemetry is nil-safe: observeDecision returns on a nil receiver,
+	// so a Server built as a literal (tests, and any construction path that skips
+	// the setter) simply emits nothing rather than panicking. Unlike the limiter
+	// above, an absent emitter costs visibility and never enforcement, so nil is
+	// the right default here where it would be wrong there.
+	staffLoginTelemetry *staffLoginTelemetry
 }
 
 // staffWriteSecurityScheme is the name in the contract; staffWriteHeader is the
@@ -209,6 +216,15 @@ func newServer(st handlerStore, pub events.Publisher, log *slog.Logger, internal
 // server constructed without it verifies nothing rather than verifying everything.
 func (s *Server) WithOrganizerAssertionKey(key string) *Server {
 	s.organizerAssertionKey = organizerAssertionKey(key)
+	return s
+}
+
+// WithStaffLoginTelemetry supplies the abuse emitter (TKT-195). A setter for the
+// same reason as the one above: every existing caller keeps compiling, and a
+// server constructed without it is unobserved rather than unprotected — the
+// limiter runs either way.
+func (s *Server) WithStaffLoginTelemetry(t *staffLoginTelemetry) *Server {
+	s.staffLoginTelemetry = t
 	return s
 }
 

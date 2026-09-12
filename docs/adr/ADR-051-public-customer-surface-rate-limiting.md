@@ -8,7 +8,8 @@ Accepted
 
 Discharges the control ADR-049 §2 named and ADR-050 § Consequences widened. Amends neither:
 the 409 membership oracle stays exactly what ADR-049 says it is, and this ADR explains why.
-TKT-195 (the back-office equivalent) is still open and inherits the mechanism, not the wiring.
+TKT-195 (the back-office equivalent) has since **shipped**, inheriting the mechanism and doing its
+own wiring, as this ADR anticipated.
 
 ## Context
 
@@ -44,9 +45,10 @@ skips the form entirely and a storefront-side limiter protects nothing.
 Not the gateway: it owns no database and its `go.mod` has no requires at all (ADR-002).
 Counters there are a deviation to argue, not a default.
 
-The mechanism is `shared/go/ratelimit`, because **TKT-195 needs the same thing in a different
-process** — its surface is `/admin/login` in *catalog*. One package, two wirings; the policy,
-the key derivation and the oracle-safety property are tested once. Two independently grown
+The mechanism is `shared/go/ratelimit`, because **TKT-195 needed the same thing in a different
+process** — its surface is `POST /staff/authenticate` in *catalog*, and it now wires this package
+there. (This line previously named `/admin/login`, which was never the route.) One package, two
+wirings; the policy, the key derivation and the oracle-safety property are tested once. Two independently grown
 limiters was the outcome the ticket's readiness note called the bad one.
 
 ### 2. Counters are in-process, and this is a real limitation, not a detail
@@ -179,9 +181,13 @@ closes in the handler.
 
 ## Consequences
 
-- **TKT-195 gets a package, not a design.** It wires `shared/go/ratelimit` into catalog with its
-  own thresholds. Its AC-4 (a 429 must not appear only for real accounts) is the same property §5
-  establishes here, and the same test shape proves it.
+- **TKT-195 got a package, not a design, and that worked.** It wired `shared/go/ratelimit` into
+  catalog with its own thresholds (10 per identifier and 300 per source, per 15 minutes) and its
+  own abuse telemetry. Its AC-4 (a 429 must not appear only for real accounts) is the same property
+  §5 establishes here, and the same test shape proves it — the budgets are spent before the store
+  lookup. The one thing it could NOT inherit is a subject label for its telemetry: that surface is
+  anonymous, so unlike the customer side it has no safe non-secret identifier to attribute a rise
+  to. ADR-042 § *TKT-195 amendment* records what that costs an operator.
 - **Thresholds are tunable; the shape is not.** The budgets are named constants and the tests
   assert against *them*. A test carrying its own literal would keep passing when the production
   value moved, leaving the limit untested exactly when it changed.

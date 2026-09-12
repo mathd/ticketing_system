@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -281,6 +282,104 @@ func TestAuthenticateStaffIsRateLimitedPerIdentifier(t *testing.T) {
 	if rec := e.do("POST", "/staff/authenticate", StaffCredentials{
 		Identifier: "ada@example.test", Password: "correct horse"}); rec.Code != http.StatusOK {
 		t.Fatalf("a second identifier got status %d: the budget is not subject-scoped", rec.Code)
+	}
+}
+
+// The SOURCE budget, which had no test at all until TKT-195 went looking. The
+// subject budget above protects one account from being ground; this one bounds a
+// client walking a LIST of identifiers, where every subject bucket is fresh and
+// only the source key repeats.
+//
+// Distinct identifiers on purpose: if this test reused one, the subject budget
+// would refuse at 10 and the source budget would never be reached, so the test
+// would pass while proving nothing about it.
+func TestAuthenticateStaffIsRateLimitedPerSource(t *testing.T) {
+	e := newEnv(t)
+	const source = "203.0.113.7"
+	// doWithHeaders does NOT attach the staff-write credential that `do` adds for
+	// unsafe methods, so without this every request is refused by that guard with
+	// "unauthorized" and never reaches the limiter at all.
+	hdr := map[string]string{"X-Forwarded-For": source, staffWriteHeader: testStaffWriteToken}
+
+	for i := range staffAuthSourceBurst {
+		id := fmt.Sprintf("walk-%d@example.test", i)
+		if rec := e.doWithHeaders("POST", "/staff/authenticate",
+			StaffCredentials{Identifier: id, Password: "guess"}, hdr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status %d, want 401 while the source budget holds", i+1, rec.Code)
+		}
+	}
+	spent := e.store.staffAuthCalls
+
+	rec := e.doWithHeaders("POST", "/staff/authenticate",
+		StaffCredentials{Identifier: "walk-last@example.test", Password: "guess"}, hdr)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt %d: status %d, want 429 — one client can walk an unlimited identifier list",
+			staffAuthSourceBurst+1, rec.Code)
+	}
+	if e.store.staffAuthCalls != spent {
+		t.Errorf("the store was consulted %d times past the source budget: a 429 that costs a lookup is an account oracle",
+			e.store.staffAuthCalls-spent)
+	}
+
+	// A different source is unaffected: this is a per-source budget, not a global
+	// lockout on the endpoint.
+	if rec := e.doWithHeaders("POST", "/staff/authenticate",
+		StaffCredentials{Identifier: "walk-other@example.test", Password: "guess"},
+		map[string]string{"X-Forwarded-For": "198.51.100.9", staffWriteHeader: testStaffWriteToken}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a second source got status %d: the budget is not source-scoped", rec.Code)
+	}
+}
+
+// A SOURCE refusal must not spend a SUBJECT token.
+//
+// `allowStaffAuth` reads `!source.Allow(...) || !subject.Allow(...)`, and Go's ||
+// short-circuits, so a request refused on the source never reaches the subject
+// bucket. That is enforcement behaviour, not a detail: a client whose source
+// budget is exhausted would otherwise keep draining a victim's subject budget
+// with the very requests it is being refused — free damage, on top of a refusal
+// that already costs it nothing.
+//
+// This is NOT a claim that the account cannot be locked out. The subject bucket
+// is keyed on the identifier alone, so an attacker with a healthy source budget
+// spends ten requests and that account is refused everywhere on this replica.
+// That is the accepted cost of a per-account budget; this test is about the
+// narrower property.
+//
+// The property has no test on its own, which is why this one exists before the
+// telemetry change touches that expression (TKT-195, D2).
+func TestASourceRefusalDoesNotSpendASubjectToken(t *testing.T) {
+	e := newEnv(t)
+	const source = "203.0.113.11"
+	const victim = "sentinel@example.test"
+	hdr := map[string]string{"X-Forwarded-For": source, staffWriteHeader: testStaffWriteToken}
+
+	// Exhaust the source budget with OTHER identifiers, leaving the victim's
+	// subject bucket untouched.
+	for i := range staffAuthSourceBurst {
+		id := fmt.Sprintf("filler-%d@example.test", i)
+		if rec := e.doWithHeaders("POST", "/staff/authenticate",
+			StaffCredentials{Identifier: id, Password: "guess"}, hdr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("filler %d: status %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	// Hammer the victim from the exhausted source, well past the SUBJECT budget.
+	// Every one of these must be refused on the source, spending nothing.
+	for i := range staffAuthSubjectBurst * 2 {
+		if rec := e.doWithHeaders("POST", "/staff/authenticate",
+			StaffCredentials{Identifier: victim, Password: "guess"}, hdr); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("victim attempt %d from the exhausted source: status %d, want 429", i+1, rec.Code)
+		}
+	}
+
+	// From a FRESH source the victim's subject budget must still be intact. If the
+	// source refusals above had spent subject tokens, this is a 429 instead.
+	if rec := e.doWithHeaders("POST", "/staff/authenticate",
+		StaffCredentials{Identifier: victim, Password: "guess"},
+		map[string]string{"X-Forwarded-For": "198.51.100.23", staffWriteHeader: testStaffWriteToken}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the victim got status %d from a fresh source: requests the source limiter had "+
+			"ALREADY refused went on spending its subject budget, which is free damage on top of a "+
+			"refusal that costs the attacker nothing", rec.Code)
 	}
 }
 

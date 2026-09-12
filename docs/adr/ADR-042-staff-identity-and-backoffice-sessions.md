@@ -21,8 +21,9 @@ inside a public-facing SSR process. A catalog-only credential removes that objec
 leaving one operation public would have meant an exception list inside a fail-closed scheme. The
 earlier decision was not wrong; its constraint was lifted.
 
-What this does **not** change: the anonymous login form is still the public deputy, so credential
-**guessing volume is unaffected** and TKT-195 is still required. See § *TKT-191 amendment* below.
+What this does **not** change: the anonymous login form is still the public deputy. Credential
+guessing volume is now **bounded by a process-local limiter** (TKT-195, shipped — see § *TKT-195
+amendment* below), not unbounded, and not eliminated. See § *TKT-191 amendment* below.
 
 ## Context
 
@@ -89,8 +90,9 @@ Four sub-decisions follow, each of which is the part most likely to be misread l
 The tempting alternative — an `/internal/` endpoint the back office calls with the shared token —
 buys nothing and costs a great deal. It buys nothing because the login *form* must be anonymous by
 construction (a staff member cannot sign in through a page that requires a session), so an
-unauthenticated caller already has an unlimited credential-submission channel; making the endpoint
-internal moves the front door without locking it. It costs a great deal because it would put the
+unauthenticated caller already has a credential-submission channel that no session guards; making
+the endpoint internal moves the front door without locking it. (Since TKT-195 that channel is rate
+limited per identifier and per source, which bounds its volume without making it authenticated.) It costs a great deal because it would put the
 shared internal credential inside a public-facing Node SSR process that renders operator input,
 turning any SSRF or injection defect there into access to every service's internal surface.
 
@@ -200,7 +202,89 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
 - **Anyone who can write to catalog's database** can insert a staff account. State inside the
   database cannot constrain an adversary who writes to the database (ADR-021). This is
   authentication, not tamper-evidence, and no part of it is claimed to be.
-- **Login attempt volume is unbounded** until TKT-195.
+- **Login attempt volume is bounded by a process-local limiter** (TKT-195), not by anything
+  stronger. What that means precisely is in § *TKT-195 amendment*: one replica, in memory, empty
+  after a restart.
+
+## TKT-195 amendment — the limiter shipped, and what it does not do
+
+`POST /staff/authenticate` is rate limited in catalog (`internal/api/ratelimit.go`) with two
+budgets from `shared/go/ratelimit`:
+
+- **per normalized identifier** — 10 per 15 minutes, which stops an account being ground at speed;
+- **per source address** — 300 per 15 minutes, which stops one client walking a list at speed.
+
+**"At speed" is doing real work in both lines.** These are token buckets that refill continuously,
+not windows that lock and reset, so neither budget stops a patient attacker — it prices them. A
+subject bucket admits one attempt every 90 seconds indefinitely; a source bucket admits one every
+3 seconds. What the limiter buys is that credential stuffing has to run at a rate where it is
+worth alerting on, not that it cannot run.
+
+Both are spent **before the store lookup**, deliberately: a bucket that filled only for accounts
+that exist would turn the 429 into the account oracle the shared 401 exists to prevent.
+
+A source refusal does not spend a subject token. **That is a narrow property and it is worth
+stating narrowly**: it means a client whose source budget is already exhausted cannot go on
+draining a victim's subject budget with the requests it is being refused. It does **not** mean an
+account cannot be locked out. The subject bucket is keyed on the normalized identifier **alone**,
+not on identifier-and-source, so an attacker with a healthy source budget spends ten requests on
+one identifier and that account is refused **from every source on that replica**. That is the
+deliberate cost of a budget that protects an account from being ground: whoever spends it, the
+account has spent it.
+
+**How long that lasts, precisely.** The bucket refills continuously at `burst/window` — 10 tokens
+per 900 seconds — and admits a request as soon as one token exists. So a victim whose bucket was
+emptied is admitted again about **90 seconds** later, not after the full 15-minute window; that is
+the same number the endpoint already advertises in `Retry-After`. Sustaining the denial therefore
+costs the attacker one request every 90 seconds indefinitely, which is cheap but not free, and is
+bounded by their own source budget of 300 per 15 minutes.
+
+Two earlier drafts of this paragraph were wrong in opposite directions: the first claimed the
+short-circuit prevented the lockout entirely, the second that it lasted a full window. Both were
+refuted by review, the second by arithmetic the code already performs.
+
+**State the limits rather than the reassurance.** This is an in-process, per-replica limiter:
+
+- it bounds **one scripted client against one replica**, and a deployment with N replicas offers N
+  times the budget;
+- it is **in memory** and **empty after a restart or a deploy**;
+- it does nothing against **distributed** abuse, an attacker **waiting out the window**, an
+  **identifier walk** spread thin enough to stay under both budgets, or **source rotation**;
+- the back office reaches catalog through the gateway, which replaces `X-Forwarded-For` with its
+  own peer, so **every staff member signing in through the form shares one source key**. The
+  source budget really bounds a caller scripting the gateway directly; the subject budget is what
+  protects an individual account.
+
+### Abuse telemetry, and the question it cannot answer
+
+The limiter emits one record per decision — `allowed`, `throttled_source`, `throttled_subject` —
+to the log, a counter and the request span, under `surface=staff_login`.
+
+It carries **no subject identifier of any kind**, and that is a deliberate limit rather than an
+omission. This surface is anonymous; its only candidate identifier is the attacker-chosen login
+identifier, which must not be emitted, and a hash of it would still be one metric series per
+attacker-chosen input while identifying nothing an operator could act on. Access's scanner
+telemetry does carry a `subject_id` because there the subject is an authenticated device whose id
+is the input to `access revoke-scanner`; there is no equivalent here.
+
+So the telemetry answers **"is this surface under pressure, and which budget is firing"**. It does
+not answer **"who"**, and a sustained rise is therefore an input to a deployment-level decision,
+not to a targeted block.
+
+One more thing the telemetry does not change, stated plainly because it is easy to read the
+paragraph above as saying the opposite: **the request span carries the client IP.** `shared/go/obs`
+wraps every handler in `otelhttp`, which sets `client.address` as an OTel HTTP semantic convention
+on every request in every service. So "the telemetry emits no client IP" is true of the emitter and
+false of the span it rides on. Changing that is a decision about `shared/go/obs` and every service's
+tracing, not about this route.
+
+**And the source key is only trustworthy behind the gateway.** `httpx.ClientIP` reads the last
+`X-Forwarded-For` entry, and the gateway sets that header to its own peer (`SetXForwarded` with no
+inbound copy), so a request arriving through the normal back-office path cannot choose its own
+source key. A caller reaching catalog's port **directly** can forge the header and therefore mint a
+fresh source bucket per request, which defeats the source budget entirely. The subject budget is
+unaffected, and is what still bounds an attack on a named account. `shared/go/httpx/clientip.go`
+documents the same limit at its source.
 
 ## Consequences
 
