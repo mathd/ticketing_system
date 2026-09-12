@@ -149,7 +149,35 @@ against, because "the cache is invalidated" is exactly the kind of claim that ov
   (correctness at claim time) · [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md)
   (after-commit ordering) · [ADR-024](./ADR-024-channel-allocations.md) (why channel is in the key) ·
   [ADR-028](./ADR-028-response-drift-fail-closed.md) · [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)
-- `services/inventory/internal/availability/cache.go` · `services/inventory/internal/store/availability_invalidation.go`
-  (`commitAvailability`) · `services/inventory/internal/api/server.go` (`availability`) ·
-  `services/inventory/api/openapi.yaml` (`AvailabilityAge`)
-- Kill-switch: TKT-210, carrying ADR-004's incident-bypass requirement.
+- `services/inventory/internal/availability/cache.go` · `services/inventory/internal/seatoccupancy/cache.go` ·
+  `services/inventory/internal/store/availability_invalidation.go` (`commitAvailability`) ·
+  `services/inventory/internal/api/server.go` (`availability`, `seatOccupancy`) ·
+  `services/inventory/api/openapi.yaml` (`AvailabilityAge`, `SeatOccupancyAge`)
+- Kill-switch: TKT-210, carrying ADR-004's incident-bypass requirement, extended to seat occupancy in TKT-177.
+
+## Amendment: Seat-occupancy read cache (TKT-177)
+
+Date: 2026-09-12
+
+### Scope and key structure
+
+The in-process read cache extends to `GET /slots/{id}/seat-occupancy`. The cache key is `(org, slot)`. Unlike the availability read, seat occupancy accepts no channel parameter. Therefore, it has no per-slot entry ceiling: a per-slot ceiling would stay permanently 1 and would incorrectly suggest that variants exist. The global entry bound (10,000 entries), concurrency semaphore (1,000 concurrent source calls), and query budget (10s) apply identically.
+
+### Invalidation fan-out
+
+Both display caches (availability and seat occupancy) share the post-commit seam in `store.Postgres`. `RegisterAvailabilityInvalidator` appends callbacks instead of overwriting a single registration. When `commitAvailability(tx, slot)` succeeds, it copies the callback list under a read lock and invokes all registered invalidators in registration order. The architectural AST guard (`TestAvailabilityMutationsUseInvalidatingCommit`) bans raw `tx.Commit()` in the store package and protects both caches without changes.
+
+### Operator kill switch
+
+The incident kill switch (`/internal/cache-control`) governs both display caches together. Disabling purges all entries in both caches and bypasses them on subsequent reads. Re-enabling starts both cold. `entries` reports the sum of cached entries across both caches.
+
+### Response `Age` header and contract enforcement
+
+`GET /slots/{id}/seat-occupancy` emits a required `Age` header matching `SeatOccupancyAge` in `openapi.yaml`. The schema defines `type: integer, minimum: 0, maximum: 5`. The `maximum` is the `cachetier.Seconds` tier restated in the contract. If the seconds tier duration increases, both `AvailabilityAge` and `SeatOccupancyAge` maxima must increase in the contract, or conformant responses will 500 under ADR-028 runtime response validation.
+
+### Limits restated
+
+The limits documented above apply equally to both display caches:
+- **Honest-writer consistency only:** Direct database updates bypass in-process callbacks.
+- **Process-local:** Invalidation affects only the local process; replicas remain stale until the tier expires.
+- **Bounded memory is not bounded load:** Entry bounds restrict cache table sizes after completion. The semaphore bounds concurrent database queries to 1,000, but callers can still drive load up to that limit.

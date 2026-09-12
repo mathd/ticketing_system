@@ -141,6 +141,7 @@ paths:
           description: Seat occupancy
           headers:
             Cache-Control: {$ref: '#/components/headers/SeatOccupancyCacheControl'}
+            Age: {$ref: '#/components/headers/SeatOccupancyAge'}
           content: {application/json: {schema: {$ref: '#/components/schemas/SeatOccupancy'}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
@@ -330,7 +331,7 @@ paths:
   /internal/cache-control:
     get:
       operationId: getCacheControl
-      summary: Whether this process is serving availability reads from memory, and how many entries it holds (TKT-210)
+      summary: Whether this process is serving display reads from memory, and how many entries it holds (TKT-210, TKT-177)
       responses:
         '200': {description: Current cache state, headers: {Cache-Control: {$ref: '#/components/headers/NeverCacheControl'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlStatus'}}}}
         '401': {$ref: '#/components/responses/Error'}
@@ -339,9 +340,10 @@ paths:
       operationId: putCacheControl
       summary: >
         The ADR-004 incident kill-switch. Disabling purges the cache and sends
-        every availability read to the store until re-enabled; re-enabling starts
-        cold. Idempotent. PROCESS-LOCAL - it says nothing about another replica -
-        and NOT durable: a restart comes back enabled.
+        every display read — availability and seat occupancy — to the store until
+        re-enabled; re-enabling starts cold. Idempotent. PROCESS-LOCAL - it says
+        nothing about another replica - and NOT durable: a restart comes back
+        enabled.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlUpdate'}}}}
       responses:
         '200': {description: Resulting cache state, headers: {Cache-Control: {$ref: '#/components/headers/NeverCacheControl'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CacheControlStatus'}}}}
@@ -450,6 +452,30 @@ components:
       schema:
         type: string
         enum: ['public, max-age=5, s-maxage=5']
+    SeatOccupancyAge:
+      description: >
+        Seconds this answer has already spent in inventory's in-memory
+        seat-occupancy cache (TKT-177, ADR-044), rounded up. Required, and 0 on a
+        cache miss.
+
+        It exists so the two staleness budgets cannot stack. Cache-Control
+        declares this response publicly cacheable for five seconds; without Age,
+        an entry already four seconds old inside the service would grant a
+        conformant client another full five, so a buyer could observe ten
+        seconds of staleness against a tier that promises five. Age is the RFC
+        9111 mechanism for exactly that, and it is the only one available here:
+        varying Cache-Control by remaining freshness is what the storefront
+        middleware does for pages, but SeatOccupancyCacheControl is a required
+        single-valued enum, so ADR-028's validator turns a REPLACEMENT value into
+        a 500.
+
+        Bounded by the cachetier.Seconds tier restated: an entry older than max-age
+        is not served.
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 5
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     OrganizerId: {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
@@ -465,14 +491,14 @@ components:
       additionalProperties: false
       required: [enabled]
       properties:
-        enabled: {type: boolean, description: 'false disables the in-memory availability cache on THIS process'}
+        enabled: {type: boolean, description: 'false disables the in-memory display caches — availability and seat occupancy — on THIS process'}
     CacheControlStatus:
       type: object
       additionalProperties: false
       required: [enabled, entries]
       properties:
         enabled: {type: boolean, description: 'the state the read path itself consults, not a separate flag'}
-        entries: {type: integer, minimum: 0, description: 'cached entries held right now. CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory'}
+        entries: {type: integer, minimum: 0, description: 'cached entries held right now, summed across both display caches (availability and seat occupancy). CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory'}
     Error:
       type: object
       additionalProperties: false

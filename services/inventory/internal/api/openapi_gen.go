@@ -200,13 +200,13 @@ type CacheControlStatus struct {
 	// Enabled the state the read path itself consults, not a separate flag
 	Enabled bool `json:"enabled"`
 
-	// Entries cached entries held right now. CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory
+	// Entries cached entries held right now, summed across both display caches (availability and seat occupancy). CARDINALITY, not bytes - ADR-044 is explicit that a bounded entry count does not bound memory
 	Entries int `json:"entries"`
 }
 
 // CacheControlUpdate defines model for CacheControlUpdate.
 type CacheControlUpdate struct {
-	// Enabled false disables the in-memory availability cache on THIS process
+	// Enabled false disables the in-memory display caches — availability and seat occupancy — on THIS process
 	Enabled bool `json:"enabled"`
 }
 

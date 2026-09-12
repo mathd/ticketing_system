@@ -1,6 +1,7 @@
 package store
 
 import (
+	"slices"
 	"sync"
 
 	"github.com/google/uuid"
@@ -46,7 +47,7 @@ func (p *Postgres) RegisterAvailabilityInvalidator(fn func(uuid.UUID)) {
 	}
 	p.invalidateMu.Lock()
 	defer p.invalidateMu.Unlock()
-	p.invalidateAvailability = fn
+	p.invalidateAvailability = append(p.invalidateAvailability, fn)
 }
 
 // commitAvailability commits a transaction that may have changed a slot's
@@ -59,10 +60,12 @@ func (p *Postgres) commitAvailability(tx committer, slot uuid.UUID) error {
 		return err
 	}
 	p.invalidateMu.RLock()
-	fn := p.invalidateAvailability
+	fns := slices.Clone(p.invalidateAvailability)
 	p.invalidateMu.RUnlock()
-	if fn != nil {
-		fn(slot)
+	for _, fn := range fns {
+		if fn != nil {
+			fn(slot)
+		}
 	}
 	return nil
 }
@@ -71,5 +74,5 @@ func (p *Postgres) commitAvailability(tx committer, slot uuid.UUID) error {
 // the whole seam reads as one unit.
 type invalidatorFields struct {
 	invalidateMu           sync.RWMutex
-	invalidateAvailability func(uuid.UUID)
+	invalidateAvailability []func(uuid.UUID)
 }

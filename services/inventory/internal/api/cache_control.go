@@ -27,8 +27,14 @@ import (
 // gateway keeps answering 404 at the edge for /api/inventory/internal/*.
 
 func (s *Server) cacheControlStatus(w http.ResponseWriter, _ *http.Request) {
-	st := s.avail.Status()
-	write(w, http.StatusOK, map[string]any{"enabled": st.Enabled, "entries": st.Entries})
+	s.cacheSwitchMu.Lock()
+	defer s.cacheSwitchMu.Unlock()
+	stAvail := s.avail.Status()
+	stOcc := s.occupancy.Status()
+	write(w, http.StatusOK, map[string]any{
+		"enabled": stAvail.Enabled && stOcc.Enabled,
+		"entries": stAvail.Entries + stOcc.Entries,
+	})
 }
 
 func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +48,22 @@ func (s *Server) cacheControlSet(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadRequest, map[string]string{"error": "enabled (boolean) required"})
 		return
 	}
+	// One lock spanning BOTH writes and the status snapshot that follows them.
+	// Without it two overlapping requests interleave — a disable sets
+	// availability, an enable then sets both, and the disable finally sets
+	// occupancy — leaving availability serving from memory while this route,
+	// which ANDs the two flags, answers enabled:false. An operator reading "the
+	// cache is off" mid-incident while a cache still answers from memory is the
+	// precise failure this surface exists to prevent, so the switch has to move
+	// both caches as one step, not two.
+	s.cacheSwitchMu.Lock()
+	defer s.cacheSwitchMu.Unlock()
 	s.avail.SetEnabled(*in.Enabled)
-	st := s.avail.Status()
-	write(w, http.StatusOK, map[string]any{"enabled": st.Enabled, "entries": st.Entries})
+	s.occupancy.SetEnabled(*in.Enabled)
+	stAvail := s.avail.Status()
+	stOcc := s.occupancy.Status()
+	write(w, http.StatusOK, map[string]any{
+		"enabled": stAvail.Enabled && stOcc.Enabled,
+		"entries": stAvail.Entries + stOcc.Entries,
+	})
 }
