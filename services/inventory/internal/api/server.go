@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -83,8 +84,12 @@ type Server struct {
 	// ADR-057). Empty means unconfigured, which fails closed — see staffOrInternal.
 	staffWriteToken string
 	pinner          SeatPinner
-	avail           availabilityReader
-	occupancy       seatOccupancyReader
+	// cacheSwitchMu makes the kill switch move both display caches as one step.
+	// The caches have independent locks of their own; this one orders the
+	// HANDLER's pair of writes, which nothing else does.
+	cacheSwitchMu sync.Mutex
+	avail         availabilityReader
+	occupancy     seatOccupancyReader
 }
 
 func New(st *store.Postgres, credential string, pinner SeatPinner) *Server {

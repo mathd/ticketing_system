@@ -1,12 +1,18 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+
+	"ticketing/services/inventory/internal/availability"
 )
 
 func cacheControlReq(t *testing.T, h http.Handler, method, token, body string) *httptest.ResponseRecorder {
@@ -121,5 +127,119 @@ func TestCacheControlIsNotReachableWithAPublicRoute(t *testing.T) {
 		"http://inventory.local/cache-control?organizer_id="+uuid.NewString(), nil))
 	if rec.Code == http.StatusOK {
 		t.Fatal("a non-internal cache-control path answered 200 — the switch must live under /internal/")
+	}
+}
+
+// splitProbeReader parks the DISABLE request between the handler's two
+// collaborator writes. Keying the park on the value — rather than on a
+// sync.Once — is what keeps the probe from blocking the enable request that has
+// to run inside that window.
+type splitProbeReader struct {
+	mu      sync.Mutex
+	enabled bool
+	entries int
+	enter   chan struct{}
+	hold    chan struct{}
+	parked  bool
+}
+
+func (r *splitProbeReader) SetEnabled(v bool) {
+	r.mu.Lock()
+	r.enabled = v
+	park := !v && !r.parked
+	if park {
+		r.parked = true
+	}
+	r.mu.Unlock()
+	if park {
+		r.enter <- struct{}{}
+		<-r.hold
+	}
+}
+
+func (r *splitProbeReader) isEnabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.enabled
+}
+
+func (r *splitProbeReader) Status() availability.Status {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return availability.Status{Enabled: r.enabled, Entries: r.entries}
+}
+
+func (r *splitProbeReader) Read(context.Context, uuid.UUID, uuid.UUID, string) (availability.Read, error) {
+	return availability.Read{}, nil
+}
+
+// TestConcurrentTogglesCannotSplitTheCaches is the kill switch's atomicity, and
+// it is the property an incident depends on.
+//
+// The handler sets two collaborators in sequence. With no lock spanning both,
+// two overlapping requests interleave — a disable sets availability, an enable
+// then sets BOTH caches, and the disable finally sets occupancy — and the
+// process is left serving availability from memory while the status route,
+// which ANDs the two flags, answers `enabled:false`. An operator reading "the
+// cache is off" mid-incident while a cache still answers from memory is the
+// precise failure this surface exists to prevent. Reported state must never be
+// more reassuring than the read path.
+//
+// The probe parks the disable between the handler's two writes. Under the fixed
+// handler the enable cannot enter at all, so it never reaches occupancy and the
+// park releases on a timer; under the broken one it runs straight through and
+// the two caches finish disagreeing.
+func TestConcurrentTogglesCannotSplitTheCaches(t *testing.T) {
+	availRd := &splitProbeReader{
+		enabled: true,
+		enter:   make(chan struct{}, 1),
+		hold:    make(chan struct{}),
+	}
+	// Occupancy starts DISABLED, so the only thing that can turn it on inside the
+	// window is the enable request. Starting it enabled would make the detector
+	// fire on the initial state and prove nothing.
+	occRd := &countingOccupancyReader{enabled: false}
+	h := NewWithReaders(nil, "secret", nil, availRd, occRd).Router(nil, true)
+
+	aDone := make(chan struct{})
+	go func() {
+		defer close(aDone)
+		cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":false}`)
+	}()
+	<-availRd.enter
+
+	bDone := make(chan struct{})
+	go func() {
+		defer close(bDone)
+		cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":true}`)
+	}()
+
+	// Did the enable reach the second collaborator while the disable is parked
+	// between its own two writes? That is the split, observed rather than
+	// inferred. A correct handler holds the enable at the lock, so this window
+	// closes without occupancy ever moving.
+	deadline := time.Now().Add(250 * time.Millisecond)
+	split := false
+	for time.Now().Before(deadline) {
+		if occRd.enabled && !availRd.isEnabled() {
+			split = true
+			break
+		}
+		runtime.Gosched()
+	}
+
+	close(availRd.hold)
+	<-aDone
+	<-bDone
+
+	if split {
+		t.Fatal("the enable request wrote the occupancy cache while the disable request " +
+			"was parked between its own two writes: the switch does not move both caches as " +
+			"one step, so a disable and an enable can interleave and leave one cache serving " +
+			"from memory while the status route reports the switch as off")
+	}
+	if availRd.isEnabled() != occRd.enabled {
+		t.Fatalf("the caches split: avail.enabled=%v, occ.enabled=%v",
+			availRd.isEnabled(), occRd.enabled)
 	}
 }
