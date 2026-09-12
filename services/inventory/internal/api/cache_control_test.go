@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +12,8 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/inventory/internal/availability"
+	"ticketing/services/inventory/internal/seatoccupancy"
+	"ticketing/services/inventory/internal/store"
 )
 
 func cacheControlReq(t *testing.T, h http.Handler, method, token, body string) *httptest.ResponseRecorder {
@@ -173,6 +174,41 @@ func (r *splitProbeReader) Read(context.Context, uuid.UUID, uuid.UUID, string) (
 	return availability.Read{}, nil
 }
 
+// signallingOccupancyReader announces every SetEnabled on a channel, so the test
+// waits on the write itself rather than on a clock. A wall-clock window would
+// pass on a loaded machine simply because the second request never got
+// scheduled — the test would go green with the defect live, which is the one
+// outcome a concurrency test must not have.
+type signallingOccupancyReader struct {
+	mu      sync.Mutex
+	enabled bool
+	entries int
+	writes  chan bool
+}
+
+func (c *signallingOccupancyReader) SetEnabled(v bool) {
+	c.mu.Lock()
+	c.enabled = v
+	c.mu.Unlock()
+	c.writes <- v
+}
+
+func (c *signallingOccupancyReader) isEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.enabled
+}
+
+func (c *signallingOccupancyReader) Status() seatoccupancy.Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return seatoccupancy.Status{Enabled: c.enabled, Entries: c.entries}
+}
+
+func (c *signallingOccupancyReader) Read(_ context.Context, _, slot uuid.UUID) (seatoccupancy.Read, error) {
+	return seatoccupancy.Read{Value: store.SeatOccupancy{SlotID: slot, Unavailable: []string{}}}, nil
+}
+
 // TestConcurrentTogglesCannotSplitTheCaches is the kill switch's atomicity, and
 // it is the property an incident depends on.
 //
@@ -195,10 +231,10 @@ func TestConcurrentTogglesCannotSplitTheCaches(t *testing.T) {
 		enter:   make(chan struct{}, 1),
 		hold:    make(chan struct{}),
 	}
-	// Occupancy starts DISABLED, so the only thing that can turn it on inside the
-	// window is the enable request. Starting it enabled would make the detector
-	// fire on the initial state and prove nothing.
-	occRd := &countingOccupancyReader{enabled: false}
+	// Occupancy starts DISABLED and reports every write. Starting it enabled
+	// would let the detector fire on the initial state and prove nothing; the
+	// signal is what makes the observation an event rather than a poll.
+	occRd := &signallingOccupancyReader{enabled: false, writes: make(chan bool, 4)}
 	h := NewWithReaders(nil, "secret", nil, availRd, occRd).Router(nil, true)
 
 	aDone := make(chan struct{})
@@ -206,7 +242,7 @@ func TestConcurrentTogglesCannotSplitTheCaches(t *testing.T) {
 		defer close(aDone)
 		cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":false}`)
 	}()
-	<-availRd.enter
+	<-availRd.enter // the disable now holds availability=false, mid-handler
 
 	bDone := make(chan struct{})
 	go func() {
@@ -214,32 +250,35 @@ func TestConcurrentTogglesCannotSplitTheCaches(t *testing.T) {
 		cacheControlReq(t, h, http.MethodPut, "secret", `{"enabled":true}`)
 	}()
 
-	// Did the enable reach the second collaborator while the disable is parked
-	// between its own two writes? That is the split, observed rather than
-	// inferred. A correct handler holds the enable at the lock, so this window
-	// closes without occupancy ever moving.
-	deadline := time.Now().Add(250 * time.Millisecond)
-	split := false
-	for time.Now().Before(deadline) {
-		if occRd.enabled && !availRd.isEnabled() {
-			split = true
-			break
-		}
-		runtime.Gosched()
+	// The disable is parked between its two writes. If any occupancy write lands
+	// now, it came from the enable request, which means the two requests
+	// interleaved: the switch is not moving both caches as one step.
+	//
+	// A correct handler holds the enable at the lock, so nothing arrives and the
+	// disable's own write is the first — which is why the disable is released
+	// only after this select settles.
+	select {
+	case v := <-occRd.writes:
+		close(availRd.hold)
+		<-aDone
+		<-bDone
+		t.Fatalf("an occupancy write (enabled=%v) landed while the disable request was parked "+
+			"between its own two writes: a disable and an enable interleaved, so one cache can "+
+			"be left serving from memory while the status route reports the switch as off", v)
+	case <-time.After(100 * time.Millisecond):
+		// Nothing got through: the enable is blocked at the lock, as intended.
 	}
 
 	close(availRd.hold)
 	<-aDone
 	<-bDone
 
-	if split {
-		t.Fatal("the enable request wrote the occupancy cache while the disable request " +
-			"was parked between its own two writes: the switch does not move both caches as " +
-			"one step, so a disable and an enable can interleave and leave one cache serving " +
-			"from memory while the status route reports the switch as off")
+	// Drain both requests' writes and confirm the caches agree at rest.
+	for len(occRd.writes) > 0 {
+		<-occRd.writes
 	}
-	if availRd.isEnabled() != occRd.enabled {
-		t.Fatalf("the caches split: avail.enabled=%v, occ.enabled=%v",
-			availRd.isEnabled(), occRd.enabled)
+	if availRd.isEnabled() != occRd.isEnabled() {
+		t.Fatalf("the caches split at rest: avail.enabled=%v, occ.enabled=%v",
+			availRd.isEnabled(), occRd.isEnabled())
 	}
 }
