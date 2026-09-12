@@ -334,10 +334,16 @@ func TestAuthenticateStaffIsRateLimitedPerSource(t *testing.T) {
 //
 // `allowStaffAuth` reads `!source.Allow(...) || !subject.Allow(...)`, and Go's ||
 // short-circuits, so a request refused on the source never reaches the subject
-// bucket. That is enforcement behaviour, not a detail: if a source refusal spent
-// a subject token, one noisy client could grind a named account's budget to zero
-// from a source that is itself being refused — the victim would then be locked
-// out from every other source too, without the attacker ever reaching the store.
+// bucket. That is enforcement behaviour, not a detail: a client whose source
+// budget is exhausted would otherwise keep draining a victim's subject budget
+// with the very requests it is being refused — free damage, on top of a refusal
+// that already costs it nothing.
+//
+// This is NOT a claim that the account cannot be locked out. The subject bucket
+// is keyed on the identifier alone, so an attacker with a healthy source budget
+// spends ten requests and that account is refused everywhere on this replica.
+// That is the accepted cost of a per-account budget; this test is about the
+// narrower property.
 //
 // The property has no test on its own, which is why this one exists before the
 // telemetry change touches that expression (TKT-195, D2).
@@ -371,8 +377,9 @@ func TestASourceRefusalDoesNotSpendASubjectToken(t *testing.T) {
 	if rec := e.doWithHeaders("POST", "/staff/authenticate",
 		StaffCredentials{Identifier: victim, Password: "guess"},
 		map[string]string{"X-Forwarded-For": "198.51.100.23", staffWriteHeader: testStaffWriteToken}); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("the victim got status %d from a fresh source: a source refusal spent its subject budget, "+
-			"so one client can lock an account out from everywhere", rec.Code)
+		t.Fatalf("the victim got status %d from a fresh source: requests the source limiter had "+
+			"ALREADY refused went on spending its subject budget, which is free damage on top of a "+
+			"refusal that costs the attacker nothing", rec.Code)
 	}
 }
 

@@ -215,9 +215,18 @@ budgets from `shared/go/ratelimit`:
 - **per source address** — 300 per 15 minutes, so one client cannot walk a list.
 
 Both are spent **before the store lookup**, deliberately: a bucket that filled only for accounts
-that exist would turn the 429 into the account oracle the shared 401 exists to prevent. A source
-refusal does not spend a subject token, so a noisy client cannot lock a named account out from
-every other source.
+that exist would turn the 429 into the account oracle the shared 401 exists to prevent.
+
+A source refusal does not spend a subject token. **That is a narrow property and it is worth
+stating narrowly**: it means a client whose source budget is already exhausted cannot go on
+draining a victim's subject budget with the requests it is being refused. It does **not** mean an
+account cannot be locked out. The subject bucket is keyed on the normalized identifier **alone**,
+not on identifier-and-source, so an attacker with a healthy source budget spends ten requests on
+one identifier and that account is refused **from every source on that replica** until the window
+refills. That is the deliberate cost of a budget that protects an account from being ground:
+whoever spends it, the account has spent it. An earlier draft of this paragraph claimed the
+short-circuit prevented this; it does not, and the difference matters to anyone reasoning about
+denial of service against a named staff member.
 
 **State the limits rather than the reassurance.** This is an in-process, per-replica limiter:
 

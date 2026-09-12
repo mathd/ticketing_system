@@ -129,13 +129,8 @@ func (h *staffTelemetryHarness) emitted(t *testing.T) string {
 			}
 		}
 	}
-	for _, s := range h.spans.GetSpans() {
-		for _, kv := range s.Attributes {
-			switch string(kv.Key) {
-			case "surface", "subject_type", "outcome":
-				fmt.Fprintf(&b, " %s=%v", kv.Key, kv.Value.AsInterface())
-			}
-		}
+	for k, v := range h.spanAttrsSetByThisEmitter(t) {
+		fmt.Fprintf(&b, " %s=%v", k, v)
 	}
 	return b.String()
 }
@@ -143,15 +138,32 @@ func (h *staffTelemetryHarness) emitted(t *testing.T) string {
 // spanAttrsSetByThisEmitter returns only the keys this ticket's code adds to the
 // span, so a test can assert their values without asserting anything about the
 // middleware's semantic-convention attributes.
+// It subtracts the middleware's known keys rather than allowlisting the
+// emitter's, which is the difference between a test that can see a new attribute
+// and one that cannot. An earlier version kept only `surface`, `subject_type` and
+// `outcome`, so a fourth attribute was DISCARDED before the assertion and the
+// test claiming to reject one could not: ai-review pass 1 [medium], and it was
+// right. Anything this emitter adds in future shows up here by default and has to
+// be accounted for deliberately.
 func (h *staffTelemetryHarness) spanAttrsSetByThisEmitter(t *testing.T) map[string]string {
 	t.Helper()
+	// Set by shared/go/obs's middleware on every request in every service (OTel
+	// HTTP semantic conventions). Listed so they can be excluded by NAME; any key
+	// not in this list is something this ticket's code put there.
+	middleware := map[string]bool{
+		"server.address": true, "http.request.method": true, "url.scheme": true,
+		"network.peer.address": true, "network.peer.port": true, "client.address": true,
+		"url.path": true, "network.protocol.version": true, "http.request.body.size": true,
+		"http.response.body.size": true, "http.response.status_code": true,
+		"url.query": true, "user_agent.original": true, "http.route": true,
+	}
 	got := map[string]string{}
 	for _, s := range h.spans.GetSpans() {
 		for _, kv := range s.Attributes {
-			switch string(kv.Key) {
-			case "surface", "subject_type", "outcome":
-				got[string(kv.Key)] = kv.Value.String()
+			if middleware[string(kv.Key)] {
+				continue
 			}
+			got[string(kv.Key)] = kv.Value.String()
 		}
 	}
 	return got

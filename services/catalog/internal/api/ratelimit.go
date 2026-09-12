@@ -115,10 +115,16 @@ func (s *Server) allowStaffAuth(w http.ResponseWriter, r *http.Request, identifi
 	// WHICH budget refused, and shaped to reproduce the short-circuit by
 	// construction rather than by inspection: the subject bucket is touched only
 	// when the source allowed. That ordering is enforcement behaviour, not style —
-	// spending a subject token on a source-refused request would let one noisy
-	// client grind a named account's budget to zero from a source that is itself
-	// being refused, locking the victim out from every other source too.
-	// TestASourceRefusalDoesNotSpendASubjectToken is what holds this.
+	// a client whose source budget is already exhausted would otherwise go on
+	// draining a victim's subject budget with the very requests it is being
+	// refused, which is free damage on top of a refusal that already costs it
+	// nothing. TestASourceRefusalDoesNotSpendASubjectToken is what holds this.
+	//
+	// It does NOT make the account safe from lockout, and nothing here should be
+	// read that way: the subject bucket is keyed on the identifier ALONE, so an
+	// attacker with a healthy source budget spends ten requests and that account
+	// is refused from every source on this replica until the window refills. That
+	// is the accepted cost of a per-account budget (ADR-042 § TKT-195 amendment).
 	if !l.source.Allow(httpx.ClientIP(r)) {
 		s.staffLoginTelemetry.observeDecision(r.Context(), staffLoginThrottledSource)
 		s.refuseStaffAuth(w)
