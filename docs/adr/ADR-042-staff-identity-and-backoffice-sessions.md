@@ -211,8 +211,14 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
 `POST /staff/authenticate` is rate limited in catalog (`internal/api/ratelimit.go`) with two
 budgets from `shared/go/ratelimit`:
 
-- **per normalized identifier** — 10 per 15 minutes, so one account cannot be ground;
-- **per source address** — 300 per 15 minutes, so one client cannot walk a list.
+- **per normalized identifier** — 10 per 15 minutes, which stops an account being ground at speed;
+- **per source address** — 300 per 15 minutes, which stops one client walking a list at speed.
+
+**"At speed" is doing real work in both lines.** These are token buckets that refill continuously,
+not windows that lock and reset, so neither budget stops a patient attacker — it prices them. A
+subject bucket admits one attempt every 90 seconds indefinitely; a source bucket admits one every
+3 seconds. What the limiter buys is that credential stuffing has to run at a rate where it is
+worth alerting on, not that it cannot run.
 
 Both are spent **before the store lookup**, deliberately: a bucket that filled only for accounts
 that exist would turn the 429 into the account oracle the shared 401 exists to prevent.
@@ -265,9 +271,20 @@ So the telemetry answers **"is this surface under pressure, and which budget is 
 not answer **"who"**, and a sustained rise is therefore an input to a deployment-level decision,
 not to a targeted block.
 
-One more thing the telemetry does not change: the request span still carries the OTel semantic
-convention `client.address`, as every span in every service does. That is a property of
-`shared/go/obs`, not of this route.
+One more thing the telemetry does not change, stated plainly because it is easy to read the
+paragraph above as saying the opposite: **the request span carries the client IP.** `shared/go/obs`
+wraps every handler in `otelhttp`, which sets `client.address` as an OTel HTTP semantic convention
+on every request in every service. So "the telemetry emits no client IP" is true of the emitter and
+false of the span it rides on. Changing that is a decision about `shared/go/obs` and every service's
+tracing, not about this route.
+
+**And the source key is only trustworthy behind the gateway.** `httpx.ClientIP` reads the last
+`X-Forwarded-For` entry, and the gateway sets that header to its own peer (`SetXForwarded` with no
+inbound copy), so a request arriving through the normal back-office path cannot choose its own
+source key. A caller reaching catalog's port **directly** can forge the header and therefore mint a
+fresh source bucket per request, which defeats the source budget entirely. The subject budget is
+unaffected, and is what still bounds an attack on a named account. `shared/go/httpx/clientip.go`
+documents the same limit at its source.
 
 ## Consequences
 

@@ -45,11 +45,20 @@ import (
 //
 // # Where each field is allowed to go (ADR-012 § TKT-202)
 //
-// Every value emitted here is one of a fixed set of constants. Nothing derived
+// Every value THIS CODE emits is one of a fixed set of constants. Nothing derived
 // from the request — not the identifier, not the normalized identifier, not the
-// password, not the client address — reaches any sink. That is why all three
-// sinks can carry the same attributes: there is no value among them that is safe
-// in one and unsafe in another.
+// password, not the client address — is emitted here. That is why all three sinks
+// can carry the same attributes: there is no value among them that is safe in one
+// and unsafe in another.
+//
+// **That is a claim about this emitter, not about the sinks.** The request SPAN
+// separately carries `client.address` — the client IP — because `shared/go/obs`
+// wraps every handler in `otelhttp`, which sets the OTel HTTP semantic
+// conventions on every request in every service. This route is not special and
+// this ticket does not change it. The distinction matters because the two
+// statements are easy to conflate: nothing here puts a request value in a sink,
+// and the span nonetheless has one. ADR-042 § TKT-195 amendment records it as a
+// limit rather than leaving it to be discovered.
 const (
 	// staffLoginAbuseMessage is the log message an operator greps for.
 	staffLoginAbuseMessage = "abuse.request"
