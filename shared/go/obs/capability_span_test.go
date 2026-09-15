@@ -1,8 +1,10 @@
 package obs
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -118,8 +120,10 @@ func TestClientSpanDoesNotCarryCapabilityOrSignedQuerySecret(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(t.Context()) })
 
 	var upstreamReceivedURL string
+	var upstreamReceivedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamReceivedURL = r.URL.String()
+		upstreamReceivedAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -129,49 +133,48 @@ func TestClientSpanDoesNotCarryCapabilityOrSignedQuerySecret(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name     string
-		path     string
-		query    string
-		hasCap   bool
-		hasQuery bool
+		name   string
+		path   string
+		query  string
+		hasCap bool
 	}{
 		{
-			name:     "capability order tickets with query",
-			path:     "/api/access/orders/" + ref + "/tickets",
-			query:    "?" + secretQuery,
-			hasCap:   true,
-			hasQuery: true,
+			name:   "capability order tickets with query",
+			path:   "/api/access/orders/" + ref + "/tickets",
+			query:  "?" + secretQuery,
+			hasCap: true,
 		},
 		{
-			name:     "ordinary path with query",
-			path:     "/healthz",
-			query:    "?" + secretQuery,
-			hasCap:   false,
-			hasQuery: true,
+			name:   "ordinary path with query",
+			path:   "/healthz",
+			query:  "?" + secretQuery,
+			hasCap: false,
 		},
 		{
-			name:     "capability with userinfo and fragment",
-			path:     "/api/access/orders/" + ref + "/tickets",
-			query:    "?" + secretQuery + "#secret-fragment",
-			hasCap:   true,
-			hasQuery: true,
+			name:   "capability with userinfo and fragment",
+			path:   "/api/access/orders/" + ref + "/tickets",
+			query:  "?" + secretQuery + "#secret-fragment",
+			hasCap: true,
 		},
 		{
-			name:     "capability with encoded rawpath",
-			path:     "/api/access/orders/%32%66%31%65%33%64%34%63-5b6a-4978-8899-aabbccddeeff/tickets",
-			query:    "?" + secretQuery,
-			hasCap:   true,
-			hasQuery: true,
+			name:   "capability with encoded rawpath",
+			path:   "/api/access/orders/%32%66%31%65%33%64%34%63-5b6a-4978-8899-aabbccddeeff/tickets",
+			query:  "?" + secretQuery,
+			hasCap: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exp.Reset()
 			upstreamReceivedURL = ""
+			upstreamReceivedAuth = ""
 
 			targetURL := srv.URL + tc.path + tc.query
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.name == "capability with userinfo and fragment" {
+				req.URL.User = url.UserPassword("syntheticuser", "secretpass")
 			}
 			resp, err := client.Do(req)
 			if err != nil {
@@ -185,13 +188,21 @@ func TestClientSpanDoesNotCarryCapabilityOrSignedQuerySecret(t *testing.T) {
 			if upstreamReceivedURL != wantUpstreamPathAndQuery {
 				t.Fatalf("upstream received %q, want %q; request URL must not be modified", upstreamReceivedURL, wantUpstreamPathAndQuery)
 			}
+			if tc.name == "capability with userinfo and fragment" {
+				wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("syntheticuser:secretpass"))
+				if upstreamReceivedAuth != wantAuth {
+					t.Fatalf("upstream received Authorization %q, want %q; request auth must be preserved", upstreamReceivedAuth, wantAuth)
+				}
+			} else if upstreamReceivedAuth != "" {
+				t.Fatalf("upstream received unexpected Authorization %q", upstreamReceivedAuth)
+			}
 
 			spans := exp.GetSpans()
 			if len(spans) == 0 {
 				t.Fatal("no client span recorded")
 			}
 
-			secretMarkers := []string{ref, "super-secret", "secret-token", "secret-fragment", "secretpass"}
+			secretMarkers := []string{ref, "super-secret", "secret-token", "secret-fragment", "syntheticuser", "secretpass"}
 
 			var sawURLFull bool
 			for _, s := range spans {
@@ -227,6 +238,9 @@ func TestClientSpanDoesNotCarryCapabilityOrSignedQuerySecret(t *testing.T) {
 						if !tc.hasCap && !strings.Contains(val, tc.path) {
 							t.Fatalf("url.full lost ordinary path %s: %s", tc.path, val)
 						}
+						if strings.Contains(val, "@") {
+							t.Fatalf("url.full contains userinfo separator '@': %s", val)
+						}
 					}
 					if a.Key == attribute.Key("url.path") {
 						if !tc.hasCap && val != tc.path {
@@ -237,6 +251,29 @@ func TestClientSpanDoesNotCarryCapabilityOrSignedQuerySecret(t *testing.T) {
 			}
 			if !sawURLFull {
 				t.Fatal("no url.full attribute found on client span")
+			}
+
+			if tc.name == "capability with userinfo and fragment" {
+				// otelhttp's internal semconv strips req.URL.User when constructing url.full,
+				// shadowing u.User = nil in CapabilitySpanProcessor.OnEnd. To ensure OnEnd's
+				// export-time userinfo sanitization seam is directly exercised and discriminating
+				// against removing u.User = nil (ADR-073; AGENTS.md: a kept guard with no reachable
+				// test is an untested guarantee), verify that OnEnd strips userinfo when url.full carries it.
+				tr := tp.Tracer("test-userinfo-seam")
+				_, userinfoSpan := tr.Start(t.Context(), "userinfo-span")
+				userinfoSpan.SetAttributes(attribute.String("url.full", "http://syntheticuser:secretpass@"+srv.Listener.Addr().String()+tc.path))
+				userinfoSpan.End()
+				_ = tp.ForceFlush(t.Context())
+
+				lastSpan := exp.GetSpans()[len(exp.GetSpans())-1]
+				for _, a := range lastSpan.Attributes {
+					if a.Key == attribute.Key("url.full") {
+						v := a.Value.AsString()
+						if strings.Contains(v, "syntheticuser") || strings.Contains(v, "secretpass") || strings.Contains(v, "@") {
+							t.Fatalf("span attribute url.full leaks userinfo: %s", v)
+						}
+					}
+				}
 			}
 		})
 	}

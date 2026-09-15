@@ -412,7 +412,7 @@ func TestGatewayProxyTimeoutPreHeaderReturns504(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Do failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d (504 Gateway Timeout)", resp.StatusCode, http.StatusGatewayTimeout)
@@ -479,7 +479,7 @@ func TestGatewayProxyTimeoutPostHeaderAbortsStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Do failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 OK (headers already sent, must not convert to 504)", resp.StatusCode)
@@ -563,7 +563,7 @@ func TestGatewayProxyWebSocketUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Bound overall connection to prevent hang if a broken mutation never finishes
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))

@@ -445,7 +445,9 @@ func TestOptionalCredentialAppliesNoLengthFloor(t *testing.T) {
 func TestGatewayProxyTimeoutFromEnv(t *testing.T) {
 	t.Run("default is 25s when unset", func(t *testing.T) {
 		oldVal, existed := os.LookupEnv("GATEWAY_PROXY_TIMEOUT")
-		os.Unsetenv("GATEWAY_PROXY_TIMEOUT")
+		if err := os.Unsetenv("GATEWAY_PROXY_TIMEOUT"); err != nil {
+			t.Fatalf("unsetenv GATEWAY_PROXY_TIMEOUT: %v", err)
+		}
 		t.Cleanup(func() {
 			if existed {
 				_ = os.Setenv("GATEWAY_PROXY_TIMEOUT", oldVal)
