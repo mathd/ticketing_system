@@ -1,13 +1,24 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	otrace "go.opentelemetry.io/otel/trace"
+	"ticketing/shared/obs"
 )
 
 type discardInfoLogger struct{}
@@ -288,5 +299,393 @@ func TestSecurityHeadersOnEveryAnswer(t *testing.T) {
 				t.Errorf("X-Frame-Options = %v, want [%s]", got, tc.wantFrame)
 			}
 		})
+	}
+}
+
+func TestGatewayCommandRegistry(t *testing.T) {
+	healthcheckRuns := 0
+	callbacks := commandCallbacks{
+		healthcheck: func() int {
+			healthcheckRuns++
+			return 7
+		},
+	}
+
+	t.Run("healthcheck runs and returns exit status", func(t *testing.T) {
+		healthcheckRuns = 0
+		got := execute([]string{"healthcheck"}, callbacks, func() error {
+			t.Fatal("server ran after healthcheck was selected")
+			return nil
+		})
+		if got.Name != "healthcheck" || got.ExitCode != 7 || got.Err != nil {
+			t.Fatalf("got = %+v, want healthcheck with exit 7", got)
+		}
+		if healthcheckRuns != 1 {
+			t.Fatalf("healthcheck ran %d times, want 1", healthcheckRuns)
+		}
+	})
+
+	t.Run("healthcheck rejects trailing arguments", func(t *testing.T) {
+		healthcheckRuns = 0
+		serverRuns := 0
+		got := execute([]string{"healthcheck", "extra"}, callbacks, func() error {
+			serverRuns++
+			return nil
+		})
+		if got.Name != "healthcheck" || got.ExitCode == 0 || got.Err == nil {
+			t.Fatalf("got = %+v, want error for trailing arguments", got)
+		}
+		if healthcheckRuns != 0 || serverRuns != 0 {
+			t.Fatalf("healthcheck=%d server=%d, want 0", healthcheckRuns, serverRuns)
+		}
+	})
+
+	t.Run("unknown command is rejected without starting server", func(t *testing.T) {
+		serverRuns := 0
+		got := execute([]string{"not-a-command"}, callbacks, func() error {
+			serverRuns++
+			return nil
+		})
+		if got.Name != "not-a-command" || got.ExitCode == 0 || got.Err == nil {
+			t.Fatalf("got = %+v, want error for unknown command", got)
+		}
+		if serverRuns != 0 {
+			t.Fatalf("server ran %d times, want 0", serverRuns)
+		}
+	})
+
+	t.Run("empty arguments starts server", func(t *testing.T) {
+		serverRuns := 0
+		got := execute(nil, callbacks, func() error {
+			serverRuns++
+			return nil
+		})
+		if got.Name != "" || got.ExitCode != 0 || got.Err != nil {
+			t.Fatalf("got = %+v, want server run", got)
+		}
+		if serverRuns != 1 {
+			t.Fatalf("server ran %d times, want 1", serverRuns)
+		}
+	})
+}
+
+func TestGatewayProxyTimeoutPreHeaderReturns504(t *testing.T) {
+	var upstreamRequests atomic.Int32
+	headerRelease := make(chan struct{})
+	upstreamCanceled := make(chan struct{}, 1)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		select {
+		case <-headerRelease:
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+			select {
+			case upstreamCanceled <- struct{}{}:
+			default:
+			}
+			return
+		}
+	}))
+	defer func() {
+		close(headerRelease)
+		upstream.Close()
+	}()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := apiProxy(u, "/api/test/", true, withProxyTimeout(1*time.Second))
+	srv := httptest.NewServer(securityHeaders(proxy))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/test/slow", strings.NewReader("client-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d (504 Gateway Timeout)", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+
+	if got := upstreamRequests.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1 (no automatic retries on write)", got)
+	}
+
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream context was not canceled after proxy deadline exceeded")
+	}
+}
+
+func TestGatewayProxyTimeoutPostHeaderAbortsStream(t *testing.T) {
+	bodyRelease := make(chan struct{})
+	upstreamCanceled := make(chan struct{}, 1)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("initial-chunk"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-bodyRelease:
+			_, _ = w.Write([]byte("-final-chunk"))
+		case <-r.Context().Done():
+			select {
+			case upstreamCanceled <- struct{}{}:
+			default:
+			}
+			return
+		}
+	}))
+	defer func() {
+		close(bodyRelease)
+		upstream.Close()
+	}()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := apiProxy(u, "/api/test/", true, withProxyTimeout(1*time.Second))
+	srv := httptest.NewServer(securityHeaders(proxy))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/test/stall", strings.NewReader("client-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 OK (headers already sent, must not convert to 504)", resp.StatusCode)
+	}
+
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("expected stream truncation/abort error, got nil with body: %q", string(body))
+	}
+	if errors.Is(readErr, context.DeadlineExceeded) {
+		t.Fatalf("read timed out on client context deadline instead of proxy aborting stream: %v", readErr)
+	}
+	var netErr net.Error
+	if errors.As(readErr, &netErr) && netErr.Timeout() {
+		t.Fatalf("read timed out on client deadline instead of proxy aborting stream: %v", readErr)
+	}
+	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected premature stream termination (io.ErrUnexpectedEOF), got: %v", readErr)
+	}
+	if string(body) != "initial-chunk" {
+		t.Fatalf("body = %q, want exact %q", string(body), "initial-chunk")
+	}
+
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream context was not canceled after post-header stall")
+	}
+}
+
+func TestGatewayProxyWebSocketUpgrade(t *testing.T) {
+	upstreamDone := make(chan struct{})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "expected websocket upgrade", http.StatusBadRequest)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijack not supported", http.StatusInternalServerError)
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("upstream hijack failed: %v", err)
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+			close(upstreamDone)
+		}()
+
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\n" +
+			"Upgrade: websocket\r\n" +
+			"Connection: Upgrade\r\n\r\n")
+		_ = buf.Flush()
+
+		for {
+			line, err := buf.ReadString('\n')
+			if err != nil {
+				return
+			}
+			_, _ = buf.WriteString("echo:" + line)
+			_ = buf.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := apiProxy(u, "/api/test/", true, withProxyTimeout(1*time.Second))
+	// Pass through securityHeaders to verify securedWriter.Unwrap() preserves http.Hijacker
+	srv := httptest.NewServer(securityHeaders(proxy))
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Bound overall connection to prevent hang if a broken mutation never finishes
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	req := "GET /api/test/ws HTTP/1.1\r\n" +
+		"Host: " + srv.Listener.Addr().String() + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write handshake failed: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: "GET"})
+	if err != nil {
+		t.Fatalf("http.ReadResponse failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101 Switching Protocols", resp.StatusCode)
+	}
+
+	// Real bidirectional exchange
+	for _, msg := range []string{"ping1\n", "ping2\n"} {
+		if _, err := conn.Write([]byte(msg)); err != nil {
+			t.Fatalf("write msg failed: %v", err)
+		}
+		echo, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read echo failed: %v", err)
+		}
+		if echo != "echo:"+msg {
+			t.Fatalf("echo = %q, want %q", echo, "echo:"+msg)
+		}
+	}
+
+	// Wait for proxy timeout (1s) to close the connection
+	_, err = reader.ReadString('\n')
+	if err == nil {
+		t.Fatal("expected connection closure after proxy timeout, but read succeeded")
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		t.Fatalf("read timed out on client deadline instead of proxy closing connection: %v", err)
+	}
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream connection was not closed upon proxy cancellation")
+	}
+}
+
+func TestGatewayProxyTracePropagation(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+	)
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	upstreamHandler := obs.MiddlewareWithTracerProvider("upstream-service", tp, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	upstream := httptest.NewServer(upstreamHandler)
+	defer upstream.Close()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := apiProxy(u, "/api/upstream/", true)
+
+	tracer := tp.Tracer("test-tracer")
+	ctx, parentSpan := tracer.Start(context.Background(), "parent-client-call")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/upstream/test", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	parentSpan.End()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, want 200", rec.Code)
+	}
+
+	spans := exporter.GetSpans()
+	var parentSnap, clientSnap, serverSnap tracetest.SpanStub
+	for _, s := range spans {
+		switch {
+		case s.Name == "parent-client-call":
+			parentSnap = s
+		case s.SpanKind == otrace.SpanKindClient:
+			clientSnap = s
+		case s.SpanKind == otrace.SpanKindServer:
+			serverSnap = s
+		}
+	}
+
+	if parentSnap.Name == "" {
+		t.Fatalf("parent span not found in exported spans: %+v", spans)
+	}
+	if clientSnap.Name == "" {
+		t.Fatalf("proxy client span not found in exported spans: %+v", spans)
+	}
+	if serverSnap.Name == "" {
+		t.Fatalf("upstream server span not found in exported spans: %+v", spans)
+	}
+
+	traceID := parentSnap.SpanContext.TraceID()
+	if !traceID.IsValid() {
+		t.Fatal("parent trace ID is invalid")
+	}
+	if clientSnap.SpanContext.TraceID() != traceID {
+		t.Errorf("client trace ID = %s, want %s", clientSnap.SpanContext.TraceID(), traceID)
+	}
+	if serverSnap.SpanContext.TraceID() != traceID {
+		t.Errorf("server trace ID = %s, want %s", serverSnap.SpanContext.TraceID(), traceID)
+	}
+
+	if clientSnap.Parent.SpanID() != parentSnap.SpanContext.SpanID() {
+		t.Errorf("client span parent = %s, want parent span ID %s", clientSnap.Parent.SpanID(), parentSnap.SpanContext.SpanID())
+	}
+	if serverSnap.Parent.SpanID() != clientSnap.SpanContext.SpanID() {
+		t.Errorf("server span parent = %s, want client span ID %s", serverSnap.Parent.SpanID(), clientSnap.SpanContext.SpanID())
 	}
 }

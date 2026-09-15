@@ -290,16 +290,14 @@ services:
   payments:
     <<: *go-service
     depends_on:
-      <<: *go-deps
+      postgres:
+        condition: service_healthy
       payments-migrate:
         condition: service_completed_successfully
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/payments/cmd/payments } }
     environment:
       <<: *go-env
       DATABASE_URL: postgres://payments:${PAYMENTS_DB_PASSWORD}@postgres:5432/payments
-      # Per-service NATS credential (TKT-170, ADR-072). Held by payments alone —
-      # deliberately NOT in the shared &go-env anchor. Publishes and subscribes nothing.
-      NATS_URL: nats://payments:${NATS_PAYMENTS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       # Payments authenticates its internal surface on THIS, not on the shared
       # INTERNAL_SERVICE_TOKEN every service holds (ai-review S8). Commerce is the
       # only caller and holds both; nothing else needs the money surface.
@@ -558,6 +556,7 @@ services:
       HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
       HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
       HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+      GATEWAY_PROXY_TIMEOUT: ${GATEWAY_PROXY_TIMEOUT:-25s}
     depends_on:
       catalog: { condition: service_healthy }
       inventory: { condition: service_healthy }

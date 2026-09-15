@@ -280,7 +280,8 @@ func TestNATSInventoryServerCannotPublishCatalogSubject(t *testing.T) {
 }
 
 // TestNATSPaymentsConnectsWithZeroSubjectRights asserts that payments credentials connect
-// successfully to support its healthcheck, but all publish and subscribe operations are refused.
+// successfully for historical compatibility and negative ACL verification (ADR-072/ADR-073),
+// but all publish and subscribe operations are refused. Payments has no live runtime broker connection.
 func TestNATSPaymentsConnectsWithZeroSubjectRights(t *testing.T) {
 	u, err := url.Parse(natsURL)
 	if err != nil {

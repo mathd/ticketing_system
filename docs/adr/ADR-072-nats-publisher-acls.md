@@ -62,7 +62,7 @@ variables.
 | `access` | `platform.access.ticket-issuance.failed`, `platform.access.{lifecycle-integrity,admission-conflict,admission-policy-conflict}.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to its OWN durables for every MUTATING or CONSUMING call (`CREATE`/`MSG.NEXT`/`ACK`), with read-only `CONSUMER.INFO.PLATFORM.*` | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, the three `platform.access.*.alarm` subjects, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
 | `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, consumer APIs scoped to `inventory-catalog-offering` for every mutating or consuming call, read-only `CONSUMER.INFO.PLATFORM.*`, plus `CONSUMER.DELETE` for the single legacy durable `inventory-performance-provisioner` | All `platform.*` | `platform.catalog.performance.{published,archived,closed,reopened}`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
 | `inventory-reprocess` | `platform.catalog.performance.{published,archived,closed,reopened}` | — | `_INBOX.>` | — | Operator quarantine reprocess command only |
-| `payments` | — | `>` | — | `>` | Healthcheck connection only (`IsConnected`) |
+| `payments` | — | `>` | — | `>` | Historical compatibility and negative broker ACL testing (no live runtime connection per ADR-073) |
 
 ### 2. The Adversary Model (ADR-021 discipline)
 

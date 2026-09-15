@@ -275,11 +275,16 @@ func TestNullableUUIDDistinguishesAbsentFromZero(t *testing.T) {
 
 func TestCommandRegistryInvokesEveryCommerceCallback(t *testing.T) {
 	var invoked string
+	var capturedArgs []string
 	withoutArgs := func(name string) func() error {
 		return func() error { invoked = name; return nil }
 	}
 	withArgs := func(name string) func([]string) error {
-		return func([]string) error { invoked = name; return nil }
+		return func(args []string) error {
+			invoked = name
+			capturedArgs = append([]string(nil), args...)
+			return nil
+		}
 	}
 	callbacks := commandCallbacks{
 		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
@@ -293,13 +298,25 @@ func TestCommandRegistryInvokesEveryCommerceCallback(t *testing.T) {
 		"migrate", "healthcheck", "enrol-reseller", "revoke-reseller", "list-resellers",
 		"list-parked", "unpark-order", "list-wedged-exchanges", "unwind-exchange",
 	}
+	withArgsCommands := map[string]bool{
+		"enrol-reseller": true, "revoke-reseller": true, "list-resellers": true,
+		"list-parked": true, "unpark-order": true, "list-wedged-exchanges": true,
+		"unwind-exchange": true,
+	}
 	if len(registry) != len(names) {
 		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			invoked = ""
-			got := execute([]string{name, "tail"}, callbacks, func() error {
+			capturedArgs = nil
+			var args []string
+			if withArgsCommands[name] {
+				args = []string{name, "tail-arg-1", "tail-arg-2"}
+			} else {
+				args = []string{name}
+			}
+			got := execute(args, callbacks, func() error {
 				t.Fatal("server ran after a command was selected")
 				return nil
 			})
@@ -312,6 +329,11 @@ func TestCommandRegistryInvokesEveryCommerceCallback(t *testing.T) {
 			}
 			if invoked != name {
 				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+			if withArgsCommands[name] {
+				if len(capturedArgs) != 2 || capturedArgs[0] != "tail-arg-1" || capturedArgs[1] != "tail-arg-2" {
+					t.Fatalf("captured args = %v, want [tail-arg-1 tail-arg-2]", capturedArgs)
+				}
 			}
 		})
 	}

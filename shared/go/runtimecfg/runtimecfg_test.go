@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -439,4 +440,64 @@ func TestOptionalCredentialAppliesNoLengthFloor(t *testing.T) {
 	if _, err := OptionalCredential("TEST_OPTIONAL_CREDENTIAL", "fake"); err != nil {
 		t.Fatalf("OptionalCredential must apply no length floor: %v", err)
 	}
+}
+
+func TestGatewayProxyTimeoutFromEnv(t *testing.T) {
+	t.Run("default is 25s when unset", func(t *testing.T) {
+		oldVal, existed := os.LookupEnv("GATEWAY_PROXY_TIMEOUT")
+		os.Unsetenv("GATEWAY_PROXY_TIMEOUT")
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv("GATEWAY_PROXY_TIMEOUT", oldVal)
+			} else {
+				_ = os.Unsetenv("GATEWAY_PROXY_TIMEOUT")
+			}
+		})
+		timeout, err := GatewayProxyTimeoutFromEnv(30 * time.Second)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if timeout != DefaultGatewayProxyTimeout {
+			t.Fatalf("timeout = %v, want %v", timeout, DefaultGatewayProxyTimeout)
+		}
+	})
+
+	t.Run("valid override below write timeout", func(t *testing.T) {
+		t.Setenv("GATEWAY_PROXY_TIMEOUT", "10s")
+		timeout, err := GatewayProxyTimeoutFromEnv(30 * time.Second)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if timeout != 10*time.Second {
+			t.Fatalf("timeout = %v, want 10s", timeout)
+		}
+	})
+
+	t.Run("rejects timeout equal to write timeout", func(t *testing.T) {
+		t.Setenv("GATEWAY_PROXY_TIMEOUT", "30s")
+		_, err := GatewayProxyTimeoutFromEnv(30 * time.Second)
+		if err == nil {
+			t.Fatal("expected error when proxy timeout == write timeout")
+		}
+	})
+
+	t.Run("rejects timeout greater than write timeout", func(t *testing.T) {
+		t.Setenv("GATEWAY_PROXY_TIMEOUT", "35s")
+		_, err := GatewayProxyTimeoutFromEnv(30 * time.Second)
+		if err == nil {
+			t.Fatal("expected error when proxy timeout > write timeout")
+		}
+	})
+
+	t.Run("rejects invalid durations including empty string", func(t *testing.T) {
+		for _, invalid := range []string{"", "0s", "-5s", "not-a-duration"} {
+			t.Run(invalid, func(t *testing.T) {
+				t.Setenv("GATEWAY_PROXY_TIMEOUT", invalid)
+				_, err := GatewayProxyTimeoutFromEnv(30 * time.Second)
+				if err == nil {
+					t.Fatalf("expected error for invalid duration %q", invalid)
+				}
+			})
+		}
+	})
 }

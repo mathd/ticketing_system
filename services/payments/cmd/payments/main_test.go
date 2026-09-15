@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"ticketing/services/payments/internal/psp"
+	"ticketing/shared/cmdline"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
 )
@@ -31,7 +36,7 @@ func TestCommandRegistryInvokesEveryPaymentsCallback(t *testing.T) {
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			invoked = ""
-			got := execute([]string{name, "tail"}, callbacks, func() error {
+			got := execute([]string{name}, callbacks, func() error {
 				t.Fatal("server ran after a command was selected")
 				return nil
 			})
@@ -46,6 +51,26 @@ func TestCommandRegistryInvokesEveryPaymentsCallback(t *testing.T) {
 				t.Fatalf("invoked %q, want %q", invoked, name)
 			}
 		})
+	}
+}
+
+func TestPaymentsExecuteWithArgsForwardsTail(t *testing.T) {
+	var captured []string
+	reg := cmdline.Registry{
+		"custom": cmdline.WithArgs(func(args []string) error {
+			captured = append([]string(nil), args...)
+			return nil
+		}),
+	}
+	got := cmdline.Dispatch([]string{"custom", "tail1", "tail2"}, reg, func() error {
+		t.Fatal("server ran after command was selected")
+		return nil
+	})
+	if got.ExitCode != 0 || got.Err != nil {
+		t.Fatalf("result = %+v", got)
+	}
+	if len(captured) != 2 || captured[0] != "tail1" || captured[1] != "tail2" {
+		t.Fatalf("captured = %v, want [tail1 tail2]", captured)
 	}
 }
 
@@ -407,4 +432,68 @@ func TestPSPFromEnvTreatsAnAbsentKeyAsALegalOfflineConfiguration(t *testing.T) {
 	if _, _, err := pspFromEnv(); err == nil {
 		t.Fatal("the bare prefix must refuse startup through pspFromEnv too")
 	}
+}
+
+type stubPingable struct {
+	err error
+}
+
+func (s *stubPingable) PingContext(context.Context) error {
+	return s.err
+}
+
+func TestPaymentsHealthHandlerDBOnly(t *testing.T) {
+	t.Run("healthy db returns 200 with db-only check", func(t *testing.T) {
+		h := healthHandler(&stubPingable{err: nil})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+
+		var body struct {
+			Status string            `json:"status"`
+			Checks map[string]string `json:"checks"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("json unmarshal failed: %v", err)
+		}
+		if body.Status != "ok" {
+			t.Errorf("status = %q, want ok", body.Status)
+		}
+		if len(body.Checks) != 1 || body.Checks["db"] != "ok" {
+			t.Errorf("checks = %#v, want exactly {db: ok}", body.Checks)
+		}
+		if _, hasNATS := body.Checks["nats"]; hasNATS {
+			t.Errorf("checks contains nats probe, want db-only: %#v", body.Checks)
+		}
+	})
+
+	t.Run("unhealthy db returns 503 with db-only check", func(t *testing.T) {
+		h := healthHandler(&stubPingable{err: errors.New("connection failed")})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", rec.Code)
+		}
+
+		var body struct {
+			Status string            `json:"status"`
+			Checks map[string]string `json:"checks"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("json unmarshal failed: %v", err)
+		}
+		if body.Status != "degraded" {
+			t.Errorf("status = %q, want degraded", body.Status)
+		}
+		if len(body.Checks) != 1 || body.Checks["db"] != "unhealthy" {
+			t.Errorf("checks = %#v, want {db: unhealthy}", body.Checks)
+		}
+		if _, hasNATS := body.Checks["nats"]; hasNATS {
+			t.Errorf("checks contains nats probe, want db-only: %#v", body.Checks)
+		}
+	})
 }

@@ -303,6 +303,22 @@ func ResponseValidationFromEnv() (bool, error) {
 	return boolean("OPENAPI_RESPONSE_VALIDATION_ENABLED", true)
 }
 
+// DefaultGatewayProxyTimeout is the default upstream proxy timeout (25s) when GATEWAY_PROXY_TIMEOUT is unset.
+const DefaultGatewayProxyTimeout = 25 * time.Second
+
+// GatewayProxyTimeoutFromEnv reads GATEWAY_PROXY_TIMEOUT (default 25s) and enforces
+// that it is a positive duration strictly less than the server write timeout.
+func GatewayProxyTimeoutFromEnv(writeTimeout time.Duration) (time.Duration, error) {
+	timeout, err := duration("GATEWAY_PROXY_TIMEOUT", DefaultGatewayProxyTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if writeTimeout > 0 && timeout >= writeTimeout {
+		return 0, fmt.Errorf("GATEWAY_PROXY_TIMEOUT (%v) must be less than HTTP_WRITE_TIMEOUT (%v)", timeout, writeTimeout)
+	}
+	return timeout, nil
+}
+
 func duration(name string, fallback time.Duration) (time.Duration, error) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {

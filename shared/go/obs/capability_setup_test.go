@@ -60,6 +60,22 @@ func TestSetupExportsNoCapabilityOnTheWire(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/access/orders/"+ref+"/tickets", nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
+	// Also issue a client request using the production client/transport to test
+	// that client spans exported over the OTLP wire do not leak capabilities or query secrets.
+	clientTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer clientTarget.Close()
+
+	const secretParam = "signed-query-secret-token"
+	clientReq, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, clientTarget.URL+"/api/access/orders/"+ref+"/tickets?sig="+secretParam, nil)
+	clientResp, clientErr := obs.Client().Do(clientReq)
+	if clientErr == nil {
+		_ = clientResp.Body.Close()
+	} else {
+		t.Fatalf("client request: %v", clientErr)
+	}
+
 	// Shutdown flushes the batch processor, which is what actually posts.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -74,6 +90,7 @@ func TestSetupExportsNoCapabilityOnTheWire(t *testing.T) {
 	}
 
 	var sawSpanPayload bool
+	var sawClientSpanPayload bool
 	for _, p := range payloads {
 		body := string(p)
 		// Confirms the request's span really is in these bytes, so a clean
@@ -84,13 +101,26 @@ func TestSetupExportsNoCapabilityOnTheWire(t *testing.T) {
 				t.Errorf("exported span carries an unsanitized url.path")
 			}
 		}
+		if strings.Contains(body, "url.full") {
+			sawClientSpanPayload = true
+			if !strings.Contains(body, ":capability") {
+				t.Errorf("exported client span carries an unsanitized url.full")
+			}
+		}
 		if strings.Contains(body, ref) {
 			t.Errorf("THE GUEST REFERENCE LEFT THE PROCESS: it appears in an OTLP payload " +
 				"posted to the collector (TKT-202, ADR-012)")
 		}
+		if strings.Contains(body, secretParam) {
+			t.Errorf("THE QUERY SECRET LEFT THE PROCESS: it appears in an OTLP payload posted to the collector")
+		}
 	}
 	if !sawSpanPayload {
 		t.Error("no exported payload carried a url.path attribute — the assertion above is vacuous; " +
+			"fix this test rather than deleting it")
+	}
+	if !sawClientSpanPayload {
+		t.Error("no exported payload carried a url.full attribute — client span export was not observed; " +
 			"fix this test rather than deleting it")
 	}
 }
