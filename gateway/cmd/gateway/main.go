@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"ticketing/shared/cmdline"
 	"ticketing/shared/httpx"
 	"ticketing/shared/obs"
 	"ticketing/shared/runtimecfg"
@@ -167,18 +169,46 @@ func edgeDenied(w http.ResponseWriter, _ *http.Request) {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		client := &http.Client{Timeout: 2 * time.Second}
-		resp, err := client.Get("http://localhost:" + port() + "/healthz")
-		if err != nil || resp.StatusCode != http.StatusOK {
-			os.Exit(1)
-		}
-		os.Exit(0)
+	result := execute(os.Args[1:], productionCommandCallbacks(), run)
+	if result.Err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, result.Err)
 	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", serviceName, err)
-		os.Exit(1)
+	if result.ExitCode != 0 {
+		os.Exit(result.ExitCode)
 	}
+}
+
+type commandCallbacks struct {
+	healthcheck func() int
+}
+
+func productionCommandCallbacks() commandCallbacks {
+	return commandCallbacks{
+		healthcheck: healthcheck,
+	}
+}
+
+func execute(args []string, callbacks commandCallbacks, serve func() error) cmdline.Result {
+	return cmdline.Dispatch(args, commandRegistry(callbacks), serve)
+}
+
+func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
+	return cmdline.Registry{
+		"healthcheck": cmdline.ExitStatus(callbacks.healthcheck),
+	}
+}
+
+func healthcheck() int {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://localhost:" + port() + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func port() string {
@@ -192,6 +222,10 @@ func run() error {
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
+	}
+	proxyTimeout, err := runtimecfg.GatewayProxyTimeoutFromEnv(httpConfig.WriteTimeout)
+	if err != nil {
+		return fmt.Errorf("gateway proxy timeout: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -225,7 +259,7 @@ func run() error {
 		if stripAPIPrefix {
 			mux.Handle(prefix+"internal/", http.HandlerFunc(edgeDenied))
 		}
-		proxy := apiProxy(u, prefix, stripAPIPrefix)
+		proxy := apiProxy(u, prefix, stripAPIPrefix, withProxyTimeout(proxyTimeout))
 		mux.Handle(prefix, proxy)
 	}
 
@@ -266,14 +300,34 @@ var proxyTransport = func() http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConnsPerHost = 100
 	t.MaxIdleConns = 500
-	return t
+	return obs.WrapTransport(t)
 }()
+
+const defaultProxyTimeout = runtimecfg.DefaultGatewayProxyTimeout
+
+type proxyOptions struct {
+	timeout time.Duration
+}
+
+type proxyOption func(*proxyOptions)
+
+func withProxyTimeout(d time.Duration) proxyOption {
+	return func(o *proxyOptions) {
+		o.timeout = d
+	}
+}
 
 // apiProxy builds the reverse proxy for one route-table entry. Extracted from run so
 // the rewrite can be exercised against a real upstream — what the upstream actually
 // receives is the only thing that settles whether an edge refusal held.
-func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool) *httputil.ReverseProxy {
-	return &httputil.ReverseProxy{
+func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool, opts ...proxyOption) http.Handler {
+	cfg := proxyOptions{
+		timeout: defaultProxyTimeout,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	rp := &httputil.ReverseProxy{
 		Transport: proxyTransport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
@@ -287,7 +341,22 @@ func apiProxy(u *url.URL, prefix string, stripAPIPrefix bool) *httputil.ReverseP
 			}
 			pr.SetXForwarded()
 		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				return
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg.timeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), cfg.timeout)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
+		rp.ServeHTTP(w, r)
+	})
 }
 
 // registerHealthRoutes keeps the three health questions separate. Gateway

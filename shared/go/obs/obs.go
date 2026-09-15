@@ -158,6 +158,18 @@ func ClientWithTimeout(d time.Duration) *http.Client {
 	}
 }
 
+// WrapTransport wraps base with OpenTelemetry client instrumentation using
+// the shared W3C propagator.
+func WrapTransport(base http.RoundTripper) http.RoundTripper {
+	return otelhttp.NewTransport(base, otelhttp.WithPropagators(propagator))
+}
+
+// WrapTransportWithTracerProvider wraps base with OpenTelemetry client instrumentation
+// bound to an explicit tracer provider, for isolated test environments.
+func WrapTransportWithTracerProvider(base http.RoundTripper, tp trace.TracerProvider) http.RoundTripper {
+	return otelhttp.NewTransport(base, otelhttp.WithPropagators(propagator), otelhttp.WithTracerProvider(tp))
+}
+
 // Middleware wraps an http.Handler with OTel server instrumentation
 // (span per request + http.server.* metrics).
 //
@@ -165,12 +177,12 @@ func ClientWithTimeout(d time.Duration) *http.Client {
 // otelhttp. Setup installs CapabilitySpanProcessor on the tracer provider so a
 // capability-bearing segment never reaches the exporter (TKT-202, ADR-012).
 func Middleware(service string, next http.Handler) http.Handler {
-	return otelhttp.NewHandler(next, service)
+	return otelhttp.NewHandler(next, service, otelhttp.WithPropagators(propagator))
 }
 
 // MiddlewareWithTracerProvider is Middleware bound to an explicit provider,
 // so a test can observe the exported spans without touching global state.
 // Production code uses Middleware and the provider Setup installs.
 func MiddlewareWithTracerProvider(service string, tp trace.TracerProvider, next http.Handler) http.Handler {
-	return otelhttp.NewHandler(next, service, otelhttp.WithTracerProvider(tp))
+	return otelhttp.NewHandler(next, service, otelhttp.WithPropagators(propagator), otelhttp.WithTracerProvider(tp))
 }

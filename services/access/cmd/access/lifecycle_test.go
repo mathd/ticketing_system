@@ -151,11 +151,16 @@ func TestVerifyOnlyStoreCannotAppend(t *testing.T) {
 
 func TestCommandRegistryInvokesEveryAccessCallback(t *testing.T) {
 	var invoked string
+	var capturedArgs []string
 	withoutArgs := func(name string) func() error {
 		return func() error { invoked = name; return nil }
 	}
 	withArgs := func(name string) func([]string) error {
-		return func([]string) error { invoked = name; return nil }
+		return func(args []string) error {
+			invoked = name
+			capturedArgs = append([]string(nil), args...)
+			return nil
+		}
 	}
 	callbacks := commandCallbacks{
 		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
@@ -169,13 +174,24 @@ func TestCommandRegistryInvokesEveryAccessCallback(t *testing.T) {
 		"migrate", "healthcheck", "lifecycle-backfill", "verify-lifecycle", "seal-lifecycle-epoch",
 		"set-lifecycle-mode", "keygen", "enrol-scanner", "revoke-scanner", "list-scanners",
 	}
+	withArgsCommands := map[string]bool{
+		"set-lifecycle-mode": true, "enrol-scanner": true,
+		"revoke-scanner": true, "list-scanners": true,
+	}
 	if len(registry) != len(names) {
 		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			invoked = ""
-			got := execute([]string{name, "tail"}, callbacks, func() error {
+			capturedArgs = nil
+			var args []string
+			if withArgsCommands[name] {
+				args = []string{name, "tail-arg-1", "tail-arg-2"}
+			} else {
+				args = []string{name}
+			}
+			got := execute(args, callbacks, func() error {
 				t.Fatal("server ran after a command was selected")
 				return nil
 			})
@@ -188,6 +204,11 @@ func TestCommandRegistryInvokesEveryAccessCallback(t *testing.T) {
 			}
 			if invoked != name {
 				t.Fatalf("invoked %q, want %q", invoked, name)
+			}
+			if withArgsCommands[name] {
+				if len(capturedArgs) != 2 || capturedArgs[0] != "tail-arg-1" || capturedArgs[1] != "tail-arg-2" {
+					t.Fatalf("captured args = %v, want [tail-arg-1 tail-arg-2]", capturedArgs)
+				}
 			}
 		})
 	}

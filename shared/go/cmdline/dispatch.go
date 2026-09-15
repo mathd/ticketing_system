@@ -1,6 +1,8 @@
 // Package cmdline dispatches service-binary subcommands without owning process exit.
 package cmdline
 
+import "fmt"
+
 // Command is one executable entry in a Registry.
 type Command struct {
 	withArgs    func([]string) error
@@ -13,7 +15,7 @@ func WithArgs(run func([]string) error) Command {
 	return Command{withArgs: run}
 }
 
-// WithoutArgs registers a command whose existing CLI ignores trailing arguments.
+// WithoutArgs registers a command that accepts no trailing arguments.
 func WithoutArgs(run func() error) Command {
 	return Command{withoutArgs: run}
 }
@@ -34,7 +36,7 @@ type Result struct {
 	Err      error
 }
 
-// Dispatch runs a named command or starts the server when args names no command.
+// Dispatch runs a named command, or starts the server when args is empty.
 // It never exits the process, so command selection can be exercised in tests.
 func Dispatch(args []string, registry Registry, serve func() error) Result {
 	if len(args) == 0 {
@@ -44,7 +46,18 @@ func Dispatch(args []string, registry Registry, serve func() error) Result {
 	name := args[0]
 	command, ok := registry[name]
 	if !ok {
-		return result("", serve())
+		return Result{
+			Name:     name,
+			ExitCode: 2,
+			Err:      fmt.Errorf("unknown command %q", name),
+		}
+	}
+	if len(args) > 1 && command.withArgs == nil {
+		return Result{
+			Name:     name,
+			ExitCode: 2,
+			Err:      fmt.Errorf("command %q does not accept trailing arguments", name),
+		}
 	}
 	if command.withArgs != nil {
 		return result(name, command.withArgs(args[1:]))

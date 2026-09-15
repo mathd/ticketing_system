@@ -21,7 +21,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/nats-io/nats.go"
 
 	"ticketing/services/payments/internal/api"
 	"ticketing/services/payments/internal/psp"
@@ -334,6 +333,23 @@ func healthcheck() int {
 	return 0
 }
 
+type pingable interface {
+	PingContext(context.Context) error
+}
+
+// healthHandler probes database health for /healthz and /readyz.
+// Payments has no message broker publishers or subscribers (ADR-073),
+// so these endpoints check only database connectivity.
+func healthHandler(db pingable) http.Handler {
+	return httpx.Healthz(serviceName,
+		httpx.Check("db", func() error {
+			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return db.PingContext(pctx)
+		}),
+	)
+}
+
 func port() string {
 	if p := os.Getenv("PORT"); p != "" {
 		return p
@@ -396,27 +412,8 @@ func run() error {
 		return err
 	}
 
-	nc, err := nats.Connect(os.Getenv("NATS_URL"),
-		nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1))
-	if err != nil {
-		return fmt.Errorf("nats connect: %w", err)
-	}
-	defer nc.Close()
-
 	r := chi.NewRouter()
-	health := httpx.Healthz(serviceName,
-		httpx.Check("db", func() error {
-			pctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			return db.PingContext(pctx)
-		}),
-		httpx.Check("nats", func() error {
-			if !nc.IsConnected() {
-				return errors.New("not connected")
-			}
-			return nil
-		}),
-	)
+	health := healthHandler(db)
 	r.Method(http.MethodGet, "/healthz", health)
 	r.Method(http.MethodGet, "/readyz", health)
 	r.Mount("/", api.New(api.ServerConfig{

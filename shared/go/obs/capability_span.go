@@ -2,6 +2,7 @@ package obs
 
 import (
 	"context"
+	"net/url"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -72,6 +73,10 @@ func newTracerProvider(exportProcessor sdktrace.SpanProcessor, res *resource.Res
 // the dependency's schema version moves — and failing open here means leaking.
 const capabilityURLPathKey = attribute.Key("url.path")
 
+// capabilityURLFullKey is the semconv attribute otelhttp writes the full client
+// request URL to.
+const capabilityURLFullKey = attribute.Key("url.full")
+
 // capabilitySpanProcessor sanitises capability-bearing paths on span attributes
 // before they are exported.
 type capabilitySpanProcessor struct {
@@ -89,10 +94,10 @@ func CapabilitySpanProcessor(next sdktrace.SpanProcessor) sdktrace.SpanProcessor
 
 // OnStart rewrites url.path if it carries a capability.
 //
-// OnStart and not OnEnd: attributes set at span creation are visible here, and a
-// span that is sampled out or dropped later never gets a second chance to be
-// cleaned. Doing it as early as possible means the raw value has the shortest
-// possible life inside the process.
+// Attributes present at span creation, such as server url.path, are sanitized
+// here before the next processor sees them.
+// Export-time attributes (such as client url.full set after creation by otelhttp)
+// are sanitized in OnEnd before handing off to the exporter.
 func (p capabilitySpanProcessor) OnStart(ctx context.Context, s sdktrace.ReadWriteSpan) {
 	for _, attr := range s.Attributes() {
 		if attr.Key != capabilityURLPathKey {
@@ -105,4 +110,56 @@ func (p capabilitySpanProcessor) OnStart(ctx context.Context, s sdktrace.ReadWri
 		break
 	}
 	p.SpanProcessor.OnStart(ctx, s)
+}
+
+type sanitizedReadOnlySpan struct {
+	sdktrace.ReadOnlySpan
+	attributes []attribute.KeyValue
+}
+
+func (s sanitizedReadOnlySpan) Attributes() []attribute.KeyValue {
+	return s.attributes
+}
+
+func sanitizeURLFull(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" {
+		// Fail closed on unparseable or opaque URLs (e.g. scheme:opaque_payload).
+		return ""
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.RawFragment = ""
+	u.User = nil
+	u.Path = SanitizedPath(u.Path)
+	u.RawPath = ""
+	return u.String()
+}
+
+// OnEnd sanitizes url.path and url.full at export time using a ReadOnlySpan wrapper.
+// otelhttp sets client url.full after span creation, so OnEnd is the export-time
+// defense-in-depth seam.
+func (p capabilitySpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
+	attrs := s.Attributes()
+	modified := make([]attribute.KeyValue, 0, len(attrs))
+	for _, a := range attrs {
+		switch a.Key {
+		case capabilityURLPathKey:
+			raw := a.Value.AsString()
+			if sanitized := SanitizedPath(raw); sanitized != raw {
+				modified = append(modified, capabilityURLPathKey.String(sanitized))
+				continue
+			}
+		case capabilityURLFullKey:
+			raw := a.Value.AsString()
+			sanitized := sanitizeURLFull(raw)
+			modified = append(modified, capabilityURLFullKey.String(sanitized))
+			continue
+		}
+		modified = append(modified, a)
+	}
+	p.SpanProcessor.OnEnd(sanitizedReadOnlySpan{
+		ReadOnlySpan: s,
+		attributes:   modified,
+	})
 }
