@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -30,6 +31,20 @@ type Signer struct {
 // the old ones so pre-rotation heads and epoch signatures stay verifiable
 // (ADR-021 §D5).
 type Keyring struct{ keys map[string]ed25519.PublicKey }
+
+type keyVerificationError struct {
+	unknown bool
+	message string
+}
+
+func (e *keyVerificationError) Error() string { return e.message }
+
+// IsUnknownKeyError reports whether verification failed because the stored key
+// id is absent from the configured keyring.
+func IsUnknownKeyError(err error) bool {
+	var keyErr *keyVerificationError
+	return errors.As(err, &keyErr) && keyErr.unknown
+}
 
 // validKID checks a key id is namespaced and cannot smuggle a delimiter.
 //
@@ -128,10 +143,10 @@ func (k *Keyring) Has(kid string) bool { return len(k.keys[kid]) == ed25519.Publ
 func (k *Keyring) verify(kid string, message, sig []byte) error {
 	key := k.keys[kid]
 	if len(key) != ed25519.PublicKeySize {
-		return fmt.Errorf("unknown lifecycle key id %q", kid)
+		return &keyVerificationError{unknown: true, message: fmt.Sprintf("unknown lifecycle key id %q", kid)}
 	}
 	if !ed25519.Verify(key, message, sig) {
-		return fmt.Errorf("invalid lifecycle signature under key %q", kid)
+		return &keyVerificationError{message: fmt.Sprintf("invalid lifecycle signature under key %q", kid)}
 	}
 	return nil
 }

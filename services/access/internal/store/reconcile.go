@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,6 +134,8 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 	}
 
 	if chainErr := p.verifyTicketChain(ctx, tx, in.TicketID, id); chainErr != nil {
+		reasonCode := alarmReasonFor(chainErr)
+		slog.Default().Error("lifecycle integrity verification failed during reconciliation", "ticket_id", in.TicketID, "reason_code", reasonCode, "error", chainErr)
 		// Appending onto an unverified predecessor would poison the chain
 		// (ADR-021 §D6), so the occurrence lands as a quarantine-side record:
 		// repeatable per ticket, keyed by occurrence, device time preserved,
@@ -142,8 +145,8 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		// could never re-evaluate them. No conflict alarm: the integrity
 		// alarm class owns broken chains, and every live scan of this ticket
 		// already raises it.
-		if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,occurrence_id,occurred_at,event_type) VALUES($1,$2,$3,$4,$5,$6)`,
-			in.TicketID, id.OrganizerID, chainErr.Error(), in.OccurrenceID, in.OccurredAt, quarantineEventType(policy, direction)); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code,occurrence_id,occurred_at,event_type) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+			in.TicketID, id.OrganizerID, chainErr.Error(), string(reasonCode), in.OccurrenceID, in.OccurredAt, quarantineEventType(policy, direction)); err != nil {
 			return ReconcileResult{}, err
 		}
 		// Quarantine-side pass facts still feed the derived projection
