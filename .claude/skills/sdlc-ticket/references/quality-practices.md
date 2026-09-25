@@ -61,6 +61,9 @@ Invariant: **no finding is silently dropped.** Each one changes the diff, produc
 The local gate is the source of truth for "green" — but only when run against a **committed** tree. Two failure modes seen in practice (TKT-49):
 
 - **Commit before the gate, generated files included.** If the project's gate has a codegen-drift check that diffs generated output against `HEAD` (this repo: `check-generate` compares `openapi_gen.go` / `api-types.gen.ts` to `HEAD`), it **cannot pass on a dirty branch** — regenerated-but-uncommitted files read as drift. So the honest sequence in Building is: implement → `make generate` → **commit (generated files included)** → run the gate. This also mirrors how CI runs it (against the committed PR tree).
+- **Commit a delegate's output before you mutation-test it.** Restoring a mutation with
+  `git checkout <file>` restores the index copy and silently discards any uncommitted edit the
+  delegate made to that file (TKT-144 lost a comment fix this way). Mutate only files that are clean.
 - **Never stage-then-unstage to make a gate pass.** A sub-agent (or you) satisfying a `HEAD`-diffing check by transiently staging generated files produces a **false green** — the working tree as it sits does not match a clean `make generate`. When delegating implementation, the prompt must forbid this and require committing the regenerated output. **Verify, don't trust:** re-run the gate yourself against the committed tree before advancing to `agent:ai-review` — a sub-agent's "gate passed" is a claim, not evidence.
 
 ## 3. Ready-for-review walkthrough (the Gate 3 hand-off, on the PR)

@@ -29,6 +29,10 @@ node "$CODEX" task --prompt-file .decision-audit.$$.md --model gpt-5.6-sol --eff
   `--scope auto|working-tree|branch`.
 - **`task` is the only command that takes a model** — pass `--model gpt-5.6-sol` explicitly.
   **The literal is `gpt-5.6-sol`; plain `gpt-5.6` does not work.** Don't "correct" it.
+- **`adversarial-review` cannot pin a model.** It runs the codex default from `~/.codex/config.toml`.
+  When `config.models.aiReview` names a different model, run every review pass (blind and fix-diff)
+  as a read-only `task --model <aiReview>` with a defect-hunting brief ("assume the diff is wrong;
+  find where"). Running `adversarial-review` there silently substitutes the model (TKT-144).
 - **Keep the two review inputs separate.** The `adversarial-review` call receives the diff and no
   plan or rationale. Record its output before starting the decision-audit `task`. The audit brief
   contains the approved plan, every `kind=decision` comment, the diff and verification evidence,
@@ -79,6 +83,12 @@ code actually under discussion) — a huge file risks being dropped from context
   easy mistake — it is the loudest thing in the log.
 
 ## Judging the output — exit 0 ≠ success
+
+**A `task --write` implementer cannot run everything here.** Its sandbox denies Docker, local
+listeners (`httptest`) and sometimes `.git` writes. So `-tags smoke` tests, httptest-backed tests,
+their mutations and, sometimes, the commit fall to the orchestrator. Plan for it: brief the implementer
+to write those tests and report which ones it could not run. Then run them, mutate them and commit
+yourself, and label that evidence as yours (TKT-144).
 
 **`$CODEX` is NOT set in a fresh shell.** Shell state does not persist between `Bash` calls, so
 `node "$CODEX" …` expands to `node ""` — which **exits 0 and does nothing**, printing not one byte.
