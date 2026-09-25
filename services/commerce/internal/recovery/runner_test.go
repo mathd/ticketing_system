@@ -540,16 +540,45 @@ func TestTerminalRefundParksOnFirstAnswer(t *testing.T) {
 	}
 }
 
-func TestUnparkedTerminalRefundReparksInOnePass(t *testing.T) {
-	for pass := 0; pass < 2; pass++ {
-		p, resolved := run(t, []store.StuckOrder{stuck("reconciliation_required")}, func(p *ports) {
-			p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
-				AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
-			p.payments.refundErr = &ProviderRefundFailedError{ProviderRef: "re_after_unpark"}
+// COS4 is proven by composition. An unparked terminal refusal re-parks at once, without a 10-attempt loop.
+// This test proves the runner parks on the terminal answer for any attempt history.
+// TestUnparkedOrderIsClaimedAgainByTheRunnerForEveryClaimableStatus proves the store re-claims an unparked row.
+// TestTerminalRefundParkPersistsReasonWithoutAttemptCharge proves parking and re-parking charge no attempt.
+func TestTerminalRefundParksRegardlessOfAttemptHistory(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempts int
+	}{
+		{name: "unparked", attempts: 0},
+		{name: "prior attempt", attempts: 1},
+		{name: "one before exhaustion", attempts: store.MaxRecoveryAttempts - 1},
+	}
+
+	wantReason := "provider_refund_failed: provider refused the refund (re_terminal); manual reconciliation required"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			order := stuck("reconciliation_required")
+			order.Attempts = tt.attempts
+			p, resolved := run(t, []store.StuckOrder{order}, func(p *ports) {
+				p.payments.status = PSPStatus{Outcome: "captured", Captured: true, Authorized: true,
+					AuthorizedAmount: 5000, CapturedAmount: 5000, Currency: "CAD"}
+				p.payments.refundErr = &ProviderRefundFailedError{ProviderRef: "re_terminal"}
+			})
+
+			if resolved != 1 || p.payments.refundCalls != 1 {
+				t.Fatalf("resolved=%d refund calls=%d, want one terminal decision and one refund", resolved, p.payments.refundCalls)
+			}
+			if len(p.store.parked) != 1 || p.store.parked[0] != wantReason {
+				t.Fatalf("parked=%v, want [%q]", p.store.parked, wantReason)
+			}
+			if len(p.store.failed) != 0 {
+				t.Fatalf("ReleaseStuckOrder calls=%d, want 0", len(p.store.failed))
+			}
+			if p.inventory.releases != 0 || len(p.journal.facts) != 0 || len(p.store.refunded) != 0 {
+				t.Fatalf("terminal refusal took another action: releases=%d facts=%v refunded=%v",
+					p.inventory.releases, p.journal.facts, p.store.refunded)
+			}
 		})
-		if resolved != 1 || len(p.store.parked) != 1 || len(p.store.failed) != 0 {
-			t.Fatalf("pass %d resolved=%d parked=%v failed=%v, want one-pass re-park", pass+1, resolved, p.store.parked, p.store.failed)
-		}
 	}
 }
 
