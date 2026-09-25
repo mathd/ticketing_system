@@ -4,7 +4,7 @@ ALTER TABLE tickets
   CHECK (seat_identity IS NULL OR (char_length(seat_identity) BETWEEN 1 AND 200 AND btrim(seat_identity) <> ''));
 
 -- +goose Down
--- Unconditionally irreversible, like the earlier Access migrations. A ticket's
+-- Unconditionally irreversible, like Access migrations 0002-0012. A ticket's
 -- seat identity records the association made at issuance; dropping it would erase
 -- that history and cannot be repaired from the lifecycle trail.
 -- +goose StatementBegin
