@@ -73,11 +73,28 @@ new failure state at all: it is exactly what TKT-158 shipped for *every* exchang
 that previously-safe behaviour for the one case where switching is unsafe, and the outstanding
 obligation is visible as `tickets_exchanged_at IS NULL`.
 
-That is a safe default, not the answer. Whether a used ticket should be exchangeable **at all** —
-refused before the money moves — or whether the entry should **carry forward** to the replacement,
-which is not even binary for a multi-entry pass (ADR-005), is a product decision nobody has taken.
-**TKT-169** owns it. Until then this clause reads: every refusal this ADR *enumerates* happens
-before money moves, and the one it does not enumerate happens after, by refusing the switch.
+**D1 and D2.** TKT-169 moves the ordinary refusal before money. Commerce asks access whether any source ticket
+has been admitted before it reprices the target or takes a hold. The rule applies to single-admission
+tickets and passes: `redeemed`, pass `entry`, and quarantine admission evidence all count through
+`ticketAdmittedUnion`. An unused pass remains exchangeable.
+
+**D3.** Access answers `GET /internal/orders/{id}/admission?organizer_id=…` with `admitted` and
+`issued_count`, from one read-only repeatable-read snapshot. No scoped tickets gives access 404.
+
+Access has no order record, so it cannot tell an unknown order from one awaiting issuance.
+Commerce has already confirmed the source order exists, so it treats that 404, or a count
+different from the source quantity, as issuance not confirmed and returns retryable 503 before
+money. An admitted source returns 409 with code
+`source_tickets_already_admitted`. An access transport error, other non-200 answer, or malformed
+response returns 502. A settled replay and a resume from a persisted basis do not read admission
+again, because money may already have moved.
+
+The read cannot stop a scan that commits after it. Access therefore keeps the same admission check
+under the source ticket row lock during the switch. If that check refuses, the exchange is already
+settled and the buyer has no replacement. This is the remaining read-to-switch race, and the locked
+check is its backstop. **D4. AC-4 is not resolved by ADR-067:** `unwind-exchange` refuses a
+settled exchange. The operator remedy remains open under **TKT-498**. This ticket does not choose
+a money remedy.
 
 ### 3. `switch_pending` is a real, safe, durable state
 

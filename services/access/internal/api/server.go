@@ -160,6 +160,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/scans/reconciliations", s.reconcile)
 	r.Get("/scans/voided-tickets", s.voidedTickets)
 	r.Post("/internal/orders/{id}/refunds", s.refundTickets)
+	r.Get("/internal/orders/{id}/admission", s.orderAdmission)
 	r.Post("/internal/orders/{id}/redeliveries", s.redeliverOrderTickets)
 }
 

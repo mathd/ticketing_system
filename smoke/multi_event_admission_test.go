@@ -534,7 +534,7 @@ func setupPassOffer(t *testing.T, ctx context.Context, suffix string) (slotID, t
 	})
 	tt := created(t, catalog+"/ticket-types", map[string]any{
 		"performance_id": perf["id"],
-		"name": map[string]string{"fr": "Passe", "en": "Pass"}, "price": map[string]any{"amount": 1250, "currency": "EUR"},
+		"name":           map[string]string{"fr": "Passe", "en": "Pass"}, "price": map[string]any{"amount": 1250, "currency": "EUR"},
 	})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != http.StatusOK {
 		t.Fatalf("publish pass %d %s", code, body)
@@ -567,7 +567,7 @@ func setupPassOffer(t *testing.T, ctx context.Context, suffix string) (slotID, t
 
 // issuePassTicket checks out a single pass ticket and returns its guest ref and
 // QR credential once access delivers it.
-func issuePassTicket(t *testing.T, suffix, ticketType string) (guestRef, qr string) {
+func issuePassTicket(t *testing.T, suffix, ticketType string) (guestRef, qr, orderID string) {
 	t.Helper()
 	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "tkt88-pass-reserve-"+suffix, map[string]any{
 		"organizer_id": organizerID, "ticket_type_id": ticketType, "quantity": 1,
@@ -587,6 +587,7 @@ func issuePassTicket(t *testing.T, suffix, ticketType string) (guestRef, qr stri
 	}
 	var completed struct {
 		GuestOrderRef string `json:"guest_order_ref"`
+		OrderID       string `json:"order_id"`
 	}
 	if err := json.Unmarshal(body, &completed); err != nil {
 		t.Fatal(err)
@@ -618,7 +619,47 @@ func issuePassTicket(t *testing.T, suffix, ticketType string) (guestRef, qr stri
 		}
 		return nil
 	})
-	return completed.GuestOrderRef, qr
+	return completed.GuestOrderRef, qr, completed.OrderID
+}
+
+// A pass with an entry follows the same exchange refusal rule as a single-admission
+// ticket. A pass with no entries remains exchangeable.
+func TestPassWithOneEntryRefusesAndUnusedPassExchanges(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	suffix := admissionSuffix()
+	slot, sourceType := setupPassOffer(t, ctx, suffix)
+	target := created(t, gatewayURL+"/api/catalog/ticket-types", map[string]any{
+		"performance_id": slot,
+		"name":           map[string]string{"fr": "Autre passe", "en": "Other pass"},
+		"price":          map[string]any{"amount": 1250, "currency": "EUR"},
+	})
+	targetType := fmt.Sprint(target["id"])
+
+	usedRef, usedQR, usedOrder := issuePassTicket(t, suffix+"-used", sourceType)
+	waitForExchangeTickets(t, usedOrder, 1)
+	if code, body := postWithKey(t, gatewayURL+"/api/access/scans", "tkt169-pass-entry-"+suffix,
+		scanBody(usedQR, uuid.NewString(), time.Now().UTC().Add(-time.Hour), "entry")); code != http.StatusOK {
+		t.Fatalf("pass entry %d %s", code, body)
+	}
+	if got := ticketHistory(t, usedRef); len(got) != 3 || got[2].Type != "entry" {
+		t.Fatalf("used pass history = %#v, want one recorded entry", got)
+	}
+	if code, body := internalJSON(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, usedOrder), "tkt169-used-pass-"+suffix,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": targetType,
+			"actor": "coverage@example.test", "reason": "used pass"}); code != http.StatusConflict {
+		t.Fatalf("used pass exchange = %d %s, want 409", code, body)
+	}
+
+	_, _, unusedOrder := issuePassTicket(t, suffix+"-unused", sourceType)
+	waitForExchangeTickets(t, unusedOrder, 1)
+	if code, body := internalJSON(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, unusedOrder), "tkt169-unused-pass-"+suffix,
+		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": targetType,
+			"actor": "coverage@example.test", "reason": "unused pass"}); code != http.StatusOK {
+		t.Fatalf("unused pass exchange = %d %s, want 200", code, body)
+	}
 }
 
 // TestPassEntryExitAndDerivedConflictWithdrawal is COS-6 (TKT-87 pass flows): a
@@ -631,7 +672,7 @@ func TestPassEntryExitAndDerivedConflictWithdrawal(t *testing.T) {
 	defer cancel()
 	suffix := admissionSuffix()
 	_, ticketType := setupPassOffer(t, ctx, suffix)
-	guestRef, qr := issuePassTicket(t, suffix, ticketType)
+	guestRef, qr, _ := issuePassTicket(t, suffix, ticketType)
 
 	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
 

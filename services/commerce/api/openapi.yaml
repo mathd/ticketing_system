@@ -482,8 +482,9 @@ paths:
       # Ends in `switch_pending`: the replacement is confirmed and the buyer still holds
       # VALID OLD TICKETS. Switching the entitlement is TKT-166.
       #
-      # Every refusal (seated source, currency mismatch, unavailable target) happens
-      # BEFORE any money moves, because an exchange has no safe partial state.
+      # Seated sources, admitted source tickets, currency mismatches and unavailable
+      # targets are refused before any money moves. Access retains a row-locked check
+      # for a scan that lands after the admission read (ADR-039 §2).
       parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExchangeCreate'}}}}
       responses:
@@ -501,10 +502,11 @@ paths:
         '422': {description: Payments definitively refused the provider refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
-        '409': {$ref: '#/components/responses/Error'}
+        '409': {description: Source tickets have already been admitted, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        # Issuance gaps are retryable; unusable access responses are dependency failures.
         '500': {$ref: '#/components/responses/Error'}
-        '502': {$ref: '#/components/responses/Error'}
-        '503': {$ref: '#/components/responses/Error'}
+        '502': {description: Access admission could not be read or validated, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Source ticket issuance is not confirmed; retry the exchange, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /internal/orders/{id}/unclaim:
     post:
       operationId: unclaimOrder
@@ -748,7 +750,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).'}
         seat_identities:
           type: array
           description: >

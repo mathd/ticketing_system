@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -196,6 +198,56 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if seated {
 		write(w, http.StatusConflict, map[string]string{"error": "a seated order cannot be exchanged yet (no ticket-to-seat association)"})
+		return
+	}
+
+	// Admission belongs to access. Read it on the forward path before repricing,
+	// taking a target hold or moving money. The switch repeats this check under the
+	// source ticket locks to cover a scan that commits after this read.
+	if s.accessURL == "" {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return
+	}
+	admissionURL := fmt.Sprintf("%s/internal/orders/%s/admission?organizer_id=%s", s.accessURL, order, in.OrganizerID)
+	status, body, err := s.call(r.Context(), http.MethodGet, admissionURL, "", nil, true)
+	if err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return
+	}
+	if status == http.StatusNotFound {
+		// Access has no order table, so a missing scoped ticket set means issuance
+		// has not caught up. Commerce already proved the source order exists.
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "source tickets are not issued yet"})
+		return
+	}
+	if status != http.StatusOK {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return
+	}
+	var admission struct {
+		Admitted    *bool  `json:"admitted"`
+		IssuedCount *int32 `json:"issued_count"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&admission); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF || admission.Admitted == nil || admission.IssuedCount == nil || *admission.IssuedCount < 1 || *admission.IssuedCount > 50 {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return
+	}
+	if *admission.IssuedCount != src.Quantity {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "source tickets are not issued yet"})
+		return
+	}
+	if *admission.Admitted {
+		write(w, http.StatusConflict, map[string]string{
+			"error": "source order tickets have already been admitted",
+			"code":  "source_tickets_already_admitted",
+		})
 		return
 	}
 

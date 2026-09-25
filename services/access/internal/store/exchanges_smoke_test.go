@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -361,6 +362,8 @@ func TestSwitchExchangeRefusesAnAlreadyAdmittedSourceTicket(t *testing.T) {
 	org := uuid.New()
 	source, _, seeds := issueOrder(t, ctx, st, org, 2)
 
+	// Commerce checks admission before settlement. This test pins the locked switch
+	// check that remains necessary if a scan commits after that read.
 	// The buyer goes through the door on one of the old tickets.
 	result, err := st.Redeem(ctx, seeds[0].redeemInput())
 	if err != nil {
@@ -397,8 +400,8 @@ func TestSwitchExchangeRefusesAnAlreadyAdmittedSourceTicket(t *testing.T) {
 	}
 }
 
-// A pass `entry` counts as admission too — the pass vocabulary is not `redeemed`
-// (ADR-005), and checking only one of the two would leave the hole open for passes.
+// A pass `entry` counts as admission for both the pre-money read and the locked switch
+// backstop. The pass vocabulary is not `redeemed` (ADR-005).
 func TestAdmissionCheckCoversBothVocabularies(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
@@ -410,12 +413,52 @@ func TestAdmissionCheckCoversBothVocabularies(t *testing.T) {
 	if _, err := st.appendLifecycleForTest(ctx, sourceIDs[0], source, org, "entry"); err != nil {
 		t.Fatal(err)
 	}
-	err := st.SwitchExchange(ctx, SwitchExchangeInput{
+	admission, err := st.OrderAdmission(ctx, org, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !admission.Admitted || admission.IssuedCount != 1 {
+		t.Fatalf("pass admission = %+v, want admitted=true and issued_count=1", admission)
+	}
+	err = st.SwitchExchange(ctx, SwitchExchangeInput{
 		EventID: uuid.New(), ExchangeID: uuid.New(), SourceOrderID: source, OrganizerID: org,
 		Tickets: replacementTickets(uuid.New(), org, uuid.New(), 1),
 	})
 	if !errors.Is(err, ErrSourceTicketsAlreadyAdmitted) {
 		t.Fatalf("err = %v, want a pass `entry` to count as admission", err)
+	}
+}
+
+func TestOrderAdmissionReadScopesTicketsAndIncludesQuarantineAdmission(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	order, _, seeds := issueOrder(t, ctx, st, org, 2)
+	admitted := seeds[0].ticketID
+
+	// This is admission evidence only in quarantine, with no redeemed/entry event.
+	corruptChain(t, ctx, db, admitted)
+	result, err := st.Redeem(ctx, seeds[0].redeemInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.Decision != DecisionAdmittedDegraded {
+		t.Fatalf("degraded admission = %+v, want accepted degraded admission", result)
+	}
+	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1 AND event_type IN ('redeemed','entry')`, admitted); n != 0 {
+		t.Fatalf("trail admissions = %d, want 0 so only quarantine evidence applies", n)
+	}
+
+	got, err := st.OrderAdmission(ctx, org, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Admitted || got.IssuedCount != 2 {
+		t.Fatalf("order admission = %+v, want admitted=true and issued_count=2", got)
+	}
+	if _, err := st.OrderAdmission(ctx, uuid.New(), order); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("wrong organizer read error = %v, want sql.ErrNoRows", err)
 	}
 }
 

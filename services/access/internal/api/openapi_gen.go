@@ -98,6 +98,12 @@ type LifecycleEvent struct {
 	Type       string             `json:"type"`
 }
 
+// OrderAdmission defines model for OrderAdmission.
+type OrderAdmission struct {
+	Admitted    bool `json:"admitted"`
+	IssuedCount int  `json:"issued_count"`
+}
+
 // ReconcileOccurrence defines model for ReconcileOccurrence.
 type ReconcileOccurrence struct {
 	EventType    *string `json:"event_type,omitempty"`
@@ -215,6 +221,11 @@ type Ref = openapi_types.UUID
 
 // scannerDeviceTokenContextKey is the context key for ScannerDeviceToken security scheme
 type scannerDeviceTokenContextKey string
+
+// GetOrderAdmissionParams defines parameters for GetOrderAdmission.
+type GetOrderAdmissionParams struct {
+	OrganizerId openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+}
 
 // RedeliverOrderTicketsParams defines parameters for RedeliverOrderTickets.
 type RedeliverOrderTicketsParams struct {

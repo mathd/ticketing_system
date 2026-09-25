@@ -93,9 +93,10 @@ func (e CancellationRefundRunStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	OrphanedSeats         ErrorCode = "orphaned_seats"
-	SeatTaken             ErrorCode = "seat_taken"
-	SeatedPoolUnsupported ErrorCode = "seated_pool_unsupported"
+	OrphanedSeats                ErrorCode = "orphaned_seats"
+	SeatTaken                    ErrorCode = "seat_taken"
+	SeatedPoolUnsupported        ErrorCode = "seated_pool_unsupported"
+	SourceTicketsAlreadyAdmitted ErrorCode = "source_tickets_already_admitted"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -106,6 +107,8 @@ func (e ErrorCode) Valid() bool {
 	case SeatTaken:
 		return true
 	case SeatedPoolUnsupported:
+		return true
+	case SourceTicketsAlreadyAdmitted:
 		return true
 	default:
 		return false
@@ -426,7 +429,7 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -434,7 +437,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). Distinguished from a generic conflict because a caller retrying it would wait forever; TKT-176 owns the seated channel seam.
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).
 type ErrorCode string
 
 // Exchange defines model for Exchange.
