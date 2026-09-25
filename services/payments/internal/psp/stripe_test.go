@@ -303,9 +303,8 @@ func TestStripeRefundResolutionSurfacesPendingWithoutResubmitting(t *testing.T) 
 	}
 }
 
-// A FAILED refund is deliberately NOT auto-resubmitted. The money never came back, so a
-// resubmit is a fresh money movement chosen by a heuristic — out of scope for TKT-116 and
-// a decision a human makes. The compensation stays bound and recoverable (502 upstream).
+// A FAILED refund found during resolution is terminal and carries the re_ reference. It
+// does not license a re-submit; re-submission policy is tracked by TKT-347.
 func TestStripeRefundResolutionFailsClosedOnAFailedRefund(t *testing.T) {
 	stub := newStripeStub(t, map[string]stubResp{"GET /v1/refunds": {200, refundListFailed}})
 	s := newStripeForStub(stub)
@@ -321,6 +320,38 @@ func TestStripeRefundResolutionFailsClosedOnAFailedRefund(t *testing.T) {
 	}
 	if got.ProviderRef != "re_lost_3" {
 		t.Fatalf("the failed refund's ref is the evidence a human reconciles from: %+v", got)
+	}
+}
+
+func TestStripeRefundPostSurfacesFailedAndCanceledAsTerminal(t *testing.T) {
+	for _, status := range []string{"failed", "canceled"} {
+		t.Run(status, func(t *testing.T) {
+			const refundList = `{"object":"list","data":[],"has_more":false}`
+			const refundID = "re_post_terminal"
+			refund := `{"id":"` + refundID + `","object":"refund","amount":1250,"currency":"eur","status":"` + status + `","payment_intent":"pi_test_authonly"}`
+			stub := newStripeStub(t, map[string]stubResp{
+				"GET /v1/refunds":  {200, refundList},
+				"POST /v1/refunds": {200, refund},
+			})
+			s := newStripeForStub(stub)
+			_, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+			var terminal *RefundFailedError
+			if !errors.Is(err, ErrRefundFailed) || !errors.As(err, &terminal) || terminal.ProviderRef != refundID {
+				t.Fatalf("Refund error = %v, want ErrRefundFailed carrying %s", err, refundID)
+			}
+			posts := 0
+			for _, req := range stub.requests {
+				if req.method == http.MethodPost {
+					posts++
+					if req.path != "/v1/refunds" {
+						t.Errorf("POST path = %q, want /v1/refunds", req.path)
+					}
+				}
+			}
+			if posts != 1 {
+				t.Fatalf("POST count = %d, want exactly 1; requests=%+v", posts, stub.requests)
+			}
+		})
 	}
 }
 

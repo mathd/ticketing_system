@@ -540,10 +540,9 @@ func TestTerminalRefundParksOnFirstAnswer(t *testing.T) {
 	}
 }
 
-// COS4 is proven by composition. An unparked terminal refusal re-parks at once, without a 10-attempt loop.
-// This test proves the runner parks on the terminal answer for any attempt history.
-// TestUnparkedOrderIsClaimedAgainByTheRunnerForEveryClaimableStatus proves the store re-claims an unparked row.
-// TestTerminalRefundParkPersistsReasonWithoutAttemptCharge proves parking and re-parking charge no attempt.
+// TestRunnerReparksAnUnparkedTerminalRefundInOnePass in the store smoke suite is the
+// connected COS4 proof: runner, real store, unpark, and re-park on one order. This unit
+// test only proves the runner's park decision is independent of attempt history.
 func TestTerminalRefundParksRegardlessOfAttemptHistory(t *testing.T) {
 	tests := []struct {
 		name     string
