@@ -96,7 +96,7 @@ paths:
         '200': {description: Admission state for the complete issued ticket set, content: {application/json: {schema: {$ref: '#/components/schemas/OrderAdmission'}}}}
         '400': {$ref: '#/components/responses/Error'}
         # A missing or wrong X-Internal-Token uses the existing internal 404.
-        # No scoped ticket rows also returns 404; commerce treats it as not issued yet.
+        # An order with no scoped ticket rows is 200 with issued_count 0, never 404.
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
   /internal/orders/{id}/redeliveries:
