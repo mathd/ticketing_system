@@ -453,7 +453,7 @@ Operationally that means:
 
 - **An admitted source ticket is refused before the target hold.** Commerce reads admission through
   access before repricing or money moves. The rule covers single-admission tickets and passes with
-  any `entry`; an unused pass remains exchangeable. Access and commerce share `ticketAdmittedUnion`,
+  any `entry`; an unused pass remains exchangeable. Access checks `ticketAdmittedUnion`,
   which includes quarantine admission evidence as well as lifecycle events (ADR-039 §2).
 
   Access checks again under the source ticket row lock when it switches the tickets. A scan can land

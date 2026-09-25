@@ -25,6 +25,7 @@ import (
 	"ticketing/services/commerce/internal/bulkrefund"
 	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/services/commerce/internal/exchangesweep"
+	"ticketing/services/commerce/internal/exchangeunwind"
 	"ticketing/services/commerce/internal/mailer"
 	"ticketing/services/commerce/internal/outbox"
 	"ticketing/services/commerce/internal/recovery"
@@ -452,6 +453,7 @@ func run() error {
 		PublicURL:            publicURL,
 		InternalToken:        token,
 		PaymentsToken:        paymentsToken,
+		MoneyEvidence:        commerceapi.NewMoneyEvidence(exchangeunwind.NewHTTPPayments(paymentsURL, paymentsToken, paymentsEvidenceTimeout)),
 		StaffWriteToken:      staffWriteToken,
 		CustomerAssertionKey: assertionKey,
 		Publisher:            publisher,

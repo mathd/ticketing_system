@@ -24,6 +24,7 @@ import (
 	apispec "ticketing/services/commerce/api"
 	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/services/commerce/internal/exchanges"
+	"ticketing/services/commerce/internal/exchangeunwind"
 	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
@@ -71,6 +72,8 @@ type Server struct {
 	// exchanges discharges an exchange's capacity obligation. Shared with the sweep
 	// (internal/exchangesweep) so the callback and the backstop cannot drift (TKT-259).
 	exchanges *exchanges.Service
+	// moneyEvidence asks payments whether a basis resume's money leg is absent.
+	moneyEvidence MoneyEvidence
 	// limiters bound the public, credential-free customer surface (TKT-224,
 	// ADR-051). In-process and per-replica — see shared/go/ratelimit's package doc
 	// for exactly what that does and does not bound.
@@ -98,6 +101,28 @@ type ServerConfig struct {
 	StaffWriteToken      string
 	CustomerAssertionKey string
 	Publisher            commerceevents.Publisher
+	MoneyEvidence        MoneyEvidence
+}
+
+// MoneyEvidence is the read-only payments check used before a basis resume re-reads
+// admission. Present and Indeterminate answers both preserve the existing resume path.
+type MoneyEvidence interface {
+	MoneyEvidence(ctx context.Context, organizer, exchangeID uuid.UUID, delta int64, paymentSourceKey string) (exchangeunwind.MoneyEvidence, error)
+}
+
+type unwindMoneyEvidence struct{ payments exchangeunwind.Payments }
+
+func (e unwindMoneyEvidence) MoneyEvidence(ctx context.Context, organizer, exchangeID uuid.UUID, delta int64, paymentSourceKey string) (exchangeunwind.MoneyEvidence, error) {
+	return exchangeunwind.New(nil, e.payments).Evidence(ctx, commercestore.WedgedExchange{
+		OrganizerID: organizer, ID: exchangeID, BasisRecorded: true,
+		DeltaAmount: delta, PaymentSourceKey: paymentSourceKey,
+	})
+}
+
+// NewMoneyEvidence applies the same evidence rule as the exchange unwind to the supplied
+// read-only payments client.
+func NewMoneyEvidence(payments exchangeunwind.Payments) MoneyEvidence {
+	return unwindMoneyEvidence{payments: payments}
 }
 
 func New(config ServerConfig) *Server {
@@ -114,6 +139,7 @@ func New(config ServerConfig) *Server {
 		staffWriteToken: config.StaffWriteToken,
 		assertionKey:    customerAssertionKey(config.CustomerAssertionKey),
 		publisher:       config.Publisher,
+		moneyEvidence:   config.MoneyEvidence,
 	}
 	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)

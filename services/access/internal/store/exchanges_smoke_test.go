@@ -4,7 +4,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -457,8 +456,13 @@ func TestOrderAdmissionReadScopesTicketsAndIncludesQuarantineAdmission(t *testin
 	if !got.Admitted || got.IssuedCount != 2 {
 		t.Fatalf("order admission = %+v, want admitted=true and issued_count=2", got)
 	}
-	if _, err := st.OrderAdmission(ctx, uuid.New(), order); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("wrong organizer read error = %v, want sql.ErrNoRows", err)
+	empty, err := st.OrderAdmission(ctx, uuid.New(), order)
+	if err != nil || empty.Admitted || empty.IssuedCount != 0 {
+		t.Fatalf("wrong organizer admission = %+v, err=%v, want authenticated empty set", empty, err)
+	}
+	empty, err = st.OrderAdmission(ctx, org, uuid.New())
+	if err != nil || empty.Admitted || empty.IssuedCount != 0 {
+		t.Fatalf("unknown order admission = %+v, err=%v, want authenticated empty set", empty, err)
 	}
 }
 

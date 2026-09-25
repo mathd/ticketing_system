@@ -102,4 +102,13 @@ func TestAdmittedExchangeRefusesBeforeAnyTargetOrMoneyCall(t *testing.T) {
 	if exchanges != 0 || exchangeFacts != 0 {
 		t.Fatalf("exchange rows=%d facts=%d, want none", exchanges, exchangeFacts)
 	}
+	if code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s", paymentsURL, organizerID, exchangeID), "", nil); code != http.StatusNotFound {
+		t.Fatalf("exchange charge operation = %d %s, want none", code, body)
+	}
+	if code, body := internalJSON(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/refund-legs?organizer_id=%s&source_idempotency_key=tkt169-order-%s&refund_idempotency_key=exchange-refund:%s",
+			paymentsURL, organizerID, suffix, exchangeID), "", nil); code != http.StatusNotFound {
+		t.Fatalf("exchange refund leg = %d %s, want none", code, body)
+	}
 }

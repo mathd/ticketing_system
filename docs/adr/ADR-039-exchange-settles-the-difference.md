@@ -53,12 +53,10 @@ Seatedness is **any** `claim_seats` row, released or not — the rule TKT-161's 
 `claims.status` and `claim_seats.released_at` are not schema-coupled, so a seated claim whose rows
 were already released is representable and is still seated.
 
-**Qualification (TKT-166): "every refusal" is not every refusal.** This clause does not cover a
-source ticket that has **already been redeemed**. Commerce checks seatedness, currency and
-availability; nothing asks access whether the old tickets have been used. So a buyer can exchange,
-scan in during `switch_pending`, and then have the used ticket voided and a fresh unredeemed
-replacement issued — **two admissions for one exchange**. The window is normally short and grows
-with any delay in the switch.
+**Before TKT-169, commerce did not check admission before an exchange.** A buyer could exchange a
+ticket that had already been used, then receive a fresh unredeemed replacement. TKT-169 adds an
+admission read before the target hold; Access still checks under the ticket locks when it switches,
+to cover a scan after commerce's read.
 
 **TKT-166's ai-review reversed the first answer here, and the reversal is the interesting part.**
 The plan proposed switching anyway and merely documenting the gap, reasoning that refusing would
@@ -66,12 +64,11 @@ strand a paid exchange. The review pointed out that the gap is *created* by that
 could not produce it, because it never switched anything — and that a follow-up ticket does not make
 a shipped double-admission un-shipped.
 
-So the switch now **refuses a source ticket that has already been admitted**
+The switch **refuses a source ticket that has already been admitted**
 (`ErrSourceTicketsAlreadyAdmitted`, checked under the same row lock as the void, covering both
-`redeemed` and a pass `entry`). The cost is a settled exchange that never switches — which is not a
-new failure state at all: it is exactly what TKT-158 shipped for *every* exchange. The refusal keeps
-that previously-safe behaviour for the one case where switching is unsafe, and the outstanding
-obligation is visible as `tickets_exchanged_at IS NULL`.
+`redeemed` and a pass `entry`). If a scan commits after commerce's read, the exchange can already
+be settled when this refusal occurs. The outstanding switch is visible as
+`tickets_exchanged_at IS NULL`.
 
 **D1 and D2.** TKT-169 moves the ordinary refusal before money. Commerce asks access whether any source ticket
 has been admitted before it reprices the target or takes a hold. The rule applies to single-admission
@@ -79,15 +76,22 @@ tickets and passes: `redeemed`, pass `entry`, and quarantine admission evidence 
 `ticketAdmittedUnion`. An unused pass remains exchangeable.
 
 **D3.** Access answers `GET /internal/orders/{id}/admission?organizer_id=…` with `admitted` and
-`issued_count`, from one read-only repeatable-read snapshot. No scoped tickets gives access 404.
+`issued_count`, from one read-only repeatable-read snapshot. An authenticated read with no scoped
+tickets returns 200 with `admitted: false` and `issued_count: 0`. A 404 means the internal
+credential was refused.
 
 Access has no order record, so it cannot tell an unknown order from one awaiting issuance.
-Commerce has already confirmed the source order exists, so it treats that 404, or a count
-different from the source quantity, as issuance not confirmed and returns retryable 503 before
-money. An admitted source returns 409 with code
-`source_tickets_already_admitted`. An access transport error, other non-200 answer, or malformed
-response returns 502. A settled replay and a resume from a persisted basis do not read admission
-again, because money may already have moved.
+Commerce treats a zero count or a count different from the source quantity as issuance not
+confirmed and returns retryable 503 before money. An access 404, transport error, other non-200
+answer, or malformed response returns 502. An admitted source returns 409 with code
+`source_tickets_already_admitted`. A settled replay does not read admission again. A basis resume
+re-reads admission only when `settling_at` is NULL and the ADR-067 payments evidence rule returns
+`Absent` for this exchange's money leg. `Present`, `Indeterminate`, or an evidence lookup error
+preserves the existing resume path, because refusing could strand a charged buyer. A set
+`settling_at` skips both reads. The marker is best-effort and is not evidence that payments was or
+was not called. Access's row-locked switch refusal remains the backstop for a scan after the
+admission read. If that race refuses the switch after settlement, the exchange reaches the state
+tracked by TKT-498.
 
 The read cannot stop a scan that commits after it. Access therefore keeps the same admission check
 under the source ticket row lock during the switch. If that check refuses, the exchange is already

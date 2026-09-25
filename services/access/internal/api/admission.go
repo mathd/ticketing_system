@@ -1,8 +1,6 @@
 package api
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -29,10 +27,6 @@ func (s *Server) orderAdmission(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.st.OrderAdmission(r.Context(), organizerID, orderID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			write(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
 		write(w, http.StatusInternalServerError, map[string]string{"error": "read order admission"})
 		return
 	}

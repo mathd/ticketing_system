@@ -302,7 +302,7 @@ components:
       required: [admitted, issued_count]
       properties:
         admitted: {type: boolean}
-        issued_count: {type: integer, minimum: 1, maximum: 50}
+        issued_count: {type: integer, minimum: 0, maximum: 50}
     # occurrence_id/occurred_at are the ADR-025 §D3 occurrence protocol, expand
     # phase (§D10): optional so old scanners keep today's semantics; occurred_at
     # is required iff occurrence_id is present — a pairing the schema cannot

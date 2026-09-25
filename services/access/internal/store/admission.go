@@ -43,10 +43,6 @@ func (p *Postgres) OrderAdmission(ctx context.Context, organizerID, orderID uuid
 		return OrderAdmission{}, err
 	}
 	_ = rows.Close()
-	if len(ids) == 0 {
-		return OrderAdmission{}, sql.ErrNoRows
-	}
-
 	result := OrderAdmission{IssuedCount: int32(len(ids))}
 	for _, id := range ids {
 		admitted, err := ticketAdmittedUnion(ctx, tx, id)

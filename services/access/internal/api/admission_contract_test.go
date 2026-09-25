@@ -31,7 +31,7 @@ func TestOrderAdmissionDeclaresItsResponsesAndBody(t *testing.T) {
 	if err := media.Schema.Value.VisitJSON(map[string]any{"admitted": true, "issued_count": 2}); err != nil {
 		t.Fatalf("the response body does not satisfy the declared schema: %v", err)
 	}
-	if err := media.Schema.Value.VisitJSON(map[string]any{"admitted": false, "issued_count": 0}); err == nil {
-		t.Error("the response schema accepts an empty ticket set")
+	if err := media.Schema.Value.VisitJSON(map[string]any{"admitted": false, "issued_count": 0}); err != nil {
+		t.Errorf("the response schema rejects an authenticated empty ticket set: %v", err)
 	}
 }
