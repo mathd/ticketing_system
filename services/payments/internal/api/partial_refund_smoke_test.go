@@ -45,6 +45,7 @@ type countingPSP struct {
 	// makes the stub answer with money the caller did not ask for.
 	confirmAmount   int64
 	confirmCurrency string
+	refundErr       error
 }
 
 func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount int64, currency string) (psp.Result, error) {
@@ -52,6 +53,9 @@ func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount
 	defer c.mu.Unlock()
 	c.calls++
 	c.amount, c.key = amount, idempotencyKey
+	if c.refundErr != nil {
+		return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, c.refundErr
+	}
 	confirmed := psp.ConfirmedMoney{Amount: amount, Currency: currency}
 	if c.confirmAmount != 0 {
 		confirmed.Amount = c.confirmAmount
@@ -188,6 +192,19 @@ func TestTwoPartialRefundLegsAgainstOneCharge(t *testing.T) {
 	if provider.count() != 2 {
 		t.Fatalf("a refused leg must not reach the provider: calls = %d", provider.count())
 	}
+}
+
+func TestPartialRefundTerminalFailureIsDeclared422(t *testing.T) {
+	org, sourceKey := uuid.New(), "leg-terminal"
+	h, provider := refundServer(t, org, sourceKey, 2500)
+	provider.refundErr = &psp.RefundFailedError{ProviderRef: "re_terminal"}
+	db, ctx := refundDB(t)
+	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal","amount":1250,"currency":"EUR"}`
+	res := postRefundLeg(t, h, body)
+	if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
+		t.Fatalf("status=%d body=%s, want exact provider terminal 422", res.Code, res.Body.String())
+	}
+	assertLegStillBound(t, db, ctx, org)
 }
 
 // The endpoint is internal: no token, no answer — and it answers 401 like every other

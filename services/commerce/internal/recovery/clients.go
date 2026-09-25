@@ -81,7 +81,7 @@ func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out a
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if out != nil && resp.StatusCode == http.StatusOK {
+	if out != nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnprocessableEntity) {
 		// Decode stops at the first complete JSON value, so `{"status":"refunded"}garbage`
 		// and two concatenated bodies both "succeed" — and the callers treat a decoded 200
 		// as proof enough to release seats and mark orders refunded. A body we cannot read
@@ -109,10 +109,11 @@ func (c HTTPClients) doBody(ctx context.Context, method, url string, body, out a
 // mint a second PaymentIntent), ErrOperationNotFound parks as inconsistent durable
 // state (an order in a PSP-recovery status must have a bound operation).
 var (
-	ErrWrongCompensation   = errors.New("compensation does not match the stored operation evidence")
-	ErrProviderUnresolved  = errors.New("provider state unresolved; compensation stays bound")
-	ErrReplayWindowExpired = errors.New("status replay window expired; manual reconciliation required")
-	ErrOperationNotFound   = errors.New("payment operation not found")
+	ErrWrongCompensation    = errors.New("compensation does not match the stored operation evidence")
+	ErrProviderUnresolved   = errors.New("provider state unresolved; compensation stays bound")
+	ErrProviderRefundFailed = errors.New("provider refund failed")
+	ErrReplayWindowExpired  = errors.New("status replay window expired; manual reconciliation required")
+	ErrOperationNotFound    = errors.New("payment operation not found")
 )
 
 // Status resolves an operation's provider state via payments' provider-neutral
@@ -187,6 +188,9 @@ func (c HTTPClients) compensate(ctx context.Context, kind string, org uuid.UUID,
 	code, err := c.doBody(ctx, http.MethodPost, c.PaymentsURL+"/internal/psp/"+kind,
 		map[string]any{"organizer_id": org, "idempotency_key": key}, &body)
 	if err != nil {
+		if code == http.StatusUnprocessableEntity {
+			return CompensationResult{}, ErrProviderUnresolved
+		}
 		return CompensationResult{}, err
 	}
 	switch code {
@@ -206,10 +210,27 @@ func (c HTTPClients) compensate(ctx context.Context, kind string, org uuid.UUID,
 		return CompensationResult{}, ErrWrongCompensation
 	case http.StatusBadGateway:
 		return CompensationResult{}, ErrProviderUnresolved
+	case http.StatusUnprocessableEntity:
+		if kind != "refund" || body.Code != "provider_refund_failed" || !usableRefundRef(body.ProviderRef) {
+			return CompensationResult{}, ErrProviderUnresolved
+		}
+		return CompensationResult{}, &ProviderRefundFailedError{ProviderRef: body.ProviderRef}
 	default:
 		return CompensationResult{}, fmt.Errorf("psp %s: unexpected status %d", kind, code)
 	}
 }
+
+type ProviderRefundFailedError struct {
+	ProviderRef string
+}
+
+func (e *ProviderRefundFailedError) Error() string {
+	return fmt.Sprintf("%s (%s); manual reconciliation required", ErrProviderRefundFailed, e.ProviderRef)
+}
+
+func (e *ProviderRefundFailedError) Unwrap() error { return ErrProviderRefundFailed }
+
+func usableRefundRef(ref string) bool { return strings.HasPrefix(ref, "re_") && len(ref) > len("re_") }
 
 // LookupOperation reads payments' recorded outcome for an idempotency key. Read-only:
 // it never binds an operation, so a recovery pass cannot fabricate one for an order

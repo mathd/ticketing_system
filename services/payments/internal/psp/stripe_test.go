@@ -303,15 +303,14 @@ func TestStripeRefundResolutionSurfacesPendingWithoutResubmitting(t *testing.T) 
 	}
 }
 
-// A FAILED refund is deliberately NOT auto-resubmitted. The money never came back, so a
-// resubmit is a fresh money movement chosen by a heuristic — out of scope for TKT-116 and
-// a decision a human makes. The compensation stays bound and recoverable (502 upstream).
+// A FAILED refund found during resolution is terminal and carries the re_ reference. It
+// does not license a re-submit; re-submission policy is tracked by TKT-347.
 func TestStripeRefundResolutionFailsClosedOnAFailedRefund(t *testing.T) {
 	stub := newStripeStub(t, map[string]stubResp{"GET /v1/refunds": {200, refundListFailed}})
 	s := newStripeForStub(stub)
 	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
-	if err == nil {
-		t.Fatalf("a failed refund must not resolve as success: %+v", got)
+	if err == nil || err.Error() != "psp: refund failed" {
+		t.Fatalf("a failed refund must be a terminal refusal, got %v (%+v)", err, got)
 	}
 	if got.Outcome == Refunded {
 		t.Fatalf("failed refund must never map to Refunded: %+v", got)
@@ -321,6 +320,75 @@ func TestStripeRefundResolutionFailsClosedOnAFailedRefund(t *testing.T) {
 	}
 	if got.ProviderRef != "re_lost_3" {
 		t.Fatalf("the failed refund's ref is the evidence a human reconciles from: %+v", got)
+	}
+}
+
+func TestStripeRefundPostSurfacesFailedAndCanceledAsTerminal(t *testing.T) {
+	for _, status := range []string{"failed", "canceled"} {
+		t.Run(status, func(t *testing.T) {
+			const refundList = `{"object":"list","data":[],"has_more":false}`
+			const refundID = "re_post_terminal"
+			refund := `{"id":"` + refundID + `","object":"refund","amount":1250,"currency":"eur","status":"` + status + `","payment_intent":"pi_test_authonly"}`
+			stub := newStripeStub(t, map[string]stubResp{
+				"GET /v1/refunds":  {200, refundList},
+				"POST /v1/refunds": {200, refund},
+			})
+			s := newStripeForStub(stub)
+			_, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+			var terminal *RefundFailedError
+			if !errors.Is(err, ErrRefundFailed) || !errors.As(err, &terminal) || terminal.ProviderRef != refundID {
+				t.Fatalf("Refund error = %v, want ErrRefundFailed carrying %s", err, refundID)
+			}
+			posts := 0
+			for _, req := range stub.requests {
+				if req.method == http.MethodPost {
+					posts++
+					if req.path != "/v1/refunds" {
+						t.Errorf("POST path = %q, want /v1/refunds", req.path)
+					}
+				}
+			}
+			if posts != 1 {
+				t.Fatalf("POST count = %d, want exactly 1; requests=%+v", posts, stub.requests)
+			}
+		})
+	}
+}
+
+func TestMapRefundStatusClassifiesTerminalAndNonTerminalStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		status  string
+		wantErr string
+		wantOut Outcome
+	}{
+		{status: "failed", wantErr: "psp: refund failed", wantOut: Unknown},
+		{status: "canceled", wantErr: "psp: refund failed", wantOut: Unknown},
+		{status: "pending", wantErr: ErrRefundPending.Error(), wantOut: Unknown},
+		{status: "succeeded", wantOut: Refunded},
+		{status: "requires_action", wantErr: `stripe refund not settled: status "requires_action"`, wantOut: Unknown},
+		{status: "", wantErr: `stripe refund not settled: status ""`, wantOut: Unknown},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			got, err := mapRefundStatus(stripeRefund{ID: "re_status", Status: tc.status})
+			if got.Outcome != tc.wantOut {
+				t.Fatalf("Outcome = %v, want %v", got.Outcome, tc.wantOut)
+			}
+			if got.ProviderRef != "re_status" {
+				t.Fatalf("ProviderRef = %q, want re_status", got.ProviderRef)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+			if tc.status == "failed" || tc.status == "canceled" {
+				var terminal *RefundFailedError
+				if !errors.Is(err, ErrRefundFailed) || !errors.As(err, &terminal) || terminal.ProviderRef != "re_status" {
+					t.Fatalf("terminal error = %v, want ErrRefundFailed carrying re_status", err)
+				}
+			}
+		})
 	}
 }
 
@@ -616,6 +684,14 @@ func TestStripeStatusResolvesRefundRef(t *testing.T) {
 	}
 	if got2.Outcome == Refunded {
 		t.Fatalf("pending must not map to Refunded: %+v", got2)
+	}
+	const refundFailed = `{"id":"re_test_11","object":"refund","amount":1250,"currency":"eur","status":"canceled"}`
+	stub3 := newStripeStub(t, map[string]stubResp{"GET /v1/refunds/re_test_11": {200, refundFailed}})
+	s3 := newStripeForStub(stub3)
+	got3, err := s3.Status(context.Background(), StatusRequest{ProviderRef: "re_test_11"})
+	var terminal *RefundFailedError
+	if !errors.Is(err, ErrRefundFailed) || !errors.As(err, &terminal) || terminal.ProviderRef != "re_test_11" || got3.Outcome != Unknown {
+		t.Fatalf("Status(canceled): result=%+v error=%v, want typed terminal refusal", got3, err)
 	}
 }
 

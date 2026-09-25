@@ -370,8 +370,9 @@ func (s *Stripe) Void(ctx context.Context, providerRef, idempotencyKey string) (
 }
 
 // Refund refunds a captured charge -> Refunded (only on Stripe status "succeeded"; a
-// "pending" or "failed" refund is a non-terminal error so the caller keeps the compensation
-// bound and does not append payment.refunded to the append-only journal — plan-final A7).
+// "pending" refund is ErrRefundPending and a "failed" or "canceled" one is the terminal
+// ErrRefundFailed (TKT-144). Both are errors, so the caller keeps the compensation bound and
+// does not append payment.refunded to the append-only journal — plan-final A7).
 func (s *Stripe) Refund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, error) {
 	// RESOLVE before submitting. A refund Stripe settled whose response we lost leaves no
 	// re_ reference to retrieve, so the recorded-ref dispatch cannot help. Within Stripe's
@@ -453,8 +454,9 @@ func (s *Stripe) resolveRefund(ctx context.Context, providerRef, idempotencyKey 
 			case refundMatchYes:
 				// Including a FAILED refund: the money did not come back, so this is not
 				// resolved — but re-submitting would be a fresh money movement chosen by a
-				// heuristic. mapRefundStatus keeps it a non-terminal error carrying the
-				// re_, which is the evidence a human reconciles from.
+				// heuristic. mapRefundStatus returns the terminal ErrRefundFailed carrying
+				// the re_, which is the evidence a human reconciles from. Whether a failed
+				// refund may ever be re-submitted is TKT-347's policy question.
 				res, e := mapRefundStatus(rf)
 				return res, true, e
 			case refundMatchInconclusive:
@@ -519,10 +521,25 @@ func mapRefundStatus(rf stripeRefund) (Result, error) {
 		return Result{Outcome: Refunded, ProviderRef: rf.ID, Confirmed: rf.confirmedRefund()}, nil
 	case "pending":
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, ErrRefundPending
-	default: // "failed" or unexpected
+	case "failed", "canceled":
+		return Result{Outcome: Unknown, ProviderRef: rf.ID}, &RefundFailedError{ProviderRef: rf.ID}
+	default:
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, fmt.Errorf("stripe refund not settled: status %q", rf.Status)
 	}
 }
+
+// RefundFailedError reports a provider-terminal refund refusal and carries its Stripe
+// refund reference for reconciliation.
+type RefundFailedError struct {
+	ProviderRef string
+}
+
+func (e *RefundFailedError) Error() string { return ErrRefundFailed.Error() }
+
+func (e *RefundFailedError) Unwrap() error { return ErrRefundFailed }
+
+// ErrRefundFailed reports a refund the provider definitively failed or canceled.
+var ErrRefundFailed = errors.New("psp: refund failed")
 
 // ErrRefundPending reports a refund the provider accepted but has not settled. The caller
 // keeps the compensation bound, persists the refund reference, and resolves it later by

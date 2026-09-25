@@ -22,11 +22,12 @@ var commerceContract = contractlint.ServiceConfig{
 			"refundProblem": {
 				http.StatusNotFound,
 				http.StatusConflict,
+				http.StatusUnprocessableEntity,
 				http.StatusInternalServerError,
 				http.StatusBadGateway,
 				http.StatusServiceUnavailable,
 			},
-			"exchangeProblem":      {http.StatusNotFound, http.StatusConflict, http.StatusInternalServerError},
+			"exchangeProblem":      {http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 			"voidProblem":          {http.StatusConflict, http.StatusInternalServerError},
 			"terminalCheckoutCode": {http.StatusPaymentRequired, http.StatusRequestTimeout},
 		},

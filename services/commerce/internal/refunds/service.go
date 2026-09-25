@@ -40,7 +40,8 @@ type Caller func(ctx context.Context, method, url, key string, in any, internal 
 // a different status and the bulk runner records each with a different outcome code.
 var (
 	// ErrPaymentsRefused is a refusal payments is sure about — the money did not move.
-	ErrPaymentsRefused = errors.New("payments refused the refund")
+	ErrPaymentsRefused      = errors.New("payments refused the refund")
+	ErrProviderRefundFailed = errors.New("provider refund failed (provider_refund_failed)")
 	// ErrPaymentsUnresolved is a transport or unexpected-status answer. Whether the money
 	// moved is unknown, so the refund row stays pending and a replay resolves it.
 	ErrPaymentsUnresolved = errors.New("payments refund unresolved")
@@ -330,6 +331,17 @@ func (s *Service) refundPayment(ctx context.Context, refund commercestore.Refund
 	}
 	if code == http.StatusConflict {
 		return uuid.Nil, ErrPaymentsRefused
+	}
+	if code == http.StatusUnprocessableEntity {
+		var failed struct {
+			Code        string `json:"code"`
+			ProviderRef string `json:"provider_ref"`
+		}
+		if json.Unmarshal(out, &failed) != nil || failed.Code != "provider_refund_failed" ||
+			!strings.HasPrefix(failed.ProviderRef, "re_") || len(failed.ProviderRef) <= len("re_") {
+			return uuid.Nil, ErrPaymentsUnresolved
+		}
+		return uuid.Nil, ErrProviderRefundFailed
 	}
 	if code != http.StatusOK {
 		return uuid.Nil, ErrPaymentsUnresolved

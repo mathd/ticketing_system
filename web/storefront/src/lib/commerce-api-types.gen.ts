@@ -455,6 +455,12 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ProviderRefundFailed: {
+            /** @enum {string} */
+            error: "provider refund failed";
+            /** @enum {string} */
+            code: "provider_refund_failed";
+        };
         Error: {
             error: string;
             /**
@@ -1577,6 +1583,15 @@ export interface operations {
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+            /** @description Payments definitively refused the provider refund */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderRefundFailed"];
+                };
+            };
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
             503: components["responses"]["Error"];
@@ -1652,6 +1667,15 @@ export interface operations {
             400: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+            /** @description Payments definitively refused the provider refund */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderRefundFailed"];
+                };
+            };
             500: components["responses"]["Error"];
             502: components["responses"]["Error"];
             503: components["responses"]["Error"];

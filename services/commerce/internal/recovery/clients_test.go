@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,47 @@ import (
 
 	"github.com/google/uuid"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRefund422RequiresValidTerminalBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"valid", `{"code":"provider_refund_failed","provider_ref":"re_terminal"}`, true},
+		{"wrong code", `{"code":"other","provider_ref":"re_terminal"}`, false},
+		{"missing reference", `{"code":"provider_refund_failed"}`, false},
+		{"bad reference", `{"code":"provider_refund_failed","provider_ref":"pi_wrong"}`, false},
+		{"malformed JSON", `{`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			})}
+			c := HTTPClients{Client: client, PaymentsURL: "http://payments", Token: "t"}
+			_, err := c.Refund(context.Background(), uuid.New(), "key")
+			if tc.want {
+				var terminal *ProviderRefundFailedError
+				if !errors.As(err, &terminal) || !errors.Is(err, ErrProviderRefundFailed) || terminal.ProviderRef != "re_terminal" {
+					t.Fatalf("Refund error = %v, want terminal refusal with re_terminal", err)
+				}
+			} else if !errors.Is(err, ErrProviderUnresolved) {
+				t.Fatalf("Refund error = %v, want unresolved", err)
+			}
+		})
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	c := HTTPClients{Client: client, PaymentsURL: "http://payments", Token: "t"}
+	if _, err := c.Refund(context.Background(), uuid.New(), "key"); !errors.Is(err, ErrProviderUnresolved) {
+		t.Fatalf("Refund 502 = %v, want unresolved", err)
+	}
+}
 
 // Inventory's transition handler answers 200 when the claim already IS the target
 // (services/inventory/internal/store/store.go: `if c.Status == target`). So on the
