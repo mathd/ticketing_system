@@ -89,6 +89,11 @@ func (c *connectedCompleter) Complete(_ context.Context, s store.StuckOrder) err
 	return errors.New("unexpected completer call")
 }
 
+// isolatedStore keeps the runner on this test's order. The claim is still the real SQL
+// claim; foreign rows it picks up are handed back at once, uncharged. The brief lease this
+// puts on those rows is safe only because nothing else uses this database while the test
+// runs: the store package has no parallel tests, and TestCommerceSmokeDatabasesAreIsolated
+// keeps every other package off commerce_store_smoke. Adding t.Parallel here breaks that.
 type isolatedStore struct {
 	recovery.DBStore
 	t       *testing.T
@@ -106,7 +111,7 @@ func (s isolatedStore) ClaimStuckOrders(ctx context.Context, _ int, lease time.D
 			isolated = append(isolated, row)
 			continue
 		}
-		if err := s.DBStore.AbandonRecoveryClaim(ctx, row.OrderID, row.ClaimID); err != nil {
+		if err := s.AbandonRecoveryClaim(ctx, row.OrderID, row.ClaimID); err != nil {
 			s.t.Errorf("abandon unrelated recovery claim for order %s: %v", row.OrderID, err)
 			return nil, err
 		}
