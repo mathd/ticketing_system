@@ -86,9 +86,10 @@ code actually under discussion) — a huge file risks being dropped from context
 
 **A `task --write` implementer cannot run everything here.** Its sandbox denies Docker, local
 listeners (`httptest`) and sometimes `.git` writes. So `-tags smoke` tests, httptest-backed tests,
-their mutations and, sometimes, the commit fall to the orchestrator. Plan for it: brief the implementer
-to write those tests and report which ones it could not run. Then run them, mutate them and commit
-yourself, and label that evidence as yours (TKT-144).
+their mutations and the commit fall to the orchestrator. Plan for it: brief the implementer to write
+those tests, report which ones it could not run, and NOT commit (its `.git` was read-only on 5 of 6
+runs in TKT-147). Then read the diff, commit it yourself BEFORE mutation-testing it, run the tests,
+mutate them, and label that evidence as yours (TKT-144, TKT-147).
 
 **`$CODEX` is NOT set in a fresh shell.** Shell state does not persist between `Bash` calls, so
 `node "$CODEX" …` expands to `node ""` — which **exits 0 and does nothing**, printing not one byte.

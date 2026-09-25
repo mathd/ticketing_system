@@ -586,3 +586,10 @@ genuinely improved connections 56→16 while also fragmenting a pool that `obs.C
 nil-Transport client had been sharing by accident; when a change makes something private that was
 shared by default, enumerate what else was riding the default.
 [full note](learnings/2026-08-31-deterministic-or-discriminating-but-not-both.md)
+
+**2026-09-25 — TKT-147.** **A SQLSTATE does not name the constraint.** An assertion that "the database
+refused the bad row" stayed green twice with the CHECK under test deleted: first a foreign key refused
+the row, then a second CHECK on the same table did, with the same `23514`. Assert
+`pgconn.PgError.ConstraintName`, build the row to satisfy every other constraint, and scope any
+`pg_constraint` lookup by `conrelid` (a name alone matches every schema in the database).
+[full note](learnings/2026-09-25-a-sqlstate-does-not-name-the-constraint.md)
