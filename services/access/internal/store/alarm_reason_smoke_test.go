@@ -79,10 +79,8 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 				if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity DROP CONSTRAINT lifecycle_event_integrity_event_id_fkey`); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_event_integrity(event_id,ticket_id,sequence,canonical_version,previous_hash,entry_hash) VALUES($1,$2,2,1,decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'))`, uuid.New(), ticketID); err != nil {
-					t.Fatal(err)
-				}
-				// Put the schema back once the subtest has VERIFIED, not here: removing the
+				// Registered straight after the drop, so a failure below still restores it.
+				// It runs once the subtest has VERIFIED, not here: removing the
 				// orphan before verification would leave nothing for the verifier to find.
 				// Cleanups run after the subtest's deferred trigger re-enable, so the delete
 				// disables the append-only trigger again around itself.
@@ -98,6 +96,9 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 						}
 					}
 				})
+				if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_event_integrity(event_id,ticket_id,sequence,canonical_version,previous_hash,entry_hash) VALUES($1,$2,2,1,decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'))`, uuid.New(), ticketID); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 		{
