@@ -390,6 +390,8 @@ if ! compose exec -T commerce /app list-resellers 00000000-0000-0000-0000-000000
 fi
 
 cd "$ROOT/smoke"
+status=0
+suite_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
@@ -431,7 +433,32 @@ SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
 SMOKE_PAYMENTS_URL=http://localhost:${PAYMENTS_PORT} \
 SMOKE_ACCESS_URL=http://localhost:${ACCESS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
-go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
+go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./... || status=$?
+
+# TKT-149 captures logs when the smoke module's Go tests fail.
+# A generic 500 hides its cause in the service log. Keep the whole suite window
+# because a failing test does not stop the suite, and later requests can evict
+# its log line from a tail window. Select levelled slog records (JSON from the
+# obs logger, text from the default slog logger) at ERROR or WARN since the
+# suite started. Show the most recent 2000 and state the total. Bare unlevelled
+# lines and non-Go services are covered only by the 50-line tail below.
+# Print logs before cleanup tears down the stack and destroys them.
+if [ "$status" -ne 0 ]; then
+  echo "--- smoke go test failed (exit $status); recent service logs ---"
+  logs_file=$(mktemp)
+  if compose logs --no-color --timestamps --since "$suite_start" >"$logs_file" 2>&1; then
+    matches=$(grep -cE '"level":"(ERROR|WARN)"|[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} (ERROR|WARN) ' "$logs_file" || true)
+    echo "--- error and warning slog records since $suite_start (all services): $matches, showing the last 2000 ---"
+    grep -E '"level":"(ERROR|WARN)"|[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} (ERROR|WARN) ' "$logs_file" | tail -n 2000 || true
+  else
+    echo "--- could not read service logs since $suite_start (compose logs failed); its output: ---"
+    tail -n 50 "$logs_file" || true
+  fi
+  rm -f "$logs_file"
+  echo "--- last 50 lines per service ---"
+  compose logs --no-color --timestamps --tail 50 || true
+  exit "$status"
+fi
 
 # QUIESCE THE ONLY LIVE WRITER BEFORE ANY JOURNAL VERIFICATION (TKT-254).
 #
