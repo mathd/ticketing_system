@@ -9,10 +9,10 @@
     "gateVerdict": ".gate.verdict"
   },
   "models": {
-    "plan": "gpt-5.6-sol",
+    "plan": "gpt-6-sol",
     "planReview": "main-agent",
-    "implement": "gemini-3.8-flash-high",
-    "aiReview": "gpt-5.6-sol"
+    "implement": "gpt-6-luna",
+    "aiReview": "gpt-6-sol"
   },
   "registry": {
     "bindingPath": "docs/adr/",
