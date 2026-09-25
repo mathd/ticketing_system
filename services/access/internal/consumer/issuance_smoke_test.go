@@ -15,6 +15,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,10 +162,9 @@ func TestCompletedSeatedOrderPersists200CharacterMultibyteSeat(t *testing.T) {
 func TestConsumedCompletedOrderSkipsSeatReadOnRedelivery(t *testing.T) {
 	db, ctx := issuanceDB(t)
 	event := issuanceEvent()
-	seatReads := 0
+	var seatReads atomic.Int32
 	commerce := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		seatReads++
-		if seatReads > 1 {
+		if seatReads.Add(1) > 1 {
 			http.Error(w, "seat service unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -188,7 +188,7 @@ func TestConsumedCompletedOrderSkipsSeatReadOnRedelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var snapshot []string
 		for rows.Next() {
 			var id, orderID, guestRef, organizerID, buyerID, slotID, ticketTypeID, payload, issuedAt string
@@ -218,8 +218,8 @@ func TestConsumedCompletedOrderSkipsSeatReadOnRedelivery(t *testing.T) {
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("ticket rows changed on redelivery:\nbefore: %v\nafter:  %v", before, after)
 	}
-	if seatReads != 1 {
-		t.Fatalf("commerce seat reads = %d, want exactly 1", seatReads)
+	if got := seatReads.Load(); got != 1 {
+		t.Fatalf("commerce seat reads = %d, want exactly 1", got)
 	}
 }
 
