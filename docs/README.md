@@ -18,7 +18,8 @@ Evidence and records:
   [checkout](./verification/checkout/), [inventory holds](./verification/inventory-holds/),
   [on-sale load](./verification/on-sale-load/README.md) (the per-pool throughput ceiling, TKT-82),
   [series & seasons](./verification/series-seasons/), [ticket delivery](./verification/ticket-delivery/)
-- [Reviews](./reviews/) — code, architecture, security and documentation review records
+- Reviews — past review records were removed from the tree in `e3744ccd`; read them from git
+  history. Review findings live on the sdlc board as tickets.
 - [Evidence](./evidence/) — supporting artefacts referenced from tickets and ADRs
 - [Spikes](./spikes/) — timeboxed investigations and their conclusions
 - [SDLC vault migration plan](./sdlc-vault-migration-plan.md) — how the board moved off git (historical)
