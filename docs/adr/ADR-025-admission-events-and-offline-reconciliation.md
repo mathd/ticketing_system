@@ -243,50 +243,46 @@ conflicts. Together every physical admission that Access learns about is represe
    unchanged (see Context) — no gate identity or conflict reason enters the canonical form;
    reasons live in the alarm payload. Structured, signed gate provenance would be a
    canonical-version design and is out of scope.
-9. **PII.** *Amended (TKT-119):* Occurrence ids and alarm payloads carry bounded identifiers,
-   enums drawn from fixed vocabularies, operational scalars that are not themselves direct person
-   identifiers (timestamps, counters, booleans, version numbers), and — on the integrity class
-   only — a **service-produced diagnostic reason string**. They carry **no device- or user-supplied
-   free text and no nested objects**, no buyer, no guest reference and no raw scanner-operator
-   identity (ADR-003 §D3).
+9. **PII.** *Amended (TKT-119, TKT-147):* Occurrence ids and alarm payloads carry bounded
+   identifiers, enums drawn from fixed vocabularies, and operational scalars that are not
+   themselves direct person identifiers (timestamps, counters, booleans, version numbers). The
+   integrity alarm carries a fixed reason code. Payloads carry **no device- or user-supplied free
+   text and no nested objects**, no buyer, no guest reference and no raw scanner-operator identity
+   (ADR-003 §D3).
+
+   Schema 2 of `platform.access.lifecycle-integrity.alarm` uses this reason vocabulary:
+   `missing_integrity_row`, `unsupported_canonical_version`, `sequence_gap`, `broken_chain_link`,
+   `entry_hash_mismatch`, `orphan_integrity_row`, `missing_head`, `head_without_events`,
+   `head_mismatch`, `missing_keyring`, `unknown_key`, `invalid_head_signature`,
+   `verification_unavailable`, `verification_unclassified`, and `legacy_quarantine`. The Access
+   database CHECK on `lifecycle_integrity_quarantine.reason_code` lists the same values. A NULL
+   code on a pre-TKT-147 quarantine row maps to `legacy_quarantine` when Access raises an alarm;
+   the migration does not update append-only rows. The internal `reason` column and Access logs
+   retain the detailed verifier error. Schema-1 alarms already in the outbox or on JetStream remain
+   unchanged and may still contain diagnostic prose. The schema-2 guarantee applies to alarms
+   produced by the updated application.
 
    This is a producer-schema constraint on honest application changes; it is **not** a privacy or
    non-linkability guarantee, and **not** containment against an adversary with write access to the
-   Access database (ADR-021 §The trust boundary). Two specifics, because both have already caught
-   this clause out:
+   Access database (ADR-021 §The trust boundary). ADR-017 §3 requires schema 2 because the meaning
+   of the existing `reason` field changed. The vocabulary limits honest application output and
+   quarantine `reason_code` values. A database writer can still edit outbox bytes.
 
    - `device_occurred_at` is device-*claimed* and correlates with a physical gate event. Bounded is
      not anonymous.
-   - `reason` (`alarmData`) is the **one unbounded field** in any alarm payload: it is an internal
-     error string (`cause.Error()`). Nothing enforces its content, so this clause is a **discipline
-     on the producer** — a diagnostic reason must be built from this service's own errors and never
-     from scanner, device or buyer input. Replacing it with a fixed reason-code vocabulary is the
-     stronger fix and is a payload change (ADR-017 §3 / ADR-033), tracked separately.
+   - The detailed integrity error stays in the internal quarantine `reason` column and logs. The
+     payload carries only its fixed code.
 
-   *Why this changed, stated as a delta rather than as a tidy-up.* The original wording —
-   "bounded identifiers and enums **only**" — was never satisfied by any shipped payload. Six
-   fields across all three classes fall outside "identifiers and enums": `alarmData.occurred_at`
-   and `alarmData.reason`; `conflictAlarmData.device_occurred_at` and
-   `conflictAlarmData.skew_flagged`; `policyConflictAlarmData.version` and
-   `policyConflictAlarmData.revisable`. §D5 *requires* the device-claimed time, so the clause
-   contradicted its own ADR.
+   TKT-119 relaxed the original wording, "bounded identifiers and enums only," because shipped
+   alarms already carried timestamps and a diagnostic reason, and §D5 requires device-claimed
+   time. It also made the exclusions explicit: no buyer, no guest reference, no scanner-operator
+   identity, no device- or user-supplied free text, and no nested objects. TKT-147 narrows the
+   integrity alarm reason to a fixed code. It does not rewrite historical schema-1 envelopes.
 
-   So this amendment is **not purely a correction — it is also a deliberate relaxation**, and
-   recording it otherwise would let a future reviewer treat the reason exception and the scalar
-   expansion as pre-existing policy instead of an accepted risk. Precisely:
-
-   - **Preserved** — all three original identity exclusions: no buyer, no guest reference, no raw
-     scanner-operator identity.
-   - **Relaxed** — the word "only". Operational scalars (timestamps, counters, booleans, version
-     numbers) and one free-text diagnostic `reason` were prohibited by it and are now admitted,
-     because they already ship and §D5 mandates one of them.
-   - **Preserved and made explicit** — no device- or user-supplied free text, and no nested
-     objects. These are *not* new: "identifiers and enums only" already entailed them, since
-     anything that is neither an identifier nor an enum was excluded. The original never
-     enumerated them, so the amendment spells them out — they are the surviving boundary of the
-     original rule, retained in full except for the single service-produced `reason` carve-out
-     above, and they are what stop "operational scalars" from becoming a licence for arbitrary
-     payload growth.
+   TKT-147 applies only to Access integrity alarms. Commerce migration
+   `services/commerce/internal/store/migrations/0019_order_attribution_detachments.sql` keeps its
+   operator-entered free-text explanation. Its comment that points to TKT-147 as the open ticket
+   is stale; the applied migration is unchanged.
 
 10. **Contracts.** The verified inventory at HEAD, NATS side: redemption emits **no**
     cross-service domain event; the lifecycle alarm outbox carries exactly one subject

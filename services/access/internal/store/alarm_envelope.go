@@ -9,12 +9,10 @@ import (
 	"ticketing/shared/domainevent"
 )
 
-// The three alarm classes each marshalled their envelope inline, as an anonymous
-// struct re-declaring the platform envelope fields. They now route through the
-// shared declaration (ADR-033); the per-alarm payload types stay here, in the
-// service that owns them, and are untouched -- ADR-025 §D9 constrains those
-// payloads, and this ticket rewraps the envelope, nothing else. The goldens in
-// alarm_envelope_test.go are what make that claim checkable.
+// The three alarm classes use the shared platform envelope (ADR-033). Each
+// service keeps its payload type. Integrity alarms use schema 2 because their
+// reason field now carries a fixed code (ADR-017 §3). The goldens in
+// alarm_envelope_test.go pin the wire bytes.
 
 func policyConflictAlarmEnvelope(id uuid.UUID, occurred time.Time, data policyConflictAlarmData) ([]byte, error) {
 	return json.Marshal(domainevent.Envelope[policyConflictAlarmData]{
@@ -23,8 +21,11 @@ func policyConflictAlarmEnvelope(id uuid.UUID, occurred time.Time, data policyCo
 }
 
 func integrityAlarmEnvelope(id uuid.UUID, occurred time.Time, data alarmData) ([]byte, error) {
+	if err := validateAlarmReason(data.Reason); err != nil {
+		return nil, err
+	}
 	return json.Marshal(domainevent.Envelope[alarmData]{
-		ID: id, Type: SubjectIntegrityAlarm, OccurredAt: occurred, Schema: 1, Data: data,
+		ID: id, Type: SubjectIntegrityAlarm, OccurredAt: occurred, Schema: 2, Data: data,
 	})
 }
 

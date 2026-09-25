@@ -296,17 +296,13 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	// 0011 added staff-triggered redelivery (TKT-203). Pinned rather than
+	// 0012 added integrity-alarm reason codes (TKT-147). Pinned rather than
 	// derived: this assertion exists so that adding a migration is a decision
-	// someone states here, not a number that drifts. Stating it — 0011 widens the
-	// event_type CHECK to admit `redelivered` and adds redelivery_requests /
-	// redelivery_attempts. It deliberately leaves the singleton partial index
-	// alone, so `delivered` stays once-per-ticket and this test's assertions about
-	// the upgraded history are untouched; it adds no column to lifecycle_events and
-	// changes no canonical bytes (ADR-021), so nothing above this line changes
-	// meaning. (0010 before it created tickets_organizer_feed_idx for the
-	// voided-ticket feed's tenant filter, ADR-019.)
-	if err != nil || current != 11 || target != 11 {
+	// someone states here, not a number that drifts. It adds a nullable column to
+	// the append-only quarantine table and leaves lifecycle history and canonical
+	// bytes unchanged. (0011 added redelivery_requests and redelivery_attempts;
+	// 0010 created tickets_organizer_feed_idx for the voided-ticket feed.)
+	if err != nil || current != 12 || target != 12 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 
@@ -511,8 +507,8 @@ func TestRepeatableAdmissionMigrationPreservesSignedHistory(t *testing.T) {
 	if err = st.MarkDelivered(ctx, s.ticketID, messageID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.Redeem(ctx, s.redeemInput()); err != nil {
-		t.Fatal(err)
+	if _, err = st.appendLifecycleForTest(ctx, s.ticketID, s.id.OrderID, s.id.OrganizerID, "redeemed"); err != nil {
+		t.Fatalf("append historical redemption before migration 0004: %v", err)
 	}
 
 	snapshot := func(query string) string {

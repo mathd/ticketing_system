@@ -47,6 +47,26 @@ func TestSignedHeadVerifies(t *testing.T) {
 	}
 }
 
+func TestKeyVerificationErrorsKeepTheirTextAndKind(t *testing.T) {
+	s, k := signerAndKeyring(t, "access-lifecycle/2026-07")
+	unknownID := "access-lifecycle/missing"
+	unknown := k.VerifyHead(goldTicket, 3, unknownID, headHash(0xa1), nil)
+	if got, want := unknown.Error(), `unknown lifecycle key id "`+unknownID+`"`; got != want {
+		t.Fatalf("unknown-key error = %q, want %q", got, want)
+	}
+	if !IsUnknownKeyError(unknown) {
+		t.Fatal("unknown-key error was not classified as unknown")
+	}
+
+	invalid := k.VerifyHead(goldTicket, 3, s.KeyID(), headHash(0xa1), make([]byte, ed25519.SignatureSize))
+	if got, want := invalid.Error(), `invalid lifecycle signature under key "`+s.KeyID()+`"`; got != want {
+		t.Fatalf("invalid-signature error = %q, want %q", got, want)
+	}
+	if IsUnknownKeyError(invalid) {
+		t.Fatal("invalid-signature error was classified as unknown key")
+	}
+}
+
 // ADR-021 §D5 binds ticket, sequence, key id and head hash into the signature.
 // Each mutation below is an attack the signature must reject; a signature over
 // the bare head hash would pass the first two.

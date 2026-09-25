@@ -363,12 +363,13 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 	}
 
 	var quarantineReason string
+	var quarantineReasonCode sql.NullString
 	var quarantinedAt time.Time
 	// Live degraded admissions only (admitted_at set): reconciliation-learned
 	// records are recordings of admissions that already happened elsewhere and
 	// never turn a verified scan into a denial.
-	err = tx.QueryRowContext(ctx, `SELECT reason,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, in.TicketID).
-		Scan(&quarantineReason, &quarantinedAt)
+	err = tx.QueryRowContext(ctx, `SELECT reason,reason_code,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, in.TicketID).
+		Scan(&quarantineReason, &quarantineReasonCode, &quarantinedAt)
 	if err == nil {
 		// Already took its one degraded admission (ADR-021 §D6), and the replay
 		// check above says this is not that occurrence's retry: deny and
@@ -377,7 +378,11 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 		if modeErr != nil {
 			return RedeemResult{}, modeErr
 		}
-		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, quarantineReason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
+		reasonCode := AlarmReasonLegacyQuarantine
+		if quarantineReasonCode.Valid {
+			reasonCode = AlarmReason(quarantineReasonCode.String)
+		}
+		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, reasonCode, quarantineReason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
 			return RedeemResult{}, alarmErr
 		}
 		if err = tx.Commit(); err != nil {

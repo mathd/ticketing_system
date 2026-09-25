@@ -136,7 +136,7 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 				if modeErr != nil {
 					return RedeemResult{}, modeErr
 				}
-				if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, chainErr.Error(), DecisionExitUnverified, mode); alarmErr != nil {
+				if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, alarmReasonFor(chainErr), chainErr.Error(), DecisionExitUnverified, mode); alarmErr != nil {
 					return RedeemResult{}, alarmErr
 				}
 				result = RedeemResult{Decision: DecisionExitUnverified, OccurredAt: p.now()}
@@ -165,15 +165,20 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 	// Already took its one degraded admission and this is not that
 	// occurrence's retry: deny and escalate — same as the redemption path.
 	var quarantineReason string
+	var quarantineReasonCode sql.NullString
 	var quarantinedAt time.Time
-	err = tx.QueryRowContext(ctx, `SELECT reason,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, in.TicketID).
-		Scan(&quarantineReason, &quarantinedAt)
+	err = tx.QueryRowContext(ctx, `SELECT reason,reason_code,admitted_at FROM lifecycle_integrity_quarantine WHERE ticket_id=$1 AND admitted_at IS NOT NULL`, in.TicketID).
+		Scan(&quarantineReason, &quarantineReasonCode, &quarantinedAt)
 	if err == nil {
 		mode, modeErr := organizerMode(ctx, tx, id.OrganizerID)
 		if modeErr != nil {
 			return RedeemResult{}, modeErr
 		}
-		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, quarantineReason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
+		reasonCode := AlarmReasonLegacyQuarantine
+		if quarantineReasonCode.Valid {
+			reasonCode = AlarmReason(quarantineReasonCode.String)
+		}
+		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, in.TicketID, reasonCode, quarantineReason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
 			return RedeemResult{}, alarmErr
 		}
 		if err = tx.Commit(); err != nil {

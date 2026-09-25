@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -266,7 +267,7 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		  ON i.event_id = e.id AND i.ticket_id = e.ticket_id
 		WHERE e.ticket_id=$1 ORDER BY i.sequence`, ticketID)
 	if err != nil {
-		return err
+		return unavailableVerification(err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -281,26 +282,26 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		var previousHash, entryHash []byte
 		var version sql.NullInt64
 		if err := rows.Scan(&eventID, &eventType, &occurredAt, &sequence, &previousHash, &entryHash, &version); err != nil {
-			return err
+			return unavailableVerification(err)
 		}
 		// A lifecycle row with no integrity row means the append path was
 		// bypassed — an event inserted straight into the table.
 		if !sequence.Valid {
-			return fmt.Errorf("lifecycle event %s has no integrity row", eventID)
+			return verificationFailure(AlarmReasonMissingIntegrityRow, fmt.Errorf("lifecycle event %s has no integrity row", eventID))
 		}
 		// Dispatch on the stored version at the gate too, not only in the audit.
 		// A version exists because the rules can change; verifying an unknown
 		// variant with today's rules judges it by the wrong ones (ADR-017 §5b′).
 		if version.Int64 != lifecycle.CanonicalVersion {
-			return fmt.Errorf("integrity row for event %s declares canonical version %d, this build writes %d",
-				eventID, version.Int64, lifecycle.CanonicalVersion)
+			return verificationFailure(AlarmReasonUnsupportedCanonicalVersion, fmt.Errorf("integrity row for event %s declares canonical version %d, this build writes %d",
+				eventID, version.Int64, lifecycle.CanonicalVersion))
 		}
 		count++
 		if sequence.Int64 != count {
-			return fmt.Errorf("sequence gap at %d (expected %d) on ticket %s", sequence.Int64, count, ticketID)
+			return verificationFailure(AlarmReasonSequenceGap, fmt.Errorf("sequence gap at %d (expected %d) on ticket %s", sequence.Int64, count, ticketID))
 		}
 		if !bytes.Equal(previousHash, prev) {
-			return fmt.Errorf("broken chain link at sequence %d on ticket %s", sequence.Int64, ticketID)
+			return verificationFailure(AlarmReasonBrokenChainLink, fmt.Errorf("broken chain link at sequence %d on ticket %s", sequence.Int64, ticketID))
 		}
 		canonical := lifecycle.CanonicalEvent(lifecycle.Event{
 			TicketID: ticketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
@@ -308,13 +309,13 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		})
 		want := lifecycle.HashEntry(prev, canonical)
 		if !bytes.Equal(want, entryHash) {
-			return fmt.Errorf("entry hash mismatch at sequence %d on ticket %s", sequence.Int64, ticketID)
+			return verificationFailure(AlarmReasonEntryHashMismatch, fmt.Errorf("entry hash mismatch at sequence %d on ticket %s", sequence.Int64, ticketID))
 		}
 		prev = want
 		last = want
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return unavailableVerification(err)
 	}
 
 	// The other coverage direction: an integrity row whose event does not exist,
@@ -324,10 +325,10 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		SELECT count(*) FROM lifecycle_event_integrity i
 		WHERE i.ticket_id=$1 AND NOT EXISTS (SELECT 1 FROM lifecycle_events e WHERE e.id=i.event_id AND e.ticket_id=i.ticket_id)`,
 		ticketID).Scan(&orphans); err != nil {
-		return err
+		return unavailableVerification(err)
 	}
 	if orphans > 0 {
-		return fmt.Errorf("%d integrity rows on ticket %s reference no matching lifecycle event", orphans, ticketID)
+		return verificationFailure(AlarmReasonOrphanIntegrityRow, fmt.Errorf("%d integrity rows on ticket %s reference no matching lifecycle event", orphans, ticketID))
 	}
 
 	var headSeq int64
@@ -340,55 +341,52 @@ func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID u
 		if count == 0 {
 			return nil // No events, no head: a ticket that has not been chained yet.
 		}
-		return fmt.Errorf("ticket %s has %d chained events and no head", ticketID, count)
+		return verificationFailure(AlarmReasonMissingHead, fmt.Errorf("ticket %s has %d chained events and no head", ticketID, count))
 	}
 	if err != nil {
-		return err
+		return unavailableVerification(err)
 	}
 	if count == 0 {
-		return fmt.Errorf("ticket %s has a head and no events", ticketID)
+		return verificationFailure(AlarmReasonHeadWithoutEvents, fmt.Errorf("ticket %s has a head and no events", ticketID))
 	}
 	if headVersion != lifecycle.CanonicalVersion {
-		return fmt.Errorf("head for ticket %s declares canonical version %d, this build writes %d", ticketID, headVersion, lifecycle.CanonicalVersion)
+		return verificationFailure(AlarmReasonUnsupportedCanonicalVersion, fmt.Errorf("head for ticket %s declares canonical version %d, this build writes %d", ticketID, headVersion, lifecycle.CanonicalVersion))
 	}
 	if headSeq != count || !bytes.Equal(headHash, last) {
-		return fmt.Errorf("head mismatch on ticket %s: head is sequence %d, chain reaches %d", ticketID, headSeq, count)
+		return verificationFailure(AlarmReasonHeadMismatch, fmt.Errorf("head mismatch on ticket %s: head is sequence %d, chain reaches %d", ticketID, headSeq, count))
 	}
 	if p.cfg.Keyring == nil {
-		return errors.New("no lifecycle keyring configured")
+		return verificationFailure(AlarmReasonMissingKeyring, errors.New("no lifecycle keyring configured"))
 	}
 	if err := p.cfg.Keyring.VerifyHead(ticketID, headSeq, keyID, headHash, signature); err != nil {
-		return fmt.Errorf("head signature on ticket %s: %w", ticketID, err)
+		reason := AlarmReasonInvalidHeadSignature
+		if lifecycle.IsUnknownKeyError(err) {
+			reason = AlarmReasonUnknownKey
+		}
+		return verificationFailure(reason, fmt.Errorf("head signature on ticket %s: %w", ticketID, err))
 	}
 	return nil
 }
 
-// alarmData is the integrity alarm payload: bounded identifiers, enums, the occurrence
-// time, and a service-produced diagnostic Reason — no QR payload, no buyer, no guest
-// reference, no raw event body (ADR-025 §D9, amended TKT-119; ADR-003 §D3).
-//
-// This payload is why §D9 was amended: it has carried BOTH a timestamp and a free-text
-// Reason since the class shipped, so "identifiers and enums only" never described it —
-// and the amendment is a deliberate relaxation of that "only", not just a correction.
-//
-// Reason is the one unbounded field in any alarm payload — it is cause.Error(). Nothing
-// enforces its content, so §D9's constraint on it is a discipline: build it from THIS
-// service's errors, never from scanner, device or buyer input. A fixed reason-code
-// vocabulary would be the stronger fix and is a payload change (ADR-017 §3).
+// alarmData contains the fixed integrity reason code and the alarm decision.
 type alarmData struct {
-	AlarmID     uuid.UUID `json:"alarm_id"`
-	OrganizerID uuid.UUID `json:"organizer_id"`
-	TicketID    uuid.UUID `json:"ticket_id"`
-	Reason      string    `json:"reason"`
-	Disposition string    `json:"disposition"`
-	Mode        string    `json:"mode"`
-	OccurredAt  time.Time `json:"occurred_at"`
+	AlarmID     uuid.UUID   `json:"alarm_id"`
+	OrganizerID uuid.UUID   `json:"organizer_id"`
+	TicketID    uuid.UUID   `json:"ticket_id"`
+	Reason      AlarmReason `json:"reason"`
+	Disposition string      `json:"disposition"`
+	Mode        string      `json:"mode"`
+	OccurredAt  time.Time   `json:"occurred_at"`
 }
 
 // oweAlarm commits an alarm with the decision that caused it. Publishing happens
 // later, from the outbox: an admission must never happen without an owed alarm,
 // because §D6's fail-open is only defensible while the alarm reaches someone.
-func (p *Postgres) oweAlarm(ctx context.Context, tx *sql.Tx, organizerID, ticketID uuid.UUID, reason string, disposition Decision, mode Mode) error {
+func (p *Postgres) oweAlarm(ctx context.Context, tx *sql.Tx, organizerID, ticketID uuid.UUID, reason AlarmReason, detail string, disposition Decision, mode Mode) error {
+	if err := validateAlarmReason(reason); err != nil {
+		return err
+	}
+	slog.Default().Error("lifecycle integrity alarm", "ticket_id", ticketID, "disposition", disposition, "reason_code", reason, "error", detail)
 	id := uuid.New()
 	occurredAt := p.now()
 	envelope, err := integrityAlarmEnvelope(id, occurredAt, alarmData{
@@ -425,6 +423,7 @@ func organizerMode(ctx context.Context, tx *sql.Tx, organizerID uuid.UUID) (Mode
 // evidence.
 func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity, occurrenceID uuid.UUID, direction AdmissionEventType, cause error) (RedeemResult, error) {
 	reason := cause.Error()
+	reasonCode := alarmReasonFor(cause)
 	now := p.now()
 
 	// Occurrence identity resolves before the quarantine denial on this path
@@ -460,7 +459,7 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 	// organizer's mode. This is the single case where the scheme refuses rather
 	// than merely records (ADR-021 §Threat model, "not prevented, by construction").
 	if err == nil {
-		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
+		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reasonCode, reason, DecisionIntegrityQuarantined, mode); alarmErr != nil {
 			return RedeemResult{}, alarmErr
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -472,7 +471,7 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 	// A human has taken control of this organizer and chosen deny. No admission,
 	// so no quarantine row: nothing was admitted to record.
 	if mode == ModeOperatorDeny {
-		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reason, DecisionIntegrityOperatorControlled, mode); alarmErr != nil {
+		if alarmErr := p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reasonCode, reason, DecisionIntegrityOperatorControlled, mode); alarmErr != nil {
 			return RedeemResult{}, alarmErr
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -484,8 +483,8 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 	// First failure for this ticket: admit once, and record that we did — with
 	// the occurrence id when the scanner sent one, so its retry can be matched
 	// (ADR-025 §D3: the identity rule extends to degraded admissions).
-	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,admitted_at,occurrence_id) VALUES($1,$2,$3,$4,$5)`,
-		ticketID, id.OrganizerID, reason, now, uuid.NullUUID{UUID: occurrenceID, Valid: occurrenceID != uuid.Nil}); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code,admitted_at,occurrence_id) VALUES($1,$2,$3,$4,$5,$6)`,
+		ticketID, id.OrganizerID, reason, string(reasonCode), now, uuid.NullUUID{UUID: occurrenceID, Valid: occurrenceID != uuid.Nil}); err != nil {
 		return RedeemResult{}, err
 	}
 
@@ -535,7 +534,7 @@ func (p *Postgres) degradedScan(ctx context.Context, tx *sql.Tx, ticketID uuid.U
 			return RedeemResult{}, err
 		}
 	}
-	if err = p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reason, DecisionAdmittedDegraded, mode); err != nil {
+	if err = p.oweAlarm(ctx, tx, id.OrganizerID, ticketID, reasonCode, reason, DecisionAdmittedDegraded, mode); err != nil {
 		return RedeemResult{}, err
 	}
 	if err = tx.Commit(); err != nil {

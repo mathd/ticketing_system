@@ -50,13 +50,13 @@ func TestWireGoldenPolicyConflictAlarm(t *testing.T) {
 func TestWireGoldenIntegrityAlarm(t *testing.T) {
 	body, err := integrityAlarmEnvelope(alarmGoldID, alarmGoldOccurred, alarmData{
 		AlarmID: alarmGoldID, OrganizerID: alarmGoldOrganizerID, TicketID: alarmGoldTicketID,
-		Reason: "chain head mismatch", Disposition: string(DecisionAdmittedDegraded),
+		Reason: AlarmReasonHeadMismatch, Disposition: string(DecisionAdmittedDegraded),
 		Mode: string(ModeNormal), OccurredAt: alarmGoldOccurred,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `{"id":"11111111-1111-4111-8111-111111111111","type":"platform.access.lifecycle-integrity.alarm","occurred_at":"2026-07-20T12:34:56.123456789Z","schema":1,"data":{"alarm_id":"11111111-1111-4111-8111-111111111111","organizer_id":"22222222-2222-4222-8222-222222222222","ticket_id":"33333333-3333-4333-8333-333333333333","reason":"chain head mismatch","disposition":"admitted_degraded","mode":"normal","occurred_at":"2026-07-20T12:34:56.123456789Z"}}`
+	const want = `{"id":"11111111-1111-4111-8111-111111111111","type":"platform.access.lifecycle-integrity.alarm","occurred_at":"2026-07-20T12:34:56.123456789Z","schema":2,"data":{"alarm_id":"11111111-1111-4111-8111-111111111111","organizer_id":"22222222-2222-4222-8222-222222222222","ticket_id":"33333333-3333-4333-8333-333333333333","reason":"head_mismatch","disposition":"admitted_degraded","mode":"normal","occurred_at":"2026-07-20T12:34:56.123456789Z"}}`
 	assertAlarmGolden(t, want, body)
 }
 
