@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/exchangeunwind"
 	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 
@@ -173,6 +176,23 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 			write(w, code, map[string]string{"error": message})
 			return
 		}
+		// settling_at is best-effort, so NULL alone does not prove the provider was never
+		// called. Re-read admission only when payments gives the unwind's definitive Absent
+		// answer for this basis's money leg. Present, Indeterminate, and errors must resume
+		// as before because a refusal could strand a charged buyer.
+		//
+		// After the bind, not before it: a downgrade's evidence is keyed on the source
+		// order's PaymentSourceKey, which the looked-up row does not carry. Asked with an
+		// empty key, payments answers 400, the unwind reads that as Indeterminate, and the
+		// re-read could never run for a downgrade.
+		if !existing.Settling && s.moneyEvidence != nil {
+			evidence, evidenceErr := s.moneyEvidence.MoneyEvidence(r.Context(), ex.OrganizerID,
+				ex.ID, ex.DeltaAmount, ex.PaymentSourceKey)
+			if evidenceErr == nil && evidence == exchangeunwind.Absent &&
+				!s.checkSourceAdmission(w, r, ex.SourceOrderID, ex.OrganizerID, ex.Quantity) {
+				return
+			}
+		}
 		s.completeExchangeFromBasis(w, r, ex, true, in.PaymentToken)
 		return
 	}
@@ -196,6 +216,12 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if seated {
 		write(w, http.StatusConflict, map[string]string{"error": "a seated order cannot be exchanged yet (no ticket-to-seat association)"})
+		return
+	}
+
+	// Admission belongs to access. The switch repeats this check under the source ticket
+	// locks to cover a scan that commits after this read.
+	if !s.checkSourceAdmission(w, r, order, in.OrganizerID, src.Quantity) {
 		return
 	}
 
@@ -326,6 +352,50 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.completeExchangeFromBasis(w, r, ex, false, in.PaymentToken)
+}
+
+// checkSourceAdmission reads access's scoped ticket set and refuses unusable or admitted
+// sources. A 200 with no tickets means issuance has not caught up; a 404 means access did
+// not authenticate this internal request or otherwise failed to serve the dependency.
+func (s *Server) checkSourceAdmission(w http.ResponseWriter, r *http.Request, order, organizer uuid.UUID, quantity int32) bool {
+	if s.accessURL == "" {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return false
+	}
+	url := fmt.Sprintf("%s/internal/orders/%s/admission?organizer_id=%s", s.accessURL, order, organizer)
+	status, body, err := s.call(r.Context(), http.MethodGet, url, "", nil, true)
+	if err != nil || status != http.StatusOK {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return false
+	}
+	var admission struct {
+		Admitted    *bool  `json:"admitted"`
+		IssuedCount *int32 `json:"issued_count"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&admission); err != nil {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF || admission.Admitted == nil || admission.IssuedCount == nil ||
+		*admission.IssuedCount < 0 || *admission.IssuedCount > 50 {
+		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
+		return false
+	}
+	if *admission.IssuedCount == 0 || *admission.IssuedCount != quantity {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "source tickets are not issued yet"})
+		return false
+	}
+	if *admission.Admitted {
+		write(w, http.StatusConflict, map[string]string{
+			"error": "source order tickets have already been admitted",
+			"code":  "source_tickets_already_admitted",
+		})
+		return false
+	}
+	return true
 }
 
 // completeExchangeFromBasis is everything after the basis is durable: the representability

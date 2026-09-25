@@ -79,6 +79,26 @@ paths:
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/admission:
+    get:
+      operationId: getOrderAdmission
+      summary: Read whether any issued order ticket has been admitted (internal; commerce only)
+      # TKT-169. The organizer narrows the lookup; X-Internal-Token authorizes it.
+      # No ticket ids leave access. `admitted` uses the same lifecycle/quarantine
+      # union as the row-locked exchange switch.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - name: organizer_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200': {description: Admission state for the complete issued ticket set, content: {application/json: {schema: {$ref: '#/components/schemas/OrderAdmission'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        # A missing or wrong X-Internal-Token uses the existing internal 404.
+        # An order with no scoped ticket rows is 200 with issued_count 0, never 404.
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/orders/{id}/redeliveries:
     post:
       operationId: redeliverOrderTickets
@@ -276,6 +296,13 @@ components:
       properties:
         ticket_ids: {type: array, items: {type: string, format: uuid}}
         replay: {type: boolean}
+    OrderAdmission:
+      type: object
+      additionalProperties: false
+      required: [admitted, issued_count]
+      properties:
+        admitted: {type: boolean}
+        issued_count: {type: integer, minimum: 0, maximum: 50}
     # occurrence_id/occurred_at are the ADR-025 §D3 occurrence protocol, expand
     # phase (§D10): optional so old scanners keep today's semantics; occurred_at
     # is required iff occurrence_id is present — a pairing the schema cannot

@@ -69,3 +69,36 @@ func TestTheExchangeOperationDeclaresItsConfirmationPending(t *testing.T) {
 		t.Error("the 202 schema accepts any status string; it must name the one state it describes")
 	}
 }
+
+func TestTheExchangeOperationDeclaresAdmissionRefusalAndDependencyStatuses(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(apispec.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := doc.Paths.Find("/internal/orders/{id}/exchanges")
+	if item == nil || item.Post == nil {
+		t.Fatal("no POST /internal/orders/{id}/exchanges in the contract")
+	}
+	for _, status := range []int{http.StatusConflict, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		if item.Post.Responses.Status(status) == nil {
+			t.Errorf("exchangeOrder does not declare %d", status)
+		}
+	}
+	response := item.Post.Responses.Status(http.StatusConflict).Value
+	media := response.Content.Get("application/json")
+	if media == nil || media.Schema == nil || media.Schema.Value == nil {
+		t.Fatal("the 409 response has no JSON schema")
+	}
+	if err := media.Schema.Value.VisitJSON(map[string]any{
+		"error": "source order tickets have already been admitted",
+		"code":  "source_tickets_already_admitted",
+	}); err != nil {
+		t.Fatalf("the 409 body does not satisfy the declared schema: %v", err)
+	}
+	if err := media.Schema.Value.VisitJSON(map[string]any{
+		"error": "source order tickets have already been admitted",
+		"code":  "unknown_admission_code",
+	}); err == nil {
+		t.Error("the 409 schema accepts an undeclared admission code")
+	}
+}

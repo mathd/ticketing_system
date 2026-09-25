@@ -8,6 +8,58 @@ import (
 	"github.com/google/uuid"
 )
 
+// OrderAdmission is the admission summary commerce needs before it accepts an exchange.
+type OrderAdmission struct {
+	Admitted    bool
+	IssuedCount int32
+}
+
+// OrderAdmission reads the complete scoped ticket set and its admission state from one
+// repeatable-read snapshot. It takes no row locks; SwitchExchange keeps the locked check
+// that closes a scan arriving after this read.
+func (p *Postgres) OrderAdmission(ctx context.Context, organizerID, orderID uuid.UUID) (OrderAdmission, error) {
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return OrderAdmission{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM tickets WHERE order_id=$1 AND organizer_id=$2 ORDER BY id`, orderID, organizerID)
+	if err != nil {
+		return OrderAdmission{}, err
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return OrderAdmission{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return OrderAdmission{}, err
+	}
+	_ = rows.Close()
+	result := OrderAdmission{IssuedCount: int32(len(ids))}
+	for _, id := range ids {
+		admitted, err := ticketAdmittedUnion(ctx, tx, id)
+		if err != nil {
+			return OrderAdmission{}, err
+		}
+		if admitted {
+			result.Admitted = true
+			break
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return OrderAdmission{}, err
+	}
+	return result, nil
+}
+
 // The admission union (ADR-025 §Decision 2).
 //
 // > authoritative admission history is the union of the lifecycle trace and the quarantine

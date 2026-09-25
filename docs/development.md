@@ -451,22 +451,26 @@ Operationally that means:
   the degraded posture admits once (ADR-021 §D6), and an exchanged ticket must not be the one it
   admits. The buyer holding it has a live replacement under the **same** guest-order link.
 
-- **A used source ticket refuses the switch.** If any source ticket carries `redeemed` or a pass
-  `entry`, `SwitchExchange` returns `ErrSourceTicketsAlreadyAdmitted` and switches nothing —
-  otherwise voiding a used ticket and issuing a fresh one would admit the same entitlement twice.
-  The exchange stays settled-but-unswitched, which is visible in the query above and is what every
-  exchange looked like before TKT-166. Resolving one is a **human decision**, not a retry: whether a
-  used ticket may be exchanged at all is still open (ADR-039 §2, TKT-169). The failure record
-  says `exchange_refused`, **not** `issuance_retries_exhausted`, and it is published on the first
-  delivery — retrying a fact about history cannot change it, and filing it under exhaustion would
-  send an operator looking for a broken dependency.
+- **An admitted source ticket is refused before the target hold.** Commerce reads admission through
+  access before repricing or money moves. The rule covers single-admission tickets and passes with
+  any `entry`; an unused pass remains exchangeable. Access checks `ticketAdmittedUnion`,
+  which includes quarantine admission evidence as well as lifecycle events (ADR-039 §2).
+
+  Access checks again under the source ticket row lock when it switches the tickets. A scan can land
+  after commerce's read, so this backstop can still refuse after settlement. That leaves a
+  settled-but-unswitched exchange, visible in the query above. ADR-067 does not resolve this state:
+  `unwind-exchange` refuses settled exchanges. TKT-498 owns the open operator remedy.
+
+  The failure record says `exchange_refused`, **not** `issuance_retries_exhausted`, and it is
+  published on the first delivery. Retrying a fact about admission history cannot change it, and
+  filing it under exhaustion would send an operator looking for a broken dependency.
 
   Note what this state costs: the buyer paid the difference and gets no replacement. That is a
   **stranded paid exchange**, and it is the deliberate trade — the alternative available without a
   product decision is admitting the same entitlement twice. Fencing the source tickets during
   `switch_pending` would remove the strand, and would do it by **denying a legitimate holder entry
   at the gate** while an exchange is mid-flight. For a ticketing system that is the worse failure,
-  which is exactly why it is a decision (TKT-169) and not a fix.
+  which is why TKT-498 owns the operator decision rather than changing gate behavior here.
 
 - **The buyer's link shows the old tickets too, without QR codes.** Replacement tickets share the
   source order's guest reference deliberately, so one link covers the whole story. The storefront

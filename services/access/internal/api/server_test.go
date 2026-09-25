@@ -339,6 +339,39 @@ func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) 
 			}
 		})
 	}
+
+	request := httptest.NewRequest(http.MethodGet,
+		"/internal/orders/00000000-0000-0000-0000-000000000003/admission?organizer_id=not-a-uuid", nil)
+	request.Header.Set("X-Internal-Token", "internal-token")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if !declared[recorder.Code] {
+		t.Fatalf("orderAdmission returned undeclared status %d for malformed organizer_id: %s",
+			recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestOrderAdmissionRejectsMissingTokenAndInvalidOrder(t *testing.T) {
+	router := newTestServer(nil, nil, "internal-token").Router(nil, true)
+	for _, tc := range []struct {
+		name, path, token string
+		want              int
+	}{
+		{name: "missing token", path: "/internal/orders/00000000-0000-0000-0000-000000000003/admission?organizer_id=00000000-0000-0000-0000-000000000002", want: http.StatusNotFound},
+		{name: "invalid order", path: "/internal/orders/nope/admission?organizer_id=00000000-0000-0000-0000-000000000002", token: "internal-token", want: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			if tc.token != "" {
+				request.Header.Set("X-Internal-Token", tc.token)
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, tc.want, recorder.Body.String())
+			}
+		})
+	}
 }
 
 // The gate keeps its own representation — the fix is route-scoped, not a replacement.

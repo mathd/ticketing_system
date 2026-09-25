@@ -53,6 +53,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/orders/{id}/admission": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read whether any issued order ticket has been admitted (internal; commerce only) */
+        get: operations["getOrderAdmission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/orders/{id}/redeliveries": {
         parameters: {
             query?: never;
@@ -153,6 +170,10 @@ export interface components {
         TicketRefund: {
             ticket_ids: string[];
             replay: boolean;
+        };
+        OrderAdmission: {
+            admitted: boolean;
+            issued_count: number;
         };
         ScanRequest: {
             qr_payload: string;
@@ -377,6 +398,33 @@ export interface operations {
             409: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
+        };
+    };
+    getOrderAdmission: {
+        parameters: {
+            query: {
+                organizer_id: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Admission state for the complete issued ticket set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderAdmission"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     redeliverOrderTickets: {

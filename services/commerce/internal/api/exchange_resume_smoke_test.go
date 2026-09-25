@@ -56,12 +56,31 @@ import (
 // exchangeStack is a commerce server wired to real PostgreSQL and three counting stubs.
 type exchangeStack struct {
 	db      *sql.DB
+	server  *Server
 	handler http.Handler
 	token   string
 
-	catalog   *countingStub
-	inventory *countingStub
-	payments  *countingStub
+	catalog       *countingStub
+	inventory     *countingStub
+	payments      *countingStub
+	access        *countingStub
+	moneyEvidence *stubMoneyEvidence
+}
+
+type stubMoneyEvidence struct {
+	evidence exchangeunwind.MoneyEvidence
+	err      error
+	calls    int
+	// The last arguments, so a test can prove the lookup was asked about the right leg:
+	// a downgrade asked with an empty source key reads as Indeterminate in production.
+	lastDelta     int64
+	lastSourceKey string
+}
+
+func (s *stubMoneyEvidence) MoneyEvidence(_ context.Context, _ uuid.UUID, _ uuid.UUID, delta int64, sourceKey string) (exchangeunwind.MoneyEvidence, error) {
+	s.calls++
+	s.lastDelta, s.lastSourceKey = delta, sourceKey
+	return s.evidence, s.err
 }
 
 // countingStub is one dependency. Every stub counts its calls, because on the resume path
@@ -292,6 +311,8 @@ type stubPolicy struct {
 	// died, then inventory recovered".
 	capacityReturnFails atomic.Bool
 	terminalRefund      atomic.Bool
+	admissionStatus     atomic.Int64
+	admissionBody       atomic.Value
 	// claims is the target claim's real state machine (TKT-255), and it exists because
 	// `finalizeFails` cannot express what TKT-255 has to prove.
 	//
@@ -394,6 +415,18 @@ func (c *claimStates) release(hold string) bool { return c.transition(hold, "rel
 func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubPolicy) *exchangeStack {
 	t.Helper()
 	const token = "smoke-internal-token"
+	if policy.admissionStatus.Load() == 0 {
+		policy.admissionStatus.Store(http.StatusOK)
+	}
+	if policy.admissionBody.Load() == nil {
+		policy.admissionBody.Store(fmt.Sprintf(`{"admitted":false,"issued_count":%d}`, f.quantity))
+	}
+	access := newCountingStub(t, func(c *countingStub, w http.ResponseWriter, r *http.Request) {
+		c.hit("admission")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(policy.admissionStatus.Load()))
+		_, _ = w.Write([]byte(policy.admissionBody.Load().(string)))
+	})
 
 	catalog := newCountingStub(t, func(c *countingStub, w http.ResponseWriter, r *http.Request) {
 		c.hit("price-resolution")
@@ -538,6 +571,9 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 	})
 
 	srv := newTestServer(db, http.DefaultClient, catalog.server.URL, inventory.server.URL, payments.server.URL, token)
+	srv.accessURL = access.server.URL
+	moneyEvidence := &stubMoneyEvidence{evidence: exchangeunwind.Absent}
+	srv.moneyEvidence = moneyEvidence
 	// Mounted on a bare chi router rather than through Router(): this exercises the
 	// HANDLER, and Router() would additionally impose the OpenAPI request/response
 	// validator. That validator is worth having and it is not what this file is about —
@@ -546,8 +582,8 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 	r.Post("/internal/orders/{id}/exchanges", srv.exchangeOrder)
 	// The access callback, mounted so a test can drive the real discharge path (TKT-259).
 	r.Post("/internal/exchanges/{id}/tickets-switched", srv.exchangeTicketsSwitched)
-	return &exchangeStack{db: db, handler: r, token: token,
-		catalog: catalog, inventory: inventory, payments: payments}
+	return &exchangeStack{db: db, server: srv, handler: r, token: token,
+		catalog: catalog, inventory: inventory, payments: payments, access: access, moneyEvidence: moneyEvidence}
 }
 
 func TestDowngradeProviderTerminalRefundIsReported(t *testing.T) {
@@ -572,6 +608,283 @@ func TestDowngradeProviderTerminalRefundIsReported(t *testing.T) {
 	if s.payments.count("facts") != 0 {
 		t.Fatalf("gross facts calls = %d, want none after terminal refusal", s.payments.count("facts"))
 	}
+}
+
+func TestAdmittedExchangeRefusesBeforeAnyTargetOrMoneyCall(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "admitted-source", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1200)
+	policy.admissionBody.Store(`{"admitted":true,"issued_count":2}`)
+	s := exchangeStackFor(t, db, f, policy)
+
+	code, out := s.exchange(t, f, "admitted-source-1")
+	if code != http.StatusConflict || out["error"] != "source order tickets have already been admitted" || out["code"] != "source_tickets_already_admitted" {
+		t.Fatalf("exchange = %d %v, want the admitted-source 409", code, out)
+	}
+	if s.access.count("admission") != 1 {
+		t.Fatalf("access admission reads = %d, want 1", s.access.count("admission"))
+	}
+	if s.inventory.count("holds") != 0 {
+		t.Fatalf("target hold calls = %d, want none", s.inventory.count("holds"))
+	}
+	for _, name := range []string{"charge-submissions", "refund-submissions", "facts"} {
+		if n := s.payments.count(name); n != 0 {
+			t.Fatalf("payments %s = %d, want none", name, n)
+		}
+	}
+	if s.exchangeRowExists(t, ctx, f.organizer, "admitted-source-1") {
+		t.Fatal("an admitted-source refusal left an exchange row")
+	}
+	if n := countCommerceRows(t, ctx, db, `SELECT count(*) FROM order_facts WHERE organizer_id=$1`, f.organizer); n != 0 {
+		t.Fatalf("exchange facts = %d, want none", n)
+	}
+}
+
+func TestExchangeRefusesWhenAdmissionReadIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name, body   string
+		status, want int
+		noAccessURL  bool
+		transportErr bool
+	}{
+		{name: "credential refusal", status: http.StatusNotFound, want: http.StatusBadGateway},
+		{name: "transport failure", status: http.StatusOK, want: http.StatusBadGateway, transportErr: true},
+		{name: "access failure", status: http.StatusServiceUnavailable, want: http.StatusBadGateway, body: `{"error":"unavailable"}`},
+		{name: "malformed body", status: http.StatusOK, want: http.StatusBadGateway, body: `{`},
+		{name: "missing field", status: http.StatusOK, want: http.StatusBadGateway, body: `{"admitted":false}`},
+		{name: "unknown field", status: http.StatusOK, want: http.StatusBadGateway, body: `{"admitted":false,"issued_count":2,"extra":true}`},
+		{name: "empty issued set", status: http.StatusOK, want: http.StatusServiceUnavailable, body: `{"admitted":false,"issued_count":0}`},
+		{name: "incomplete issuance", status: http.StatusOK, want: http.StatusServiceUnavailable, body: `{"admitted":false,"issued_count":1}`},
+		{name: "no access URL", status: http.StatusOK, want: http.StatusBadGateway, noAccessURL: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedExchangeSource(t, db, ctx, "admission-unavailable-"+tc.name, 2, 1000)
+			policy := &stubPolicy{}
+			policy.catalogUnit.Store(1200)
+			policy.admissionStatus.Store(int64(tc.status))
+			policy.admissionBody.Store(tc.body)
+			s := exchangeStackFor(t, db, f, policy)
+			if tc.noAccessURL {
+				s.server.accessURL = ""
+			}
+			if tc.transportErr {
+				s.server.client = &http.Client{Transport: admissionFailureTransport{base: http.DefaultTransport}}
+			}
+
+			code, _ := s.exchange(t, f, "admission-unavailable-1")
+			if code != tc.want {
+				t.Fatalf("exchange status = %d, want %d", code, tc.want)
+			}
+			if s.inventory.count("holds") != 0 || s.payments.count("charge-submissions") != 0 || s.payments.count("refund-submissions") != 0 || s.payments.count("facts") != 0 {
+				t.Fatalf("unusable admission read reached later work: holds=%d payments=%v", s.inventory.count("holds"), s.payments.count("charge-submissions"))
+			}
+			if s.exchangeRowExists(t, ctx, f.organizer, "admission-unavailable-1") {
+				t.Fatal("an unavailable-admission refusal left an exchange row")
+			}
+			// A transport failure never reaches the access stub, and a missing URL never
+			// makes the call, so neither can be counted there.
+			wantReads := 1
+			if tc.noAccessURL || tc.transportErr {
+				wantReads = 0
+			}
+			if got := s.access.count("admission"); got != wantReads {
+				t.Fatalf("access admission calls = %d, want %d", got, wantReads)
+			}
+		})
+	}
+}
+
+func TestPreProviderBasisResumeRechecksAdmission(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "resume-before-provider-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(1500)
+	policy.finalizeFails.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+
+	const key = "resume-before-provider-1"
+	if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+		t.Fatalf("initial exchange = %d, want target-finalize refusal", code)
+	}
+	settled, basis, _, _, _ := s.exchangeRow(t, ctx, f.organizer, key)
+	if settled || !basis || exchangeIsSettling(t, ctx, db, f.organizer, key) {
+		t.Fatalf("initial state settled=%t basis=%t settling=%t, want unsettled basis before provider", settled, basis,
+			exchangeIsSettling(t, ctx, db, f.organizer, key))
+	}
+
+	// The retry is the only request counted below. The scan could have happened after the
+	// first request's admission read, while the basis was durable and before money could move.
+	s.catalog.reset()
+	s.inventory.reset()
+	s.payments.reset()
+	s.access.reset()
+	policy.finalizeFails.Store(false)
+	policy.admissionBody.Store(`{"admitted":true,"issued_count":2}`)
+
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusConflict || out["code"] != "source_tickets_already_admitted" {
+		t.Fatalf("pre-provider resume = %d %v, want admitted-source 409", code, out)
+	}
+	if got := s.access.count("admission"); got != 1 {
+		t.Fatalf("pre-provider resume made %d admission reads, want 1", got)
+	}
+	if s.moneyEvidence.calls != 1 {
+		t.Fatalf("pre-provider resume made %d payments evidence reads, want 1", s.moneyEvidence.calls)
+	}
+	for _, call := range []struct {
+		stub *countingStub
+		name string
+	}{{s.inventory, "finalize"}, {s.payments, "charge-submissions"}, {s.payments, "refund-submissions"}, {s.payments, "facts"}} {
+		if got := call.stub.count(call.name); got != 0 {
+			t.Errorf("pre-provider resume made %d %s calls, want 0", got, call.name)
+		}
+	}
+	settled, basis, _, _, _ = s.exchangeRow(t, ctx, f.organizer, key)
+	if settled || !basis || exchangeIsSettling(t, ctx, db, f.organizer, key) {
+		t.Fatalf("refused state settled=%t basis=%t settling=%t, want unsettled basis for unwind-exchange",
+			settled, basis, exchangeIsSettling(t, ctx, db, f.organizer, key))
+	}
+}
+
+// The downgrade twin of TestPreProviderBasisResumeRechecksAdmission. A downgrade's money
+// evidence is the refund leg, keyed on the source order's payment source key, which the
+// looked-up exchange row does not carry. Asked without it, payments answers 400, the
+// unwind reads Indeterminate, and the re-read never runs for any downgrade.
+func TestPreProviderDowngradeResumeAsksEvidenceWithTheSourceKey(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "resume-downgrade-before-provider-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(500)
+	policy.finalizeFails.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+
+	const key = "resume-downgrade-before-provider-1"
+	if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+		t.Fatalf("initial exchange = %d, want target-finalize refusal", code)
+	}
+	s.inventory.reset()
+	s.payments.reset()
+	s.access.reset()
+	policy.finalizeFails.Store(false)
+	policy.admissionBody.Store(`{"admitted":true,"issued_count":2}`)
+
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusConflict || out["code"] != "source_tickets_already_admitted" {
+		t.Fatalf("pre-provider downgrade resume = %d %v, want admitted-source 409", code, out)
+	}
+	if s.moneyEvidence.lastDelta >= 0 {
+		t.Fatalf("evidence asked about delta %d, want a downgrade (negative)", s.moneyEvidence.lastDelta)
+	}
+	var sourceKey string
+	if err := db.QueryRowContext(ctx, `SELECT idempotency_key FROM orders WHERE id=$1`, f.order).Scan(&sourceKey); err != nil {
+		t.Fatal(err)
+	}
+	if sourceKey == "" || s.moneyEvidence.lastSourceKey != sourceKey {
+		t.Fatalf("evidence source key = %q, want the source order's key %q", s.moneyEvidence.lastSourceKey, sourceKey)
+	}
+	if got := s.payments.count("refund-submissions"); got != 0 {
+		t.Fatalf("refused downgrade resume submitted %d refund legs, want 0", got)
+	}
+}
+
+func TestBasisResumeSkipsAdmissionUnlessPaymentsProvesNoMovement(t *testing.T) {
+	for _, evidence := range []exchangeunwind.MoneyEvidence{exchangeunwind.Present, exchangeunwind.Indeterminate} {
+		t.Run(evidence.String(), func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedExchangeSource(t, db, ctx, "resume-evidence-"+evidence.String(), 2, 1000)
+			policy := &stubPolicy{}
+			policy.catalogUnit.Store(500)
+			policy.finalizeFails.Store(true)
+			s := exchangeStackFor(t, db, f, policy)
+			const key = "resume-evidence-" + "case"
+			if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+				t.Fatalf("initial exchange = %d, want target-finalize refusal", code)
+			}
+			s.inventory.reset()
+			s.payments.reset()
+			s.access.reset()
+			s.moneyEvidence.evidence = evidence
+			policy.finalizeFails.Store(false)
+
+			if code, out := s.exchange(t, f, key); code != http.StatusOK {
+				t.Fatalf("resume with %s evidence = %d %v, want 200", evidence, code, out)
+			}
+			if got := s.moneyEvidence.calls; got != 1 {
+				t.Fatalf("evidence calls = %d, want 1 for the resume", got)
+			}
+			if got := s.access.count("admission"); got != 0 {
+				t.Fatalf("resume with %s evidence made %d admission reads, want 0", evidence, got)
+			}
+			if s.inventory.count("finalize") != 1 || s.payments.count("refund-submissions") != 1 {
+				t.Fatalf("resume did not proceed: finalize=%d refunds=%d", s.inventory.count("finalize"), s.payments.count("refund-submissions"))
+			}
+		})
+	}
+}
+
+func TestBasisResumeWithSettlingMarkerSkipsEvidenceAndAdmission(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "resume-settling-marker", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(500)
+	policy.finalizeFails.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+	const key = "resume-settling-marker-case"
+	if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+		t.Fatalf("initial exchange = %d, want target-finalize refusal", code)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET settling_at=now() WHERE organizer_id=$1 AND id=$2`,
+		f.organizer, commercestore.ExchangeID(f.organizer, key)); err != nil {
+		t.Fatal(err)
+	}
+	s.inventory.reset()
+	s.payments.reset()
+	s.access.reset()
+	policy.admissionBody.Store(`{"admitted":true,"issued_count":2}`)
+	policy.finalizeFails.Store(false)
+
+	if code, out := s.exchange(t, f, key); code != http.StatusOK {
+		t.Fatalf("resume with settling marker = %d %v, want 200", code, out)
+	}
+	if s.moneyEvidence.calls != 0 || s.access.count("admission") != 0 {
+		t.Fatalf("settling marker caused reads: evidence=%d admission=%d, want 0", s.moneyEvidence.calls, s.access.count("admission"))
+	}
+	if s.inventory.count("finalize") != 1 || s.payments.count("refund-submissions") != 1 {
+		t.Fatalf("resume did not proceed: finalize=%d refunds=%d", s.inventory.count("finalize"), s.payments.count("refund-submissions"))
+	}
+}
+
+func exchangeIsSettling(t *testing.T, ctx context.Context, db *sql.DB, org uuid.UUID, key string) bool {
+	t.Helper()
+	var settling sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT settling_at FROM order_exchanges WHERE organizer_id=$1 AND id=$2`,
+		org, commercestore.ExchangeID(org, key)).Scan(&settling); err != nil {
+		t.Fatalf("read exchange settling_at: %v", err)
+	}
+	return settling.Valid
+}
+
+type admissionFailureTransport struct {
+	base http.RoundTripper
+}
+
+func (t admissionFailureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/admission") {
+		return nil, errors.New("access transport failed")
+	}
+	return t.base.RoundTrip(r)
+}
+
+func countCommerceRows(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // exchange posts one exchange request under `key`. The body is built here so every caller
@@ -750,9 +1063,13 @@ func TestAnInterruptedExchangeResumesFromItsPersistedBasis(t *testing.T) {
 
 	const key = "resume-basis-1"
 	interruptAfterTheMoneyMoved(t, s, ctx, f, policy, key)
+	if !exchangeIsSettling(t, ctx, db, f.organizer, key) {
+		t.Fatal("the charged resume fixture has no settling_at marker")
+	}
 
 	catalogBefore := s.catalog.count("price-resolution")
 	holdsBefore := s.inventory.count("holds")
+	admissionBefore := s.access.count("admission")
 
 	code, out := s.exchange(t, f, key)
 	if code != http.StatusOK {
@@ -768,6 +1085,9 @@ func TestAnInterruptedExchangeResumesFromItsPersistedBasis(t *testing.T) {
 		t.Errorf("the retry took %d new holds (was %d). The target claim is already finalizing "+
 			"against the basis; a second hold is a second claim on the same capacity",
 			got-holdsBefore, holdsBefore)
+	}
+	if got := s.access.count("admission"); got != admissionBefore {
+		t.Errorf("the retry made %d admission reads, want 0", got-admissionBefore)
 	}
 
 	settled, _, total, delta, unit := s.exchangeRow(t, ctx, f.organizer, key)
@@ -910,6 +1230,10 @@ func TestResumingAnExchangeMakesNoSecondProviderMovement(t *testing.T) {
 
 	const key = "resume-once-1"
 	interruptAfterTheMoneyMoved(t, s, ctx, f, policy, key)
+	if got := s.access.count("admission"); got != 1 {
+		t.Fatalf("forward exchange made %d admission reads, want 1", got)
+	}
+	admissionBefore := s.access.count("admission")
 
 	if code, out := s.exchange(t, f, key); code != http.StatusOK {
 		t.Fatalf("the retry answered %d %v, want 200", code, out)
@@ -918,6 +1242,9 @@ func TestResumingAnExchangeMakesNoSecondProviderMovement(t *testing.T) {
 	// not move money either. Two retries is the realistic shape of a recovery loop.
 	if code, out := s.exchange(t, f, key); code != http.StatusOK {
 		t.Fatalf("the second retry answered %d %v, want 200", code, out)
+	}
+	if got := s.access.count("admission"); got != admissionBefore {
+		t.Fatalf("resume and settled replay made %d new admission reads, want 0", got-admissionBefore)
 	}
 
 	// ONE movement, however many submissions.

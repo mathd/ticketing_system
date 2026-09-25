@@ -50,16 +50,10 @@ var ErrSourceTicketsAlreadyVoided = errors.New("source order tickets are already
 // is small — a scan during `switch_pending` — and it is real, and it grows with any delay
 // in the switch.
 //
-// The cost is a settled exchange that never switches: the buyer paid the difference and
-// keeps their used old ticket. That is NOT a new failure state. It is exactly what TKT-158
-// shipped for every exchange, and this refusal simply keeps that behaviour for the one
-// case where switching is unsafe. Under-selling one exchange beats admitting twice, and
-// the obligation is visible (`tickets_exchanged_at IS NULL`) rather than silent.
-//
-// It is not the whole answer. Whether a used ticket should be exchangeable AT ALL —
-// refused before the money moves — and whether the entry should instead carry forward to
-// the replacement, which is not even binary for a multi-entry pass (ADR-005), is a product
-// decision. TKT-169 owns it. This is the safe default until it is taken.
+// Commerce reads this predicate before it takes the target hold. A scan can still commit
+// after that read, so this check remains under the ticket row lock as the backstop. If it
+// refuses there, the exchange is already settled; ADR-039 §2 assigns resolution of that
+// residual state to TKT-498.
 var ErrSourceTicketsAlreadyAdmitted = errors.New("source order tickets have already been admitted")
 
 // SwitchExchangeInput is one exchange's switch: which source order loses its tickets, and

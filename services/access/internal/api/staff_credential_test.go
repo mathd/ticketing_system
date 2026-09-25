@@ -62,6 +62,8 @@ func everyOtherInternalOperation() []internalOp {
 	return []internalOp{
 		{"refundTickets", http.MethodPost, "/internal/orders/{id}/refunds",
 			"/internal/orders/" + orderUUID + "/refunds", refund, false},
+		{"orderAdmission", http.MethodGet, "/internal/orders/{id}/admission",
+			"/internal/orders/" + orderUUID + "/admission?organizer_id=" + orgUUID, "", false},
 	}
 }
 

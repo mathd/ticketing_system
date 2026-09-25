@@ -296,6 +296,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &exchangeSource); err != nil {
 		t.Fatal(err)
 	}
+	waitForExchangeTickets(t, exchangeSource.OrderID, 1)
 	// A dearer and a cheaper ticket type on the same performance, so all three money
 	// directions are exercised. The first version of this test used the SAME type and
 	// asserted delta 0 — which meant both payment branches could be deleted and it still
@@ -386,9 +387,9 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, exchangeSource.OrderID), "cov-exchange-up-"+slot,
 			map[string]any{"organizer_id": organizerID, "target_ticket_type_id": dearer,
 				"actor": "coverage@example.test", "reason": "upgrade",
-			// An upgrade is the one exchange the buyer owes money on, so it carries an
-			// instrument (TKT-301, ADR-069). Opaque to commerce; the fake judges it.
-			"payment_token": "fake-ok"})
+				// An upgrade is the one exchange the buyer owes money on, so it carries an
+				// instrument (TKT-301, ADR-069). Opaque to commerce; the fake judges it.
+				"payment_token": "fake-ok"})
 		if code != http.StatusOK {
 			return fmt.Errorf("exchange state: %d %s", code, body)
 		}
@@ -513,6 +514,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &downSource); err != nil {
 		t.Fatal(err)
 	}
+	waitForExchangeTickets(t, downSource.OrderID, 1)
 	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, downSource.OrderID), "cov-exchange-down-"+slot,
 		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
 			"actor": "coverage@example.test", "reason": "downgrade"}); code != http.StatusOK {
@@ -563,6 +565,7 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if err := json.Unmarshal(body, &eqSource); err != nil {
 		t.Fatal(err)
 	}
+	waitForExchangeTickets(t, eqSource.OrderID, 1)
 	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, eqSource.OrderID), "cov-exchange-eq-"+slot,
 		map[string]any{"organizer_id": organizerID, "target_ticket_type_id": tt,
 			"actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
@@ -585,6 +588,30 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	if exchanged.Status != "switch_pending" || exchanged.TicketsExchanged || exchanged.Replay {
 		t.Fatalf("exchange state = %+v, want switch_pending on a first call", exchanged)
 	}
+}
+
+// waitForExchangeTickets polls access's real admission read until issuance has
+// projected the complete source ticket set. It also gives the new GET operation
+// direct smoke coverage; commerce's server-side call is invisible to this client.
+func waitForExchangeTickets(t *testing.T, orderID string, quantity int) {
+	t.Helper()
+	target := fmt.Sprintf("%s/internal/orders/%s/admission?organizer_id=%s", accessURL, orderID, organizerID)
+	retry(t, 30*time.Second, func() error {
+		code, body := internalJSON(t, http.MethodGet, target, "", nil)
+		if code != http.StatusOK {
+			return fmt.Errorf("access admission read %d %s", code, body)
+		}
+		var result struct {
+			IssuedCount int `json:"issued_count"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		if result.IssuedCount != quantity {
+			return fmt.Errorf("issued_count=%d, want %d", result.IssuedCount, quantity)
+		}
+		return nil
+	})
 }
 
 // assertExchangeCharge proves the UPGRADE leg reached payments: an operation bound under
