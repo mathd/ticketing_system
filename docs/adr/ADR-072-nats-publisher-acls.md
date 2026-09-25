@@ -170,12 +170,25 @@ touches ADR-034.
 
 **(b) Forged events within a principal's own publish boundary — TKT-296.**
 
-A compromised service can forge events within its own subject boundary. For example, a compromised commerce
-service can publish an `order.completed` event for a slot without creating an order in its database. Access
-consumes the event and issues a valid ticket.
-This limitation is tracked in TKT-296 (signed event envelopes).
-Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` explicitly pins this
-limitation as present. Do not remove this test.
+A holder of commerce's NATS credentials alone can publish `order.completed` for an order Commerce does not
+know. Access reads the order's seat data from Commerce, so that event mints no ticket. With a fresh event ID,
+it fails issuance at the seat read. If it reuses an already consumed event ID, the consumed-event pre-check
+skips it without a failure record.
+This narrows the gap. The following cases are inferred from code, not executed by any test. The Commerce
+seat query has no order-status predicate (`services/commerce/internal/store/order_seats.go:31`), and
+Access compares only order ID, organizer, slot, ticket type, and quantity
+(`services/access/internal/consumer/seats.go:26`). A forger could name a declined or otherwise unpaid
+order that still has a reservation row and get tickets for seats whose hold may already be released. A
+forger could also keep those checked fields from a real order and choose a different `buyer_id` or
+`guest_order_ref`. The smoke test executes only the completed-order, original-buyer case. A compromised
+Commerce service can answer the read for any forged event. As §6(a) describes, a compromised principal
+can read `order.completed` payloads from JetStream (TKT-327), which expose an order line. The seat read
+is not a security control and does not authenticate the event. TKT-296 tracks the residual: signed event
+envelopes close forgery by a holder of stolen NATS credentials who does not have the signing key. A
+compromised service or signer remains outside that guarantee.
+
+Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` pins both the
+narrowed case and the still-open case. Do not remove this test.
 
 ## Consequences
 

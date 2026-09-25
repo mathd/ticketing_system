@@ -61,6 +61,7 @@ func everyInternalOperationExceptRefund() []internalOp {
 		// validator answers 400 and the credential check never runs.
 		{"getCancellationRefundReport", http.MethodGet, "/internal/cancellation-refunds/{id}", "/internal/cancellation-refunds/" + someUUID + "?organizer_id=" + someUUID, "", false},
 		{"getDeliveryEmail", http.MethodGet, "/internal/buyers/{id}/delivery-email", "/internal/buyers/" + someUUID + "/delivery-email", "", false},
+		{"getInternalOrderSeats", http.MethodGet, "/internal/orders/{id}/seats", "/internal/orders/" + someUUID + "/seats?organizer_id=" + someUUID, "", false},
 		// The un-claim (TKT-225). Deliberately on THIS side of the list: it is a
 		// support action on someone else's purchase, and this slice ships no
 		// back-office surface to reach it from, so the staff credential must not

@@ -652,6 +652,24 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+  /internal/orders/{id}/seats:
+    get:
+      operationId: getInternalOrderSeats
+      summary: Read the seat identities assigned to an order
+      description: >
+        Internal access-service read used during ticket issuance. The order ID
+        comes from order.completed. A missing order and an order owned by another
+        organizer both answer 404. An existing unseated order answers 200 with
+        seated false and an empty seat_identities array. A non-NULL empty seat
+        set is invalid stored data and answers 500.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/OrganizerIdQuery'}
+      responses:
+        '200': {description: Order line and seat identities, content: {application/json: {schema: {$ref: '#/components/schemas/InternalOrderSeats'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /internal/buyers/{id}/delivery-email:
     get:
       operationId: getDeliveryEmail
@@ -1491,6 +1509,24 @@ components:
       additionalProperties: false
       required: [email]
       properties: {email: {type: string}}
+    InternalOrderSeats:
+      type: object
+      additionalProperties: false
+      required: [order_id, organizer_id, slot_id, ticket_type_id, quantity, seated, seat_identities]
+      properties:
+        order_id: {type: string, format: uuid}
+        organizer_id: {type: string, format: uuid}
+        slot_id: {type: string, format: uuid}
+        ticket_type_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1, maximum: 50}
+        seated: {type: boolean}
+        seat_identities:
+          type: array
+          items: {type: string, minLength: 1, maxLength: 200}
+      description: >
+        The reservation row is the source of seatedness: NULL seat_identities
+        means unseated, while a non-NULL array means seated. The response echoes
+        the order line so access can reject a seat set for a different event line.
     CancellationRefundCreate:
       type: object
       additionalProperties: false

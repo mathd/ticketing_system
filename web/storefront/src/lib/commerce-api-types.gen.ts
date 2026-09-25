@@ -435,6 +435,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/orders/{id}/seats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the seat identities assigned to an order
+         * @description Internal access-service read used during ticket issuance. The order ID comes from order.completed. A missing order and an order owned by another organizer both answer 404. An existing unseated order answers 200 with seated false and an empty seat_identities array. A non-NULL empty seat set is invalid stored data and answers 500.
+         */
+        get: operations["getInternalOrderSeats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/buyers/{id}/delivery-email": {
         parameters: {
             query?: never;
@@ -876,6 +896,20 @@ export interface components {
         };
         DeliveryEmail: {
             email: string;
+        };
+        /** @description The reservation row is the source of seatedness: NULL seat_identities means unseated, while a non-NULL array means seated. The response echoes the order line so access can reject a seat set for a different event line. */
+        InternalOrderSeats: {
+            /** Format: uuid */
+            order_id: string;
+            /** Format: uuid */
+            organizer_id: string;
+            /** Format: uuid */
+            slot_id: string;
+            /** Format: uuid */
+            ticket_type_id: string;
+            quantity: number;
+            seated: boolean;
+            seat_identities: string[];
         };
         CancellationRefundCreate: {
             /** Format: uuid */
@@ -1842,6 +1876,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StaffOrderDetail"];
+                };
+            };
+            400: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    getInternalOrderSeats: {
+        parameters: {
+            query: {
+                organizer_id: components["parameters"]["OrganizerIdQuery"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Order line and seat identities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InternalOrderSeats"];
                 };
             };
             400: components["responses"]["Error"];

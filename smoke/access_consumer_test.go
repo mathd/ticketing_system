@@ -454,6 +454,9 @@ func TestAccessPoisonEventPolicy(t *testing.T) {
 		t.Fatalf("failed-event record is not sanitized: %s", encoded)
 	}
 
+	// The order is absent from Commerce, so the issuance seat read returns 404
+	// and exhausts issuance retries. This still drives the sanitized failure
+	// record path without relying on a delivery-stage failure.
 	transientID := uuid.New()
 	transientBody, _ := json.Marshal(map[string]any{
 		"id": transientID, "type": orderCompletedSubject, "schema": 1,
@@ -466,7 +469,7 @@ func TestAccessPoisonEventPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	exhausted := nextAccessFailure(t, failures, 10*time.Second)
-	if exhausted.Data.SourceEventID != transientID.String() || exhausted.Data.Reason != "delivery_retries_exhausted" || exhausted.Data.Stage != "delivery" || exhausted.Data.Attempts != 4 {
+	if exhausted.Data.SourceEventID != transientID.String() || exhausted.Data.Reason != "issuance_retries_exhausted" || exhausted.Data.Stage != "issuance" || exhausted.Data.Attempts != 4 {
 		t.Fatalf("exhausted failure = %+v", exhausted)
 	}
 

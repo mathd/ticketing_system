@@ -65,6 +65,36 @@ func issueTicket(t *testing.T, ctx context.Context, st *Postgres, organizerID uu
 	return s
 }
 
+// issueLegacyTicket seeds the ticket row shape used before migration 0013.
+func issueLegacyTicket(t *testing.T, ctx context.Context, st *Postgres, organizerID uuid.UUID) seeded {
+	t.Helper()
+	s := seeded{ticketID: uuid.New(), id: TicketIdentity{OrderID: uuid.New(), OrganizerID: organizerID, SlotID: uuid.New()}}
+	issuedAt := time.Now().UTC()
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO consumed_events(event_id) VALUES($1)`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		s.ticketID, s.id.OrderID, uuid.New(), organizerID, uuid.New(), s.id.SlotID, uuid.New(), "signed-credential", issuedAt); err != nil {
+		t.Fatal(err)
+	}
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(s.ticketID.String()+":issued"))
+	if _, err := st.appendLifecycle(ctx, tx, appendInput{
+		TicketID: s.ticketID, OrderID: s.id.OrderID, OrganizerID: organizerID, SlotID: s.id.SlotID,
+		EventID: eventID, Type: "issued", OccurredAt: issuedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func migratedDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 	db, provider := schemaDB(t, ctx)

@@ -33,6 +33,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 
 type Ticket struct {
 	ID, OrderID, GuestOrderRef, OrganizerID, BuyerID, SlotID, TicketTypeID uuid.UUID
+	SeatIdentity                                                           *string
 	Payload                                                                string
 	IssuedAt                                                               time.Time
 }
@@ -94,6 +95,12 @@ type Postgres struct {
 // only for the verify-only paths, which hold public keys and cannot append.
 func New(db *sql.DB, cfg Config) *Postgres { return &Postgres{db: db, cfg: cfg} }
 
+func (p *Postgres) Consumed(ctx context.Context, eventID uuid.UUID) (bool, error) {
+	var exists bool
+	err := p.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM consumed_events WHERE event_id=$1)`, eventID).Scan(&exists)
+	return exists, err
+}
+
 func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -124,7 +131,7 @@ func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 // drift apart: two copies of "insert the row, then chain its first lifecycle event" would
 // be two places to forget the append, and the verifier would call the second one tampering.
 func (p *Postgres) insertIssuedTicket(ctx context.Context, tx *sql.Tx, t Ticket) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, t.ID, t.OrderID, t.GuestOrderRef, t.OrganizerID, t.BuyerID, t.SlotID, t.TicketTypeID, t.Payload, t.IssuedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,seat_identity,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, t.ID, t.OrderID, t.GuestOrderRef, t.OrganizerID, t.BuyerID, t.SlotID, t.TicketTypeID, t.SeatIdentity, t.Payload, t.IssuedAt); err != nil {
 		return err
 	}
 	// The ticket row was created in this transaction, so nothing else can see

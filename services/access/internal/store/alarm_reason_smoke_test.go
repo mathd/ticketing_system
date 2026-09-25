@@ -472,7 +472,8 @@ func TestIntegrityAlarmReasonMigrationAndConstraint(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	st := New(db, cfg)
-	s := issueTicket(t, ctx, st, uuid.New())
+	// Migration 0011 predates seat_identity, so seed the pre-0013 ticket shape.
+	s := issueLegacyTicket(t, ctx, st, uuid.New())
 	seedLegacyQuarantine(t, ctx, db, s)
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("apply migrations through 0012: %v", err)
@@ -495,7 +496,8 @@ func TestIntegrityAlarmReasonMigrationAndConstraint(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_integrity_quarantine SET reason_code='sequence_gap' WHERE ticket_id=$1`, s.ticketID); err == nil {
 		t.Fatal("append-only quarantine trigger allowed a reason_code UPDATE")
 	}
-	invalidCodeTicket := issueTicket(t, ctx, st, uuid.New())
+	// The schema remains at 0012 here, before tickets gains seat_identity.
+	invalidCodeTicket := issueLegacyTicket(t, ctx, st, uuid.New())
 	_, err = db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code,admitted_at) VALUES($1,$2,'bad code','not_a_reason',now())`, invalidCodeTicket.ticketID, invalidCodeTicket.id.OrganizerID)
 	if err == nil {
 		t.Fatal("reason_code CHECK accepted a value outside the vocabulary")

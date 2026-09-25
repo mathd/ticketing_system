@@ -341,16 +341,17 @@ func TestNATSPaymentsConnectsWithZeroSubjectRights(t *testing.T) {
 	})
 }
 
-// TestNATSResidualCredentialedForgeryStillMintsTickets pins the accepted security gap:
-// using commerce's legitimate credentials, publishing a hand-built valid order.completed event
-// mints an authentic signed ticket that admits at the gate scanner, while commerce has zero
-// database records for the order and inventory confirmed_quantity is unchanged (ADR-021 pin-the-gap).
+// TestNATSResidualCredentialedForgeryStillMintsTickets pins the unknown-order refusal and one
+// still-open case from ADR-072 §6(b). A compromised principal can read order.completed payloads
+// from JetStream under §6(a) (TKT-327); this test reads the line from the database for
+// convenience and pins only the completed-order case. The read does not check status, buyer ID,
+// or guest order reference. It is not a security control; signed envelopes (TKT-296) are the fix.
 func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	suffix := "forgery-" + admissionSuffix()
-	slotID, ticketTypeID := setupCheckoutOffer(t, suffix)
+	unknownSlotID, unknownTicketTypeID := setupCheckoutOffer(t, suffix)
 
 	invConn, err := pgx.Connect(ctx, dsn("inventory", "inventory"))
 	if err != nil {
@@ -359,7 +360,7 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	defer func() { _ = invConn.Close(ctx) }()
 
 	var initialConfirmed int
-	if err := invConn.QueryRow(ctx, "SELECT confirmed_quantity FROM inventory_pools WHERE slot_id=$1", slotID).Scan(&initialConfirmed); err != nil {
+	if err := invConn.QueryRow(ctx, "SELECT confirmed_quantity FROM inventory_pools WHERE slot_id=$1", unknownSlotID).Scan(&initialConfirmed); err != nil {
 		t.Fatalf("query inventory initial confirmed_quantity: %v", err)
 	}
 
@@ -380,100 +381,189 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 		t.Fatalf("commerce jetstream: %v", err)
 	}
 
-	orderID := uuid.New()
-	guestRef := uuid.New()
-	buyerID := uuid.New()
-	eventID := uuid.New()
+	// (a) Commerce's NATS credentials cannot make an unknown order pass the seat
+	// read. Wait for the failure record so a momentary absence of tickets is not
+	// mistaken for a refusal.
+	adminConn, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+	if err != nil {
+		t.Fatalf("admin connect for failure observer: %v", err)
+	}
+	defer adminConn.Close()
+	adminJS, err := jetstream.New(adminConn)
+	if err != nil {
+		t.Fatalf("admin jetstream for failure observer: %v", err)
+	}
+	stream, err := adminJS.Stream(ctx, "PLATFORM")
+	if err != nil {
+		t.Fatalf("admin get PLATFORM stream: %v", err)
+	}
+	failureName := "forgery-failures-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	failures, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable: failureName, FilterSubject: accessFailureSubject,
+		DeliverPolicy: jetstream.DeliverNewPolicy, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("create access failure consumer: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.DeleteConsumer(context.Background(), failureName) })
 
-	event := map[string]any{
-		"id":          eventID.String(),
-		"type":        "platform.commerce.order.completed",
-		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"schema":      1,
+	unknownOrderID, unknownGuestRef, unknownEventID := uuid.New(), uuid.New(), uuid.New()
+	unknownEvent := map[string]any{
+		"id": unknownEventID.String(), "type": "platform.commerce.order.completed",
+		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano), "schema": 1,
 		"data": map[string]any{
-			"order_id":        orderID.String(),
-			"guest_order_ref": guestRef.String(),
-			"organizer_id":    organizerID,
-			"buyer_id":        buyerID.String(),
-			"slot_id":         slotID,
-			"ticket_type_id":  ticketTypeID,
-			"quantity":        1,
+			"order_id": unknownOrderID.String(), "guest_order_ref": unknownGuestRef.String(),
+			"organizer_id": organizerID, "buyer_id": uuid.NewString(),
+			"slot_id": unknownSlotID, "ticket_type_id": unknownTicketTypeID, "quantity": 1,
 		},
 	}
-	body, err := json.Marshal(event)
+	unknownBody, err := json.Marshal(unknownEvent)
 	if err != nil {
-		t.Fatalf("marshal event: %v", err)
+		t.Fatal(err)
+	}
+	if _, err := commJS.Publish(ctx, "platform.commerce.order.completed", unknownBody, jetstream.WithMsgID(unknownEventID.String())); err != nil {
+		t.Fatalf("publish unknown-order event: %v", err)
+	}
+	unknownFailure := nextAccessFailure(t, failures, 15*time.Second)
+	if unknownFailure.Data.SourceEventID != unknownEventID.String() || unknownFailure.Data.Reason != "issuance_retries_exhausted" || unknownFailure.Data.Stage != "issuance" || unknownFailure.Data.Attempts != 4 {
+		t.Fatalf("unknown-order failure = %+v", unknownFailure)
+	}
+	accessDB := accessConn(t, ctx)
+	defer func() { _ = accessDB.Close(ctx) }()
+	var unknownTicketCount int
+	if err := accessDB.QueryRow(ctx, "SELECT count(*) FROM tickets WHERE order_id=$1", unknownOrderID).Scan(&unknownTicketCount); err != nil {
+		t.Fatalf("query tickets for unknown order: %v", err)
+	}
+	if unknownTicketCount != 0 {
+		t.Fatalf("unknown order %s has %d tickets, want 0", unknownOrderID, unknownTicketCount)
 	}
 
-	if _, err := commJS.Publish(ctx, "platform.commerce.order.completed", body, jetstream.WithMsgID(eventID.String())); err != nil {
-		t.Fatalf("publish commerce order.completed: %v", err)
+	var finalConfirmed int
+	if err := invConn.QueryRow(ctx, "SELECT confirmed_quantity FROM inventory_pools WHERE slot_id=$1", unknownSlotID).Scan(&finalConfirmed); err != nil {
+		t.Fatalf("query inventory final confirmed_quantity: %v", err)
+	}
+	if finalConfirmed != initialConfirmed {
+		t.Fatalf("inventory_pools confirmed_quantity changed: initial=%d, final=%d", initialConfirmed, finalConfirmed)
 	}
 
-	var qrPayload string
-	retry(t, 15*time.Second, func() error {
-		code, respBody, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef.String()+"/tickets")
-		if code != http.StatusOK {
-			return fmt.Errorf("ticket bundle status %d: %s", code, respBody)
-		}
-		var bundle struct {
-			Tickets []struct {
-				QRPayload string `json:"qr_payload"`
-			} `json:"tickets"`
-		}
-		if err := json.Unmarshal(respBody, &bundle); err != nil {
-			return err
-		}
-		if len(bundle.Tickets) != 1 {
-			return fmt.Errorf("expected 1 ticket in bundle, got %d", len(bundle.Tickets))
-		}
-		if bundle.Tickets[0].QRPayload == "" {
-			return fmt.Errorf("ticket qr_payload is empty")
-		}
-		qrPayload = bundle.Tickets[0].QRPayload
-		return nil
-	})
-
-	occ := uuid.NewString()
-	occurredAt := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Microsecond)
-	scanPayload := map[string]any{
-		"qr_payload":    qrPayload,
-		"occurrence_id": occ,
-		"occurred_at":   occurredAt.Format(time.RFC3339Nano),
-	}
-	code, scanResp := postWithKey(t, gatewayURL+"/api/access/scans", "scan-"+suffix, scanPayload)
-	if code != http.StatusOK {
-		t.Fatalf("scan status %d: %s", code, scanResp)
-	}
-	var scanResult struct {
-		Decision string `json:"decision"`
-	}
-	if err := json.Unmarshal(scanResp, &scanResult); err != nil {
-		t.Fatalf("unmarshal scan response: %v", err)
-	}
-	if scanResult.Decision != "accepted" {
-		t.Fatalf("scan decision = %q, want %q", scanResult.Decision, "accepted")
-	}
-
+	// (b) The read does not close the gap. Reuse the real-checkout fixture, then
+	// read its exact persisted line and publish that line under a fresh event ID.
+	realOrderID, realGuestRef, _, _ := consoleFixture(t, suffix+"-real")
 	commDB, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
 	if err != nil {
 		t.Fatalf("connect commerce db: %v", err)
 	}
 	defer func() { _ = commDB.Close(ctx) }()
+	var realOrganizerID, realBuyerID, realSlotID, realTicketTypeID string
+	var quantity int
+	if err := commDB.QueryRow(ctx, `SELECT r.organizer_id::text, r.buyer_id::text, r.slot_id::text,
+		r.ticket_type_id::text, r.quantity
+		FROM orders o JOIN reservations r ON r.id=o.reservation_id WHERE o.id=$1`, realOrderID).
+		Scan(&realOrganizerID, &realBuyerID, &realSlotID, &realTicketTypeID, &quantity); err != nil {
+		t.Fatalf("read real order line: %v", err)
+	}
+	var originalTicketIDs []string
+	retry(t, 15*time.Second, func() error {
+		var count int
+		if err := accessDB.QueryRow(ctx, "SELECT count(*) FROM tickets WHERE order_id=$1", realOrderID).Scan(&count); err != nil {
+			return err
+		}
+		if count != quantity {
+			return fmt.Errorf("real order ticket count = %d, want quantity %d before forged replay", count, quantity)
+		}
+		rows, err := accessDB.Query(ctx, "SELECT id::text FROM tickets WHERE order_id=$1", realOrderID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		originalTicketIDs = originalTicketIDs[:0]
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			originalTicketIDs = append(originalTicketIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(originalTicketIDs) != quantity {
+			return fmt.Errorf("read %d original ticket IDs, want %d", len(originalTicketIDs), quantity)
+		}
+		return nil
+	})
+	replayEventID := uuid.New()
+	replayEvent := map[string]any{
+		"id": replayEventID.String(), "type": "platform.commerce.order.completed",
+		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano), "schema": 1,
+		"data": map[string]any{
+			"order_id": realOrderID, "guest_order_ref": realGuestRef,
+			"organizer_id": realOrganizerID, "buyer_id": realBuyerID,
+			"slot_id": realSlotID, "ticket_type_id": realTicketTypeID, "quantity": quantity,
+		},
+	}
+	replayBody, err := json.Marshal(replayEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commJS.Publish(ctx, "platform.commerce.order.completed", replayBody, jetstream.WithMsgID(replayEventID.String())); err != nil {
+		t.Fatalf("publish real-order forged event: %v", err)
+	}
+	retry(t, 15*time.Second, func() error {
+		var count int
+		if err := accessDB.QueryRow(ctx, "SELECT count(*) FROM tickets WHERE order_id=$1", realOrderID).Scan(&count); err != nil {
+			return err
+		}
+		if count != 2*quantity {
+			return fmt.Errorf("real order ticket count = %d, want %d after forged replay", count, 2*quantity)
+		}
+		return nil
+	})
 
-	var orderCount int
-	if err := commDB.QueryRow(ctx, "SELECT count(*) FROM orders WHERE id=$1", orderID).Scan(&orderCount); err != nil {
-		t.Fatalf("query commerce orders: %v", err)
+	original := make(map[string]struct{}, len(originalTicketIDs))
+	for _, id := range originalTicketIDs {
+		original[id] = struct{}{}
 	}
-	if orderCount != 0 {
-		t.Fatalf("commerce.orders count = %d for forged order %s, want 0", orderCount, orderID)
+	var forgedQR string
+	rows, err := accessDB.Query(ctx, "SELECT id::text, qr_payload FROM tickets WHERE order_id=$1", realOrderID)
+	if err != nil {
+		t.Fatalf("query forged ticket set: %v", err)
+	}
+	for rows.Next() {
+		var id, qr string
+		if err := rows.Scan(&id, &qr); err != nil {
+			rows.Close()
+			t.Fatalf("scan ticket row: %v", err)
+		}
+		if _, exists := original[id]; !exists {
+			forgedQR = qr
+			break
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate forged ticket rows: %v", err)
+	}
+	if forgedQR == "" {
+		t.Fatal("forged replay produced no additional ticket credential")
 	}
 
-	var finalConfirmed int
-	if err := invConn.QueryRow(ctx, "SELECT confirmed_quantity FROM inventory_pools WHERE slot_id=$1", slotID).Scan(&finalConfirmed); err != nil {
-		t.Fatalf("query inventory final confirmed_quantity: %v", err)
+	scanPayload := map[string]any{
+		"qr_payload": forgedQR, "occurrence_id": uuid.NewString(),
+		"occurred_at": time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond).Format(time.RFC3339Nano),
 	}
-	if finalConfirmed != initialConfirmed {
-		t.Fatalf("inventory_pools confirmed_quantity changed: initial=%d, final=%d", initialConfirmed, finalConfirmed)
+	code, scanResp := postWithKey(t, gatewayURL+"/api/access/scans", "scan-forged-"+suffix, scanPayload)
+	if code != http.StatusOK {
+		t.Fatalf("scan forged ticket status %d: %s", code, scanResp)
+	}
+	var scanResult struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal(scanResp, &scanResult); err != nil {
+		t.Fatalf("unmarshal forged ticket scan response: %v", err)
+	}
+	if scanResult.Decision != "accepted" {
+		t.Fatalf("forged ticket scan decision = %q, want accepted", scanResult.Decision)
 	}
 }
 
