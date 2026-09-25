@@ -57,9 +57,11 @@ canonical form does not include this field. No claim is made against that advers
 - Every `order.completed` issuance, including an unseated order, now depends on a
   successful Commerce read. Access retries issuance failures up to four processing
   attempts. A count, line, or identity mismatch also retries, then appears in the
-  existing `issuance_exhausted` failure record with stage `issuance`. Access does
-  not start its transaction or issue a NULL-associated ticket when the response is
-  invalid. The reason label does not distinguish a permanent mismatch from an outage.
+  existing `issuance_retries_exhausted` failure record with stage `issuance`. Access
+  does not start its transaction or issue a NULL-associated ticket when the response
+  is invalid. The reason label does not distinguish a permanent mismatch from an outage.
+- Migration 0013's Down is unconditionally irreversible, like every Access migration.
+  Rolling Access back below 0013 requires a forward fix.
 - The seat read does not authenticate `order.completed` and is not a security control. It checks the order ID,
   organizer, slot, ticket type, quantity, and seat identities. It does not check order status, buyer ID, or
   guest order reference. A forger with commerce's NATS credentials can use an unpaid order that still has a

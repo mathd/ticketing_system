@@ -128,6 +128,65 @@ func TestCompletedSeatedOrderAssignsExactSeats(t *testing.T) {
 	}
 }
 
+func TestCompletedGAOrderIssuesWithNullSeatIdentity(t *testing.T) {
+	db, ctx := issuanceDB(t)
+	event := issuanceEvent()
+	var requestCount int
+	commerce := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/orders/"+event.Data.OrderID.String()+"/seats" ||
+			r.URL.Query().Get("organizer_id") != event.Data.OrganizerID.String() || r.Header.Get("X-Internal-Token") != "internal" {
+			t.Errorf("commerce read request = %s %s token=%q", r.Method, r.URL, r.Header.Get("X-Internal-Token"))
+		}
+		_ = json.NewEncoder(w).Encode(orderSeats{
+			OrderID: event.Data.OrderID, OrganizerID: event.Data.OrganizerID,
+			SlotID: event.Data.SlotID, TicketTypeID: event.Data.TicketTypeID,
+			Quantity: int(event.Data.Quantity), Seated: false, SeatIdentities: []string{},
+		})
+	}))
+	defer commerce.Close()
+	st := store.New(db, issuanceConfig(t))
+	qr, err := ticket.New(base64.RawStdEncoding.EncodeToString(make([]byte, ed25519.SeedSize)), "ticket/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Consumer{st: st, signer: qr, client: commerce.Client(), commerceURL: commerce.URL, token: "internal"}
+	if err := c.issue(ctx, event); err != nil {
+		t.Fatalf("issue GA order: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("commerce read count = %d, want 1", requestCount)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT seat_identity FROM tickets WHERE order_id=$1`, event.Data.OrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ticketCount int
+	for rows.Next() {
+		var seatIdentity sql.NullString
+		if err := rows.Scan(&seatIdentity); err != nil {
+			t.Fatal(err)
+		}
+		ticketCount++
+		if seatIdentity.Valid {
+			t.Errorf("GA ticket %d seat identity = %q, want NULL", ticketCount, seatIdentity.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if ticketCount != int(event.Data.Quantity) {
+		t.Fatalf("ticket rows = %d, want %d", ticketCount, event.Data.Quantity)
+	}
+	if n := countIssuanceRows(t, ctx, db, `SELECT count(*) FROM consumed_events WHERE event_id=$1`, event.ID); n != 1 {
+		t.Fatalf("consumed event rows = %d, want 1", n)
+	}
+	if n := countIssuanceRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events l JOIN tickets t ON t.id=l.ticket_id WHERE t.order_id=$1 AND l.event_type='issued'`, event.Data.OrderID); n != int(event.Data.Quantity) {
+		t.Fatalf("issued lifecycle rows = %d, want %d", n, event.Data.Quantity)
+	}
+}
+
 func TestCompletedSeatedOrderPersists200CharacterMultibyteSeat(t *testing.T) {
 	db, ctx := issuanceDB(t)
 	event := issuanceEvent()
