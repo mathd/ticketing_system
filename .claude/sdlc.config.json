@@ -9,13 +9,14 @@
     "gateVerdict": ".gate.verdict"
   },
   "models": {
-    "plan": "gpt-6-sol",
+    "plan": "main-agent",
     "planReview": "main-agent",
-    "implement": "gpt-6-luna",
-    "aiReview": "gpt-6-sol"
+    "implement": "main-agent",
+    "aiReview": "main-agent"
   },
   "registry": {
     "bindingPath": "docs/adr/",
     "referenceLocation": "local"
-  }
+  },
+  "modelWaiver": "Owner, 2026-09-25: run every stage on Claude Opus 5.5 (main-agent) only. codex (gpt-6-sol/gpt-6-luna) answered 401 on every call. This WAIVES the skill's cross-model invariant (plan != planReview, implement != aiReview); record it on every ticket (kind=decision) and in each closeout's overrides. Restore the gpt-* values and delete this key when codex is back."
 }

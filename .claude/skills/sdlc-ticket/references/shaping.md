@@ -144,7 +144,10 @@ there is nothing observable between them the second guard is untestable and the 
    existing patterns, feasibility). Fill what you can yourself: draft objective, scope, COS,
    first slice (SPIDR: split by Spike/Path/Interface/Data/Rules until one slice fits a sprint).
    This read is also where a **remedy the ticket proposes** gets checked rather than inherited
-   (above) — including, and especially, one that cites a precedent ticket.
+   (above) — including, and especially, one that cites a precedent ticket. The same goes for an
+   AC struck as **already discharged** by another ticket or ADR: cite the code path that
+   discharges it (file:line) and read it. TKT-169's AC-4 was struck as "discharged by ADR-067",
+   but ADR-067's unwind refuses exactly the settled exchange the AC was about.
 2. **Surface the rest, Example-Mapping style** — for each COS/rule, try a concrete example; what
    you can't exemplify is an unknown. Sort unknowns into:
    - **investigations** (answerable by work) → spawn a **spike** (below);

@@ -593,3 +593,9 @@ the row, then a second CHECK on the same table did, with the same `23514`. Asser
 `pgconn.PgError.ConstraintName`, build the row to satisfy every other constraint, and scope any
 `pg_constraint` lookup by `conrelid` (a name alone matches every schema in the database).
 [full note](learnings/2026-09-25-a-sqlstate-does-not-name-the-constraint.md)
+
+**2026-09-25 — TKT-169.** **A stub that ignores its arguments cannot catch a call with the wrong
+arguments.** A money guard was gated on a payments-evidence lookup; the test stub returned a fixed
+answer, while production asked with an empty key, got a 400, read Indeterminate, and the guard could
+never fire for a downgrade. Record and assert a stub's inputs when the real answer depends on them.
+[full note](learnings/2026-09-25-a-stub-that-ignores-its-arguments.md)
