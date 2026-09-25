@@ -71,10 +71,15 @@ type stubMoneyEvidence struct {
 	evidence exchangeunwind.MoneyEvidence
 	err      error
 	calls    int
+	// The last arguments, so a test can prove the lookup was asked about the right leg:
+	// a downgrade asked with an empty source key reads as Indeterminate in production.
+	lastDelta     int64
+	lastSourceKey string
 }
 
-func (s *stubMoneyEvidence) MoneyEvidence(context.Context, uuid.UUID, uuid.UUID, int64, string) (exchangeunwind.MoneyEvidence, error) {
+func (s *stubMoneyEvidence) MoneyEvidence(_ context.Context, _ uuid.UUID, _ uuid.UUID, delta int64, sourceKey string) (exchangeunwind.MoneyEvidence, error) {
 	s.calls++
+	s.lastDelta, s.lastSourceKey = delta, sourceKey
 	return s.evidence, s.err
 }
 
@@ -741,6 +746,47 @@ func TestPreProviderBasisResumeRechecksAdmission(t *testing.T) {
 	if settled || !basis || exchangeIsSettling(t, ctx, db, f.organizer, key) {
 		t.Fatalf("refused state settled=%t basis=%t settling=%t, want unsettled basis for unwind-exchange",
 			settled, basis, exchangeIsSettling(t, ctx, db, f.organizer, key))
+	}
+}
+
+// The downgrade twin of TestPreProviderBasisResumeRechecksAdmission. A downgrade's money
+// evidence is the refund leg, keyed on the source order's payment source key, which the
+// looked-up exchange row does not carry. Asked without it, payments answers 400, the
+// unwind reads Indeterminate, and the re-read never runs for any downgrade.
+func TestPreProviderDowngradeResumeAsksEvidenceWithTheSourceKey(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "resume-downgrade-before-provider-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(500)
+	policy.finalizeFails.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+
+	const key = "resume-downgrade-before-provider-1"
+	if code, _ := s.exchange(t, f, key); code != http.StatusConflict {
+		t.Fatalf("initial exchange = %d, want target-finalize refusal", code)
+	}
+	s.inventory.reset()
+	s.payments.reset()
+	s.access.reset()
+	policy.finalizeFails.Store(false)
+	policy.admissionBody.Store(`{"admitted":true,"issued_count":2}`)
+
+	code, out := s.exchange(t, f, key)
+	if code != http.StatusConflict || out["code"] != "source_tickets_already_admitted" {
+		t.Fatalf("pre-provider downgrade resume = %d %v, want admitted-source 409", code, out)
+	}
+	if s.moneyEvidence.lastDelta >= 0 {
+		t.Fatalf("evidence asked about delta %d, want a downgrade (negative)", s.moneyEvidence.lastDelta)
+	}
+	var sourceKey string
+	if err := db.QueryRowContext(ctx, `SELECT idempotency_key FROM orders WHERE id=$1`, f.order).Scan(&sourceKey); err != nil {
+		t.Fatal(err)
+	}
+	if sourceKey == "" || s.moneyEvidence.lastSourceKey != sourceKey {
+		t.Fatalf("evidence source key = %q, want the source order's key %q", s.moneyEvidence.lastSourceKey, sourceKey)
+	}
+	if got := s.payments.count("refund-submissions"); got != 0 {
+		t.Fatalf("refused downgrade resume submitted %d refund legs, want 0", got)
 	}
 }
 

@@ -158,18 +158,6 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 	// money against a price the buyer never agreed to and journal a provenance snapshot
 	// describing a resolution that happened after the charge.
 	if found && existing.BasisRecorded && !existing.Settled {
-		// settling_at is best-effort, so NULL alone does not prove the provider was never
-		// called. Re-read admission only when payments gives the unwind's definitive Absent
-		// answer for this basis's money leg. Present, Indeterminate, and errors must resume
-		// as before because a refusal could strand a charged buyer.
-		if !existing.Settling && s.moneyEvidence != nil {
-			evidence, evidenceErr := s.moneyEvidence.MoneyEvidence(r.Context(), existing.OrganizerID,
-				existing.ID, existing.DeltaAmount, existing.PaymentSourceKey)
-			if evidenceErr == nil && evidence == exchangeunwind.Absent &&
-				!s.checkSourceAdmission(w, r, existing.SourceOrderID, existing.OrganizerID, existing.Quantity) {
-				return
-			}
-		}
 		// BindOrderExchange, not LoadExchangeSource, and the difference is the point.
 		//
 		// The resume needs five fields the exchange row does not carry — SourceReservation,
@@ -187,6 +175,23 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 			}
 			write(w, code, map[string]string{"error": message})
 			return
+		}
+		// settling_at is best-effort, so NULL alone does not prove the provider was never
+		// called. Re-read admission only when payments gives the unwind's definitive Absent
+		// answer for this basis's money leg. Present, Indeterminate, and errors must resume
+		// as before because a refusal could strand a charged buyer.
+		//
+		// After the bind, not before it: a downgrade's evidence is keyed on the source
+		// order's PaymentSourceKey, which the looked-up row does not carry. Asked with an
+		// empty key, payments answers 400, the unwind reads that as Indeterminate, and the
+		// re-read could never run for a downgrade.
+		if !existing.Settling && s.moneyEvidence != nil {
+			evidence, evidenceErr := s.moneyEvidence.MoneyEvidence(r.Context(), ex.OrganizerID,
+				ex.ID, ex.DeltaAmount, ex.PaymentSourceKey)
+			if evidenceErr == nil && evidence == exchangeunwind.Absent &&
+				!s.checkSourceAdmission(w, r, ex.SourceOrderID, ex.OrganizerID, ex.Quantity) {
+				return
+			}
 		}
 		s.completeExchangeFromBasis(w, r, ex, true, in.PaymentToken)
 		return
