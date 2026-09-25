@@ -725,16 +725,10 @@ func TestReserveUsesRuleResolvedPriceAndPinsTheQuote(t *testing.T) {
 	}
 }
 
-// TestSeatedReservationAndCheckout is TKT-173 end to end through the gateway: a
-// buyer names seats, pays for exactly the seats they got, and a competitor naming
-// one of them is refused by name.
-//
-// It gets its own fixture and its own test rather than joining
-// TestSeatedPublicationCoexistsWithGA, which already carries publication, the
-// schema-4 fork, occupancy (TKT-172), direct seat holding and pinning. The buyer
-// WRITE path deserves its own failure boundary — when this breaks, the message
-// should say "seated checkout", not "seated publication".
-func TestSeatedReservationAndCheckout(t *testing.T) {
+// TestTicketSeatIdentitySurvivesPinnedMapEdit checks the full seated checkout,
+// then reads Commerce's issuance operation and Access's ticket rows. It edits
+// the published map while the seats remain pinned and checks both rows again.
+func TestTicketSeatIdentitySurvivesPinnedMapEdit(t *testing.T) {
 	catalog := gatewayURL + "/api/catalog"
 	suffix := uuid.NewString()[:8]
 
@@ -890,6 +884,7 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 		t.Fatalf("seated checkout = %d %s", orderCode, orderBody)
 	}
 	var order struct {
+		OrderID       string `json:"order_id"`
 		Status        string `json:"status"`
 		GuestOrderRef string `json:"guest_order_ref"`
 	}
@@ -899,6 +894,165 @@ func TestSeatedReservationAndCheckout(t *testing.T) {
 	if order.Status != "completed" || order.GuestOrderRef == "" {
 		t.Fatalf("seated order = %s", orderBody)
 	}
+
+	// The internal read is a documented 2xx operation, so call it directly through
+	// the running commerce service. This also reads the exact set access will use.
+	code, body = internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/orders/%s/seats?organizer_id=%s", commerceURL, order.OrderID, organizerID), "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("internal order seats = %d %s", code, body)
+	}
+	var orderSeats struct {
+		OrderID        string   `json:"order_id"`
+		OrganizerID    string   `json:"organizer_id"`
+		SlotID         string   `json:"slot_id"`
+		TicketTypeID   string   `json:"ticket_type_id"`
+		Quantity       int      `json:"quantity"`
+		Seated         bool     `json:"seated"`
+		SeatIdentities []string `json:"seat_identities"`
+	}
+	if err := json.Unmarshal(body, &orderSeats); err != nil {
+		t.Fatal(err)
+	}
+	if orderSeats.OrderID != order.OrderID || orderSeats.OrganizerID != organizerID ||
+		orderSeats.SlotID != fmt.Sprint(perf["id"]) || orderSeats.TicketTypeID != fmt.Sprint(tt["id"]) ||
+		orderSeats.Quantity != 2 || !orderSeats.Seated || len(orderSeats.SeatIdentities) != 2 ||
+		orderSeats.SeatIdentities[0] != seatOf(2) || orderSeats.SeatIdentities[1] != seatOf(3) {
+		t.Fatalf("order seats = %+v", orderSeats)
+	}
+
+	// Wait for issuance, then read the tickets table. The expected set comes from
+	// the reservation above, not from the read being tested.
+	var issuedSeats []string
+	retry(t, 10*time.Second, func() error {
+		var err error
+		issuedSeats, err = readTicketSeatIdentities(order.OrderID)
+		if err != nil {
+			return err
+		}
+		if len(issuedSeats) != 2 {
+			return fmt.Errorf("issued ticket count = %d", len(issuedSeats))
+		}
+		return nil
+	})
+	if len(issuedSeats) != 2 || issuedSeats[0] != seatOf(2) || issuedSeats[1] != seatOf(3) {
+		t.Fatalf("issued ticket seats = %v, want [%s %s]", issuedSeats, seatOf(2), seatOf(3))
+	}
+
+	// A new published version keeps the identity family for existing seats. Ticket
+	// rows must retain the same values after the edit.
+	editCode, editBody := postJSON(t, catalog+"/seat-maps/"+fmt.Sprint(seatMap["id"])+"/edit", map[string]any{
+		"sections": []map[string]any{{"name": "Stalls", "position": 1, "rows": []map[string]any{{
+			"label": "A", "position": 1,
+			"seats": []map[string]any{{"label": "1", "position": 1}, {"label": "2", "position": 2}, {"label": "3", "position": 3}, {"label": "4", "position": 4}},
+		}}}},
+	})
+	if editCode != http.StatusCreated {
+		t.Fatalf("edit pinned seat map = %d %s", editCode, editBody)
+	}
+	var edited struct {
+		ID      string `json:"id"`
+		Version int32  `json:"version"`
+	}
+	if err := json.Unmarshal(editBody, &edited); err != nil {
+		t.Fatalf("decode edited map: %v (%s)", err, editBody)
+	}
+	if edited.ID == "" || edited.ID == fmt.Sprint(seatMap["id"]) || edited.Version != 2 {
+		t.Fatalf("edited map = %+v; want a new version 2 row", edited)
+	}
+	geometryCode, geometryBody, _ := getWithHeaders(t, catalog+"/public/seat-maps/"+edited.ID)
+	if geometryCode != http.StatusOK {
+		t.Fatalf("edited map geometry = %d %s", geometryCode, geometryBody)
+	}
+	var geometry struct {
+		Sections []struct {
+			Rows []struct {
+				Seats []struct {
+					Identity string `json:"seat_identity"`
+				} `json:"seats"`
+			} `json:"rows"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(geometryBody, &geometry); err != nil {
+		t.Fatal(err)
+	}
+	var mapIdentities []string
+	for _, section := range geometry.Sections {
+		for _, row := range section.Rows {
+			for _, seat := range row.Seats {
+				mapIdentities = append(mapIdentities, seat.Identity)
+			}
+		}
+	}
+	if len(mapIdentities) != 4 || mapIdentities[1] != seatOf(2) || mapIdentities[2] != seatOf(3) {
+		t.Fatalf("edited map identities = %v; want the same family identities for seats 2 and 3", mapIdentities)
+	}
+	pinnedSeats, err := readPinnedSeatIdentities(edited.ID, []string{seatOf(2), seatOf(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinnedSeats) != 2 || pinnedSeats[0] != seatOf(2) || pinnedSeats[1] != seatOf(3) {
+		t.Fatalf("seat pins after edit = %v, want the issued identities", pinnedSeats)
+	}
+	afterEdit, err := readTicketSeatIdentities(order.OrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEdit) != 2 || afterEdit[0] != seatOf(2) || afterEdit[1] != seatOf(3) {
+		t.Fatalf("ticket identities after seat-map edit = %v", afterEdit)
+	}
+}
+
+func readTicketSeatIdentities(orderID string) ([]string, error) {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn("access", "access"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	rows, err := conn.Query(ctx, `SELECT seat_identity FROM tickets WHERE order_id=$1 ORDER BY seat_identity`, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var identities []string
+	for rows.Next() {
+		var identity *string
+		if err := rows.Scan(&identity); err != nil {
+			return nil, err
+		}
+		if identity == nil {
+			return nil, fmt.Errorf("issued seated ticket has NULL seat identity")
+		}
+		identities = append(identities, *identity)
+	}
+	return identities, rows.Err()
+}
+
+func readPinnedSeatIdentities(mapID string, wanted []string) ([]string, error) {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn("catalog", "catalog"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	rows, err := conn.Query(ctx, `SELECT DISTINCT p.seat_identity
+		FROM seat_map_pins p
+		JOIN seat_maps m ON m.map_family_id=p.map_family_id
+		WHERE m.id=$1 AND p.organizer_id=$2 AND p.seat_identity=ANY($3::text[])
+		ORDER BY p.seat_identity`, mapID, organizerID, wanted)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var identities []string
+	for rows.Next() {
+		var identity string
+		if err := rows.Scan(&identity); err != nil {
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	return identities, rows.Err()
 }
 
 // TKT-215 AC4 + AC8, end to end through the real stack: two reservations that

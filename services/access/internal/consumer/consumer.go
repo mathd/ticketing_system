@@ -354,6 +354,10 @@ func (c *Consumer) processExchanged(ctx context.Context, event exchanged) (Failu
 }
 
 func (c *Consumer) issue(ctx context.Context, e completed) error {
+	seatIdentities, err := c.seats(ctx, e)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	in := store.IssueInput{EventID: e.ID}
 	for i := int32(0); i < e.Data.Quantity; i++ {
@@ -362,7 +366,12 @@ func (c *Consumer) issue(ctx context.Context, e completed) error {
 		if err != nil {
 			return err
 		}
-		in.Tickets = append(in.Tickets, store.Ticket{ID: id, OrderID: e.Data.OrderID, GuestOrderRef: e.Data.GuestOrderRef, OrganizerID: e.Data.OrganizerID, BuyerID: e.Data.BuyerID, SlotID: e.Data.SlotID, TicketTypeID: e.Data.TicketTypeID, Payload: payload, IssuedAt: now})
+		var seatIdentity *string
+		if len(seatIdentities) > 0 {
+			identity := seatIdentities[i]
+			seatIdentity = &identity
+		}
+		in.Tickets = append(in.Tickets, store.Ticket{ID: id, OrderID: e.Data.OrderID, GuestOrderRef: e.Data.GuestOrderRef, OrganizerID: e.Data.OrganizerID, BuyerID: e.Data.BuyerID, SlotID: e.Data.SlotID, TicketTypeID: e.Data.TicketTypeID, SeatIdentity: seatIdentity, Payload: payload, IssuedAt: now})
 	}
 	return c.st.Issue(ctx, in)
 }

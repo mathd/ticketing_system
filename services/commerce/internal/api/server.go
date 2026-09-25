@@ -230,6 +230,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	// The staff order read (TKT-201). A GET beside the writes on the same order, behind
 	// the same inline guard, and NOT a widening of the public GET /orders/{id} above.
 	r.Get("/internal/orders/{id}", s.staffOrderDetail)
+	r.Get("/internal/orders/{id}/seats", s.internalOrderSeats)
 	r.Post("/internal/orders/{id}/refunds", s.refundOrder)
 	// TKT-171: the comped-order reversal. Beside the refund because it is the same
 	// staff decision on an order with no money leg, not a different subsystem.

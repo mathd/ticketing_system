@@ -156,6 +156,13 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 	if _, err = provider.Up(ctx); err != nil {
 		t.Fatalf("apply migrations 0002 through 0004: %v", err)
 	}
+	var historicalSeatIdentity *string
+	if err = db.QueryRowContext(ctx, `SELECT seat_identity FROM tickets WHERE id=$1`, ticketID).Scan(&historicalSeatIdentity); err != nil {
+		t.Fatalf("read historical ticket seat identity: %v", err)
+	}
+	if historicalSeatIdentity != nil {
+		t.Fatalf("historical ticket seat identity = %q; want NULL because no ticket-to-seat mapping was recorded", *historicalSeatIdentity)
+	}
 	after, err := st.History(ctx, ticketID)
 	if err != nil {
 		t.Fatal(err)
@@ -296,13 +303,13 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	// 0012 added integrity-alarm reason codes (TKT-147). Pinned rather than
-	// derived: this assertion exists so that adding a migration is a decision
-	// someone states here, not a number that drifts. It adds a nullable column to
-	// the append-only quarantine table and leaves lifecycle history and canonical
-	// bytes unchanged. (0011 added redelivery_requests and redelivery_attempts;
-	// 0010 created tickets_organizer_feed_idx for the voided-ticket feed.)
-	if err != nil || current != 12 || target != 12 {
+	// 0013 added nullable ticket seat identities (TKT-164), with no backfill.
+	// The association lives on tickets and leaves lifecycle history and canonical
+	// bytes unchanged. Pinned rather than derived so adding a migration is a
+	// decision someone states here. (0012 added integrity-alarm reason codes;
+	// 0011 added redelivery_requests and redelivery_attempts; 0010 created
+	// tickets_organizer_feed_idx.)
+	if err != nil || current != 13 || target != 13 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 

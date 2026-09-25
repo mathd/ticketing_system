@@ -486,6 +486,17 @@ type ExchangeSwitched struct {
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
 }
 
+// InternalOrderSeats The reservation row is the source of seatedness: NULL seat_identities means unseated, while a non-NULL array means seated. The response echoes the order line so access can reject a seat set for a different event line.
+type InternalOrderSeats struct {
+	OrderId        openapi_types.UUID `json:"order_id"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	Quantity       int                `json:"quantity"`
+	SeatIdentities []string           `json:"seat_identities"`
+	Seated         bool               `json:"seated"`
+	SlotId         openapi_types.UUID `json:"slot_id"`
+	TicketTypeId   openapi_types.UUID `json:"ticket_type_id"`
+}
+
 // OperationalConversion defines model for OperationalConversion.
 type OperationalConversion struct {
 	Amount          int64              `json:"amount"`
@@ -860,6 +871,11 @@ type ExchangeOrderParams struct {
 // RefundOrderParams defines parameters for RefundOrder.
 type RefundOrderParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetInternalOrderSeatsParams defines parameters for GetInternalOrderSeats.
+type GetInternalOrderSeatsParams struct {
+	OrganizerId OrganizerIdQuery `form:"organizer_id" json:"organizer_id"`
 }
 
 // UnclaimOrderParams defines parameters for UnclaimOrder.
