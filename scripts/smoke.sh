@@ -390,6 +390,7 @@ if ! compose exec -T commerce /app list-resellers 00000000-0000-0000-0000-000000
 fi
 
 cd "$ROOT/smoke"
+status=0
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
@@ -431,7 +432,16 @@ SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
 SMOKE_PAYMENTS_URL=http://localhost:${PAYMENTS_PORT} \
 SMOKE_ACCESS_URL=http://localhost:${ACCESS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
-go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./...
+go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./... || status=$?
+
+# TKT-149 captures logs when the smoke module's Go tests fail.
+# A generic 500 hides its cause in the service log.
+# Print recent logs before cleanup tears down the stack and destroys them.
+if [ "$status" -ne 0 ]; then
+  echo "--- smoke go test failed (exit $status); recent service logs ---"
+  compose logs --no-color --timestamps --tail 400 inventory gateway || true
+  exit "$status"
+fi
 
 # QUIESCE THE ONLY LIVE WRITER BEFORE ANY JOURNAL VERIFICATION (TKT-254).
 #
