@@ -230,13 +230,16 @@ func TestIntegrityAlarmReasonMigrationAndConstraint(t *testing.T) {
 		t.Fatal("append-only quarantine trigger allowed a reason_code UPDATE")
 	}
 	invalidCodeTicket := issueTicket(t, ctx, st, uuid.New())
-	_, err = db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code) VALUES($1,$2,'bad code','not_a_reason')`, invalidCodeTicket.ticketID, invalidCodeTicket.id.OrganizerID)
+	_, err = db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code,admitted_at) VALUES($1,$2,'bad code','not_a_reason',now())`, invalidCodeTicket.ticketID, invalidCodeTicket.id.OrganizerID)
 	if err == nil {
 		t.Fatal("reason_code CHECK accepted a value outside the vocabulary")
 	}
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
-		t.Fatalf("invalid reason_code insert error = %v, want CHECK violation (SQLSTATE 23514)", err)
+	// Name the constraint, not just the SQLSTATE: the table has other CHECKs (the
+	// time and event_type checks), and a row that trips one of them would pass a
+	// SQLSTATE-only assertion with the reason_code CHECK gone.
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "lifecycle_integrity_quarantine_reason_code_check" {
+		t.Fatalf("invalid reason_code insert error = %v, want the reason_code CHECK violation", err)
 	}
 
 	var constraint string
