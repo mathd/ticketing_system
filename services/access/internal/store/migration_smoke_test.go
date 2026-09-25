@@ -506,7 +506,8 @@ func TestRepeatableAdmissionMigrationPreservesSignedHistory(t *testing.T) {
 
 	cfg := testConfig(t)
 	st := New(db, cfg)
-	s := issueTicket(t, ctx, st, uuid.New())
+	// Migration 0003 predates seat_identity, so seed the pre-0013 ticket shape.
+	s := issueLegacyTicket(t, ctx, st, uuid.New())
 	messageID, err := st.DeliveryID(ctx, s.ticketID)
 	if err != nil {
 		t.Fatal(err)

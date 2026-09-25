@@ -66,11 +66,11 @@ func issuanceConfig(t *testing.T) store.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := lifecycle.NewSigner(base64.RawStdEncoding.EncodeToString(priv.Seed()), "access-issuance/test")
+	signer, err := lifecycle.NewSigner(base64.RawStdEncoding.EncodeToString(priv.Seed()), "access-lifecycle/issuance-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyring, err := lifecycle.NewKeyring("access-issuance/test=" + base64.RawStdEncoding.EncodeToString(pub))
+	keyring, err := lifecycle.NewKeyring("access-lifecycle/issuance-test=" + base64.RawStdEncoding.EncodeToString(pub))
 	if err != nil {
 		t.Fatal(err)
 	}
