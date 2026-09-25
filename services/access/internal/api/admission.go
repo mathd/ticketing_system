@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"database/sql"
 	"net/http"
 
@@ -28,7 +29,7 @@ func (s *Server) orderAdmission(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.st.OrderAdmission(r.Context(), organizerID, orderID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 			return
 		}
