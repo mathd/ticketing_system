@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -227,8 +229,14 @@ func TestIntegrityAlarmReasonMigrationAndConstraint(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE lifecycle_integrity_quarantine SET reason_code='sequence_gap' WHERE ticket_id=$1`, s.ticketID); err == nil {
 		t.Fatal("append-only quarantine trigger allowed a reason_code UPDATE")
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code) VALUES($1,$2,'bad code','not_a_reason')`, uuid.New(), uuid.New()); err == nil {
+	invalidCodeTicket := issueTicket(t, ctx, st, uuid.New())
+	_, err = db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code) VALUES($1,$2,'bad code','not_a_reason')`, invalidCodeTicket.ticketID, invalidCodeTicket.id.OrganizerID)
+	if err == nil {
 		t.Fatal("reason_code CHECK accepted a value outside the vocabulary")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("invalid reason_code insert error = %v, want CHECK violation (SQLSTATE 23514)", err)
 	}
 
 	var constraint string
