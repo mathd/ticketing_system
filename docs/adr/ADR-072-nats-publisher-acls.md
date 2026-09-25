@@ -170,12 +170,15 @@ touches ADR-034.
 
 **(b) Forged events within a principal's own publish boundary — TKT-296.**
 
-A compromised service can forge events within its own subject boundary. For example, a compromised commerce
-service can publish an `order.completed` event for a slot without creating an order in its database. Access
-consumes the event and issues a valid ticket.
-This limitation is tracked in TKT-296 (signed event envelopes).
-Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` explicitly pins this
-limitation as present. Do not remove this test.
+A holder of commerce's NATS credentials alone can publish `order.completed` for an order Commerce does not
+know. Access now reads the order's seat data from Commerce, so that event fails issuance and mints no ticket.
+This narrows the gap for that adversary. The gap remains open: a forger with commerce's NATS credentials can
+name a real completed order and its exact line, then use a new event ID to mint another ticket set. A fully
+compromised commerce service can also answer the seat read for a forged event. The seat read does not
+authenticate the event. Signed event envelopes remain the fix tracked by TKT-296.
+
+Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` pins both the
+narrowed case and the still-open case. Do not remove this test.
 
 ## Consequences
 

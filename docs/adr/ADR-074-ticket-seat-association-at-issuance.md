@@ -60,6 +60,9 @@ canonical form does not include this field. No claim is made against that advers
   existing `issuance_exhausted` failure record with stage `issuance`. Access does
   not start its transaction or issue a NULL-associated ticket when the response is
   invalid. The reason label does not distinguish a permanent mismatch from an outage.
+- The seat read incidentally narrows ADR-072 §6(b) for a forger with commerce's
+  NATS credentials only. It is not a security control and was not designed as one.
+  Signed event envelopes tracked by TKT-296 remain the fix.
 - On a prolonged Commerce outage, Access commits neither tickets nor a consumed
   event receipt for the failed issuance. Operators use the existing failed-event
   recovery procedure: inspect the failure record, repair the dependency, find the
