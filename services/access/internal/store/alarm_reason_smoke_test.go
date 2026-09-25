@@ -198,7 +198,7 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 	// The orphan case drops the event FK; its cleanup must have put it back, or every
 	// case after it ran on a weaker schema than production.
 	var fk int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname='lifecycle_event_integrity_event_id_fkey'`).Scan(&fk); err != nil || fk != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='lifecycle_event_integrity'::regclass AND conname='lifecycle_event_integrity_event_id_fkey'`).Scan(&fk); err != nil || fk != 1 {
 		t.Fatalf("lifecycle_event_integrity event FK after the branch table: count=%d err=%v", fk, err)
 	}
 
