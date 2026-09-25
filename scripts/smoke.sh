@@ -391,6 +391,7 @@ fi
 
 cd "$ROOT/smoke"
 status=0
+suite_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
@@ -435,11 +436,17 @@ SMOKE_COMPOSE_PROJECT="$PROJECT" \
 go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./... || status=$?
 
 # TKT-149 captures logs when the smoke module's Go tests fail.
-# A generic 500 hides its cause in the service log.
-# Print recent logs before cleanup tears down the stack and destroys them.
+# A generic 500 hides its cause in the service log. Keep the whole suite window:
+# a failing test does not stop the suite, and later requests can evict its log
+# line from a tail window. Filter the volume to error and warning levels, which
+# bounds the dump to lines that can explain a failure.
+# Print logs before cleanup tears down the stack and destroys them.
 if [ "$status" -ne 0 ]; then
   echo "--- smoke go test failed (exit $status); recent service logs ---"
-  compose logs --no-color --timestamps --tail 400 inventory gateway || true
+  echo "--- error and warning log lines since $suite_start (all services) ---"
+  compose logs --no-color --timestamps --since "$suite_start" 2>&1 | grep -E '"level":"(ERROR|WARN)"' || true
+  echo "--- last 50 lines per service ---"
+  compose logs --no-color --timestamps --tail 50 || true
   exit "$status"
 fi
 
