@@ -258,9 +258,10 @@ conflicts. Together every physical admission that Access learns about is represe
    database CHECK on `lifecycle_integrity_quarantine.reason_code` lists the same values. A NULL
    code on a pre-TKT-147 quarantine row maps to `legacy_quarantine` when Access raises an alarm;
    the migration does not update append-only rows. The internal `reason` column and Access logs
-   retain the detailed verifier error. Schema-1 alarms already in the outbox or on JetStream remain
-   unchanged and may still contain diagnostic prose. The schema-2 guarantee applies to alarms
-   produced by the updated application.
+   retain the detailed verifier error for quarantined rows. Operator-controlled denials and
+   unverified exits write no quarantine row, so their logs retain the detail. Schema-1 alarms
+   already in the outbox or on JetStream remain unchanged and may still contain diagnostic prose.
+   The schema-2 guarantee applies to alarms produced by the updated application.
 
    This is a producer-schema constraint on honest application changes; it is **not** a privacy or
    non-linkability guarantee, and **not** containment against an adversary with write access to the
@@ -270,8 +271,9 @@ conflicts. Together every physical admission that Access learns about is represe
 
    - `device_occurred_at` is device-*claimed* and correlates with a physical gate event. Bounded is
      not anonymous.
-   - The detailed integrity error stays in the internal quarantine `reason` column and logs. The
-     payload carries only its fixed code.
+   - For quarantined rows, the detailed integrity error stays in the internal `reason` column and
+     logs. Operator-controlled denials and unverified exits write no quarantine row, so only their
+     logs retain the detail. The payload carries only its fixed code.
 
    TKT-119 relaxed the original wording, "bounded identifiers and enums only," because shipped
    alarms already carried timestamps and a diagnostic reason, and §D5 requires device-claimed

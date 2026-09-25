@@ -256,3 +256,22 @@ func TestIntegrityAlarmReasonMigrationAndConstraint(t *testing.T) {
 	}
 
 }
+
+func TestIntegrityAlarmReasonMigrationIsIrreversible(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	// Pin the migration version. Down rolls back exactly the current head, so
+	// Up-to-head would only prove that whichever migration is newest refuses.
+	if _, err := provider.UpTo(ctx, 12); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(ctx); err == nil {
+		t.Fatal("migration 0012 rolled back; quarantine reason codes must be retained")
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name='lifecycle_integrity_quarantine' AND column_name='reason_code'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("failed down attempt removed reason_code (n=%d err=%v)", n, err)
+	}
+}

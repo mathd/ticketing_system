@@ -20,4 +20,12 @@ ALTER TABLE lifecycle_integrity_quarantine
   ));
 
 -- +goose Down
-ALTER TABLE lifecycle_integrity_quarantine DROP COLUMN reason_code;
+-- Unconditionally irreversible, like the earlier Access migrations. The
+-- quarantine table is append-only, and reason codes classify its degraded-
+-- admission records. A conditional guard would weaken that convention.
+-- +goose StatementBegin
+DO $$
+BEGIN
+  RAISE EXCEPTION 'migration 0012 is irreversible: quarantine reason codes are part of the append-only degraded-admission record';
+END $$;
+-- +goose StatementEnd
