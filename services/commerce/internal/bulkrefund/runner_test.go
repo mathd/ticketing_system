@@ -720,6 +720,23 @@ func TestDefiniteRefusalIsTerminalOnTheFirstAttempt(t *testing.T) {
 	}
 }
 
+func TestProviderTerminalRefundIsImmediateCancellationFailure(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrProviderRefundFailed}
+	f.work = append(f.work, work(order))
+
+	runnerFor(f, newFakeRefunder(f)).RunOnce(context.Background())
+
+	got, terminal := f.final[order]
+	if !terminal || got.FailureCode != "refund_refused" {
+		t.Fatalf("outcome = %+v (terminal=%v), want immediate failed/refund_refused", got, terminal)
+	}
+	if f.attempts[order] != 1 || got.FailureReason != refunds.ErrProviderRefundFailed.Error() {
+		t.Fatalf("attempts=%d reason=%q, want one attempt and terminal provider detail", f.attempts[order], got.FailureReason)
+	}
+}
+
 // Review finding 2: the ceiling can move between reading the remainder and binding — a staff
 // refund lands in between. The fixed quantity is then wrong forever, so it must be CLEARED
 // and recomputed rather than stranding a refundable order on a stale number.

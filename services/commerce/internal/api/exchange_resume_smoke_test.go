@@ -291,6 +291,7 @@ type stubPolicy struct {
 	// capacity is not back. Toggling it is how a test drives "the callback 502'd, redelivery
 	// died, then inventory recovered".
 	capacityReturnFails atomic.Bool
+	terminalRefund      atomic.Bool
 	// claims is the target claim's real state machine (TKT-255), and it exists because
 	// `finalizeFails` cannot express what TKT-255 has to prove.
 	//
@@ -487,6 +488,11 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 			_, _ = w.Write([]byte(`{"status":"captured"}`))
 		case strings.HasSuffix(r.URL.Path, "/internal/psp/partial-refund"):
 			c.hit("refund-submissions")
+			if policy.terminalRefund.Load() {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_terminal"}`))
+				return
+			}
 			// Recorded under the REFUND key, which the write path carries in its BODY (not
 			// the query), so the evidence read below can answer about this leg specifically.
 			c.hit("refund-key:" + bodyField(r, "refund_key"))
@@ -542,6 +548,30 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 	r.Post("/internal/exchanges/{id}/tickets-switched", srv.exchangeTicketsSwitched)
 	return &exchangeStack{db: db, handler: r, token: token,
 		catalog: catalog, inventory: inventory, payments: payments}
+}
+
+func TestDowngradeProviderTerminalRefundIsReported(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedExchangeSource(t, db, ctx, "terminal-downgrade-src", 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(600)
+	policy.terminalRefund.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+
+	code, out := s.exchange(t, f, "terminal-downgrade-1")
+	if code != http.StatusUnprocessableEntity || out["error"] != "provider refund failed" || out["code"] != "provider_refund_failed" {
+		t.Fatalf("exchange = %d %v, want declared terminal 422", code, out)
+	}
+	if s.payments.count("refund-submissions") != 1 {
+		t.Fatalf("refund submissions = %d, want 1 for the negative delta", s.payments.count("refund-submissions"))
+	}
+	settled, basis, _, delta, _ := s.exchangeRow(t, ctx, f.organizer, "terminal-downgrade-1")
+	if settled || !basis || delta >= 0 {
+		t.Fatalf("settled=%t basis=%t delta=%d, want bound negative-delta exchange left unsettled", settled, basis, delta)
+	}
+	if s.payments.count("facts") != 0 {
+		t.Fatalf("gross facts calls = %d, want none after terminal refusal", s.payments.count("facts"))
+	}
 }
 
 // exchange posts one exchange request under `key`. The body is built here so every caller

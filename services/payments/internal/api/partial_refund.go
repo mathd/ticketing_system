@@ -88,6 +88,9 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	// provider reference needs recording on the still-bound row.
 	result, err := s.psp.Refund(r.Context(), op.ProviderPaymentRef, leg.ProviderKey, leg.Amount, leg.Currency)
 	if err != nil {
+		if failedRefund422(w, err) {
+			return
+		}
 		// Recoverable, never terminal: the leg stays bound and its allowance stays
 		// reserved, so nothing else can spend the money this leg may yet take.
 		write(w, 502, map[string]string{"error": "provider refund unresolved"})

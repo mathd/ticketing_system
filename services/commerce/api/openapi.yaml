@@ -437,6 +437,7 @@ paths:
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+        '422': {description: Payments definitively refused the provider refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '500': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
@@ -497,6 +498,7 @@ paths:
         # recoverable by retrying. The handler has written it since TKT-158; only the
         # contract was missing, so nothing but the declaration changes here.
         '202': {description: 'Charged; confirmation pending — replay the same key to resume', content: {application/json: {schema: {$ref: '#/components/schemas/ExchangePending'}}}}
+        '422': {description: Payments definitively refused the provider refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
@@ -715,6 +717,13 @@ components:
         Retry-After: {description: Seconds to wait before retrying, schema: {type: string}}
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
+    ProviderRefundFailed:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error: {type: string, enum: [provider refund failed]}
+        code: {type: string, enum: [provider_refund_failed]}
     Error:
       type: object
       additionalProperties: false

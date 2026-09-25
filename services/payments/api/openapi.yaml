@@ -161,8 +161,9 @@ paths:
       summary: Refund the whole captured amount of a compensation (internal)
       description: >-
         Refund captured money. The refund amount/currency are the STORED captured amount — callers
-        cannot supply an amount. A pending/failed provider refund is 502 with the compensation still
-        bound: `payment.refunded` is appended only on a settled success.
+        cannot supply an amount. A pending or unresolved provider refund is 502, with the
+        compensation still bound. A provider-terminal refusal with its `re_` reference is 422.
+        `payment.refunded` is appended only on a settled success.
 
 
         ORDERING ASSUMED, NOT VERIFIED (ADR-071). This is one leg of a reversal sequence the CALLER
@@ -179,6 +180,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+        '422': {description: Provider definitively failed or canceled the refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '502': {$ref: '#/components/responses/Error'}
   /internal/psp/partial-refund:
     post:
@@ -205,6 +207,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+        '422': {description: Provider definitively failed or canceled the refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '502': {$ref: '#/components/responses/Error'}
 components:
   parameters:
@@ -213,6 +216,14 @@ components:
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
     Error: {type: object, additionalProperties: false, required: [error], properties: {error: {type: string}}}
+    ProviderRefundFailed:
+      type: object
+      additionalProperties: false
+      required: [error, code, provider_ref]
+      properties:
+        error: {type: string, enum: [provider refund failed]}
+        code: {type: string, enum: [provider_refund_failed]}
+        provider_ref: {type: string, pattern: '^re_.+'}
     Fact:
       type: object
       additionalProperties: false

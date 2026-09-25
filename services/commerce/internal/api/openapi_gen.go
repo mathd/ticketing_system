@@ -163,6 +163,36 @@ func (e OrderResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for ProviderRefundFailedCode.
+const (
+	ProviderRefundFailedCodeProviderRefundFailed ProviderRefundFailedCode = "provider_refund_failed"
+)
+
+// Valid indicates whether the value is a known member of the ProviderRefundFailedCode enum.
+func (e ProviderRefundFailedCode) Valid() bool {
+	switch e {
+	case ProviderRefundFailedCodeProviderRefundFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProviderRefundFailedError.
+const (
+	ProviderRefundFailedErrorProviderRefundFailed ProviderRefundFailedError = "provider refund failed"
+)
+
+// Valid indicates whether the value is a known member of the ProviderRefundFailedError enum.
+func (e ProviderRefundFailedError) Valid() bool {
+	switch e {
+	case ProviderRefundFailedErrorProviderRefundFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RefundRefundStatus.
 const (
 	RefundRefundStatusFull    RefundRefundStatus = "full"
@@ -583,6 +613,18 @@ type PasswordResetRequest struct {
 type PasswordResetResult struct {
 	CustomerId openapi_types.UUID `json:"customer_id"`
 }
+
+// ProviderRefundFailed defines model for ProviderRefundFailed.
+type ProviderRefundFailed struct {
+	Code  ProviderRefundFailedCode  `json:"code"`
+	Error ProviderRefundFailedError `json:"error"`
+}
+
+// ProviderRefundFailedCode defines model for ProviderRefundFailed.Code.
+type ProviderRefundFailedCode string
+
+// ProviderRefundFailedError defines model for ProviderRefundFailed.Error.
+type ProviderRefundFailedError string
 
 // Refund defines model for Refund.
 type Refund struct {

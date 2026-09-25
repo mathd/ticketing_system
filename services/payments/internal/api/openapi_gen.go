@@ -90,6 +90,36 @@ func (e PSPStatusOutcome) Valid() bool {
 	}
 }
 
+// Defines values for ProviderRefundFailedCode.
+const (
+	ProviderRefundFailedCodeProviderRefundFailed ProviderRefundFailedCode = "provider_refund_failed"
+)
+
+// Valid indicates whether the value is a known member of the ProviderRefundFailedCode enum.
+func (e ProviderRefundFailedCode) Valid() bool {
+	switch e {
+	case ProviderRefundFailedCodeProviderRefundFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProviderRefundFailedError.
+const (
+	ProviderRefundFailedErrorProviderRefundFailed ProviderRefundFailedError = "provider refund failed"
+)
+
+// Valid indicates whether the value is a known member of the ProviderRefundFailedError enum.
+func (e ProviderRefundFailedError) Valid() bool {
+	switch e {
+	case ProviderRefundFailedErrorProviderRefundFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SettlementFeeIncidence.
 const (
 	SettlementFeeIncidenceAbsorbed SettlementFeeIncidence = "absorbed"
@@ -272,6 +302,19 @@ type PSPStatus struct {
 
 // PSPStatusOutcome defines model for PSPStatus.Outcome.
 type PSPStatusOutcome string
+
+// ProviderRefundFailed defines model for ProviderRefundFailed.
+type ProviderRefundFailed struct {
+	Code        ProviderRefundFailedCode  `json:"code"`
+	Error       ProviderRefundFailedError `json:"error"`
+	ProviderRef string                    `json:"provider_ref"`
+}
+
+// ProviderRefundFailedCode defines model for ProviderRefundFailed.Code.
+type ProviderRefundFailedCode string
+
+// ProviderRefundFailedError defines model for ProviderRefundFailed.Error.
+type ProviderRefundFailedError string
 
 // RefundLegState defines model for RefundLegState.
 type RefundLegState struct {

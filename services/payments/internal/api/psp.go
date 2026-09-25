@@ -447,6 +447,9 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		result, err = s.psp.Refund(r.Context(), op.ProviderPaymentRef, comp.ProviderKey, amount, currency)
 	}
 	if err != nil {
+		if failedRefund422(w, err) {
+			return
+		}
 		// A pending refund is recoverable, but its provider reference is durable progress:
 		// persist it so the next attempt resolves instead of re-submitting (ai-review B3).
 		if errors.Is(err, psp.ErrRefundPending) && result.ProviderRef != "" && comp.ProviderRef == "" {
@@ -510,4 +513,15 @@ func (s *Server) compensate(w http.ResponseWriter, r *http.Request, kind string)
 		return
 	}
 	write(w, 200, map[string]any{"status": status, "fact_id": factID, "replay": false})
+}
+
+func failedRefund422(w http.ResponseWriter, err error) bool {
+	var failed *psp.RefundFailedError
+	if !errors.As(err, &failed) || len(failed.ProviderRef) <= len("re_") || !strings.HasPrefix(failed.ProviderRef, "re_") {
+		return false
+	}
+	write(w, http.StatusUnprocessableEntity, map[string]string{
+		"error": "provider refund failed", "code": "provider_refund_failed", "provider_ref": failed.ProviderRef,
+	})
+	return true
 }

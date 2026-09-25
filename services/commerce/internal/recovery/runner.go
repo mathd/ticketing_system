@@ -71,8 +71,10 @@ type PSPStatus struct {
 // CompensationResult is payments' answer to a driven void/refund. Replay reports that
 // the compensation had already completed — same terminal state, idempotent.
 type CompensationResult struct {
-	Status string `json:"status"`
-	Replay bool   `json:"replay"`
+	Status      string `json:"status"`
+	Replay      bool   `json:"replay"`
+	Code        string `json:"code"`
+	ProviderRef string `json:"provider_ref"`
 }
 
 // Inventory owns the claim. Both calls are idempotent for a repeated target, including
@@ -488,6 +490,11 @@ func (r *Runner) resolveReconciliation(ctx context.Context, s store.StuckOrder) 
 				"operation predates durable provider evidence; manual reconciliation required")
 		}
 		if _, err := r.payments.Refund(ctx, s.OrganizerID, s.IdempotencyKey); err != nil {
+			var failed *ProviderRefundFailedError
+			if errors.As(err, &failed) && usableRefundRef(failed.ProviderRef) {
+				return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
+					fmt.Sprintf("provider_refund_failed: provider refused the refund (%s); manual reconciliation required", failed.ProviderRef))
+			}
 			// ErrWrongCompensation: evidence moved between status and refund — the next
 			// pass re-derives. ErrProviderUnresolved: the compensation stays BOUND in
 			// payments; retry later. Both are retry, neither is terminal.

@@ -519,10 +519,25 @@ func mapRefundStatus(rf stripeRefund) (Result, error) {
 		return Result{Outcome: Refunded, ProviderRef: rf.ID, Confirmed: rf.confirmedRefund()}, nil
 	case "pending":
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, ErrRefundPending
-	default: // "failed" or unexpected
+	case "failed", "canceled":
+		return Result{Outcome: Unknown, ProviderRef: rf.ID}, &RefundFailedError{ProviderRef: rf.ID}
+	default:
 		return Result{Outcome: Unknown, ProviderRef: rf.ID}, fmt.Errorf("stripe refund not settled: status %q", rf.Status)
 	}
 }
+
+// RefundFailedError reports a provider-terminal refund refusal and carries its Stripe
+// refund reference for reconciliation.
+type RefundFailedError struct {
+	ProviderRef string
+}
+
+func (e *RefundFailedError) Error() string { return ErrRefundFailed.Error() }
+
+func (e *RefundFailedError) Unwrap() error { return ErrRefundFailed }
+
+// ErrRefundFailed reports a refund the provider definitively failed or canceled.
+var ErrRefundFailed = errors.New("psp: refund failed")
 
 // ErrRefundPending reports a refund the provider accepted but has not settled. The caller
 // keeps the compensation bound, persists the refund reference, and resolves it later by

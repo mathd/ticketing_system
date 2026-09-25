@@ -669,7 +669,7 @@ func failure(code, reason string) store.CancellationOutcome {
 // provider payload in it is both unreadable and a disclosure risk.
 func refundFailureCode(err error) string {
 	switch {
-	case errors.Is(err, refunds.ErrPaymentsRefused),
+	case errors.Is(err, refunds.ErrPaymentsRefused), errors.Is(err, refunds.ErrProviderRefundFailed),
 		errors.Is(err, store.ErrRefundExceedsOrder),
 		errors.Is(err, store.ErrRefundConflict):
 		return "refund_refused"

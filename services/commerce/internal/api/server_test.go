@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 )
 
@@ -440,7 +442,7 @@ func TestClassifyRecoveredCoversTheStatusVocabulary(t *testing.T) {
 // fail-closed response validator (ADR-028), so the mapping must only produce statuses the
 // contract declares.
 func TestRefundProblemMapsEveryStoreError(t *testing.T) {
-	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 502: true, 503: true}
+	declared := map[int]bool{400: true, 404: true, 409: true, 422: true, 500: true, 502: true, 503: true}
 	cases := []struct {
 		name string
 		err  error
@@ -450,6 +452,7 @@ func TestRefundProblemMapsEveryStoreError(t *testing.T) {
 		{"over refund", commercestore.ErrRefundExceedsOrder, http.StatusConflict},
 		{"no money", commercestore.ErrRefundNoMoney, http.StatusConflict},
 		{"key reused", commercestore.ErrRefundConflict, http.StatusConflict},
+		{"provider terminal refusal", refunds.ErrProviderRefundFailed, http.StatusUnprocessableEntity},
 		{"unknown order", sql.ErrNoRows, http.StatusNotFound},
 		{"anything else", errors.New("connection reset"), http.StatusInternalServerError},
 	}
@@ -493,16 +496,17 @@ func TestRefundOrderRequiresInternalToken(t *testing.T) {
 // this mapping, and every status it can produce must be one the contract declares (an
 // undeclared status becomes a 500 under the fail-closed validator, ADR-028).
 func TestExchangeProblemMapsEveryStoreError(t *testing.T) {
-	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 502: true, 503: true}
+	declared := map[int]bool{400: true, 404: true, 409: true, 422: true, 500: true, 502: true, 503: true}
 	for name, tc := range map[string]struct {
 		err  error
 		code int
 	}{
-		"not exchangeable":  {commercestore.ErrOrderNotExchangeable, http.StatusConflict},
-		"key reused":        {commercestore.ErrExchangeConflict, http.StatusConflict},
-		"currency mismatch": {commercestore.ErrExchangeCurrencyMismatch, http.StatusConflict},
-		"unknown order":     {sql.ErrNoRows, http.StatusNotFound},
-		"anything else":     {errors.New("connection reset"), http.StatusInternalServerError},
+		"not exchangeable":          {commercestore.ErrOrderNotExchangeable, http.StatusConflict},
+		"key reused":                {commercestore.ErrExchangeConflict, http.StatusConflict},
+		"currency mismatch":         {commercestore.ErrExchangeCurrencyMismatch, http.StatusConflict},
+		"provider terminal refusal": {fmt.Errorf("%w: re_terminal", refunds.ErrProviderRefundFailed), http.StatusUnprocessableEntity},
+		"unknown order":             {sql.ErrNoRows, http.StatusNotFound},
+		"anything else":             {errors.New("connection reset"), http.StatusInternalServerError},
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, message := exchangeProblem(tc.err)
@@ -514,6 +518,31 @@ func TestExchangeProblemMapsEveryStoreError(t *testing.T) {
 			}
 			if strings.Contains(message, "connection reset") {
 				t.Fatalf("message leaks the underlying error: %q", message)
+			}
+		})
+	}
+}
+
+func TestExchangeProviderRefundFailureRequiresValidTerminalBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"valid", http.StatusUnprocessableEntity, `{"code":"provider_refund_failed","provider_ref":"re_terminal"}`, true},
+		{"wrong code", http.StatusUnprocessableEntity, `{"code":"other","provider_ref":"re_terminal"}`, false},
+		{"missing reference", http.StatusUnprocessableEntity, `{"code":"provider_refund_failed"}`, false},
+		{"malformed", http.StatusUnprocessableEntity, `{`, false},
+		{"wrong status", http.StatusBadGateway, `{"code":"provider_refund_failed","provider_ref":"re_terminal"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := providerRefundFailure(tc.status, []byte(tc.body))
+			if tc.want != errors.Is(err, refunds.ErrProviderRefundFailed) {
+				t.Fatalf("providerRefundFailure = %v, want terminal=%t", err, tc.want)
+			}
+			if tc.want && !strings.Contains(err.Error(), "re_terminal") {
+				t.Fatalf("terminal error lost provider reference: %v", err)
 			}
 		})
 	}

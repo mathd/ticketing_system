@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
 
 	"ticketing/shared/httpx"
@@ -63,6 +64,8 @@ type exchangeRequest struct {
 // status cannot slip in (ADR-028).
 func exchangeProblem(err error) (int, string) {
 	switch {
+	case errors.Is(err, refunds.ErrProviderRefundFailed):
+		return http.StatusUnprocessableEntity, "provider refund failed"
 	case errors.Is(err, commercestore.ErrOrderNotExchangeable):
 		return http.StatusConflict, "only a completed, unreversed order can be exchanged"
 	case errors.Is(err, commercestore.ErrExchangeConflict):
@@ -425,6 +428,10 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 			write(w, http.StatusConflict, map[string]string{"error": ErrUpgradeNeedsInstrument.Error()})
 			return
 		}
+		if errors.Is(err, refunds.ErrProviderRefundFailed) {
+			write(w, http.StatusUnprocessableEntity, map[string]string{"error": "provider refund failed", "code": "provider_refund_failed"})
+			return
+		}
 		write(w, http.StatusBadGateway, map[string]string{"error": "exchange settlement unresolved"})
 		return
 	}
@@ -657,16 +664,36 @@ func (s *Server) settleExchangeDelta(r *http.Request, ex commercestore.Exchange,
 		}
 		return nil
 	default:
-		code, _, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/psp/partial-refund", "",
+		code, body, err := s.call(r.Context(), http.MethodPost, s.paymentsURL+"/internal/psp/partial-refund", "",
 			map[string]any{
 				"organizer_id": ex.OrganizerID, "idempotency_key": ex.PaymentSourceKey,
 				"refund_key": "exchange-refund:" + ex.ID.String(), "amount": -delta, "currency": ex.Currency,
 			}, true)
+		if err == nil {
+			if terminal := providerRefundFailure(code, body); terminal != nil {
+				return terminal
+			}
+		}
 		if err != nil || code != http.StatusOK {
 			return fmt.Errorf("exchange refund leg: status %d: %w", code, err)
 		}
 		return nil
 	}
+}
+
+func providerRefundFailure(status int, body []byte) error {
+	if status != http.StatusUnprocessableEntity {
+		return nil
+	}
+	var failed struct {
+		Code        string `json:"code"`
+		ProviderRef string `json:"provider_ref"`
+	}
+	if json.Unmarshal(body, &failed) != nil || failed.Code != "provider_refund_failed" ||
+		!strings.HasPrefix(failed.ProviderRef, "re_") || len(failed.ProviderRef) <= len("re_") {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", refunds.ErrProviderRefundFailed, failed.ProviderRef)
 }
 
 // exchangeFacts journals both GROSS legs. Deterministic ids and the exchange row's stable

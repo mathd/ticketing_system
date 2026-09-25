@@ -45,6 +45,8 @@ func refundProblem(err error) (int, string) {
 		return http.StatusConflict, "refund conflicts with an existing request"
 	case errors.Is(err, refunds.ErrPaymentsRefused):
 		return http.StatusConflict, "refund unresolved"
+	case errors.Is(err, refunds.ErrProviderRefundFailed):
+		return http.StatusUnprocessableEntity, "provider refund failed"
 	case errors.Is(err, refunds.ErrPaymentsUnresolved):
 		return http.StatusBadGateway, "refund unresolved"
 	case errors.Is(err, refunds.ErrJournalUnavailable):
@@ -105,6 +107,12 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
 	})
 	if err != nil {
+		if errors.Is(err, refunds.ErrProviderRefundFailed) {
+			write(w, http.StatusUnprocessableEntity, map[string]string{
+				"error": "provider refund failed", "code": "provider_refund_failed",
+			})
+			return
+		}
 		code, message := refundProblem(err)
 		if code == http.StatusInternalServerError {
 			slog.Default().ErrorContext(r.Context(), "refund order", "err", err)

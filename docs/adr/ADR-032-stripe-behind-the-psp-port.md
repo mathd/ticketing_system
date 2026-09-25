@@ -265,10 +265,12 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
      malformed page or unterminated pagination proves nothing about whether a refund exists, and
      submitting on that is how you refund twice. Fail closed: the compensation stays bound and
      recoverable (502), which is what the caller already does with an unresolved refund.
-  3. **A matched refund whose status is `failed` does not license a resubmit either.** The money did
-     not come back, so the compensation is genuinely unresolved — but re-submitting is a *fresh
-     money movement chosen by a heuristic*. It stays a non-terminal error carrying the `re_`, and a
-     human reconciles from it.
+  3. **A matched refund whose status is `failed` or `canceled` does not license a resubmit.** The
+     money did not come back, so re-submitting is a fresh money movement chosen by a heuristic.
+     Payments reports this terminal refusal as `psp.ErrRefundFailed` and a declared 422 with its
+     usable `re_` reference. Commerce parks the order on the first answer and keeps the reference
+     in `recovery_last_error` for reconciliation. This legible state does not license a resubmit;
+     the resubmission policy belongs to TKT-347.
   Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
   the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the

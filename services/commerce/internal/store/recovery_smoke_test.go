@@ -539,6 +539,45 @@ func TestParkForReconciliationHoldsCapturedMoneyVisibly(t *testing.T) {
 	}
 }
 
+func TestTerminalRefundParkPersistsReasonWithoutAttemptCharge(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedStuck(t, "reconciliation_required")
+	park := func() {
+		claimed := claimStuckOne(t, seeded.OrderID)
+		if err := ParkForReconciliation(ctx, db, claimed.OrderID, claimed.ClaimID,
+			"provider_refund_failed: provider refused the refund (re_terminal); manual reconciliation required"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() (string, bool, int) {
+		var reason string
+		var parked bool
+		var attempts int
+		if err := db.QueryRowContext(ctx, `SELECT recovery_last_error,recovery_parked_at IS NOT NULL,recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).
+			Scan(&reason, &parked, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		return reason, parked, attempts
+	}
+
+	park()
+	reason, parked, attempts := read()
+	if !parked || !strings.HasPrefix(reason, "provider_refund_failed") || attempts != 0 {
+		t.Fatalf("first park: reason=%q parked=%t attempts=%d", reason, parked, attempts)
+	}
+	if err := UnparkOrder(ctx, db, seeded.OrderID, "operator reviewed provider refund"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes' WHERE id=$1`, seeded.OrderID); err != nil {
+		t.Fatal(err)
+	}
+	park()
+	reason, parked, attempts = read()
+	if !parked || reason != "provider_refund_failed: provider refused the refund (re_terminal); manual reconciliation required" || attempts != 0 {
+		t.Fatalf("re-park: reason=%q parked=%t attempts=%d", reason, parked, attempts)
+	}
+}
+
 // The status vocabulary is now closed. An unknown status would silently fall out of
 // every claim query — which is how release_pending came to be told to buyers while
 // being written nowhere.

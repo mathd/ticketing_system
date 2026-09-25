@@ -36,8 +36,9 @@ import (
 // stub that helpfully echoed would reproduce the defect under test.
 type divergentPSP struct {
 	psp.PSP
-	amount   int64
-	currency string
+	amount    int64
+	currency  string
+	refundErr error
 	// absent makes the provider report NO confirmation at all — silence, which must not be
 	// read as assent.
 	absent bool
@@ -65,6 +66,9 @@ func (d *divergentPSP) Authorize(_ context.Context, req psp.AuthorizeRequest) (p
 }
 
 func (d *divergentPSP) Refund(_ context.Context, _, idempotencyKey string, amount int64, currency string) (psp.Result, error) {
+	if d.refundErr != nil {
+		return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, d.refundErr
+	}
 	return psp.Result{
 		Outcome: psp.Refunded, ProviderRef: "re_" + idempotencyKey,
 		Confirmed: d.confirmation(amount, currency),
@@ -405,6 +409,17 @@ func TestWholeRefundFailsClosedWhenTheProviderReturnsADifferentCurrency(t *testi
 	res := postWholeRefund(t, h, org, key)
 	if res.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d body=%s, want 502", res.Code, res.Body.String())
+	}
+	assertCompensationStillBound(t, db, ctx, org)
+}
+
+func TestWholeRefundTerminalFailureIsDeclared422(t *testing.T) {
+	org, key := uuid.New(), "comp-terminal-refund"
+	db, ctx := refundDB(t)
+	h := divergentRefundServer(t, org, key, 2500, &divergentPSP{refundErr: &psp.RefundFailedError{ProviderRef: "re_terminal"}})
+	res := postWholeRefund(t, h, org, key)
+	if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
+		t.Fatalf("status=%d body=%s, want exact provider terminal 422", res.Code, res.Body.String())
 	}
 	assertCompensationStillBound(t, db, ctx, org)
 }
