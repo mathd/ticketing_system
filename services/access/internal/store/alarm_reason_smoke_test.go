@@ -82,12 +82,22 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 				if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_event_integrity(event_id,ticket_id,sequence,canonical_version,previous_hash,entry_hash) VALUES($1,$2,2,1,decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'))`, uuid.New(), ticketID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_event_integrity WHERE ticket_id=$1 AND NOT EXISTS (SELECT 1 FROM lifecycle_events WHERE lifecycle_events.id=lifecycle_event_integrity.event_id)`, ticketID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity ADD CONSTRAINT lifecycle_event_integrity_event_id_fkey FOREIGN KEY (event_id) REFERENCES lifecycle_events(id)`); err != nil {
-					t.Fatal(err)
-				}
+				// Put the schema back once the subtest has VERIFIED, not here: removing the
+				// orphan before verification would leave nothing for the verifier to find.
+				// Cleanups run after the subtest's deferred trigger re-enable, so the delete
+				// disables the append-only trigger again around itself.
+				t.Cleanup(func() {
+					for _, stmt := range []string{
+						`ALTER TABLE lifecycle_event_integrity DISABLE TRIGGER USER`,
+						`DELETE FROM lifecycle_event_integrity WHERE NOT EXISTS (SELECT 1 FROM lifecycle_events WHERE lifecycle_events.id=lifecycle_event_integrity.event_id)`,
+						`ALTER TABLE lifecycle_event_integrity ENABLE TRIGGER USER`,
+						`ALTER TABLE lifecycle_event_integrity ADD CONSTRAINT lifecycle_event_integrity_event_id_fkey FOREIGN KEY (event_id) REFERENCES lifecycle_events(id)`,
+					} {
+						if _, err := db.ExecContext(context.Background(), stmt); err != nil {
+							t.Errorf("restore after orphan case: %s: %v", stmt, err)
+						}
+					}
+				})
 			},
 		},
 		{
@@ -183,6 +193,13 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 				t.Fatalf("alarmReasonFor(verifyTicketChain) = %q, want %q (err=%v)", got, tt.want, err)
 			}
 		})
+	}
+
+	// The orphan case drops the event FK; its cleanup must have put it back, or every
+	// case after it ran on a weaker schema than production.
+	var fk int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname='lifecycle_event_integrity_event_id_fkey'`).Scan(&fk); err != nil || fk != 1 {
+		t.Fatalf("lifecycle_event_integrity event FK after the branch table: count=%d err=%v", fk, err)
 	}
 
 	// verification_unavailable is reachable: a cancellation after BeginTx makes the verifier's
