@@ -95,6 +95,12 @@ type Postgres struct {
 // only for the verify-only paths, which hold public keys and cannot append.
 func New(db *sql.DB, cfg Config) *Postgres { return &Postgres{db: db, cfg: cfg} }
 
+func (p *Postgres) Consumed(ctx context.Context, eventID uuid.UUID) (bool, error) {
+	var exists bool
+	err := p.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM consumed_events WHERE event_id=$1)`, eventID).Scan(&exists)
+	return exists, err
+}
+
 func (p *Postgres) Issue(ctx context.Context, in IssueInput) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {

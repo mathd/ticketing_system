@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -55,4 +56,24 @@ func TestResolveSeatIdentities(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("200 multibyte characters accepted", func(t *testing.T) {
+		seats := base
+		seats.Quantity = 1
+		seats.SeatIdentities = []string{strings.Repeat("🎟", 200)}
+		event.Data.Quantity = 1
+		got, err := resolveSeatIdentities(seats, event)
+		if err != nil || len(got) != 1 || got[0] != seats.SeatIdentities[0] {
+			t.Fatalf("resolve 200-character identity = %v, %v; want exact identity", got, err)
+		}
+	})
+	t.Run("201 multibyte characters refused", func(t *testing.T) {
+		seats := base
+		seats.Quantity = 1
+		seats.SeatIdentities = []string{strings.Repeat("🎟", 201)}
+		event.Data.Quantity = 1
+		if got, err := resolveSeatIdentities(seats, event); err == nil {
+			t.Fatalf("resolve 201-character identity = %v; want refusal", got)
+		}
+	})
 }

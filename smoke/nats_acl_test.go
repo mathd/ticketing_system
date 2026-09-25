@@ -341,9 +341,11 @@ func TestNATSPaymentsConnectsWithZeroSubjectRights(t *testing.T) {
 	})
 }
 
-// TestNATSResidualCredentialedForgeryStillMintsTickets pins both the narrowed and still-open
-// parts of ADR-072 §6(b): an unknown order now fails the seat read, but commerce's NATS
-// credentials can still replay the exact line of a real order under a new event ID.
+// TestNATSResidualCredentialedForgeryStillMintsTickets pins the unknown-order refusal and one
+// still-open case from ADR-072 §6(b). A compromised principal can read order.completed payloads
+// from JetStream under §6(a) (TKT-327); this test reads the line from the database for
+// convenience and pins only the completed-order case. The read does not check status, buyer ID,
+// or guest order reference. It is not a security control; signed envelopes (TKT-296) are the fix.
 func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

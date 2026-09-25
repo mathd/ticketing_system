@@ -354,6 +354,13 @@ func (c *Consumer) processExchanged(ctx context.Context, event exchanged) (Failu
 }
 
 func (c *Consumer) issue(ctx context.Context, e completed) error {
+	consumed, err := c.st.Consumed(ctx, e.ID)
+	if err != nil {
+		return err
+	}
+	if consumed {
+		return nil
+	}
 	seatIdentities, err := c.seats(ctx, e)
 	if err != nil {
 		return err

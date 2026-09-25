@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +124,102 @@ func TestCompletedSeatedOrderAssignsExactSeats(t *testing.T) {
 	}
 	if n := countIssuanceRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events l JOIN tickets t ON t.id=l.ticket_id WHERE t.order_id=$1 AND l.event_type='issued'`, event.Data.OrderID); n != 2 {
 		t.Fatalf("issued lifecycle rows = %d, want 2", n)
+	}
+}
+
+func TestCompletedSeatedOrderPersists200CharacterMultibyteSeat(t *testing.T) {
+	db, ctx := issuanceDB(t)
+	event := issuanceEvent()
+	event.Data.Quantity = 1
+	want := strings.Repeat("🎟", 200)
+	commerce := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(orderSeats{
+			OrderID: event.Data.OrderID, OrganizerID: event.Data.OrganizerID,
+			SlotID: event.Data.SlotID, TicketTypeID: event.Data.TicketTypeID,
+			Quantity: 1, Seated: true, SeatIdentities: []string{want},
+		})
+	}))
+	defer commerce.Close()
+	qr, err := ticket.New(base64.RawStdEncoding.EncodeToString(make([]byte, ed25519.SeedSize)), "ticket/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Consumer{st: store.New(db, issuanceConfig(t)), signer: qr, client: commerce.Client(), commerceURL: commerce.URL, token: "internal"}
+	if err := c.issue(ctx, event); err != nil {
+		t.Fatalf("issue seated order: %v", err)
+	}
+	ticketID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(event.ID.String()+":0"))
+	var got *string
+	if err := db.QueryRowContext(ctx, `SELECT seat_identity FROM tickets WHERE id=$1 AND order_id=$2`, ticketID, event.Data.OrderID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != want {
+		t.Fatalf("ticket seat identity = %v, want exact 200-character identity", got)
+	}
+}
+
+func TestConsumedCompletedOrderSkipsSeatReadOnRedelivery(t *testing.T) {
+	db, ctx := issuanceDB(t)
+	event := issuanceEvent()
+	seatReads := 0
+	commerce := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		seatReads++
+		if seatReads > 1 {
+			http.Error(w, "seat service unavailable", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(orderSeats{
+			OrderID: event.Data.OrderID, OrganizerID: event.Data.OrganizerID,
+			SlotID: event.Data.SlotID, TicketTypeID: event.Data.TicketTypeID,
+			Quantity: int(event.Data.Quantity), Seated: true, SeatIdentities: []string{"Stalls/A/1", "Stalls/A/2"},
+		})
+	}))
+	defer commerce.Close()
+	qr, err := ticket.New(base64.RawStdEncoding.EncodeToString(make([]byte, ed25519.SeedSize)), "ticket/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Consumer{st: store.New(db, issuanceConfig(t)), signer: qr, client: commerce.Client(), commerceURL: commerce.URL, token: "internal"}
+	readTicketRows := func() []string {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, `SELECT id::text, order_id::text, guest_order_ref::text,
+			organizer_id::text, buyer_id::text, slot_id::text, ticket_type_id::text,
+			seat_identity, qr_payload, issued_at::text FROM tickets WHERE order_id=$1 ORDER BY id`, event.Data.OrderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var snapshot []string
+		for rows.Next() {
+			var id, orderID, guestRef, organizerID, buyerID, slotID, ticketTypeID, payload, issuedAt string
+			var seatIdentity sql.NullString
+			if err := rows.Scan(&id, &orderID, &guestRef, &organizerID, &buyerID, &slotID, &ticketTypeID, &seatIdentity, &payload, &issuedAt); err != nil {
+				t.Fatal(err)
+			}
+			snapshot = append(snapshot, fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%t:%s|%s|%s", id, orderID, guestRef,
+				organizerID, buyerID, slotID, ticketTypeID, seatIdentity.Valid, seatIdentity.String, payload, issuedAt))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return snapshot
+	}
+	if err := c.issue(ctx, event); err != nil {
+		t.Fatalf("first issue: %v", err)
+	}
+	before := readTicketRows()
+	if len(before) != int(event.Data.Quantity) {
+		t.Fatalf("ticket rows after first issue = %d, want %d", len(before), event.Data.Quantity)
+	}
+	if err := c.issue(ctx, event); err != nil {
+		t.Fatalf("redelivered issue = %v, want nil", err)
+	}
+	after := readTicketRows()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("ticket rows changed on redelivery:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if seatReads != 1 {
+		t.Fatalf("commerce seat reads = %d, want exactly 1", seatReads)
 	}
 }
 

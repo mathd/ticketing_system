@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -41,7 +42,7 @@ func resolveSeatIdentities(got orderSeats, event completed) ([]string, error) {
 	identities := append([]string(nil), got.SeatIdentities...)
 	sort.Strings(identities)
 	for i, identity := range identities {
-		if strings.TrimSpace(identity) == "" || len(identity) > 200 || (i > 0 && identities[i-1] == identity) {
+		if strings.TrimSpace(identity) == "" || utf8.RuneCountInString(identity) > 200 || (i > 0 && identities[i-1] == identity) {
 			return nil, errors.New("commerce seat identities are invalid")
 		}
 	}

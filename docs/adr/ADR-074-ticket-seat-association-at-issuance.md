@@ -60,9 +60,14 @@ canonical form does not include this field. No claim is made against that advers
   existing `issuance_exhausted` failure record with stage `issuance`. Access does
   not start its transaction or issue a NULL-associated ticket when the response is
   invalid. The reason label does not distinguish a permanent mismatch from an outage.
-- The seat read incidentally narrows ADR-072 §6(b) for a forger with commerce's
-  NATS credentials only. It is not a security control and was not designed as one.
-  Signed event envelopes tracked by TKT-296 remain the fix.
+- The seat read does not authenticate `order.completed` and is not a security control. It checks the order ID,
+  organizer, slot, ticket type, quantity, and seat identities. It does not check order status, buyer ID, or
+  guest order reference. A forger with commerce's NATS credentials can use an unpaid order that still has a
+  reservation row, including one whose seat hold may have been released, or keep those checked fields from a
+  real order and choose a different buyer or guest reference. A compromised principal can read order lines
+  from `order.completed` payloads as described in ADR-072 §6(a); the smoke test reads the line from the
+  database for convenience and pins only the completed-order case. Signed event envelopes tracked by TKT-296
+  remain the fix.
 - On a prolonged Commerce outage, Access commits neither tickets nor a consumed
   event receipt for the failed issuance. Operators use the existing failed-event
   recovery procedure: inspect the failure record, repair the dependency, find the

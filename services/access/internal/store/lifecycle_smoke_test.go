@@ -75,6 +75,9 @@ func issueLegacyTicket(t *testing.T, ctx context.Context, st *Postgres, organize
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO consumed_events(event_id) VALUES($1)`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO tickets(id,order_id,guest_order_ref,organizer_id,buyer_id,slot_id,ticket_type_id,qr_payload,issued_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		s.ticketID, s.id.OrderID, uuid.New(), organizerID, uuid.New(), s.id.SlotID, uuid.New(), "signed-credential", issuedAt); err != nil {
 		t.Fatal(err)
