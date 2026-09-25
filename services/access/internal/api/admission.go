@@ -1,8 +1,8 @@
 package api
 
 import (
-	"errors"
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
