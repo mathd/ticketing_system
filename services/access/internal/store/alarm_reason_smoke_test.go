@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -81,6 +82,12 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 				if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_event_integrity(event_id,ticket_id,sequence,canonical_version,previous_hash,entry_hash) VALUES($1,$2,2,1,decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'))`, uuid.New(), ticketID); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_event_integrity WHERE ticket_id=$1 AND NOT EXISTS (SELECT 1 FROM lifecycle_events WHERE lifecycle_events.id=lifecycle_event_integrity.event_id)`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity ADD CONSTRAINT lifecycle_event_integrity_event_id_fkey FOREIGN KEY (event_id) REFERENCES lifecycle_events(id)`); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 		{
@@ -141,7 +148,7 @@ func TestVerifierBranchAssignsItsCode(t *testing.T) {
 	}
 
 	// These mutations model a database writer who can remove the append-only triggers.
-	// Each subtest issues a fresh ticket and restores the triggers before verification.
+	// Each subtest issues a fresh ticket and restores the triggers after verification.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := issueTicket(t, ctx, st, uuid.New())
@@ -214,8 +221,14 @@ func TestIntegrityAlarmDiagnosticLog(t *testing.T) {
 		t.Helper()
 		var output bytes.Buffer
 		previous := slog.Default()
+		previousWriter := log.Writer()
+		previousFlags := log.Flags()
 		slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
-		t.Cleanup(func() { slog.SetDefault(previous) })
+		t.Cleanup(func() {
+			slog.SetDefault(previous)
+			log.SetOutput(previousWriter)
+			log.SetFlags(previousFlags)
+		})
 		ticketID := drive(t)
 		for _, field := range []string{ticketID.String(), "disposition=" + string(wantDisposition), "reason_code=" + string(AlarmReasonEntryHashMismatch), "entry hash mismatch"} {
 			if !strings.Contains(output.String(), field) {
