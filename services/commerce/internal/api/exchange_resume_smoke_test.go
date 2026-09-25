@@ -665,8 +665,10 @@ func TestExchangeRefusesWhenAdmissionReadIsUnavailable(t *testing.T) {
 			if s.exchangeRowExists(t, ctx, f.organizer, "admission-unavailable-1") {
 				t.Fatal("an unavailable-admission refusal left an exchange row")
 			}
+			// A transport failure never reaches the access stub, and a missing URL never
+			// makes the call, so neither can be counted there.
 			wantReads := 1
-			if tc.noAccessURL {
+			if tc.noAccessURL || tc.transportErr {
 				wantReads = 0
 			}
 			if got := s.access.count("admission"); got != wantReads {
