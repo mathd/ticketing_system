@@ -3,11 +3,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -17,6 +19,239 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+func TestVerifierBranchAssignsItsCode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	cfg := testConfig(t)
+	st := New(db, cfg)
+
+	tests := []struct {
+		name   string
+		want   AlarmReason
+		mutate func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID)
+	}{
+		{
+			name: "missing integrity row", want: AlarmReasonMissingIntegrityRow,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_event_integrity WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unsupported integrity canonical version", want: AlarmReasonUnsupportedCanonicalVersion,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET canonical_version=99 WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "sequence gap", want: AlarmReasonSequenceGap,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET sequence=2 WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "broken chain link", want: AlarmReasonBrokenChainLink,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET previous_hash=decode(repeat('11',32),'hex') WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "entry hash mismatch", want: AlarmReasonEntryHashMismatch,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_event_integrity SET entry_hash=decode(repeat('00',32),'hex') WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "orphan integrity row", want: AlarmReasonOrphanIntegrityRow,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `ALTER TABLE lifecycle_event_integrity DROP CONSTRAINT lifecycle_event_integrity_event_id_fkey`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_event_integrity(event_id,ticket_id,sequence,canonical_version,previous_hash,entry_hash) VALUES($1,$2,2,1,decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'))`, uuid.New(), ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing head", want: AlarmReasonMissingHead,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_heads WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "head without events", want: AlarmReasonHeadWithoutEvents,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_event_integrity WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `DELETE FROM lifecycle_events WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "head sequence mismatch", want: AlarmReasonHeadMismatch,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET last_sequence=2 WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unsupported head canonical version", want: AlarmReasonUnsupportedCanonicalVersion,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET canonical_version=99 WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unknown key", want: AlarmReasonUnknownKey,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET key_id='unknown/lifecycle-key' WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "invalid head signature", want: AlarmReasonInvalidHeadSignature,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {
+				if _, err := db.ExecContext(ctx, `UPDATE lifecycle_heads SET signature=decode(repeat('33',64),'hex') WHERE ticket_id=$1`, ticketID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing keyring", want: AlarmReasonMissingKeyring,
+			mutate: func(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID) {},
+		},
+	}
+
+	// These mutations model a database writer who can remove the append-only triggers.
+	// Each subtest issues a fresh ticket and restores the triggers before verification.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := issueTicket(t, ctx, st, uuid.New())
+			for _, table := range []string{"lifecycle_events", "lifecycle_event_integrity", "lifecycle_heads"} {
+				if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` DISABLE TRIGGER USER`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer func() {
+				for _, table := range []string{"lifecycle_events", "lifecycle_event_integrity", "lifecycle_heads"} {
+					if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ENABLE TRIGGER USER`); err != nil {
+						t.Errorf("enable %s triggers: %v", table, err)
+					}
+				}
+			}()
+			tt.mutate(t, ctx, db, s.ticketID)
+			verifier := st
+			if tt.want == AlarmReasonMissingKeyring {
+				verifier = New(db, Config{Signer: cfg.Signer, Policy: cfg.Policy})
+			}
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			var id TicketIdentity
+			if err := tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, s.ticketID).Scan(&id.OrderID, &id.OrganizerID, &id.SlotID); err != nil {
+				t.Fatal(err)
+			}
+			err = verifier.verifyTicketChain(ctx, tx, s.ticketID, id)
+			if got := alarmReasonFor(err); got != tt.want {
+				t.Fatalf("alarmReasonFor(verifyTicketChain) = %q, want %q (err=%v)", got, tt.want, err)
+			}
+		})
+	}
+
+	// verification_unavailable is reachable: a cancellation after BeginTx makes the verifier's
+	// first query return the context error. verification_unclassified is not a verifier branch,
+	// because verifyTicketChain wraps every query or scan failure and every integrity failure.
+	// legacy_quarantine is emitted by degradedScan when it reads a quarantine row, not by this
+	// verifier. The remaining verifier reason codes all have table cases above.
+	t.Run("verification unavailable", func(t *testing.T) {
+		s := issueTicket(t, ctx, st, uuid.New())
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		var id TicketIdentity
+		if err := tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, s.ticketID).Scan(&id.OrderID, &id.OrganizerID, &id.SlotID); err != nil {
+			t.Fatal(err)
+		}
+		cancelled, cancelQuery := context.WithCancel(ctx)
+		cancelQuery()
+		err = st.verifyTicketChain(cancelled, tx, s.ticketID, id)
+		if got := alarmReasonFor(err); got != AlarmReasonVerificationUnavailable {
+			t.Fatalf("alarmReasonFor(verifyTicketChain) = %q, want %q (err=%v)", got, AlarmReasonVerificationUnavailable, err)
+		}
+	})
+}
+
+func TestIntegrityAlarmDiagnosticLog(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+
+	// These tests do not run in parallel, so replacing the process default logger is safe.
+	assertLog := func(t *testing.T, wantDisposition Decision, drive func(t *testing.T) uuid.UUID) {
+		t.Helper()
+		var output bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		ticketID := drive(t)
+		for _, field := range []string{ticketID.String(), "disposition=" + string(wantDisposition), "reason_code=" + string(AlarmReasonEntryHashMismatch), "entry hash mismatch"} {
+			if !strings.Contains(output.String(), field) {
+				t.Fatalf("diagnostic log lacks %q: %s", field, output.String())
+			}
+		}
+	}
+
+	t.Run("operator controlled denial", func(t *testing.T) {
+		assertLog(t, DecisionIntegrityOperatorControlled, func(t *testing.T) uuid.UUID {
+			org := uuid.New()
+			s := issueTicket(t, ctx, st, org)
+			if err := st.SetMode(ctx, org, ModeOperatorDeny, "operator"); err != nil {
+				t.Fatal(err)
+			}
+			corruptChain(t, ctx, db, s.ticketID)
+			got, err := st.Redeem(ctx, s.redeemInput())
+			if err != nil || got.Accepted || got.Decision != DecisionIntegrityOperatorControlled {
+				t.Fatalf("Redeem = %+v, %v", got, err)
+			}
+			return s.ticketID
+		})
+	})
+	t.Run("unverified pass exit", func(t *testing.T) {
+		assertLog(t, DecisionExitUnverified, func(t *testing.T) uuid.UUID {
+			s := issueTicket(t, ctx, st, uuid.New())
+			seedPolicy(t, ctx, st, s, ReEntryPolicy{Mode: "multi"})
+			corruptChain(t, ctx, db, s.ticketID)
+			got, err := st.Scan(ctx, scanInput(s, uuid.New(), AdmissionExit, time.Now().UTC()))
+			if err != nil || got.Accepted || got.Decision != DecisionExitUnverified {
+				t.Fatalf("exit Scan = %+v, %v", got, err)
+			}
+			return s.ticketID
+		})
+	})
+}
 
 func alarmResult(t *testing.T, ctx context.Context, db *sql.DB, ticketID uuid.UUID, wantReason AlarmReason, wantDisposition Decision) (AlarmReason, Decision, []byte) {
 	t.Helper()

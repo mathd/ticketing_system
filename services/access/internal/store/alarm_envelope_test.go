@@ -9,19 +9,15 @@ import (
 
 // Wire-compatibility goldens for the three alarm classes (TKT-126).
 //
-// Captured from the PRE-refactor emitters — the anonymous envelope structs that
-// were inline in scan.go, lifecycle.go and reconcile.go — and committed before
-// the shared envelope package existed (ADR-017 §5b′: a fixture built from the type
-// under test cannot fail). Reviewer's check: at the commit introducing this
-// file, the shared package does not exist yet —
-// `git show <that-commit>:shared/go/domainevent/envelope.go` must fail.
+// The integrity alarm golden pins schema 2, which added the stable reason and
+// disposition fields. The fixture is a literal rather than a value generated
+// from the envelope type, so a change to the type cannot update the expected
+// bytes at the same time. The other two alarm goldens pin their current schema 1
+// envelopes.
 //
 // These rows land in `lifecycle_integrity_alarm_outbox` and are part of the
-// access integrity surface (ADR-021), so "byte-for-byte identical" has to hold
-// here too. ADR-025 §D9 (amended TKT-119) constrains the alarm PAYLOAD to bounded
-// identifiers, enums and operational scalars;
-// this ticket changes only the envelope wrapper, and these goldens are what
-// makes that claim checkable rather than asserted.
+// access integrity record (ADR-021). ADR-025 §D9 (amended TKT-119) constrains
+// the alarm payload to bounded identifiers, enums and operational scalars.
 
 var (
 	alarmGoldID           = uuid.MustParse("11111111-1111-4111-8111-111111111111")

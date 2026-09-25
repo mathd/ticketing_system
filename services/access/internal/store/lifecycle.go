@@ -252,9 +252,9 @@ type TicketIdentity struct{ OrderID, OrganizerID, SlotID uuid.UUID }
 // verifyTicketChain recomputes a ticket's whole chain and checks its head
 // signature. The caller holds the ticket row lock.
 //
-// It returns a plain error describing what failed. Every case listed in ADR-021
-// §Threat model under "detected cryptographically" surfaces here: coverage in
-// both directions, sequence gaps, broken links, unknown key ids, head mismatch.
+// It returns a typed verifierError with a stable reason code and diagnostic
+// detail. It checks event and integrity-row coverage, sequence gaps, chain
+// links, canonical versions, the head, and its signature.
 func (p *Postgres) verifyTicketChain(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, id TicketIdentity) error {
 	// The join binds i.ticket_id = e.ticket_id, it does not merely match on
 	// event_id. Without that, an integrity row reassigned to another ticket still
