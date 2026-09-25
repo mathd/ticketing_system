@@ -66,7 +66,7 @@ canonical form does not include this field. No claim is made against that advers
   reservation row, including one whose seat hold may have been released, or keep those checked fields from a
   real order and choose a different buyer or guest reference. A compromised principal can read order lines
   from `order.completed` payloads as described in ADR-072 §6(a); the smoke test reads the line from the
-  database for convenience and pins only the completed-order case. A forged event mints no ticket. With a
+  database for convenience and pins only the completed-order case. A forged event for an unknown order mints no ticket. With a
   fresh event ID, it fails issuance at the seat read; if it reuses an already consumed event ID, the pre-check
   skips it without a failure record. Signed event envelopes tracked by TKT-296 close forgery by a holder of
   stolen NATS credentials who does not have the signing key. A compromised service or signer remains outside
