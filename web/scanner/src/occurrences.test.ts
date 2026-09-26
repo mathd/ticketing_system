@@ -76,7 +76,77 @@ describe('durable pending record', () => {
     const b = await store.mint('qr-payload', '2026-07-17T09:01:00Z')
     expect(a.occurrenceId).not.toBe(b.occurrenceId)
   })
+
+  it('commits a revocation refusal directly as queued', async () => {
+    const record = await store.mintRefusal('listed-ticket', '2026-07-17T09:00:00Z')
+    expect(record).toMatchObject({ state: 'QUEUED', actuated: false, localDecision: 'revocation_refused' })
+    expect(await store.get(record.occurrenceId)).toMatchObject({ state: 'QUEUED', localDecision: 'revocation_refused' })
+  })
 })
+
+describe('revocation set', () => {
+  it('keeps ids from one pull after another fingerprint completes a pull', async () => {
+    await store.mergeRevoked([ticketIDForStore])
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:00:00Z')
+    expect(await store.isRevoked(ticketIDForStore)).toBe(true)
+  })
+
+  it('records completion separately for each token fingerprint', async () => {
+    await store.completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    expect(await store.revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await store.revocationPull('fingerprint-b')).toEqual({})
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await store.revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await store.revocationPull('fingerprint-b')).toEqual({ completedAt: '2026-09-25T12:15:00Z' })
+  })
+
+  it('normalizes merged ids before lookup', async () => {
+    await store.mergeRevoked([ticketIDForStore.toUpperCase()])
+    expect(await store.isRevoked(ticketIDForStore.toLowerCase())).toBe(true)
+  })
+
+  it('keeps queued rows on a v1 upgrade and merges ids across completed pulls', async () => {
+    const dbName = `upgrade-${crypto.randomUUID()}`
+    const v1 = indexedDB.open(dbName, 1)
+    v1.onupgradeneeded = () => v1.result.createObjectStore('occurrences', { keyPath: 'occurrenceId' })
+    const legacyDB = await new Promise<IDBDatabase>((resolve, reject) => {
+      v1.onsuccess = () => resolve(v1.result)
+      v1.onerror = () => reject(v1.error)
+    })
+    const legacy = {
+      occurrenceId: crypto.randomUUID(), qrPayload: 'old', occurredAt: '2026-09-01T00:00:00Z',
+      state: 'QUEUED', actuated: false, createdAt: '2026-09-01T00:00:00Z',
+    }
+    const tx = legacyDB.transaction('occurrences', 'readwrite')
+    tx.objectStore('occurrences').put(legacy)
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    legacyDB.close()
+
+    const upgraded = await openStore(dbName)
+    openedStores.push(upgraded)
+    await upgraded.mergeRevoked([ticketIDForStore])
+    await upgraded.completeRevocationPull('upgrade-fingerprint', '2026-09-25T12:00:00Z')
+    expect(await upgraded.revocationPull('upgrade-fingerprint')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    await upgraded.mergeRevoked(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'])
+    await upgraded.completeRevocationPull('upgrade-fingerprint', '2026-09-25T12:15:00Z')
+
+    expect(await upgraded.isRevoked(ticketIDForStore)).toBe(true)
+    expect(await upgraded.isRevoked('3f8fb96c-44f9-4a66-8c12-7d91cfae4d72')).toBe(true)
+    expect(await upgraded.queued()).toMatchObject([legacy])
+  })
+
+  it('never removes an id when another pull completes', async () => {
+    await store.mergeRevoked([ticketIDForStore])
+    await store.completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await store.isRevoked(ticketIDForStore)).toBe(true)
+  })
+})
+
+const ticketIDForStore = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
 
 describe('actuation gating', () => {
   it('actuates exactly once for a pending record, marking before reporting', async () => {

@@ -9,10 +9,12 @@ import {
 } from './access-contract'
 import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
 import { openOccurrenceStore, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
+import { decodeTicketID } from './revocation'
 
 type ScanOutcome =
   | { kind: 'accepted'; scannedAt: string; replay: boolean }
   | { kind: 'rejected'; reason: string; originalScanAt?: string }
+  | { kind: 'revocation-refused' }
   | { kind: 'queued'; cause: 'offline' | 'unreadable' | 'local' }
   | { kind: 'duplicate-response' }
 
@@ -42,8 +44,10 @@ declare global {
 
 const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
+const revocationsURL = '/api/access/scans/voided-tickets'
 const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
+const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
 
 // The enrolled device's credential.
 //
@@ -76,6 +80,11 @@ function scanHeaders(token: string): HeadersInit {
   return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
 }
 
+async function tokenFingerprint(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
 }
@@ -91,13 +100,17 @@ function App() {
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
   const [pairingInput, setPairingInput] = useState('')
   const [storageFailure, setStorageFailure] = useState<string | null>(null)
+  const [hasRevocationPull, setHasRevocationPull] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
+  const deviceTokenRef = useRef(deviceToken)
+  deviceTokenRef.current = deviceToken
   const reopenAfter = useRef<Promise<void>>(Promise.resolve())
+  const pullInFlight = useRef<{ token: string; promise: Promise<void> } | null>(null)
   // Bumped by every stopCamera() and every startCamera() entry. A start captures its value and
   // treats itself as stale once the counter moves on — so a stream resolving after unmount or a
   // superseded start disposes of its own resource instead of touching the active one.
@@ -142,11 +155,18 @@ function App() {
   useEffect(() => {
     mounted.current = true
     void refreshQueued()
-    // Reconnect is the natural sync point for the offline queue (ADR-025 §D6).
-    const onOnline = () => void syncQueued()
+    const timer = window.setInterval(() => {
+      if (deviceTokenRef.current) void pullRevocations()
+    }, 15 * 60 * 1000)
+    // Refresh and queue sync are independent so one failure does not suppress the other.
+    const onOnline = () => {
+      if (deviceTokenRef.current) void pullRevocations()
+      void syncQueued()
+    }
     window.addEventListener('online', onOnline)
     return () => {
       mounted.current = false
+      window.clearInterval(timer)
       window.removeEventListener('online', onOnline)
       const pendingStore = storePromise.current
       storePromise.current = null
@@ -155,6 +175,11 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (deviceToken) void pullRevocations()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceToken])
 
   const refreshQueued = async () => {
     try {
@@ -169,6 +194,59 @@ function App() {
     }
   }
 
+  const pullRevocations = async (): Promise<void> => {
+    const token = deviceTokenRef.current
+    if (!token) return
+    const current = pullInFlight.current
+    if (current?.token === token) return current.promise
+    const pull = (async () => {
+      try {
+        const store = await getStore()
+        const fingerprint = await tokenFingerprint(token)
+        const previousPull = await store.revocationPull(fingerprint)
+        if (mounted.current && deviceTokenRef.current === token) {
+          setHasRevocationPull(!!previousPull.completedAt)
+        }
+        let cursor: string | null = null
+        do {
+          // Stop when the screen has closed: a walk that outlives its component would
+          // go on calling fetch for a scanner nobody is looking at.
+          if (!mounted.current) return
+          const query = cursor === null ? '?limit=100' : `?limit=100&cursor=${encodeURIComponent(cursor)}`
+          const response = await fetch(`${revocationsURL}${query}`, {
+            headers: { [scannerTokenHeader]: token },
+          })
+          if (response.status === 401) {
+            // A revoked device learns it here too, not only on its next scan.
+            clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', token)
+            return
+          }
+          if (!response.ok) return
+          const body: unknown = await response.json()
+          if (!body || typeof body !== 'object' || !('ticket_ids' in body) || !('next_cursor' in body)) return
+          const page = body as { ticket_ids?: unknown; next_cursor?: unknown }
+          if (!Array.isArray(page.ticket_ids) || page.ticket_ids.some((id) => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) return
+          if (page.next_cursor !== null && (typeof page.next_cursor !== 'string' || !page.next_cursor)) return
+          await store.mergeRevoked(page.ticket_ids as string[])
+          cursor = page.next_cursor
+        } while (cursor !== null)
+        await store.completeRevocationPull(fingerprint, new Date().toISOString())
+        if (mounted.current && deviceTokenRef.current === token) {
+          setHasRevocationPull(true)
+        }
+      } catch {
+        // A failed page does not advance the completed-pull time.
+      }
+    })()
+    const flight = { token, promise: pull }
+    pullInFlight.current = flight
+    try {
+      await pull
+    } finally {
+      if (pullInFlight.current === flight) pullInFlight.current = null
+    }
+  }
+
   const submit = async (value = payload) => {
     if (!value.trim() || submitting) return
     setSubmitting(true)
@@ -176,13 +254,29 @@ function App() {
     try {
       let store: OccurrenceStore
       let record: OccurrenceRecord
+      let listed = false
       try {
         store = await getStore()
+        const ticketID = decodeTicketID(value.trim())
+        listed = !!ticketID && await store.isRevoked(ticketID)
+        if (listed) {
+          record = await store.mintRefusal(value.trim(), new Date().toISOString())
+          reportStorageReady()
+          setOutcome({ kind: 'revocation-refused' })
+          await refreshQueued()
+          void syncQueued()
+          return
+        }
         // Commit the occurrence before sending the request (ADR-025 §D3).
         record = await store.mint(value.trim(), new Date().toISOString())
         reportStorageReady()
       } catch {
-        reportStorageFailure()
+        if (listed) {
+          setOutcome({ kind: 'revocation-refused' })
+          reportStorageFailure(storageRefusalMessage)
+        } else {
+          reportStorageFailure()
+        }
         return
       }
 
@@ -208,7 +302,7 @@ function App() {
           // The ticket was not checked. Keep the occurrence and return the device
           // to pairing instead of presenting a ticket rejection.
           await store.markQueued(record.occurrenceId)
-          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.')
+          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.', deviceToken)
           await refreshQueued()
           return
         }
@@ -271,17 +365,19 @@ function App() {
           qr_payload: record.qrPayload,
           occurrence_id: record.occurrenceId,
           occurred_at: record.occurredAt,
+          ...(record.localDecision ? { local_decision: record.localDecision } : {}),
         })),
       }
+      const token = deviceTokenRef.current
       const response = await fetch(reconcileURL, {
         method: 'POST',
-        headers: scanHeaders(deviceToken),
+        headers: scanHeaders(token),
         body: JSON.stringify(request),
       })
       if (response.status === 401) {
         // The queue is untouched: an unpaired device must not discard a night of
         // offline scans. Pair and sync again.
-        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.')
+        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
         return
       }
       if (!response.ok) return
@@ -408,28 +504,43 @@ function App() {
   // clearPairing sends the operator to the pairing screen with the reason they
   // are seeing it. One destination for every "this device is not enrolled"
   // answer, because two would eventually disagree about what to tell them.
-  const clearPairing = (reason: string) => {
+  const clearPairing = (reason: string, rejectedToken: string) => {
+    if (rejectedToken !== deviceTokenRef.current) return
     try {
-      localStorage.removeItem(deviceTokenKey)
+      if (localStorage.getItem(deviceTokenKey) === rejectedToken) localStorage.removeItem(deviceTokenKey)
     } catch {
       // Storage unavailable; the in-memory clear below is what matters.
     }
+    deviceTokenRef.current = ''
     setDeviceToken('')
+    setHasRevocationPull(false)
     setSyncNote(reason)
   }
 
-  const pairDevice = (event: React.FormEvent) => {
+  const pairDevice = async (event: React.FormEvent) => {
     event.preventDefault()
     const token = pairingInput.trim()
     if (!token) return
+    const fingerprint = await tokenFingerprint(token)
+    try {
+      const pull = await (await getStore()).revocationPull(fingerprint)
+      setHasRevocationPull(!!pull.completedAt)
+    } catch {
+      reportStorageFailure()
+      return
+    }
     try {
       localStorage.setItem(deviceTokenKey, token)
     } catch {
       // Storage unavailable: pair for this session rather than refusing to work.
       // The alternative is a gate that cannot open because a browser setting.
     }
+    // Move the ref now, not on the next render: a 401 for the old token that
+    // arrives in between must see that this tab has moved on.
+    deviceTokenRef.current = token
     setDeviceToken(token)
     setPairingInput('')
+    setSyncNote('')
   }
 
   if (!deviceToken) {
@@ -478,19 +589,22 @@ function App() {
         <div className="scanner-actions">
           <button type="button" onClick={() => void submit()} disabled={submitting || !payload.trim()}>{submitting ? 'Checking…' : 'Check ticket'}</button>
           <button type="button" onClick={() => void startCamera()} disabled={cameraActive || submitting}>Use camera</button>
+          <button type="button" onClick={() => void pullRevocations()}>Refresh revocation list</button>
           {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
         </div>
         <video ref={video} aria-label="Camera preview" muted playsInline hidden={!cameraActive} />
         {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
         {queuedCount > 0 && (
           <p className="queue-note" role="status">
-            {`${queuedCount} queued offline scan${queuedCount > 1 ? 's' : ''} awaiting sync.`}{' '}
+            {`${queuedCount} queued offline scan${queuedCount > 1 ? 's' : ''} awaiting sync.`}{!hasRevocationPull ? ' This device holds no revocation list yet.' : ''}{' '}
             <button type="button" onClick={() => void syncQueued()}>Sync queued scans</button>
           </p>
         )}
         {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
         {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
       </section>
+      {!hasRevocationPull && <p className="queue-note" role="status">This device holds no revocation list yet.</p>}
+      {outcome?.kind === 'revocation-refused' && <section className="result rejected" role="alert"><h2>Not valid for entry</h2><p>This ticket is on the device's revocation list. Do not admit.</p></section>}
       {outcome?.kind === 'accepted' && (
         <section className="result accepted" role="status">
           <h2>Accepted</h2>

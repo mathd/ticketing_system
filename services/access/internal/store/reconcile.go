@@ -65,6 +65,78 @@ type ReconcileResult struct {
 	SkewFlagged bool
 }
 
+// RecordRevocationRefusal records a local scanner denial without writing an
+// admission, quarantine, or alarm row.
+func (p *Postgres) RecordRevocationRefusal(ctx context.Context, ticketID, orderID, organizerID, slotID, occurrenceID uuid.UUID, occurredAt time.Time, decision string) (ReconcileResult, error) {
+	if decision != "revocation_refused" || occurrenceID == uuid.Nil || occurrenceID.Version() != 4 || occurrenceID.Variant() != uuid.RFC4122 || occurredAt.IsZero() {
+		return ReconcileResult{}, ErrOccurrenceCollision
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ReconcileResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var identity TicketIdentity
+	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, ticketID).
+		Scan(&identity.OrderID, &identity.OrganizerID, &identity.SlotID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (identity.OrderID != orderID || identity.OrganizerID != organizerID || identity.SlotID != slotID)) {
+		return ReconcileResult{}, ErrTicketCredential
+	}
+	if err != nil {
+		return ReconcileResult{}, err
+	}
+	var storedTicket, storedOwner uuid.UUID
+	var storedAt time.Time
+	var storedDecision string
+	err = tx.QueryRowContext(ctx, `SELECT ticket_id,organizer_id,occurred_at,decision FROM scanner_local_decisions WHERE occurrence_id=$1`, occurrenceID).
+		Scan(&storedTicket, &storedOwner, &storedAt, &storedDecision)
+	if err == nil {
+		if storedTicket != ticketID || storedOwner != organizerID || !storedAt.Equal(occurredAt) || storedDecision != decision {
+			return ReconcileResult{}, ErrOccurrenceCollision
+		}
+		if err = tx.Commit(); err != nil {
+			return ReconcileResult{}, err
+		}
+		return ReconcileResult{OccurrenceID: occurrenceID, Outcome: ReconcileSynced, OccurredAt: storedAt}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ReconcileResult{}, err
+	}
+	var used bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE id=$1) OR EXISTS(SELECT 1 FROM lifecycle_integrity_quarantine WHERE occurrence_id=$1)`, occurrenceID).Scan(&used); err != nil {
+		return ReconcileResult{}, err
+	}
+	if used {
+		return ReconcileResult{}, ErrOccurrenceCollision
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO scanner_local_decisions(occurrence_id,ticket_id,organizer_id,occurred_at,decision) VALUES($1,$2,$3,$4,$5)`, occurrenceID, ticketID, organizerID, occurredAt, decision)
+	if err != nil {
+		return ReconcileResult{}, revocationRefusalInsertError(err, occurrenceID)
+	}
+	if err = tx.Commit(); err != nil {
+		return ReconcileResult{}, err
+	}
+	return ReconcileResult{OccurrenceID: occurrenceID, Outcome: ReconcileRecorded, OccurredAt: occurredAt}, nil
+}
+
+func revocationRefusalInsertError(err error, occurrenceID uuid.UUID) error {
+	if isUniqueViolation(err) {
+		return fmt.Errorf("occurrence %s: %w", occurrenceID, ErrOccurrenceCollision)
+	}
+	return err
+}
+
+func refusedOccurrence(ctx context.Context, tx *sql.Tx, occurrenceID uuid.UUID) error {
+	var refused bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM scanner_local_decisions WHERE occurrence_id=$1)`, occurrenceID).Scan(&refused); err != nil {
+		return err
+	}
+	if refused {
+		return fmt.Errorf("occurrence %s: %w", occurrenceID, ErrOccurrenceCollision)
+	}
+	return nil
+}
+
 // ReconcileAdmission records one offline occurrence (ADR-025 §D2/§D6).
 // Reconciliation of an admission that already physically happened is
 // recording, not deciding: it cannot retroactively deny, so every occurrence
@@ -363,6 +435,9 @@ func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, oc
 		return true, occurredAt.Time, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return false, time.Time{}, err
+	}
+	if err = refusedOccurrence(ctx, tx, occ); err != nil {
 		return false, time.Time{}, err
 	}
 	return false, time.Time{}, nil

@@ -24,6 +24,12 @@ function pasteCredential(value = 'signed-ticket') {
   fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
 }
 
+function routedFetch(scan: () => Promise<Response>) {
+  return vi.fn((url: string, _init?: RequestInit) => String(url).includes('voided-tickets')
+    ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+    : scan())
+}
+
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void }
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
@@ -57,21 +63,21 @@ function stubCamera(getUserMedia: () => Promise<MediaStream>) {
 
 describe('App', () => {
   it('renders the scanner and accepts a pasted credential', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 })))
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 }))))
     render(<App />)
     pasteCredential()
     expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
   })
 
   it('shows the original scan time for a duplicate', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'rejected', reason: 'already_redeemed', original_scan_at: '2026-07-13T12:00:00Z' }), { status: 409 })))
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(new Response(JSON.stringify({ decision: 'rejected', reason: 'already_redeemed', original_scan_at: '2026-07-13T12:00:00Z' }), { status: 409 }))))
     render(<App />)
     pasteCredential()
     expect(await screen.findByText(/Already redeemed at/)).toBeDefined()
   })
 
   it('rejects an invalid credential', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'rejected', reason: 'invalid_credential' }), { status: 422 })))
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(new Response(JSON.stringify({ decision: 'rejected', reason: 'invalid_credential' }), { status: 422 }))))
     render(<App />)
     pasteCredential()
     expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeDefined()
@@ -93,7 +99,7 @@ describe('App', () => {
     })
     stubCamera(getUserMedia)
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 })))
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-07-13T12:00:00Z' }), { status: 200 }))))
 
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
@@ -312,14 +318,14 @@ describe('device pairing', () => {
     // The scan form is not merely disabled — it is not there. A gate operator
     // cannot paste a credential into a scanner that has no credential itself.
     expect(screen.queryByLabelText('Ticket credential')).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/scans'), expect.anything())
   })
 
   it('pairs, keeps the token across a reload, and sends it on every scan', async () => {
     localStorage.clear()
-    const fetchMock = vi.fn().mockResolvedValue(
+    const fetchMock = routedFetch(() => Promise.resolve(
       new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-10T12:00:00Z' }), { status: 200 }),
-    )
+    ))
     vi.stubGlobal('fetch', fetchMock)
 
     const { unmount } = render(<App />)
@@ -328,11 +334,12 @@ describe('device pairing', () => {
 
     // Trimmed on the way in: a token pasted from a terminal carries whitespace,
     // and an untrimmed one is refused in a way that reads as "revoked device".
-    expect(localStorage.getItem('scanner.device-token')).toBe('gate-token')
+    await waitFor(() => expect(localStorage.getItem('scanner.device-token')).toBe('gate-token'))
 
     pasteCredential()
     expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
-    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>
+    const scanCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/scans'))!
+    const headers = (scanCall[1] as RequestInit).headers as Record<string, string>
     expect(headers['X-Scanner-Token']).toBe('gate-token')
 
     // Survives a reload — a gate device is paired once, not once per page load.
@@ -356,9 +363,9 @@ describe('device pairing', () => {
   // stopped queueing would be far worse than the wrong message.
   it('says the server answered badly, not "No connection", when the reply cannot be read', async () => {
     // A 502 whose body is an HTML error page: reached the server, unreadable reply.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
       new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 }),
-    ))
+    )))
 
     render(<App />)
     pasteCredential()
@@ -374,12 +381,14 @@ describe('device pairing', () => {
   // actuation. Report the local write failure without blaming the network or server.
   it('blames this device, not the server, when the reply was fine and the local write failed', async () => {
     const reply = deferred<Response>()
-    const fetchMock = vi.fn().mockReturnValue(reply.promise)
+    const fetchMock = vi.fn((url: string) => String(url).includes('voided-tickets')
+      ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+      : reply.promise)
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
     pasteCredential()
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1))
 
     // Mint has committed before fetch starts. Failing every later write targets
     // actuation and its fail-closed queue attempt without relying on transaction counts.
@@ -404,7 +413,9 @@ describe('device pairing', () => {
   it('still says "No connection" when the request never reached the server', async () => {
     // fetch itself rejects: this is the case the old copy described correctly, and
     // it must keep saying so — otherwise the fix has merely moved the wrong message.
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    vi.stubGlobal('fetch', vi.fn((url: string) => String(url).includes('voided-tickets')
+      ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+      : Promise.reject(new TypeError('Failed to fetch'))))
 
     render(<App />)
     pasteCredential()
@@ -416,9 +427,9 @@ describe('device pairing', () => {
   })
 
   it('treats a 401 as "pair the device", not as a rejected ticket, and keeps the scan queued', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
       new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 }),
-    ))
+    )))
 
     render(<App />)
     pasteCredential()

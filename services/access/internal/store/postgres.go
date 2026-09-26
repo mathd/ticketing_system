@@ -514,6 +514,9 @@ func (p *Postgres) replayByOccurrence(ctx context.Context, tx *sql.Tx, ticketID,
 		}
 		return true, RedeemResult{Accepted: true, Decision: DecisionAccepted, OccurredAt: row.OccurredAt.Time, Replayed: true}, nil
 	}
+	if err = refusedOccurrence(ctx, tx, occ); err != nil {
+		return false, RedeemResult{}, err
+	}
 	return false, RedeemResult{}, nil
 }
 
@@ -621,6 +624,9 @@ func (p *Postgres) RecordAdmission(ctx context.Context, in RecordAdmissionInput)
 		return RecordAdmissionResult{Event: stored, Replayed: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return RecordAdmissionResult{}, err
+	}
+	if err = refusedOccurrence(ctx, tx, in.OccurrenceID); err != nil {
 		return RecordAdmissionResult{}, err
 	}
 

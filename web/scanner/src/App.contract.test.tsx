@@ -19,6 +19,11 @@ const record: OccurrenceRecord = {
 function fakeStore(queued: OccurrenceRecord[] = []) {
   const store: OccurrenceStore = {
     mint: vi.fn().mockResolvedValue({ ...record, state: 'PENDING' }),
+    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
+    isRevoked: vi.fn().mockResolvedValue(false),
+    mergeRevoked: vi.fn().mockResolvedValue(undefined),
+    completeRevocationPull: vi.fn().mockResolvedValue(undefined),
+    revocationPull: vi.fn().mockResolvedValue({}),
     actuate: vi.fn().mockResolvedValue(true),
     markQueued: vi.fn().mockResolvedValue(undefined),
     markSynced: vi.fn().mockResolvedValue(undefined),
@@ -47,9 +52,9 @@ describe('Scanner runtime response contracts', () => {
   it('does not actuate an accepted response that lacks its required time', async () => {
     const store = fakeStore()
     openStore.mockResolvedValue(store)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ decision: 'accepted' }), { status: 200 }),
-    ))
+    vi.stubGlobal('fetch', (url: string) => Promise.resolve(String(url).includes('voided-tickets')
+      ? new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
+      : new Response(JSON.stringify({ decision: 'accepted' }), { status: 200 })))
 
     render(<App />)
     fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'signed-ticket' } })
@@ -64,16 +69,15 @@ describe('Scanner runtime response contracts', () => {
   it('does not retire a queued occurrence for an unknown reconciliation result', async () => {
     const store = fakeStore([record])
     openStore.mockResolvedValue(store)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        results: [{ occurrence_id: record.occurrenceId, result: 'done' }],
-      }), { status: 200 }),
-    ))
+    const fetchMock = vi.fn((url: string) => Promise.resolve(String(url).includes('voided-tickets')
+      ? new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
+      : new Response(JSON.stringify({ results: [{ occurrence_id: record.occurrenceId, result: 'done' }] }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /sync/i }))
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations'))).toHaveLength(1))
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })

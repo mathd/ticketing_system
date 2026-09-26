@@ -197,6 +197,7 @@ export interface components {
             occurrence_id: string;
             occurred_at: string;
             event_type?: string;
+            local_decision?: string;
         };
         ReconcileResponse: {
             results: components["schemas"]["ReconcileResult"][];

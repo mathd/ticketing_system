@@ -106,10 +106,11 @@ type OrderAdmission struct {
 
 // ReconcileOccurrence defines model for ReconcileOccurrence.
 type ReconcileOccurrence struct {
-	EventType    *string `json:"event_type,omitempty"`
-	OccurredAt   string  `json:"occurred_at"`
-	OccurrenceId string  `json:"occurrence_id"`
-	QrPayload    string  `json:"qr_payload"`
+	EventType     *string `json:"event_type,omitempty"`
+	LocalDecision *string `json:"local_decision,omitempty"`
+	OccurredAt    string  `json:"occurred_at"`
+	OccurrenceId  string  `json:"occurrence_id"`
+	QrPayload     string  `json:"qr_payload"`
 }
 
 // ReconcileRequest defines model for ReconcileRequest.

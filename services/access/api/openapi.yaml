@@ -356,11 +356,14 @@ components:
       # Omitted means entry — an old scanner's queue keeps today's semantics.
       # Deliberately a plain string, same reason as the other fields: an
       # unknown value gets its own per-item rejected result, never a batch 422.
+      # local_decision records a scanner-side refusal. Unknown values are
+      # refused for that occurrence only.
       properties:
         qr_payload: {type: string}
         occurrence_id: {type: string}
         occurred_at: {type: string}
         event_type: {type: string}
+        local_decision: {type: string}
     ReconcileResponse:
       type: object
       additionalProperties: false

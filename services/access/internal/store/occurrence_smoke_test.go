@@ -99,6 +99,188 @@ func TestRedeemWithOccurrenceUsesScannerIDAndDeviceTime(t *testing.T) {
 	}
 }
 
+func TestRecordRevocationRefusalIsExactAndNeverAnAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	first := issueTicket(t, ctx, st, uuid.New())
+	second := issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+	before := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1`, first.ticketID)
+	quarantineBefore := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, first.ticketID)
+	alarmsBefore := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`)
+
+	result, err := st.RecordRevocationRefusal(ctx, first.ticketID, first.id.OrderID, first.id.OrganizerID, first.id.SlotID, occ, deviceTime(), "revocation_refused")
+	if err != nil || result.Outcome != ReconcileRecorded {
+		t.Fatalf("first refusal = %+v, %v; want recorded", result, err)
+	}
+	var ticketID, organizerID uuid.UUID
+	var occurredAt time.Time
+	var decision string
+	if err := db.QueryRowContext(ctx, `SELECT ticket_id,organizer_id,occurred_at,decision FROM scanner_local_decisions WHERE occurrence_id=$1`, occ).
+		Scan(&ticketID, &organizerID, &occurredAt, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if ticketID != first.ticketID || organizerID != first.id.OrganizerID || !occurredAt.Equal(deviceTime()) || decision != "revocation_refused" {
+		t.Fatalf("refusal row = %s %s %s %q", ticketID, organizerID, occurredAt, decision)
+	}
+	if after := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE ticket_id=$1`, first.ticketID); after != before {
+		t.Fatalf("refusal changed lifecycle event count from %d to %d", before, after)
+	}
+	if after := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id=$1`, first.ticketID); after != quarantineBefore {
+		t.Fatalf("refusal changed quarantine count from %d to %d", quarantineBefore, after)
+	}
+	if after := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_integrity_alarm_outbox`); after != alarmsBefore {
+		t.Fatalf("refusal changed alarm outbox count from %d to %d", alarmsBefore, after)
+	}
+	replay, err := st.RecordRevocationRefusal(ctx, first.ticketID, first.id.OrderID, first.id.OrganizerID, first.id.SlotID, occ, deviceTime(), "revocation_refused")
+	if err != nil || replay.Outcome != ReconcileSynced {
+		t.Fatalf("exact replay = %+v, %v; want synced", replay, err)
+	}
+	if _, err := st.RecordRevocationRefusal(ctx, second.ticketID, second.id.OrderID, second.id.OrganizerID, second.id.SlotID, occ, deviceTime(), "revocation_refused"); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("cross-ticket refusal reuse = %v, want collision", err)
+	}
+	if _, err := st.ReconcileAdmission(ctx, first.reconcileInput(occ, deviceTime())); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("admission reused refusal id = %v, want collision", err)
+	}
+	admissionID := uuid.New()
+	if _, err := st.ReconcileAdmission(ctx, second.reconcileInput(admissionID, deviceTime())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordRevocationRefusal(ctx, first.ticketID, first.id.OrderID, first.id.OrganizerID, first.id.SlotID, admissionID, deviceTime(), "revocation_refused"); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("refusal reused admission id = %v, want collision", err)
+	}
+	quarantineID := uuid.New()
+	if _, err := db.ExecContext(ctx, `INSERT INTO lifecycle_integrity_quarantine(ticket_id,organizer_id,reason,reason_code,occurrence_id,occurred_at,event_type) VALUES($1,$2,'fixture quarantine','legacy_quarantine',$3,$4,'entry')`,
+		second.ticketID, second.id.OrganizerID, quarantineID, deviceTime()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordRevocationRefusal(ctx, first.ticketID, first.id.OrderID, first.id.OrganizerID, first.id.SlotID, quarantineID, deviceTime(), "revocation_refused"); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("refusal reused quarantine id = %v, want collision", err)
+	}
+	if _, err := st.RecordRevocationRefusal(ctx, first.ticketID, uuid.New(), first.id.OrganizerID, first.id.SlotID, uuid.New(), deviceTime(), "revocation_refused"); !errors.Is(err, ErrTicketCredential) {
+		t.Fatalf("refusal with mismatched signed order id = %v, want ErrTicketCredential", err)
+	}
+}
+
+func TestRefusalOccurrenceCannotBeReusedByLiveAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	refused := issueTicket(t, ctx, st, uuid.New())
+	live := issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+	if _, err := st.RecordRevocationRefusal(ctx, refused.ticketID, refused.id.OrderID, refused.id.OrganizerID, refused.id.SlotID, occ, deviceTime(), "revocation_refused"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Redeem(ctx, occurrenceRedeemInput(live, occ)); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("Redeem reused refusal id: %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countEvents(t, ctx, db, live.ticketID, "redeemed"); got != 0 {
+		t.Fatalf("refusal reuse wrote %d lifecycle rows, want none", got)
+	}
+}
+
+func TestRecordRevocationRefusalInsertRaceMapsToCollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	a, b := issueTicket(t, ctx, st, uuid.New()), issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+
+	blockerConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blockerConn.Close() }()
+	var blockerPID int
+	if err := blockerConn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	competing, err := blockerConn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = competing.Rollback() }()
+	var isolation string
+	if err := competing.QueryRowContext(ctx, `SHOW transaction_isolation`).Scan(&isolation); err != nil {
+		t.Fatal(err)
+	}
+	if isolation != "read committed" {
+		t.Fatalf("test database isolation = %q, want read committed", isolation)
+	}
+	if _, err := competing.ExecContext(ctx, `INSERT INTO scanner_local_decisions(occurrence_id,ticket_id,organizer_id,occurred_at,decision) VALUES($1,$2,$3,$4,'revocation_refused')`, occ, b.ticketID, b.id.OrganizerID, deviceTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.RecordRevocationRefusal(ctx, a.ticketID, a.id.OrderID, a.id.OrganizerID, a.id.SlotID, occ, deviceTime(), "revocation_refused")
+		done <- err
+	}()
+	// RecordRevocationRefusal uses BeginTx with nil options, so it inherits the
+	// checked READ COMMITTED default. Its SELECT cannot see T1's uncommitted row,
+	// but the unique index makes its INSERT wait for T1's outcome.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked int
+		if err := db.QueryRowContext(ctx, `SELECT count(*)
+			FROM pg_locks AS waiter
+			JOIN pg_locks AS holder
+			  ON holder.locktype = 'transactionid'
+			 AND holder.transactionid = waiter.transactionid
+			 AND holder.granted
+			WHERE waiter.locktype = 'transactionid'
+			  AND NOT waiter.granted
+			  AND waiter.pid <> holder.pid
+			  AND holder.pid = $1`, blockerPID).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordRevocationRefusal never blocked on the conflicting insert; the unique-index path was not exercised")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := competing.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("insert race returned %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countRows(t, ctx, db, `SELECT count(*) FROM scanner_local_decisions WHERE occurrence_id=$1`, occ); got != 1 {
+		t.Fatalf("race left %d refusal rows for occurrence %s, want 1", got, occ)
+	}
+	if got := countRows(t, ctx, db, `SELECT count(*) FROM scanner_local_decisions WHERE occurrence_id=$1 AND ticket_id=$2`, occ, b.ticketID); got != 1 {
+		t.Fatalf("race did not preserve ticket B's refusal row")
+	}
+}
+
+func TestRecordAdmissionCannotReuseRefusalOccurrence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	refused := issueTicket(t, ctx, st, uuid.New())
+	live := issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+	if _, err := st.RecordRevocationRefusal(ctx, refused.ticketID, refused.id.OrderID, refused.id.OrganizerID, refused.id.SlotID, occ, deviceTime(), "revocation_refused"); err != nil {
+		t.Fatal(err)
+	}
+	in := RecordAdmissionInput{TicketID: live.ticketID, OrderID: live.id.OrderID, OrganizerID: live.id.OrganizerID, SlotID: live.id.SlotID, OccurrenceID: occ, Type: AdmissionEntry, OccurredAt: deviceTime()}
+	if _, err := st.RecordAdmission(ctx, in); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("RecordAdmission reused refusal id: %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countEvents(t, ctx, db, live.ticketID, "entry"); got != 0 {
+		t.Fatalf("refusal reuse wrote %d lifecycle rows, want none", got)
+	}
+}
+
 // The §D3 named trap: a retry of the occurrence that became `redeemed` is
 // idempotent success — distinguishable as a replay, never bare accepted, and it
 // can never be forged into duplicate_admit evidence of a second admission.
@@ -1623,7 +1805,7 @@ func TestReconcileAfterADegradedAdmissionIsAConflict(t *testing.T) {
 // reach the replay through different callers.
 func TestDuplicateAdmitOccurrenceNeverReplaysAsAccepted(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
+		name   string
 		break_ bool
 	}{
 		{name: "healthy chain"},
