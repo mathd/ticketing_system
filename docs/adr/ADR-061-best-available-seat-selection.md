@@ -196,7 +196,9 @@ returned the original quantity with an empty seat set.
 - `best_available_unsupported` — this slot has **no ordering projection**, so best-available
   will never succeed there for any size until the projection is repaired.
 
-One is a property of the request, the other is an operational defect with an operator remedy.
+One is a property of the request, the other is an operational defect: re-provisioning with a valid
+projection repairs it, except for a rule-off pool that fell back on invalid geometry, which has no
+supported repair yet (TKT-499).
 Answering both the same way makes a broken pool indistinguishable from a sold-out show to the
 very people who could fix it — the same distinction ADR-041 drew when it kept
 `orphan_prevention_enabled` separate from the projection so that "rule off" and "projection
@@ -295,7 +297,9 @@ cannot occur.
   unavailable party size.
 - **Follow-up delivered in TKT-258.** Inventory now fetches geometry for schema-4 seated
   publications and keeps the existing schema-5 rule-on path. Both provision the ordering
-  projection, while `orphan_prevention_enabled` remains the only claim-rule switch. Catalog
+  projection when the map's geometry is valid (a rule-off pool with invalid geometry falls back
+  to no projection, TKT-258 D3), while `orphan_prevention_enabled` remains the only claim-rule
+  switch. Catalog
   still emits the same schema-4 payload for rule-off maps. A one-shot correction wave adds
   ordering data to existing rule-off pools. No event schema or payload changed.
 - **Negative.** Immutable ordering is duplicated per pool, alongside the adjacency ADR-041
