@@ -216,6 +216,11 @@ function App() {
           const response = await fetch(`${revocationsURL}${query}`, {
             headers: { [scannerTokenHeader]: token },
           })
+          if (response.status === 401) {
+            // A revoked device learns it here too, not only on its next scan.
+            clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', token)
+            return
+          }
           if (!response.ok) return
           const body: unknown = await response.json()
           if (!body || typeof body !== 'object' || !('ticket_ids' in body) || !('next_cursor' in body)) return
@@ -506,6 +511,7 @@ function App() {
     } catch {
       // Storage unavailable; the in-memory clear below is what matters.
     }
+    deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
     setSyncNote(reason)
@@ -529,6 +535,9 @@ function App() {
       // Storage unavailable: pair for this session rather than refusing to work.
       // The alternative is a gate that cannot open because a browser setting.
     }
+    // Move the ref now, not on the next render: a 401 for the old token that
+    // arrives in between must see that this tab has moved on.
+    deviceTokenRef.current = token
     setDeviceToken(token)
     setPairingInput('')
     setSyncNote('')

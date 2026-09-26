@@ -285,6 +285,20 @@ describe('Scanner storage failures', () => {
     expect(completions.get(oldFingerprint)).toEqual(expect.any(String))
   })
 
+  it('returns to pairing when the feed refuses the current token', async () => {
+    const { store } = fakeStore()
+    openStore.mockResolvedValue(store)
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(String(url).includes('voided-tickets')
+      ? new Response(JSON.stringify({ error: 'not paired' }), { status: 401 })
+      : new Response('{}', { status: 200 }))))
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeDefined()
+    expect(localStorage.getItem('scanner.device-token')).toBeNull()
+    expect(store.completeRevocationPull).not.toHaveBeenCalled()
+  })
+
   it('ignores a late 401 for token A after this tab pairs with token B', async () => {
     const { store } = fakeStore()
     vi.mocked(store.queued).mockResolvedValue([storedOccurrence()])
@@ -313,7 +327,12 @@ describe('Scanner storage failures', () => {
     expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
 
     rejectOldScan(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-    await waitFor(() => expect(screen.getByLabelText('Ticket credential')).toBeDefined())
+    // B's scan screen is already up, so waiting for it proves nothing. Wait until the
+    // old 401 handler has run (it queues the occurrence first, then unpairs), and one
+    // more task so its unpair step has run too.
+    await waitFor(() => expect(store.markQueued).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.getByLabelText('Ticket credential')).toBeDefined()
     expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token')
     expect(screen.queryByRole('heading', { name: 'Pair this device' })).toBeNull()
     expect(screen.queryByText(/this device is not paired/i)).toBeNull()
