@@ -599,3 +599,10 @@ arguments.** A money guard was gated on a payments-evidence lookup; the test stu
 answer, while production asked with an empty key, got a 400, read Indeterminate, and the guard could
 never fire for a downgrade. Record and assert a stub's inputs when the real answer depends on them.
 [full note](learnings/2026-09-25-a-stub-that-ignores-its-arguments.md)
+
+**2026-09-26 — TKT-211.** **pgx does not wrap `context.DeadlineExceeded` for a query interrupted in
+flight**: it returns a server-side cancellation. A handler that classified the timeout with
+`errors.Is(err, context.DeadlineExceeded)` still answered 500 against a query blocked on a table
+lock. Ask the context (`ctx.Err()`), not the error, and test against a real blocked query, since
+a fake that returns `ctx.Err()` encodes the assumption.
+[full note](learnings/2026-09-26-pgx-does-not-wrap-deadline-exceeded.md)
