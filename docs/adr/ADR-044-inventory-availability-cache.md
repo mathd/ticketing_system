@@ -181,3 +181,34 @@ The limits documented above apply equally to both display caches:
 - **Honest-writer consistency only:** Direct database updates bypass in-process callbacks.
 - **Process-local:** Invalidation affects only the local process; replicas remain stale until the tier expires.
 - **Bounded memory is not bounded load:** Entry bounds restrict cache table sizes after completion. The semaphore bounds concurrent database queries to 1,000, but callers can still drive load up to that limit.
+
+## Amendment: a load past its budget answers 503 (TKT-211)
+
+Before TKT-211, a display read whose load outran the query budget answered **500** through
+`problem()`'s default branch. That status was inherited, not chosen: 500 says "this service is
+broken", while the true statement is "a dependency was too slow; retry".
+
+**Decision.** Both display reads now answer **503** when their cache's OWN load budget expires:
+
+- `getAvailability` → `{"error":"availability temporarily unavailable, retry","code":"availability_unavailable"}`
+- `getSeatOccupancy` → `{"error":"seat occupancy temporarily unavailable, retry","code":"seat_occupancy_unavailable"}`
+
+Both are declared in `services/inventory/api/openapi.yaml` (ADR-028 would otherwise turn an
+undeclared 503 into a 500). The body is fixed text; no internal error text reaches this public
+route.
+
+**Classification happens at the budget, not from the error.** When the budget interrupts a real
+query, pgx reports a server-side cancellation that is NOT `context.DeadlineExceeded`. TKT-211
+verified this: a handler that matched `context.DeadlineExceeded` alone still answered 500 against a
+query blocked in Postgres. So each cache's `loadDirect` returns `ErrLoadBudgetExceeded` (which wraps
+`context.DeadlineExceeded`) whenever the load's own deadline has passed, and only then. A source
+that fails fast with the same error is not the sentinel.
+
+**What stays a 500 (or the existing mapping):** a caller's own cancellation or deadline ends the
+wait with the caller's context error. That says nothing about the dependency, so it keeps the
+existing path. The mapping lives in the two read handlers, not in `problem()`, which serves every
+route.
+
+**Tests:** `TestAvailabilityPastItsBudgetAnswers503` and `TestSeatOccupancyPastItsBudgetAnswers503`
+(a real query blocked by a table lock until the budget fires), `TestCallerCancellationOrDeadlineIsNot503`,
+and `TestLoadBudgetSentinelFollowsTheBudgetNotTheError` in both cache packages.
