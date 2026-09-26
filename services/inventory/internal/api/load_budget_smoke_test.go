@@ -157,63 +157,77 @@ func TestSeatOccupancyPastItsBudgetAnswers503(t *testing.T) {
 // context.DeadlineExceeded), which must stay on the existing path. The deadline case is
 // the one a naive errors.Is(err, context.DeadlineExceeded) mapping would get wrong: only
 // the cache's own load budget is evidence that the dependency was slow.
+//
+// Each case gets its OWN fixture (review pass 4): the cache's load outlives a caller that
+// left, so a shared schema would carry one case's waiting query into the next, and a
+// coalesced read would issue no query at all. With a fresh schema, the only backend that
+// can wait on its inventory_pools is this case's read.
 func TestCallerCancellationOrDeadlineIsNot503(t *testing.T) {
-	f := loadBudgetFixture(t)
-	srv := NewWithReaders(f.st, "", nil,
-		availability.New(f.st, availability.WithLoadTimeout(5*time.Second)),
-		seatoccupancy.New(f.st, seatoccupancy.WithLoadTimeout(5*time.Second)),
-	).Router(nil, true)
-	lockPools(t, f.db)
-	callerContexts := map[string]func() (context.Context, context.CancelFunc){
-		"canceled": func() (context.Context, context.CancelFunc) {
-			ctx, cancel := context.WithCancel(context.Background())
-			time.AfterFunc(100*time.Millisecond, cancel)
-			return ctx, cancel
-		},
-		"caller deadline": func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), 100*time.Millisecond)
-		},
+	type caller struct {
+		name     string
+		deadline time.Duration // zero: cancel explicitly once the read is seen waiting
 	}
-	for name, newCtx := range callerContexts {
-		for _, path := range []string{
-			"/slots/" + f.gaSlot.String() + "/availability?organizer_id=" + f.org.String(),
-			"/slots/" + f.seated.String() + "/seat-occupancy?organizer_id=" + f.org.String(),
-		} {
-			// Evidence, not timing, that the read reached Postgres and waited on the lock: an
-			// observer polls pg_locks for a backend waiting on inventory_pools while the
-			// request runs (review passes 1-3). A fast, unrelated 500 cannot produce it.
-			sawWaiter := make(chan bool, 1)
-			stopObserver := make(chan struct{})
-			go func() {
-				seen := false
-				defer func() { sawWaiter <- seen }()
-				for {
-					select {
-					case <-stopObserver:
-						return
-					case <-time.After(5 * time.Millisecond):
-					}
-					var waiting int
-					if err := f.db.QueryRow(`SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'inventory_pools'::regclass`).Scan(&waiting); err == nil && waiting > 0 {
-						seen = true
-					}
+	for _, c := range []caller{{name: "canceled"}, {name: "caller deadline", deadline: 300 * time.Millisecond}} {
+		for _, read := range []string{"availability", "seat-occupancy"} {
+			t.Run(c.name+"/"+read, func(t *testing.T) {
+				f := loadBudgetFixture(t)
+				srv := NewWithReaders(f.st, "", nil,
+					availability.New(f.st, availability.WithLoadTimeout(5*time.Second)),
+					seatoccupancy.New(f.st, seatoccupancy.WithLoadTimeout(5*time.Second)),
+				).Router(nil, true)
+				lockPools(t, f.db)
+				slot := f.gaSlot
+				if read == "seat-occupancy" {
+					slot = f.seated
 				}
-			}()
-			ctx, cancel := newCtx()
-			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
-			res := httptest.NewRecorder()
-			srv.ServeHTTP(res, req)
-			cancel()
-			close(stopObserver)
-			if !<-sawWaiter {
-				t.Fatalf("%s %s: no backend was ever seen waiting on inventory_pools: the read never reached the lock", name, path)
-			}
-			// The existing path: problem()'s default, a fixed 500 body. Pinned exactly, so a
-			// read that ignored the cancellation and answered 200 cannot pass either.
-			if res.Code != http.StatusInternalServerError || strings.TrimSpace(res.Body.String()) != `{"error":"internal error"}` {
-				t.Fatalf("%s %s: got %d %s, want the existing 500 internal error; only the cache's own budget means a slow dependency",
-					name, path, res.Code, res.Body.String())
-			}
+				path := "/slots/" + slot.String() + "/" + read + "?organizer_id=" + f.org.String()
+
+				ctx, cancel := context.WithCancel(context.Background())
+				if c.deadline > 0 {
+					ctx, cancel = context.WithTimeout(context.Background(), c.deadline)
+				}
+				defer cancel()
+				res := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					srv.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx))
+				}()
+				// Evidence, not timing, that THIS read reached Postgres and is waiting on the
+				// lock. Bounded, and each probe has its own timeout, so a stuck observation
+				// fails the test instead of hanging it.
+				if !waitForLockWaiter(t, f.db, 3*time.Second) {
+					t.Fatalf("%s: no backend was seen waiting on inventory_pools: the read never reached the lock", path)
+				}
+				if c.deadline == 0 {
+					cancel()
+				}
+				<-done
+				// The existing path: problem()'s default, a fixed 500 body. Pinned exactly, so a
+				// read that ignored the caller's end and answered 200 cannot pass either.
+				if res.Code != http.StatusInternalServerError || strings.TrimSpace(res.Body.String()) != `{"error":"internal error"}` {
+					t.Fatalf("%s: got %d %s, want the existing 500 internal error; only the cache's own budget means a slow dependency",
+						path, res.Code, res.Body.String())
+				}
+			})
 		}
 	}
+}
+
+// waitForLockWaiter polls pg_locks until some backend waits on inventory_pools, or the
+// bound passes. Every probe carries its own short timeout.
+func waitForLockWaiter(t *testing.T, db *sql.DB, bound time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(bound)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		var waiting int
+		err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'inventory_pools'::regclass`).Scan(&waiting)
+		cancel()
+		if err == nil && waiting > 0 {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }
