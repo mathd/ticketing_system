@@ -561,6 +561,13 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	read, err := s.avail.Read(r.Context(), org, slot, r.URL.Query().Get("channel"))
+	if errors.Is(err, availability.ErrLoadBudgetExceeded) {
+		// The source query outran the cache's budget: a slow dependency, so 503 and a
+		// retry, not a 500 that says this service is broken (TKT-211, ADR-044). Mapped
+		// here and not in problem(), which serves every route. The body is fixed text.
+		write(w, 503, map[string]string{"error": "availability temporarily unavailable, retry", "code": "availability_unavailable"})
+		return
+	}
 	if err != nil {
 		problem(w, err)
 		return
@@ -592,6 +599,11 @@ func (s *Server) seatOccupancy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	read, err := s.occupancy.Read(r.Context(), org, slot)
+	if errors.Is(err, seatoccupancy.ErrLoadBudgetExceeded) {
+		// Same rule as the availability read beside it (TKT-211).
+		write(w, 503, map[string]string{"error": "seat occupancy temporarily unavailable, retry", "code": "seat_occupancy_unavailable"})
+		return
+	}
 	if err != nil {
 		problem(w, err)
 		return

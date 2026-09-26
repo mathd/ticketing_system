@@ -30,6 +30,21 @@ func (e AvailabilityOfferingStatus) Valid() bool {
 	}
 }
 
+// Defines values for AvailabilityUnavailableCode.
+const (
+	AvailabilityUnavailableCodeAvailabilityUnavailable AvailabilityUnavailableCode = "availability_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the AvailabilityUnavailableCode enum.
+func (e AvailabilityUnavailableCode) Valid() bool {
+	switch e {
+	case AvailabilityUnavailableCodeAvailabilityUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CapacityAdjustmentStatus.
 const (
 	Applied CapacityAdjustmentStatus = "applied"
@@ -147,6 +162,21 @@ func (e SeatOccupancyOfferingStatus) Valid() bool {
 	}
 }
 
+// Defines values for SeatOccupancyUnavailableCode.
+const (
+	SeatOccupancyUnavailableCodeSeatOccupancyUnavailable SeatOccupancyUnavailableCode = "seat_occupancy_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SeatOccupancyUnavailableCode enum.
+func (e SeatOccupancyUnavailableCode) Valid() bool {
+	switch e {
+	case SeatOccupancyUnavailableCodeSeatOccupancyUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StaffAvailabilityOfferingStatus.
 const (
 	Archived StaffAvailabilityOfferingStatus = "archived"
@@ -182,6 +212,15 @@ type Availability struct {
 
 // AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
 type AvailabilityOfferingStatus string
+
+// AvailabilityUnavailable The availability query outran its budget (TKT-211). Retry; this is not a sellout.
+type AvailabilityUnavailable struct {
+	Code  AvailabilityUnavailableCode `json:"code"`
+	Error string                      `json:"error"`
+}
+
+// AvailabilityUnavailableCode defines model for AvailabilityUnavailable.Code.
+type AvailabilityUnavailableCode string
 
 // BestAvailableSeatHoldCreate A best-available request (TKT-81). Identical to SeatHoldCreate except that it names a PARTY SIZE instead of seats: the caller does not choose, and cannot influence, which seats it receives. That is deliberate rather than a simplification — a client-supplied seat preference on this path would be a second, unauthenticated way to steer an allocation, and the response is the only place the chosen seats appear.
 type BestAvailableSeatHoldCreate struct {
@@ -539,6 +578,15 @@ type SeatOccupancy struct {
 
 // SeatOccupancyOfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
 type SeatOccupancyOfferingStatus string
+
+// SeatOccupancyUnavailable The seat-occupancy query outran its budget (TKT-211). Retry.
+type SeatOccupancyUnavailable struct {
+	Code  SeatOccupancyUnavailableCode `json:"code"`
+	Error string                       `json:"error"`
+}
+
+// SeatOccupancyUnavailableCode defines model for SeatOccupancyUnavailable.Code.
+type SeatOccupancyUnavailableCode string
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {

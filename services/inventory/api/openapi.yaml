@@ -118,6 +118,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+        '503': {description: 'The availability query outran its budget; retry (TKT-211). code availability_unavailable.', content: {application/json: {schema: {$ref: '#/components/schemas/AvailabilityUnavailable'}}}}
   /slots/{id}/seat-occupancy:
     get:
       operationId: getSeatOccupancy
@@ -147,6 +148,7 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '500': {$ref: '#/components/responses/Error'}
+        '503': {description: 'The seat-occupancy query outran its budget; retry (TKT-211). code seat_occupancy_unavailable.', content: {application/json: {schema: {$ref: '#/components/schemas/SeatOccupancyUnavailable'}}}}
   # The hold transitions are service-to-service only: commerce drives them, never a
   # public caller. They sit under /internal/ so the gateway refuses them at the edge by
   # the same explicit prefix registration that covers every other internal route, rather
@@ -486,6 +488,22 @@ components:
     OperationalHold: {description: Operational hold state, content: {application/json: {schema: {$ref: '#/components/schemas/OperationalHold'}}}}
     Error: {description: Error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   schemas:
+    AvailabilityUnavailable:
+      description: 'The availability query outran its budget (TKT-211). Retry; this is not a sellout.'
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error: {type: string}
+        code: {type: string, enum: [availability_unavailable]}
+    SeatOccupancyUnavailable:
+      description: 'The seat-occupancy query outran its budget (TKT-211). Retry.'
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error: {type: string}
+        code: {type: string, enum: [seat_occupancy_unavailable]}
     CacheControlUpdate:
       type: object
       additionalProperties: false

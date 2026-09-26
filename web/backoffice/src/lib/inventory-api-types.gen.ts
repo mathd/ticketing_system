@@ -408,6 +408,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The availability query outran its budget (TKT-211). Retry; this is not a sellout. */
+        AvailabilityUnavailable: {
+            error: string;
+            /** @enum {string} */
+            code: "availability_unavailable";
+        };
+        /** @description The seat-occupancy query outran its budget (TKT-211). Retry. */
+        SeatOccupancyUnavailable: {
+            error: string;
+            /** @enum {string} */
+            code: "seat_occupancy_unavailable";
+        };
         CacheControlUpdate: {
             /** @description false disables the in-memory display caches — availability and seat occupancy — on THIS process */
             enabled: boolean;
@@ -1025,6 +1037,15 @@ export interface operations {
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             500: components["responses"]["Error"];
+            /** @description The availability query outran its budget; retry (TKT-211). code availability_unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailabilityUnavailable"];
+                };
+            };
         };
     };
     getSeatOccupancy: {
@@ -1055,6 +1076,15 @@ export interface operations {
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             500: components["responses"]["Error"];
+            /** @description The seat-occupancy query outran its budget; retry (TKT-211). code seat_occupancy_unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeatOccupancyUnavailable"];
+                };
+            };
         };
     };
     confirmHold: {

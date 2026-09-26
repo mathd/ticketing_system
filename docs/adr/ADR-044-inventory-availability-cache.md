@@ -181,3 +181,43 @@ The limits documented above apply equally to both display caches:
 - **Honest-writer consistency only:** Direct database updates bypass in-process callbacks.
 - **Process-local:** Invalidation affects only the local process; replicas remain stale until the tier expires.
 - **Bounded memory is not bounded load:** Entry bounds restrict cache table sizes after completion. The semaphore bounds concurrent database queries to 1,000, but callers can still drive load up to that limit.
+
+## Amendment: a load past its budget answers 503 (TKT-211)
+
+Before TKT-211, a display read whose load outran the query budget answered **500** through
+`problem()`'s default branch. That status was inherited, not chosen: 500 says "this service is
+broken", while the true statement is "a dependency was too slow; retry".
+
+**Decision.** Both display reads now answer **503** when their cache's OWN load budget expires:
+
+- `getAvailability` → `{"error":"availability temporarily unavailable, retry","code":"availability_unavailable"}`
+- `getSeatOccupancy` → `{"error":"seat occupancy temporarily unavailable, retry","code":"seat_occupancy_unavailable"}`
+
+Both are declared in `services/inventory/api/openapi.yaml` (ADR-028 would otherwise turn an
+undeclared 503 into a 500). The body is fixed text; no internal error text reaches this public
+route.
+
+**Classification happens at the budget, not from the error.** When the budget interrupts a real
+query, pgx reports a server-side cancellation that is NOT `context.DeadlineExceeded`. TKT-211
+verified this: a handler that matched `context.DeadlineExceeded` alone still answered 500 against a
+query blocked in Postgres. So each cache's `loadDirect` returns `ErrLoadBudgetExceeded` (which wraps
+`context.DeadlineExceeded`) when the load's own deadline has passed and the error is not a DOMAIN
+answer. A source that fails fast with the same error is not the sentinel. A domain answer
+(`ErrNotFound`, and for seat occupancy `ErrPoolKindMismatch`) passes through unchanged even when it
+arrives after the deadline: a slot that does not exist is a 404, however long the query took to
+find out, and a retry would not change it.
+
+Each 503 has its own response schema (`AvailabilityUnavailable`, `SeatOccupancyUnavailable`): both
+fields required, one allowed `code`, no extra properties. ADR-028's validator therefore enforces the
+body's shape and its `code`; the `error` text is fixed by the handler, not by the schema.
+
+**What stays a 500 (or the existing mapping):** a caller's own cancellation or deadline ends the
+wait with the caller's context error. That says nothing about the dependency, so it keeps the
+existing path. When the caller's context and a budget-failed load finish at the same instant, either
+answer may be written: the caller's own context had already ended, and which of the two it
+receives is not specified. The handlers do not arbitrate this race (TKT-211 D3). The mapping lives in the two read handlers, not in `problem()`, which serves every
+route.
+
+**Tests:** `TestAvailabilityPastItsBudgetAnswers503` and `TestSeatOccupancyPastItsBudgetAnswers503`
+(a real query blocked by a table lock until the budget fires), `TestCallerCancellationOrDeadlineIsNot503`,
+and `TestLoadBudgetSentinelFollowsTheBudgetNotTheError` in both cache packages.
