@@ -185,10 +185,8 @@ function App() {
     try {
       const store = await getStore()
       const queue = await store.queued()
-      const pull = await store.revocationPull()
       if (mounted.current) {
         setQueuedCount(queue.length)
-        setHasRevocationPull(!!pull.completedAt)
         setStorageFailure(null)
       }
     } catch {
@@ -205,8 +203,10 @@ function App() {
       try {
         const store = await getStore()
         const fingerprint = await tokenFingerprint(token)
-        const generation = await store.beginRevocationPull(fingerprint)
-        if (!generation) return
+        const previousPull = await store.revocationPull(fingerprint)
+        if (mounted.current && deviceTokenRef.current === token) {
+          setHasRevocationPull(!!previousPull.completedAt)
+        }
         let cursor: string | null = null
         do {
           const query = cursor === null ? '?limit=100' : `?limit=100&cursor=${encodeURIComponent(cursor)}`
@@ -219,10 +219,11 @@ function App() {
           const page = body as { ticket_ids?: unknown; next_cursor?: unknown }
           if (!Array.isArray(page.ticket_ids) || page.ticket_ids.some((id) => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) return
           if (page.next_cursor !== null && (typeof page.next_cursor !== 'string' || !page.next_cursor)) return
-          if (!await store.mergeRevoked(page.ticket_ids as string[], generation, fingerprint)) return
+          await store.mergeRevoked(page.ticket_ids as string[])
           cursor = page.next_cursor
         } while (cursor !== null)
-        if (await store.completeRevocationPull(generation, new Date().toISOString(), fingerprint) && mounted.current) {
+        await store.completeRevocationPull(fingerprint, new Date().toISOString())
+        if (mounted.current && deviceTokenRef.current === token) {
           setHasRevocationPull(true)
         }
       } catch {
@@ -496,16 +497,14 @@ function App() {
   // are seeing it. One destination for every "this device is not enrolled"
   // answer, because two would eventually disagree about what to tell them.
   const clearPairing = (reason: string, rejectedToken: string) => {
+    if (rejectedToken !== deviceTokenRef.current) return
     try {
       if (localStorage.getItem(deviceTokenKey) === rejectedToken) localStorage.removeItem(deviceTokenKey)
     } catch {
       // Storage unavailable; the in-memory clear below is what matters.
     }
     setDeviceToken('')
-    // Only clear the list if the rejected device still owns it.
-    void tokenFingerprint(rejectedToken)
-      .then((fingerprint) => getStore().then((store) => store.unpairRevocations(fingerprint)))
-      .catch(() => reportStorageFailure())
+    setHasRevocationPull(false)
     setSyncNote(reason)
   }
 
@@ -513,8 +512,10 @@ function App() {
     event.preventDefault()
     const token = pairingInput.trim()
     if (!token) return
+    const fingerprint = await tokenFingerprint(token)
     try {
-      await (await getStore()).clearRevocations(await tokenFingerprint(token))
+      const pull = await (await getStore()).revocationPull(fingerprint)
+      setHasRevocationPull(!!pull.completedAt)
     } catch {
       reportStorageFailure()
       return
@@ -527,6 +528,7 @@ function App() {
     }
     setDeviceToken(token)
     setPairingInput('')
+    setSyncNote('')
   }
 
   if (!deviceToken) {

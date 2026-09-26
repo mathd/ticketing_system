@@ -191,7 +191,16 @@ func TestRecordRevocationRefusalInsertRaceMapsToCollision(t *testing.T) {
 	a, b := issueTicket(t, ctx, st, uuid.New()), issueTicket(t, ctx, st, uuid.New())
 	occ := uuid.New()
 
-	competing, err := db.BeginTx(ctx, nil)
+	blockerConn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blockerConn.Close()
+	var blockerPID int
+	if err := blockerConn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+	competing, err := blockerConn.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,8 +227,16 @@ func TestRecordRevocationRefusalInsertRaceMapsToCollision(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var blocked int
-		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
-			WHERE wait_event_type='Lock' AND query ILIKE '%INSERT INTO scanner_local_decisions%'`).Scan(&blocked); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT count(*)
+			FROM pg_locks AS waiter
+			JOIN pg_locks AS holder
+			  ON holder.locktype = 'transactionid'
+			 AND holder.transactionid = waiter.transactionid
+			 AND holder.granted
+			WHERE waiter.locktype = 'transactionid'
+			  AND NOT waiter.granted
+			  AND waiter.pid <> holder.pid
+			  AND holder.pid = $1`, blockerPID).Scan(&blocked); err != nil {
 			t.Fatal(err)
 		}
 		if blocked > 0 {

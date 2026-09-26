@@ -85,25 +85,23 @@ describe('durable pending record', () => {
 })
 
 describe('revocation set', () => {
-  it('binds the first pull fingerprint and refuses a different pairing', async () => {
-    const generation = await store.beginRevocationPull('fingerprint-a')
-    expect(await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-b')).toBe(false)
-    expect(await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-b')).toBe(false)
-    expect(await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')).toBe(true)
-    expect(await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-a')).toBe(true)
+  it('keeps ids from one pull after another fingerprint completes a pull', async () => {
+    await store.mergeRevoked([ticketIDForStore])
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:00:00Z')
     expect(await store.isRevoked(ticketIDForStore)).toBe(true)
   })
 
-  it('claims legacy metadata once, then enforces the fingerprint', async () => {
-    const generation = await store.beginRevocationPull('fingerprint-a')
-    expect(await store.beginRevocationPull('fingerprint-b')).toBe('')
-    expect(await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-b')).toBe(false)
-    expect(await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')).toBe(true)
+  it('records completion separately for each token fingerprint', async () => {
+    await store.completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    expect(await store.revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await store.revocationPull('fingerprint-b')).toEqual({})
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await store.revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await store.revocationPull('fingerprint-b')).toEqual({ completedAt: '2026-09-25T12:15:00Z' })
   })
 
   it('normalizes merged ids before lookup', async () => {
-    const generation = await store.beginRevocationPull('fingerprint-a')
-    await store.mergeRevoked([ticketIDForStore.toUpperCase()], generation, 'fingerprint-a')
+    await store.mergeRevoked([ticketIDForStore.toUpperCase()])
     expect(await store.isRevoked(ticketIDForStore.toLowerCase())).toBe(true)
   })
 
@@ -129,71 +127,22 @@ describe('revocation set', () => {
 
     const upgraded = await openStore(dbName)
     openedStores.push(upgraded)
-    const generation = await upgraded.beginRevocationPull('upgrade-fingerprint')
-    await upgraded.mergeRevoked([ticketIDForStore], generation, 'upgrade-fingerprint')
-    await upgraded.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'upgrade-fingerprint')
-    expect(await upgraded.revocationPull()).toMatchObject({ completedAt: '2026-09-25T12:00:00Z' })
-    const nextGeneration = await upgraded.beginRevocationPull('upgrade-fingerprint')
-    await upgraded.mergeRevoked(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'], nextGeneration, 'upgrade-fingerprint')
-    await upgraded.completeRevocationPull(nextGeneration, '2026-09-25T12:15:00Z', 'upgrade-fingerprint')
+    await upgraded.mergeRevoked([ticketIDForStore])
+    await upgraded.completeRevocationPull('upgrade-fingerprint', '2026-09-25T12:00:00Z')
+    expect(await upgraded.revocationPull('upgrade-fingerprint')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    await upgraded.mergeRevoked(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'])
+    await upgraded.completeRevocationPull('upgrade-fingerprint', '2026-09-25T12:15:00Z')
 
     expect(await upgraded.isRevoked(ticketIDForStore)).toBe(true)
     expect(await upgraded.isRevoked('3f8fb96c-44f9-4a66-8c12-7d91cfae4d72')).toBe(true)
     expect(await upgraded.queued()).toMatchObject([legacy])
   })
 
-  it('does not let an old pull write after pairing changes', async () => {
-    const generation = await store.beginRevocationPull('fingerprint-a')
-    await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')
-    await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-a')
-    const queued = await store.mint('queued scan', '2026-09-25T12:00:00Z')
-    await store.markQueued(queued.occurrenceId)
-    await store.clearRevocations('fingerprint-b')
-    expect(await store.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')).toBe(false)
-    expect(await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-a')).toBe(false)
-    expect(await store.isRevoked(ticketIDForStore)).toBe(false)
-    expect((await store.revocationPull()).completedAt).toBeUndefined()
-    expect((await store.queued()).map((row) => row.occurrenceId)).toEqual([queued.occurrenceId])
-  })
-
-  it('unpairs only when the rejected fingerprint owns the revocation set', async () => {
-    const dbName = `unpair-${crypto.randomUUID()}`
-    const ownedStore = await openStore(dbName)
-    const generation = await ownedStore.beginRevocationPull('fingerprint-a')
-    await ownedStore.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')
-    await ownedStore.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-a')
-
-    const readState = async () => {
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open(dbName)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      })
-      const tx = db.transaction(['revocations', 'revocation_meta'], 'readonly')
-      const meta = await new Promise<unknown>((resolve, reject) => {
-        const request = tx.objectStore('revocation_meta').get('state')
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      })
-      const ids = await new Promise<unknown>((resolve, reject) => {
-        const request = tx.objectStore('revocations').getAll()
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      })
-      db.close()
-      return { meta, ids }
-    }
-
-    const before = await readState()
-    await ownedStore.unpairRevocations('fingerprint-b')
-    expect(await readState()).toEqual(before)
-
-    await ownedStore.unpairRevocations('fingerprint-a')
-    const after = await readState()
-    expect(after.ids).toEqual([])
-    expect(after.meta).toMatchObject({ key: 'state', fingerprint: 'unpaired' })
-    expect(after.meta).not.toHaveProperty('completedAt')
-    expect(after.meta).not.toMatchObject({ generation })
+  it('never removes an id when another pull completes', async () => {
+    await store.mergeRevoked([ticketIDForStore])
+    await store.completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    await store.completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await store.isRevoked(ticketIDForStore)).toBe(true)
   })
 })
 

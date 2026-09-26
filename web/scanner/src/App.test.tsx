@@ -318,7 +318,7 @@ describe('device pairing', () => {
     // The scan form is not merely disabled — it is not there. A gate operator
     // cannot paste a credential into a scanner that has no credential itself.
     expect(screen.queryByLabelText('Ticket credential')).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/scans'), expect.anything())
   })
 
   it('pairs, keeps the token across a reload, and sends it on every scan', async () => {
