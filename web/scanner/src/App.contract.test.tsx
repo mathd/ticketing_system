@@ -19,6 +19,7 @@ const record: OccurrenceRecord = {
 function fakeStore(queued: OccurrenceRecord[] = []) {
   const store: OccurrenceStore = {
     mint: vi.fn().mockResolvedValue({ ...record, state: 'PENDING' }),
+    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
     isRevoked: vi.fn().mockResolvedValue(false),
     beginRevocationPull: vi.fn().mockResolvedValue('generation'),
     mergeRevoked: vi.fn().mockResolvedValue(true),

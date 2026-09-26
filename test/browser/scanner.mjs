@@ -63,10 +63,11 @@ const refundResponse = await fetch(`http://localhost:${ACCESS_PORT}/internal/ord
   body: JSON.stringify({ organizer_id: ORGANIZER, refund_id: randomUUID(), quantity: 1 }),
 });
 if (!refundResponse.ok) throw new Error(`Access refund returned ${refundResponse.status}: ${await refundResponse.text()}`);
-const voidedEventCount = sql(
+const lifecycleTypesBeforeRefusal = sql(
   PG,
   'access',
-  `SELECT count(*) FROM lifecycle_events WHERE ticket_id='${ticketID}' AND event_type='refunded'`,
+  `SELECT COALESCE(json_agg(event_type ORDER BY occurred_at, id), '[]'::json)::text
+     FROM lifecycle_events WHERE ticket_id='${ticketID}'`,
 );
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -143,8 +144,9 @@ try {
     JSON.stringify(exactRow),
   );
   check(
-    'the refusal leaves the ticket lifecycle unchanged',
-    sql(PG, 'access', `SELECT count(*) FROM lifecycle_events WHERE ticket_id='${ticketID}' AND event_type='refunded'`) === voidedEventCount,
+    'the refusal leaves the full ordered lifecycle unchanged',
+    sql(PG, 'access', `SELECT COALESCE(json_agg(event_type ORDER BY occurred_at, id), '[]'::json)::text
+      FROM lifecycle_events WHERE ticket_id='${ticketID}'`) === lifecycleTypesBeforeRefusal,
   );
 
   await page.getByLabel('Ticket credential').fill('not-a-ticket');

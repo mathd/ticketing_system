@@ -277,6 +277,9 @@ func (p *Postgres) replayAdmissionOccurrence(ctx context.Context, tx *sql.Tx, ti
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, RedeemResult{}, err
 	}
+	if err = refusedOccurrence(ctx, tx, occ); err != nil {
+		return false, RedeemResult{}, err
+	}
 	return false, RedeemResult{}, nil
 }
 

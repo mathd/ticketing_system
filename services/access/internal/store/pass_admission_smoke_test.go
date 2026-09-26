@@ -216,6 +216,25 @@ func TestScanEntryOccurrenceReplay(t *testing.T) {
 	}
 }
 
+func TestPassScanCannotReuseRefusalOccurrence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	refused := issueTicket(t, ctx, st, uuid.New())
+	pass := issueAndSeed(t, ctx, st, ReEntryPolicy{Mode: "multi"})
+	occ := uuid.New()
+	if _, err := st.RecordRevocationRefusal(ctx, refused.ticketID, refused.id.OrderID, refused.id.OrganizerID, refused.id.SlotID, occ, deviceTime(), "revocation_refused"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Scan(ctx, scanInput(pass, occ, AdmissionEntry, deviceTime())); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("pass Scan reused refusal id: %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countEvents(t, ctx, db, pass.ticketID, "entry"); got != 0 {
+		t.Fatalf("refusal reuse wrote %d lifecycle rows, want none", got)
+	}
+}
+
 func TestScanSingleAndUnknownPolicyKeepTodaySemantics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

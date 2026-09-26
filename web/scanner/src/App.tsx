@@ -47,6 +47,7 @@ const reconcileURL = '/api/access/scans/reconciliations'
 const revocationsURL = '/api/access/scans/voided-tickets'
 const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
+const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
 
 // The enrolled device's credential.
 //
@@ -79,6 +80,14 @@ function scanHeaders(token: string): HeadersInit {
   return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
 }
 
+// No SHA-256 hex digest equals this value, so no pull can write under it.
+const unpairedFingerprint = 'unpaired'
+
+async function tokenFingerprint(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
 }
@@ -104,7 +113,7 @@ function App() {
   const deviceTokenRef = useRef(deviceToken)
   deviceTokenRef.current = deviceToken
   const reopenAfter = useRef<Promise<void>>(Promise.resolve())
-  const pullInFlight = useRef<Promise<void> | null>(null)
+  const pullInFlight = useRef<{ token: string; promise: Promise<void> } | null>(null)
   // Bumped by every stopCamera() and every startCamera() entry. A start captures its value and
   // treats itself as stale once the counter moves on — so a stream resolving after unmount or a
   // superseded start disposes of its own resource instead of touching the active one.
@@ -190,17 +199,27 @@ function App() {
     }
   }
 
-  const pullRevocations = async () => {
-    if (pullInFlight.current) return pullInFlight.current
+  const pullRevocations = async (): Promise<void> => {
+    const token = deviceTokenRef.current
+    if (!token) return
+    const current = pullInFlight.current
+    if (current?.token === token) return current.promise
+    if (current) {
+      await current.promise
+      const next = pullInFlight.current
+      if (next?.token === token) return next.promise
+    }
     const pull = (async () => {
       try {
         const store = await getStore()
-        const generation = await store.beginRevocationPull()
+        const fingerprint = await tokenFingerprint(token)
+        const generation = await store.beginRevocationPull(fingerprint)
+        if (!generation) return
         let cursor: string | null = null
         do {
           const query = cursor === null ? '?limit=100' : `?limit=100&cursor=${encodeURIComponent(cursor)}`
           const response = await fetch(`${revocationsURL}${query}`, {
-            headers: { [scannerTokenHeader]: deviceTokenRef.current },
+            headers: { [scannerTokenHeader]: token },
           })
           if (!response.ok) return
           const body: unknown = await response.json()
@@ -208,21 +227,22 @@ function App() {
           const page = body as { ticket_ids?: unknown; next_cursor?: unknown }
           if (!Array.isArray(page.ticket_ids) || page.ticket_ids.some((id) => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) return
           if (page.next_cursor !== null && (typeof page.next_cursor !== 'string' || !page.next_cursor)) return
-          if (!await store.mergeRevoked(page.ticket_ids as string[], generation)) return
+          if (!await store.mergeRevoked(page.ticket_ids as string[], generation, fingerprint)) return
           cursor = page.next_cursor
         } while (cursor !== null)
-        if (await store.completeRevocationPull(generation, new Date().toISOString()) && mounted.current) {
+        if (await store.completeRevocationPull(generation, new Date().toISOString(), fingerprint) && mounted.current) {
           setHasRevocationPull(true)
         }
       } catch {
         // A failed page does not advance the completed-pull time.
       }
     })()
-    pullInFlight.current = pull
+    const flight = { token, promise: pull }
+    pullInFlight.current = flight
     try {
       await pull
     } finally {
-      if (pullInFlight.current === pull) pullInFlight.current = null
+      if (pullInFlight.current === flight) pullInFlight.current = null
     }
   }
 
@@ -233,12 +253,13 @@ function App() {
     try {
       let store: OccurrenceStore
       let record: OccurrenceRecord
+      let listed = false
       try {
         store = await getStore()
         const ticketID = decodeTicketID(value.trim())
-        if (ticketID && await store.isRevoked(ticketID)) {
-          record = await store.mint(value.trim(), new Date().toISOString(), 'revocation_refused')
-          await store.markQueued(record.occurrenceId)
+        listed = !!ticketID && await store.isRevoked(ticketID)
+        if (listed) {
+          record = await store.mintRefusal(value.trim(), new Date().toISOString())
           reportStorageReady()
           setOutcome({ kind: 'revocation-refused' })
           await refreshQueued()
@@ -249,7 +270,12 @@ function App() {
         record = await store.mint(value.trim(), new Date().toISOString())
         reportStorageReady()
       } catch {
-        reportStorageFailure()
+        if (listed) {
+          setOutcome({ kind: 'revocation-refused' })
+          reportStorageFailure(storageRefusalMessage)
+        } else {
+          reportStorageFailure()
+        }
         return
       }
 
@@ -483,7 +509,9 @@ function App() {
       // Storage unavailable; the in-memory clear below is what matters.
     }
     setDeviceToken('')
-    void getStore().then((store) => store.clearRevocations()).catch(() => reportStorageFailure())
+    // Bind the cleared list to no device. The rejected token's own fingerprint would
+    // let a stale tab that still holds that token write into the list again.
+    void getStore().then((store) => store.clearRevocations(unpairedFingerprint)).catch(() => reportStorageFailure())
     setSyncNote(reason)
   }
 
@@ -492,7 +520,7 @@ function App() {
     const token = pairingInput.trim()
     if (!token) return
     try {
-      await (await getStore()).clearRevocations()
+      await (await getStore()).clearRevocations(await tokenFingerprint(token))
     } catch {
       reportStorageFailure()
       return

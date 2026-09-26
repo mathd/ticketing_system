@@ -111,12 +111,30 @@ func (p *Postgres) RecordRevocationRefusal(ctx context.Context, ticketID, orderI
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO scanner_local_decisions(occurrence_id,ticket_id,organizer_id,occurred_at,decision) VALUES($1,$2,$3,$4,$5)`, occurrenceID, ticketID, organizerID, occurredAt, decision)
 	if err != nil {
-		return ReconcileResult{}, err
+		return ReconcileResult{}, revocationRefusalInsertError(err, occurrenceID)
 	}
 	if err = tx.Commit(); err != nil {
 		return ReconcileResult{}, err
 	}
 	return ReconcileResult{OccurrenceID: occurrenceID, Outcome: ReconcileRecorded, OccurredAt: occurredAt}, nil
+}
+
+func revocationRefusalInsertError(err error, occurrenceID uuid.UUID) error {
+	if isUniqueViolation(err) {
+		return fmt.Errorf("occurrence %s: %w", occurrenceID, ErrOccurrenceCollision)
+	}
+	return err
+}
+
+func refusedOccurrence(ctx context.Context, tx *sql.Tx, occurrenceID uuid.UUID) error {
+	var refused bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM scanner_local_decisions WHERE occurrence_id=$1)`, occurrenceID).Scan(&refused); err != nil {
+		return err
+	}
+	if refused {
+		return fmt.Errorf("occurrence %s: %w", occurrenceID, ErrOccurrenceCollision)
+	}
+	return nil
 }
 
 // ReconcileAdmission records one offline occurrence (ADR-025 §D2/§D6).
@@ -419,12 +437,8 @@ func (p *Postgres) reconcileReplay(ctx context.Context, tx *sql.Tx, ticketID, oc
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, err
 	}
-	var refused bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM scanner_local_decisions WHERE occurrence_id=$1)`, occ).Scan(&refused); err != nil {
+	if err = refusedOccurrence(ctx, tx, occ); err != nil {
 		return false, time.Time{}, err
-	}
-	if refused {
-		return false, time.Time{}, fmt.Errorf("occurrence %s: %w", occ, ErrOccurrenceCollision)
 	}
 	return false, time.Time{}, nil
 }

@@ -164,6 +164,57 @@ func TestRecordRevocationRefusalIsExactAndNeverAnAdmission(t *testing.T) {
 	}
 }
 
+func TestRefusalOccurrenceCannotBeReusedByLiveAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	refused := issueTicket(t, ctx, st, uuid.New())
+	live := issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+	if _, err := st.RecordRevocationRefusal(ctx, refused.ticketID, refused.id.OrderID, refused.id.OrganizerID, refused.id.SlotID, occ, deviceTime(), "revocation_refused"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Redeem(ctx, occurrenceRedeemInput(live, occ)); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("Redeem reused refusal id: %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countEvents(t, ctx, db, live.ticketID, "redeemed"); got != 0 {
+		t.Fatalf("refusal reuse wrote %d lifecycle rows, want none", got)
+	}
+}
+
+type occurrenceUniqueError struct{}
+
+func (occurrenceUniqueError) Error() string    { return "unique violation" }
+func (occurrenceUniqueError) SQLState() string { return "23505" }
+
+func TestRevocationRefusalInsertUniqueRaceMapsToCollision(t *testing.T) {
+	err := revocationRefusalInsertError(occurrenceUniqueError{}, uuid.New())
+	if !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("unique insert error = %v, want ErrOccurrenceCollision", err)
+	}
+}
+
+func TestRecordAdmissionCannotReuseRefusalOccurrence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	refused := issueTicket(t, ctx, st, uuid.New())
+	live := issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
+	if _, err := st.RecordRevocationRefusal(ctx, refused.ticketID, refused.id.OrderID, refused.id.OrganizerID, refused.id.SlotID, occ, deviceTime(), "revocation_refused"); err != nil {
+		t.Fatal(err)
+	}
+	in := RecordAdmissionInput{TicketID: live.ticketID, OrderID: live.id.OrderID, OrganizerID: live.id.OrganizerID, SlotID: live.id.SlotID, OccurrenceID: occ, Type: AdmissionEntry, OccurredAt: deviceTime()}
+	if _, err := st.RecordAdmission(ctx, in); !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("RecordAdmission reused refusal id: %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countEvents(t, ctx, db, live.ticketID, "entry"); got != 0 {
+		t.Fatalf("refusal reuse wrote %d lifecycle rows, want none", got)
+	}
+}
+
 // The §D3 named trap: a retry of the occurrence that became `redeemed` is
 // idempotent success — distinguishable as a replay, never bare accepted, and it
 // can never be forged into duplicate_admit evidence of a second admission.

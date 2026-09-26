@@ -30,12 +30,13 @@ export type RevocationPull = { generation: string; completedAt?: string }
 export interface OccurrenceStore {
   /** Commits the PENDING record; resolves only after the IDB transaction completes. */
   mint(qrPayload: string, occurredAt: string, localDecision?: 'revocation_refused'): Promise<OccurrenceRecord>
+  mintRefusal(qrPayload: string, occurredAt: string): Promise<OccurrenceRecord>
   isRevoked(ticketID: string): Promise<boolean>
-  beginRevocationPull(): Promise<string>
-  mergeRevoked(ticketIDs: string[], generation: string): Promise<boolean>
-  completeRevocationPull(generation: string, completedAt: string): Promise<boolean>
+  beginRevocationPull(fingerprint: string): Promise<string>
+  mergeRevoked(ticketIDs: string[], generation: string, fingerprint: string): Promise<boolean>
+  completeRevocationPull(generation: string, completedAt: string, fingerprint: string): Promise<boolean>
   revocationPull(): Promise<RevocationPull>
-  clearRevocations(): Promise<void>
+  clearRevocations(fingerprint: string): Promise<void>
   /**
    * Atomic PENDING-and-never-actuated → ACTUATED transition. Resolves true iff
    * THIS call performed it — the one signal that may open the gate.
@@ -52,7 +53,7 @@ export interface OccurrenceStore {
 const STORE = 'occurrences'
 const REVOCATIONS = 'revocations'
 const REVOCATION_META = 'revocation_meta'
-type RevocationMeta = { key: 'state'; generation: string; completedAt?: string }
+type RevocationMeta = { key: 'state'; generation: string; fingerprint?: string; completedAt?: string }
 const DEFAULT_PENDING_LEASE_MS = 30_000
 
 export type OccurrenceStoreOptions = {
@@ -271,31 +272,59 @@ export async function openOccurrenceStore(
       await put(record)
       return record
     },
+    async mintRefusal(qrPayload, occurredAt) {
+      const record: OccurrenceRecord = {
+        occurrenceId: crypto.randomUUID(),
+        qrPayload,
+        occurredAt,
+        state: 'QUEUED',
+        actuated: false,
+        createdAt: new Date().toISOString(),
+        localDecision: 'revocation_refused',
+      }
+      await put(record)
+      return record
+    },
     async isRevoked(ticketID) {
       const tx = db.transaction(REVOCATIONS, 'readonly')
-      return (await requestDone(tx.objectStore(REVOCATIONS).get(ticketID) as IDBRequest<unknown>)) !== undefined
+      return (await requestDone(tx.objectStore(REVOCATIONS).get(ticketID.toLowerCase()) as IDBRequest<unknown>)) !== undefined
     },
-    async beginRevocationPull() {
-      const tx = db.transaction(REVOCATION_META, 'readonly')
-      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
-      return meta?.generation ?? ''
-    },
-    async mergeRevoked(ticketIDs, generation) {
-      const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
-      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
-      if (!meta || meta.generation !== generation) {
-        await transactionDone(tx)
-        return false
-      }
-      for (const ticketID of ticketIDs) tx.objectStore(REVOCATIONS).put({ ticketID })
-      await transactionDone(tx)
-      return true
-    },
-    async completeRevocationPull(generation, completedAt) {
+    async beginRevocationPull(fingerprint) {
+      if (!fingerprint) return ''
       const tx = db.transaction(REVOCATION_META, 'readwrite')
       const os = tx.objectStore(REVOCATION_META)
       const meta = await requestDone(os.get('state') as IDBRequest<RevocationMeta | undefined>)
-      const current = !!meta && meta.generation === generation
+      if (!meta) {
+        const generation = crypto.randomUUID()
+        os.put({ key: 'state', generation, fingerprint } satisfies RevocationMeta)
+        await transactionDone(tx)
+        return generation
+      }
+      if (meta.fingerprint === undefined) {
+        const claimed = { ...meta, fingerprint }
+        os.put(claimed)
+        await transactionDone(tx)
+        return claimed.generation
+      }
+      await transactionDone(tx)
+      return meta.fingerprint === fingerprint ? meta.generation : ''
+    },
+    async mergeRevoked(ticketIDs, generation, fingerprint) {
+      const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
+      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
+      if (!meta || meta.generation !== generation || meta.fingerprint !== fingerprint) {
+        await transactionDone(tx)
+        return false
+      }
+      for (const ticketID of ticketIDs) tx.objectStore(REVOCATIONS).put({ ticketID: ticketID.toLowerCase() })
+      await transactionDone(tx)
+      return true
+    },
+    async completeRevocationPull(generation, completedAt, fingerprint) {
+      const tx = db.transaction(REVOCATION_META, 'readwrite')
+      const os = tx.objectStore(REVOCATION_META)
+      const meta = await requestDone(os.get('state') as IDBRequest<RevocationMeta | undefined>)
+      const current = !!meta && meta.generation === generation && meta.fingerprint === fingerprint
       if (current) os.put({ ...meta, completedAt })
       await transactionDone(tx)
       return current
@@ -305,10 +334,10 @@ export async function openOccurrenceStore(
       const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
       return { generation: meta?.generation ?? '', completedAt: meta?.completedAt }
     },
-    async clearRevocations() {
+    async clearRevocations(fingerprint) {
       const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
       tx.objectStore(REVOCATIONS).clear()
-      tx.objectStore(REVOCATION_META).put({ key: 'state', generation: crypto.randomUUID() } satisfies RevocationMeta)
+      tx.objectStore(REVOCATION_META).put({ key: 'state', generation: crypto.randomUUID(), fingerprint } satisfies RevocationMeta)
       await transactionDone(tx)
     },
     actuate(occurrenceId) {
