@@ -32,6 +32,8 @@ package availability
 import (
 	"container/list"
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -364,8 +366,24 @@ func (s *Service) load(k key, f *flight) {
 func (s *Service) loadDirect(k key) (store.Availability, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.loadTimeout)
 	defer cancel()
-	return s.src.Availability(ctx, k.org, k.slot, k.channel)
+	v, err := s.src.Availability(ctx, k.org, k.slot, k.channel)
+	// The budget decides, not the error's shape. A query the budget interrupts comes back
+	// from pgx as a server-side cancellation, not as context.DeadlineExceeded (verified in
+	// TKT-211: a handler matching context.DeadlineExceeded alone answered 500), so the
+	// handler cannot recognise it from the error. If this load's own deadline has passed,
+	// say so explicitly.
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return v, fmt.Errorf("%w: %w", ErrLoadBudgetExceeded, err)
+	}
+	return v, err
 }
+
+// ErrLoadBudgetExceeded reports a load that outran its own query budget: the dependency
+// was slow, and a retry is the right advice (the handler answers 503). It wraps
+// context.DeadlineExceeded, so callers that already test for that still match. A
+// CALLER's own cancellation or deadline is not this error: it ends the wait with the
+// caller's context error, and says nothing about the dependency.
+var ErrLoadBudgetExceeded = fmt.Errorf("load exceeded its query budget: %w", context.DeadlineExceeded)
 
 func (s *Service) wait(ctx context.Context, f *flight) (Read, error) {
 	select {
