@@ -848,8 +848,11 @@ To confirm a repair, check inventory. The pool must still have
 `orphan_prevention_enabled=false`, and its `seat_claim_adjacency` rows must have non-null
 `row_key`, `position`, and `row_rank`. A pool with no ordering data still returns
 `best_available_unsupported` until a valid projection is applied. Rule-off maps that
-inventory cannot project also retain their seated inventory without ordering rows and
-return `best_available_unsupported` until the map is fixed and the correction wave is run.
+inventory cannot project (a seatless map, labels that differ only by trailing whitespace, a
+map over inventory's 8 MiB read limit) keep their seated inventory without ordering rows
+and return `best_available_unsupported`. There is no supported repair for such a pool yet:
+editing the map creates a new version that the pool is not bound to, and a rerun of the
+wave reuses a consumed event id. TKT-499 owns the repair path.
 
 ## Back-office sign-in (TKT-190)
 

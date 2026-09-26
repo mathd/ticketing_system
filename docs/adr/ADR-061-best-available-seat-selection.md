@@ -223,7 +223,9 @@ publication: maps with no seats, labels that differ only by trailing whitespace,
 larger than inventory's 8 MiB read limit. For these maps, inventory keeps the seated pool
 and its seat-map id, but provisions no adjacency rows when geometry validation fails. This
 preserves named-seat inventory; best-available returns `best_available_unsupported` for that
-pool until the map is fixed and the rule-off correction wave applies a valid projection.
+pool. There is no supported repair for such a pool yet: a map edit creates a new version the
+pool is not bound to (ADR-029), and a rerun of the wave reuses a consumed event id. TKT-499
+owns the repair path.
 Transport failures still retry without provisioning. Rule-on publications still terminate
 on invalid geometry because their selection rule cannot work without the projection.
 **That required changing the adjacency write,
