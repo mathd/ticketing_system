@@ -18,13 +18,19 @@ var errServerCancel = errors.New("ERROR: canceling statement due to user request
 
 // budgetSource fails with errServerCancel, either at once or only once the load's own
 // deadline has passed.
-type budgetSource struct{ waitForDeadline bool }
+type budgetSource struct {
+	waitForDeadline bool
+	err             error // nil means errServerCancel
+}
 
 func (budgetSource) RegisterAvailabilityInvalidator(func(uuid.UUID)) {}
 
 func (b budgetSource) Availability(ctx context.Context, _, _ uuid.UUID, _ string) (store.Availability, error) {
 	if b.waitForDeadline {
 		<-ctx.Done()
+	}
+	if b.err != nil {
+		return store.Availability{}, b.err
 	}
 	return store.Availability{}, errServerCancel
 }
@@ -43,5 +49,20 @@ func TestLoadBudgetSentinelFollowsTheBudgetNotTheError(t *testing.T) {
 	_, err = fast.Read(context.Background(), uuid.New(), uuid.New(), "")
 	if errors.Is(err, ErrLoadBudgetExceeded) || !errors.Is(err, errServerCancel) {
 		t.Fatalf("a load that failed within its budget returned %v, want the plain source error", err)
+	}
+}
+
+// A domain answer is never a slow dependency, however late it arrives (review F1): a slot
+// that does not exist stays a 404 even when the query that found out used the whole
+// budget. Without this, a slow-but-correct "not found" would advise a retry.
+func TestADomainAnswerAfterTheBudgetIsNotTheSentinel(t *testing.T) {
+	for _, domain := range []error{
+		store.ErrNotFound,
+	} {
+		svc := New(budgetSource{waitForDeadline: true, err: domain}, WithLoadTimeout(20*time.Millisecond))
+		_, err := svc.Read(context.Background(), uuid.New(), uuid.New(), "")
+		if errors.Is(err, ErrLoadBudgetExceeded) || !errors.Is(err, domain) {
+			t.Fatalf("a late %v became %v, want the domain error unchanged", domain, err)
+		}
 	}
 }

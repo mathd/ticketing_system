@@ -219,7 +219,11 @@ func (s *Service) loadDirect(k key) (store.SeatOccupancy, error) {
 	// from pgx as a server-side cancellation, not as context.DeadlineExceeded (see the
 	// availability cache). If this load's own deadline has passed, say so explicitly
 	// (TKT-211).
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	// A DOMAIN answer is never a slow dependency, however late it arrives: a slot that
+	// does not exist must still be a 404 if the query that found out took most of the
+	// budget. Only a non-domain error with this load's own deadline passed is the
+	// sentinel (TKT-211 review F1).
+	if err != nil && !(errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrPoolKindMismatch)) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return v, fmt.Errorf("%w: %w", ErrLoadBudgetExceeded, err)
 	}
 	return v, err

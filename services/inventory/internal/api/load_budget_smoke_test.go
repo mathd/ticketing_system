@@ -85,6 +85,13 @@ func lockPools(t *testing.T, db *sql.DB) {
 	if _, err := tx.Exec(`SET LOCAL lock_timeout = '5s'`); err != nil {
 		t.Fatal(err)
 	}
+	// lock_timeout bounds how long taking the lock may wait, not how long it is HELD. If a
+	// regression left the read hanging, the cleanup below would never run; the server ends
+	// an idle-in-transaction session itself, so the lock cannot outlive a stuck test
+	// (review F4).
+	if _, err := tx.Exec(`SET LOCAL idle_in_transaction_session_timeout = '15s'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(`LOCK TABLE inventory_pools IN ACCESS EXCLUSIVE MODE`); err != nil {
 		t.Fatal(err)
 	}
@@ -175,10 +182,20 @@ func TestCallerCancellationOrDeadlineIsNot503(t *testing.T) {
 			ctx, cancel := newCtx()
 			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			res := httptest.NewRecorder()
+			start := time.Now()
 			srv.ServeHTTP(res, req)
+			elapsed := time.Since(start)
 			cancel()
-			if res.Code == http.StatusServiceUnavailable {
-				t.Fatalf("%s %s: got 503; only the cache's own budget means a slow dependency", name, path)
+			// It must have reached the blocked read and waited for the caller's end, or a
+			// broken route answering fast would pass (review F3).
+			if elapsed < 100*time.Millisecond {
+				t.Fatalf("%s %s: answered in %v, before the caller's context ended: the read never blocked", name, path, elapsed)
+			}
+			// The existing path: problem()'s default, a fixed 500 body. Pinned exactly, so a
+			// read that ignored the cancellation and answered 200 cannot pass either.
+			if res.Code != http.StatusInternalServerError || strings.TrimSpace(res.Body.String()) != `{"error":"internal error"}` {
+				t.Fatalf("%s %s: got %d %s, want the existing 500 internal error; only the cache's own budget means a slow dependency",
+					name, path, res.Code, res.Body.String())
 			}
 		}
 	}
