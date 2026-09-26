@@ -183,15 +183,64 @@ func TestRefusalOccurrenceCannotBeReusedByLiveAdmission(t *testing.T) {
 	}
 }
 
-type occurrenceUniqueError struct{}
+func TestRecordRevocationRefusalInsertRaceMapsToCollision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	a, b := issueTicket(t, ctx, st, uuid.New()), issueTicket(t, ctx, st, uuid.New())
+	occ := uuid.New()
 
-func (occurrenceUniqueError) Error() string    { return "unique violation" }
-func (occurrenceUniqueError) SQLState() string { return "23505" }
+	competing, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = competing.Rollback() }()
+	var isolation string
+	if err := competing.QueryRowContext(ctx, `SHOW transaction_isolation`).Scan(&isolation); err != nil {
+		t.Fatal(err)
+	}
+	if isolation != "read committed" {
+		t.Fatalf("test database isolation = %q, want read committed", isolation)
+	}
+	if _, err := competing.ExecContext(ctx, `INSERT INTO scanner_local_decisions(occurrence_id,ticket_id,organizer_id,occurred_at,decision) VALUES($1,$2,$3,$4,'revocation_refused')`, occ, b.ticketID, b.id.OrganizerID, deviceTime()); err != nil {
+		t.Fatal(err)
+	}
 
-func TestRevocationRefusalInsertUniqueRaceMapsToCollision(t *testing.T) {
-	err := revocationRefusalInsertError(occurrenceUniqueError{}, uuid.New())
-	if !errors.Is(err, ErrOccurrenceCollision) {
-		t.Fatalf("unique insert error = %v, want ErrOccurrenceCollision", err)
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.RecordRevocationRefusal(ctx, a.ticketID, a.id.OrderID, a.id.OrganizerID, a.id.SlotID, occ, deviceTime(), "revocation_refused")
+		done <- err
+	}()
+	// RecordRevocationRefusal uses BeginTx with nil options, so it inherits the
+	// checked READ COMMITTED default. Its SELECT cannot see T1's uncommitted row,
+	// but the unique index makes its INSERT wait for T1's outcome.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type='Lock' AND query ILIKE '%INSERT INTO scanner_local_decisions%'`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordRevocationRefusal never blocked on the conflicting insert; the unique-index path was not exercised")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := competing.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, ErrOccurrenceCollision) {
+		t.Fatalf("insert race returned %v, want ErrOccurrenceCollision", err)
+	}
+	if got := countRows(t, ctx, db, `SELECT count(*) FROM scanner_local_decisions WHERE occurrence_id=$1`, occ); got != 1 {
+		t.Fatalf("race left %d refusal rows for occurrence %s, want 1", got, occ)
+	}
+	if got := countRows(t, ctx, db, `SELECT count(*) FROM scanner_local_decisions WHERE occurrence_id=$1 AND ticket_id=$2`, occ, b.ticketID); got != 1 {
+		t.Fatalf("race did not preserve ticket B's refusal row")
 	}
 }
 

@@ -26,6 +26,7 @@ function fakeStore(queued: OccurrenceRecord[] = []) {
     completeRevocationPull: vi.fn().mockResolvedValue(true),
     revocationPull: vi.fn().mockResolvedValue({ generation: 'generation' }),
     clearRevocations: vi.fn().mockResolvedValue(undefined),
+    unpairRevocations: vi.fn().mockResolvedValue(undefined),
     actuate: vi.fn().mockResolvedValue(true),
     markQueued: vi.fn().mockResolvedValue(undefined),
     markSynced: vi.fn().mockResolvedValue(undefined),

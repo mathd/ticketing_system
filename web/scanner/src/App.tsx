@@ -80,9 +80,6 @@ function scanHeaders(token: string): HeadersInit {
   return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
 }
 
-// No SHA-256 hex digest equals this value, so no pull can write under it.
-const unpairedFingerprint = 'unpaired'
-
 async function tokenFingerprint(token: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -204,11 +201,6 @@ function App() {
     if (!token) return
     const current = pullInFlight.current
     if (current?.token === token) return current.promise
-    if (current) {
-      await current.promise
-      const next = pullInFlight.current
-      if (next?.token === token) return next.promise
-    }
     const pull = (async () => {
       try {
         const store = await getStore()
@@ -301,7 +293,7 @@ function App() {
           // The ticket was not checked. Keep the occurrence and return the device
           // to pairing instead of presenting a ticket rejection.
           await store.markQueued(record.occurrenceId)
-          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.')
+          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.', deviceToken)
           await refreshQueued()
           return
         }
@@ -367,15 +359,16 @@ function App() {
           ...(record.localDecision ? { local_decision: record.localDecision } : {}),
         })),
       }
+      const token = deviceTokenRef.current
       const response = await fetch(reconcileURL, {
         method: 'POST',
-        headers: scanHeaders(deviceTokenRef.current),
+        headers: scanHeaders(token),
         body: JSON.stringify(request),
       })
       if (response.status === 401) {
         // The queue is untouched: an unpaired device must not discard a night of
         // offline scans. Pair and sync again.
-        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.')
+        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
         return
       }
       if (!response.ok) return
@@ -502,16 +495,17 @@ function App() {
   // clearPairing sends the operator to the pairing screen with the reason they
   // are seeing it. One destination for every "this device is not enrolled"
   // answer, because two would eventually disagree about what to tell them.
-  const clearPairing = (reason: string) => {
+  const clearPairing = (reason: string, rejectedToken: string) => {
     try {
-      localStorage.removeItem(deviceTokenKey)
+      if (localStorage.getItem(deviceTokenKey) === rejectedToken) localStorage.removeItem(deviceTokenKey)
     } catch {
       // Storage unavailable; the in-memory clear below is what matters.
     }
     setDeviceToken('')
-    // Bind the cleared list to no device. The rejected token's own fingerprint would
-    // let a stale tab that still holds that token write into the list again.
-    void getStore().then((store) => store.clearRevocations(unpairedFingerprint)).catch(() => reportStorageFailure())
+    // Only clear the list if the rejected device still owns it.
+    void tokenFingerprint(rejectedToken)
+      .then((fingerprint) => getStore().then((store) => store.unpairRevocations(fingerprint)))
+      .catch(() => reportStorageFailure())
     setSyncNote(reason)
   }
 

@@ -37,6 +37,7 @@ export interface OccurrenceStore {
   completeRevocationPull(generation: string, completedAt: string, fingerprint: string): Promise<boolean>
   revocationPull(): Promise<RevocationPull>
   clearRevocations(fingerprint: string): Promise<void>
+  unpairRevocations(rejectedFingerprint: string): Promise<void>
   /**
    * Atomic PENDING-and-never-actuated → ACTUATED transition. Resolves true iff
    * THIS call performed it — the one signal that may open the gate.
@@ -338,6 +339,16 @@ export async function openOccurrenceStore(
       const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
       tx.objectStore(REVOCATIONS).clear()
       tx.objectStore(REVOCATION_META).put({ key: 'state', generation: crypto.randomUUID(), fingerprint } satisfies RevocationMeta)
+      await transactionDone(tx)
+    },
+    async unpairRevocations(rejectedFingerprint) {
+      const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
+      const metaStore = tx.objectStore(REVOCATION_META)
+      const meta = await requestDone(metaStore.get('state') as IDBRequest<RevocationMeta | undefined>)
+      if (!meta || meta.fingerprint === undefined || meta.fingerprint === rejectedFingerprint) {
+        tx.objectStore(REVOCATIONS).clear()
+        metaStore.put({ key: 'state', generation: crypto.randomUUID(), fingerprint: 'unpaired' } satisfies RevocationMeta)
+      }
       await transactionDone(tx)
     },
     actuate(occurrenceId) {

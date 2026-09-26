@@ -40,6 +40,7 @@ function fakeStore() {
     completeRevocationPull: vi.fn().mockResolvedValue(true),
     revocationPull: vi.fn().mockResolvedValue({ generation: 'generation' }),
     clearRevocations: vi.fn().mockResolvedValue(undefined),
+    unpairRevocations: vi.fn().mockResolvedValue(undefined),
     actuate: vi.fn().mockResolvedValue(true),
     markQueued: vi.fn().mockResolvedValue(undefined),
     markSynced: vi.fn().mockResolvedValue(undefined),
@@ -201,9 +202,28 @@ describe('Scanner storage failures', () => {
     expect(screen.getByText(/holds no revocation list yet/i)).toBeDefined()
   })
 
-  it('starts a full pull with the new token after the old pull finishes', async () => {
+  it('finishes a new token pull while the old token request is pending and rejects late writes', async () => {
     const { store } = fakeStore()
     openStore.mockResolvedValue(store)
+    let meta: { fingerprint: string; generation: string; completedAt?: string } | undefined
+    vi.mocked(store.beginRevocationPull).mockImplementation(async (fingerprint) => {
+      if (!meta || meta.fingerprint === 'unpaired') meta = { fingerprint, generation: `generation-${fingerprint}` }
+      return meta.fingerprint === fingerprint ? meta.generation : ''
+    })
+    vi.mocked(store.clearRevocations).mockImplementation(async (fingerprint) => {
+      meta = { fingerprint, generation: `generation-${fingerprint}` }
+    })
+    vi.mocked(store.unpairRevocations).mockImplementation(async (fingerprint) => {
+      if (!meta || meta.fingerprint === fingerprint) meta = { fingerprint: 'unpaired', generation: 'generation-unpaired' }
+    })
+    vi.mocked(store.mergeRevoked).mockImplementation(async (_ids, generation, fingerprint) =>
+      meta?.generation === generation && meta.fingerprint === fingerprint,
+    )
+    vi.mocked(store.completeRevocationPull).mockImplementation(async (generation, completedAt, fingerprint) => {
+      if (meta?.generation !== generation || meta.fingerprint !== fingerprint) return false
+      meta.completedAt = completedAt
+      return true
+    })
     let releaseFirst!: (response: Response) => void
     const firstPage = new Promise<Response>((resolve) => { releaseFirst = resolve })
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -230,19 +250,15 @@ describe('Scanner storage failures', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
     await waitFor(() => {
       expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token')
-      expect(store.clearRevocations).toHaveBeenCalledTimes(2)
+      expect(store.clearRevocations).toHaveBeenCalledOnce()
+      expect(store.unpairRevocations).toHaveBeenCalledOnce()
     })
-    // The 401 unpair binds the list to NO token. Binding it to the rejected token
-    // would let a stale tab that still holds that token write into the list again.
-    const [unpaired, repaired] = vi.mocked(store.clearRevocations).mock.calls.map(([fingerprint]) => fingerprint)
-    expect(unpaired).not.toBe(await sha256Hex('paired-device-token'))
+    // The store receives the rejected identity and binds the cleared list to no token.
+    const [unpaired] = vi.mocked(store.unpairRevocations).mock.calls.map(([fingerprint]) => fingerprint)
+    const [repaired] = vi.mocked(store.clearRevocations).mock.calls.map(([fingerprint]) => fingerprint)
+    expect(unpaired).toBe(await sha256Hex('paired-device-token'))
     expect(unpaired).not.toBe(await sha256Hex('new-device-token'))
     expect(repaired).toBe(await sha256Hex('new-device-token'))
-    expect(fetchMock.mock.calls.filter(([url, init]) =>
-      String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'new-device-token',
-    )).toHaveLength(0)
-    releaseFirst(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-
     await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) =>
       String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'new-device-token',
     )).toHaveLength(2))
@@ -254,8 +270,39 @@ describe('Scanner storage failures', () => {
       String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'paired-device-token',
     )).toHaveLength(1)
     expect(store.beginRevocationPull).toHaveBeenCalledTimes(2)
-    expect(store.mergeRevoked).toHaveBeenCalledWith(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'], 'generation', expect.any(String))
-    expect(store.completeRevocationPull).toHaveBeenCalledWith('generation', expect.any(String), expect.any(String))
+    const newFingerprint = await sha256Hex('new-device-token')
+    const oldFingerprint = await sha256Hex('paired-device-token')
+    expect(store.mergeRevoked).toHaveBeenCalledWith(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'], `generation-${newFingerprint}`, newFingerprint)
+    expect(store.completeRevocationPull).toHaveBeenCalledWith(`generation-${newFingerprint}`, expect.any(String), newFingerprint)
+    expect(meta).toMatchObject({ fingerprint: newFingerprint, completedAt: expect.any(String) })
+
+    releaseFirst(new Response(JSON.stringify({ ticket_ids: ['a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'], next_cursor: null }), { status: 200 }))
+    await waitFor(() => expect(store.mergeRevoked).toHaveBeenCalledTimes(3))
+    expect(store.mergeRevoked).toHaveBeenCalledWith(['a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'], `generation-${oldFingerprint}`, oldFingerprint)
+    await expect(vi.mocked(store.mergeRevoked).mock.results[2]?.value).resolves.toBe(false)
+    expect(store.completeRevocationPull).toHaveBeenCalledTimes(1)
+    expect(meta).toMatchObject({ fingerprint: newFingerprint, completedAt: expect.any(String) })
+  })
+
+  it('keeps a newer local pairing when an old scan token gets a 401', async () => {
+    const { store } = fakeStore()
+    openStore.mockResolvedValue(store)
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('voided-tickets')) {
+        return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+      }
+      localStorage.setItem('scanner.device-token', 'new-device-token')
+      return Promise.resolve(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    await waitFor(() => expect(store.beginRevocationPull).toHaveBeenCalledOnce())
+    checkTicket()
+
+    await screen.findByLabelText('Pairing token')
+    expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token')
+    expect(store.unpairRevocations).toHaveBeenCalledWith(await sha256Hex('paired-device-token'))
   })
 
   it('refuses a listed tid before scan or actuation and queues one refusal row', async () => {

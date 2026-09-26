@@ -155,6 +155,46 @@ describe('revocation set', () => {
     expect((await store.revocationPull()).completedAt).toBeUndefined()
     expect((await store.queued()).map((row) => row.occurrenceId)).toEqual([queued.occurrenceId])
   })
+
+  it('unpairs only when the rejected fingerprint owns the revocation set', async () => {
+    const dbName = `unpair-${crypto.randomUUID()}`
+    const ownedStore = await openStore(dbName)
+    const generation = await ownedStore.beginRevocationPull('fingerprint-a')
+    await ownedStore.mergeRevoked([ticketIDForStore], generation, 'fingerprint-a')
+    await ownedStore.completeRevocationPull(generation, '2026-09-25T12:00:00Z', 'fingerprint-a')
+
+    const readState = async () => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(dbName)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      const tx = db.transaction(['revocations', 'revocation_meta'], 'readonly')
+      const meta = await new Promise<unknown>((resolve, reject) => {
+        const request = tx.objectStore('revocation_meta').get('state')
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      const ids = await new Promise<unknown>((resolve, reject) => {
+        const request = tx.objectStore('revocations').getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      db.close()
+      return { meta, ids }
+    }
+
+    const before = await readState()
+    await ownedStore.unpairRevocations('fingerprint-b')
+    expect(await readState()).toEqual(before)
+
+    await ownedStore.unpairRevocations('fingerprint-a')
+    const after = await readState()
+    expect(after.ids).toEqual([])
+    expect(after.meta).toMatchObject({ key: 'state', fingerprint: 'unpaired' })
+    expect(after.meta).not.toHaveProperty('completedAt')
+    expect(after.meta).not.toMatchObject({ generation })
+  })
 })
 
 const ticketIDForStore = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
