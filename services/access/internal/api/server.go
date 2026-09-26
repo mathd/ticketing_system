@@ -615,10 +615,11 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		Occurrences []struct {
-			QRPayload    string `json:"qr_payload"`
-			OccurrenceID string `json:"occurrence_id"`
-			OccurredAt   string `json:"occurred_at"`
-			EventType    string `json:"event_type"`
+			QRPayload     string `json:"qr_payload"`
+			OccurrenceID  string `json:"occurrence_id"`
+			OccurredAt    string `json:"occurred_at"`
+			EventType     string `json:"event_type"`
+			LocalDecision string `json:"local_decision"`
 		} `json:"occurrences"`
 	}
 	if err := httpx.DecodeJSON(w, r, &input, 256<<10); err != nil || len(input.Occurrences) == 0 {
@@ -635,6 +636,15 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range input.Occurrences {
 		occ, occurredAt, err := parseOccurrence(entry.OccurrenceID, entry.OccurredAt)
 		if err != nil || occ == uuid.Nil {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		localDecision := entry.LocalDecision
+		if localDecision != "" && localDecision != "revocation_refused" {
+			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		if localDecision != "" && entry.EventType != "" {
 			results = append(results, rejected(entry.OccurrenceID))
 			continue
 		}
@@ -661,6 +671,19 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 		// result, not a failure for the whole queue.
 		if !scannerScopeAllows(r.Context(), claims.OrganizerID) {
 			results = append(results, rejected(entry.OccurrenceID))
+			continue
+		}
+		if localDecision == "revocation_refused" {
+			result, err := s.st.RecordRevocationRefusal(r.Context(), claims.TicketID, claims.OrderID, claims.OrganizerID, claims.SlotID, occ, occurredAt, localDecision)
+			if errors.Is(err, store.ErrTicketCredential) || errors.Is(err, store.ErrOccurrenceCollision) {
+				results = append(results, rejected(entry.OccurrenceID))
+				continue
+			}
+			if err != nil {
+				write(w, http.StatusInternalServerError, map[string]string{"error": "record scanner refusal"})
+				return
+			}
+			results = append(results, map[string]any{"occurrence_id": entry.OccurrenceID, "result": string(result.Outcome), "occurred_at": result.OccurredAt})
 			continue
 		}
 		result, err := s.st.ReconcileAdmission(r.Context(), store.ReconcileOccurrence{

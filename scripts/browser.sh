@@ -133,8 +133,14 @@ run_specs() {
   local failed=0
   for spec in "${specs[@]}"; do
     echo "=== $(basename "$spec")"
-    BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" ACCESS_CONTAINER="$access" \
-      node "$spec" || failed=1
+    if [ "$(basename "$spec")" = scanner.mjs ]; then
+      BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" ACCESS_CONTAINER="$access" \
+        ACCESS_PORT="$ACCESS_PORT" ACCESS_QR_PRIVATE_KEY="$ACCESS_QR_PRIVATE_KEY" ACCESS_QR_KID="$ACCESS_QR_KID" \
+        INTERNAL_SERVICE_TOKEN="$INTERNAL_SERVICE_TOKEN" node "$spec" || failed=1
+    else
+      BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" ACCESS_CONTAINER="$access" \
+        node "$spec" || failed=1
+    fi
   done
   return $failed
 }

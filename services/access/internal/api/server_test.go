@@ -304,6 +304,33 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 	}
 }
 
+func TestReconcileUnknownLocalDecisionRejectsOnlyItsItem(t *testing.T) {
+	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
+	request := scanRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
+		`{"occurrences":[`+
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z","local_decision":"future_decision"},`+
+			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reconcile with unknown local decision = %d, want per-item results", recorder.Code)
+	}
+	var response struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 || response.Results[0]["result"] != "rejected" || response.Results[1]["result"] != "rejected" {
+		t.Fatalf("results = %+v, want two item results", response.Results)
+	}
+}
+
 // ai-review F4. The scan-shaped 422 is the gate's established representation for a
 // request the contract rejects, and it was applied to EVERY route — including the
 // internal refund operation, which declares no 422. An undeclared status is exactly the

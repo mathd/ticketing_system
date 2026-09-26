@@ -78,6 +78,59 @@ describe('durable pending record', () => {
   })
 })
 
+describe('revocation set', () => {
+  it('keeps queued rows on a v1 upgrade and merges ids across completed pulls', async () => {
+    const dbName = `upgrade-${crypto.randomUUID()}`
+    const v1 = indexedDB.open(dbName, 1)
+    v1.onupgradeneeded = () => v1.result.createObjectStore('occurrences', { keyPath: 'occurrenceId' })
+    const legacyDB = await new Promise<IDBDatabase>((resolve, reject) => {
+      v1.onsuccess = () => resolve(v1.result)
+      v1.onerror = () => reject(v1.error)
+    })
+    const legacy = {
+      occurrenceId: crypto.randomUUID(), qrPayload: 'old', occurredAt: '2026-09-01T00:00:00Z',
+      state: 'QUEUED', actuated: false, createdAt: '2026-09-01T00:00:00Z',
+    }
+    const tx = legacyDB.transaction('occurrences', 'readwrite')
+    tx.objectStore('occurrences').put(legacy)
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    legacyDB.close()
+
+    const upgraded = await openStore(dbName)
+    openedStores.push(upgraded)
+    const generation = await upgraded.beginRevocationPull()
+    await upgraded.mergeRevoked([ticketIDForStore], generation)
+    await upgraded.completeRevocationPull(generation, '2026-09-25T12:00:00Z')
+    expect(await upgraded.revocationPull()).toMatchObject({ completedAt: '2026-09-25T12:00:00Z' })
+    const nextGeneration = await upgraded.beginRevocationPull()
+    await upgraded.mergeRevoked(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'], nextGeneration)
+    await upgraded.completeRevocationPull(nextGeneration, '2026-09-25T12:15:00Z')
+
+    expect(await upgraded.isRevoked(ticketIDForStore)).toBe(true)
+    expect(await upgraded.isRevoked('3f8fb96c-44f9-4a66-8c12-7d91cfae4d72')).toBe(true)
+    expect(await upgraded.queued()).toMatchObject([legacy])
+  })
+
+  it('does not let an old pull write after pairing changes', async () => {
+    const generation = await store.beginRevocationPull()
+    await store.mergeRevoked([ticketIDForStore], generation)
+    await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z')
+    const queued = await store.mint('queued scan', '2026-09-25T12:00:00Z')
+    await store.markQueued(queued.occurrenceId)
+    await store.clearRevocations()
+    expect(await store.mergeRevoked([ticketIDForStore], generation)).toBe(false)
+    expect(await store.completeRevocationPull(generation, '2026-09-25T12:00:00Z')).toBe(false)
+    expect(await store.isRevoked(ticketIDForStore)).toBe(false)
+    expect((await store.revocationPull()).completedAt).toBeUndefined()
+    expect((await store.queued()).map((row) => row.occurrenceId)).toEqual([queued.occurrenceId])
+  })
+})
+
+const ticketIDForStore = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
+
 describe('actuation gating', () => {
   it('actuates exactly once for a pending record, marking before reporting', async () => {
     const record = await store.mint('qr', '2026-07-17T09:00:00Z')

@@ -22,11 +22,20 @@ export type OccurrenceRecord = {
   ownerId?: string
   /** Epoch milliseconds. The owner renews this while its page remains alive. */
   leaseExpiresAt?: number
+  localDecision?: 'revocation_refused'
 }
+
+export type RevocationPull = { generation: string; completedAt?: string }
 
 export interface OccurrenceStore {
   /** Commits the PENDING record; resolves only after the IDB transaction completes. */
-  mint(qrPayload: string, occurredAt: string): Promise<OccurrenceRecord>
+  mint(qrPayload: string, occurredAt: string, localDecision?: 'revocation_refused'): Promise<OccurrenceRecord>
+  isRevoked(ticketID: string): Promise<boolean>
+  beginRevocationPull(): Promise<string>
+  mergeRevoked(ticketIDs: string[], generation: string): Promise<boolean>
+  completeRevocationPull(generation: string, completedAt: string): Promise<boolean>
+  revocationPull(): Promise<RevocationPull>
+  clearRevocations(): Promise<void>
   /**
    * Atomic PENDING-and-never-actuated → ACTUATED transition. Resolves true iff
    * THIS call performed it — the one signal that may open the gate.
@@ -41,6 +50,9 @@ export interface OccurrenceStore {
 }
 
 const STORE = 'occurrences'
+const REVOCATIONS = 'revocations'
+const REVOCATION_META = 'revocation_meta'
+type RevocationMeta = { key: 'state'; generation: string; completedAt?: string }
 const DEFAULT_PENDING_LEASE_MS = 30_000
 
 export type OccurrenceStoreOptions = {
@@ -135,9 +147,15 @@ export async function openOccurrenceStore(
   if (!ownerId || !Number.isSafeInteger(pendingLeaseMs) || pendingLeaseMs <= 0) {
     throw new TypeError('occurrence owner and pending lease must be valid')
   }
-  const open = indexedDB.open(dbName, 1)
+  const open = indexedDB.open(dbName, 2)
   open.onupgradeneeded = () => {
-    open.result.createObjectStore(STORE, { keyPath: 'occurrenceId' })
+    const db = open.result
+    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'occurrenceId' })
+    if (!db.objectStoreNames.contains(REVOCATIONS)) db.createObjectStore(REVOCATIONS, { keyPath: 'ticketID' })
+    if (!db.objectStoreNames.contains(REVOCATION_META)) {
+      const meta = db.createObjectStore(REVOCATION_META, { keyPath: 'key' })
+      meta.put({ key: 'state', generation: crypto.randomUUID() } satisfies RevocationMeta)
+    }
   }
   const db = await requestDone(open as IDBRequest<IDBDatabase>)
 
@@ -238,7 +256,7 @@ export async function openOccurrenceStore(
   }
 
   return {
-    async mint(qrPayload, occurredAt) {
+    async mint(qrPayload, occurredAt, localDecision) {
       const record: OccurrenceRecord = {
         occurrenceId: crypto.randomUUID(),
         qrPayload,
@@ -248,9 +266,50 @@ export async function openOccurrenceStore(
         createdAt: new Date().toISOString(),
         ownerId,
         leaseExpiresAt: now() + pendingLeaseMs,
+        ...(localDecision ? { localDecision } : {}),
       }
       await put(record)
       return record
+    },
+    async isRevoked(ticketID) {
+      const tx = db.transaction(REVOCATIONS, 'readonly')
+      return (await requestDone(tx.objectStore(REVOCATIONS).get(ticketID) as IDBRequest<unknown>)) !== undefined
+    },
+    async beginRevocationPull() {
+      const tx = db.transaction(REVOCATION_META, 'readonly')
+      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
+      return meta?.generation ?? ''
+    },
+    async mergeRevoked(ticketIDs, generation) {
+      const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
+      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
+      if (!meta || meta.generation !== generation) {
+        await transactionDone(tx)
+        return false
+      }
+      for (const ticketID of ticketIDs) tx.objectStore(REVOCATIONS).put({ ticketID })
+      await transactionDone(tx)
+      return true
+    },
+    async completeRevocationPull(generation, completedAt) {
+      const tx = db.transaction(REVOCATION_META, 'readwrite')
+      const os = tx.objectStore(REVOCATION_META)
+      const meta = await requestDone(os.get('state') as IDBRequest<RevocationMeta | undefined>)
+      const current = !!meta && meta.generation === generation
+      if (current) os.put({ ...meta, completedAt })
+      await transactionDone(tx)
+      return current
+    },
+    async revocationPull() {
+      const tx = db.transaction(REVOCATION_META, 'readonly')
+      const meta = await requestDone(tx.objectStore(REVOCATION_META).get('state') as IDBRequest<RevocationMeta | undefined>)
+      return { generation: meta?.generation ?? '', completedAt: meta?.completedAt }
+    },
+    async clearRevocations() {
+      const tx = db.transaction([REVOCATIONS, REVOCATION_META], 'readwrite')
+      tx.objectStore(REVOCATIONS).clear()
+      tx.objectStore(REVOCATION_META).put({ key: 'state', generation: crypto.randomUUID() } satisfies RevocationMeta)
+      await transactionDone(tx)
     },
     actuate(occurrenceId) {
       return transition(occurrenceId, (record) =>

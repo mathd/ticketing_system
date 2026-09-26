@@ -180,6 +180,28 @@ The relation order is `tickets â†’ lifecycle_events`. The tempting alternative â
 voided stream and would walk other organizers' voided rows before discarding them: right answer,
 wrong scan.
 
+### 8. A scanner merges revocations and uses them only to deny
+
+TKT-271 adds a scanner-side revocation set in IndexedDB. The scanner pulls every page from the
+first page through `next_cursor: null`. A later pull merges ticket IDs into the set; it never
+replaces IDs from an earlier completed pull. The completion time is committed only after the whole
+walk succeeds. A failed or malformed page does not advance it.
+
+The set belongs to the current pairing generation. Clearing or changing pairing clears the set
+and its completion time. A pull that began under an older generation cannot write into the new
+one. The occurrence queue survives this reset.
+
+Before every scan, whether online or offline, the scanner may decode the credential's `tid` and
+look it up in the set. That ID is unverified. The scanner may use it to refuse entry, but never to
+admit. A listed ticket creates a queued `revocation_refused` occurrence and does not call the scan
+route or actuate the gate. If the credential cannot be decoded, the scanner follows its existing
+scan path. Access verifies the signed credential and organizer scope when it records a refusal in
+`scanner_local_decisions`. That record does not create a lifecycle event, quarantine row or alarm.
+
+TKT-271 ships this revocation refusal only. A device with no completed pull keeps the existing
+offline policy. Its screen says that it holds no revocation list yet. The 24-hour ceiling, refusal
+before the first pull, unreadable-time refusal and operator override belong to TKT-500.
+
 ## Consequences
 
 - **A walk is not a consistent read, and the feed's completeness is across pulls

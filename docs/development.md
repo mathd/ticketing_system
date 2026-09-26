@@ -1326,6 +1326,14 @@ which is the correct workflow anyway, and the reason the credential is per devic
 instead of the scan form. Paste the token. It is kept in that browser's `localStorage`
 and survives reloads.
 
+**Revocation list.** A paired scanner pulls the organizer's voided-ticket feed when the scan
+screen opens, after pairing, every 15 minutes, and when the device comes online. The operator can
+also select **Refresh revocation list**. The scanner checks the local list before every scan. A
+listed ticket shows **Not valid for entry** and must not be admitted. The scanner queues that refusal
+and syncs it when possible. If no pull has completed, the screen says **This device holds no
+revocation list yet** and the existing venue offline policy still applies. TKT-500 owns the freshness
+ceiling and override.
+
 **What an operator sees when it goes wrong.** A revoked or unpaired device gets `401`
 and the app returns to the pairing screen with the reason — never the ticket-rejection
 screen. That distinction is deliberate: the person at the turnstile has a perfectly good
