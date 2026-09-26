@@ -809,6 +809,51 @@ candidates, and anyone who can write to inventory can undo the repair.
 is quarantined and acked, latches the consumer unready, and needs `reprocess-quarantine`
 **plus a restart** by an operator (see *Inventory catalog-event quarantine operations*).
 
+## Best-available ordering correction wave (TKT-258)
+
+Catalog keeps emitting the same schema-4 publication for rule-off seated performances. The
+payload already names the bound seat-map version. New inventory binaries fetch that map's
+geometry and store ordering data while leaving `orphan_prevention_enabled` false. TKT-258
+changes no event schema or payload, and makes no access-service change.
+
+Deploy the new inventory version to every replica first. Let all old inventory consumers
+drain before running the correction wave. The inventory version decides whether the event
+repairs a pool: an old consumer can acknowledge the correction's fresh event id without
+adding ordering rows, and `consumed_events` then prevents a later delivery with that same id
+from repairing the pool.
+
+After the inventory rollout and drain, deploy catalog with the command and run:
+
+```bash
+docker compose exec catalog /app reemit-best-available-ordering
+```
+
+The command takes no flags. It scans published seated performances bound to rule-off maps,
+in pages ordered by performance id, and re-emits each schema-4 publication with a separate
+deterministic event id. A publish failure stops the run. `corrected=<n>` counts emitted
+publications, not inventory repairs.
+
+If a correction run happened while any old inventory consumer was still consuming, bump the
+wave's id namespace suffix in `services/catalog/internal/events/events.go` (for example,
+`best-available-ordering-schema4-1` to `best-available-ordering-schema4-2`), deploy that
+catalog build, and run the command again. The namespace is versioned because an old
+inventory consumer records the id even though it cannot apply the projection. The same id
+cannot repair that pool later.
+
+The candidate query has no completion marker, so each run reconciles the current set. A
+repeat run with the same namespace emits the same ids and is safe only after all consuming
+inventory replicas can apply the correction.
+
+To confirm a repair, check inventory. The pool must still have
+`orphan_prevention_enabled=false`, and its `seat_claim_adjacency` rows must have non-null
+`row_key`, `position`, and `row_rank`. A pool with no ordering data still returns
+`best_available_unsupported` until a valid projection is applied. Rule-off maps that
+inventory cannot project (a seatless map, labels that differ only by trailing whitespace, a
+map over inventory's 8 MiB read limit) keep their seated inventory without ordering rows
+and return `best_available_unsupported`. There is no supported repair for such a pool yet:
+editing the map creates a new version that the pool is not bound to, and a rerun of the
+wave reuses a consumed event id. TKT-499 owns the repair path.
+
 ## Back-office sign-in (TKT-190)
 
 `/admin/` is behind a staff session. Three paths stay anonymous and nothing else does:

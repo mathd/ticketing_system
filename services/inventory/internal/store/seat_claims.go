@@ -467,8 +467,10 @@ type SeatAdjacencyRow struct {
 // snapshot used as a coarse ceiling — the tight per-seat oversell boundary is the
 // claim_seats unique index plus catalog PinSeat existence-validation (ADR-031).
 //
-// adjacency is non-empty only for a schema-5, rule-enabled publication (TKT-181). It
-// is written in the SAME transaction as the pool and the consumed-event row, which is
+// adjacency carries the ordering projection for any seated publication whose geometry is
+// valid (TKT-258): rule-enabled schema 5 always, and rule-off schema 4/5 unless their
+// geometry was invalid, in which case it is empty and the pool has no best-available
+// ordering. It is written in the SAME transaction as the pool and the consumed-event row, which is
 // the property the whole design rests on: a pool that says the rule is on and has no
 // projection is unrepresentable. Anything less would leave a rule-enabled pool that
 // silently enforces nothing, and the consumed-event row would stop any later binary

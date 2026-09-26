@@ -440,6 +440,9 @@ func TestSeatedPublicationProvisionsSeatedPool(t *testing.T) {
 	seatMap := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 	body := `{` + id + `,"schema":4,"data":{"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","kind":"performance","capacity":500,"seat_map_id":"` + seatMap + `","re_entry":{"mode":"single","requires_exit":false}}}`
 	c, st := testConsumerWithStore()
+	c.resolver = fakeResolver{adjacency: []SeatAdjacency{{
+		SeatIdentity: "Stalls/A/1", RowKey: "row-a", Position: 1, RowRank: 1,
+	}}}
 	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
 
 	c.handle(context.Background(), msg)
@@ -455,6 +458,9 @@ func TestSeatedPublicationProvisionsSeatedPool(t *testing.T) {
 	}
 	if len(st.seatProvisioned) != 1 || st.seatMapIDs[0].String() != seatMap {
 		t.Fatalf("seatProvisioned = %v seatMapIDs = %v — a seated publication must provision a seated pool with its seat map", st.seatProvisioned, st.seatMapIDs)
+	}
+	if len(st.adjacency) != 1 || len(st.adjacency[0]) != 1 || st.adjacency[0][0].RowKey == nil {
+		t.Fatalf("schema-4 projection = %v, want its ordering metadata", st.adjacency)
 	}
 	if len(st.quarantined) != 0 {
 		t.Fatalf("quarantined = %v — schema 4 is a KNOWN variant, it must not quarantine", st.quarantined)
@@ -711,28 +717,84 @@ func TestSchema5MalformedPayloadIsStillTerminated(t *testing.T) {
 	}
 }
 
-// Rule OFF takes the schema-4 outcome and makes NO geometry call. An unconditional
-// fetch would put a catalog round trip on every seated publication.
-func TestSchema5RuleOffProvisionsWithoutFetchingGeometry(t *testing.T) {
-	st := &fakeCatalogStore{}
-	// The resolver errors if it is ever called, so a fetch would fail the test loudly.
-	c := offeringConsumer(st, fakeResolver{adjacencyErr: errors.New("must not be called")})
+func TestRuleOffPublicationFetchesGeometryAndKeepsRuleOff(t *testing.T) {
+	for _, schema := range []int{4, 5} {
+		t.Run(fmt.Sprintf("schema_%d", schema), func(t *testing.T) {
+			st := &fakeCatalogStore{}
+			resolver := fakeResolver{adjacency: []SeatAdjacency{{
+				SeatIdentity: "Stalls/A/1", RowKey: "row-a", Position: 1, RowRank: 1,
+			}}}
+			c := offeringConsumer(st, resolver)
 
-	body := `{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":5,"data":{` +
-		`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
-		`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
-		`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
-	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
-	c.handle(context.Background(), msg)
+			body := fmt.Sprintf(`{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":%d,"data":{`, schema) +
+				`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+				`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+				`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+			c.handle(context.Background(), msg)
 
-	if len(st.seatProvisioned) != 1 {
-		t.Fatalf("rule-off schema 5 must provision a seated pool, actions=%v", msg.actions)
+			if len(msg.actions) != 1 || msg.actions[0] != "ack" {
+				t.Fatalf("actions = %v, want ack", msg.actions)
+			}
+			if len(st.seatProvisioned) != 1 {
+				t.Fatalf("rule-off schema %d must provision a seated pool, actions=%v", schema, msg.actions)
+			}
+			if len(st.orphanPrevention) != 1 || st.orphanPrevention[0] {
+				t.Fatalf("orphanPrevention = %v want [false]", st.orphanPrevention)
+			}
+			if len(st.adjacency) != 1 || len(st.adjacency[0]) != 1 ||
+				st.adjacency[0][0].SeatIdentity != "Stalls/A/1" || st.adjacency[0][0].RowKey == nil || *st.adjacency[0][0].RowKey != "row-a" {
+				t.Fatalf("rule-off projection = %v, want the fetched ordering row", st.adjacency)
+			}
+		})
 	}
-	if len(st.orphanPrevention) != 1 || st.orphanPrevention[0] {
-		t.Fatalf("orphanPrevention = %v want [false]", st.orphanPrevention)
-	}
-	if len(st.adjacency) != 1 || len(st.adjacency[0]) != 0 {
-		t.Fatalf("rule-off must carry no adjacency, got %v", st.adjacency)
+}
+
+func TestRuleOffPublicationGeometryFailuresKeepTKT307Dispositions(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		schema         int
+		ruleOn         bool
+		err            error
+		want           string
+		wantProvision  bool
+		wantProjection bool
+	}{
+		{name: "schema_4 invalid geometry falls back", schema: 4, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "ack", wantProvision: true},
+		{name: "schema_5 false invalid geometry falls back", schema: 5, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "ack", wantProvision: true},
+		{name: "schema_4 transport retries", schema: 4, err: errors.New("connection refused"), want: "nak-delay"},
+		{name: "schema_5 false transport retries", schema: 5, err: errors.New("connection refused"), want: "nak-delay"},
+		{name: "schema_5 true invalid geometry terminates", schema: 5, ruleOn: true, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "term"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeCatalogStore{}
+			c := offeringConsumer(st, fakeResolver{adjacencyErr: tc.err})
+			body := fmt.Sprintf(`{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":%d,"data":{`, tc.schema) +
+				`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+				`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+				`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400`
+			if tc.ruleOn {
+				body += `,"orphan_prevention_enabled":true`
+			}
+			body += `}}`
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+			c.handle(context.Background(), msg)
+			if len(msg.actions) != 1 || msg.actions[0] != tc.want {
+				t.Fatalf("actions = %v, want [%s]", msg.actions, tc.want)
+			}
+			if got := len(st.seatProvisioned) == 1; got != tc.wantProvision {
+				t.Fatalf("seated pools provisioned = %v, want %v", got, tc.wantProvision)
+			}
+			if tc.wantProvision && (len(st.orphanPrevention) != 1 || st.orphanPrevention[0]) {
+				t.Fatalf("orphan-prevention flags = %v, want [false]", st.orphanPrevention)
+			}
+			if len(st.provisioned) != 0 {
+				t.Fatal("seated publication must not provision a quantity pool")
+			}
+			if got := len(st.adjacency) == 1 && len(st.adjacency[0]) > 0; got != tc.wantProjection {
+				t.Fatalf("projection present = %v, want %v (adjacency=%v)", got, tc.wantProjection, st.adjacency)
+			}
+		})
 	}
 }
 

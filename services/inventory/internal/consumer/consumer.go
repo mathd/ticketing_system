@@ -105,8 +105,9 @@ type provisionInput struct {
 	// seatMapID is set (non-nil) only for a seated pool (schema 4/5); it routes the
 	// apply to ProvisionSeated. Zero for a GA/festival pool.
 	seatMapID uuid.UUID
-	// orphanPrevention and adjacency arrive together on a rule-enabled schema-5
-	// publication, and are committed with the pool in one transaction (ADR-041).
+	// orphanPrevention is the claim-rule switch. The projection is fetched for every
+	// seated schema-4 or schema-5 publication. Rule-off pools can fall back to no
+	// projection when geometry is invalid.
 	orphanPrevention bool
 	adjacency        []store.SeatAdjacencyRow
 }
@@ -126,9 +127,9 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity}, nil
 	case 4:
 		// Seated fork (TKT-103): a slot claimed seat-by-seat (TKT-80). This provisions
-		// a SEATED pool — distinct from a GA quantity pool — carrying the catalog seat
-		// map so seat holds can pin, and a coarse capacity ceiling. The tight per-seat
-		// oversell boundary is the claim_seats unique index + PinSeat existence
+		// a SEATED pool — distinct from a GA quantity pool — with the catalog seat map,
+		// its ordering projection when usable, and a coarse capacity ceiling. The tight
+		// per-seat oversell boundary is the claim_seats unique index + PinSeat existence
 		// validation, not this capacity (ADR-031).
 		if e.Data.PerformanceID == uuid.Nil || e.Data.OrganizerID == uuid.Nil {
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication is missing required identifiers")
@@ -145,10 +146,19 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		if e.Data.Capacity <= 0 {
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication has invalid capacity")
 		}
-		return provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID, capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}, nil
+		in := provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID,
+			capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}
+		// Schema 4 is rule-off. Deterministically-invalid geometry cannot support
+		// best-available, but terminating would also discard the seated inventory
+		// that predates this projection. Fall back without adjacency; a catalog
+		// transport failure remains retryable and never provisions an incomplete pool.
+		if err := c.resolveSeatMapAdjacency(ctx, &in, 4, true); err != nil {
+			return provisionInput{}, err
+		}
+		return in, nil
 	case 5:
-		// Same seated pool as schema 4, plus the orphan-prevention flag and — when it is
-		// on — the adjacency projection for the EXACT published version this slot is
+		// Same seated pool as schema 4, plus the orphan-prevention flag and the
+		// adjacency projection for the EXACT published version this slot is
 		// seated against (ADR-029 makes that version immutable, which is what allows a
 		// one-time projection).
 		//
@@ -167,37 +177,12 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		in := provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID,
 			capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID,
 			orphanPrevention: e.Data.OrphanPreventionEnabled}
-		if !in.orphanPrevention {
-			// Rule off: byte-for-byte the schema-4 outcome, and NO geometry fetch. AC4
-			// is "no extra work when off", and an unconditional fetch here would make
-			// that false for every seated publication.
-			return in, nil
-		}
-		if c.resolver == nil {
-			return provisionInput{}, fmt.Errorf("schema-5 rule-enabled publication needs catalog resolver")
-		}
-		adjacency, err := c.resolver.SeatMapAdjacency(ctx, *e.Data.SeatMapID)
-		if errors.Is(err, ErrGeometryInvalid) {
-			// Deterministic: a draft map, the wrong version, duplicate identities, bad
-			// positions. No binary and no retry can provision it, so it terminates —
-			// parking it would be an infinite loop over corrupt data, which is the
-			// mirror image of the bug the retry branch fixed.
-			return provisionInput{}, fmt.Errorf("schema-5 adjacency projection: %w", err)
-		}
-		if err != nil {
-			// Fail closed, and mark it RETRYABLE. Nothing is provisioned and the event
-			// comes back — which is recoverable. Provisioning without the projection is
-			// not: the consumed-event row would make it permanent. Terminating is not
-			// either: the publication would be gone and the slot would have no
-			// inventory at all.
-			return provisionInput{}, fmt.Errorf("%w: schema-5 adjacency projection: %v", errResolveUnavailable, err)
-		}
-		for _, a := range adjacency {
-			rowKey, position, rank := a.RowKey, a.Position, a.RowRank
-			in.adjacency = append(in.adjacency, store.SeatAdjacencyRow{
-				SeatIdentity: a.SeatIdentity, Left: a.Left, Right: a.Right,
-				RowKey: &rowKey, Position: &position, RowRank: &rank,
-			})
+		// Rule-off schema 5 has the same fallback as schema 4: preserve the seated
+		// inventory and let best-available report unsupported until the map is fixed.
+		// Rule-on cannot work without this projection, so invalid geometry terminates.
+		// A transport failure retries in either case and never provisions without it.
+		if err := c.resolveSeatMapAdjacency(ctx, &in, 5, !in.orphanPrevention); err != nil {
+			return provisionInput{}, err
 		}
 		return in, nil
 	case 3:
@@ -231,6 +216,36 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 	default:
 		return provisionInput{}, fmt.Errorf("unsupported publication schema %d", e.Schema)
 	}
+}
+
+func (c *Consumer) resolveSeatMapAdjacency(ctx context.Context, in *provisionInput, schema int, allowInvalidFallback bool) error {
+	if c.resolver == nil {
+		return fmt.Errorf("schema-%d seated publication needs catalog resolver", schema)
+	}
+	adjacency, err := c.resolver.SeatMapAdjacency(ctx, in.seatMapID)
+	if errors.Is(err, ErrGeometryInvalid) {
+		if allowInvalidFallback {
+			c.log.Warn("invalid seat map geometry; provisioning rule-off pool without best-available ordering",
+				"seat_map_id", in.seatMapID, "reason", err)
+			return nil
+		}
+		// Invalid geometry cannot be repaired by retrying this publication. The
+		// caller terminates because its rule-on selection requires the projection.
+		return fmt.Errorf("schema-%d adjacency projection: %w", schema, err)
+	}
+	if err != nil {
+		// Do not provision without the projection after a transport failure. Retry
+		// the publication because a catalog outage can clear without changing bytes.
+		return fmt.Errorf("%w: schema-%d adjacency projection: %v", errResolveUnavailable, schema, err)
+	}
+	for _, a := range adjacency {
+		rowKey, position, rank := a.RowKey, a.Position, a.RowRank
+		in.adjacency = append(in.adjacency, store.SeatAdjacencyRow{
+			SeatIdentity: a.SeatIdentity, Left: a.Left, Right: a.Right,
+			RowKey: &rowKey, Position: &position, RowRank: &rank,
+		})
+	}
+	return nil
 }
 
 // maxKnownPublicationSchema is the highest `performance.published` variant this binary can read.
@@ -431,8 +446,8 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 			return
 		}
 		// A CATALOG lookup failure is a dependency outage, not corrupt data, and the
-		// distinction is the difference between a retry and permanent loss. Schema 1
-		// and schema 5 both call catalog; terminating on a timeout would drop the
+		// distinction is the difference between a retry and permanent loss. Schemas 1,
+		// 4, and 5 call catalog; terminating on a timeout would drop the
 		// publication for ever and leave the slot with no inventory at all
 		// (ai-review). Payload validation failures below are genuinely poison.
 		//

@@ -22,11 +22,12 @@ func TestCommandRegistryInvokesEveryCatalogCallback(t *testing.T) {
 	callbacks := commandCallbacks{
 		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
 		reemitPolicies: withArgs("reemit-policies"), reemitOrphanPrevention: withArgs("reemit-orphan-prevention"),
-		provisionStaff: withArgs("provision-staff"), validateRules: withArgs("validate-rules"),
+		reemitBestAvailableOrdering: withArgs("reemit-best-available-ordering"),
+		provisionStaff:              withArgs("provision-staff"), validateRules: withArgs("validate-rules"),
 	}
 	registry := commandRegistry(callbacks)
 	names := []string{
-		"migrate", "healthcheck", "reemit-policies", "reemit-orphan-prevention",
+		"migrate", "healthcheck", "reemit-policies", "reemit-orphan-prevention", "reemit-best-available-ordering",
 		"provision-staff", "validate-rules",
 	}
 	if len(registry) != len(names) {

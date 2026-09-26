@@ -84,6 +84,59 @@ func TestListOrphanPreventionCandidates(t *testing.T) {
 	}
 }
 
+func TestListBestAvailableOrderingCandidates(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+
+	ruleOff := make([]uuid.UUID, 3)
+	for i := range ruleOff {
+		ruleOff[i], _, _ = seedSeatedSlot(t, ctx, db, false)
+	}
+	enabled, _, _ := seedSeatedSlot(t, ctx, db, true)
+	ga := seedPublishedSlot(t, ctx, db, "published", "multi", nil)
+	draft, _, _ := seedSeatedSlot(t, ctx, db, false)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE performances SET status='draft', published_at=NULL WHERE id=$1`, draft); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[uuid.UUID]Performance{}
+	var cursor *uuid.UUID
+	pages := 0
+	for {
+		batch, err := st.ListBestAvailableOrderingCandidates(ctx, cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		pages++
+		for _, perf := range batch {
+			got[perf.ID] = perf
+		}
+		last := batch[len(batch)-1].ID
+		cursor = &last
+	}
+	if pages != 2 {
+		t.Fatalf("candidate pages = %d, want 2 non-empty pages for 3 candidates at page size 2", pages)
+	}
+	if len(got) != len(ruleOff) {
+		t.Fatalf("candidate count = %d, want exactly %d rule-off seated slots", len(got), len(ruleOff))
+	}
+	for _, id := range ruleOff {
+		if perf, ok := got[id]; !ok {
+			t.Fatalf("published rule-off seated slot %s is missing from the correction candidates", id)
+		} else if perf.OrphanPreventionEnabled || perf.SeatMapID == nil {
+			t.Fatalf("candidate = %+v, want its bound map and rule disabled", perf)
+		}
+	}
+	for _, id := range []uuid.UUID{enabled, ga, draft} {
+		if _, ok := got[id]; ok {
+			t.Fatalf("%s must not be a best-available ordering candidate", id)
+		}
+	}
+}
+
 // TestHydratedFlagFollowsTheBoundVersionNotTheFamily is AC4 at the layer that decides it.
 // A published seat-map version is immutable and a slot is bound to exactly one (ADR-029),
 // so publishing a NEWER version of the same family with a different setting must not

@@ -118,8 +118,9 @@ var readOnlyStoreMethods = map[string]bool{
 	// Postgres on every request, so it participates in no cached payload.
 	"GetChannel": true, "ListChannels": true, "ListEnabledChannels": true,
 	// Operator and migration reads that never feed a cached public response.
-	"ListOrphanPreventionCandidates":     true,
-	"ListPublishedUngroupedPerformances": true,
+	"ListOrphanPreventionCandidates":      true,
+	"ListBestAvailableOrderingCandidates": true,
+	"ListPublishedUngroupedPerformances":  true,
 	// TKT-243. An operator sweep over price and fee rule currencies. A pure
 	// read, and one that touches no published payload — it reports
 	// misconfiguration to a CLI, so it neither invalidates a public read nor

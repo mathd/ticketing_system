@@ -437,6 +437,42 @@ func (p *Postgres) ListOrphanPreventionCandidates(ctx context.Context, after *uu
 	return out, nil
 }
 
+// ListBestAvailableOrderingCandidates returns published seated performances whose bound
+// map has orphan prevention off. Re-emitting them adds ordering metadata without changing
+// the pool's rule setting (TKT-258).
+func (p *Postgres) ListBestAvailableOrderingCandidates(ctx context.Context, after *uuid.UUID, limit int) ([]Performance, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	args := []any{limit}
+	cursor := ""
+	if after != nil {
+		cursor = "AND p.id > $2"
+		args = append(args, *after)
+	}
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT `+performanceColumns+` `+performanceFrom+`
+		 WHERE p.status = 'published' AND p.seat_map_id IS NOT NULL
+		   AND NOT sm.orphan_prevention_enabled `+cursor+`
+		 ORDER BY p.id LIMIT $1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list best-available ordering candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Performance
+	for rows.Next() {
+		perf, _, _, scanErr := scanPerformance(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan performance: %w", scanErr)
+		}
+		out = append(out, perf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate performances: %w", err)
+	}
+	return out, nil
+}
+
 // ListPublishedUngroupedPerformances returns fully-hydrated published, ungrouped
 // performances for the re_entry re-emission backfill (TKT-96), keyset-paginated
 // by id (cursor is exclusive; nil starts at the beginning). Grouped festival-day
