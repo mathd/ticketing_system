@@ -195,7 +195,7 @@ func TestRecordRevocationRefusalInsertRaceMapsToCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer blockerConn.Close()
+	defer func() { _ = blockerConn.Close() }()
 	var blockerPID int
 	if err := blockerConn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
 		t.Fatal(err)
