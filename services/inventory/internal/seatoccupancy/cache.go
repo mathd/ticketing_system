@@ -223,7 +223,7 @@ func (s *Service) loadDirect(k key) (store.SeatOccupancy, error) {
 	// does not exist must still be a 404 if the query that found out took most of the
 	// budget. Only a non-domain error with this load's own deadline passed is the
 	// sentinel (TKT-211 review F1).
-	if err != nil && !(errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrPoolKindMismatch)) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrPoolKindMismatch) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return v, fmt.Errorf("%w: %w", ErrLoadBudgetExceeded, err)
 	}
 	return v, err

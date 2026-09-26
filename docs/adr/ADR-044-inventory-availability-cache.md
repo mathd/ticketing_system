@@ -201,12 +201,21 @@ route.
 query, pgx reports a server-side cancellation that is NOT `context.DeadlineExceeded`. TKT-211
 verified this: a handler that matched `context.DeadlineExceeded` alone still answered 500 against a
 query blocked in Postgres. So each cache's `loadDirect` returns `ErrLoadBudgetExceeded` (which wraps
-`context.DeadlineExceeded`) whenever the load's own deadline has passed, and only then. A source
-that fails fast with the same error is not the sentinel.
+`context.DeadlineExceeded`) when the load's own deadline has passed and the error is not a DOMAIN
+answer. A source that fails fast with the same error is not the sentinel. A domain answer
+(`ErrNotFound`, and for seat occupancy `ErrPoolKindMismatch`) passes through unchanged even when it
+arrives after the deadline: a slot that does not exist is a 404, however long the query took to
+find out, and a retry would not change it.
+
+Each 503 has its own response schema (`AvailabilityUnavailable`, `SeatOccupancyUnavailable`): both
+fields required, one allowed `code`, no extra properties, so ADR-028's validator enforces the exact
+body.
 
 **What stays a 500 (or the existing mapping):** a caller's own cancellation or deadline ends the
 wait with the caller's context error. That says nothing about the dependency, so it keeps the
-existing path. The mapping lives in the two read handlers, not in `problem()`, which serves every
+existing path. When the caller's context and a budget-failed load finish at the same instant, either
+answer may be written. Both go to a caller that has already gone, so the handlers do not arbitrate
+this race. The mapping lives in the two read handlers, not in `problem()`, which serves every
 route.
 
 **Tests:** `TestAvailabilityPastItsBudgetAnswers503` and `TestSeatOccupancyPastItsBudgetAnswers503`

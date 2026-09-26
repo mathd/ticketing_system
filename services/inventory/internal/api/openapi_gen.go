@@ -30,6 +30,21 @@ func (e AvailabilityOfferingStatus) Valid() bool {
 	}
 }
 
+// Defines values for AvailabilityUnavailableCode.
+const (
+	AvailabilityUnavailableCodeAvailabilityUnavailable AvailabilityUnavailableCode = "availability_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the AvailabilityUnavailableCode enum.
+func (e AvailabilityUnavailableCode) Valid() bool {
+	switch e {
+	case AvailabilityUnavailableCodeAvailabilityUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CapacityAdjustmentStatus.
 const (
 	Applied CapacityAdjustmentStatus = "applied"
@@ -54,14 +69,12 @@ const (
 	AllocationCapsExceedCapacity  ErrorCode = "allocation_caps_exceed_capacity"
 	AllocationRevisionMismatch    ErrorCode = "allocation_revision_mismatch"
 	AllocationWindowReversed      ErrorCode = "allocation_window_reversed"
-	AvailabilityUnavailable       ErrorCode = "availability_unavailable"
 	BestAvailableUnavailable      ErrorCode = "best_available_unavailable"
 	BestAvailableUnsupported      ErrorCode = "best_available_unsupported"
 	ChannelWindowClosed           ErrorCode = "channel_window_closed"
 	OrphanedSeats                 ErrorCode = "orphaned_seats"
 	PinUnavailable                ErrorCode = "pin_unavailable"
 	PresaleCodeInvalid            ErrorCode = "presale_code_invalid"
-	SeatOccupancyUnavailable      ErrorCode = "seat_occupancy_unavailable"
 	SeatTaken                     ErrorCode = "seat_taken"
 	SeatUnavailable               ErrorCode = "seat_unavailable"
 	SlotArchived                  ErrorCode = "slot_archived"
@@ -79,8 +92,6 @@ func (e ErrorCode) Valid() bool {
 		return true
 	case AllocationWindowReversed:
 		return true
-	case AvailabilityUnavailable:
-		return true
 	case BestAvailableUnavailable:
 		return true
 	case BestAvailableUnsupported:
@@ -92,8 +103,6 @@ func (e ErrorCode) Valid() bool {
 	case PinUnavailable:
 		return true
 	case PresaleCodeInvalid:
-		return true
-	case SeatOccupancyUnavailable:
 		return true
 	case SeatTaken:
 		return true
@@ -153,6 +162,21 @@ func (e SeatOccupancyOfferingStatus) Valid() bool {
 	}
 }
 
+// Defines values for SeatOccupancyUnavailableCode.
+const (
+	SeatOccupancyUnavailableCodeSeatOccupancyUnavailable SeatOccupancyUnavailableCode = "seat_occupancy_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the SeatOccupancyUnavailableCode enum.
+func (e SeatOccupancyUnavailableCode) Valid() bool {
+	switch e {
+	case SeatOccupancyUnavailableCodeSeatOccupancyUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StaffAvailabilityOfferingStatus.
 const (
 	Archived StaffAvailabilityOfferingStatus = "archived"
@@ -188,6 +212,15 @@ type Availability struct {
 
 // AvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but available is 0 unless open
 type AvailabilityOfferingStatus string
+
+// AvailabilityUnavailable The availability query outran its budget (TKT-211). Retry; this is not a sellout.
+type AvailabilityUnavailable struct {
+	Code  AvailabilityUnavailableCode `json:"code"`
+	Error string                      `json:"error"`
+}
+
+// AvailabilityUnavailableCode defines model for AvailabilityUnavailable.Code.
+type AvailabilityUnavailableCode string
 
 // BestAvailableSeatHoldCreate A best-available request (TKT-81). Identical to SeatHoldCreate except that it names a PARTY SIZE instead of seats: the caller does not choose, and cannot influence, which seats it receives. That is deliberate rather than a simplification — a client-supplied seat preference on this path would be a second, unauthenticated way to steer an allocation, and the response is the only place the chosen seats appear.
 type BestAvailableSeatHoldCreate struct {
@@ -320,7 +353,7 @@ type Error struct {
 	// OPTIONAL even on those two, and a client must handle its absence: `allocation_window_reversed` can be answered from a bare sentinel that carries no channel. Required-ness is not expressible per-code here, so the guarantee is deliberately the weaker one the validator can actually enforce. Verbatim and opaque: channel codes are never normalized or case-folded (ADR-024), so this matches a submitted code byte for byte and can be used to find the row it belongs to.
 	Channel *string `json:"channel,omitempty"`
 
-	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, a display read that outran its query budget (`availability_unavailable`, `seat_occupancy_unavailable`: 503, retry; TKT-211), or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021). `allocation_window_reversed` (TKT-307) is the one code here carried by a **400** rather than a 409, and the distinction is the point: every other code says the pool cannot accept a well-formed set, while this one says the set itself is malformed — a window whose close is at or before its open, which migration 0013 makes unrepresentable. The remedy is to fix a field, not to change a number. `channel` is OPTIONAL on it, and that is enforceable rather than aspirational: the refusal normally names the offending row, but the sentinel can be returned bare, in which case the field is absent and a client must fall back to the form-level `error` string. Do not index `channel` unconditionally on this code.
+	// Code Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021). `allocation_window_reversed` (TKT-307) is the one code here carried by a **400** rather than a 409, and the distinction is the point: every other code says the pool cannot accept a well-formed set, while this one says the set itself is malformed — a window whose close is at or before its open, which migration 0013 makes unrepresentable. The remedy is to fix a field, not to change a number. `channel` is OPTIONAL on it, and that is enforceable rather than aspirational: the refusal normally names the offending row, but the sentinel can be returned bare, in which case the field is absent and a client must fall back to the form-level `error` string. Do not index `channel` unconditionally on this code.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -328,7 +361,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, a display read that outran its query budget (`availability_unavailable`, `seat_occupancy_unavailable`: 503, retry; TKT-211), or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021). `allocation_window_reversed` (TKT-307) is the one code here carried by a **400** rather than a 409, and the distinction is the point: every other code says the pool cannot accept a well-formed set, while this one says the set itself is malformed — a window whose close is at or before its open, which migration 0013 makes unrepresentable. The remedy is to fix a field, not to change a number. `channel` is OPTIONAL on it, and that is enforceable rather than aspirational: the refusal normally names the offending row, but the sentinel can be returned bare, in which case the field is absent and a client must fall back to the form-level `error` string. Do not index `channel` unconditionally on this code.
+// ErrorCode Machine-readable conflict reason; present when a dead slot, a channel outside its sales window, a missing or unusable presale code, an already-held seat, an unmapped seat, a transient pin failure, or a refused allocation replacement rejected the request. `channel_window_closed` is distinct from a code-less capacity refusal on purpose (TKT-238): the caller should wait for the window rather than treat the channel as sold out. `presale_code_invalid` (TKT-239) is DELIBERATELY UNIFORM across five causes — absent, unknown, wrong-channel, exhausted and out-of-window codes are indistinguishable, because a distinguishing refusal is an enumeration oracle on presale codes. Prompt for a code; do not report a sellout. The two `allocation_*` codes (TKT-244) let the back-office editor put a refusal beside the field an operator must fix: `allocation_caps_exceed_capacity` belongs on the total and names no channel, because the sum is a property of the whole submitted set; `allocation_cap_below_consumption` carries `channel` and belongs on that row's cap input. A client cannot derive the second locally — consumption moves between the read that fills the form and the write that submits it. The two `best_available_*` codes (TKT-81) are deliberately distinct and must not be collapsed: `best_available_unavailable` means this slot cannot seat a party of that size right now — RETRYABLE, and a smaller party may well succeed, so offer fewer seats rather than reporting a sellout; `best_available_unsupported` means the slot has no seat-ordering projection at all, so best-available will NEVER succeed there for any size until the performance is re-provisioned. One is a property of the request and the other is an operational defect, and answering both the same way makes a broken pool look like a sold-out show to the very people who could fix it. Neither carries `seat_identities`: no seats were chosen. `allocation_revision_mismatch` (TKT-250) says the submitted set was built on a stale read: another writer replaced the set in between, so the save was refused rather than applied. It names no channel for the same reason `allocation_caps_exceed_capacity` does not — staleness is a property of the whole set — and the only remedy is to reload and re-apply. It is honest-writer lost-update protection, NOT authorization (ADR-021). `allocation_window_reversed` (TKT-307) is the one code here carried by a **400** rather than a 409, and the distinction is the point: every other code says the pool cannot accept a well-formed set, while this one says the set itself is malformed — a window whose close is at or before its open, which migration 0013 makes unrepresentable. The remedy is to fix a field, not to change a number. `channel` is OPTIONAL on it, and that is enforceable rather than aspirational: the refusal normally names the offending row, but the sentinel can be returned bare, in which case the field is absent and a client must fall back to the form-level `error` string. Do not index `channel` unconditionally on this code.
 type ErrorCode string
 
 // GroupReservation defines model for GroupReservation.
@@ -545,6 +578,15 @@ type SeatOccupancy struct {
 
 // SeatOccupancyOfferingStatus Catalog offer state mirrored by inventory (TKT-75). The seat list stays factual whatever this says — it is how a caller tells "these seats are free" from "nothing on this slot is claimable at all"
 type SeatOccupancyOfferingStatus string
+
+// SeatOccupancyUnavailable The seat-occupancy query outran its budget (TKT-211). Retry.
+type SeatOccupancyUnavailable struct {
+	Code  SeatOccupancyUnavailableCode `json:"code"`
+	Error string                       `json:"error"`
+}
+
+// SeatOccupancyUnavailableCode defines model for SeatOccupancyUnavailable.Code.
+type SeatOccupancyUnavailableCode string
 
 // StaffAvailability defines model for StaffAvailability.
 type StaffAvailability struct {

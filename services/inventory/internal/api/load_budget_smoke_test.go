@@ -179,10 +179,12 @@ func TestCallerCancellationOrDeadlineIsNot503(t *testing.T) {
 			"/slots/" + f.gaSlot.String() + "/availability?organizer_id=" + f.org.String(),
 			"/slots/" + f.seated.String() + "/seat-occupancy?organizer_id=" + f.org.String(),
 		} {
+			// The clock starts BEFORE the caller's context, so a read that really blocked
+			// until the context ended can never measure under 100ms (review pass 2).
+			start := time.Now()
 			ctx, cancel := newCtx()
 			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			res := httptest.NewRecorder()
-			start := time.Now()
 			srv.ServeHTTP(res, req)
 			elapsed := time.Since(start)
 			cancel()
