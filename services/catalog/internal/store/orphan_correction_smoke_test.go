@@ -87,7 +87,10 @@ func TestListOrphanPreventionCandidates(t *testing.T) {
 func TestListBestAvailableOrderingCandidates(t *testing.T) {
 	ctx, db, st := festivalSmokeStore(t)
 
-	ruleOff, _, _ := seedSeatedSlot(t, ctx, db, false)
+	ruleOff := make([]uuid.UUID, 3)
+	for i := range ruleOff {
+		ruleOff[i], _, _ = seedSeatedSlot(t, ctx, db, false)
+	}
 	enabled, _, _ := seedSeatedSlot(t, ctx, db, true)
 	ga := seedPublishedSlot(t, ctx, db, "published", "multi", nil)
 	draft, _, _ := seedSeatedSlot(t, ctx, db, false)
@@ -98,24 +101,34 @@ func TestListBestAvailableOrderingCandidates(t *testing.T) {
 
 	got := map[uuid.UUID]Performance{}
 	var cursor *uuid.UUID
+	pages := 0
 	for {
-		batch, err := st.ListBestAvailableOrderingCandidates(ctx, cursor, 1)
+		batch, err := st.ListBestAvailableOrderingCandidates(ctx, cursor, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(batch) == 0 {
 			break
 		}
+		pages++
 		for _, perf := range batch {
 			got[perf.ID] = perf
 		}
 		last := batch[len(batch)-1].ID
 		cursor = &last
 	}
-	if perf, ok := got[ruleOff]; !ok {
-		t.Fatal("published rule-off seated slot is missing from the correction candidates")
-	} else if perf.OrphanPreventionEnabled || perf.SeatMapID == nil {
-		t.Fatalf("candidate = %+v, want its bound map and rule disabled", perf)
+	if pages != 2 {
+		t.Fatalf("candidate pages = %d, want 2 non-empty pages for 3 candidates at page size 2", pages)
+	}
+	if len(got) != len(ruleOff) {
+		t.Fatalf("candidate count = %d, want exactly %d rule-off seated slots", len(got), len(ruleOff))
+	}
+	for _, id := range ruleOff {
+		if perf, ok := got[id]; !ok {
+			t.Fatalf("published rule-off seated slot %s is missing from the correction candidates", id)
+		} else if perf.OrphanPreventionEnabled || perf.SeatMapID == nil {
+			t.Fatalf("candidate = %+v, want its bound map and rule disabled", perf)
+		}
 	}
 	for _, id := range []uuid.UUID{enabled, ga, draft} {
 		if _, ok := got[id]; ok {

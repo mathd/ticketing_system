@@ -7,14 +7,16 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/catalog/internal/events"
 	"ticketing/services/catalog/internal/store"
 )
 
 type orderingFake struct {
-	rows      []store.Performance
-	emitted   []store.Performance
-	pageSizes []int
-	err       error
+	rows       []store.Performance
+	emitted    []store.Performance
+	emittedIDs []string
+	pageSizes  []int
+	err        error
 }
 
 func (f *orderingFake) list(_ context.Context, after *uuid.UUID, limit int) ([]store.Performance, error) {
@@ -39,6 +41,7 @@ func (f *orderingFake) PerformancePublishedBestAvailableOrderingCorrection(_ con
 		return f.err
 	}
 	f.emitted = append(f.emitted, perf)
+	f.emittedIDs = append(f.emittedIDs, events.BestAvailableOrderingCorrectionEventID(perf))
 	return nil
 }
 
@@ -58,6 +61,19 @@ func TestBestAvailableOrderingCorrectionPaginatesAndReruns(t *testing.T) {
 	}
 	if len(f.pageSizes) < 2 {
 		t.Fatalf("pages = %v, want keyset pagination", f.pageSizes)
+	}
+	firstRunIDs := append([]string(nil), f.emittedIDs...)
+	secondCount, err := c.run(context.Background())
+	if err != nil || secondCount != len(f.rows) {
+		t.Fatalf("second run corrected=%d err=%v, want %d", secondCount, err, len(f.rows))
+	}
+	if len(f.emittedIDs) != 2*len(firstRunIDs) {
+		t.Fatalf("total emitted ids = %d, want %d", len(f.emittedIDs), 2*len(firstRunIDs))
+	}
+	for i, id := range firstRunIDs {
+		if got := f.emittedIDs[len(firstRunIDs)+i]; got != id {
+			t.Fatalf("second run id[%d] = %s, want deterministic id %s", i, got, id)
+		}
 	}
 }
 

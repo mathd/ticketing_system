@@ -106,7 +106,8 @@ type provisionInput struct {
 	// apply to ProvisionSeated. Zero for a GA/festival pool.
 	seatMapID uuid.UUID
 	// orphanPrevention is the claim-rule switch. The projection is fetched for every
-	// seated schema-4 or schema-5 publication and is committed with the pool.
+	// seated schema-4 or schema-5 publication. Rule-off pools can fall back to no
+	// projection when geometry is invalid.
 	orphanPrevention bool
 	adjacency        []store.SeatAdjacencyRow
 }
@@ -127,8 +128,8 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 	case 4:
 		// Seated fork (TKT-103): a slot claimed seat-by-seat (TKT-80). This provisions
 		// a SEATED pool — distinct from a GA quantity pool — with the catalog seat map,
-		// its ordering projection, and a coarse capacity ceiling. The tight per-seat
-		// oversell boundary is the claim_seats unique index + PinSeat existence
+		// its ordering projection when usable, and a coarse capacity ceiling. The tight
+		// per-seat oversell boundary is the claim_seats unique index + PinSeat existence
 		// validation, not this capacity (ADR-031).
 		if e.Data.PerformanceID == uuid.Nil || e.Data.OrganizerID == uuid.Nil {
 			return provisionInput{}, fmt.Errorf("schema-4 seated publication is missing required identifiers")
@@ -147,7 +148,11 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		}
 		in := provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID,
 			capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID}
-		if err := c.resolveSeatMapAdjacency(ctx, &in, 4); err != nil {
+		// Schema 4 is rule-off. Deterministically-invalid geometry cannot support
+		// best-available, but terminating would also discard the seated inventory
+		// that predates this projection. Fall back without adjacency; a catalog
+		// transport failure remains retryable and never provisions an incomplete pool.
+		if err := c.resolveSeatMapAdjacency(ctx, &in, 4, true); err != nil {
 			return provisionInput{}, err
 		}
 		return in, nil
@@ -172,7 +177,11 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 		in := provisionInput{organizerID: e.Data.OrganizerID, poolID: e.Data.PerformanceID,
 			capacity: e.Data.Capacity, seatMapID: *e.Data.SeatMapID,
 			orphanPrevention: e.Data.OrphanPreventionEnabled}
-		if err := c.resolveSeatMapAdjacency(ctx, &in, 5); err != nil {
+		// Rule-off schema 5 has the same fallback as schema 4: preserve the seated
+		// inventory and let best-available report unsupported until the map is fixed.
+		// Rule-on cannot work without this projection, so invalid geometry terminates.
+		// A transport failure retries in either case and never provisions without it.
+		if err := c.resolveSeatMapAdjacency(ctx, &in, 5, !in.orphanPrevention); err != nil {
 			return provisionInput{}, err
 		}
 		return in, nil
@@ -209,17 +218,24 @@ func (c *Consumer) provisionInput(ctx context.Context, e publication) (provision
 	}
 }
 
-func (c *Consumer) resolveSeatMapAdjacency(ctx context.Context, in *provisionInput, schema int) error {
+func (c *Consumer) resolveSeatMapAdjacency(ctx context.Context, in *provisionInput, schema int, allowInvalidFallback bool) error {
 	if c.resolver == nil {
 		return fmt.Errorf("schema-%d seated publication needs catalog resolver", schema)
 	}
 	adjacency, err := c.resolver.SeatMapAdjacency(ctx, in.seatMapID)
 	if errors.Is(err, ErrGeometryInvalid) {
-		// Invalid geometry cannot be repaired by retrying this publication.
+		if allowInvalidFallback {
+			c.log.Warn("invalid seat map geometry; provisioning rule-off pool without best-available ordering",
+				"seat_map_id", in.seatMapID, "reason", err)
+			return nil
+		}
+		// Invalid geometry cannot be repaired by retrying this publication. The
+		// caller terminates because its rule-on selection requires the projection.
 		return fmt.Errorf("schema-%d adjacency projection: %w", schema, err)
 	}
 	if err != nil {
-		// Do not provision without the projection. A catalog outage is retryable.
+		// Do not provision without the projection after a transport failure. Retry
+		// the publication because a catalog outage can clear without changing bytes.
 		return fmt.Errorf("%w: schema-%d adjacency projection: %v", errResolveUnavailable, schema, err)
 	}
 	for _, a := range adjacency {

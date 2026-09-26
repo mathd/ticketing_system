@@ -241,6 +241,9 @@ func (p *JetStream) PerformancePublishedOrphanCorrection(ctx context.Context, pe
 	return p.publishPerformancePublished(ctx, perf, OrphanPreventionCorrectionEventID(perf))
 }
 
+// The namespace is versioned because inventory permanently records consumed event ids.
+// If a wave reaches an old inventory consumer before the fleet is upgraded, that
+// consumer can ack this id without repairing the pool; a later wave must use a new id.
 const bestAvailableOrderingEpoch = "best-available-ordering-schema4-1"
 
 // BestAvailableOrderingCorrectionEventID gives the rule-off ordering repair its own

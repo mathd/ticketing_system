@@ -89,10 +89,42 @@ func awaitOrderingProjection(t *testing.T, slotID string, conn *pgx.Conn) {
 	})
 }
 
+func assertExactOrderingProjection(t *testing.T, slotID string, conn *pgx.Conn, want []string) {
+	t.Helper()
+	rows, err := conn.Query(t.Context(), `SELECT seat_identity, row_key IS NOT NULL, position IS NOT NULL, row_rank IS NOT NULL
+		FROM seat_claim_adjacency WHERE pool_id=$1 ORDER BY seat_identity`, slotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var identity string
+		var hasRowKey, hasPosition, hasRank bool
+		if err := rows.Scan(&identity, &hasRowKey, &hasPosition, &hasRank); err != nil {
+			t.Fatal(err)
+		}
+		if !hasRowKey || !hasPosition || !hasRank {
+			t.Fatalf("seat %q ordering fields present = %v/%v/%v, want all present", identity, hasRowKey, hasPosition, hasRank)
+		}
+		got = append(got, identity)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ordering projection identities = %v, want exact set %v", got, want)
+	}
+}
+
 func TestRuleOffPublicationSupportsBestAvailableAndKeepsOrphanRuleOff(t *testing.T) {
 	slotID, _, ticketID := createRuleOffSeatedPerformance(t, 2, 4)
 	conn := inventoryConnection(t)
 	awaitOrderingProjection(t, slotID, conn)
+	assertExactOrderingProjection(t, slotID, conn, []string{
+		"Stalls/A/1", "Stalls/A/2", "Stalls/A/3", "Stalls/A/4",
+		"Stalls/B/1", "Stalls/B/2", "Stalls/B/3", "Stalls/B/4",
+	})
 
 	var enabled bool
 	if err := conn.QueryRow(t.Context(), `SELECT orphan_prevention_enabled FROM inventory_pools WHERE slot_id=$1`, slotID).Scan(&enabled); err != nil {
@@ -144,8 +176,8 @@ func TestRuleOffCorrectionAddsOrderingToExistingPool(t *testing.T) {
 	slotID, _, ticketID := createRuleOffSeatedPerformance(t, 1, 4)
 	conn := inventoryConnection(t)
 	awaitOrderingProjection(t, slotID, conn)
-	if _, err := conn.Exec(t.Context(), `UPDATE seat_claim_adjacency SET row_key=NULL,position=NULL,row_rank=NULL WHERE pool_id=$1`, slotID); err != nil {
-		t.Fatal(err)
+	if _, err := conn.Exec(t.Context(), `DELETE FROM seat_claim_adjacency WHERE pool_id=$1`, slotID); err != nil {
+		t.Fatalf("delete legacy pool adjacency: %v", err)
 	}
 	if code, body := postBestAvailable(t, "before-correction-"+slotID, map[string]any{
 		"organizer_id": organizerID, "slot_id": slotID, "seat_count": 2,
@@ -156,6 +188,9 @@ func TestRuleOffCorrectionAddsOrderingToExistingPool(t *testing.T) {
 
 	runBestAvailableOrderingCorrection(t)
 	awaitOrderingProjection(t, slotID, conn)
+	assertExactOrderingProjection(t, slotID, conn, []string{
+		"Stalls/A/1", "Stalls/A/2", "Stalls/A/3", "Stalls/A/4",
+	})
 	var enabled bool
 	if err := conn.QueryRow(t.Context(), `SELECT orphan_prevention_enabled FROM inventory_pools WHERE slot_id=$1`, slotID).Scan(&enabled); err != nil {
 		t.Fatal(err)
@@ -163,11 +198,21 @@ func TestRuleOffCorrectionAddsOrderingToExistingPool(t *testing.T) {
 	if enabled {
 		t.Fatal("correction enabled orphan prevention on a rule-off pool")
 	}
-	if code, body := postBestAvailable(t, "after-correction-"+slotID, map[string]any{
+	code, body := postBestAvailable(t, "after-correction-"+slotID, map[string]any{
 		"organizer_id": organizerID, "slot_id": slotID, "seat_count": 2,
 		"ticket_type_id": ticketID, "unit_amount": 5000, "currency": "EUR",
-	}); code != http.StatusCreated {
+	})
+	if code != http.StatusCreated {
 		t.Fatalf("best-available after correction = %d %s, want 201", code, body)
+	}
+	var result struct {
+		Seats []string `json:"seats"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode corrected best-available response: %v (%s)", err, body)
+	}
+	if fmt.Sprint(result.Seats) != fmt.Sprint([]string{"Stalls/A/1", "Stalls/A/2"}) {
+		t.Fatalf("best-available after correction chose %v, want the first repaired run", result.Seats)
 	}
 }
 

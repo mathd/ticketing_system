@@ -751,32 +751,50 @@ func TestRuleOffPublicationFetchesGeometryAndKeepsRuleOff(t *testing.T) {
 }
 
 func TestRuleOffPublicationGeometryFailuresKeepTKT307Dispositions(t *testing.T) {
-	for _, schema := range []int{4, 5} {
-		for _, tc := range []struct {
-			name string
-			err  error
-			want string
-		}{
-			{name: "transport retries", err: errors.New("connection refused"), want: "nak-delay"},
-			{name: "invalid geometry terminates", err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "term"},
-		} {
-			t.Run(fmt.Sprintf("schema_%d/%s", schema, tc.name), func(t *testing.T) {
-				st := &fakeCatalogStore{}
-				c := offeringConsumer(st, fakeResolver{adjacencyErr: tc.err})
-				body := fmt.Sprintf(`{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":%d,"data":{`, schema) +
-					`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
-					`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
-					`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400}}`
-				msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
-				c.handle(context.Background(), msg)
-				if len(msg.actions) != 1 || msg.actions[0] != tc.want {
-					t.Fatalf("actions = %v, want [%s]", msg.actions, tc.want)
-				}
-				if len(st.seatProvisioned) != 0 || len(st.provisioned) != 0 {
-					t.Fatal("failed geometry must not provision any pool")
-				}
-			})
-		}
+	for _, tc := range []struct {
+		name           string
+		schema         int
+		ruleOn         bool
+		err            error
+		want           string
+		wantProvision  bool
+		wantProjection bool
+	}{
+		{name: "schema_4 invalid geometry falls back", schema: 4, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "ack", wantProvision: true},
+		{name: "schema_5 false invalid geometry falls back", schema: 5, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "ack", wantProvision: true},
+		{name: "schema_4 transport retries", schema: 4, err: errors.New("connection refused"), want: "nak-delay"},
+		{name: "schema_5 false transport retries", schema: 5, err: errors.New("connection refused"), want: "nak-delay"},
+		{name: "schema_5 true invalid geometry terminates", schema: 5, ruleOn: true, err: fmt.Errorf("%w: draft map", ErrGeometryInvalid), want: "term"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeCatalogStore{}
+			c := offeringConsumer(st, fakeResolver{adjacencyErr: tc.err})
+			body := fmt.Sprintf(`{"id":"6ba7b813-9dad-11d1-80b4-00c04fd430c8","schema":%d,"data":{`, tc.schema) +
+				`"performance_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
+				`"organizer_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8",` +
+				`"seat_map_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8","capacity":400`
+			if tc.ruleOn {
+				body += `,"orphan_prevention_enabled":true`
+			}
+			body += `}}`
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+			c.handle(context.Background(), msg)
+			if len(msg.actions) != 1 || msg.actions[0] != tc.want {
+				t.Fatalf("actions = %v, want [%s]", msg.actions, tc.want)
+			}
+			if got := len(st.seatProvisioned) == 1; got != tc.wantProvision {
+				t.Fatalf("seated pools provisioned = %v, want %v", got, tc.wantProvision)
+			}
+			if tc.wantProvision && (len(st.orphanPrevention) != 1 || st.orphanPrevention[0]) {
+				t.Fatalf("orphan-prevention flags = %v, want [false]", st.orphanPrevention)
+			}
+			if len(st.provisioned) != 0 {
+				t.Fatal("seated publication must not provision a quantity pool")
+			}
+			if got := len(st.adjacency) == 1 && len(st.adjacency[0]) > 0; got != tc.wantProjection {
+				t.Fatalf("projection present = %v, want %v (adjacency=%v)", got, tc.wantProjection, st.adjacency)
+			}
+		})
 	}
 }
 

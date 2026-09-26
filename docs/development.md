@@ -816,8 +816,13 @@ payload already names the bound seat-map version. New inventory binaries fetch t
 geometry and store ordering data while leaving `orphan_prevention_enabled` false. TKT-258
 changes no event schema or payload, and makes no access-service change.
 
-Deploy inventory with the schema-4 geometry fetch first. Then deploy catalog with the new
-one-shot command and run:
+Deploy the new inventory version to every replica first. Let all old inventory consumers
+drain before running the correction wave. The inventory version decides whether the event
+repairs a pool: an old consumer can acknowledge the correction's fresh event id without
+adding ordering rows, and `consumed_events` then prevents a later delivery with that same id
+from repairing the pool.
+
+After the inventory rollout and drain, deploy catalog with the command and run:
 
 ```bash
 docker compose exec catalog /app reemit-best-available-ordering
@@ -828,16 +833,23 @@ in pages ordered by performance id, and re-emits each schema-4 publication with 
 deterministic event id. A publish failure stops the run. `corrected=<n>` counts emitted
 publications, not inventory repairs.
 
-After every pre-TKT-258 catalog replica has drained, run the command again. That second run
-is the stopping condition because an older replica can publish a rule-off performance
-without ordering data during rollout. The candidate query has no completion marker, so each
-run reconciles the current set. The deterministic correction id lets inventory ignore
-repeated events after it has applied them.
+If a correction run happened while any old inventory consumer was still consuming, bump the
+wave's id namespace suffix in `services/catalog/internal/events/events.go` (for example,
+`best-available-ordering-schema4-1` to `best-available-ordering-schema4-2`), deploy that
+catalog build, and run the command again. The namespace is versioned because an old
+inventory consumer records the id even though it cannot apply the projection. The same id
+cannot repair that pool later.
+
+The candidate query has no completion marker, so each run reconciles the current set. A
+repeat run with the same namespace emits the same ids and is safe only after all consuming
+inventory replicas can apply the correction.
 
 To confirm a repair, check inventory. The pool must still have
 `orphan_prevention_enabled=false`, and its `seat_claim_adjacency` rows must have non-null
 `row_key`, `position`, and `row_rank`. A pool with no ordering data still returns
-`best_available_unsupported` until the wave reaches it.
+`best_available_unsupported` until a valid projection is applied. Rule-off maps that
+inventory cannot project also retain their seated inventory without ordering rows and
+return `best_available_unsupported` until the map is fixed and the correction wave is run.
 
 ## Back-office sign-in (TKT-190)
 

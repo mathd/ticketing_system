@@ -194,7 +194,7 @@ returned the original quantity with an empty seat set.
 - `best_available_unavailable` — this slot cannot seat a party of that size right now.
   **Retryable**; a smaller party may succeed. Offer fewer seats; do not report a sellout.
 - `best_available_unsupported` — this slot has **no ordering projection**, so best-available
-  will never succeed there for any size until the performance is re-provisioned.
+  will never succeed there for any size until the projection is repaired.
 
 One is a property of the request, the other is an operational defect with an operator remedy.
 Answering both the same way makes a broken pool indistinguishable from a sold-out show to the
@@ -218,6 +218,14 @@ every rule-enabled pool inside ADR-008's 30-second migration bound is the smalle
 
 Repair runs through ADR-041's correction-wave machinery: re-emit, and inventory upgrades the
 pool. Rule-on pools use schema 5. TKT-258 adds a separate rule-off wave that re-emits schema 4.
+Some rule-off maps cannot produce an inventory projection even though catalog permits their
+publication: maps with no seats, labels that differ only by trailing whitespace, and maps
+larger than inventory's 8 MiB read limit. For these maps, inventory keeps the seated pool
+and its seat-map id, but provisions no adjacency rows when geometry validation fails. This
+preserves named-seat inventory; best-available returns `best_available_unsupported` for that
+pool until the map is fixed and the rule-off correction wave applies a valid projection.
+Transport failures still retry without provisioning. Rule-on publications still terminate
+on invalid geometry because their selection rule cannot work without the projection.
 **That required changing the adjacency write,
 and the change is deliberately asymmetric.** `ProvisionSeated` inserted adjacency with
 `ON CONFLICT DO NOTHING`, which is right for a replay and wrong for an upgrade — the identical
@@ -226,8 +234,8 @@ is invisible from here, because both arrive as 'the pool already exists'". Under
 correction wave is a silent no-op on every adjacency row and the pool stays unselectable for
 ever while the wave reports success.
 
-So the conflict clause now updates **`row_key` and `position` only**, and deliberately leaves
-`left_identity` and `right_identity` untouched. **A publication describing a *different* set is
+So the conflict clause now updates **`row_key`, `position`, and `row_rank`**, and deliberately
+leaves `left_identity` and `right_identity` untouched. **A publication describing a *different* set is
 refused outright** rather than merged: a column-wise merge across two generations would keep
 rows the new set omits, add rows naming neighbours that were never updated to name them back,
 and leave a projection neither input describes. ADR-029 already makes that unreachable through
