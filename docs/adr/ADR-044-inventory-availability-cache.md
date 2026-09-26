@@ -208,14 +208,14 @@ arrives after the deadline: a slot that does not exist is a 404, however long th
 find out, and a retry would not change it.
 
 Each 503 has its own response schema (`AvailabilityUnavailable`, `SeatOccupancyUnavailable`): both
-fields required, one allowed `code`, no extra properties, so ADR-028's validator enforces the exact
-body.
+fields required, one allowed `code`, no extra properties. ADR-028's validator therefore enforces the
+body's shape and its `code`; the `error` text is fixed by the handler, not by the schema.
 
 **What stays a 500 (or the existing mapping):** a caller's own cancellation or deadline ends the
 wait with the caller's context error. That says nothing about the dependency, so it keeps the
 existing path. When the caller's context and a budget-failed load finish at the same instant, either
-answer may be written. Both go to a caller that has already gone, so the handlers do not arbitrate
-this race. The mapping lives in the two read handlers, not in `problem()`, which serves every
+answer may be written: the caller's own context had already ended, and which of the two it
+receives is not specified. The handlers do not arbitrate this race (TKT-211 D3). The mapping lives in the two read handlers, not in `problem()`, which serves every
 route.
 
 **Tests:** `TestAvailabilityPastItsBudgetAnswers503` and `TestSeatOccupancyPastItsBudgetAnswers503`

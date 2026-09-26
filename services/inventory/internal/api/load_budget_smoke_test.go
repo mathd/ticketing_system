@@ -179,19 +179,34 @@ func TestCallerCancellationOrDeadlineIsNot503(t *testing.T) {
 			"/slots/" + f.gaSlot.String() + "/availability?organizer_id=" + f.org.String(),
 			"/slots/" + f.seated.String() + "/seat-occupancy?organizer_id=" + f.org.String(),
 		} {
-			// The clock starts BEFORE the caller's context, so a read that really blocked
-			// until the context ended can never measure under 100ms (review pass 2).
-			start := time.Now()
+			// Evidence, not timing, that the read reached Postgres and waited on the lock: an
+			// observer polls pg_locks for a backend waiting on inventory_pools while the
+			// request runs (review passes 1-3). A fast, unrelated 500 cannot produce it.
+			sawWaiter := make(chan bool, 1)
+			stopObserver := make(chan struct{})
+			go func() {
+				seen := false
+				defer func() { sawWaiter <- seen }()
+				for {
+					select {
+					case <-stopObserver:
+						return
+					case <-time.After(5 * time.Millisecond):
+					}
+					var waiting int
+					if err := f.db.QueryRow(`SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'inventory_pools'::regclass`).Scan(&waiting); err == nil && waiting > 0 {
+						seen = true
+					}
+				}
+			}()
 			ctx, cancel := newCtx()
 			req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 			res := httptest.NewRecorder()
 			srv.ServeHTTP(res, req)
-			elapsed := time.Since(start)
 			cancel()
-			// It must have reached the blocked read and waited for the caller's end, or a
-			// broken route answering fast would pass (review F3).
-			if elapsed < 100*time.Millisecond {
-				t.Fatalf("%s %s: answered in %v, before the caller's context ended: the read never blocked", name, path, elapsed)
+			close(stopObserver)
+			if !<-sawWaiter {
+				t.Fatalf("%s %s: no backend was ever seen waiting on inventory_pools: the read never reached the lock", name, path)
 			}
 			// The existing path: problem()'s default, a fixed 500 body. Pinned exactly, so a
 			// read that ignored the cancellation and answered 200 cannot pass either.
