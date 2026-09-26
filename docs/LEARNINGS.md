@@ -606,3 +606,10 @@ flight**: it returns a server-side cancellation. A handler that classified the t
 lock. Ask the context (`ctx.Err()`), not the error, and test against a real blocked query, since
 a fake that returns `ctx.Err()` encodes the assumption.
 [full note](learnings/2026-09-26-pgx-does-not-wrap-deadline-exceeded.md)
+
+**2026-09-26 — TKT-271.** **A rising finding count indicts the mechanism, not the last patch.**
+Review findings on a pairing-bound revocation list went 2 → 2 → 3 across three passes, each created
+by the previous fix. The binding protected nothing: a voided id is a correct denial under any pairing.
+Deleting it (a merge-only union, with completion keyed per token) ended the churn. When findings
+rise and cluster in one mechanism, ask what it protects before patching it again.
+[full note](learnings/2026-09-26-a-rising-finding-count-indicts-the-mechanism.md)
