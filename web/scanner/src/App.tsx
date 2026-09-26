@@ -209,6 +209,9 @@ function App() {
         }
         let cursor: string | null = null
         do {
+          // Stop when the screen has closed: a walk that outlives its component would
+          // go on calling fetch for a scanner nobody is looking at.
+          if (!mounted.current) return
           const query = cursor === null ? '?limit=100' : `?limit=100&cursor=${encodeURIComponent(cursor)}`
           const response = await fetch(`${revocationsURL}${query}`, {
             headers: { [scannerTokenHeader]: token },

@@ -206,6 +206,25 @@ describe('Scanner storage failures', () => {
     expect(screen.getByText(/holds no revocation list yet/i)).toBeDefined()
   })
 
+  // A pull must not outlive its screen. Without this, a closed scanner's walk goes
+  // on to call fetch, and in this suite it called the NEXT test's fetch stub.
+  it('stops a revocation pull when the scanner closes', async () => {
+    const { store } = fakeStore()
+    let release!: (pull: { completedAt?: string }) => void
+    vi.mocked(store.revocationPull).mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    openStore.mockResolvedValue(store)
+    const fetchMock = routedFetch(() => Promise.resolve(new Response('{}', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { unmount } = render(<App />)
+    await waitFor(() => expect(store.revocationPull).toHaveBeenCalled())
+    unmount()
+    release({})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('voided-tickets'))).toHaveLength(0)
+  })
+
   it('finishes a new token pull while an old token request is pending', async () => {
     const { store } = fakeStore()
     openStore.mockResolvedValue(store)
