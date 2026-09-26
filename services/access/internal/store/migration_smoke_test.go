@@ -303,13 +303,14 @@ func TestRedeemedLifecycleMigrationPreservesHistory(t *testing.T) {
 		t.Fatal("upgraded lifecycle history is no longer immutable")
 	}
 	current, target, err := provider.GetVersions(ctx)
-	// 0013 added nullable ticket seat identities (TKT-164), with no backfill.
-	// The association lives on tickets and leaves lifecycle history and canonical
-	// bytes unchanged. Pinned rather than derived so adding a migration is a
-	// decision someone states here. (0012 added integrity-alarm reason codes;
+	// 0014 added scanner_local_decisions (TKT-271): a scanner's recorded refusal
+	// is kept beside, never inside, the lifecycle history, so history and
+	// canonical bytes are unchanged. Pinned rather than derived so adding a
+	// migration is a decision someone states here. (0013 added nullable ticket
+	// seat identities; 0012 added integrity-alarm reason codes;
 	// 0011 added redelivery_requests and redelivery_attempts; 0010 created
 	// tickets_organizer_feed_idx.)
-	if err != nil || current != 13 || target != 13 {
+	if err != nil || current != 14 || target != 14 {
 		t.Fatalf("migration versions current=%d target=%d err=%v", current, target, err)
 	}
 

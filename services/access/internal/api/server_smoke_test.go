@@ -183,6 +183,36 @@ func TestReconcileResultsOnTheWire(t *testing.T) {
 	}
 }
 
+// A revocation_refused item must reach the refusal record, never the admission
+// path: the scanner did NOT let this holder in. The observable difference is the
+// ticket itself. Had the handler reconciled the item as an admission, the ticket
+// would be redeemed and the live scan after it would answer already_redeemed.
+func TestReconcileRevocationRefusalIsNotAnAdmissionOnTheWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	srv, st, qr := newSmokeServer(t, ctx)
+	payload, organizer := issueSmokeTicket(t, ctx, st, qr)
+	router := enrolled(srv, organizer).Router(nil, true)
+	refused, live := uuid.NewString(), uuid.NewString()
+	body := `{"occurrences":[{"qr_payload":` + mustJSON(t, payload) + `,"occurrence_id":"` + refused + `","occurred_at":"2026-07-17T09:00:00Z","local_decision":"revocation_refused"}]}`
+
+	for _, want := range []string{"recorded", "synced"} {
+		code, response := postJSON(t, router, "/scans/reconciliations", body)
+		results, _ := response["results"].([]any)
+		if code != http.StatusOK || len(results) != 1 {
+			t.Fatalf("reconcile = %d %v", code, response)
+		}
+		entry, _ := results[0].(map[string]any)
+		if entry["occurrence_id"] != refused || entry["result"] != want {
+			t.Fatalf("entry = %v, want %s for %s", entry, want, refused)
+		}
+	}
+	code, scan := postJSON(t, router, "/scans", `{"qr_payload":`+mustJSON(t, payload)+`,"occurrence_id":"`+live+`","occurred_at":"2026-07-17T09:10:00Z"}`)
+	if code != http.StatusOK || scan["decision"] != "accepted" {
+		t.Fatalf("live scan after a recorded refusal = %d %v, want accepted (the refusal admitted no one)", code, scan)
+	}
+}
+
 func mustJSON(t *testing.T, s string) string {
 	t.Helper()
 	raw, err := json.Marshal(s)

@@ -304,16 +304,21 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 	}
 }
 
+// An unknown local_decision on a VALID, in-scope credential is refused for that
+// item only. The credential must verify, or the credential check refuses the item
+// first and the test cannot see the decision check at all. The store is nil on
+// purpose: an item that reached it would be recorded as an admission, and here it
+// would panic instead. A local_decision beside an event_type is refused too,
+// because the item would then name two different facts.
 func TestReconcileUnknownLocalDecisionRejectsOnlyItsItem(t *testing.T) {
-	verifier, err := ticket.NewVerifier("access-qr/test-v1=O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik", "access-qr/test-v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	router := enrolled(newTestServer(nil, verifier)).Router(nil, true)
+	organizer := uuid.New()
+	verifier, payload := signedFor(t, organizer)
+	router := enrolled(newTestServer(nil, verifier), organizer).Router(nil, true)
+	unknown, mixed := uuid.NewString(), uuid.NewString()
 	request := scanRequest(http.MethodPost, "/scans/reconciliations", bytes.NewBufferString(
 		`{"occurrences":[`+
-			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z","local_decision":"future_decision"},`+
-			`{"qr_payload":"not-a-ticket","occurrence_id":"`+uuid.NewString()+`","occurred_at":"2026-07-17T09:00:00Z"}]}`))
+			`{"qr_payload":"`+payload+`","occurrence_id":"`+unknown+`","occurred_at":"2026-07-17T09:00:00Z","local_decision":"future_decision"},`+
+			`{"qr_payload":"`+payload+`","occurrence_id":"`+mixed+`","occurred_at":"2026-07-17T09:00:00Z","local_decision":"revocation_refused","event_type":"exit"}]}`))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -326,8 +331,10 @@ func TestReconcileUnknownLocalDecisionRejectsOnlyItsItem(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Results) != 2 || response.Results[0]["result"] != "rejected" || response.Results[1]["result"] != "rejected" {
-		t.Fatalf("results = %+v, want two item results", response.Results)
+	if len(response.Results) != 2 ||
+		response.Results[0]["occurrence_id"] != unknown || response.Results[0]["result"] != "rejected" ||
+		response.Results[1]["occurrence_id"] != mixed || response.Results[1]["result"] != "rejected" {
+		t.Fatalf("results = %+v, want both items rejected by id", response.Results)
 	}
 }
 
