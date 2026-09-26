@@ -216,8 +216,9 @@ ordinal) would fail to match what the consumer derives on the next re-provision 
 incompatible row namings in one projection, with nothing to report it. A recursive walk across
 every rule-enabled pool inside ADR-008's 30-second migration bound is the smaller objection.
 
-Repair therefore runs through ADR-041's existing correction-wave machinery: re-emit, and
-inventory's schema-5 handler upgrades the pool. **That required changing the adjacency write,
+Repair runs through ADR-041's correction-wave machinery: re-emit, and inventory upgrades the
+pool. Rule-on pools use schema 5. TKT-258 adds a separate rule-off wave that re-emits schema 4.
+**That required changing the adjacency write,
 and the change is deliberately asymmetric.** `ProvisionSeated` inserted adjacency with
 `ON CONFLICT DO NOTHING`, which is right for a replay and wrong for an upgrade — the identical
 trap the same function already documents one table up for the rule flag, where "the difference
@@ -279,15 +280,14 @@ cannot occur.
   lock. Contiguity is real geometry, not string order. No cross-service call on the claim path.
   The orphan rule is honoured by construction rather than bolted on. Work under the lock is
   bounded by a constant, not by the size of the house.
-- **Negative — a real operational cost, stated plainly.** Best-available works **only on pools
-  that carry an ordering projection**, which today means pools provisioned with orphan
-  prevention enabled. A venue that deliberately turned the orphan rule off cannot use
-  best-available. Decoupling the two means changing what catalog emits and what
-  `ProvisionSeated` requires — an ordered, multi-ticket, three-service rollout of the kind
-  ADR-041's own delivery section documents — and bundling it into a ticket about selection
-  would have joined two independent risks. `best_available_unsupported` exists so the
-  limitation is visible at runtime instead of presenting as a sellout. **This is the follow-up
-  work this ADR most expects to be superseded by.**
+- **Negative.** A pool without ordering metadata cannot use best-available.
+  `best_available_unsupported` reports that missing projection separately from an
+  unavailable party size.
+- **Follow-up delivered in TKT-258.** Inventory now fetches geometry for schema-4 seated
+  publications and keeps the existing schema-5 rule-on path. Both provision the ordering
+  projection, while `orphan_prevention_enabled` remains the only claim-rule switch. Catalog
+  still emits the same schema-4 payload for rule-off maps. A one-shot correction wave adds
+  ordering data to existing rule-off pools. No event schema or payload changed.
 - **Negative.** Immutable ordering is duplicated per pool, alongside the adjacency ADR-041
   already duplicates, for the same reason and with the same trade.
 - **Not covered.** Party splitting. Seat quality or price-tier preference in selection

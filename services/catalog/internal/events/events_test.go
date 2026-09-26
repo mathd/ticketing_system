@@ -592,3 +592,26 @@ func TestOrphanPreventionCorrectionIDIsItsOwnNamespace(t *testing.T) {
 		t.Fatal("id ignores published_at — a republished slot could never be corrected again")
 	}
 }
+
+func TestBestAvailableOrderingCorrectionIDHasItsOwnNamespace(t *testing.T) {
+	perf := goldPerformance()
+	perf.SeatMapID = &goldSeatMapID
+	perf.OrphanPreventionEnabled = false
+
+	correction := BestAvailableOrderingCorrectionEventID(perf)
+	if correction == EventID(perf) || correction == BackfillEventID(perf) || correction == OrphanPreventionCorrectionEventID(perf) {
+		t.Fatal("best-available correction reused a live, policy, or rule-on correction id")
+	}
+	if correction != BestAvailableOrderingCorrectionEventID(perf) {
+		t.Fatal("correction id must be deterministic for repeat runs")
+	}
+	if correction != "fe0c38dc-21a6-5472-930b-f04a8a85f59e" {
+		t.Fatalf("correction id = %s, update only after checking the identity namespace", correction)
+	}
+	republished := perf
+	later := goldOccurred.Add(time.Hour)
+	republished.PublishedAt = &later
+	if BestAvailableOrderingCorrectionEventID(republished) == correction {
+		t.Fatal("id ignores published_at and would conflate separate publications")
+	}
+}

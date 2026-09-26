@@ -809,6 +809,36 @@ candidates, and anyone who can write to inventory can undo the repair.
 is quarantined and acked, latches the consumer unready, and needs `reprocess-quarantine`
 **plus a restart** by an operator (see *Inventory catalog-event quarantine operations*).
 
+## Best-available ordering correction wave (TKT-258)
+
+Catalog keeps emitting the same schema-4 publication for rule-off seated performances. The
+payload already names the bound seat-map version. New inventory binaries fetch that map's
+geometry and store ordering data while leaving `orphan_prevention_enabled` false. TKT-258
+changes no event schema or payload, and makes no access-service change.
+
+Deploy inventory with the schema-4 geometry fetch first. Then deploy catalog with the new
+one-shot command and run:
+
+```bash
+docker compose exec catalog /app reemit-best-available-ordering
+```
+
+The command takes no flags. It scans published seated performances bound to rule-off maps,
+in pages ordered by performance id, and re-emits each schema-4 publication with a separate
+deterministic event id. A publish failure stops the run. `corrected=<n>` counts emitted
+publications, not inventory repairs.
+
+After every pre-TKT-258 catalog replica has drained, run the command again. That second run
+is the stopping condition because an older replica can publish a rule-off performance
+without ordering data during rollout. The candidate query has no completion marker, so each
+run reconciles the current set. The deterministic correction id lets inventory ignore
+repeated events after it has applied them.
+
+To confirm a repair, check inventory. The pool must still have
+`orphan_prevention_enabled=false`, and its `seat_claim_adjacency` rows must have non-null
+`row_key`, `position`, and `row_rank`. A pool with no ordering data still returns
+`best_available_unsupported` until the wave reaches it.
+
 ## Back-office sign-in (TKT-190)
 
 `/admin/` is behind a staff session. Three paths stay anonymous and nothing else does:

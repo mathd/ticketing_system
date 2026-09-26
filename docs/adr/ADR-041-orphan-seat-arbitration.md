@@ -126,10 +126,10 @@ Concretely:
   from data the store does not have. Per ADR-021, name the adversary: all of this is
   corruption-detection for an honest writer, and a writer with inventory DB access can
   still make the rule say whatever they like.
-- **Rule off means no work, and it is proven by absence:** dropping the projection table
-  and observing a rule-off claim still succeed. "No extra latency" is read as *no
-  additional network call, SQL statement, lock or projection access*; literal timing
-  equality is unmeasurable and, read that way, unachievable.
+- **Rule off means no arbitration work.** TKT-258 adds provisioning work for best-available:
+  inventory fetches and stores ordering geometry for rule-off seated pools. Claim paths
+  still skip orphan arbitration when the pool flag is false. The flag is not inferred from
+  the presence of projection rows.
 
 ### Delivery order is part of the decision
 
@@ -233,7 +233,10 @@ forge candidates at will.
 
 - **Positive.** No cross-service call on the claim path. No stale projection, by
   construction. The rule is decided where contention is resolved, so two claimants cannot
-  jointly strand a seat. Rule-off pools are untouched, including their event bytes.
+  jointly strand a seat. TKT-258 also projects ordering data for rule-off seated pools so
+  best-available can use them. The rule flag remains false, and claim paths consult it as
+  the only switch. Catalog's live rule-off publication remains schema 4 with its existing
+  payload.
 - **Negative.** Immutable geometry is duplicated per pool — deliberately: it makes
   provisioning completeness, version binding and claim scoping local and atomic, at the
   cost of storing the same rows once per seated performance. A `performance.published`

@@ -48,21 +48,21 @@ func main() {
 
 // subcommands are the one-shot modes (the registry shape services/access and
 // services/inventory use). migrate is the out-of-band migration job (ADR-022);
-// reemit-policies re-emits published slots' re_entry policy so access re-projects
-// slots published before the field existed (TKT-96) — a one-shot data repair,
-// idempotent and safe to re-run.
+// reemit-policies restores access projections for older publications. The two
+// correction commands restore inventory projections on already-published slots.
 type commandCallbacks struct {
-	migrate                                func() error
-	healthcheck                            func() int
-	reemitPolicies, reemitOrphanPrevention func([]string) error
-	provisionStaff, validateRules          func([]string) error
+	migrate                                                             func() error
+	healthcheck                                                         func() int
+	reemitPolicies, reemitOrphanPrevention, reemitBestAvailableOrdering func([]string) error
+	provisionStaff, validateRules                                       func([]string) error
 }
 
 func productionCommandCallbacks() commandCallbacks {
 	return commandCallbacks{
 		migrate: migrate, healthcheck: healthcheck,
 		reemitPolicies: reemitPolicies, reemitOrphanPrevention: reemitOrphanPrevention,
-		provisionStaff: provisionStaffCommand, validateRules: validateRulesCommand,
+		reemitBestAvailableOrdering: reemitBestAvailableOrdering,
+		provisionStaff:              provisionStaffCommand, validateRules: validateRulesCommand,
 	}
 }
 
@@ -72,12 +72,13 @@ func execute(args []string, callbacks commandCallbacks, serve func() error) cmdl
 
 func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
 	return cmdline.Registry{
-		"migrate":                  cmdline.WithoutArgs(callbacks.migrate),
-		"healthcheck":              cmdline.ExitStatus(callbacks.healthcheck),
-		"reemit-policies":          cmdline.WithArgs(callbacks.reemitPolicies),
-		"reemit-orphan-prevention": cmdline.WithArgs(callbacks.reemitOrphanPrevention),
-		"provision-staff":          cmdline.WithArgs(callbacks.provisionStaff),
-		"validate-rules":           cmdline.WithArgs(callbacks.validateRules),
+		"migrate":                        cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":                    cmdline.ExitStatus(callbacks.healthcheck),
+		"reemit-policies":                cmdline.WithArgs(callbacks.reemitPolicies),
+		"reemit-orphan-prevention":       cmdline.WithArgs(callbacks.reemitOrphanPrevention),
+		"reemit-best-available-ordering": cmdline.WithArgs(callbacks.reemitBestAvailableOrdering),
+		"provision-staff":                cmdline.WithArgs(callbacks.provisionStaff),
+		"validate-rules":                 cmdline.WithArgs(callbacks.validateRules),
 	}
 }
 

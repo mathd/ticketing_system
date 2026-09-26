@@ -84,6 +84,46 @@ func TestListOrphanPreventionCandidates(t *testing.T) {
 	}
 }
 
+func TestListBestAvailableOrderingCandidates(t *testing.T) {
+	ctx, db, st := festivalSmokeStore(t)
+
+	ruleOff, _, _ := seedSeatedSlot(t, ctx, db, false)
+	enabled, _, _ := seedSeatedSlot(t, ctx, db, true)
+	ga := seedPublishedSlot(t, ctx, db, "published", "multi", nil)
+	draft, _, _ := seedSeatedSlot(t, ctx, db, false)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE performances SET status='draft', published_at=NULL WHERE id=$1`, draft); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[uuid.UUID]Performance{}
+	var cursor *uuid.UUID
+	for {
+		batch, err := st.ListBestAvailableOrderingCandidates(ctx, cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, perf := range batch {
+			got[perf.ID] = perf
+		}
+		last := batch[len(batch)-1].ID
+		cursor = &last
+	}
+	if perf, ok := got[ruleOff]; !ok {
+		t.Fatal("published rule-off seated slot is missing from the correction candidates")
+	} else if perf.OrphanPreventionEnabled || perf.SeatMapID == nil {
+		t.Fatalf("candidate = %+v, want its bound map and rule disabled", perf)
+	}
+	for _, id := range []uuid.UUID{enabled, ga, draft} {
+		if _, ok := got[id]; ok {
+			t.Fatalf("%s must not be a best-available ordering candidate", id)
+		}
+	}
+}
+
 // TestHydratedFlagFollowsTheBoundVersionNotTheFamily is AC4 at the layer that decides it.
 // A published seat-map version is immutable and a slot is bound to exactly one (ADR-029),
 // so publishing a NEWER version of the same family with a different setting must not

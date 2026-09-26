@@ -241,6 +241,25 @@ func (p *JetStream) PerformancePublishedOrphanCorrection(ctx context.Context, pe
 	return p.publishPerformancePublished(ctx, perf, OrphanPreventionCorrectionEventID(perf))
 }
 
+const bestAvailableOrderingEpoch = "best-available-ordering-schema4-1"
+
+// BestAvailableOrderingCorrectionEventID gives the rule-off ordering repair its own
+// deterministic identity. It must not reuse the live or rule-on correction id.
+func BestAvailableOrderingCorrectionEventID(perf store.Performance) string {
+	key := SubjectPerformancePublished + ":best-available-ordering:" + bestAvailableOrderingEpoch + ":" + perf.ID.String()
+	if perf.PublishedAt != nil {
+		key += ":" + perf.PublishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
+}
+
+// PerformancePublishedBestAvailableOrderingCorrection re-emits the live schema-4
+// publication with a fresh identity so inventory can add ordering data to an existing
+// rule-off pool.
+func (p *JetStream) PerformancePublishedBestAvailableOrderingCorrection(ctx context.Context, perf store.Performance) error {
+	return p.publishPerformancePublished(ctx, perf, BestAvailableOrderingCorrectionEventID(perf))
+}
+
 func ArchivedEventID(perf store.Performance) string { return archivedEventUUID(perf).String() }
 
 func archivedEventUUID(perf store.Performance) uuid.UUID {
