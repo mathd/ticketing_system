@@ -24,6 +24,7 @@ experiment stays valid.
 
 ## Working agreement
 
+- **On autonomous runs, do not override a `[high]` or higher blocking review finding; escalate it to the owner.** Fixing it is allowed. A recorded override does not make a blocking finding safe (TKT-283; decision TKT-234, prompted by TKT-230).
 - **The stack is decided and scaffolded.** Five Go services (catalog, inventory, commerce,
   payments, access) behind a Go gateway, TypeScript + React frontends, PostgreSQL (one database
   per service), NATS JetStream, all under one `docker compose up`. Layout and service ownership:
