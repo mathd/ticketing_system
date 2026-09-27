@@ -1,0 +1,41 @@
+TKT-356 probe results
+Date: 2026-09-27
+
+Environment and scope
+---------------------
+The standalone probe uses Go's standard library. The validation runner uses Python's standard
+library and the Go toolchain. The run used a temporary GOCACHE and temporary mutant copies. It
+used no network, Docker, database, browser, production import, or production key.
+
+Command:
+python3 docs/evidence/TKT-356/validate.py
+
+Captured restored stdout
+------------------------
+The exact stdout bytes, including its leading newline, are in [`probe.stdout`](probe.stdout).
+The runner captured 8,262 bytes and 109 newline bytes. SHA-256:
+`fc968e19e7a38eac97372ec8924ce9b4be88c10bfcd0a0ea1f60723c8b6456bd`.
+
+Mutations
+---------
+Each mutant changed a temporary copy of `probe.go`. The probe reports every failed assertion
+before exiting, so the runner can check more than one property for a mutation. All five mutations
+exited 1 and made their named target assertion or assertions red:
+
+| Mutation | Exit | Assertion that failed |
+|---|---:|---|
+| Remove offline upper bound | 1 | `FAIL offline old exp+5s: got true, want false` |
+| Open gate for expired refusal | 1 | `FAIL expired local evaluation keeps gate closed: got true, want false` |
+| Route unknown decision through ledger | 1 | `FAIL unknown decision rejected before ledger mutation: got admission_recorded, want unknown_decision`; `FAIL unknown decision leaves ledger unchanged: got rows=7 admissions=2 refusals=4 admitted=2, want rows=6 admissions=1 refusals=4 admitted=1` |
+| Remove `evaluateLocal` clock branch | 1 | `FAIL missing clock local evaluation decision: got admitted, want unknown_clock` |
+| Map early credential to expiry | 1 | `FAIL early signed credential at T-6 local evaluation decision: got expired_credential, want not_yet_valid` |
+
+Restored runs
+-------------
+After the final fixture change and all five mutations, the runner made six restored runs. Each
+exited 0, produced 8,262 bytes with 109 newline bytes, and matched the captured stdout byte for
+byte. Each run had SHA-256
+`fc968e19e7a38eac97372ec8924ce9b4be88c10bfcd0a0ea1f60723c8b6456bd`.
+
+These results cover only the standalone candidate model. They do not show scanner integration,
+production refusal routing, or a repository gate run.
