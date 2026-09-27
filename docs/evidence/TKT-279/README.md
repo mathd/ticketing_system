@@ -74,3 +74,19 @@ verification. Later commits require their own gate run.
 
 PR #394's repository security scan failed on the five dependency advisories tracked by TKT-329.
 That CI failure prevents merge despite the local gate pass.
+
+
+## Decision-audit fixture corrections
+
+The informed review found that an untyped control with no values could not prove the exclusion,
+and that explicit primitive types with composition had no direct test. Commit `f3e1b8c9` added
+both cases. The untyped case emits two values on a declared 304 response, where ordinary kin
+validation is skipped. The composed string case emits two individually valid values and expects
+the cardinality refusal.
+
+The orchestrator reran all 13 probes and added two more: apply the check to untyped headers, and
+exempt headers with `allOf`. All 15 failed at assertions, and the two new probes failed specifically
+in the new cases. [mutation-details.txt](mutation-details.txt) records each exact patch, base commit,
+command, output and exit status. Every mutation was restored. Eight unmutated repeat runs then
+passed in all three packages; [repeat-results.txt](repeat-results.txt) contains the captured result.
+A fresh full gate remains required before the next push.

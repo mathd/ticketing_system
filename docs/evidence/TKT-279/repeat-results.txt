@@ -1,0 +1,6 @@
+$ go test -count=8 ./shared/go/contract ./services/inventory/internal/api ./services/catalog/internal/api -run '^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged|TestInventoryResponseHeaderCardinality|TestPublicReadCacheTiersAreContractEnforced|TestCatalogCacheTierDuplicateValuesAreRefused)$'
+ok  	ticketing/shared/contract	0.257s
+ok  	ticketing/services/inventory/internal/api	0.575s
+ok  	ticketing/services/catalog/internal/api	4.530s
+exit=0
+base=f3e1b8c99497a28bb0bf2930b7504b497670162d
