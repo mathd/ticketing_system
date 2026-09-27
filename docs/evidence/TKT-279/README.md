@@ -81,12 +81,18 @@ That CI failure prevents merge despite the local gate pass.
 The informed review found that an untyped control with no values could not prove the exclusion,
 and that explicit primitive types with composition had no direct test. Commit `f3e1b8c9` added
 both cases. The untyped case emits two values on a declared 304 response, where ordinary kin
-validation is skipped. The composed string case emits two individually valid values and expects
-the cardinality refusal.
+validation is skipped.
 
-The orchestrator reran all 13 probes and added two more: apply the check to untyped headers, and
-exempt headers with `allOf`. All 15 failed at assertions, and the two new probes failed specifically
-in the new cases. [mutation-details.txt](mutation-details.txt) records each exact patch, base commit,
-command, output and exit status. Every mutation was restored. Eight unmutated repeat runs then
-passed in all three packages; [repeat-results.txt](repeat-results.txt) contains the captured result.
-A fresh full gate remains required before the next push.
+The second review found the composed fixture was invalid for a single value. Its `allOf` child
+had an enum but no string type, and the decoder returned null. The earlier mutation caught a
+changed log message, but did not prove that two individually valid values would be accepted
+without the cardinality check. Commit `4f23e850` adds the child type and a one-value success
+control. The control failed before the fixture correction and passed after it.
+
+The orchestrator reran all 15 mutations at `4f23e850`. All failed at assertions. Exempting
+compositions now returns 200 in the duplicate case, which fails its expected-500 assertion.
+[mutation-details.txt](mutation-details.txt) stores JSON with each exact patch, base commit,
+command, output and exit status. JSON escapes preserve patch whitespace without introducing
+trailing spaces into this repository's diff. Every mutation was restored. Eight unmutated repeat
+runs then passed in all three packages; [repeat-results.txt](repeat-results.txt) contains the
+captured result. A fresh full gate remains required before the next push.
