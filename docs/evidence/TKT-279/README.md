@@ -20,7 +20,7 @@ array, untyped-with-no-value, noncanonical-key, and request-compatibility contro
 exact/range/default precedence fixtures were completed after this red run; they passed after the
 change. The inventory controls with one `Cache-Control` and one `Age` passed; each availability and
 seat-occupancy duplicate case returned 200 instead of 500. Earlier attempts with an invalid
-untyped-header fixture and an unwritable default Go cache are also in `red-evidence.txt`; they are
+untyped-header fixture and an unwritable default Go cache are also in [red-first.txt](red-first.txt); they are
 not counted as red-first proof.
 
 After the production change, the old catalog gap pin ran before it was deleted:
@@ -30,7 +30,7 @@ After the production change, the old catalog gap pin ran before it was deleted:
 ```
 
 It failed as expected. The response was 500, while the obsolete test expected 200. The captured
-output is in `red-evidence.txt`.
+output is in [red-first.txt](red-first.txt).
 
 These eight-repeat checks passed after the final test fixtures were in place:
 
@@ -66,4 +66,11 @@ The orchestrator then ran all new shared, inventory and catalog tests with `go t
 All three packages passed. Comparing parsed OpenAPI documents with descriptions removed confirmed
 that both contract edits changed descriptions only.
 
-The full `make check` gate is still pending. No gate result is claimed here.
+The first full gate failed on Staticcheck QF1001 at `6493d21b`. After the equivalent predicate rewrite,
+`make check` passed at `6e42f3c7db5646a30e73968008bb9b7534a46d31`. The verdict recorded tree digest
+`1e41526d128c4c1767fcbd259068c99c97f6c1c4`, which the orchestrator independently matched to the clean
+worktree. This result includes lint, tests, builds, database and gateway smoke tests, and integrity
+verification. Later commits require their own gate run.
+
+PR #394's repository security scan failed on the five dependency advisories tracked by TKT-329.
+That CI failure prevents merge despite the local gate pass.
