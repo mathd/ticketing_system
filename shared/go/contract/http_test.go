@@ -98,6 +98,7 @@ paths:
             X-Optional: {schema: {type: string}}
             X-Canonical: {schema: {type: string, enum: [allowed]}}
             X-Enum: {schema: {type: string, enum: [alpha, beta]}}
+            X-Composed: {schema: {type: string, allOf: [{enum: [allowed]}]}}
             X-Array: {schema: {type: array, items: {type: string, enum: [alpha, beta]}}}
             X-Integer-Array: {schema: {type: array, items: {type: integer, minimum: 0}}}
             X-Untyped: {schema: {}}
@@ -106,6 +107,7 @@ paths:
           description: not modified
           headers:
             X-String: {schema: {type: string}}
+            X-Untyped: {schema: {}}
   /fallback:
     get:
       responses:
@@ -417,6 +419,7 @@ func TestResponseHeaderCardinality(t *testing.T) {
 		{name: "optional primitive refuses two values", header: "X-Optional", count: 2, set: func(h http.Header) { h.Add("X-Optional", "one"); h.Add("X-Optional", "two") }},
 		{name: "enum refuses two allowed values", header: "X-Enum", count: 2, set: func(h http.Header) { h.Add("X-Enum", "alpha"); h.Add("X-Enum", "beta") }},
 		{name: "enum refuses identical values", header: "X-Enum", count: 2, set: func(h http.Header) { h.Add("X-Enum", "alpha"); h.Add("X-Enum", "alpha") }},
+		{name: "composed string refuses two valid values", header: "X-Composed", count: 2, set: func(h http.Header) { h.Add("X-Composed", "allowed"); h.Add("X-Composed", "allowed") }},
 		{name: "three values are refused", header: "X-Integer", count: 3, set: func(h http.Header) { h.Add("X-Integer", "0"); h.Add("X-Integer", "1"); h.Add("X-Integer", "2") }},
 		{name: "split map key casing is counted", header: "X-String", count: 2, set: func(h http.Header) { h["X-String"] = []string{"allowed"}; h["x-string"] = []string{"allowed"} }},
 		{name: "mixed-case declaration is counted", header: "x-MiXeD", count: 2, set: func(h http.Header) { h.Add("x-mixed", "one"); h.Add("x-mixed", "two") }},
@@ -501,6 +504,7 @@ func TestResponseHeaderCardinality(t *testing.T) {
 		{name: "array validates first field and leaves later field alone", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "forbidden") }, want: []string{"alpha", "forbidden"}},
 		{name: "integer array ignores invalid later field as before", path: "/headers", header: "X-Integer-Array", status: 200, headers: func(h http.Header) { h.Add("X-Integer-Array", "1"); h.Add("X-Integer-Array", "invalid") }, want: []string{"1", "invalid"}},
 		{name: "untyped optional declaration with no value remains unchanged", path: "/headers", status: 200, headers: func(http.Header) {}},
+		{name: "untyped header preserves duplicate values on not modified response", path: "/headers", header: "X-Untyped", status: http.StatusNotModified, headers: func(h http.Header) { h.Add("X-Untyped", "one"); h.Add("X-Untyped", "two") }, want: []string{"one", "two"}},
 		{name: "single noncanonical key retains value validation limitation", path: "/headers", header: "X-Canonical", status: 200, headers: func(h http.Header) { h["x-canonical"] = []string{"invalid"} }, want: []string{"invalid"}},
 		{name: "different declared headers each accept one value", path: "/headers", status: 200, headers: func(h http.Header) { h.Set("X-String", "allowed"); h.Set("X-Integer", "0") }},
 		{name: "range response selected before default", path: "/fallback", header: "X-Mode", status: 201, headers: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }, want: []string{"one", "two"}},
