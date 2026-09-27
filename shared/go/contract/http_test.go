@@ -98,7 +98,7 @@ paths:
             X-Optional: {schema: {type: string}}
             X-Canonical: {schema: {type: string, enum: [allowed]}}
             X-Enum: {schema: {type: string, enum: [alpha, beta]}}
-            X-Composed: {schema: {type: string, allOf: [{enum: [allowed]}]}}
+            X-Composed: {schema: {type: string, allOf: [{type: string, enum: [allowed]}]}}
             X-Array: {schema: {type: array, items: {type: string, enum: [alpha, beta]}}}
             X-Integer-Array: {schema: {type: array, items: {type: integer, minimum: 0}}}
             X-Untyped: {schema: {}}
@@ -506,6 +506,7 @@ func TestResponseHeaderCardinality(t *testing.T) {
 		{name: "untyped optional declaration with no value remains unchanged", path: "/headers", status: 200, headers: func(http.Header) {}},
 		{name: "untyped header preserves duplicate values on not modified response", path: "/headers", header: "X-Untyped", status: http.StatusNotModified, headers: func(h http.Header) { h.Add("X-Untyped", "one"); h.Add("X-Untyped", "two") }, want: []string{"one", "two"}},
 		{name: "single noncanonical key retains value validation limitation", path: "/headers", header: "X-Canonical", status: 200, headers: func(h http.Header) { h["x-canonical"] = []string{"invalid"} }, want: []string{"invalid"}},
+		{name: "composed string accepts one value", path: "/headers", header: "X-Composed", status: 200, headers: func(h http.Header) { h.Set("X-Composed", "allowed") }, want: []string{"allowed"}},
 		{name: "different declared headers each accept one value", path: "/headers", status: 200, headers: func(h http.Header) { h.Set("X-String", "allowed"); h.Set("X-Integer", "0") }},
 		{name: "range response selected before default", path: "/fallback", header: "X-Mode", status: 201, headers: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }, want: []string{"one", "two"}},
 		{name: "invalid first array field still fails ordinary validation", path: "/headers", header: "X-Array", status: 200, wantStatus: http.StatusInternalServerError, headers: func(h http.Header) { h.Add("X-Array", "forbidden"); h.Add("X-Array", "alpha") }},
