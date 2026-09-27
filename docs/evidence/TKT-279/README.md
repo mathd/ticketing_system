@@ -1,7 +1,7 @@
 # TKT-279 evidence
 
 This file separates checks that ran from checks left to the orchestrator. The red-first output is
-at `/tmp/tkt279-wtq_tp1j/red-evidence.txt` on the implementation host.
+in [red-first.txt](red-first.txt).
 
 ## Executed
 
@@ -53,10 +53,17 @@ The catalog API run included `write_credential_test.go` and its combined-credent
 storefront and backoffice clients, and inventory's generated declarations for the backoffice.
 It did not change generated Go API files. `git diff --check` passed.
 
-## Not run here
+## Independent verification
 
-- Mutation probes and mutant restoration checks. The orchestrator will run these independently.
-- `make check`. This task explicitly leaves the gate to the orchestrator after it handles generated
-  files.
+The orchestrator committed the implementation as `fd9b31ec`, then ran 13 separate mutation probes.
+Each failed at a test assertion, without a build failure. Removing the cardinality call failed
+independently in shared, inventory and catalog tests. Other probes changed type selection, the
+allowed count, equal-value counting, array handling, response matching, case matching, logging and
+body forwarding. [mutation-results.txt](mutation-results.txt) records commands and observed failures.
+Every probe restored the source bytes. `git diff` was empty after restoration.
 
-No result is claimed for either item above.
+The orchestrator then ran all new shared, inventory and catalog tests with `go test -count=8`.
+All three packages passed. Comparing parsed OpenAPI documents with descriptions removed confirmed
+that both contract edits changed descriptions only.
+
+The full `make check` gate is still pending. No gate result is claimed here.
