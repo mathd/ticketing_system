@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -132,7 +133,11 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 				// allows it unless told otherwise.
 				Options: &openapi3filter.Options{IncludeResponseStatus: true},
 			}
-			if validationErr := validate(r.Context(), input); validationErr != nil {
+			validationErr := responseHeaderCardinalityError(route, recorder.Code, recorder.Header())
+			if validationErr == nil {
+				validationErr = validate(r.Context(), input)
+			}
+			if validationErr != nil {
 				logger := log
 				if logger == nil {
 					logger = slog.Default()
@@ -159,6 +164,38 @@ func responseValidated(router routers.Router, next http.Handler, log *slog.Logge
 		w.WriteHeader(recorder.Code)
 		_, _ = w.Write(recorder.Body.Bytes())
 	})
+}
+
+func responseHeaderCardinalityError(route *routers.Route, status int, headers http.Header) error {
+	if route == nil || route.Operation == nil || route.Operation.Responses == nil {
+		return nil
+	}
+	response := route.Operation.Responses.Status(status)
+	if response == nil {
+		response = route.Operation.Responses.Default()
+	}
+	if response == nil || response.Value == nil {
+		return nil
+	}
+	for name, headerRef := range response.Value.Headers {
+		if headerRef == nil || headerRef.Value == nil || headerRef.Value.Schema == nil || headerRef.Value.Schema.Value == nil {
+			continue
+		}
+		typ := headerRef.Value.Schema.Value.Type
+		if typ == nil || !(typ.Is("string") || typ.Is("integer") || typ.Is("number") || typ.Is("boolean")) {
+			continue
+		}
+		count := 0
+		for actualName, values := range headers {
+			if strings.EqualFold(actualName, name) {
+				count += len(values)
+			}
+		}
+		if count > 1 {
+			return fmt.Errorf("response header %q has %d field values; want at most one", name, count)
+		}
+	}
+	return nil
 }
 
 func requestValidator(spec []byte, next http.Handler, log *slog.Logger, validateResponses bool, errorHandler func(http.ResponseWriter, *http.Request, string, int), authenticate openapi3filter.AuthenticationFunc) (http.Handler, error) {

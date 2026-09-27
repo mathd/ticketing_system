@@ -162,6 +162,20 @@ security property and is not one:
 - **Where enabled**, the guarantee is exactly: a response reaching this middleware that fails the
   committed schema or status validation is replaced by the generic 500 before reaching the client,
   and the violation is logged.
+- TKT-279 adds one bounded response-header check where validation is enabled: for a matched
+  operation's selected response, more than one field value for a declared header with an explicit
+  `string`, `integer`, `number` or `boolean` schema type fails closed through the same 500 and log.
+  References are resolved before checking. The count is case-insensitive and counts field values,
+  not comma-separated parts. Arrays, objects, untyped or composed schemas, and content-based headers
+  have no new cardinality rule.
+- kin-openapi's existing response-value validation still looks up canonical header-map keys. A
+  response writer that directly inserts a single noncanonical key can therefore bypass value
+  validation; the shared contract test pins that observed case. TKT-279's cardinality count does
+  compare keys without case sensitivity, so this limitation concerns the value check only.
+- Request-header validation did not change. kin-openapi reads the first field value for primitive
+  request headers. Inventory's `Idempotency-Key` path uses `Header.Get`, which also reads the first
+  value. That is one checked reader; this is not a claim that every request consumer was audited or
+  that duplicate request values are safe.
 - **Where disabled**, there is **no runtime response-contract guarantee at all** — a drifted payload
   reaches the client unchanged, and nothing is logged. This is the property being traded away, and
   it should be written down as a loss rather than described as an optimisation.

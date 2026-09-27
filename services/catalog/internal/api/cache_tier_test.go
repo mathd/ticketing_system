@@ -42,9 +42,11 @@ package api
 // test a middleware arrangement catalog does not run.
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
@@ -227,66 +229,48 @@ func TestPublicReadCacheTiersAreContractEnforced(t *testing.T) {
 	}
 }
 
-// TestPublicReadCacheTierDuplicateHeaderIsNotCaught pins a KNOWN, OPEN gap so the
-// claim above cannot quietly drift from the behaviour (ADR-021's rule: a gap that
-// is not this ticket's to close is pinned as a test asserting it is PRESENT).
-//
-// `required: true` plus a one-value enum constrains the FIRST field value only.
-// kin-openapi decodes a primitive header from raw[0] and never looks at the rest,
-// while the response wrapper forwards every value — so a handler that emits the
-// declared tier and then APPENDS a second value passes validation, and both values
-// reach the client. A shared cache reading that response gets a conflicting
-// directive the contract says cannot happen.
-//
-// Scope, established by running it: this is NOT introduced by TKT-209 and is not
-// specific to these five reads. It is a property of the shared response validator
-// (shared/go/contract) and applies to every enum-declared response header in every
-// service — `PriceResolutionCacheControl` and `NeverCacheControl`, catalog's
-// `SeatMapCacheControl`, and inventory's, all of which predate this branch and
-// behave identically. Closing it means rejecting a multi-valued declared header in
-// the shared validator, which changes behaviour for all five services and belongs
-// in its own ticket rather than smuggled into a catalog contract change.
-//
-// This test asserts the gap is STILL THERE. If it ever fails, the validator has
-// been fixed — update the ADR-004 amendment and delete this test; do not "repair"
-// it. Found by TKT-209's adversarial ai-review and verified by execution.
-func TestPublicReadCacheTierDuplicateHeaderIsNotCaught(t *testing.T) {
+func TestCatalogCacheTierDuplicateValuesAreRefused(t *testing.T) {
 	r := chi.NewRouter()
-	r.Get("/public/venues", func(w http.ResponseWriter, _ *http.Request) {
+	r.Get("/public/seat-maps/{seatMapId}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// The declared tier FIRST, so raw[0] satisfies the enum...
+		w.Header().Set("X-Handler-Only", "secret")
+		w.Header().Add("Cache-Control", "no-store")
 		w.Header().Add("Cache-Control", CacheControlPublicVenueReads)
-		// ...and a value the enum does not permit second.
-		w.Header().Add("Cache-Control", "public, max-age=300, s-maxage=300")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"venues":[]}`))
+		_, _ = w.Write([]byte(seatMapGeometryJSON))
 	})
-	h, err := contract.ResponseValidator(apispec.Spec, r, nil, true)
+	var logs bytes.Buffer
+	h, err := contract.ResponseValidator(apispec.Spec, r, slog.New(slog.NewJSONHandler(&logs, nil)), true)
 	if err != nil {
 		t.Fatalf("ResponseValidator: %v", err)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-		"http://catalog.local/public/venues?organizer_id="+uuid.NewString(), nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("the duplicate-header gap appears to be CLOSED (got %d, want 200). "+
-			"If the shared response validator now rejects a multi-valued declared header, "+
-			"that is good news: update ADR-004's TKT-209 amendment and delete this test.", rec.Code)
+		"http://catalog.local/public/seat-maps/"+uuid.NewString(), nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("two individually permitted enum values: got %d %s, want 500", rec.Code, rec.Body.String())
 	}
-	// The second, undeclared value really does reach the client — the part that
-	// makes this a gap rather than a curiosity.
-	//
-	// Asserted as the EXACT ordered pair, not as a count: a length check stays
-	// green if something downstream drops the forbidden value and duplicates the
-	// allowed one, which is the shape in which this gap would actually get closed.
-	// The test would then still claim the gap is open while it was shut.
-	got := rec.Result().Header.Values("Cache-Control")
-	want := []string{CacheControlPublicVenueReads, "public, max-age=300, s-maxage=300"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("the forbidden second value must still reach the client verbatim.\n got: %v\nwant: %v\n"+
-			"If the forbidden value is gone, the shared validator has been fixed: update ADR-004's "+
-			"TKT-209 amendment and delete this test rather than loosening this assertion.", got, want)
+	if rec.Body.String() != "{\"error\":\"response violates OpenAPI contract\"}\n" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+		t.Fatalf("Cache-Control = %v", got)
+	}
+	if rec.Header().Get("Content-Type") != "application/json" || rec.Header().Get("X-Handler-Only") != "" {
+		t.Fatalf("refusal headers = %v", rec.Header())
+	}
+	if strings.Count(logs.String(), "\n") != 1 {
+		t.Fatalf("want exactly one structured error log, got %q", logs.String())
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+		t.Fatalf("decode drift log: %v", err)
+	}
+	if entry["level"] != "ERROR" || entry["msg"] != "response violates OpenAPI contract" || entry["status"] != float64(http.StatusOK) {
+		t.Fatalf("drift log = %v", entry)
+	}
+	if detail, _ := entry["error"].(string); !strings.Contains(detail, "Cache-Control") || !strings.Contains(detail, "has 2 field values") {
+		t.Fatalf("drift log does not identify header cardinality: %v", entry)
 	}
 }
 

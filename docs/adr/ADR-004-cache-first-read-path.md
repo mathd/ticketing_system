@@ -266,18 +266,29 @@ this amendment, on any of these five reads:
 
 Before this amendment all three were served as 200 with the wrong header, or with none.
 
-**What this does NOT close, stated so the claim cannot be read wider than it is.** The enforcement
-binds the header's **first field value**. A response that emits the declared tier and then *appends*
-a second `Cache-Control` value passes validation and both values reach the client, because
-kin-openapi decodes a primitive header from `raw[0]` and the response wrapper forwards the rest. This
-is **not introduced here and not specific to these five reads**: it is a property of the shared
-response validator (`shared/go/contract`) and applies to every enum-declared response header in every
-service, `SeatMapCacheControl`, `PriceResolutionCacheControl`, `NeverCacheControl` and inventory's
-included — all of which predate this amendment. Closing it means rejecting a multi-valued declared
-header in the shared validator, which changes behaviour for all five services and is its own decision.
-The gap is pinned open by `TestPublicReadCacheTierDuplicateHeaderIsNotCaught`, which asserts it is
-still present; if that test ever fails the validator has been fixed and this paragraph should be
-updated rather than the test repaired (the ADR-021 convention).
+**Primitive response-header cardinality is enforced by TKT-279, within a defined boundary.** When
+response validation is enabled, the shared validator refuses more than one field value for a
+declared response header whose resolved schema type is `string`, `integer`, `number` or `boolean`.
+This applies with or without `required` or `enum`, and counts values across header-map keys without
+case sensitivity. A comma inside one field value still counts as one. The validator selects the
+response declaration for the matched operation and status, including an exact status, a status range
+or `default`. It uses ADR-028's existing generic 500 and structured log, and withholds the handler's
+headers and body.
+
+This does not add a cardinality rule for arrays, objects, schemas without an explicit type, composed
+schemas or content-based headers. Array headers still use kin-openapi's existing decoder, which reads
+the first field value; no current service contract declares array, object, composed or content-based
+response headers. Do not read this as a guarantee for every declared response header.
+
+Request validation is unchanged. kin-openapi also reads the first field value for primitive request
+headers. Inventory's `Idempotency-Key` consumer uses `Header.Get`, which reads the first value; that is
+one verified path, not an audit or security claim about every request-header consumer.
+
+The old catalog gap pin, `TestPublicReadCacheTierDuplicateHeaderIsNotCaught`, was removed after it
+failed against the new rule. Shared contract tests cover every primitive type, references, optional
+and enum schemas, exact/range/default selection, HEAD and 304 responses, case-variant map keys and
+array compatibility. Inventory tests cover both availability responses with duplicate `Cache-Control`
+and `Age`; catalog tests include two individually permitted seat-map enum values.
 
 **This is a real availability cost, and it is ADR-028's accepted trade-off, not a new decision.** A
 handler and its declaration can now only move together: change one without the other and that read is
