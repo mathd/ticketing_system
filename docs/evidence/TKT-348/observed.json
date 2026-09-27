@@ -1,0 +1,315 @@
+{
+  "status": "observed",
+  "evidence_note": "Generated only after all six real router/store repetitions pass.",
+  "runner_command": "bash docs/evidence/TKT-348/run.sh /tmp/tkt348-r22yx5jm/probe-observed.json",
+  "probe_command": "go run ./cmd/tkt348probe \u003coutput-path\u003e",
+  "repetitions": 6,
+  "observations": [
+    {
+      "repetition": 1,
+      "organizer_id": "0eb4308c-9458-4b36-90b3-de7d4fc7bf37",
+      "slot_id": "3430b54d-a18c-41c9-a8a9-4d3c2d8df3cc",
+      "capacity": 5,
+      "operational_hold_id": "28af2d44-a766-4270-915e-22b7c730c1ee",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"e3f32a01-f36b-4b9f-a14f-df896f5f53a3\",\"organizer_id\":\"0eb4308c-9458-4b36-90b3-de7d4fc7bf37\",\"slot_id\":\"3430b54d-a18c-41c9-a8a9-4d3c2d8df3cc\",\"quantity\":1,\"ticket_type_id\":\"29746318-80f4-41ff-8c79-4fb366f04eb5\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:52.777822-04:00\",\"server_time\":\"2026-09-27T13:49:52.77796-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "28af2d44-a766-4270-915e-22b7c730c1ee",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "c61539d0-957e-4032-b391-78df28212809"
+        },
+        {
+          "id": "e3f32a01-f36b-4b9f-a14f-df896f5f53a3",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:52.777822-04:00",
+          "idempotency_key": "public-a-9c1e665d-5b8b-4346-86d6-5f4333b6729c"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    },
+    {
+      "repetition": 2,
+      "organizer_id": "9f1d62e9-68a8-4325-aa88-5124d6b1f1c4",
+      "slot_id": "bb58b6f5-3a78-494c-8b7f-fb31dd25d93d",
+      "capacity": 5,
+      "operational_hold_id": "d95400e2-0abb-4f33-afc4-41de8ad94a59",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"551215b7-b23a-4e0b-a6cb-1a09791151ea\",\"organizer_id\":\"9f1d62e9-68a8-4325-aa88-5124d6b1f1c4\",\"slot_id\":\"bb58b6f5-3a78-494c-8b7f-fb31dd25d93d\",\"quantity\":1,\"ticket_type_id\":\"c68189df-72b5-431b-835f-dd23f8caa0e7\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:52.938959-04:00\",\"server_time\":\"2026-09-27T13:49:52.939088-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "d95400e2-0abb-4f33-afc4-41de8ad94a59",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "b43e7453-74cc-4c14-a0d8-b0220458760f"
+        },
+        {
+          "id": "551215b7-b23a-4e0b-a6cb-1a09791151ea",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:52.938959-04:00",
+          "idempotency_key": "public-a-0879f567-80b8-4a44-9f06-819d9ec84b22"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    },
+    {
+      "repetition": 3,
+      "organizer_id": "9c238254-626c-4ddb-999b-0dc5ebd2b4c9",
+      "slot_id": "2618df38-b000-4675-9e49-230c04d59ae0",
+      "capacity": 5,
+      "operational_hold_id": "12e9c461-5b7e-4578-8455-a03f4f93d806",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"d1c223a1-7a66-4490-8e4a-8795240e92a0\",\"organizer_id\":\"9c238254-626c-4ddb-999b-0dc5ebd2b4c9\",\"slot_id\":\"2618df38-b000-4675-9e49-230c04d59ae0\",\"quantity\":1,\"ticket_type_id\":\"715add62-590c-4339-855c-048cd4338d5c\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:53.096199-04:00\",\"server_time\":\"2026-09-27T13:49:53.096391-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "12e9c461-5b7e-4578-8455-a03f4f93d806",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "869092a1-91a1-42ff-bb72-a2b0d1a7e1e9"
+        },
+        {
+          "id": "d1c223a1-7a66-4490-8e4a-8795240e92a0",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:53.096199-04:00",
+          "idempotency_key": "public-a-67add6db-e9a2-4840-baa9-c68baa30a3b4"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    },
+    {
+      "repetition": 4,
+      "organizer_id": "152acd40-2043-47a9-a176-35ae3a1a9195",
+      "slot_id": "14120c91-18bc-47ba-819f-4162b4130d93",
+      "capacity": 5,
+      "operational_hold_id": "2ba487ff-e54a-49c6-9a5e-bf7207da992d",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"a0892b9e-0942-4f98-8a70-0788aa5f7e2a\",\"organizer_id\":\"152acd40-2043-47a9-a176-35ae3a1a9195\",\"slot_id\":\"14120c91-18bc-47ba-819f-4162b4130d93\",\"quantity\":1,\"ticket_type_id\":\"7b98cb0b-a06e-4ad2-b097-07534a970e9d\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:53.294462-04:00\",\"server_time\":\"2026-09-27T13:49:53.29458-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "2ba487ff-e54a-49c6-9a5e-bf7207da992d",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "76e65bf4-0188-49f9-adc3-75e1f0f837ec"
+        },
+        {
+          "id": "a0892b9e-0942-4f98-8a70-0788aa5f7e2a",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:53.294462-04:00",
+          "idempotency_key": "public-a-2f97dd84-b85e-4bf2-b087-00fed51acb21"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    },
+    {
+      "repetition": 5,
+      "organizer_id": "c6bb840a-d159-4d04-97b0-bdad1fc1a0ad",
+      "slot_id": "79f65718-4d6a-485c-9d0c-bd72539d8805",
+      "capacity": 5,
+      "operational_hold_id": "02094ff4-efc3-419a-8db5-fb7547391dbb",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"2cff9ca8-e3f8-4d2b-a002-f488d17d8b01\",\"organizer_id\":\"c6bb840a-d159-4d04-97b0-bdad1fc1a0ad\",\"slot_id\":\"79f65718-4d6a-485c-9d0c-bd72539d8805\",\"quantity\":1,\"ticket_type_id\":\"c9a251d7-99d8-40e8-ae04-40149e15494d\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:53.461746-04:00\",\"server_time\":\"2026-09-27T13:49:53.461899-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "02094ff4-efc3-419a-8db5-fb7547391dbb",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "bbd23847-8323-4dae-8c32-398ffb2c73f1"
+        },
+        {
+          "id": "2cff9ca8-e3f8-4d2b-a002-f488d17d8b01",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:53.461746-04:00",
+          "idempotency_key": "public-a-a6056a09-4bb7-4d78-a5c4-99c6949f42b7"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    },
+    {
+      "repetition": 6,
+      "organizer_id": "1ede625a-7e70-4e63-8cc0-8ef5d8b5a91b",
+      "slot_id": "0f6e0ff0-de4f-43be-a743-0b24aad0d11e",
+      "capacity": 5,
+      "operational_hold_id": "21cfd16b-e5fb-4f9c-a0b0-d3c7de190253",
+      "full_pool_public_request": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "operational_release": {
+        "quantity": 1,
+        "status": "held",
+        "remaining": 4
+      },
+      "public_request_a": {
+        "status": 201,
+        "body": "{\"hold_id\":\"e29ce5a8-fd03-412d-a7c4-c70ce361c03c\",\"organizer_id\":\"1ede625a-7e70-4e63-8cc0-8ef5d8b5a91b\",\"slot_id\":\"0f6e0ff0-de4f-43be-a743-0b24aad0d11e\",\"quantity\":1,\"ticket_type_id\":\"fe454a8f-cc0e-43ea-935a-c571afbdfbb9\",\"currency\":\"EUR\",\"status\":\"held\",\"expires_at\":\"2026-09-27T13:59:53.625876-04:00\",\"server_time\":\"2026-09-27T13:49:53.626007-04:00\"}\n"
+      },
+      "public_request_b": {
+        "status": 409,
+        "body": "{\"error\":\"insufficient capacity\"}\n"
+      },
+      "claim_rows": [
+        {
+          "id": "21cfd16b-e5fb-4f9c-a0b0-d3c7de190253",
+          "kind": "operational",
+          "status": "held",
+          "quantity": 4,
+          "returned_quantity": 0,
+          "expires_at": null,
+          "idempotency_key": "43550e63-e67b-4edb-968e-8c22d2e381ab"
+        },
+        {
+          "id": "e29ce5a8-fd03-412d-a7c4-c70ce361c03c",
+          "kind": "buyer",
+          "status": "held",
+          "quantity": 1,
+          "returned_quantity": 0,
+          "expires_at": "2026-09-27T13:59:53.625876-04:00",
+          "idempotency_key": "public-a-97d4720d-3e90-49e0-8ed6-12aea29d9b64"
+        }
+      ],
+      "pool_counters": {
+        "confirmed_quantity": 0,
+        "live_held_and_finalizing_quantity": 5,
+        "capacity": 5,
+        "target_capacity": null,
+        "confirmed_plus_live_held_finalizing_le_capacity": true
+      }
+    }
+  ]
+}
