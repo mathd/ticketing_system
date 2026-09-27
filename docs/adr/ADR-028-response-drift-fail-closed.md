@@ -166,8 +166,9 @@ security property and is not one:
   operation's selected response, more than one field value for a declared header with an explicit
   `string`, `integer`, `number` or `boolean` schema type fails closed through the same 500 and log.
   References are resolved before checking. The count is case-insensitive and counts field values,
-  not comma-separated parts. Arrays, objects, untyped or composed schemas, and content-based headers
-  have no new cardinality rule.
+  not comma-separated parts. Arrays, objects, schemas without an explicit primitive type, and
+  content-based headers have no new cardinality rule. A composed schema receives the rule when it
+  declares one of the primitive types above.
 - kin-openapi's existing response-value validation still looks up canonical header-map keys. A
   response writer that directly inserts a single noncanonical key can therefore bypass value
   validation; the shared contract test pins that observed case. TKT-279's cardinality count does

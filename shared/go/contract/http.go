@@ -182,7 +182,7 @@ func responseHeaderCardinalityError(route *routers.Route, status int, headers ht
 			continue
 		}
 		typ := headerRef.Value.Schema.Value.Type
-		if typ == nil || !(typ.Is("string") || typ.Is("integer") || typ.Is("number") || typ.Is("boolean")) {
+		if typ == nil || (!typ.Is("string") && !typ.Is("integer") && !typ.Is("number") && !typ.Is("boolean")) {
 			continue
 		}
 		count := 0

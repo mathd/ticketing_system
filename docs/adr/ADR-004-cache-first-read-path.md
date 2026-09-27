@@ -275,10 +275,11 @@ response declaration for the matched operation and status, including an exact st
 or `default`. It uses ADR-028's existing generic 500 and structured log, and withholds the handler's
 headers and body.
 
-This does not add a cardinality rule for arrays, objects, schemas without an explicit type, composed
-schemas or content-based headers. Array headers still use kin-openapi's existing decoder, which reads
-the first field value; no current service contract declares array, object, composed or content-based
-response headers. Do not read this as a guarantee for every declared response header.
+This does not add a cardinality rule for arrays, objects, schemas without an explicit primitive type,
+or content-based headers. A composed schema receives the rule when it declares one of the primitive
+types above. Array headers still use kin-openapi's existing decoder, which reads the first field value;
+no current service contract declares array, object or content-based response headers. Do not read this
+as a guarantee for every declared response header.
 
 Request validation is unchanged. kin-openapi also reads the first field value for primitive request
 headers. Inventory's `Idempotency-Key` consumer uses `Header.Get`, which reads the first value; that is
