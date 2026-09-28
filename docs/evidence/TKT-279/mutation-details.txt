@@ -1,0 +1,242 @@
+[
+  {
+    "name": "remove-call-shared",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -133,7 +133,7 @@\n \t\t\t\t// allows it unless told otherwise.\n \t\t\t\tOptions: &openapi3filter.Options{IncludeResponseStatus: true},\n \t\t\t}\n-\t\t\tvalidationErr := responseHeaderCardinalityError(route, recorder.Code, recorder.Header())\n+\t\t\tvar validationErr error\n \t\t\tif validationErr == nil {\n \t\t\t\tvalidationErr = validate(r.Context(), input)\n \t\t\t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.04s)\n    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:461: status = 304, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/exact_status_wins_over_range_and_default (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/default_response_selected_when_no_exact_or_range (0.00s)\n        http_test.go:461: status = 404, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.044s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "remove-call-inventory",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./services/inventory/internal/api",
+      "-run",
+      "^TestInventoryResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -133,7 +133,7 @@\n \t\t\t\t// allows it unless told otherwise.\n \t\t\t\tOptions: &openapi3filter.Options{IncludeResponseStatus: true},\n \t\t\t}\n-\t\t\tvalidationErr := responseHeaderCardinalityError(route, recorder.Code, recorder.Header())\n+\t\t\tvar validationErr error\n \t\t\tif validationErr == nil {\n \t\t\t\tvalidationErr = validate(r.Context(), input)\n \t\t\t}\n",
+    "output": "$ go test -count=1 ./services/inventory/internal/api -run ^TestInventoryResponseHeaderCardinality$\n--- FAIL: TestInventoryResponseHeaderCardinality (0.07s)\n    --- FAIL: TestInventoryResponseHeaderCardinality/availability_duplicate_Cache-Control (0.01s)\n        availability_cache_tier_test.go:79: duplicate Cache-Control: got 200 {\"slot_id\":\"00000000-0000-0000-0000-000000000000\",\"capacity\":0,\"held\":0,\"confirmed\":0,\"available\":0,\"offering_status\":\"open\"}, want 500\n    --- FAIL: TestInventoryResponseHeaderCardinality/availability_duplicate_Age (0.01s)\n        availability_cache_tier_test.go:79: duplicate Age: got 200 {\"slot_id\":\"00000000-0000-0000-0000-000000000000\",\"capacity\":0,\"held\":0,\"confirmed\":0,\"available\":0,\"offering_status\":\"open\"}, want 500\n    --- FAIL: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Cache-Control (0.01s)\n        availability_cache_tier_test.go:79: duplicate Cache-Control: got 200 {\"slot_id\":\"00000000-0000-0000-0000-000000000000\",\"seat_map_id\":\"00000000-0000-0000-0000-000000000000\",\"offering_status\":\"open\",\"remaining_capacity\":0,\"unavailable_seat_identities\":[]}, want 500\n    --- FAIL: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Age (0.01s)\n        availability_cache_tier_test.go:79: duplicate Age: got 200 {\"slot_id\":\"00000000-0000-0000-0000-000000000000\",\"seat_map_id\":\"00000000-0000-0000-0000-000000000000\",\"offering_status\":\"open\",\"remaining_capacity\":0,\"unavailable_seat_identities\":[]}, want 500\nFAIL\nFAIL\tticketing/services/inventory/internal/api\t0.076s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "remove-call-catalog",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./services/catalog/internal/api",
+      "-run",
+      "^TestCatalogCacheTierDuplicateValuesAreRefused$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -133,7 +133,7 @@\n \t\t\t\t// allows it unless told otherwise.\n \t\t\t\tOptions: &openapi3filter.Options{IncludeResponseStatus: true},\n \t\t\t}\n-\t\t\tvalidationErr := responseHeaderCardinalityError(route, recorder.Code, recorder.Header())\n+\t\t\tvar validationErr error\n \t\t\tif validationErr == nil {\n \t\t\t\tvalidationErr = validate(r.Context(), input)\n \t\t\t}\n",
+    "output": "$ go test -count=1 ./services/catalog/internal/api -run ^TestCatalogCacheTierDuplicateValuesAreRefused$\n--- FAIL: TestCatalogCacheTierDuplicateValuesAreRefused (0.02s)\n    cache_tier_test.go:251: two individually permitted enum values: got 200 {\"map\":{\"id\":\"00000000-0000-0000-0000-000000000000\",\"organizer_id\":\"00000000-0000-0000-0000-000000000000\",\"venue_id\":\"00000000-0000-0000-0000-000000000000\",\"name\":\"m\",\"version\":1,\"status\":\"published\",\"orphan_prevention_enabled\":false,\"created_at\":\"2026-01-01T00:00:00Z\"},\"sections\":[]}, want 500\nFAIL\nFAIL\tticketing/services/catalog/internal/api\t0.032s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "enum-only",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -181,7 +181,7 @@\n \t\tif headerRef == nil || headerRef.Value == nil || headerRef.Value.Schema == nil || headerRef.Value.Schema.Value == nil {\n \t\t\tcontinue\n \t\t}\n-\t\ttyp := headerRef.Value.Schema.Value.Type\n+\t\tif len(headerRef.Value.Schema.Value.Enum) == 0 { continue }; typ := headerRef.Value.Schema.Value.Type\n \t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n \t\t\tcontinue\n \t\t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:461: status = 304, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/exact_status_wins_over_range_and_default (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/default_response_selected_when_no_exact_or_range (0.00s)\n        http_test.go:461: status = 404, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.039s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "string-only",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -182,7 +182,7 @@\n \t\t\tcontinue\n \t\t}\n \t\ttyp := headerRef.Value.Schema.Value.Type\n-\t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n+\t\tif typ == nil || !typ.Is(\"string\") {\n \t\t\tcontinue\n \t\t}\n \t\tcount := 0\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.032s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "allow-two",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -191,7 +191,7 @@\n \t\t\t\tcount += len(values)\n \t\t\t}\n \t\t}\n-\t\tif count > 1 {\n+\t\tif count > 2 {\n \t\t\treturn fmt.Errorf(\"response header %q has %d field values; want at most one\", name, count)\n \t\t}\n \t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:461: status = 304, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/exact_status_wins_over_range_and_default (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/default_response_selected_when_no_exact_or_range (0.00s)\n        http_test.go:461: status = 404, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.044s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "count-distinct",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -188,7 +188,7 @@\n \t\tcount := 0\n \t\tfor actualName, values := range headers {\n \t\t\tif strings.EqualFold(actualName, name) {\n-\t\t\t\tcount += len(values)\n+\t\t\t\tcount += len(func() map[string]bool { m := map[string]bool{}; for _, v := range values {m[v] = true}; return m }())\n \t\t\t}\n \t\t}\n \t\tif count > 1 {\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:461: status = 304, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.036s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "check-arrays",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -182,7 +182,7 @@\n \t\t\tcontinue\n \t\t}\n \t\ttyp := headerRef.Value.Schema.Value.Type\n-\t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n+\t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\") && !typ.Is(\"array\")) {\n \t\t\tcontinue\n \t\t}\n \t\tcount := 0\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)\n        http_test.go:538: status = 500, want 200; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:45.993405956-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/headers\\\",\\\"status\\\":200,\\\"error\\\":\\\"response header \\\\\\\"X-Array\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)\n        http_test.go:538: status = 500, want 200; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:45.996497909-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/headers\\\",\\\"status\\\":200,\\\"error\\\":\\\"response header \\\\\\\"X-Array\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/control/integer_array_ignores_invalid_later_field_as_before (0.00s)\n        http_test.go:538: status = 500, want 200; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:45.997527245-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/headers\\\",\\\"status\\\":200,\\\"error\\\":\\\"response header \\\\\\\"X-Integer-Array\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)\n        http_test.go:538: status = 500, want 201; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:46.002776934-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/fallback\\\",\\\"status\\\":201,\\\"error\\\":\\\"response header \\\\\\\"X-Mode\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\nFAIL\nFAIL\tticketing/shared/contract\t0.039s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "exact-only",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -170,7 +170,7 @@\n \tif route == nil || route.Operation == nil || route.Operation.Responses == nil {\n \t\treturn nil\n \t}\n-\tresponse := route.Operation.Responses.Status(status)\n+\tresponse := route.Operation.Responses.Value(fmt.Sprint(status))\n \tif response == nil {\n \t\tresponse = route.Operation.Responses.Default()\n \t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)\n        http_test.go:538: status = 500, want 201; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:46.907720374-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/fallback\\\",\\\"status\\\":201,\\\"error\\\":\\\"response header \\\\\\\"X-Mode\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\nFAIL\nFAIL\tticketing/shared/contract\t0.037s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "default-before-exact",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -170,9 +170,9 @@\n \tif route == nil || route.Operation == nil || route.Operation.Responses == nil {\n \t\treturn nil\n \t}\n-\tresponse := route.Operation.Responses.Status(status)\n+\tresponse := route.Operation.Responses.Default()\n \tif response == nil {\n-\t\tresponse = route.Operation.Responses.Default()\n+\t\tresponse = route.Operation.Responses.Status(status)\n \t}\n \tif response == nil || response.Value == nil {\n \t\treturn nil\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)\n        http_test.go:538: status = 500, want 201; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:47.776009299-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/fallback\\\",\\\"status\\\":201,\\\"error\\\":\\\"response header \\\\\\\"X-Mode\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\nFAIL\nFAIL\tticketing/shared/contract\t0.034s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "case-sensitive",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -187,7 +187,7 @@\n \t\t}\n \t\tcount := 0\n \t\tfor actualName, values := range headers {\n-\t\t\tif strings.EqualFold(actualName, name) {\n+\t\t\tif strings.Compare(actualName, name) == 0 {\n \t\t\t\tcount += len(values)\n \t\t\t}\n \t\t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.041s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "apply-to-untyped",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -182,7 +182,7 @@\n \t\t\tcontinue\n \t\t}\n \t\ttyp := headerRef.Value.Schema.Value.Type\n-\t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n+\t\tif typ != nil && (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n \t\t\tcontinue\n \t\t}\n \t\tcount := 0\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/control/untyped_header_preserves_duplicate_values_on_not_modified_response (0.00s)\n        http_test.go:538: status = 500, want 304; body=\"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\" logs=\"{\\\"time\\\":\\\"2026-09-27T10:50:49.600037782-04:00\\\",\\\"level\\\":\\\"ERROR\\\",\\\"msg\\\":\\\"response violates OpenAPI contract\\\",\\\"method\\\":\\\"GET\\\",\\\"path\\\":\\\"/headers\\\",\\\"status\\\":304,\\\"error\\\":\\\"response header \\\\\\\"X-Untyped\\\\\\\" has 2 field values; want at most one\\\"}\\n\"\nFAIL\nFAIL\tticketing/shared/contract\t0.035s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "exempt-compositions",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -181,7 +181,7 @@\n \t\tif headerRef == nil || headerRef.Value == nil || headerRef.Value.Schema == nil || headerRef.Value.Schema.Value == nil {\n \t\t\tcontinue\n \t\t}\n-\t\ttyp := headerRef.Value.Schema.Value.Type\n+\t\tif len(headerRef.Value.Schema.Value.AllOf) > 0 { continue }; typ := headerRef.Value.Schema.Value.Type\n \t\tif typ == nil || (!typ.Is(\"string\") && !typ.Is(\"integer\") && !typ.Is(\"number\") && !typ.Is(\"boolean\")) {\n \t\t\tcontinue\n \t\t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:461: status = 200, want 500; body=\"\\\"original body\\\"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.040s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "omit-log",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -147,7 +147,7 @@\n \t\t\t\t// violation on a guest route would otherwise write it to a log\n \t\t\t\t// at ERROR (TKT-202, ADR-012). This sink is easy to miss \u2014\n \t\t\t\t// it is a second, independent emitter of the raw path.\n-\t\t\t\tlogger.ErrorContext(r.Context(), \"response violates OpenAPI contract\",\n+\t\t\t\tlogger.DebugContext(r.Context(), \"response violates OpenAPI contract\",\n \t\t\t\t\t\"method\", r.Method, \"path\", obs.SanitizedPath(r.URL.Path), \"status\", recorder.Code, \"error\", validationErr.Error())\n \t\t\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n \t\t\t\tw.Header().Set(\"Cache-Control\", \"no-store\")\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.03s)\n    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/exact_status_wins_over_range_and_default (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\n    --- FAIL: TestResponseHeaderCardinality/default_response_selected_when_no_exact_or_range (0.00s)\n        http_test.go:476: want exactly one drift log, got \"\"\nFAIL\nFAIL\tticketing/shared/contract\t0.039s\nFAIL\n\nexit=1\n"
+  },
+  {
+    "name": "leak-body",
+    "exit": 1,
+    "killed": true,
+    "base": "4f23e850c4202219b787a159b39b4497a5621601",
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "./shared/go/contract",
+      "-run",
+      "^TestResponseHeaderCardinality$"
+    ],
+    "patch": "--- a/shared/go/contract/http.go\n+++ b/shared/go/contract/http.go\n@@ -152,7 +152,7 @@\n \t\t\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n \t\t\t\tw.Header().Set(\"Cache-Control\", \"no-store\")\n \t\t\t\tw.WriteHeader(http.StatusInternalServerError)\n-\t\t\t\t_ = json.NewEncoder(w).Encode(map[string]string{\"error\": \"response violates OpenAPI contract\"})\n+\t\t\t\t_, _ = w.Write(recorder.Body.Bytes())\n \t\t\t\treturn\n \t\t\t}\n \t\t}\n",
+    "output": "$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$\n--- FAIL: TestResponseHeaderCardinality (0.04s)\n    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/composed_string_refuses_two_valid_values (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/mixed-case_declaration_is_counted (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/exact_status_wins_over_range_and_default (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\n    --- FAIL: TestResponseHeaderCardinality/default_response_selected_when_no_exact_or_range (0.00s)\n        http_test.go:464: body = \"\\\"original body\\\"\", want \"{\\\"error\\\":\\\"response violates OpenAPI contract\\\"}\\n\"\nFAIL\nFAIL\tticketing/shared/contract\t0.046s\nFAIL\n\nexit=1\n"
+  }
+]
