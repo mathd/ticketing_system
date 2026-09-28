@@ -9,8 +9,8 @@
     "gateVerdict": ".gate.verdict"
   },
   "models": {
-    "plan": "gpt-6-sol",
-    "planReview": "main-agent",
+    "plan": "gpt-6-astra",
+    "planReview": "gpt-6-sol",
     "implement": "gpt-6-luna",
     "aiReview": "gpt-6-sol"
   },
