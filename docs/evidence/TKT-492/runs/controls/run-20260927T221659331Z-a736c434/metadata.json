@@ -1,0 +1,382 @@
+{
+  "schema_version": 1,
+  "ticket": "TKT-492",
+  "profile_id": "tkt492-local-scanner-v1",
+  "mode": "controls",
+  "attempt": null,
+  "started_at": "2026-09-27T22:16:59.331Z",
+  "status": "controls_passed",
+  "source_head": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_head_expected": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_dirty_paths": [
+    ".claude/sdlc.config.json",
+    "docs/evidence/TKT-492/README.md",
+    "docs/evidence/TKT-492/analyze.mjs",
+    "docs/evidence/TKT-492/artifact-provenance.json",
+    "docs/evidence/TKT-492/follow-up-20260927.md",
+    "docs/evidence/TKT-492/pass2-batch.md",
+    "docs/evidence/TKT-492/profile.json",
+    "docs/evidence/TKT-492/run.mjs",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/warmups.jsonl"
+  ],
+  "artifact_sha256": {
+    "bin/gate/catalog": "15f4a2ff041f96e1d20bd87fec349da20c56556b1aca4a19ff0f022e642648b6",
+    "bin/gate/inventory": "a490930aba9d1bf895583e7eed88c29b6859a607b7280a2b101fcb8dd18e669c",
+    "bin/gate/commerce": "dd8208561805ad0315366c1fc94125cf70288efc221651a78d012e84d55bb538",
+    "bin/gate/payments": "9eb40632b617433b11f905ec382be207d01b18bd5c3790dbbb19995813092ee3",
+    "bin/gate/access": "10ef52b33cf9cabb1836ff80ef997a5cc3ce0b62d14ad46ea638b47b70a357e0",
+    "bin/gate/gateway": "0cb04a286564933e9a3d6dc032c946e6393661ce967b247f6c9d46518e3feea8",
+    "web/storefront/dist/server/entry.mjs": "bede6fe30af92b9fd76ed1d2d80f4cbf61a3994e6c7c6db79db89a41e5de8902",
+    "web/backoffice/dist/server/entry.mjs": "fc2e68dc7cd03ec5f3161b1588927ce6fc2fbb858d73cb411ba49397dd3ffaf4",
+    "web/scanner/dist/assets/index-Bg3KvOvM.js": "5c06735128939df5d3575c6abc2a09fc36d08b9e8861443fd8f42f4239508bb8",
+    "web/scanner/dist/assets/index-YSOJujVX.css": "16cab488e3e74ae7d9896329a369222dd4e354e7527b7f6eda52d4f4ba3ba8ac",
+    "web/scanner/dist/favicon.svg": "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66",
+    "web/scanner/dist/index.html": "13b670fde043a81bebdfca34fb7991449b4d0d60822a2c509f0f261e33e7a472"
+  },
+  "profile_sha256": "497f6069cd79e344bf1605d7f531cbc2a971b7241e9aab8a7414beafd6746813",
+  "harness_sha256": {
+    "runner": "b604dade6dc50302f5587c091430b25fc2ac16341dc3261f4d72c8d35ffc179d",
+    "analyzer": "b59ccff516fecf2c9ba2628b041649dfdf715dc0bfd8cbb29d0ad9fa81c42659"
+  },
+  "root_gate_verdict_present": false,
+  "browser": {
+    "channel": "chrome",
+    "playwright_core": "1.62.1",
+    "node": "v24.11.1",
+    "chrome_version": "153.0.8010.47"
+  },
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "cpus": 16,
+    "total_memory_bytes": 67425112064
+  },
+  "topology": {
+    "compose_files": [
+      "compose.yaml",
+      "compose.direct-ports.yaml",
+      "compose.onsale-load.yaml",
+      "compose.smoke-cadence.yaml",
+      "compose.smoke.yaml"
+    ],
+    "project_alias": "owned-tkt492-project",
+    "service_count": 19,
+    "port_slot": 39,
+    "worker_cadence": {
+      "access_lifecycle_checkpoint": "1s",
+      "access_event_retry_backoff": [
+        "100ms",
+        "200ms",
+        "400ms",
+        "800ms",
+        "1s",
+        "1s"
+      ],
+      "commerce_recovery": "2s",
+      "refund_reversal": "2s",
+      "healthcheck": "5s",
+      "otel_metric_export": "5s"
+    },
+    "database_pool_defaults": {
+      "max_open_connections": 25,
+      "max_idle_connections": 10,
+      "connection_max_lifetime": "30m",
+      "connection_max_idle_time": "5m"
+    }
+  },
+  "images": {
+    "gateway": {
+      "image_id": "sha256:334d367e73cd2cc22d169ba8fb17a4dde993962242bec1b1ed6b02c1dfa66a3b",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-gateway"
+    },
+    "access": {
+      "image_id": "sha256:3e781ff7272b931e4b4239649ae471d6906d1a2574225c869100e44b8feca187",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-access"
+    },
+    "payments": {
+      "image_id": "sha256:c96110656342303eee2215fd737005e661458ef14774fe39b90cbd90e90ad12d",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-payments"
+    },
+    "catalog": {
+      "image_id": "sha256:43b3f5b2014251edace9688eccc6200ccc96fb03ee0bf5e43b1063f8f0736d03",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-catalog"
+    },
+    "inventory": {
+      "image_id": "sha256:ba72fb4f3195b04a626dfd8f5395bd25c0b9c6fbbc31ed729ff888267241d685",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-inventory"
+    },
+    "commerce": {
+      "image_id": "sha256:20ede5330d1fb44c003395cbf6c0f0f2ab8ecb9f261ff94277befdc5e0032354",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-commerce"
+    },
+    "access-lifecycle-backfill": {
+      "image_id": "sha256:7b565f59247bef19217ab58dc897045a6a8a2bf3415a06ea166e1b8e808ac5da",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-access-lifecycle-backfill"
+    },
+    "access-migrate": {
+      "image_id": "sha256:67cdf29a0c12535877aa409e9f11999b75cf6f4231603e70259a9bdce5ddf4a7",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-access-migrate"
+    },
+    "payments-migrate": {
+      "image_id": "sha256:bc6667b9a4b3600cda015e135b63de2f4d595d3d300df01e5beb5759f3fd2b9d",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-payments-migrate"
+    },
+    "catalog-migrate": {
+      "image_id": "sha256:9eb3291e5ba48fe57f013890aece6af3de52b3f2414750132e1554d6cc88aafb",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-catalog-migrate"
+    },
+    "commerce-migrate": {
+      "image_id": "sha256:86fe72b8b6aa60bd343a6c2249bca993146d1fa06fc05478b32b7f15cad56be3",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-commerce-migrate"
+    },
+    "inventory-migrate": {
+      "image_id": "sha256:ad4c386bf91cdc91f134aad337786c3d587767e3be3a911a26881e351290dfcc",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-inventory-migrate"
+    },
+    "nats-init": {
+      "image_id": "sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c",
+      "reference": "natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c"
+    },
+    "postgres": {
+      "image_id": "sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
+      "reference": "postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
+    },
+    "lgtm": {
+      "image_id": "sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8",
+      "reference": "grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8"
+    },
+    "nats": {
+      "image_id": "sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66",
+      "reference": "nats:2.14.4-alpine3.22@sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66"
+    },
+    "backoffice": {
+      "image_id": "sha256:b13df50def0b1105347decf24b1da1aed1ad0146aedafafb07a057d2e5404059",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-backoffice"
+    },
+    "scanner": {
+      "image_id": "sha256:24acb294619b8dceadc911af634d0ed572f0a7c04d7ae401c5ca0b8ffcb46896",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-scanner"
+    },
+    "storefront": {
+      "image_id": "sha256:63c7044fadb94c5cc6dba298e6ae1575c2f91b4ba823e94674643aa558356f34",
+      "reference": "ticketing-tkt492-1dd950da0b9945fcbe-storefront"
+    }
+  },
+  "docker_container_limits": {
+    "gateway": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-lifecycle-backfill": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats-init": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "postgres": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "lgtm": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "backoffice": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "scanner": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "storefront": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    }
+  },
+  "started_containers": [
+    "access",
+    "access-lifecycle-backfill",
+    "access-migrate",
+    "backoffice",
+    "catalog",
+    "catalog-migrate",
+    "commerce",
+    "commerce-migrate",
+    "gateway",
+    "inventory",
+    "inventory-migrate",
+    "lgtm",
+    "nats",
+    "nats-init",
+    "payments",
+    "payments-migrate",
+    "postgres",
+    "scanner",
+    "storefront"
+  ],
+  "result": "controls_passed",
+  "completed_at": "2026-09-27T22:18:03.498Z",
+  "evidence_sha256": {
+    "samples.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "warmups.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "health.jsonl": "93eb6bb176d7ce263ece0d3c4d4e05c92cc533400b052b1224de8ef54c7cfdf1",
+    "fixtures.json": "f3cb6c27a190167aa3b591fbe8d1c589158c2df34e11c31dfbee719abe684fbf",
+    "correctness.json": "c4de1e60284573ec8ab9fe6f2e5195055984d4033da1a26caff764321e42e75a",
+    "controls.json": "dc4e6ab87f7ab2714343c146c2684494c3afacb768f2c395cdbae95d5a9afd79"
+  },
+  "aliases_present": 23,
+  "page_faults": [
+    {
+      "context": "control-wrong-heading",
+      "kind": "unexpected_main_navigation"
+    },
+    {
+      "context": "control-wrong-class",
+      "kind": "unexpected_main_navigation"
+    }
+  ]
+}

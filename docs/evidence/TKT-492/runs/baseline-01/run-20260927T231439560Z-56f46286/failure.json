@@ -1,0 +1,13 @@
+{
+  "status": "aborted",
+  "phase": "offline_reconcile_warmup_result_incomplete",
+  "classification": {
+    "outcome": "correctness_failure",
+    "source": "runner_assertion",
+    "category": "database",
+    "code": "offline_reconcile_warmup_result_incomplete"
+  },
+  "error_type": null,
+  "error_location": "run.mjs:147:5",
+  "at": "2026-09-27T23:16:33.864Z"
+}

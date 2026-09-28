@@ -1,0 +1,11 @@
+{
+  "status": "aborted",
+  "phase": "issued_ticket_history_invalid",
+  "classification": {
+    "outcome": "inconclusive",
+    "source": "runner_error"
+  },
+  "error_type": "Error",
+  "error_location": "run.mjs:137:7",
+  "at": "2026-09-27T23:02:44.974Z"
+}

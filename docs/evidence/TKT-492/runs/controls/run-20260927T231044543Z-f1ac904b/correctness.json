@@ -1,0 +1,119 @@
+{
+  "status": "passed",
+  "sequences": [
+    {
+      "name": "single acceptance",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "95fee9bc-f6b9-4a7a-b0c5-6e7f693b3f36",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:11:41.824Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "duplicate refusal",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "cad7f8bf-a6de-4427-8667-a12577ad9f1e",
+        "status": 409,
+        "decision": "rejected",
+        "reason": "already_redeemed",
+        "rendered_class": "rejected",
+        "rendered_heading": "Rejected",
+        "rendered_body_prefix": "Already redeemed at",
+        "replay_notice_present": false,
+        "scanned_at": null,
+        "original_scan_at": "2026-09-27T23:11:42.174Z",
+        "error_classification": null
+      },
+      "precondition": {
+        "occurrence_id": "7f638dae-053f-4b8a-a970-4740b1aa3a28",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:11:42.174Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "multi-entry pass",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "ffc07bb2-fb17-444b-8b94-b9e603bfba00",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:11:42.824Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "exit-required refusal",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "e8ed0d12-a066-45ab-aec9-395d2e61491c",
+        "status": 409,
+        "decision": "rejected",
+        "reason": "exit_required",
+        "rendered_class": "rejected",
+        "rendered_heading": "Rejected",
+        "rendered_body_prefix": "Credential is invalid or cannot be redeemed",
+        "replay_notice_present": false,
+        "scanned_at": null,
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "offline queue and reconciliation",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "0f67f00c-6101-4b90-855b-4b638d1e1cee",
+        "rendered_class": "queued",
+        "rendered_heading": "Queued offline",
+        "rendered_body_prefix": "No connection",
+        "queue_state_before_sync": "QUEUED",
+        "reconcile_result": "recorded",
+        "persisted_state": "SYNCED"
+      }
+    },
+    {
+      "name": "second independent acceptance",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "ce838177-b270-4ccb-8218-41216244de87",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:11:43.891Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    }
+  ],
+  "lifecycle_verifier": "not_run_controls_mode",
+  "exact_assertions": false,
+  "failures": []
+}

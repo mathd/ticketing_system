@@ -1,0 +1,466 @@
+{
+  "schema_version": 1,
+  "ticket": "TKT-492",
+  "profile_id": "tkt492-local-scanner-v1",
+  "mode": "baseline",
+  "attempt": "01",
+  "started_at": "2026-09-27T23:22:28.993Z",
+  "status": "aborted",
+  "source_head": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_head_expected": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_dirty_paths": [
+    ".claude/sdlc.config.json",
+    "docs/evidence/TKT-492/README.md",
+    "docs/evidence/TKT-492/analyze.mjs",
+    "docs/evidence/TKT-492/artifact-provenance.json",
+    "docs/evidence/TKT-492/fixture-wait-20260927.md",
+    "docs/evidence/TKT-492/follow-up-20260927.md",
+    "docs/evidence/TKT-492/pass2-batch.md",
+    "docs/evidence/TKT-492/pass3-batch.md",
+    "docs/evidence/TKT-492/profile.json",
+    "docs/evidence/TKT-492/run.mjs",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/correctness.json",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/failure.json",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/fixtures.json",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/health.jsonl",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/metadata.json",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/samples.jsonl",
+    "docs/evidence/TKT-492/runs/baseline-01/run-20260927T231439560Z-56f46286/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230204973Z-390eecff/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230721587Z-31fda145/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230826178Z-50d095bb/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T230930871Z-cb495bea/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231044543Z-f1ac904b/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231153455Z-8ad3c3cf/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T231300389Z-fa6b682c/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T232123509Z-e2f79061/warmups.jsonl"
+  ],
+  "artifact_sha256": {
+    "bin/gate/catalog": "15f4a2ff041f96e1d20bd87fec349da20c56556b1aca4a19ff0f022e642648b6",
+    "bin/gate/inventory": "a490930aba9d1bf895583e7eed88c29b6859a607b7280a2b101fcb8dd18e669c",
+    "bin/gate/commerce": "dd8208561805ad0315366c1fc94125cf70288efc221651a78d012e84d55bb538",
+    "bin/gate/payments": "9eb40632b617433b11f905ec382be207d01b18bd5c3790dbbb19995813092ee3",
+    "bin/gate/access": "10ef52b33cf9cabb1836ff80ef997a5cc3ce0b62d14ad46ea638b47b70a357e0",
+    "bin/gate/gateway": "0cb04a286564933e9a3d6dc032c946e6393661ce967b247f6c9d46518e3feea8",
+    "web/storefront/dist/server/entry.mjs": "bede6fe30af92b9fd76ed1d2d80f4cbf61a3994e6c7c6db79db89a41e5de8902",
+    "web/backoffice/dist/server/entry.mjs": "fc2e68dc7cd03ec5f3161b1588927ce6fc2fbb858d73cb411ba49397dd3ffaf4",
+    "web/scanner/dist/assets/index-Bg3KvOvM.js": "5c06735128939df5d3575c6abc2a09fc36d08b9e8861443fd8f42f4239508bb8",
+    "web/scanner/dist/assets/index-YSOJujVX.css": "16cab488e3e74ae7d9896329a369222dd4e354e7527b7f6eda52d4f4ba3ba8ac",
+    "web/scanner/dist/favicon.svg": "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66",
+    "web/scanner/dist/index.html": "13b670fde043a81bebdfca34fb7991449b4d0d60822a2c509f0f261e33e7a472"
+  },
+  "profile_sha256": "497f6069cd79e344bf1605d7f531cbc2a971b7241e9aab8a7414beafd6746813",
+  "harness_sha256": {
+    "runner": "02dd25d6ab7d9711701100d79bd7649a544c758ddf1bb145f1335a70036b573e",
+    "analyzer": "02962577d53ec1a3b2de910a371227c4db3ad1b89abf4ead6ddb2e6e083bbc08"
+  },
+  "root_gate_verdict_present": false,
+  "browser": {
+    "channel": "chrome",
+    "playwright_core": "1.62.1",
+    "node": "v24.11.1",
+    "chrome_version": "153.0.8010.47"
+  },
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "cpus": 16,
+    "total_memory_bytes": 67425112064
+  },
+  "topology": {
+    "compose_files": [
+      "compose.yaml",
+      "compose.direct-ports.yaml",
+      "compose.onsale-load.yaml",
+      "compose.smoke-cadence.yaml",
+      "compose.smoke.yaml"
+    ],
+    "project_alias": "owned-tkt492-project",
+    "service_count": 19,
+    "port_slot": 39,
+    "worker_cadence": {
+      "access_lifecycle_checkpoint": "1s",
+      "access_event_retry_backoff": [
+        "100ms",
+        "200ms",
+        "400ms",
+        "800ms",
+        "1s",
+        "1s"
+      ],
+      "commerce_recovery": "2s",
+      "refund_reversal": "2s",
+      "healthcheck": "5s",
+      "otel_metric_export": "5s"
+    },
+    "database_pool_defaults": {
+      "max_open_connections": 25,
+      "max_idle_connections": 10,
+      "connection_max_lifetime": "30m",
+      "connection_max_idle_time": "5m"
+    }
+  },
+  "images": {
+    "gateway": {
+      "image_id": "sha256:368f6099d4503c7476b8011537e5f9e4b78f00aca57c5dfe58c6097fae24f78a",
+      "reference": "ticketing-tkt492-faab10cf7185436596-gateway"
+    },
+    "access": {
+      "image_id": "sha256:3340dc6924666b1ff36cac8b943445fd46dee0e9a2eabd8e0398a9da9de92561",
+      "reference": "ticketing-tkt492-faab10cf7185436596-access"
+    },
+    "commerce": {
+      "image_id": "sha256:366f111826c36ddc3fbb1c13536833bc3c852f9d7261eed0e6ad0c4ff455cbeb",
+      "reference": "ticketing-tkt492-faab10cf7185436596-commerce"
+    },
+    "payments": {
+      "image_id": "sha256:0a2ed0f778d2071538adeff2e92c1d8d6cc70c4c86fcf0928c240d1b0989f057",
+      "reference": "ticketing-tkt492-faab10cf7185436596-payments"
+    },
+    "inventory": {
+      "image_id": "sha256:a0fa2dc3e971c8bc3bb7fb1f48b6e83c7565ed52738c3bb2a3c5e94742dfcc13",
+      "reference": "ticketing-tkt492-faab10cf7185436596-inventory"
+    },
+    "catalog": {
+      "image_id": "sha256:d81c14f2fbe95992f28ad9ba6fb1b841a766012eaa18379885a82669a4c20ead",
+      "reference": "ticketing-tkt492-faab10cf7185436596-catalog"
+    },
+    "access-lifecycle-backfill": {
+      "image_id": "sha256:4dc05c256d58f03b65d9c5393b5fff064453720294a9a2be37e4ee2f3d598288",
+      "reference": "ticketing-tkt492-faab10cf7185436596-access-lifecycle-backfill"
+    },
+    "payments-migrate": {
+      "image_id": "sha256:6d0d3fc578cbac622a06f9ce5b6395989904815ee20601acaf2e69c8e1374a3f",
+      "reference": "ticketing-tkt492-faab10cf7185436596-payments-migrate"
+    },
+    "commerce-migrate": {
+      "image_id": "sha256:70641229609809c817d842ef1eeb0f6be2b5bb234f99c2cfc9856fc98798c267",
+      "reference": "ticketing-tkt492-faab10cf7185436596-commerce-migrate"
+    },
+    "access-migrate": {
+      "image_id": "sha256:6e9a061c22db803249abbdb623be9a800c9395618498b017448c94c9e1819bb8",
+      "reference": "ticketing-tkt492-faab10cf7185436596-access-migrate"
+    },
+    "inventory-migrate": {
+      "image_id": "sha256:79dc96333d9b6f09fe89466fe21b02d3e140dae5bbd2d404c7fa27cb1b610b13",
+      "reference": "ticketing-tkt492-faab10cf7185436596-inventory-migrate"
+    },
+    "catalog-migrate": {
+      "image_id": "sha256:ab064377ed6e54d1e0febd28cad42e1090dbed5159daed3b42e20c242e95b3e7",
+      "reference": "ticketing-tkt492-faab10cf7185436596-catalog-migrate"
+    },
+    "nats-init": {
+      "image_id": "sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c",
+      "reference": "natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c"
+    },
+    "postgres": {
+      "image_id": "sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
+      "reference": "postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
+    },
+    "nats": {
+      "image_id": "sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66",
+      "reference": "nats:2.14.4-alpine3.22@sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66"
+    },
+    "lgtm": {
+      "image_id": "sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8",
+      "reference": "grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8"
+    },
+    "scanner": {
+      "image_id": "sha256:5b8dbd81964b4f6b0e6a315e4381a257093118cf617fe2f9406ed7a816899d9f",
+      "reference": "ticketing-tkt492-faab10cf7185436596-scanner"
+    },
+    "backoffice": {
+      "image_id": "sha256:f256cf85d762b68f52bd5d49e896fd6452a387a4af7d9a7924f48bbcade1d3b5",
+      "reference": "ticketing-tkt492-faab10cf7185436596-backoffice"
+    },
+    "storefront": {
+      "image_id": "sha256:92bb14e86b1288f6f4b22c1813cd2c8685570455a60398ba140afadb79f21d65",
+      "reference": "ticketing-tkt492-faab10cf7185436596-storefront"
+    }
+  },
+  "docker_container_limits": {
+    "gateway": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-lifecycle-backfill": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats-init": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "postgres": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "lgtm": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "scanner": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "backoffice": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "storefront": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    }
+  },
+  "started_containers": [
+    "access",
+    "access-lifecycle-backfill",
+    "access-migrate",
+    "backoffice",
+    "catalog",
+    "catalog-migrate",
+    "commerce",
+    "commerce-migrate",
+    "gateway",
+    "inventory",
+    "inventory-migrate",
+    "lgtm",
+    "nats",
+    "nats-init",
+    "payments",
+    "payments-migrate",
+    "postgres",
+    "scanner",
+    "storefront"
+  ],
+  "result": "aborted",
+  "completed_at": "2026-09-27T23:24:31.054Z",
+  "evidence_sha256": {
+    "samples.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "warmups.jsonl": "3505716f2a741e1bd05f7a79f0a9f5fe31339e3239a534153fb557095226d54c",
+    "health.jsonl": "edd48a90cea584859d60325b03d8b82af911ffa082553b171d846ef067829cd2",
+    "fixtures.json": "7f7bd8b1a5aba5d5ceca441986a897f46ce3144f8548443f52e4099687740754",
+    "correctness.json": "9d0fe32e3cc568f8bbe099360dff0f34b116efcb3efb0d309ef69ddb0f0e527c",
+    "failure.json": "a8df579184e6939449b1ace3790f977ed4897095561133d5eb96497085009631"
+  },
+  "aliases_present": 660,
+  "page_faults": []
+}

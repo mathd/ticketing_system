@@ -1,0 +1,75 @@
+{
+  "controls": [
+    {
+      "name": "delayed_genuine_response",
+      "observed_latency_ms": 1062.6000000238419,
+      "observed_status": 200,
+      "observed_decision": "accepted",
+      "rendered_class": "accepted",
+      "rendered_heading": "Accepted",
+      "rendered_body_prefix": "Entry recorded at",
+      "replay_notice_present": false,
+      "detected": true
+    },
+    {
+      "name": "online_abort_is_not_offline",
+      "online": true,
+      "observed_error": "aborted_online",
+      "detected": true
+    },
+    {
+      "name": "wrong_wire_decision",
+      "observed_status": 409,
+      "observed_decision": "rejected",
+      "rendered_class": "rejected",
+      "rendered_heading": "Rejected",
+      "rendered_body_prefix": "Already redeemed at",
+      "expected_rejected": true,
+      "detected": true
+    },
+    {
+      "name": "correct_wire_wrong_render",
+      "subcases": [
+        {
+          "name": "wrong_heading",
+          "status": 200,
+          "decision": "accepted",
+          "rendered_class": "accepted",
+          "rendered_heading": "Wrong result",
+          "rendered_body_prefix": "Entry recorded at",
+          "detected": true
+        },
+        {
+          "name": "wrong_class",
+          "status": 200,
+          "decision": "accepted",
+          "rendered_class": "rejected",
+          "rendered_heading": "Accepted",
+          "rendered_body_prefix": "Entry recorded at",
+          "detected": true
+        }
+      ],
+      "detected": true
+    },
+    {
+      "name": "identical_refusals_are_fresh",
+      "first_occurrence_id": "bb94e29b-a266-40e9-80cf-c7b6e1eac04e",
+      "second_occurrence_id": "2fb2545d-340d-4223-b28b-b761fc942953",
+      "first_click_at_ms": 768.1999999284744,
+      "second_click_at_ms": 1083.0999999046326,
+      "first_rendered_class": "rejected",
+      "first_rendered_heading": "Rejected",
+      "first_rendered_body_prefix": "Already redeemed at",
+      "second_rendered_class": "rejected",
+      "second_rendered_heading": "Rejected",
+      "second_rendered_body_prefix": "Already redeemed at",
+      "same_visible_class": true,
+      "detected": true
+    },
+    {
+      "name": "missed_arrival_invalidates_generator",
+      "missed_arrivals": 1,
+      "detected": true
+    }
+  ]
+}

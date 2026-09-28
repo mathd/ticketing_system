@@ -1,0 +1,66 @@
+{
+  "status": "failed",
+  "sequences": [],
+  "reconciliation_diagnostics": [
+    {
+      "label": "warmup",
+      "expected_occurrence_count": 20,
+      "response_status": 200,
+      "returned_total": 20,
+      "returned_unique_count": 20,
+      "pending_total": 0,
+      "pending_inside_expected": 0,
+      "pending_outside_expected": 0,
+      "local_state_counts": {
+        "QUEUED": 0,
+        "SYNCED": 20,
+        "RESOLVED": 0,
+        "missing": 0,
+        "other": 0
+      }
+    },
+    {
+      "label": "warmup",
+      "expected_occurrence_count": 20,
+      "response_status": 200,
+      "returned_total": 20,
+      "returned_unique_count": 20,
+      "pending_total": 0,
+      "pending_inside_expected": 0,
+      "pending_outside_expected": 0,
+      "local_state_counts": {
+        "QUEUED": 0,
+        "SYNCED": 20,
+        "RESOLVED": 0,
+        "missing": 0,
+        "other": 0
+      }
+    },
+    {
+      "label": "warmup",
+      "expected_occurrence_count": 20,
+      "response_status": 200,
+      "returned_total": 20,
+      "returned_unique_count": 20,
+      "pending_total": 13,
+      "pending_inside_expected": 13,
+      "pending_outside_expected": 0,
+      "local_state_counts": {
+        "QUEUED": 13,
+        "SYNCED": 7,
+        "RESOLVED": 0,
+        "missing": 0,
+        "other": 0
+      }
+    }
+  ],
+  "lifecycle_verifier": "pending",
+  "exact_assertions": false,
+  "failures": [
+    {
+      "source": "runner",
+      "category": "database",
+      "code": "offline_reconcile_warmup_result_incomplete"
+    }
+  ]
+}

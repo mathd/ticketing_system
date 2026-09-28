@@ -1,0 +1,138 @@
+{
+  "status": "passed",
+  "sequences": [
+    {
+      "name": "single acceptance",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "513da9f1-2930-4d7d-9092-888a5e5b113f",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:49:05.958Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "duplicate refusal",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "854299d2-1a0d-496a-8b95-2578c232bd41",
+        "status": 409,
+        "decision": "rejected",
+        "reason": "already_redeemed",
+        "rendered_class": "rejected",
+        "rendered_heading": "Rejected",
+        "rendered_body_prefix": "Already redeemed at",
+        "replay_notice_present": false,
+        "scanned_at": null,
+        "original_scan_at": "2026-09-27T23:49:06.291Z",
+        "error_classification": null
+      },
+      "precondition": {
+        "occurrence_id": "e996563f-b1a1-41a4-983e-90e872773443",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:49:06.291Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "multi-entry pass",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "2cc48b51-7b04-4715-9b89-d60368c5435a",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:49:06.958Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "exit-required refusal",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "0f328774-f777-4428-ac09-f5d1d6423a4f",
+        "status": 409,
+        "decision": "rejected",
+        "reason": "exit_required",
+        "rendered_class": "rejected",
+        "rendered_heading": "Rejected",
+        "rendered_body_prefix": "Credential is invalid or cannot be redeemed",
+        "replay_notice_present": false,
+        "scanned_at": null,
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    },
+    {
+      "name": "offline queue and reconciliation",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "c63d5e5c-541a-455f-8c4e-a3a1367f9ca2",
+        "rendered_class": "queued",
+        "rendered_heading": "Queued offline",
+        "rendered_body_prefix": "No connection",
+        "queue_state_before_sync": "QUEUED",
+        "reconcile_result": "recorded",
+        "persisted_state": "SYNCED"
+      }
+    },
+    {
+      "name": "second independent acceptance",
+      "status": "passed",
+      "observed": {
+        "occurrence_id": "de915980-0787-48a0-8dad-eae7cc33fdd3",
+        "status": 200,
+        "decision": "accepted",
+        "reason": null,
+        "rendered_class": "accepted",
+        "rendered_heading": "Accepted",
+        "rendered_body_prefix": "Entry recorded at",
+        "replay_notice_present": false,
+        "scanned_at": "2026-09-27T23:49:08.024Z",
+        "original_scan_at": null,
+        "error_classification": null
+      }
+    }
+  ],
+  "reconciliation_diagnostics": [
+    {
+      "label": "short-correctness",
+      "expected_occurrence_count": 1,
+      "response_status": 200,
+      "returned_total": 1,
+      "returned_unique_count": 1,
+      "pending_total": 0,
+      "pending_inside_expected": 0,
+      "pending_outside_expected": 0,
+      "local_state_counts": {
+        "QUEUED": 0,
+        "SYNCED": 1,
+        "RESOLVED": 0,
+        "missing": 0,
+        "other": 0
+      }
+    }
+  ],
+  "lifecycle_verifier": "not_run_controls_mode",
+  "exact_assertions": false,
+  "failures": []
+}

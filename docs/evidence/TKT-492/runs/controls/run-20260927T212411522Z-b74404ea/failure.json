@@ -1,0 +1,7 @@
+{
+  "status": "aborted",
+  "phase": "setup_or_run_failed",
+  "error_type": null,
+  "error_location": "run.mjs:124:7",
+  "at": "2026-09-27T21:24:58.207Z"
+}

@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "ticket": "TKT-492",
+  "profile_id": "tkt492-local-scanner-v1",
+  "mode": "controls",
+  "attempt": null,
+  "started_at": "2026-09-27T23:02:04.973Z",
+  "status": "aborted",
+  "source_head": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_head_expected": "036f776f32656cf978b8a397ff51787b7f834de6",
+  "source_dirty_paths": [
+    ".claude/sdlc.config.json",
+    "docs/evidence/TKT-492/README.md",
+    "docs/evidence/TKT-492/analyze.mjs",
+    "docs/evidence/TKT-492/artifact-provenance.json",
+    "docs/evidence/TKT-492/follow-up-20260927.md",
+    "docs/evidence/TKT-492/pass2-batch.md",
+    "docs/evidence/TKT-492/pass3-batch.md",
+    "docs/evidence/TKT-492/profile.json",
+    "docs/evidence/TKT-492/run.mjs",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211017383Z-1b3a1ef3/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211253413Z-65118057/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T211758635Z-a39f39c7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T212411522Z-b74404ea/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215617233Z-8b794232/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/failure.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T215939992Z-8b032045/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221330025Z-617a45d7/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221554773Z-2aeecb10/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221659331Z-a736c434/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221803816Z-584bea68/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T221907033Z-8633f3e5/warmups.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/controls.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/correctness.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/fixtures.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/health.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/metadata.json",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/samples.jsonl",
+    "docs/evidence/TKT-492/runs/controls/run-20260927T222010654Z-15c00200/warmups.jsonl"
+  ],
+  "artifact_sha256": {
+    "bin/gate/catalog": "15f4a2ff041f96e1d20bd87fec349da20c56556b1aca4a19ff0f022e642648b6",
+    "bin/gate/inventory": "a490930aba9d1bf895583e7eed88c29b6859a607b7280a2b101fcb8dd18e669c",
+    "bin/gate/commerce": "dd8208561805ad0315366c1fc94125cf70288efc221651a78d012e84d55bb538",
+    "bin/gate/payments": "9eb40632b617433b11f905ec382be207d01b18bd5c3790dbbb19995813092ee3",
+    "bin/gate/access": "10ef52b33cf9cabb1836ff80ef997a5cc3ce0b62d14ad46ea638b47b70a357e0",
+    "bin/gate/gateway": "0cb04a286564933e9a3d6dc032c946e6393661ce967b247f6c9d46518e3feea8",
+    "web/storefront/dist/server/entry.mjs": "bede6fe30af92b9fd76ed1d2d80f4cbf61a3994e6c7c6db79db89a41e5de8902",
+    "web/backoffice/dist/server/entry.mjs": "fc2e68dc7cd03ec5f3161b1588927ce6fc2fbb858d73cb411ba49397dd3ffaf4",
+    "web/scanner/dist/assets/index-Bg3KvOvM.js": "5c06735128939df5d3575c6abc2a09fc36d08b9e8861443fd8f42f4239508bb8",
+    "web/scanner/dist/assets/index-YSOJujVX.css": "16cab488e3e74ae7d9896329a369222dd4e354e7527b7f6eda52d4f4ba3ba8ac",
+    "web/scanner/dist/favicon.svg": "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66",
+    "web/scanner/dist/index.html": "13b670fde043a81bebdfca34fb7991449b4d0d60822a2c509f0f261e33e7a472"
+  },
+  "profile_sha256": "497f6069cd79e344bf1605d7f531cbc2a971b7241e9aab8a7414beafd6746813",
+  "harness_sha256": {
+    "runner": "f85dc6ecc0b7c389a36ffc6671535e92bf38b969d15238fe25d8f6261cadbdfd",
+    "analyzer": "02962577d53ec1a3b2de910a371227c4db3ad1b89abf4ead6ddb2e6e083bbc08"
+  },
+  "root_gate_verdict_present": false,
+  "browser": {
+    "channel": "chrome",
+    "playwright_core": "1.62.1",
+    "node": "v24.11.1",
+    "chrome_version": "153.0.8010.47"
+  },
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "cpus": 16,
+    "total_memory_bytes": 67425112064
+  },
+  "topology": {
+    "compose_files": [
+      "compose.yaml",
+      "compose.direct-ports.yaml",
+      "compose.onsale-load.yaml",
+      "compose.smoke-cadence.yaml",
+      "compose.smoke.yaml"
+    ],
+    "project_alias": "owned-tkt492-project",
+    "service_count": 19,
+    "port_slot": 39,
+    "worker_cadence": {
+      "access_lifecycle_checkpoint": "1s",
+      "access_event_retry_backoff": [
+        "100ms",
+        "200ms",
+        "400ms",
+        "800ms",
+        "1s",
+        "1s"
+      ],
+      "commerce_recovery": "2s",
+      "refund_reversal": "2s",
+      "healthcheck": "5s",
+      "otel_metric_export": "5s"
+    },
+    "database_pool_defaults": {
+      "max_open_connections": 25,
+      "max_idle_connections": 10,
+      "connection_max_lifetime": "30m",
+      "connection_max_idle_time": "5m"
+    }
+  },
+  "images": {
+    "gateway": {
+      "image_id": "sha256:f81fc713cdd37760066494c15eec8a80df75760e00335f0281a5071395bae831",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-gateway"
+    },
+    "access": {
+      "image_id": "sha256:d3df6eb42a6495649dec6b6450bd356b0e0487a552e2e57707d0e4880a0618ce",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-access"
+    },
+    "payments": {
+      "image_id": "sha256:df3e9d20cc1e9ed29f1405677bbd7ac16761b9534b493050030eb64069e891ff",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-payments"
+    },
+    "commerce": {
+      "image_id": "sha256:e929b02a2701acb0baeeebe59a29989af34a56db707b16f7641965e8c6d2828d",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-commerce"
+    },
+    "catalog": {
+      "image_id": "sha256:b3484cdb4c49eb04ce7d1612b50ac6d1e227744d63bcc111cd3f1e5d3c65f446",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-catalog"
+    },
+    "inventory": {
+      "image_id": "sha256:48a756abd3e7fdbcb262cd6971613278c4d6af170752a33938f0d574ee37ef5d",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-inventory"
+    },
+    "access-lifecycle-backfill": {
+      "image_id": "sha256:3f6b2d0fbc98fe4534bf6be468eff52ccf908b7f9666c00c15304550474d94c9",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-access-lifecycle-backfill"
+    },
+    "commerce-migrate": {
+      "image_id": "sha256:a46a0b176261e16ef9e7f56bb99655c913b498132997680e81f593a2164acbe9",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-commerce-migrate"
+    },
+    "catalog-migrate": {
+      "image_id": "sha256:5c3dff6f2e7b61b1cfb522b2133dc103e349127fc13ca78b000185ff0145b9d5",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-catalog-migrate"
+    },
+    "payments-migrate": {
+      "image_id": "sha256:fcc0661f4f8b8efc5b0d9de71f2348162d18ae94d7c04224eeea6e13ac6bfcdb",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-payments-migrate"
+    },
+    "inventory-migrate": {
+      "image_id": "sha256:566e5524b6bf370e886db0b65af7483e41a1300caeced3f1f06929ba38a23ee0",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-inventory-migrate"
+    },
+    "access-migrate": {
+      "image_id": "sha256:0eb0d341b14eb044ba5183435741f7c626b17c99e502def92e59aff34fc126ee",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-access-migrate"
+    },
+    "nats-init": {
+      "image_id": "sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c",
+      "reference": "natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c"
+    },
+    "postgres": {
+      "image_id": "sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
+      "reference": "postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
+    },
+    "nats": {
+      "image_id": "sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66",
+      "reference": "nats:2.14.4-alpine3.22@sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66"
+    },
+    "scanner": {
+      "image_id": "sha256:a07db2cae1fc7f696f0bdc594a8fd2be6c8ada1f7a62a9e61209adfa77b3fb90",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-scanner"
+    },
+    "lgtm": {
+      "image_id": "sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8",
+      "reference": "grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8"
+    },
+    "backoffice": {
+      "image_id": "sha256:93717dc561babb5cfc2d5b15b20cd8869b66e0940ecbda21d916e5a06140dc52",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-backoffice"
+    },
+    "storefront": {
+      "image_id": "sha256:4b11e2601c32d45b9b0361ca41e775a9c80df9bf5bf8b7a793692c3c2273dec3",
+      "reference": "ticketing-tkt492-62bc49228d8b4a199a-storefront"
+    }
+  },
+  "docker_container_limits": {
+    "gateway": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-lifecycle-backfill": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "commerce-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "catalog-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "payments-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "inventory-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "access-migrate": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats-init": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "postgres": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "nats": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "scanner": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "lgtm": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "backoffice": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    },
+    "storefront": {
+      "nano_cpus": 0,
+      "memory_limit_bytes": 0,
+      "cpu_quota": 0,
+      "cpu_period": 0
+    }
+  },
+  "started_containers": [
+    "access",
+    "access-lifecycle-backfill",
+    "access-migrate",
+    "backoffice",
+    "catalog",
+    "catalog-migrate",
+    "commerce",
+    "commerce-migrate",
+    "gateway",
+    "inventory",
+    "inventory-migrate",
+    "lgtm",
+    "nats",
+    "nats-init",
+    "payments",
+    "payments-migrate",
+    "postgres",
+    "scanner",
+    "storefront"
+  ],
+  "result": "aborted",
+  "completed_at": "2026-09-27T23:02:50.522Z",
+  "evidence_sha256": {
+    "samples.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "warmups.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "health.jsonl": "b0791f666e8bce1e7f274d9be8457401a5db852155fffd2a4c3c8a2033e51ff1",
+    "correctness.json": "7dae80c16e8669b58e3ff587664cd09e9cc5891da3ad7daf2a02d688d498a3b7",
+    "controls.json": "ed02d7240cb17059caf055bc2ef2ae82cdcfd3d26c98183b01e2adfb8ea7b1bd",
+    "failure.json": "e9e3e05715ad24cf7efe94d480deb77f53a45b644dc35b0baa62a91f4e69e9b4"
+  },
+  "aliases_present": 20,
+  "page_faults": []
+}

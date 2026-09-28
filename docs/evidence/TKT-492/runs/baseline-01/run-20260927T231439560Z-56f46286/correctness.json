@@ -1,0 +1,13 @@
+{
+  "status": "failed",
+  "sequences": [],
+  "lifecycle_verifier": "pending",
+  "exact_assertions": false,
+  "failures": [
+    {
+      "source": "runner",
+      "category": "database",
+      "code": "offline_reconcile_warmup_result_incomplete"
+    }
+  ]
+}

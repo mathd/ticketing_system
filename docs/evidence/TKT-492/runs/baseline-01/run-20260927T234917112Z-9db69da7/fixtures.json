@@ -1,0 +1,48 @@
+{
+  "alias_count": 660,
+  "class_counts": {
+    "online-single-b1": 50,
+    "online-single-b2": 50,
+    "online-single-b3": 50,
+    "online-single-b4": 50,
+    "online-single-b5": 50,
+    "online-single-b6": 50,
+    "online-single-b7": 50,
+    "online-single-b8": 50,
+    "online-warmup-b1": 40,
+    "offline-warmup-b1": 40,
+    "offline-shared-ab-b1": 50,
+    "offline-unique-cd-b1": 50,
+    "offline-unique-cd-b2": 50,
+    "pass-exit-refusal-b1": 4,
+    "pass-warmup-b1": 4,
+    "pass-measured-b1": 4,
+    "correctness-pass-b1": 1,
+    "offline-pass-warmup-b1": 4,
+    "offline-pass-measured-b1": 4,
+    "correctness-single-b1": 8,
+    "correctness-race-b1": 1
+  },
+  "offer_classes": {
+    "single": {
+      "offer_alias": "single",
+      "policy": "single"
+    },
+    "pass": {
+      "offer_alias": "pass",
+      "policy": {
+        "mode": "multi",
+        "requires_exit": false
+      }
+    },
+    "passExit": {
+      "offer_alias": "passExit",
+      "policy": {
+        "mode": "multi",
+        "requires_exit": true
+      }
+    }
+  },
+  "credentials_written": false,
+  "guest_references_written": false
+}

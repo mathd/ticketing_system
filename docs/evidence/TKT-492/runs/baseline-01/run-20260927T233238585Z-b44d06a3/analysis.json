@@ -1,0 +1,54 @@
+{
+  "profile_id": "tkt492-local-scanner-v1",
+  "attempts": [
+    {
+      "attempt": "01",
+      "run_status": "complete",
+      "result": "incomplete",
+      "classification": {
+        "generator": "valid",
+        "correctness": "inconclusive",
+        "latency": "inconclusive",
+        "outcome": "incomplete"
+      },
+      "correctness_failures": [],
+      "diagnostic": "attempt 01: scheduler lag does not match page timestamps",
+      "counts": {
+        "single_accept": 400,
+        "single_duplicate": 400,
+        "pass_accept": 400,
+        "pass_exit_required": 400,
+        "offline_single_queued": 200,
+        "offline_pass_queued": 200
+      },
+      "latency_ms": {
+        "count": 2000,
+        "p50": 40.300000071525574,
+        "p95": 52.60000002384186,
+        "p99": 61.5,
+        "maximum": 77.19999992847443,
+        "violations_at_or_above_500": 0
+      },
+      "scheduler_lag_ms": {
+        "count": 2000,
+        "p50": 0,
+        "p95": 0.20000004768371582,
+        "p99": 0.30009758472442627,
+        "maximum": 1.6000487804412842
+      },
+      "validity": {
+        "missed_arrivals": 0,
+        "overlap_count": null,
+        "unknown_transport_failures": 0
+      },
+      "evidence_hashes": {
+        "samples.jsonl": "bbe2d3b2fb2ab321bc01799624e6d36a813bea5d99c37f581c0e8eef7f695753",
+        "warmups.jsonl": "8e336863d12bbac363babdb3f48124bede721921991c0f6d4b4e6bca15f696c1",
+        "health.jsonl": "b74262479ea212f3a2a775b9560f9ca3cfa21b77dabfa082743a4525a1cfca6d",
+        "fixtures.json": "7f7bd8b1a5aba5d5ceca441986a897f46ce3144f8548443f52e4099687740754",
+        "correctness.json": "a0400e346b7bbb38a03c240bea0ce5f68478e1eb0622fdbdecac4c4ab565c23e"
+      }
+    }
+  ],
+  "combined": "incomplete"
+}

@@ -1,0 +1,14 @@
+{
+  "directory": "/tmp/tkt492-lag-mutations-bjkcquqa",
+  "mutations": [
+    {
+      "mutation": "signed_delta",
+      "detected": true
+    },
+    {
+      "mutation": "unchecked_lag",
+      "detected": true
+    }
+  ],
+  "unmodified_passes": 6
+}

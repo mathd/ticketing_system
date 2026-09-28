@@ -1,0 +1,13 @@
+{
+  "recorded_by": "orchestrator",
+  "raw_json_files_scanned": 191,
+  "credential_marker_matches": 0,
+  "mutation_reports": "Captured command results. Temporary paths in the JSON reports identify the original test workspace, not repository dependencies.",
+  "gate": "pending",
+  "review_pass_4": "pending",
+  "script_sha256": {
+    "run.mjs": "7ca57756e62ecf21ff2141e73a3710b41f340496538688ed71836cf5bff434f2",
+    "analyze.mjs": "b0d876bb0f26c57e8ec794bbba54e8cd4484b7acd1191172644cba1a9b81abd7",
+    "profile.json": "497f6069cd79e344bf1605d7f531cbc2a971b7241e9aab8a7414beafd6746813"
+  }
+}

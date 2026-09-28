@@ -1,0 +1,3 @@
+{"at":"2026-09-27T23:11:22.666Z","phase":"setup","healthy":true,"running_containers":11,"expected_running_containers":11,"oom_kills":0,"restart_count":0,"cpu_percent_total":13.78,"memory_used_bytes_total":258147877,"memory_limit_bytes_total":741622740419}
+{"at":"2026-09-27T23:11:29.055Z","phase":"warmup","healthy":true,"running_containers":11,"expected_running_containers":11,"oom_kills":0,"restart_count":0,"cpu_percent_total":8.32,"memory_used_bytes_total":274191090,"memory_limit_bytes_total":741622740419}
+{"at":"2026-09-27T23:11:46.445Z","phase":"correctness","healthy":true,"running_containers":11,"expected_running_containers":11,"oom_kills":0,"restart_count":0,"cpu_percent_total":2.78,"memory_used_bytes_total":281478693,"memory_limit_bytes_total":741622740419}

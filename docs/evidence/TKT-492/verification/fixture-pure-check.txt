@@ -1,0 +1,3 @@
+pending-as-ready: detected
+skip-wait-precondition: detected
+unmodified fixture checks: 6/6 passed

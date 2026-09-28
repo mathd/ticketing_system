@@ -1,0 +1,2 @@
+{"at":"2026-09-27T23:23:07.283Z","phase":"setup","healthy":true,"running_containers":11,"expected_running_containers":11,"oom_kills":0,"restart_count":0,"cpu_percent_total":3.04,"memory_used_bytes_total":254315332,"memory_limit_bytes_total":741622740419}
+{"at":"2026-09-27T23:23:23.151Z","phase":"warmup","healthy":true,"running_containers":11,"expected_running_containers":11,"oom_kills":0,"restart_count":0,"cpu_percent_total":6.95,"memory_used_bytes_total":284098036,"memory_limit_bytes_total":741622740419}

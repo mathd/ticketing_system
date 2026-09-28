@@ -1,0 +1,30 @@
+{
+  "alias_count": 23,
+  "class_counts": {
+    "control-single-b1": 20,
+    "control-pass-exit-b1": 1,
+    "control-pass-b1": 2
+  },
+  "offer_classes": {
+    "single": {
+      "offer_alias": "single",
+      "policy": "single"
+    },
+    "pass": {
+      "offer_alias": "pass",
+      "policy": {
+        "mode": "multi",
+        "requires_exit": false
+      }
+    },
+    "passExit": {
+      "offer_alias": "passExit",
+      "policy": {
+        "mode": "multi",
+        "requires_exit": true
+      }
+    }
+  },
+  "credentials_written": false,
+  "guest_references_written": false
+}

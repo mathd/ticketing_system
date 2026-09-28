@@ -1,0 +1,96 @@
+{
+  "profile_id": "tkt492-local-scanner-v1",
+  "target_ms_exclusive": 500,
+  "deciding_statistic": "maximum",
+  "host": "pending orchestrator capture",
+  "topology": "scripts/browser.sh compose stack with its five compose files; exact image and host details pending capture",
+  "browser": {
+    "channel": "chrome",
+    "headless": true,
+    "contexts": 4,
+    "stagger_ms": 250,
+    "interval_ms": 1000,
+    "max_in_flight_per_context": 1,
+    "playwright_package": "playwright-core"
+  },
+  "deadlines": {
+    "startup_ms": 600000,
+    "fixture_setup_per_attempt_ms": 1200000,
+    "scan_ms": 5000,
+    "reconciliation_ms": 60000,
+    "schedule_lag_p99_ms_max": 25,
+    "schedule_lag_ms_max": 100
+  },
+  "attempts": ["01", "02"],
+  "samples_per_attempt": {
+    "online_warmup_per_context": 40,
+    "offline_warmup_per_context": 20,
+    "measured_online_per_class_per_context": 100,
+    "measured_offline_per_context": 100,
+    "measured_online_total": 1600,
+    "measured_offline_total": 400,
+    "measured_total": 2000
+  },
+  "online_classes": {
+    "single_accept": {
+      "status": 200,
+      "decision": "accepted",
+      "reason": null,
+      "heading": "Accepted",
+      "body_prefix": "Entry recorded at"
+    },
+    "single_duplicate": {
+      "status": 409,
+      "decision": "rejected",
+      "reason": "already_redeemed",
+      "heading": "Rejected",
+      "body_prefix": "Already redeemed at"
+    },
+    "pass_accept": {
+      "status": 200,
+      "decision": "accepted",
+      "reason": null,
+      "heading": "Accepted",
+      "body_prefix": "Entry recorded at"
+    },
+    "pass_exit_required": {
+      "status": 409,
+      "decision": "rejected",
+      "reason": "exit_required",
+      "heading": "Rejected",
+      "body_prefix": "Credential is invalid or cannot be redeemed"
+    }
+  },
+  "offline": {
+    "heading": "Queued offline",
+    "body_prefix": "No connection",
+    "queue_state": "QUEUED",
+    "single_ticket_contexts": ["A", "B", "C", "D"],
+    "pass_ticket_contexts": ["A", "B", "C", "D"],
+    "shared_single_ticket_contexts": ["A", "B"],
+    "reconnect_order": ["B", "A", "C", "D"]
+  },
+  "controls": [
+    "delayed_genuine_response",
+    "online_abort_is_not_offline",
+    "wrong_wire_decision",
+    "correct_wire_wrong_render",
+    "identical_refusals_are_fresh",
+    "missed_arrival_invalidates_generator"
+  ],
+  "correctness_sequences": 6,
+  "validity": {
+    "require_all_planned_samples": true,
+    "require_exact_class_counts": true,
+    "require_zero_missed_arrivals": true,
+    "require_zero_overlaps": true,
+    "require_zero_unknown_transport_failures": true,
+    "require_healthy_stack_before_and_after_phase": true,
+    "require_zero_latency_violations": true
+  },
+  "result": {
+    "attempt_01": "pending",
+    "attempt_02": "pending",
+    "combined": "pending"
+  }
+}

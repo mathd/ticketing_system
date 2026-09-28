@@ -1,0 +1,29 @@
+{
+  "directory": "/tmp/tkt492-analysis-mutations-ej3cy8gj",
+  "results": [
+    {
+      "mutation": "drop_known_failures",
+      "exit": 1,
+      "detected": true
+    },
+    {
+      "mutation": "disable_database_assertion",
+      "exit": 1,
+      "detected": true
+    },
+    {
+      "mutation": "drop_runner_failures",
+      "exit": 1,
+      "detected": true
+    },
+    {
+      "mutation": "skip_partial_database_checks",
+      "exit": 1,
+      "detected": true
+    },
+    {
+      "unmutated_runs": 6,
+      "passed": 6
+    }
+  ]
+}

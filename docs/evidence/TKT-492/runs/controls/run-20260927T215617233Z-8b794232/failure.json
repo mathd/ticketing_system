@@ -1,0 +1,7 @@
+{
+  "status": "aborted",
+  "phase": "control_suite_failed",
+  "error_type": "Error",
+  "error_location": "run.mjs:131:5",
+  "at": "2026-09-27T21:57:06.578Z"
+}

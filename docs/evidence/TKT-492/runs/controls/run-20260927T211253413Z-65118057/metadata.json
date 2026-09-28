@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "ticket": "TKT-492",
+  "profile_id": "tkt492-local-scanner-v1",
+  "mode": "controls",
+  "attempt": null,
+  "started_at": "2026-09-27T21:12:53.415Z",
+  "completed_at": "2026-09-27T21:13:36.551Z",
+  "status": "aborted",
+  "result": "aborted",
+  "evidence_sha256": {
+    "samples.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "warmups.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "health.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "correctness.json": "1502b93829574daa7c1b93ab31cf0f9843bca8e893b0b46ddc59a7aa81ccbf29",
+    "controls.json": "ed02d7240cb17059caf055bc2ef2ae82cdcfd3d26c98183b01e2adfb8ea7b1bd",
+    "failure.json": "24b3338dc9cbee198b49d93633bbaaece8fb16f8d1cfeef502b8a3211f281d4c"
+  },
+  "aliases_present": 0,
+  "page_faults": []
+}
