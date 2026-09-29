@@ -124,7 +124,7 @@ services:
   # One-shot: provisions the PLATFORM stream (ADR-007) at stack init.
   # Idempotent; the smoke suite asserts the stream EXISTS, it no longer creates it.
   nats-init:
-    image: natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c
+    image: natsio/nats-box:0.20.0@sha256:d2f04223f40e016f77922a8115d34b0cd5fad2ec10b19b39316ae92d07f3d295
     depends_on:
       nats:
         condition: service_healthy
