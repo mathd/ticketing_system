@@ -632,6 +632,59 @@ Per ADR-021's name-the-claim discipline, and because prose is not compiled:
   row; that test is the tripwire, and it was written precisely because an earlier comment claimed
   the agreement was structural and a one-sided fix falsified it.
 
+## Amendment (2026-10-04, TKT-285) — a zero-total order is classified by the operation lookup, and a PSP-skipped order is completed, not released
+
+A zero-total checkout skips the PSP (ADR-011, TKT-285 amendment), so payments holds no operation for
+the order. The old reading of "no operation" in `resolveCreated` is "payment was never attempted":
+record `not_attempted` and release the seat. Applied to a PSP-skipped order that was already
+finalized, it would silently cancel a sale the buyer was promised. This amendment closes that.
+
+### Decision
+
+The discriminator is the persisted gross total (`StuckOrder.Amount == 0`). It narrows the decision
+table. It does not replace the operation lookup, which stays the evidence (§2).
+
+| Zero-total order state | Resolution |
+|---|---|
+| `created`, lookup **error** (transport, 5xx) | Retry with backoff. Never `not_attempted`, never release. |
+| `created`, lookup **found** | A legacy order that bound an operation. Every existing `resolveCreated` branch applies, unchanged: operation status, provider status for an unresolved operation, and compensation for proven captured money with a gone claim. |
+| `created`, not found, `order.created` fact present | Replay `order.created`, confirm, submit `order.completed`, run `CompleteOrder`, clear the claim. |
+| `created`, not found, no `order.created` fact | Record `not_attempted` and release. The same path as a paid order with no operation. |
+| `confirmation_pending` | The same completion, with no lookup. Only the PSP-skipped path produces this status for a zero total. |
+| `payment_unknown`, `reconciliation_required`, `release_pending` | Existing paths, unchanged. |
+
+The `order.created` fact is the proof that checkout reached the buyer-details write: checkout writes
+`buyer_pii` before it. The runner reads it with a pure `SELECT` on `order_facts` by the deterministic
+fact ID. No migration is needed.
+
+A gone claim during the PSP-skipped completion **parks** the order for reconciliation. It never enters
+the captured-money compensation arm, because nothing was captured. The PSP-skipped completion calls
+payments for the operation lookup and for fact submission only. It never calls status, void, refund
+or charge.
+
+### Rejected: a durable "PSP skipped" marker
+
+A column on `orders` would need a data migration, and the lookup already supplies the evidence. It
+also leaves legacy orders alone: a zero-total order that bound an operation before this change is
+resolved by operation evidence, as any other order is. The zero-total dispatch does read one thing
+the lookup does not prove: that the persisted total is the total the buyer was quoted. No production
+code updates `reservations.total_amount` after insert (checked by `grep` for `UPDATE reservations`
+statements that write an amount; none found). If code ever starts to do so after a charge, the
+dispatch needs a durable marker. The adversary is the honest writer (ADR-021): a database writer can
+change the total, and nothing here defends against that.
+
+### Known residuals (not fixed here)
+
+- **Unfenced checkout against recovery.** Checkout's writes after `claimOrder` are not fenced by the
+  recovery claim. A zero checkout stalled for over two minutes before its intent fact can be released
+  as `not_attempted` while the request later resumes. A paid order has the same interleaving today
+  (TKT-319, claim and lease contract). The zero version cannot capture money.
+- **Buyer copy.** A `not_attempted` release replays as 408, which the storefront shows as "Payment
+  declined". This change adds one more producer of that answer, a zero order with no intent fact.
+  The buyer-facing fix is TKT-503.
+- **Paid recovery journal.** Recovery still completes a PAID order without submitting
+  `order.completed`. Only the PSP-skipped path submits it.
+
 ## References
 
 - [ADR-011 — Checkout finalization and canonical money journal](./ADR-011-checkout-journal-protocol.md) (recovery story amended by this ADR)
@@ -640,4 +693,5 @@ Per ADR-021's name-the-claim discipline, and because prose is not compiled:
 - [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) (§2 *observed, not predicted* is the precedent the TKT-262 amendment applies; §4 assigns unparking to TKT-146)
 - [ADR-032 — Stripe behind the PSP port](./ADR-032-stripe-behind-the-psp-port.md) (the status/refund contract `resolveReconciliation` reads; its TKT-115 amendment shipped the same-pass refund)
 - TKT-116 (the 202 branch this ADR's TKT-145 amendment records) · TKT-280 (`TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`, the tripwire that pins both the parked 409 and the unparked 202)
+- TKT-285 (the PSP-skipped zero-total order) · TKT-319 · TKT-502 · TKT-503
 - TKT-43 · TKT-28 (the walking skeleton this hardens) · TKT-11 (fiscal archive; owns the anchor choice) · TKT-33 (PII erasure machinery)
