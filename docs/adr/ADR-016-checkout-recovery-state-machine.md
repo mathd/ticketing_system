@@ -651,7 +651,7 @@ table. It does not replace the operation lookup, which stays the evidence (§2).
 | `created`, not found, `order.created` fact present | Replay `order.created`, confirm, submit `order.completed`, run `CompleteOrder`, clear the claim. |
 | `created`, not found, no `order.created` fact | Record `not_attempted` and release. The same path as a paid order with no operation. |
 | `confirmation_pending`, lookup **error** | Retry with backoff. |
-| `confirmation_pending`, lookup **found** | Park for reconciliation in one pass (D22). No producer creates this state: the old charge path could not answer 200 for zero, and checkout writes a zero `confirmation_pending` row only for an order it inserted, which has no operation. The evidence branches cannot finish such a row, because `RecordTerminalOutcome` excludes `confirmation_pending`. |
+| `confirmation_pending`, lookup **found** | Park for reconciliation in one pass (D22). No producer creates this state: the old charge path could not answer 200 for zero, and checkout writes a zero `confirmation_pending` row only for an order it inserted, which has no operation. Parking is uniform rather than per-outcome: a resolved `captured` operation could still complete through `confirmAndComplete` (`CompleteOrder` accepts `confirmation_pending`), but the `declined` and `timeout` branches cannot finish, because `RecordTerminalOutcome` excludes `confirmation_pending`. |
 | `confirmation_pending`, not found | The same completion as above, with no intent read: confirm only runs after the intent fact was written. |
 | `payment_unknown`, `reconciliation_required`, `release_pending` | Existing paths, unchanged. |
 

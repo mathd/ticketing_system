@@ -259,6 +259,13 @@ func TestZeroCreatedWhoseLookupFindsAnOperationKeepsTheExistingBranches(t *testi
 		if p.inventory.confirmed != 0 || len(p.completer.completed) != 0 {
 			t.Errorf("an unresolved legacy order was completed")
 		}
+		// A retry must not leave a record either: an order.failed journalled before the retry
+		// error would assert a failure that never happened, and the journal is append-only.
+		if len(p.journal.facts) != 0 || len(p.journal.created) != 0 || len(p.journal.completed) != 0 ||
+			p.payments.voidCalls != 0 || p.payments.refundCalls != 0 {
+			t.Errorf("an unknown status journalled or compensated: facts=%d created=%d completed=%d voids=%d refunds=%d; trace=%v",
+				len(p.journal.facts), len(p.journal.created), len(p.journal.completed), p.payments.voidCalls, p.payments.refundCalls, p.trace.steps)
+		}
 	})
 	t.Run("captured with a gone claim is compensated", func(t *testing.T) {
 		p, resolved := run(t, []store.StuckOrder{zeroStuck("created")}, func(p *ports) {
