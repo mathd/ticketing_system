@@ -75,6 +75,16 @@ type connectedJournal struct {
 	t *testing.T
 }
 
+func (j *connectedJournal) OrderCreated(_ context.Context, s store.StuckOrder) error {
+	j.t.Errorf("unexpected journal OrderCreated for order=%s", s.OrderID)
+	return nil
+}
+
+func (j *connectedJournal) OrderCompleted(_ context.Context, s store.StuckOrder) error {
+	j.t.Errorf("unexpected journal OrderCompleted for order=%s", s.OrderID)
+	return nil
+}
+
 func (j *connectedJournal) OrderFailed(_ context.Context, s store.StuckOrder) error {
 	j.t.Errorf("unexpected journal OrderFailed for order=%s", s.OrderID)
 	return errors.New("unexpected journal call")
