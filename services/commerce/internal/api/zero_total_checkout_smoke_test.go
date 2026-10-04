@@ -333,8 +333,26 @@ func TestAResumedZeroOrderIsAnswered202AndNothingElseHappens(t *testing.T) {
 			// Whatever the other services would say, they must not be asked.
 			z.set(func() { z.operation, z.confirm = http.StatusNotFound, http.StatusOK })
 			before := orderUpdatedAt(t, ctx, db, reservation)
+			// The stored buyer details are made DISTINGUISHABLE from what the replay carries
+			// (the replay re-sends "Free Buyer", free@example.test; the request must be identical or
+			// it is a fingerprint conflict instead of a resume). A resume that wrote buyer_pii
+			// before returning would overwrite them.
+			var buyerID uuid.UUID
+			if err := db.QueryRowContext(ctx, `SELECT buyer_id FROM reservations WHERE id=$1`, reservation).Scan(&buyerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE buyer_pii SET name='Stored Name', email='stored@example.test' WHERE buyer_id=$1`, buyerID); err != nil {
+				t.Fatal(err)
+			}
 
 			code, body := z.checkout(t, reservation, key)
+			var name, email string
+			if err := db.QueryRowContext(ctx, `SELECT name, email FROM buyer_pii WHERE buyer_id=$1`, buyerID).Scan(&name, &email); err != nil {
+				t.Fatal(err)
+			}
+			if name != "Stored Name" || email != "stored@example.test" {
+				t.Fatalf("buyer_pii = %q / %q after a zero-total replay, want it untouched: a resume must write nothing", name, email)
+			}
 			if code != http.StatusAccepted || body["status"] != status {
 				t.Fatalf("replay answered %d %v, want 202 with the durable status %q", code, body, status)
 			}
