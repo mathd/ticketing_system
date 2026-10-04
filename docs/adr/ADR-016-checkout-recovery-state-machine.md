@@ -651,7 +651,7 @@ table. It does not replace the operation lookup, which stays the evidence (§2).
 | `created`, not found, `order.created` fact present | Replay `order.created`, confirm, submit `order.completed`, run `CompleteOrder`, clear the claim. |
 | `created`, not found, no `order.created` fact | Record `not_attempted` and release. The same path as a paid order with no operation. |
 | `confirmation_pending`, lookup **error** | Retry with backoff. |
-| `confirmation_pending`, lookup **found** | The existing evidence branches, as for `created`. |
+| `confirmation_pending`, lookup **found** | Park for reconciliation in one pass (D22). No producer creates this state: the old charge path could not answer 200 for zero, and checkout writes a zero `confirmation_pending` row only for an order it inserted, which has no operation. The evidence branches cannot finish such a row, because `RecordTerminalOutcome` excludes `confirmation_pending`. |
 | `confirmation_pending`, not found | The same completion as above, with no intent read: confirm only runs after the intent fact was written. |
 | `payment_unknown`, `reconciliation_required`, `release_pending` | Existing paths, unchanged. |
 
@@ -677,11 +677,15 @@ Recovery's two-minute grace runs on that column, so a refresh would let a buyer 
 seconds keep recovery from ever claiming the order. This is the same reasoning the code already applies
 to `release_pending`. A paid resumed order still has its `updated_at` refreshed, as before.
 
-Recovery treats a zero-total `created` **or** `confirmation_pending` order the same way: it calls the
-operation lookup first. A lookup error retries. A found operation takes the existing evidence
-branches. Not found takes the PSP-skipped completion described above. A buyer whose zero checkout
-crashed mid-way therefore sees `202` on a replay until recovery completes the order, as for a paid
-order stuck in `payment_unknown`.
+Recovery treats a zero-total `created` **or** `confirmation_pending` order the same way up to the
+lookup: it calls the operation lookup first, and a lookup error retries. After a found operation the
+two statuses differ. A `created` order takes the existing evidence branches. A `confirmation_pending`
+order **parks** at once (D22), for the reason in the table. Not found takes the PSP-skipped path
+described above, and it does not always complete. A crash after the order insertion but before the
+`order.created` fact leads to `not_attempted`, a release, and a `timeout` answer. A gone claim parks.
+Only an order that has its intent fact and a live claim completes. A buyer whose zero checkout crashed
+mid-way sees `202` on a replay until recovery resolves the order, as for a paid order stuck in
+`payment_unknown`.
 
 ### Rejected: a durable "PSP skipped" marker
 
