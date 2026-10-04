@@ -302,7 +302,9 @@ func TestZeroCompletionTransientFailuresRetryWithoutReleasing(t *testing.T) {
 // `reconciliation_required` row can come from before this change. A zero `release_pending` row can
 // also come from TODAY'S recovery: the no-intent release (see the not_attempted test above)
 // records the outcome and sets that status before it releases. The zero-total gone-claim park
-// leaves the order's status as it was, so it does not by itself produce `reconciliation_required`.
+// also produces one today: ParkForReconciliation sets `reconciliation_required` and parks the row,
+// so it is never claimed again. If an operator un-parks it, resolveReconciliation asks payments
+// for status, finds no operation, and parks it again.
 func TestZeroTotalOrdersInOtherStatusesKeepTheirExistingPaths(t *testing.T) {
 	t.Run("payment_unknown with no operation is released", func(t *testing.T) {
 		p, resolved := run(t, []store.StuckOrder{zeroStuck("payment_unknown")}, func(p *ports) {
