@@ -297,9 +297,12 @@ func TestZeroCompletionTransientFailuresRetryWithoutReleasing(t *testing.T) {
 }
 
 // The zero dispatch is scoped to `created` and `confirmation_pending`. The other statuses a
-// zero-total order can wear keep their existing paths and their existing evidence: only the
-// new skip path produces a zero `confirmation_pending`, while `payment_unknown`,
-// `reconciliation_required` and `release_pending` can only come from before this change.
+// zero-total order can wear keep their existing paths and their existing evidence. Only the new
+// skip path produces a zero `confirmation_pending`. A zero `payment_unknown` or
+// `reconciliation_required` row can come from before this change. A zero `release_pending` row can
+// also come from TODAY'S recovery: the no-intent release (see the not_attempted test above)
+// records the outcome and sets that status before it releases. The zero-total gone-claim park
+// leaves the order's status as it was, so it does not by itself produce `reconciliation_required`.
 func TestZeroTotalOrdersInOtherStatusesKeepTheirExistingPaths(t *testing.T) {
 	t.Run("payment_unknown with no operation is released", func(t *testing.T) {
 		p, resolved := run(t, []store.StuckOrder{zeroStuck("payment_unknown")}, func(p *ports) {

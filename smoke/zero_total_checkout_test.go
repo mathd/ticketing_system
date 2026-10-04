@@ -16,9 +16,12 @@ import (
 
 // TKT-285: a zero-total checkout skips the PSP. These tests drive it through the composed stack
 // — real catalog price, real inventory, real payments with its real journal, real recovery
-// runner — because what they prove spans services: that payments was never asked to charge
-// (a fact about ITS tables), that its journal holds exactly the order's two facts (a fact about
-// ITS journal), and that access issued the tickets (a fact about a third service).
+// runner — because what they prove spans services. The durable tables prove that payments holds
+// no operation, no settlement row and exactly the order's two journal facts for the order, and that
+// access issued the tickets (a fact about a third service). They do NOT prove that no charge
+// REQUEST was made: a refused charge leaves no row. That is proven at the api tier
+// (zero_total_checkout_smoke_test.go in services/commerce/internal/api), whose payments stub
+// records every request.
 
 // zeroOrderJournal is what payments recorded for one order, re-read from its tables.
 type zeroOrderJournal struct {
@@ -28,10 +31,13 @@ type zeroOrderJournal struct {
 }
 
 type journalFact struct {
-	FactType   string
-	Amount     int64
-	Currency   string
-	OccurredAt time.Time
+	FactID      uuid.UUID
+	OrganizerID uuid.UUID
+	BuyerID     uuid.UUID
+	FactType    string
+	Amount      int64
+	Currency    string
+	OccurredAt  time.Time
 }
 
 func readZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) zeroOrderJournal {
@@ -44,7 +50,7 @@ func readZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) zer
 	var out zeroOrderJournal
 	// Every journal row about this order, whatever its type: a fabricated payment.* fact or a
 	// zero-amount money fact must show up here, so nothing is filtered by type.
-	rows, err := pay.Query(ctx, `SELECT fact_type, amount, currency, occurred_at FROM journal_entries
+	rows, err := pay.Query(ctx, `SELECT fact_id, organizer_id, buyer_id, fact_type, amount, currency, occurred_at FROM journal_entries
 		WHERE payload->>'order_id' = $1 ORDER BY sequence`, orderID)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +58,7 @@ func readZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) zer
 	defer rows.Close()
 	for rows.Next() {
 		var f journalFact
-		if err := rows.Scan(&f.FactType, &f.Amount, &f.Currency, &f.OccurredAt); err != nil {
+		if err := rows.Scan(&f.FactID, &f.OrganizerID, &f.BuyerID, &f.FactType, &f.Amount, &f.Currency, &f.OccurredAt); err != nil {
 			t.Fatal(err)
 		}
 		out.facts = append(out.facts, f)
@@ -85,9 +91,16 @@ func assertZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) z
 			t.Errorf("%s carries %d %s, want 0 EUR", f.FactType, f.Amount, f.Currency)
 		}
 		var stored time.Time
-		if err := com.QueryRow(ctx, `SELECT occurred_at FROM order_facts WHERE order_id=$1 AND fact_type=$2`,
-			orderID, f.FactType).Scan(&stored); err != nil {
+		var storedID, storedOrganizer, storedBuyer uuid.UUID
+		if err := com.QueryRow(ctx, `SELECT occurred_at, fact_id, organizer_id, buyer_id FROM order_facts WHERE order_id=$1 AND fact_type=$2`,
+			orderID, f.FactType).Scan(&stored, &storedID, &storedOrganizer, &storedBuyer); err != nil {
 			t.Fatalf("commerce has no %s fact for the order: %v", f.FactType, err)
+		}
+		// Identity, not only content: the journal row must be THE fact commerce recorded, for the
+		// same organizer and buyer. A fact submitted under a fresh id, or another buyer's, fails.
+		if f.FactID != storedID || f.OrganizerID != storedOrganizer || f.BuyerID != storedBuyer {
+			t.Errorf("%s journal row (fact %s organizer %s buyer %s) != commerce order_facts (fact %s organizer %s buyer %s)",
+				f.FactType, f.FactID, f.OrganizerID, f.BuyerID, storedID, storedOrganizer, storedBuyer)
 		}
 		if !f.OccurredAt.Equal(stored) {
 			t.Errorf("%s journal time %s != commerce order_facts time %s", f.FactType, f.OccurredAt, stored)

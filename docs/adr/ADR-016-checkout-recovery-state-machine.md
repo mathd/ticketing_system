@@ -662,6 +662,19 @@ the captured-money compensation arm, because nothing was captured. The PSP-skipp
 payments for the operation lookup and for fact submission only. It never calls status, void, refund
 or charge.
 
+### A resumed zero-total checkout is classified the same way (D20)
+
+Checkout's zero skip needs no lookup for an order **this request newly inserted**: payments binds an
+operation only after commerce has inserted the order, so a new order cannot have one. A checkout that
+**resumes** an existing zero-total order (`created`, `payment_unknown` or `confirmation_pending`) may
+be a replay of a legacy order whose old zero charge bound an operation, so it asks payments' operation
+lookup first, the same endpoint and classification recovery uses (200 found, 404 not found, anything
+else an error). Not found: skip the PSP and complete. Found, or the lookup fails: answer `202
+payment_unknown`, change nothing, and leave the order to recovery, which resolves it from the
+operation evidence above. This keeps a zero `confirmation_pending` row meaning "PSP-skipped path". A
+resumed zero replay now depends on payments being available for the lookup, as it already does for the
+journal.
+
 ### Rejected: a durable "PSP skipped" marker
 
 A column on `orders` would need a data migration, and the lookup already supplies the evidence. It

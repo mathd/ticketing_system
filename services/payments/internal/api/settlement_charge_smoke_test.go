@@ -204,6 +204,19 @@ func TestAZeroAmountChargeIsRefusedAndLeavesNothingBehind(t *testing.T) {
 		t.Errorf("%d payment operation(s) survive a refused zero charge", n)
 	}
 
+	// The journal, re-read: a refused zero charge appended nothing for this order. (A refusal
+	// before the bind also left no row before this change, so this guards the journal rather than
+	// distinguishing the fix.)
+	var journalRows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM journal_entries WHERE organizer_id=$1 AND payload->>'order_id'=$2`,
+		org, order).Scan(&journalRows); err != nil {
+		t.Fatal(err)
+	}
+	if journalRows != 0 {
+		t.Errorf("the journal holds %d row(s) for the order of a refused zero charge", journalRows)
+	}
+
 	oneKey := "one-" + org.String()
 	if res := postCharge(t, h, oneKey, bodyFor(1)); res.Code != http.StatusOK {
 		t.Fatalf("control charge of 1: status=%d body=%s, want 200", res.Code, res.Body.String())
