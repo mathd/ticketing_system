@@ -112,3 +112,25 @@ func TestJournalFactReportsEitherSideFailing(t *testing.T) {
 		}
 	})
 }
+
+// order.failed is the one fact recovery submits for PAID orders, and it carries the order's real
+// gross amount (the attempted total, not zero). The table test above uses zero-total orders only,
+// so a submit() that hard-coded 0 would pass it. This case fixes that.
+func TestJournalFactCarriesAPositiveAmountForAPaidOrder(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	order := stuck("created") // Amount 5000
+	order.Currency = "EUR"
+	j := JournalFact{Client: server.Client(), PaymentsURL: server.URL, Token: "t",
+		DB: &recordingFactDB{id: uuid.New(), occurred: time.Now()}}
+	if err := j.OrderFailed(context.Background(), order); err != nil {
+		t.Fatal(err)
+	}
+	if got["amount"] != float64(5000) || got["currency"] != "EUR" || got["fact_type"] != "order.failed" {
+		t.Fatalf("submitted %v, want amount 5000 EUR order.failed", got)
+	}
+}

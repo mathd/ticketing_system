@@ -411,19 +411,24 @@ func TestRunnerCompletesAZeroTotalOrderWithOnlyALookupAndTheJournalFacts(t *test
 func TestRunnerReleasesAZeroTotalOrderThatNeverRecordedItsIntent(t *testing.T) {
 	seeded, payments, inventory, facts, db, ctx := zeroRecoveryRun(t, "created", false)
 
-	var status, outcome string
-	if err := db.QueryRowContext(ctx, `SELECT status, coalesce(terminal_outcome,'') FROM orders WHERE id=$1`, seeded.OrderID).Scan(&status, &outcome); err != nil {
+	var status, outcome, reservationStatus string
+	var claim, lease sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT o.status, coalesce(o.terminal_outcome,''), r.status, o.recovery_claim_id::text, o.recovery_lease_until::text
+		FROM orders o JOIN reservations r ON r.id=o.reservation_id WHERE o.id=$1`, seeded.OrderID).
+		Scan(&status, &outcome, &reservationStatus, &claim, &lease); err != nil {
 		t.Fatal(err)
 	}
-	if outcome != "not_attempted" || status == "completed" {
-		t.Fatalf("order status=%q outcome=%q, want a not_attempted release", status, outcome)
+	// Exactly the terminal state a paid order with no operation reaches: `not_attempted`
+	// surfaces as `timeout`, the reservation is failed, and the recovery claim is released.
+	if status != "timeout" || outcome != "not_attempted" || reservationStatus != "failed" || claim.Valid || lease.Valid {
+		t.Fatalf("order status=%q outcome=%q reservation=%q claim=%v lease=%v, want timeout / not_attempted / failed with the claim and lease cleared",
+			status, outcome, reservationStatus, claim, lease)
 	}
 	if payments.lookups != 1 || inventory.releases != 1 || inventory.confirms != 0 {
 		t.Errorf("lookups=%d releases=%d confirms=%d, want 1/1/0", payments.lookups, inventory.releases, inventory.confirms)
 	}
-	for _, f := range facts {
-		if f.FactType != "order.failed" {
-			t.Errorf("a pre-intent order journalled %s, want only order.failed", f.FactType)
-		}
+	if len(facts) != 1 || facts[0].FactType != "order.failed" {
+		t.Fatalf("payments received %+v, want exactly one order.failed and nothing else", facts)
 	}
 }
