@@ -1797,6 +1797,18 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		write(w, 500, map[string]string{"error": "persist checkout"})
 		return
 	}
+	// A ZERO-TOTAL order skips the provider (TKT-285, owner decision D1): there is nothing to
+	// charge, so there is no settlement plan, no /internal/charges call and no payment
+	// operation, and the order completes through the same tail a paid one does. The
+	// discriminator is the persisted GROSS total (x.Amount), not the face value: a zero face
+	// value with a passed-on fee is a positive total and is still charged.
+	//
+	// The token was required and is not forwarded (D5); ADR-069 records that it is sent to
+	// payments only when a charge is made.
+	if x.Amount == 0 {
+		s.completeCheckout(w, r, x, order)
+		return
+	}
 	// The settlement plan comes from the PERSISTED snapshot, never a fresh
 	// catalog read (TKT-217 / ADR-048). A schedule edited between the sale and
 	// the capture must not change who gets paid for that sale — the same reason
@@ -1879,7 +1891,23 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
-	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+	s.completeCheckout(w, r, x, order)
+}
+
+// completeCheckout is the completion tail both checkout paths share: inventory confirm, the
+// `confirmation_pending` answer when confirm fails, the order.completed fact, the completion
+// transaction, and the owed publish (TKT-285, D3).
+//
+// A PAID checkout reaches it after payments answered 200; a ZERO-TOTAL checkout reaches it
+// straight after the finalize, because there is no charge to wait for. It exists so the zero
+// path reuses the tail instead of copying it — a copy would let the two drift, and the failure
+// arms below are the part that matters: a confirm that fails must leave the order pending for
+// recovery and must NOT journal order.completed.
+//
+// It writes the response itself, like the rest of executeCheckout, and returns nothing: every
+// exit is a terminal answer to the buyer.
+func (s *Server) completeCheckout(w http.ResponseWriter, r *http.Request, x reservation, order uuid.UUID) {
+	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
 		res, execErr := s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 		if execErr == nil {
