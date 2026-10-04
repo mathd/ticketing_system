@@ -46,6 +46,11 @@ type StaffAvailability struct {
 	PublicAvailable int32                 `json:"public_available"`
 	OfferingStatus  string                `json:"offering_status"`
 	Channels        []ChannelAvailability `json:"channels"`
+	// InventoryKind is the pool's kind, "ga" or "seated" (TKT-286). The back office
+	// reads it to decide whether the allocation editor may be shown: a seated pool
+	// refuses a non-empty allocation replace (TKT-176), so an editor for one only
+	// looks editable. It is empty until the pool query populates it.
+	InventoryKind string `json:"inventory_kind"`
 	// AllocationRevision is the allocation set's current revision (TKT-250). An
 	// editor reads it here and presents it back on the replace, which refuses if the
 	// set moved in between — see ReplaceChannelAllocations.
@@ -387,12 +392,12 @@ func (p *Postgres) StaffAvailability(ctx context.Context, org, slot uuid.UUID) (
 	var target sql.NullInt32
 	var lifecycle, closure string
 	err := p.db.QueryRowContext(ctx, `SELECT capacity,confirmed_quantity,target_capacity,lifecycle_status,closure_status,
-			allocation_revision,
+			allocation_revision,inventory_kind,
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='buyer' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='operational' AND `+liveClaims+`),
 			(SELECT COALESCE(sum(quantity),0) FROM claims WHERE pool_id=$1 AND claim_kind='reservation' AND `+liveClaims+`)
 		FROM inventory_pools WHERE slot_id=$1 AND organizer_id=$2`, slot, org).
-		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.AllocationRevision, &a.BuyerHeld, &a.OperationalHeld, &a.ReservationHeld)
+		Scan(&a.Capacity, &a.Confirmed, &target, &lifecycle, &closure, &a.AllocationRevision, &a.InventoryKind, &a.BuyerHeld, &a.OperationalHeld, &a.ReservationHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}

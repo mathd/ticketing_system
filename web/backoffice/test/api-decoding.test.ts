@@ -119,6 +119,7 @@ function staffAvailability(overrides: Record<string, unknown> = {}) {
     public_available: 50,
     offering_status: 'open',
     channels: [],
+    inventory_kind: 'ga',
     allocation_revision: 2,
     ...overrides,
   };
@@ -581,6 +582,17 @@ describe('inventory response decoding', () => {
     ['a negative counter', staffAvailability({ available: -1 })],
     ['an unknown offering status', staffAvailability({ offering_status: 'paused' })],
     ['an invalid allocation revision', staffAvailability({ allocation_revision: -1 })],
+    // TKT-286 / D5. The kind decides whether the page may show an editor at all, so an
+    // uncertain one is a failed read — never a default. Each is its own malformation class:
+    // absence (an older inventory), null, the wrong type, an unknown value, and the empty
+    // string. A missing kind read as "ga" would bring back the editor that looks editable
+    // on a seated slot and cannot save.
+    ['an absent inventory kind', staffAvailability({ inventory_kind: undefined })],
+    ['a null inventory kind', staffAvailability({ inventory_kind: null })],
+    ['a numeric inventory kind', staffAvailability({ inventory_kind: 1 })],
+    ['an unknown inventory kind', staffAvailability({ inventory_kind: 'hybrid' })],
+    ['an empty inventory kind', staffAvailability({ inventory_kind: '' })],
+    ['a differently cased inventory kind', staffAvailability({ inventory_kind: 'GA' })],
     ['a malformed nested date', staffAvailability({ channels: [{
       channel: 'presale', cap: 10, released: false, window_open: true,
       held: 0, confirmed: 0, available: 10, opens_at: 'tomorrow',
@@ -592,6 +604,13 @@ describe('inventory response decoding', () => {
   ])('rejects staff availability with %s', async (_name, body) => {
     answer(body);
     await expect(getStaffAvailability(SLOT, ORGANIZER)).rejects.toThrow();
+  });
+
+  it.each(['ga', 'seated'] as const)('preserves the %s inventory kind', async (kind) => {
+    answer(staffAvailability({ inventory_kind: kind }));
+    await expect(getStaffAvailability(SLOT, ORGANIZER)).resolves.toMatchObject({
+      inventory_kind: kind,
+    });
   });
 
   const allocation = {

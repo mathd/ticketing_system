@@ -998,6 +998,17 @@ components:
         public_available: {type: integer, minimum: 0, maximum: 9007199254740991}
         offering_status: {type: string, enum: [open, closed, archived], description: 'Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open'}
         channels: {type: array, items: {$ref: '#/components/schemas/ChannelAvailability'}}
+        inventory_kind:
+          type: string
+          enum: [ga, seated]
+          description: >
+            The pool's kind (TKT-286). The back office reads it to decide whether a slot's
+            allocation editor may be shown: a seated pool refuses a non-empty allocation
+            replace (TKT-176), so an editor for one only looks editable. Always emitted by
+            inventory. NOT in the `required` list deliberately, for the reason
+            `allocation_revision` is not: adding a required response property breaks a
+            consumer that has not regenerated. The back office decodes it strictly, so a
+            reply without it is an unavailable read and never a default.
         allocation_revision:
           type: integer
           format: int64

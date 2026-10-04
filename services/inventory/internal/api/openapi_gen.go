@@ -177,6 +177,24 @@ func (e SeatOccupancyUnavailableCode) Valid() bool {
 	}
 }
 
+// Defines values for StaffAvailabilityInventoryKind.
+const (
+	Ga     StaffAvailabilityInventoryKind = "ga"
+	Seated StaffAvailabilityInventoryKind = "seated"
+)
+
+// Valid indicates whether the value is a known member of the StaffAvailabilityInventoryKind enum.
+func (e StaffAvailabilityInventoryKind) Valid() bool {
+	switch e {
+	case Ga:
+		return true
+	case Seated:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StaffAvailabilityOfferingStatus.
 const (
 	Archived StaffAvailabilityOfferingStatus = "archived"
@@ -600,6 +618,9 @@ type StaffAvailability struct {
 	Channels  []ChannelAvailability `json:"channels"`
 	Confirmed int                   `json:"confirmed"`
 
+	// InventoryKind The pool's kind (TKT-286). The back office reads it to decide whether a slot's allocation editor may be shown: a seated pool refuses a non-empty allocation replace (TKT-176), so an editor for one only looks editable. Always emitted by inventory. NOT in the `required` list deliberately, for the reason `allocation_revision` is not: adding a required response property breaks a consumer that has not regenerated. The back office decodes it strictly, so a reply without it is an unavailable read and never a default.
+	InventoryKind *StaffAvailabilityInventoryKind `json:"inventory_kind,omitempty"`
+
 	// OfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open
 	OfferingStatus  StaffAvailabilityOfferingStatus `json:"offering_status"`
 	OperationalHeld int                             `json:"operational_held"`
@@ -612,6 +633,9 @@ type StaffAvailability struct {
 	// TargetCapacity Requested target while a clamped cut drains; absent otherwise
 	TargetCapacity *int `json:"target_capacity,omitempty"`
 }
+
+// StaffAvailabilityInventoryKind The pool's kind (TKT-286). The back office reads it to decide whether a slot's allocation editor may be shown: a seated pool refuses a non-empty allocation replace (TKT-176), so an editor for one only looks editable. Always emitted by inventory. NOT in the `required` list deliberately, for the reason `allocation_revision` is not: adding a required response property breaks a consumer that has not regenerated. The back office decodes it strictly, so a reply without it is an unavailable read and never a default.
+type StaffAvailabilityInventoryKind string
 
 // StaffAvailabilityOfferingStatus Catalog offer state mirrored by inventory (TKT-75): counters stay factual, but claimable availability is 0 unless open
 type StaffAvailabilityOfferingStatus string

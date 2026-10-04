@@ -914,7 +914,7 @@ describe('inventory allocation client', () => {
   it('reads staff availability direct, with its own credential and never the shared one', async () => {
     const calls = spyFetch(
       { slot_id: SLOT, capacity: 100, buyer_held: 0, operational_held: 0, reservation_held: 0,
-        confirmed: 0, available: 100, public_available: 60, offering_status: 'open', channels: [] },
+        confirmed: 0, available: 100, public_available: 60, offering_status: 'open', channels: [], inventory_kind: 'ga' },
       200,
     );
     await getStaffAvailability(SLOT, 'org-1');
