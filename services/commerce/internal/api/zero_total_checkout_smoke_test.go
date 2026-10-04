@@ -31,6 +31,26 @@ type zeroStack struct {
 	mu       sync.Mutex
 	payments []string // "<path>" or "/internal/facts:<fact_type>"
 	hold     []string // inventory action: finalize | confirm | release
+
+	// Behaviour switches, read per request so a test can change them between a first checkout
+	// and its replay. operation is the status payments answers to GET /internal/operations
+	// (404 = no operation bound, 200 = one is, 500 = the lookup fails); confirm is what
+	// inventory answers to confirm; factStatus overrides the answer to /internal/facts for one
+	// fact type.
+	operation  int
+	confirm    int
+	factStatus map[string]int
+}
+
+func (z *zeroStack) set(f func()) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	f()
+}
+
+// reset forgets the recorded calls, so a replay's assertions are about the replay alone.
+func (z *zeroStack) reset() {
+	z.set(func() { z.payments, z.hold = nil, nil })
 }
 
 func (z *zeroStack) paymentsCalls() []string {
@@ -70,7 +90,7 @@ func (z *zeroStack) charges() int {
 // the confirm call, so a case can make the completion tail's first step fail.
 func newZeroStack(t *testing.T, db *sql.DB, confirmStatus int) *zeroStack {
 	t.Helper()
-	z := &zeroStack{}
+	z := &zeroStack{operation: http.StatusNotFound, confirm: confirmStatus}
 	payments := newCountingStub(t, func(_ *countingStub, w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		entry := r.URL.Path
@@ -79,7 +99,18 @@ func newZeroStack(t *testing.T, db *sql.DB, confirmStatus int) *zeroStack {
 		}
 		z.mu.Lock()
 		z.payments = append(z.payments, entry)
+		operation, factCode := z.operation, z.factStatus[strings.TrimPrefix(entry, "/internal/facts:")]
 		z.mu.Unlock()
+		if strings.HasPrefix(entry, "/internal/facts:") && factCode != 0 {
+			w.WriteHeader(factCode)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/internal/operations") {
+			w.WriteHeader(operation)
+			_, _ = w.Write([]byte(`{"resolved":false}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/internal/charges") {
 			_, _ = w.Write([]byte(`{"status":"captured","fact_id":"` + uuid.NewString() + `"}`))
 			return
@@ -91,9 +122,10 @@ func newZeroStack(t *testing.T, db *sql.DB, confirmStatus int) *zeroStack {
 		action := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		z.mu.Lock()
 		z.hold = append(z.hold, action)
+		confirmCode := z.confirm
 		z.mu.Unlock()
-		if action == "confirm" && confirmStatus != http.StatusOK {
-			w.WriteHeader(confirmStatus)
+		if action == "confirm" && confirmCode != http.StatusOK {
+			w.WriteHeader(confirmCode)
 		}
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -102,6 +134,16 @@ func newZeroStack(t *testing.T, db *sql.DB, confirmStatus int) *zeroStack {
 	r.Post("/reservations/{id}/checkout", srv.checkout)
 	z.h = r
 	return z
+}
+
+func (z *zeroStack) lookups() int {
+	n := 0
+	for _, c := range z.paymentsCalls() {
+		if strings.HasSuffix(c, "/internal/operations") {
+			n++
+		}
+	}
+	return n
 }
 
 func (z *zeroStack) checkout(t *testing.T, reservation uuid.UUID, key string) (int, map[string]any) {
@@ -159,6 +201,9 @@ func TestAZeroTotalCheckoutCompletesWithoutACharge(t *testing.T) {
 	}
 	if got := z.factTypes(); fmt.Sprint(got) != "[order.created order.completed]" {
 		t.Fatalf("journal facts = %v, want exactly [order.created order.completed] in that order", got)
+	}
+	if n := z.lookups(); n != 0 {
+		t.Fatalf("a NEW zero-total order made %d operation lookup(s), want 0: a newly inserted order cannot have an operation (D20)", n)
 	}
 	// Every payments call is a journal submission: nothing else is asked of payments.
 	for _, c := range z.paymentsCalls() {
@@ -226,6 +271,140 @@ func TestAConfirmFailureLeavesAnOrderPendingWithoutACompletionFact(t *testing.T)
 			}
 			if n := owedCompletions(t, ctx, db, reservation); n != 0 {
 				t.Fatalf("completion outbox rows = %d, want 0 for an order that is not complete", n)
+			}
+		})
+	}
+}
+
+// D20 (TKT-285). A zero-total checkout that RESUMES an existing order is classified by payments'
+// operation lookup, exactly as recovery classifies it. The order may be a legacy one whose old
+// zero charge bound an operation; skipping the PSP for it would bypass operation evidence.
+//
+// resumedZeroOrder builds that state through the real handler: a first zero checkout whose confirm
+// fails leaves an order behind (confirmation_pending), which the test then moves to `status` (the
+// legacy shapes are payment_unknown). The stub's calls are reset before the replay, so every
+// assertion below is about the replay alone.
+func resumedZeroOrder(t *testing.T, status string) (*zeroStack, *sql.DB, context.Context, uuid.UUID, string) {
+	t.Helper()
+	db, ctx := exchangeAPIDB(t)
+	_, reservation := seedCheckoutableAt(t, db, ctx, 0)
+	z := newZeroStack(t, db, http.StatusInternalServerError)
+	key := "resume-" + uuid.NewString()
+	if code, body := z.checkout(t, reservation, key); code != http.StatusAccepted || body["status"] != "confirmation_pending" {
+		t.Fatalf("first checkout answered %d %v, want 202 confirmation_pending", code, body)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET status=$2 WHERE reservation_id=$1`, reservation, status); err != nil {
+		t.Fatal(err)
+	}
+	z.reset()
+	return z, db, ctx, reservation, key
+}
+
+func TestAResumedZeroOrderWithAnOperationIsNotSkippedOrCompleted(t *testing.T) {
+	for _, status := range []string{"payment_unknown", "confirmation_pending"} {
+		t.Run(status, func(t *testing.T) {
+			z, db, ctx, reservation, key := resumedZeroOrder(t, status)
+			z.set(func() { z.operation, z.confirm = http.StatusOK, http.StatusOK })
+
+			code, body := z.checkout(t, reservation, key)
+			if code != http.StatusAccepted || body["status"] != "payment_unknown" {
+				t.Fatalf("replay answered %d %v, want 202 payment_unknown", code, body)
+			}
+			if got := z.paymentsCalls(); fmt.Sprint(got) != "[/internal/operations]" {
+				t.Fatalf("payments calls = %v, want exactly one operation lookup: no charge, no fact", got)
+			}
+			if got := z.holdCalls(); len(got) != 0 {
+				t.Fatalf("inventory calls = %v, want none: no finalize, no confirm", got)
+			}
+			if got := orderStatus(t, ctx, db, reservation); got != status {
+				t.Fatalf("order status = %q, want it untouched (%q)", got, status)
+			}
+			if n := owedCompletions(t, ctx, db, reservation); n != 0 {
+				t.Fatalf("completion outbox rows = %d, want 0", n)
+			}
+		})
+	}
+}
+
+func TestAResumedZeroOrderWithoutAnOperationCompletes(t *testing.T) {
+	z, db, ctx, reservation, key := resumedZeroOrder(t, "payment_unknown")
+	z.set(func() { z.operation, z.confirm = http.StatusNotFound, http.StatusOK })
+
+	code, body := z.checkout(t, reservation, key)
+	if code != http.StatusOK || body["status"] != "completed" {
+		t.Fatalf("replay answered %d %v, want 200 completed", code, body)
+	}
+	if n := z.lookups(); n != 1 {
+		t.Fatalf("operation lookups = %d, want 1", n)
+	}
+	if n := z.charges(); n != 0 {
+		t.Fatalf("charges = %d, want 0", n)
+	}
+	if got := orderStatus(t, ctx, db, reservation); got != "completed" {
+		t.Fatalf("order status = %q, want completed", got)
+	}
+	if n := owedCompletions(t, ctx, db, reservation); n != 1 {
+		t.Fatalf("completion outbox rows = %d, want 1", n)
+	}
+}
+
+// A lookup that fails proves nothing. Not "found", not "not found": the buyer gets the same
+// 202 and the row is left exactly as it was.
+func TestAResumedZeroOrderWhoseLookupFailsAnswers202AndChangesNothing(t *testing.T) {
+	for name, status := range map[string]int{"5xx": http.StatusInternalServerError, "unexpected 4xx": http.StatusTeapot} {
+		t.Run(name, func(t *testing.T) {
+			z, db, ctx, reservation, key := resumedZeroOrder(t, "payment_unknown")
+			z.set(func() { z.operation, z.confirm = status, http.StatusOK })
+
+			code, body := z.checkout(t, reservation, key)
+			if code != http.StatusAccepted || body["status"] != "payment_unknown" {
+				t.Fatalf("replay answered %d %v, want 202 payment_unknown", code, body)
+			}
+			if z.charges() != 0 || len(z.holdCalls()) != 0 || len(z.factTypes()) != 0 {
+				t.Fatalf("a failed lookup was acted on: payments=%v inventory=%v", z.paymentsCalls(), z.holdCalls())
+			}
+			if got := orderStatus(t, ctx, db, reservation); got != "payment_unknown" {
+				t.Fatalf("order status = %q, want it untouched", got)
+			}
+		})
+	}
+}
+
+// A5. The journal refusing a fact aborts the checkout with 503 on BOTH paths, and the same way:
+// the order stays `created` and recoverable, never completed. order.created is refused before
+// the finalize, so inventory is never called; order.completed is refused after the confirm, so
+// the claim is confirmed but the order is not completed. A zero order behaves exactly as a paid
+// one does for the same failure.
+func TestAJournalRefusingAFactAbortsCheckoutAndLeavesTheOrderRecoverable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		total int64
+		fact  string
+		holds string
+	}{
+		{"paid order.created", 2500, "order.created", "[]"},
+		{"zero order.created", 0, "order.created", "[]"},
+		{"paid order.completed", 2500, "order.completed", "[finalize confirm]"},
+		{"zero order.completed", 0, "order.completed", "[finalize confirm]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			_, reservation := seedCheckoutableAt(t, db, ctx, tc.total)
+			z := newZeroStack(t, db, http.StatusOK)
+			z.set(func() { z.factStatus = map[string]int{tc.fact: http.StatusServiceUnavailable} })
+
+			code, body := z.checkout(t, reservation, "journal-down-"+uuid.NewString())
+			if code != http.StatusServiceUnavailable || body["error"] != "journal unavailable" {
+				t.Fatalf("checkout answered %d %v, want 503 journal unavailable", code, body)
+			}
+			if got := fmt.Sprint(z.holdCalls()); got != tc.holds {
+				t.Fatalf("inventory calls = %s, want %s", got, tc.holds)
+			}
+			if got := orderStatus(t, ctx, db, reservation); got != "created" {
+				t.Fatalf("order status = %q, want created (recoverable)", got)
+			}
+			if n := owedCompletions(t, ctx, db, reservation); n != 0 {
+				t.Fatalf("completion outbox rows = %d, want 0", n)
 			}
 		})
 	}

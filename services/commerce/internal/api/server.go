@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -1321,7 +1322,9 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 	return nil
 }
 
-// claimOrder returns the order id, its current status, and whether recovery has PARKED it.
+// claimOrder returns the order id, its current status, whether recovery has PARKED it, and
+// whether THIS call inserted the row (TKT-285, D20: a newly inserted order cannot have a
+// payment operation, a resumed one can).
 // Parked is read here rather than re-queried because this is the only place that already
 // holds the row lock, and a replay branch that answers from durable evidence needs to know
 // whether any worker can still act on that evidence (ai-review F2).
@@ -1338,15 +1341,16 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 // attribution immutable under idempotency: a second request bearing a different
 // (or absent) assertion cannot repoint a completed purchase at someone else, and
 // cannot promote a guest order into an attributed one. The first claim decides.
-func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, error) {
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, x.ID.String()); err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
+	inserted := false
 	var id uuid.UUID
 	var storedKey, storedFingerprint, status string
 	var recoveryClaim uuid.NullUUID
@@ -1366,9 +1370,10 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// reseller that did not make it. Settlement (ADR-048) splits by these.
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id,channel_code,reseller_id) SELECT $1,$2,'created',$3,$4,$5,r.channel_code,r.reseller_id FROM reservations r WHERE r.id=$2`, id, x.ID, key, fingerprint, customer)
 		status = "created"
+		inserted = err == nil
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {
-			return uuid.Nil, "", false, errCheckoutConflict
+			return uuid.Nil, "", false, false, errCheckoutConflict
 		}
 		// A recovery pass holds this order under an unexpired lease. It may already have
 		// asked payments whether a charge exists and been told no; binding one now would
@@ -1376,7 +1381,7 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// under a captured payment. Recovery's decision is bounded by its lease, so the
 		// buyer can retry once it lapses.
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
-			return uuid.Nil, "", false, errRecoveryInProgress
+			return uuid.Nil, "", false, false, errRecoveryInProgress
 		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
@@ -1390,17 +1395,17 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// recovery's 2-minute grace window on every retry, leaving the release that IS
 		// outstanding permanently unclaimable and the buyer looping on the same answer.
 		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, id); err != nil {
-			return uuid.Nil, "", false, err
+			return uuid.Nil, "", false, false, err
 		}
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return uuid.Nil, "", false, errCheckoutConflict
+		return uuid.Nil, "", false, false, errCheckoutConflict
 	}
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
-	return id, status, recoveryParked.Valid, tx.Commit()
+	return id, status, recoveryParked.Valid, inserted, tx.Commit()
 }
 
 func checkoutClaimProblem(err error) (int, string) {
@@ -1656,7 +1661,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reservation, key string, in checkoutRequest, customer uuid.NullUUID) {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
-	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
+	order, orderStatus, recoveryParked, inserted, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
 	if err != nil {
 		code, message := checkoutClaimProblem(err)
 		if code == http.StatusInternalServerError {
@@ -1779,6 +1784,20 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 	if recoveryParked {
 		writeAwaitingReconciliation(w, order, orderStatus)
 		return
+	}
+	// D20 (TKT-285). A zero-total order this request did NOT insert is a RESUME, and it may be a
+	// legacy order whose old zero charge bound a payment operation. Skipping the PSP for it
+	// would bypass operation evidence (ADR-016): it is classified by payments' operation
+	// lookup, exactly as recovery does. Not found: it is a PSP-skipped order and proceeds. Found
+	// or unanswered: 202 payment_unknown with NO state change and no charge, and recovery
+	// resolves it from the evidence. A newly inserted order cannot have an operation (payments
+	// binds only after commerce inserts the order), so it makes no lookup.
+	if x.Amount == 0 && !inserted {
+		found, lookupErr := s.operationExists(r.Context(), x.OrganizerID, key)
+		if lookupErr != nil || found {
+			write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
+			return
+		}
 	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
 		write(w, 500, map[string]string{"error": "persist buyer"})
@@ -1906,6 +1925,25 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 //
 // It writes the response itself, like the rest of executeCheckout, and returns nothing: every
 // exit is a terminal answer to the buyer.
+// operationExists asks payments whether an operation is bound to the checkout key. The
+// classification mirrors recovery's HTTPClients.LookupOperation: 200 is found, 404 is not
+// found, and anything else (transport error, 5xx, other status) is an error that proves nothing.
+func (s *Server) operationExists(ctx context.Context, organizer uuid.UUID, key string) (bool, error) {
+	u := fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=%s", s.paymentsURL, organizer, url.QueryEscape(key))
+	code, _, err := s.call(ctx, http.MethodGet, u, "", nil, true)
+	if err != nil {
+		return false, err
+	}
+	switch code {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("lookup operation: unexpected status %d", code)
+	}
+}
+
 func (s *Server) completeCheckout(w http.ResponseWriter, r *http.Request, x reservation, order uuid.UUID) {
 	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
