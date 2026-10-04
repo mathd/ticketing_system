@@ -650,7 +650,9 @@ table. It does not replace the operation lookup, which stays the evidence (§2).
 | `created`, lookup **found** | A legacy order that bound an operation. Every existing `resolveCreated` branch applies, unchanged: operation status, provider status for an unresolved operation, and compensation for proven captured money with a gone claim. |
 | `created`, not found, `order.created` fact present | Replay `order.created`, confirm, submit `order.completed`, run `CompleteOrder`, clear the claim. |
 | `created`, not found, no `order.created` fact | Record `not_attempted` and release. The same path as a paid order with no operation. |
-| `confirmation_pending` | The same completion, with no lookup. Only the PSP-skipped path produces this status for a zero total. |
+| `confirmation_pending`, lookup **error** | Retry with backoff. |
+| `confirmation_pending`, lookup **found** | The existing evidence branches, as for `created`. |
+| `confirmation_pending`, not found | The same completion as above, with no intent read: confirm only runs after the intent fact was written. |
 | `payment_unknown`, `reconciliation_required`, `release_pending` | Existing paths, unchanged. |
 
 The `order.created` fact is the proof that checkout reached the buyer-details write: checkout writes
@@ -662,18 +664,24 @@ the captured-money compensation arm, because nothing was captured. The PSP-skipp
 payments for the operation lookup and for fact submission only. It never calls status, void, refund
 or charge.
 
-### A resumed zero-total checkout is classified the same way (D20)
+### One classifier, in recovery (D21)
 
-Checkout's zero skip needs no lookup for an order **this request newly inserted**: payments binds an
-operation only after commerce has inserted the order, so a new order cannot have one. A checkout that
-**resumes** an existing zero-total order (`created`, `payment_unknown` or `confirmation_pending`) may
-be a replay of a legacy order whose old zero charge bound an operation, so it asks payments' operation
-lookup first, the same endpoint and classification recovery uses (200 found, 404 not found, anything
-else an error). Not found: skip the PSP and complete. Found, or the lookup fails: answer `202
-payment_unknown`, change nothing, and leave the order to recovery, which resolves it from the
-operation evidence above. This keeps a zero `confirmation_pending` row meaning "PSP-skipped path". A
-resumed zero replay now depends on payments being available for the lookup, as it already does for the
-journal.
+Operation evidence classifies a zero-total order in exactly one place: the recovery runner. Checkout
+keeps no second classifier. Checkout skips the PSP only for an order **this request inserted**:
+payments binds an operation only after commerce has inserted the order, so a new order cannot have
+one. A checkout that **resumes** an existing zero-total order (`created`, `payment_unknown` or
+`confirmation_pending`) answers `202` with the order's durable status and does nothing else. It makes
+no lookup, writes nothing (no buyer details, no fact, no finalize, no status change), and calls neither
+inventory nor payments. `claimOrder` also does not refresh `updated_at` for a zero-total resumed order.
+Recovery's two-minute grace runs on that column, so a refresh would let a buyer who replays every 30
+seconds keep recovery from ever claiming the order. This is the same reasoning the code already applies
+to `release_pending`. A paid resumed order still has its `updated_at` refreshed, as before.
+
+Recovery treats a zero-total `created` **or** `confirmation_pending` order the same way: it calls the
+operation lookup first. A lookup error retries. A found operation takes the existing evidence
+branches. Not found takes the PSP-skipped completion described above. A buyer whose zero checkout
+crashed mid-way therefore sees `202` on a replay until recovery completes the order, as for a paid
+order stuck in `payment_unknown`.
 
 ### Rejected: a durable "PSP skipped" marker
 

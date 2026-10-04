@@ -76,11 +76,18 @@ func readZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) zer
 }
 
 // assertZeroOrderJournal is COS4, re-read EXACTLY: two rows, in order, amount 0, EUR, with the
-// timestamps commerce stored; no payment.* fact, no operation, no settlement row. A comparison
-// against commerce's order_facts and not a non-null check, so a truncated or substituted
-// timestamp fails.
-func assertZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) zeroOrderJournal {
+// timestamps commerce stored; no payment.* fact, no operation, no settlement row.
+//
+// Identity is asserted against EXPECTED values, not only copy against copy. The fact id is the
+// one commerce derives (SHA-1 of order id and fact type), and the organizer and buyer come from the
+// fixture (wantBuyer is the reservation's buyer). Both stored copies, commerce's order_facts row and
+// payments' journal row, are compared with them, so a wrong buyer written consistently into both
+// copies fails. The comparison of one copy with the other is kept for the timestamp, which has no
+// derivable expected value.
+func assertZeroOrderJournal(t *testing.T, ctx context.Context, orderID, wantBuyer string) zeroOrderJournal {
 	t.Helper()
+	wantOrganizer := uuid.MustParse(organizerID)
+	buyer := uuid.MustParse(wantBuyer)
 	got := readZeroOrderJournal(t, ctx, orderID)
 	if len(got.facts) != 2 || got.facts[0].FactType != "order.created" || got.facts[1].FactType != "order.completed" {
 		t.Fatalf("payments journal for the order = %+v, want exactly [order.created order.completed]", got.facts)
@@ -96,11 +103,14 @@ func assertZeroOrderJournal(t *testing.T, ctx context.Context, orderID string) z
 			orderID, f.FactType).Scan(&stored, &storedID, &storedOrganizer, &storedBuyer); err != nil {
 			t.Fatalf("commerce has no %s fact for the order: %v", f.FactType, err)
 		}
-		// Identity, not only content: the journal row must be THE fact commerce recorded, for the
-		// same organizer and buyer. A fact submitted under a fresh id, or another buyer's, fails.
-		if f.FactID != storedID || f.OrganizerID != storedOrganizer || f.BuyerID != storedBuyer {
-			t.Errorf("%s journal row (fact %s organizer %s buyer %s) != commerce order_facts (fact %s organizer %s buyer %s)",
-				f.FactType, f.FactID, f.OrganizerID, f.BuyerID, storedID, storedOrganizer, storedBuyer)
+		wantID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(orderID+":"+f.FactType))
+		if f.FactID != wantID || f.OrganizerID != wantOrganizer || f.BuyerID != buyer {
+			t.Errorf("%s journal row: fact %s organizer %s buyer %s, want fact %s organizer %s buyer %s",
+				f.FactType, f.FactID, f.OrganizerID, f.BuyerID, wantID, wantOrganizer, buyer)
+		}
+		if storedID != wantID || storedOrganizer != wantOrganizer || storedBuyer != buyer {
+			t.Errorf("%s commerce order_facts row: fact %s organizer %s buyer %s, want fact %s organizer %s buyer %s",
+				f.FactType, storedID, storedOrganizer, storedBuyer, wantID, wantOrganizer, buyer)
 		}
 		if !f.OccurredAt.Equal(stored) {
 			t.Errorf("%s journal time %s != commerce order_facts time %s", f.FactType, f.OccurredAt, stored)
@@ -182,7 +192,7 @@ func TestAZeroPricedTicketChecksOutWithoutTouchingThePSP(t *testing.T) {
 		t.Errorf("confirmed seats = %d, want 2: the completion tail must confirm the claim", confirmed)
 	}
 
-	first := assertZeroOrderJournal(t, ctx, order.OrderID)
+	first := assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 
 	// A byte-identical replay answers the same order and changes nothing: not a second
 	// ticket set, not a second journal row, and still no operation.
@@ -196,7 +206,7 @@ func TestAZeroPricedTicketChecksOutWithoutTouchingThePSP(t *testing.T) {
 		t.Fatalf("replay = %d %s, want the same completed order", code, raw)
 	}
 	waitForTickets(t, order.GuestRef, 2)
-	second := assertZeroOrderJournal(t, ctx, order.OrderID)
+	second := assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 	if fmt.Sprint(first.facts) != fmt.Sprint(second.facts) {
 		t.Errorf("a replay changed the journal: %+v then %+v", first.facts, second.facts)
 	}
@@ -342,7 +352,7 @@ func TestRecoveryCompletesAZeroTotalOrderAndTheJournalHoldsOnlyItsFacts(t *testi
 				return nil
 			})
 
-			assertZeroOrderJournal(t, ctx, orderID)
+			assertZeroOrderJournal(t, ctx, orderID, buyerID)
 			var guestRef string
 			if err := db.QueryRow(ctx, `SELECT guest_order_ref::text FROM orders WHERE id=$1`, orderID).Scan(&guestRef); err != nil {
 				t.Fatal(err)

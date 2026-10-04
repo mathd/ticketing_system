@@ -71,7 +71,7 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if reservation["amount"] != float64(0) {
 		t.Fatalf("reserved total = %v, want 0: the ticket type is priced at zero", reservation["amount"])
 	}
-	assertZeroOrderJournal(t, ctx, order.OrderID)
+	assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 
 	// AFTER issuance, deliberately: voiding drives access, which answers 503 until
 	// the tickets exist (its outbox/JetStream path is asynchronous). Voiding earlier
@@ -160,7 +160,7 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	}
 	// And payments' side, re-read exactly: still the order's two purchase facts and nothing
 	// the reversal could have added — no refund fact, no operation, no settlement row.
-	assertZeroOrderJournal(t, ctx, order.OrderID)
+	assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 	var refundStatus string
 	var refundedQty int
 	if err := com.QueryRow(ctx, `SELECT refund_status, refunded_quantity FROM orders WHERE id=$1`, order.OrderID).Scan(&refundStatus, &refundedQty); err != nil {
