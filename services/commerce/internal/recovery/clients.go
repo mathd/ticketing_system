@@ -334,8 +334,8 @@ func (c StoreCompleter) Complete(ctx context.Context, s store.StuckOrder) error 
 	return err
 }
 
-// JournalFact submits the order.failed fact through payments, mirroring the checkout
-// path's fact submission.
+// JournalFact submits order facts (order.failed, and since TKT-285 order.created and
+// order.completed) through payments, mirroring the checkout path's fact submission.
 type JournalFact struct {
 	Client      *http.Client
 	PaymentsURL string
@@ -359,13 +359,33 @@ func (f StoreFactDB) RecordOrderFact(ctx context.Context, s store.StuckOrder, fa
 	return store.RecordOrderFact(ctx, f.DB, s, factType)
 }
 
+// OrderFailed journals order.failed for an order recovery released or refunded.
 func (j JournalFact) OrderFailed(ctx context.Context, s store.StuckOrder) error {
-	factID, occurred, err := j.DB.RecordOrderFact(ctx, s, "order.failed")
+	return j.submit(ctx, s, "order.failed")
+}
+
+// OrderCreated re-submits the order.created fact. The checkout wrote it before it died; the
+// derived id and the first stored timestamp make this a replay of the same fact, so it is
+// safe to repeat and it cannot mint a second one (TKT-285, ADR-011).
+func (j JournalFact) OrderCreated(ctx context.Context, s store.StuckOrder) error {
+	return j.submit(ctx, s, "order.created")
+}
+
+// OrderCompleted submits the order.completed fact for an order recovery is completing.
+// Recovery used to complete a PAID order without it; only the PSP-skipped zero-total path
+// calls this, because that path has no payment fact for the order's completion to hang from
+// and the journal otherwise never learns the order finished (TKT-285).
+func (j JournalFact) OrderCompleted(ctx context.Context, s store.StuckOrder) error {
+	return j.submit(ctx, s, "order.completed")
+}
+
+func (j JournalFact) submit(ctx context.Context, s store.StuckOrder, factType string) error {
+	factID, occurred, err := j.DB.RecordOrderFact(ctx, s, factType)
 	if err != nil {
 		return fmt.Errorf("record order fact: %w", err)
 	}
 	payload := map[string]any{
-		"fact_id": factID, "organizer_id": s.OrganizerID, "fact_type": "order.failed",
+		"fact_id": factID, "organizer_id": s.OrganizerID, "fact_type": factType,
 		"buyer_id": s.BuyerID, "amount": s.Amount, "currency": s.Currency,
 		"occurred_at": occurred, "payload": map[string]string{"order_id": s.OrderID.String()},
 	}
@@ -385,7 +405,7 @@ func (j JournalFact) OrderFailed(ctx context.Context, s store.StuckOrder) error 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("journal order.failed: status %d", resp.StatusCode)
+		return fmt.Errorf("journal %s: status %d", factType, resp.StatusCode)
 	}
 	return nil
 }

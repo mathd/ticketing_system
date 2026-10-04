@@ -895,3 +895,137 @@ func claimStuckOne(t *testing.T, order uuid.UUID) StuckOrder {
 	t.Fatalf("order %s not claimable", order)
 	return StuckOrder{}
 }
+
+// seedZeroStuck is seedStuck for a ZERO-TOTAL order (TKT-285): the reservation row itself
+// carries a zero gross total, which is what ClaimStuckOrders reads into StuckOrder.Amount.
+//
+// The returned StuckOrder is deliberately NOT given an Amount here. seedStuck leaves it unset,
+// and a test that read the fixture's own field instead of the claim's would be comparing the
+// fixture with itself: it would stay green with the claim's SQL total replaced by a constant.
+// Tests that care read the order back through the real claim (claimedZero).
+func seedZeroStuck(t *testing.T, status string) StuckOrder {
+	t.Helper()
+	s := seedStuck(t, status)
+	db, ctx := outboxDB(t)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE reservations SET unit_amount=0,total_amount=0,face_value_amount=0 WHERE id=$1`, s.ReservationID); err != nil {
+		t.Fatalf("zero the seeded reservation: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_facts WHERE order_id=$1`, s.OrderID) })
+	return s
+}
+
+// claimedZero loads the seeded order through the REAL claim SQL, so Amount and Currency are
+// what production would read from reservations.total_amount.
+func claimedZero(t *testing.T, s StuckOrder) StuckOrder {
+	t.Helper()
+	db, ctx := outboxDB(t)
+	claimed, err := ClaimStuckOrders(ctx, db, 10000, time.Minute)
+	if err != nil {
+		t.Fatalf("claim stuck orders: %v", err)
+	}
+	for _, c := range claimed {
+		if c.OrderID == s.OrderID {
+			return c
+		}
+	}
+	t.Fatalf("the seeded zero-total order %s was not claimable", s.OrderID)
+	return StuckOrder{}
+}
+
+// TKT-285 (D16). The order facts a zero-total completion journals must carry the order's real
+// gross total — zero — and the same identity and first timestamp on every replay, because the
+// recovery runner re-submits them on retries. Seeded and re-read as a coherent ZERO reservation,
+// NOT seedStuck's 2500 row: that row has an unpopulated Amount, so asserting "amount 0" on it
+// would pass with the claim's SQL total replaced by any constant that the fixture then ignores.
+func TestZeroTotalOrderFactsReplayWithTheirIdentityTimeAndAmount(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedZeroStuck(t, "created")
+	order := claimedZero(t, seeded)
+	if order.Amount != 0 || order.Currency != "EUR" {
+		t.Fatalf("the claim read %d %s for a zero-total reservation, want 0 EUR", order.Amount, order.Currency)
+	}
+
+	for _, factType := range []string{"order.created", "order.completed"} {
+		first, firstAt, err := RecordOrderFact(ctx, db, order, factType)
+		if err != nil {
+			t.Fatalf("%s: record: %v", factType, err)
+		}
+		second, secondAt, err := RecordOrderFact(ctx, db, order, factType)
+		if err != nil {
+			t.Fatalf("%s: re-record: %v", factType, err)
+		}
+		wantID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(order.OrderID.String()+":"+factType))
+		if first != wantID || second != wantID {
+			t.Errorf("%s: ids %s / %s, want the derived %s on every replay", factType, first, second, wantID)
+		}
+		if !secondAt.Equal(firstAt) {
+			t.Errorf("%s: occurred_at moved from %s to %s on replay", factType, firstAt, secondAt)
+		}
+
+		var rows int
+		var amount int64
+		var currency string
+		var stored time.Time
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*), coalesce(max(amount),-1), coalesce(max(currency),''), max(occurred_at)
+			FROM order_facts WHERE order_id=$1 AND fact_type=$2`, order.OrderID, factType).
+			Scan(&rows, &amount, &currency, &stored); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 || amount != 0 || currency != "EUR" || !stored.Equal(firstAt) {
+			t.Errorf("%s: stored rows=%d amount=%d currency=%q at=%s, want 1 row of 0 EUR at %s",
+				factType, rows, amount, currency, stored, firstAt)
+		}
+	}
+}
+
+// OrderFactRecorded is the evidence read the zero-total branch decides on, so its two answers
+// each get a case — and the read must create nothing, or asking for the intent fact would
+// manufacture it.
+func TestOrderFactRecordedAnswersFromTheDeterministicFactAndWritesNothing(t *testing.T) {
+	db, ctx := outboxDB(t)
+	order := claimedZero(t, seedZeroStuck(t, "created"))
+	other := claimedZero(t, seedZeroStuck(t, "created"))
+
+	recorded := func(o StuckOrder, factType string) bool {
+		t.Helper()
+		ok, err := OrderFactRecorded(ctx, db, o.OrderID, factType)
+		if err != nil {
+			t.Fatalf("OrderFactRecorded(%s): %v", factType, err)
+		}
+		return ok
+	}
+	countFacts := func() int {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_facts WHERE order_id IN ($1,$2)`,
+			order.OrderID, other.OrderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if recorded(order, "order.created") {
+		t.Fatal("a fact that was never written reads as recorded")
+	}
+	if n := countFacts(); n != 0 {
+		t.Fatalf("the read created %d row(s)", n)
+	}
+	if _, _, err := RecordOrderFact(ctx, db, order, "order.created"); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded(order, "order.created") {
+		t.Fatal("a recorded fact reads as absent")
+	}
+	// Scoped to the type and to the order: a different type, and a different order's fact,
+	// must not satisfy the question.
+	if recorded(order, "order.completed") {
+		t.Error("order.created satisfied a question about order.completed")
+	}
+	if recorded(other, "order.created") {
+		t.Error("another order's order.created satisfied this order's question")
+	}
+	if n := countFacts(); n != 1 {
+		t.Fatalf("order_facts holds %d row(s) after one write and several reads, want 1", n)
+	}
+}

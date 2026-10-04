@@ -53,6 +53,9 @@ func (s *backlogStore) AbandonRecoveryClaim(context.Context, uuid.UUID, uuid.UUI
 func (s *backlogStore) MarkReleased(context.Context, store.StuckOrder) error {
 	panic("a recovery transition reached the metrics fake")
 }
+func (s *backlogStore) OrderFactRecorded(context.Context, uuid.UUID, string) (bool, error) {
+	panic("a recovery transition reached the metrics fake")
+}
 func (s *backlogStore) ReleaseStuckOrder(context.Context, uuid.UUID, uuid.UUID, error) error {
 	panic("a recovery transition reached the metrics fake")
 }

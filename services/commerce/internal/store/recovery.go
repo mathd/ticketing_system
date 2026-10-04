@@ -347,6 +347,23 @@ func RecordOrderFact(ctx context.Context, db OutboxDB, s StuckOrder, factType st
 	return factID, occurred, nil
 }
 
+// OrderFactRecorded reports whether the order's fact of this type exists in order_facts.
+//
+// A read by the deterministic fact id RecordOrderFact derives, so it needs no new index and no
+// migration, and it writes nothing — asking must never create the evidence it looks for.
+// TKT-285 uses it for the order.created fact: checkout writes buyer_pii BEFORE that fact, so
+// its presence proves the delivery details exist.
+func OrderFactRecorded(ctx context.Context, db OutboxDB, orderID uuid.UUID, factType string) (bool, error) {
+	factID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(orderID.String()+":"+factType))
+	rows, err := db.QueryContext(ctx, `SELECT 1 FROM order_facts WHERE fact_id=$1 AND order_id=$2`, factID, orderID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	found := rows.Next()
+	return found, rows.Err()
+}
+
 // AbandonRecoveryClaim hands back a claim whose order was never driven — a shutdown
 // caught the pass mid-batch.
 //

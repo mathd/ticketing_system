@@ -1321,7 +1321,9 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 	return nil
 }
 
-// claimOrder returns the order id, its current status, and whether recovery has PARKED it.
+// claimOrder returns the order id, its current status, whether recovery has PARKED it, and
+// whether THIS call inserted the row (TKT-285, D21: a newly inserted order cannot have a
+// payment operation, a resumed one can).
 // Parked is read here rather than re-queried because this is the only place that already
 // holds the row lock, and a replay branch that answers from durable evidence needs to know
 // whether any worker can still act on that evidence (ai-review F2).
@@ -1338,15 +1340,16 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 // attribution immutable under idempotency: a second request bearing a different
 // (or absent) assertion cannot repoint a completed purchase at someone else, and
 // cannot promote a guest order into an attributed one. The first claim decides.
-func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, error) {
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, x.ID.String()); err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
+	inserted := false
 	var id uuid.UUID
 	var storedKey, storedFingerprint, status string
 	var recoveryClaim uuid.NullUUID
@@ -1366,9 +1369,10 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// reseller that did not make it. Settlement (ADR-048) splits by these.
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id,channel_code,reseller_id) SELECT $1,$2,'created',$3,$4,$5,r.channel_code,r.reseller_id FROM reservations r WHERE r.id=$2`, id, x.ID, key, fingerprint, customer)
 		status = "created"
+		inserted = err == nil
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {
-			return uuid.Nil, "", false, errCheckoutConflict
+			return uuid.Nil, "", false, false, errCheckoutConflict
 		}
 		// A recovery pass holds this order under an unexpired lease. It may already have
 		// asked payments whether a charge exists and been told no; binding one now would
@@ -1376,7 +1380,7 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// under a captured payment. Recovery's decision is bounded by its lease, so the
 		// buyer can retry once it lapses.
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
-			return uuid.Nil, "", false, errRecoveryInProgress
+			return uuid.Nil, "", false, false, errRecoveryInProgress
 		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
@@ -1389,18 +1393,23 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// to protect — while refreshing updated_at would push the order back inside
 		// recovery's 2-minute grace window on every retry, leaving the release that IS
 		// outstanding permanently unclaimable and the buyer looping on the same answer.
-		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, id); err != nil {
-			return uuid.Nil, "", false, err
+		//
+		// NOT for a zero-total order (TKT-285, D21). Checkout answers a resumed zero order 202
+		// without doing any work, so there is no in-flight request to protect, and refreshing the
+		// timestamp would let a buyer who replays every 30 seconds keep recovery from ever
+		// claiming it: the same reasoning as release_pending above.
+		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending') AND $2::bigint <> 0`, id, x.Amount); err != nil {
+			return uuid.Nil, "", false, false, err
 		}
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return uuid.Nil, "", false, errCheckoutConflict
+		return uuid.Nil, "", false, false, errCheckoutConflict
 	}
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
-	return id, status, recoveryParked.Valid, tx.Commit()
+	return id, status, recoveryParked.Valid, inserted, tx.Commit()
 }
 
 func checkoutClaimProblem(err error) (int, string) {
@@ -1656,7 +1665,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reservation, key string, in checkoutRequest, customer uuid.NullUUID) {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
-	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
+	order, orderStatus, recoveryParked, inserted, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
 	if err != nil {
 		code, message := checkoutClaimProblem(err)
 		if code == http.StatusInternalServerError {
@@ -1780,6 +1789,19 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		writeAwaitingReconciliation(w, order, orderStatus)
 		return
 	}
+	// D21 (TKT-285). A zero-total order this request did NOT insert is a RESUME, and every
+	// resumed zero order is recovery's job: it may be a legacy order whose old zero charge bound a
+	// payment operation, and only recovery classifies an order by operation evidence (ADR-016).
+	// Checkout keeps no second classifier. It answers 202 with the durable status and does
+	// NOTHING else: no lookup, no buyer_pii, no fact, no finalize, no status change, and no
+	// call to inventory or payments. claimOrder also leaves updated_at alone for such an order,
+	// so a replaying buyer cannot postpone recovery's grace period. Only an order THIS request
+	// inserted can skip the PSP below: payments binds an operation only after commerce inserts
+	// the order, so a new order cannot have one.
+	if x.Amount == 0 && !inserted {
+		write(w, 202, map[string]any{"order_id": order, "status": orderStatus})
+		return
+	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
 		write(w, 500, map[string]string{"error": "persist buyer"})
 		return
@@ -1795,6 +1817,18 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 	}
 	if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1 AND status IN ('held','finalizing')`, x.ID); err != nil {
 		write(w, 500, map[string]string{"error": "persist checkout"})
+		return
+	}
+	// A ZERO-TOTAL order skips the provider (TKT-285, owner decision D1): there is nothing to
+	// charge, so there is no settlement plan, no /internal/charges call and no payment
+	// operation, and the order completes through the same tail a paid one does. The
+	// discriminator is the persisted GROSS total (x.Amount), not the face value: a zero face
+	// value with a passed-on fee is a positive total and is still charged.
+	//
+	// The token was required and is not forwarded (D5); ADR-069 records that it is sent to
+	// payments only when a charge is made.
+	if x.Amount == 0 {
+		s.completeCheckout(w, r, x, order)
 		return
 	}
 	// The settlement plan comes from the PERSISTED snapshot, never a fresh
@@ -1879,7 +1913,23 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
-	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+	s.completeCheckout(w, r, x, order)
+}
+
+// completeCheckout is the completion tail both checkout paths share: inventory confirm, the
+// `confirmation_pending` answer when confirm fails, the order.completed fact, the completion
+// transaction, and the owed publish (TKT-285, D3).
+//
+// A PAID checkout reaches it after payments answered 200; a ZERO-TOTAL checkout reaches it
+// straight after the finalize, because there is no charge to wait for. It exists so the zero
+// path reuses the tail instead of copying it — a copy would let the two drift, and the failure
+// arms below are the part that matters: a confirm that fails must leave the order pending for
+// recovery and must NOT journal order.completed.
+//
+// It writes the response itself, like the rest of executeCheckout, and returns nothing: every
+// exit is a terminal answer to the buyer.
+func (s *Server) completeCheckout(w http.ResponseWriter, r *http.Request, x reservation, order uuid.UUID) {
+	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
 		res, execErr := s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 		if execErr == nil {

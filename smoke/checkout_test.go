@@ -107,6 +107,14 @@ func postWithKeyAsync(t *testing.T, url, key string, body any) (int, []byte) {
 
 func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 	t.Helper()
+	return setupCheckoutOfferAt(t, suffix, 1250)
+}
+
+// setupCheckoutOfferAt is setupCheckoutOffer with an explicit unit price. TKT-285 needs a
+// ticket type priced at ZERO, created through the catalog like any other — a comped ticket's
+// real path — rather than a reservation row edited after the fact.
+func setupCheckoutOfferAt(t *testing.T, suffix string, price int64) (string, string) {
+	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
 	venue := created(t, catalog+"/venues", map[string]any{"name": "Checkout " + suffix, "ga_capacity": 5})
 	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Paiement " + suffix, "en": "Checkout " + suffix}})
@@ -115,7 +123,7 @@ func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 	// performance that has already started.
 	startsAt := time.Now().UTC().AddDate(0, 0, 90).Truncate(time.Second).Format(time.RFC3339)
 	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": "UTC"})
-	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 1250, "currency": "EUR"}})
+	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": price, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}

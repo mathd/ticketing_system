@@ -35,6 +35,16 @@ type fakeStore struct {
 	released  []store.StuckOrder // MarkReleased
 	failed    []error            // ReleaseStuckOrder causes
 	abandoned []uuid.UUID        // AbandonRecoveryClaim (shutdown hand-back)
+
+	// recorded answers OrderFactRecorded: the fact types commerce holds for an order. The
+	// default (nil) is "no fact", which no pre-TKT-285 path reads.
+	recorded    map[string]bool
+	recordedErr error
+}
+
+func (f *fakeStore) OrderFactRecorded(_ context.Context, _ uuid.UUID, factType string) (bool, error) {
+	f.tr.add("store.OrderFactRecorded:" + factType)
+	return f.recorded[factType], f.recordedErr
 }
 
 // Backlog is observability-only and no recovery decision reads it, so the transition
@@ -164,6 +174,29 @@ type fakeJournal struct {
 	tr    *trace
 	facts []store.StuckOrder
 	err   error
+
+	// TKT-285: the zero-total completion's two facts, with their own failure switches so a
+	// case can fail one without the other.
+	created, completed       []store.StuckOrder
+	createdErr, completedErr error
+}
+
+func (f *fakeJournal) OrderCreated(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("journal.OrderCreated")
+	if f.createdErr != nil {
+		return f.createdErr
+	}
+	f.created = append(f.created, s)
+	return nil
+}
+
+func (f *fakeJournal) OrderCompleted(_ context.Context, s store.StuckOrder) error {
+	f.tr.add("journal.OrderCompleted")
+	if f.completedErr != nil {
+		return f.completedErr
+	}
+	f.completed = append(f.completed, s)
+	return nil
 }
 
 func (f *fakeJournal) OrderFailed(_ context.Context, s store.StuckOrder) error {

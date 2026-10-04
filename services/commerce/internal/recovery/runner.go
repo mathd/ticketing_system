@@ -94,6 +94,11 @@ var ErrClaimGone = errors.New("inventory claim is gone")
 // Journal records order facts. Failures are retried; the fact write is idempotent.
 type Journal interface {
 	OrderFailed(ctx context.Context, s store.StuckOrder) error
+	// OrderCreated and OrderCompleted serve the PSP-skipped zero-total completion only
+	// (TKT-285): the checkout that died wrote order.created and never reached
+	// order.completed, and a zero-total order has no payment fact to carry either.
+	OrderCreated(ctx context.Context, s store.StuckOrder) error
+	OrderCompleted(ctx context.Context, s store.StuckOrder) error
 }
 
 // Completer finishes an order whose claim is confirmed, owing its completion event.
@@ -115,6 +120,10 @@ type Store interface {
 	ClearRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
 	AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error
 	MarkReleased(ctx context.Context, s store.StuckOrder) error
+	// OrderFactRecorded reports whether commerce has the order's fact of this type. A pure
+	// read of order_facts (deterministic fact id), used to tell a zero-total order that got
+	// as far as its intent fact from one that did not (TKT-285).
+	OrderFactRecorded(ctx context.Context, orderID uuid.UUID, factType string) (bool, error)
 	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error
 	// Backlog reports the parked population for observability only. It is never read
 	// by a recovery decision — a runner that steered on its own queue depth would be
@@ -162,6 +171,10 @@ func (d DBStore) MarkRefunded(ctx context.Context, s store.StuckOrder) error {
 
 func (d DBStore) MarkReleased(ctx context.Context, s store.StuckOrder) error {
 	return store.MarkReleased(ctx, d.DB, s)
+}
+
+func (d DBStore) OrderFactRecorded(ctx context.Context, orderID uuid.UUID, factType string) (bool, error) {
+	return store.OrderFactRecorded(ctx, d.DB, orderID, factType)
 }
 
 func (d DBStore) ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error {
@@ -287,6 +300,14 @@ func (r *Runner) releaseUndriven(orders []store.StuckOrder) {
 func (r *Runner) drive(ctx context.Context, s store.StuckOrder) error {
 	switch s.Status {
 	case "confirmation_pending":
+		if s.Amount == 0 {
+			// A zero total was never necessarily uncharged (TKT-285, D21): a LEGACY zero order
+			// may have bound a payment operation before the PSP was skipped. So a zero order is
+			// classified by the operation lookup like `created`, in ONE place (resolveCreated).
+			// Not found means the PSP-skipped path and completes without any payments call
+			// beyond the journal; found takes the existing evidence branches.
+			return r.resolveCreated(ctx, s)
+		}
 		// Capture returned 200, so the money is KNOWN captured. No PSP lookup: the
 		// evidence is already in hand. Retry the claim confirmation and complete.
 		return r.confirmAndComplete(ctx, s)
@@ -326,6 +347,29 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 	if err != nil {
 		return fmt.Errorf("lookup payment operation: %w", err)
 	}
+	if found && s.Amount == 0 && s.Status == "confirmation_pending" {
+		// D22 (TKT-285): a zero-total confirmation_pending order with a payment operation has no
+		// producer. The old charge path could not answer 200 for zero (a zero confirmed amount is
+		// refused), and checkout writes this status for a zero order only when it inserted the
+		// order, which has no operation. The evidence branches below cannot finish such a row
+		// either: RecordTerminalOutcome excludes confirmation_pending, so a found declined or
+		// timeout would conflict on every attempt. Park it at once; a human reconciles.
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
+			"zero-total confirmation_pending order with a payment operation, which no producer creates; manual reconciliation required")
+	}
+	if !found && s.Amount == 0 {
+		// A zero-total checkout skips the PSP (TKT-285), so "no operation" is what a
+		// COMPLETED-to-be comp looks like here, not proof that payment was never attempted.
+		// Releasing it would silently cancel a sale the buyer was promised. Only `created` and
+		// `confirmation_pending` can be PSP-skipped orders; `payment_unknown` keeps the
+		// existing path below.
+		switch s.Status {
+		case "created":
+			return r.resolveZeroCreated(ctx, s)
+		case "confirmation_pending":
+			return r.completeZero(ctx, s)
+		}
+	}
 	if !found {
 		// No operation exists for this key, so payments never bound a charge: the PSP
 		// was never asked, and no side effect can exist. This is durable evidence of no
@@ -363,6 +407,67 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 	default:
 		return fmt.Errorf("unrecognized payment status %q", op.Status)
 	}
+}
+
+// resolveZeroCreated decides a zero-total `created` order whose operation lookup found nothing.
+//
+// The lookup already ran: found would have taken the existing branches (a legacy order that
+// bound an operation is resolved by operation evidence like any other), and an error never gets
+// here. What is left is the PSP-skipped path, and the one question the amount cannot answer is
+// how far checkout got. The order.created fact is the evidence — checkout writes buyer_pii
+// BEFORE it — so its presence means the delivery details exist and the order completes, while
+// its absence means checkout never promised anything and the order is released exactly as a
+// paid order with no operation is (not_attempted).
+func (r *Runner) resolveZeroCreated(ctx context.Context, s store.StuckOrder) error {
+	intent, err := r.store.OrderFactRecorded(ctx, s.OrderID, "order.created")
+	if err != nil {
+		return fmt.Errorf("read order.created fact: %w", err)
+	}
+	if !intent {
+		if err := r.store.RecordTerminalOutcome(ctx, s.OrderID, s.ClaimID, "not_attempted"); err != nil {
+			return fmt.Errorf("record terminal outcome: %w", err)
+		}
+		s.TerminalOutcome, s.Status = "not_attempted", "release_pending"
+		return r.releaseAndFail(ctx, s)
+	}
+	return r.completeZero(ctx, s)
+}
+
+// completeZero completes a PSP-skipped zero-total order: replay the order.created fact, secure
+// the seat, journal order.completed, run the completion transaction, drop the lease.
+//
+// It is deliberately NOT confirmAndComplete. That function's gone-claim arm assumes captured
+// money and drives provider status and a refund; here nothing was captured, so a gone claim is
+// PARKED for a human instead and payments is never asked about a charge that was never made.
+// The completion transaction is the shared one (store.CompleteOrder through the Completer), so
+// the outbox row that owes the issuance event is written exactly as checkout writes it.
+//
+// The order.created replay is idempotent — same derived id, first stored timestamp — and costs
+// one call; it exists because a crash can land before payments ever saw the fact checkout
+// recorded locally. An order confirmed from `held` (crash after the intent fact, before the
+// finalize) is accepted: inventory confirms a held claim, and only the `finalizing` history
+// entry is skipped (ADR-011 amendment).
+func (r *Runner) completeZero(ctx context.Context, s store.StuckOrder) error {
+	if err := r.journal.OrderCreated(ctx, s); err != nil {
+		return fmt.Errorf("journal order.created: %w", err)
+	}
+	err := r.inventory.Confirm(ctx, s.OrganizerID, s.HoldID)
+	if errors.Is(err, ErrClaimGone) {
+		r.log.WarnContext(ctx, "zero-total order cannot be confirmed; parked for reconciliation",
+			"order_id", s.OrderID)
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
+			"zero-total order whose claim is gone; nothing was charged; manual reconciliation required")
+	}
+	if err != nil {
+		return fmt.Errorf("confirm claim: %w", err)
+	}
+	if err := r.journal.OrderCompleted(ctx, s); err != nil {
+		return fmt.Errorf("journal order.completed: %w", err)
+	}
+	if err := r.completer.Complete(ctx, s); err != nil {
+		return fmt.Errorf("complete order: %w", err)
+	}
+	return r.store.ClearRecoveryClaim(ctx, s.OrderID, s.ClaimID)
 }
 
 func (r *Runner) confirmAndComplete(ctx context.Context, s store.StuckOrder) error {

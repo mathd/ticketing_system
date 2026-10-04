@@ -179,6 +179,7 @@ func (e SettlementLedgerEntryIncidence) Valid() bool {
 
 // Charge defines model for Charge.
 type Charge struct {
+	// Amount Minor units, and AT LEAST 1: a charge moves money, and a total of zero has none to move. Commerce completes a zero-total order without calling the provider (TKT-285), so a zero here is a caller defect and is refused with 400 before any operation is bound.
 	Amount       int64              `json:"amount"`
 	BuyerId      openapi_types.UUID `json:"buyer_id"`
 	Currency     ChargeCurrency     `json:"currency"`
