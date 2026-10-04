@@ -347,6 +347,16 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 	if err != nil {
 		return fmt.Errorf("lookup payment operation: %w", err)
 	}
+	if found && s.Amount == 0 && s.Status == "confirmation_pending" {
+		// D22 (TKT-285): a zero-total confirmation_pending order with a payment operation has no
+		// producer. The old charge path could not answer 200 for zero (a zero confirmed amount is
+		// refused), and checkout writes this status for a zero order only when it inserted the
+		// order, which has no operation. The evidence branches below cannot finish such a row
+		// either: RecordTerminalOutcome excludes confirmation_pending, so a found declined or
+		// timeout would conflict on every attempt. Park it at once; a human reconciles.
+		return r.store.ParkForReconciliation(ctx, s.OrderID, s.ClaimID,
+			"zero-total confirmation_pending order with a payment operation, which no producer creates; manual reconciliation required")
+	}
 	if !found && s.Amount == 0 {
 		// A zero-total checkout skips the PSP (TKT-285), so "no operation" is what a
 		// COMPLETED-to-be comp looks like here, not proof that payment was never attempted.

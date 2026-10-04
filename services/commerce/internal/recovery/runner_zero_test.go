@@ -3,6 +3,7 @@ package recovery
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ticketing/services/commerce/internal/store"
@@ -123,35 +124,37 @@ func TestZeroConfirmationPendingWithNoOperationCompletes(t *testing.T) {
 	}
 }
 
-// Zero + confirmation_pending + a FOUND operation is a legacy order (D21): the existing evidence
-// branches decide, and the PSP-skipped completion must not run.
-func TestZeroConfirmationPendingWhoseLookupFindsAnOperationUsesTheEvidence(t *testing.T) {
-	t.Run("unresolved asks the provider for status", func(t *testing.T) {
-		p, _ := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
-			p.payments.found = true
-			p.payments.op = Operation{Resolved: false}
-			p.payments.status = PSPStatus{Outcome: "unknown"}
+// Zero + confirmation_pending + a FOUND operation (D22). No producer creates this state: the old
+// charge path could not answer 200 for a zero amount, and checkout writes a zero confirmation_pending
+// row only for an order it inserted, which has no operation. The evidence branches cannot finish
+// such a row (RecordTerminalOutcome excludes confirmation_pending), so it PARKS in one pass for
+// whatever the operation says, with nothing else done.
+func TestZeroConfirmationPendingWhoseLookupFindsAnOperationParksOnce(t *testing.T) {
+	for name, op := range map[string]Operation{
+		"unresolved": {Resolved: false},
+		"captured":   {Resolved: true, Status: "captured"},
+		"declined":   {Resolved: true, Status: "declined"},
+		"timeout":    {Resolved: true, Status: "timeout"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
+				p.payments.found = true
+				p.payments.op = op
+			})
+			if resolved != 1 || len(p.store.parked) != 1 {
+				t.Fatalf("resolved=%d parked=%v, want 1 and exactly one park; trace=%v", resolved, p.store.parked, p.trace.steps)
+			}
+			if !strings.Contains(p.store.parked[0], "zero-total confirmation_pending") || !strings.Contains(p.store.parked[0], "payment operation") {
+				t.Errorf("park reason %q does not name the state", p.store.parked[0])
+			}
+			assertNoPaymentFollowUp(t, p, 1)
+			assertNothingReleasedOrFailed(t, p)
+			if p.inventory.confirmed != 0 || len(p.journal.created) != 0 || len(p.journal.completed) != 0 ||
+				len(p.completer.completed) != 0 || p.store.cleared != 0 {
+				t.Errorf("a found operation was acted on beyond the park; trace=%v", p.trace.steps)
+			}
 		})
-		if p.payments.statusCalls != 1 {
-			t.Fatalf("status calls = %d, want 1; trace=%v", p.payments.statusCalls, p.trace.steps)
-		}
-		if p.inventory.confirmed != 0 || len(p.journal.created) != 0 || len(p.journal.completed) != 0 || len(p.completer.completed) != 0 {
-			t.Errorf("the PSP-skipped completion ran for an order that has an operation; trace=%v", p.trace.steps)
-		}
-	})
-	t.Run("captured takes the captured handling", func(t *testing.T) {
-		p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
-			p.payments.found = true
-			p.payments.op = Operation{Resolved: true, Status: "captured"}
-		})
-		if resolved != 1 || p.inventory.confirmed != 1 || len(p.completer.completed) != 1 {
-			t.Fatalf("resolved=%d confirmed=%d completions=%d, want 1/1/1; trace=%v", resolved, p.inventory.confirmed, len(p.completer.completed), p.trace.steps)
-		}
-		// The legacy handling never journalled the order facts; the PSP-skipped one does.
-		if len(p.journal.created) != 0 || len(p.journal.completed) != 0 {
-			t.Errorf("legacy captured path journalled created=%d completed=%d, want 0/0", len(p.journal.created), len(p.journal.completed))
-		}
-	})
+	}
 }
 
 // A lookup that errors proves nothing about a zero confirmation_pending order either: retry, and
@@ -235,17 +238,26 @@ func TestZeroCreatedWhoseLookupFindsAnOperationKeepsTheExistingBranches(t *testi
 		assertNothingReleasedOrFailed(t, p)
 	})
 	t.Run("unresolved operation asks the provider for status", func(t *testing.T) {
-		p, _ := run(t, []store.StuckOrder{zeroStuck("created")}, func(p *ports) {
+		// Provider status that proves nothing ("unknown"): the order must be handed back for a
+		// retry, not resolved, parked or terminated.
+		p, resolved := run(t, []store.StuckOrder{zeroStuck("created")}, func(p *ports) {
 			p.payments.found = true
 			p.payments.op = Operation{Resolved: false}
-			p.payments.status = PSPStatus{Outcome: "declined"}
+			p.payments.status = PSPStatus{Outcome: "unknown"}
 			intentRecorded(p)
 		})
 		if p.payments.statusCalls != 1 {
 			t.Fatalf("status calls = %d, want 1: an unresolved bound operation is resolved by provider status; trace=%v", p.payments.statusCalls, p.trace.steps)
 		}
+		if resolved != 0 || len(p.store.failed) != 1 {
+			t.Fatalf("resolved=%d handed back=%d, want 0 and exactly 1: an unknown status is a retry; trace=%v", resolved, len(p.store.failed), p.trace.steps)
+		}
+		if len(p.store.outcomes) != 0 || len(p.store.parked) != 0 || len(p.store.queued) != 0 || len(p.store.released) != 0 ||
+			len(p.store.refunded) != 0 || p.store.cleared != 0 || p.inventory.releases != 0 {
+			t.Errorf("an unknown status caused a transition; trace=%v", p.trace.steps)
+		}
 		if p.inventory.confirmed != 0 || len(p.completer.completed) != 0 {
-			t.Errorf("a declined legacy order was completed")
+			t.Errorf("an unresolved legacy order was completed")
 		}
 	})
 	t.Run("captured with a gone claim is compensated", func(t *testing.T) {
