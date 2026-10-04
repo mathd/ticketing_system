@@ -374,12 +374,10 @@ func TestRunnerCompletesAZeroTotalOrderWithOnlyALookupAndTheJournalFacts(t *test
 			if owed != 1 {
 				t.Fatalf("completion outbox rows = %d, want 1: issuance depends on the event the completion owes", owed)
 			}
-			wantLookups := 1
-			if status == "confirmation_pending" {
-				wantLookups = 0
-			}
-			if payments.lookups != wantLookups {
-				t.Errorf("payments lookups = %d, want %d", payments.lookups, wantLookups)
+			// Exactly ONE lookup, answered not-found, for both statuses: a zero order is classified by
+			// operation evidence whatever its status (D21).
+			if payments.lookups != 1 {
+				t.Errorf("payments lookups = %d, want 1", payments.lookups)
 			}
 			if inventory.confirms != 1 || inventory.releases != 0 {
 				t.Errorf("inventory confirm/release = %d/%d, want 1/0", inventory.confirms, inventory.releases)

@@ -301,11 +301,12 @@ func (r *Runner) drive(ctx context.Context, s store.StuckOrder) error {
 	switch s.Status {
 	case "confirmation_pending":
 		if s.Amount == 0 {
-			// A zero total was never charged (TKT-285): this row is the PSP-skipped path's
-			// own confirmation_pending, so there is no capture to have been "known". It
-			// completes through the zero path, which never reaches the captured-money
-			// compensation arm below.
-			return r.completeZero(ctx, s)
+			// A zero total was never necessarily uncharged (TKT-285, D21): a LEGACY zero order
+			// may have bound a payment operation before the PSP was skipped. So a zero order is
+			// classified by the operation lookup like `created`, in ONE place (resolveCreated).
+			// Not found means the PSP-skipped path and completes without any payments call
+			// beyond the journal; found takes the existing evidence branches.
+			return r.resolveCreated(ctx, s)
 		}
 		// Capture returned 200, so the money is KNOWN captured. No PSP lookup: the
 		// evidence is already in hand. Retry the claim confirmation and complete.
@@ -346,11 +347,18 @@ func (r *Runner) resolveCreated(ctx context.Context, s store.StuckOrder) error {
 	if err != nil {
 		return fmt.Errorf("lookup payment operation: %w", err)
 	}
-	if !found && s.Amount == 0 && s.Status == "created" {
+	if !found && s.Amount == 0 {
 		// A zero-total checkout skips the PSP (TKT-285), so "no operation" is what a
 		// COMPLETED-to-be comp looks like here, not proof that payment was never attempted.
-		// Releasing it would silently cancel a sale the buyer was promised.
-		return r.resolveZeroCreated(ctx, s)
+		// Releasing it would silently cancel a sale the buyer was promised. Only `created` and
+		// `confirmation_pending` can be PSP-skipped orders; `payment_unknown` keeps the
+		// existing path below.
+		switch s.Status {
+		case "created":
+			return r.resolveZeroCreated(ctx, s)
+		case "confirmation_pending":
+			return r.completeZero(ctx, s)
+		}
 	}
 	if !found {
 		// No operation exists for this key, so payments never bound a charge: the PSP

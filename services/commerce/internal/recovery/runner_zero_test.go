@@ -96,17 +96,22 @@ func TestZeroCreatedWithNoOperationAndAnIntentFactIsCompletedNotReleased(t *test
 	}
 }
 
-// Row: zero + confirmation_pending. Only the new skip path produces one for a zero total, so
-// there is no lookup at all — the evidence is already in hand.
-func TestZeroConfirmationPendingCompletesWithoutALookup(t *testing.T) {
-	p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, nil)
+// Row: zero + confirmation_pending + lookup not-found. A zero `confirmation_pending` row is
+// classified by the operation lookup like `created` (D21): a legacy zero order could have bound an
+// operation. Not found means the PSP-skipped path, which completes; and no intent read is needed,
+// because confirm only runs after the intent fact was written.
+func TestZeroConfirmationPendingWithNoOperationCompletes(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
+		p.payments.found = false
+	})
 
 	if resolved != 1 {
 		t.Fatalf("resolved = %d, want 1; trace=%v", resolved, p.trace.steps)
 	}
-	assertNoPaymentFollowUp(t, p, 0)
+	assertNoPaymentFollowUp(t, p, 1)
 	assertNothingReleasedOrFailed(t, p)
 	want := []string{
+		"payments.LookupOperation",
 		"journal.OrderCreated",
 		"inventory.Confirm",
 		"journal.OrderCompleted",
@@ -116,6 +121,52 @@ func TestZeroConfirmationPendingCompletesWithoutALookup(t *testing.T) {
 	if !reflect.DeepEqual(p.trace.steps, want) {
 		t.Fatalf("trace = %v\nwant    %v", p.trace.steps, want)
 	}
+}
+
+// Zero + confirmation_pending + a FOUND operation is a legacy order (D21): the existing evidence
+// branches decide, and the PSP-skipped completion must not run.
+func TestZeroConfirmationPendingWhoseLookupFindsAnOperationUsesTheEvidence(t *testing.T) {
+	t.Run("unresolved asks the provider for status", func(t *testing.T) {
+		p, _ := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
+			p.payments.found = true
+			p.payments.op = Operation{Resolved: false}
+			p.payments.status = PSPStatus{Outcome: "unknown"}
+		})
+		if p.payments.statusCalls != 1 {
+			t.Fatalf("status calls = %d, want 1; trace=%v", p.payments.statusCalls, p.trace.steps)
+		}
+		if p.inventory.confirmed != 0 || len(p.journal.created) != 0 || len(p.journal.completed) != 0 || len(p.completer.completed) != 0 {
+			t.Errorf("the PSP-skipped completion ran for an order that has an operation; trace=%v", p.trace.steps)
+		}
+	})
+	t.Run("captured takes the captured handling", func(t *testing.T) {
+		p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
+			p.payments.found = true
+			p.payments.op = Operation{Resolved: true, Status: "captured"}
+		})
+		if resolved != 1 || p.inventory.confirmed != 1 || len(p.completer.completed) != 1 {
+			t.Fatalf("resolved=%d confirmed=%d completions=%d, want 1/1/1; trace=%v", resolved, p.inventory.confirmed, len(p.completer.completed), p.trace.steps)
+		}
+		// The legacy handling never journalled the order facts; the PSP-skipped one does.
+		if len(p.journal.created) != 0 || len(p.journal.completed) != 0 {
+			t.Errorf("legacy captured path journalled created=%d completed=%d, want 0/0", len(p.journal.created), len(p.journal.completed))
+		}
+	})
+}
+
+// A lookup that errors proves nothing about a zero confirmation_pending order either: retry, and
+// never confirm.
+func TestZeroConfirmationPendingWhoseLookupFailsRetriesWithoutConfirming(t *testing.T) {
+	p, resolved := run(t, []store.StuckOrder{zeroStuck("confirmation_pending")}, func(p *ports) {
+		p.payments.err = errors.New("payments unavailable")
+	})
+	if resolved != 0 || len(p.store.failed) != 1 {
+		t.Fatalf("resolved=%d handed back=%d, want 0 and 1; trace=%v", resolved, len(p.store.failed), p.trace.steps)
+	}
+	if p.inventory.confirmed != 0 || len(p.journal.created) != 0 || len(p.completer.completed) != 0 {
+		t.Errorf("an unanswered lookup was acted on; trace=%v", p.trace.steps)
+	}
+	assertNothingReleasedOrFailed(t, p)
 }
 
 // Row: zero + created + lookup not-found + NO order.created fact. Checkout never wrote the
