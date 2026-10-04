@@ -416,3 +416,395 @@ describe('mutation pages classify unreadable success responses', () => {
     expect(html).not.toContain('Nothing was saved — try again');
   }, 30_000);
 });
+
+// ---------------------------------------------------------------------------------------
+// TKT-286. The slot page for a SEATED pool: allocations read-only, plus one separate
+// "Clear allocations" operation. Everything below drives the real page through the real
+// Astro container and a stubbed inventory, and observes the only things a request can
+// leave behind: the response and the PUTs inventory received.
+// ---------------------------------------------------------------------------------------
+
+const SELLER = 'c0000000-0000-4000-8000-000000000001';
+const OTHER_ORGANIZER = '00000000-0000-4000-8000-0000000000ff';
+
+/** A POST that can carry the same field twice, which `post()` (a Record) cannot. */
+function postEntries(path: string, entries: Array<[string, string]>): Request {
+  return new Request(`http://backoffice.test${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(entries),
+  });
+}
+
+// Non-default on purpose, so a row rendered from defaults cannot pass: a code-gated
+// reseller allocation with every optional boundary set (seconds and microseconds), and a
+// plain one that is already released.
+const legacyChannels = [
+  {
+    channel: 'reseller-acme',
+    cap: 40,
+    release_at: '2026-10-01T09:30:15.123456Z',
+    released: false,
+    opens_at: '2026-09-20T08:00:00Z',
+    closes_at: '2026-09-30T22:15:30Z',
+    window_open: false,
+    requires_code: true,
+    sold_by: SELLER,
+    held: 3,
+    confirmed: 4,
+    available: 33,
+  },
+  {
+    channel: 'pos',
+    cap: 12,
+    released: true,
+    window_open: true,
+    held: 1,
+    confirmed: 0,
+    available: 11,
+  },
+];
+
+function availabilityBody(
+  kind: 'ga' | 'seated',
+  channels: unknown[] = legacyChannels,
+  revision: number | null = 2,
+) {
+  return {
+    slot_id: SLOT,
+    capacity: 100,
+    buyer_held: 0,
+    operational_held: 0,
+    reservation_held: 0,
+    confirmed: 0,
+    available: 100,
+    public_available: 100,
+    offering_status: 'open',
+    channels,
+    inventory_kind: kind,
+    ...(revision === null ? {} : { allocation_revision: revision }),
+  };
+}
+
+type Put = { url: string; body: Record<string, unknown> };
+
+/** Stub inventory. `read` is the availability body, or 'fail' for a failed read. */
+function stubInventory(
+  read: unknown,
+  put: (body: Record<string, unknown>) => Response = () => json({ slot_id: SLOT, allocations: [] }),
+): Put[] {
+  const puts: Put[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'PUT') {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      puts.push({ url, body });
+      return put(body);
+    }
+    if (url.includes('/availability')) {
+      return read === 'fail' ? json({ error: 'inventory is down' }, 500) : json(read);
+    }
+    if (url.includes('/internal/channels')) return json({ channels: [] });
+    throw new Error(`unexpected request: ${url}`);
+  }));
+  return puts;
+}
+
+const SLOT_PAGE = '../src/pages/slots/[id].astro';
+const slotPath = `/admin/slots/${SLOT}`;
+const clearEntries = (revision = '2'): Array<[string, string]> => [
+  ['allocationRevision', revision],
+  ['_action', 'clear-allocations'],
+];
+
+/** The text of one named cell of one row, so an assertion names WHICH value it checks. */
+function cell(html: string, channel: string, field: string): string | undefined {
+  const row = new RegExp(`<tr[^>]*data-channel="${channel}"[^>]*>([\\s\\S]*?)</tr>`).exec(html)?.[1];
+  const td = row && new RegExp(`<td[^>]*data-field="${field}"[^>]*>([\\s\\S]*?)</td>`).exec(row)?.[1];
+  return td?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Every `name="…"` inside every <form>, as one list per form. */
+function formControlNames(html: string): string[][] {
+  return [...html.matchAll(/<form\b[\s\S]*?<\/form>/g)].map((f) =>
+    [...f[0].matchAll(/\bname="([^"]*)"/g)].map((m) => m[1]),
+  );
+}
+
+describe('the slot page for a seated pool', () => {
+  it('renders the stored allocations as text, with no editable control (COS1)', async () => {
+    const puts = stubInventory(availabilityBody('seated'));
+    const response = await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT });
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    // Exact values, asserted per field, so dropping or defaulting one is visible.
+    expect(cell(html, 'reseller-acme', 'cap')).toBe('40');
+    expect(cell(html, 'reseller-acme', 'consumption')).toBe('7');
+    expect(cell(html, 'reseller-acme', 'release')).toContain('2026-10-01T09:30:15.123456Z');
+    expect(cell(html, 'reseller-acme', 'opens')).toBe('2026-09-20T08:00:00Z');
+    expect(cell(html, 'reseller-acme', 'closes')).toBe('2026-09-30T22:15:30Z');
+    expect(cell(html, 'reseller-acme', 'window')).toBe('closed');
+    expect(cell(html, 'reseller-acme', 'requires-code')).toBe('yes');
+    expect(cell(html, 'reseller-acme', 'sold-by')).toBe(SELLER);
+    expect(cell(html, 'pos', 'cap')).toBe('12');
+    expect(cell(html, 'pos', 'consumption')).toBe('1');
+    expect(cell(html, 'pos', 'requires-code')).toBe('no');
+    expect(cell(html, 'pos', 'sold-by')).toBe('—');
+
+    // No editable control, and not a disabled copy of the editor either.
+    expect(html).not.toMatch(/name="(cap|channel|releaseAt|clearRelease)\./);
+    expect(html).not.toContain('data-action="save-allocations"');
+    expect(html).not.toContain('Save allocations');
+    expect(html).not.toMatch(/<input[^>]*type="(number|text|checkbox)"/);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it('offers one separate clear form whose only named controls are the revision and the operation (COS1, D8)', async () => {
+    stubInventory(availabilityBody('seated'));
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+
+    const forms = formControlNames(html);
+    expect(forms).toHaveLength(1);
+    expect([...forms[0]].sort()).toEqual(['_action', 'allocationRevision']);
+    expect(html).toMatch(/name="_action"[^>]*value="clear-allocations"|value="clear-allocations"[^>]*name="_action"/);
+    expect(html).toMatch(/data-allocation-revision/);
+    expect(html).toMatch(/name="allocationRevision"[^>]*value="2"|value="2"[^>]*name="allocationRevision"/);
+    const button = /<button[^>]*data-action="clear-allocations"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(button).not.toBe('');
+    expect(button).not.toContain('disabled');
+    expect(button).not.toContain('name=');
+    // Posts to the canonical URL, exactly as the editor does: a query on the form action
+    // could be bookmarked, and would then steer a later save (D3).
+    expect(html).toMatch(/<form[^>]*action=""/);
+  }, 30_000);
+
+  it.each([
+    ['no allocation rows', availabilityBody('seated', [], 2)],
+    ['no usable rendered revision', availabilityBody('seated', legacyChannels, null)],
+  ])('disables the clear button with %s (D7, a UI aid only)', async (_name, body) => {
+    stubInventory(body);
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+    const button = /<button[^>]*data-action="clear-allocations"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(button).toContain('disabled');
+    expect(html).not.toContain('data-action="save-allocations"');
+  }, 30_000);
+
+  it('does not render the GA editor-empty claim that the whole slot sells publicly', async () => {
+    stubInventory(availabilityBody('seated', []));
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+    expect(html).not.toContain('the whole slot sells publicly');
+  }, 30_000);
+
+  it('clears the set with exactly an empty replace carrying the SUBMITTED revision (COS2)', async () => {
+    // The fresh read says revision 5; the form carried 2. The write must say 2.
+    const puts = stubInventory(availabilityBody('seated', legacyChannels, 5));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries('2')), { id: SLOT });
+
+    expect(response.status).toBe(303);
+    // The canonical slot URL: no query. (BASE_URL is not set under vitest, so the
+    // `/admin` prefix is not asserted here; the browser spec asserts the real one.)
+    expect(response.headers.get('location')).toMatch(new RegExp(`/slots/${SLOT}$`));
+    expect(puts).toEqual([
+      {
+        url: `http://localhost:8081/internal/slots/${SLOT}/channel-allocations`,
+        body: { organizer_id: ORGANIZER, allocation_revision: 2, allocations: [] },
+      },
+    ]);
+  }, 30_000);
+
+  it('ignores every other submitted field when clearing', async () => {
+    const puts = stubInventory(availabilityBody('seated'));
+    const response = await renderPage(
+      SLOT_PAGE,
+      postEntries(slotPath, [
+        ...clearEntries('2'),
+        ['organizer_id', OTHER_ORGANIZER],
+        ['channel.0', 'reseller-acme'],
+        ['cap.0', '1'],
+        ['allocations', '[{"channel":"x","cap":1}]'],
+        ['allocation_revision', '99'],
+      ]),
+      { id: SLOT },
+    );
+
+    expect(response.status).toBe(303);
+    expect(puts.map((p) => p.body)).toEqual([
+      { organizer_id: ORGANIZER, allocation_revision: 2, allocations: [] },
+    ]);
+  }, 30_000);
+
+  it('refuses a stale clear, shows the reload instruction and re-renders the SUBMITTED revision (COS4)', async () => {
+    // Inventory is now at revision 3; the page the operator loaded carried 2.
+    const puts = stubInventory(availabilityBody('seated', legacyChannels, 3), () =>
+      json({ error: 'conflict: allocation set revision mismatch', code: 'allocation_revision_mismatch' }, 409),
+    );
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries('2')), { id: SLOT });
+    const html = await response.text();
+
+    expect(response.status).not.toBe(303);
+    expect(puts).toHaveLength(1);
+    expect(puts[0].body.allocation_revision).toBe(2);
+    expect(html).toContain('Someone else changed this slot');
+    expect(html).toMatch(/name="allocationRevision"[^>]*value="2"|value="2"[^>]*name="allocationRevision"/);
+    expect(html).not.toMatch(/name="allocationRevision"[^>]*value="3"|value="3"[^>]*name="allocationRevision"/);
+    // The stored rows stay on screen and the clear form stays offered.
+    expect(cell(html, 'reseller-acme', 'cap')).toBe('40');
+    expect(html).toContain('data-action="clear-allocations"');
+  }, 30_000);
+
+  it('does not claim an unreadable clear saved nothing', async () => {
+    stubInventory(availabilityBody('seated'), () => json({}, 200));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('may have saved this allocation set');
+    expect(html).not.toContain('Nothing was saved — try again');
+  }, 30_000);
+
+  it('a crafted editor POST cannot clear a seated slot (COS3)', async () => {
+    // No `_action`: this is the EDITOR path, and it has no rows to submit. The editor's
+    // omission refusal must still fire, and no write may happen.
+    const puts = stubInventory(availabilityBody('seated'));
+    const response = await renderPage(SLOT_PAGE, post(slotPath, { allocationRevision: '2' }), { id: SLOT });
+    const html = await response.text();
+
+    expect(puts).toHaveLength(0);
+    expect(response.status).not.toBe(303);
+    expect(html).toContain('allocations changed since this page was loaded');
+  }, 30_000);
+
+  it.each([
+    ['an unknown operation', [['allocationRevision', '2'], ['_action', 'delete-everything']]],
+    ['an empty operation', [['allocationRevision', '2'], ['_action', '']]],
+    ['a repeated clear', [['allocationRevision', '2'], ['_action', 'clear-allocations'], ['_action', 'clear-allocations']]],
+    ['clear then another operation', [['allocationRevision', '2'], ['_action', 'clear-allocations'], ['_action', 'save']]],
+    ['another operation then clear', [['allocationRevision', '2'], ['_action', 'save'], ['_action', 'clear-allocations']]],
+  ] as Array<[string, Array<[string, string]>]>)('refuses %s with a 400 and no write (D8)', async (_name, entries) => {
+    const puts = stubInventory(availabilityBody('seated'));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, entries), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it.each([
+    ['a missing revision', [['_action', 'clear-allocations']]],
+    ['an empty revision', [['allocationRevision', ''], ['_action', 'clear-allocations']]],
+    ['a malformed revision', [['allocationRevision', 'two'], ['_action', 'clear-allocations']]],
+    ['a negative revision', [['allocationRevision', '-1'], ['_action', 'clear-allocations']]],
+  ] as Array<[string, Array<[string, string]>]>)('refuses a clear with %s with a 400 and no write', async (_name, entries) => {
+    const puts = stubInventory(availabilityBody('seated'));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, entries), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it('refuses a clear of an already empty seated set with a 400 and no write (D4)', async () => {
+    // Inventory would accept it and burn a revision; the page is the only guard.
+    const puts = stubInventory(availabilityBody('seated', []));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it('refuses a clear when its own fresh read failed, with a 400 and no write (D4)', async () => {
+    const puts = stubInventory('fail');
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+});
+
+describe('the slot page for a GA pool', () => {
+  it('refuses the clear operation with a 400 and no write, because inventory would accept an empty GA replace (D4)', async () => {
+    const puts = stubInventory(availabilityBody('ga'));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it('still renders the editor, with no clear form and no operation selector (COS5)', async () => {
+    stubInventory(availabilityBody('ga'));
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+
+    expect(html).toContain('data-action="save-allocations"');
+    expect(html).toContain('name="cap.0"');
+    expect(html).not.toContain('clear-allocations');
+    expect(html).not.toContain('name="_action"');
+    expect(formControlNames(html)).toHaveLength(1);
+  }, 30_000);
+
+  it('runs a POST with no `_action` as the editor, exactly as before (COS5)', async () => {
+    const puts = stubInventory(availabilityBody('ga'));
+    const response = await renderPage(
+      SLOT_PAGE,
+      post(slotPath, {
+        allocationRevision: '2',
+        'channel.0': 'reseller-acme',
+        'cap.0': '55',
+        'releaseAt.0': '2026-10-01T09:30:15.123456Z',
+        'channel.1': 'pos',
+        'cap.1': '12',
+        'releaseAt.1': '',
+      }),
+      { id: SLOT },
+    );
+
+    expect(response.status).toBe(303);
+    // Written out by hand, not derived from toAllocationRequest: the stored window, code
+    // gate and seller binding come from inventory's current set, only the cap changed.
+    expect(puts).toHaveLength(1);
+    expect(puts[0].body).toEqual({
+      organizer_id: ORGANIZER,
+      allocation_revision: 2,
+      allocations: [
+        {
+          channel: 'reseller-acme',
+          cap: 55,
+          release_at: '2026-10-01T09:30:15.123456Z',
+          opens_at: '2026-09-20T08:00:00Z',
+          closes_at: '2026-09-30T22:15:30Z',
+          requires_code: true,
+          sold_by: SELLER,
+        },
+        { channel: 'pos', cap: 12, requires_code: false },
+      ],
+    });
+  }, 30_000);
+
+  it('refuses an editor POST that carries an operation selector it does not know (D8)', async () => {
+    const puts = stubInventory(availabilityBody('ga'));
+    const response = await renderPage(
+      SLOT_PAGE,
+      postEntries(slotPath, [['allocationRevision', '2'], ['_action', 'save'], ['channel.0', 'pos'], ['cap.0', '12']]),
+      { id: SLOT },
+    );
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+});
+
+describe('the slot page when the pool kind is unknown', () => {
+  it.each([
+    ['omitted (version skew)', (() => { const b: Record<string, unknown> = availabilityBody('seated'); delete b.inventory_kind; return b; })()],
+    ['unknown', { ...availabilityBody('seated'), inventory_kind: 'hybrid' }],
+  ])('shows the inventory-unavailable state, no editor and no clear form, when the kind is %s (D5)', async (_name, body) => {
+    const puts = stubInventory(body);
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+
+    expect(html).toContain('Inventory is unavailable');
+    expect(html).not.toContain('data-action="save-allocations"');
+    expect(html).not.toContain('data-action="clear-allocations"');
+    expect(html).not.toContain('<form');
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+
+  it('refuses a clear POST when the kind is unreadable (D5)', async () => {
+    const body: Record<string, unknown> = availabilityBody('seated');
+    delete body.inventory_kind;
+    const puts = stubInventory(body);
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
+    expect(response.status).toBe(400);
+    expect(puts).toHaveLength(0);
+  }, 30_000);
+});
