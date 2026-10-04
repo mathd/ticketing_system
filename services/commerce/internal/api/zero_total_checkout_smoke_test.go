@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ type zeroStack struct {
 	// fact type.
 	operation  int
 	confirm    int
+	finalize   int
 	factStatus map[string]int
 }
 
@@ -124,8 +126,14 @@ func newZeroStack(t *testing.T, db *sql.DB, confirmStatus int) *zeroStack {
 		z.hold = append(z.hold, action)
 		confirmCode := z.confirm
 		z.mu.Unlock()
+		z.mu.Lock()
+		finalizeCode := z.finalize
+		z.mu.Unlock()
 		if action == "confirm" && confirmCode != http.StatusOK {
 			w.WriteHeader(confirmCode)
+		}
+		if action == "finalize" && finalizeCode != 0 {
+			w.WriteHeader(finalizeCode)
 		}
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -276,14 +284,14 @@ func TestAConfirmFailureLeavesAnOrderPendingWithoutACompletionFact(t *testing.T)
 	}
 }
 
-// D20 (TKT-285). A zero-total checkout that RESUMES an existing order is classified by payments'
-// operation lookup, exactly as recovery classifies it. The order may be a legacy one whose old
-// zero charge bound an operation; skipping the PSP for it would bypass operation evidence.
+// D21 (TKT-285). A zero-total checkout that RESUMES an existing order is recovery's job: checkout
+// answers 202 with the durable status and does nothing else, and recovery classifies the order by
+// operation evidence. The order may be a legacy one whose old zero charge bound an operation.
 //
 // resumedZeroOrder builds that state through the real handler: a first zero checkout whose confirm
-// fails leaves an order behind (confirmation_pending), which the test then moves to `status` (the
-// legacy shapes are payment_unknown). The stub's calls are reset before the replay, so every
-// assertion below is about the replay alone.
+// fails leaves an order behind (confirmation_pending), which the test then moves to `status`, with
+// updated_at back-dated past recovery's grace period so any refresh is visible. The stub's calls are
+// reset before the replay, so every assertion below is about the replay alone.
 func resumedZeroOrder(t *testing.T, status string) (*zeroStack, *sql.DB, context.Context, uuid.UUID, string) {
 	t.Helper()
 	db, ctx := exchangeAPIDB(t)
@@ -293,31 +301,56 @@ func resumedZeroOrder(t *testing.T, status string) (*zeroStack, *sql.DB, context
 	if code, body := z.checkout(t, reservation, key); code != http.StatusAccepted || body["status"] != "confirmation_pending" {
 		t.Fatalf("first checkout answered %d %v, want 202 confirmation_pending", code, body)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE orders SET status=$2 WHERE reservation_id=$1`, reservation, status); err != nil {
-		t.Fatal(err)
-	}
+	backdate(t, ctx, db, reservation, status)
 	z.reset()
 	return z, db, ctx, reservation, key
 }
 
-func TestAResumedZeroOrderWithAnOperationIsNotSkippedOrCompleted(t *testing.T) {
-	for _, status := range []string{"payment_unknown", "confirmation_pending"} {
+// backdate moves the order to `status` with updated_at ten minutes in the past.
+func backdate(t *testing.T, ctx context.Context, db *sql.DB, reservation uuid.UUID, status string) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := db.QueryRowContext(ctx, `UPDATE orders SET status=$2, updated_at=now()-interval '10 minutes'
+		WHERE reservation_id=$1 RETURNING updated_at`, reservation, status).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+func orderUpdatedAt(t *testing.T, ctx context.Context, db *sql.DB, reservation uuid.UUID) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := db.QueryRowContext(ctx, `SELECT updated_at FROM orders WHERE reservation_id=$1`, reservation).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+func TestAResumedZeroOrderIsAnswered202AndNothingElseHappens(t *testing.T) {
+	for _, status := range []string{"created", "payment_unknown", "confirmation_pending"} {
 		t.Run(status, func(t *testing.T) {
 			z, db, ctx, reservation, key := resumedZeroOrder(t, status)
-			z.set(func() { z.operation, z.confirm = http.StatusOK, http.StatusOK })
+			// Whatever the other services would say, they must not be asked.
+			z.set(func() { z.operation, z.confirm = http.StatusNotFound, http.StatusOK })
+			before := orderUpdatedAt(t, ctx, db, reservation)
 
 			code, body := z.checkout(t, reservation, key)
-			if code != http.StatusAccepted || body["status"] != "payment_unknown" {
-				t.Fatalf("replay answered %d %v, want 202 payment_unknown", code, body)
+			if code != http.StatusAccepted || body["status"] != status {
+				t.Fatalf("replay answered %d %v, want 202 with the durable status %q", code, body, status)
 			}
-			if got := z.paymentsCalls(); fmt.Sprint(got) != "[/internal/operations]" {
-				t.Fatalf("payments calls = %v, want exactly one operation lookup: no charge, no fact", got)
+			if got := z.paymentsCalls(); len(got) != 0 {
+				t.Fatalf("payments calls = %v, want none: no lookup, no fact, no charge", got)
 			}
 			if got := z.holdCalls(); len(got) != 0 {
 				t.Fatalf("inventory calls = %v, want none: no finalize, no confirm", got)
 			}
 			if got := orderStatus(t, ctx, db, reservation); got != status {
 				t.Fatalf("order status = %q, want it untouched (%q)", got, status)
+			}
+			// updated_at is the clock recovery's two-minute grace runs on. A replay that moved it
+			// would let a buyer retrying every 30 seconds keep recovery from ever claiming the order.
+			if after := orderUpdatedAt(t, ctx, db, reservation); !after.Equal(before) {
+				t.Fatalf("updated_at moved from %s to %s: a zero-total replay must not postpone recovery", before, after)
 			}
 			if n := owedCompletions(t, ctx, db, reservation); n != 0 {
 				t.Fatalf("completion outbox rows = %d, want 0", n)
@@ -326,47 +359,27 @@ func TestAResumedZeroOrderWithAnOperationIsNotSkippedOrCompleted(t *testing.T) {
 	}
 }
 
-func TestAResumedZeroOrderWithoutAnOperationCompletes(t *testing.T) {
-	z, db, ctx, reservation, key := resumedZeroOrder(t, "payment_unknown")
-	z.set(func() { z.operation, z.confirm = http.StatusNotFound, http.StatusOK })
+// The control for the test above, and the half of claimOrder's rule that must NOT change: a PAID
+// resumed order still has its updated_at refreshed, because a live paid replay owns its in-flight
+// work and recovery must not claim it underneath. The replay is made to stop at the finalize
+// (inventory refuses, 409) so that nothing else writes the row: any movement of updated_at is the
+// claim's own refresh.
+func TestAResumedPaidOrderStillHasItsUpdatedAtRefreshed(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	_, reservation := seedCheckoutableAt(t, db, ctx, 2500)
+	z := newZeroStack(t, db, http.StatusInternalServerError)
+	key := "resume-paid-" + uuid.NewString()
+	if code, body := z.checkout(t, reservation, key); code != http.StatusAccepted || body["status"] != "confirmation_pending" {
+		t.Fatalf("first checkout answered %d %v, want 202 confirmation_pending", code, body)
+	}
+	before := backdate(t, ctx, db, reservation, "payment_unknown")
+	z.set(func() { z.finalize = http.StatusInternalServerError })
 
-	code, body := z.checkout(t, reservation, key)
-	if code != http.StatusOK || body["status"] != "completed" {
-		t.Fatalf("replay answered %d %v, want 200 completed", code, body)
+	if code, _ := z.checkout(t, reservation, key); code != http.StatusConflict {
+		t.Fatalf("replay answered %d, want 409 hold expired (the finalize was refused)", code)
 	}
-	if n := z.lookups(); n != 1 {
-		t.Fatalf("operation lookups = %d, want 1", n)
-	}
-	if n := z.charges(); n != 0 {
-		t.Fatalf("charges = %d, want 0", n)
-	}
-	if got := orderStatus(t, ctx, db, reservation); got != "completed" {
-		t.Fatalf("order status = %q, want completed", got)
-	}
-	if n := owedCompletions(t, ctx, db, reservation); n != 1 {
-		t.Fatalf("completion outbox rows = %d, want 1", n)
-	}
-}
-
-// A lookup that fails proves nothing. Not "found", not "not found": the buyer gets the same
-// 202 and the row is left exactly as it was.
-func TestAResumedZeroOrderWhoseLookupFailsAnswers202AndChangesNothing(t *testing.T) {
-	for name, status := range map[string]int{"5xx": http.StatusInternalServerError, "unexpected 4xx": http.StatusTeapot} {
-		t.Run(name, func(t *testing.T) {
-			z, db, ctx, reservation, key := resumedZeroOrder(t, "payment_unknown")
-			z.set(func() { z.operation, z.confirm = status, http.StatusOK })
-
-			code, body := z.checkout(t, reservation, key)
-			if code != http.StatusAccepted || body["status"] != "payment_unknown" {
-				t.Fatalf("replay answered %d %v, want 202 payment_unknown", code, body)
-			}
-			if z.charges() != 0 || len(z.holdCalls()) != 0 || len(z.factTypes()) != 0 {
-				t.Fatalf("a failed lookup was acted on: payments=%v inventory=%v", z.paymentsCalls(), z.holdCalls())
-			}
-			if got := orderStatus(t, ctx, db, reservation); got != "payment_unknown" {
-				t.Fatalf("order status = %q, want it untouched", got)
-			}
-		})
+	if after := orderUpdatedAt(t, ctx, db, reservation); !after.After(before.Add(5 * time.Minute)) {
+		t.Fatalf("updated_at = %s, want it refreshed from %s: a live paid replay must keep recovery out", after, before)
 	}
 }
 
