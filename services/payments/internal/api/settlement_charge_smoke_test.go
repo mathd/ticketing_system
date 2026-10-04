@@ -166,6 +166,53 @@ func TestAnUnsettleableChargeLeavesNoOperationBehind(t *testing.T) {
 	}
 }
 
+// TKT-285 (D9, COS2). A zero-amount charge is refused at the boundary, before it can bind an
+// operation: payments used to admit it, bind, call the provider and only then refuse the
+// result, which left a bound operation that nothing could ever resolve.
+//
+// The charge is otherwise VALID — a settlement plan that balances at zero, a token the fake
+// accepts — so a 400 here is the amount's doing and not the plan's. The positive control
+// (amount 1) proves the same body shape goes through, which is what makes the refusal about the
+// amount rather than about a fixture the validator dislikes.
+func TestAZeroAmountChargeIsRefusedAndLeavesNothingBehind(t *testing.T) {
+	h, provider := chargeServer(t)
+	db, ctx := refundDB(t)
+	org := uuid.New()
+	order, buyer := uuid.New().String(), uuid.New().String()
+	bodyFor := func(amount int64) string {
+		return `{"organizer_id":"` + org.String() + `","order_id":"` + order + `","buyer_id":"` + buyer +
+			`","amount":` + fmt.Sprint(amount) + `,"currency":"EUR","payment_token":"fake-ok",` + feeFreePlan(amount) + `}`
+	}
+	operations := func(key string) int {
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2`,
+			org, key).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	zeroKey := "zero-" + org.String()
+	if res := postCharge(t, h, zeroKey, bodyFor(0)); res.Code != http.StatusBadRequest {
+		t.Fatalf("zero charge: status=%d body=%s, want 400", res.Code, res.Body.String())
+	}
+	if n := provider.authorizeCount(); n != 0 {
+		t.Errorf("provider called %d time(s) for a zero charge", n)
+	}
+	if n := operations(zeroKey); n != 0 {
+		t.Errorf("%d payment operation(s) survive a refused zero charge", n)
+	}
+
+	oneKey := "one-" + org.String()
+	if res := postCharge(t, h, oneKey, bodyFor(1)); res.Code != http.StatusOK {
+		t.Fatalf("control charge of 1: status=%d body=%s, want 200", res.Code, res.Body.String())
+	}
+	if n := operations(oneKey); n != 1 {
+		t.Fatalf("the control charge left %d operation(s), want 1 — this query cannot see what it claims to check", n)
+	}
+}
+
 // A settlement plan that attributes the whole capture to the organizer and owes
 // nobody a fee. Enough to make a charge settleable without involving payees.
 func feeFreePlan(amount int64) string {

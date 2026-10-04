@@ -250,7 +250,15 @@ components:
         order_id: {type: string, format: uuid}
         organizer_id: {type: string, format: uuid}
         buyer_id: {type: string, format: uuid}
-        amount: {type: integer, format: int64, minimum: 0}
+        amount:
+          description: >
+            Minor units, and AT LEAST 1: a charge moves money, and a total of zero has none to
+            move. Commerce completes a zero-total order without calling the provider
+            (TKT-285), so a zero here is a caller defect and is refused with 400 before any
+            operation is bound.
+          type: integer
+          format: int64
+          minimum: 1
         currency: {type: string, enum: [EUR]}
         payment_token: {type: string}
         settlement:
