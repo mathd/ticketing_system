@@ -121,11 +121,18 @@ func directService(url string) string {
 // for inventory to provision its pool. Returns (slotID, ticketTypeID).
 func publishedSlot(t *testing.T, name string, capacity int) (string, string) {
 	t.Helper()
+	return publishedSlotAt(t, name, capacity, 2500)
+}
+
+// publishedSlotAt is publishedSlot with an explicit unit price; publishedSlot keeps its 2500
+// default for every existing caller. TKT-285 passes 0 for a comped ticket.
+func publishedSlotAt(t *testing.T, name string, capacity int, price int64) (string, string) {
+	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
 	venue := created(t, catalog+"/venues", map[string]any{"name": name, "ga_capacity": capacity})
 	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": name, "en": name}})
 	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": "2026-11-01T20:00:00Z", "timezone": "UTC"})
-	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": 2500, "currency": "EUR"}})
+	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": price, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)
 	}
