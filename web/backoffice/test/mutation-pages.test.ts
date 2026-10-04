@@ -394,6 +394,7 @@ describe('mutation pages classify unreadable success responses', () => {
           public_available: 100,
           offering_status: 'open',
           channels: [],
+          inventory_kind: 'ga',
           allocation_revision: 2,
         });
       }
