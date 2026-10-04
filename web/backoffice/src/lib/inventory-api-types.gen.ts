@@ -824,6 +824,11 @@ export interface components {
             offering_status: "open" | "closed" | "archived";
             channels: components["schemas"]["ChannelAvailability"][];
             /**
+             * @description The pool's kind (TKT-286). The back office reads it to decide whether a slot's allocation editor may be shown: a seated pool refuses a non-empty allocation replace (TKT-176), so an editor for one only looks editable. Always emitted by inventory. NOT in the `required` list deliberately, for the reason `allocation_revision` is not: adding a required response property breaks a consumer that has not regenerated. The back office decodes it strictly, so a reply without it is an unavailable read and never a default.
+             * @enum {string}
+             */
+            inventory_kind?: "ga" | "seated";
+            /**
              * Format: int64
              * @description The allocation set's current revision (TKT-250). An editor reads it here and presents it back on ChannelAllocationSet; the replace compares it under the pool row lock and refuses a stale save. Bumped only by a successful allocation replace — a ticket sale, a refund or a capacity adjustment leaves it alone, so an open editor is not invalidated by ordinary trading. NOT in the `required` list deliberately: adding a required response property breaks any consumer that has not regenerated, and every reader takes this by name.
              */
