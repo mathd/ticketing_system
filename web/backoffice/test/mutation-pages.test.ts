@@ -532,6 +532,17 @@ function formControlNames(html: string): string[][] {
 }
 
 describe('the slot page for a seated pool', () => {
+  it('labels seated availability as pool capacity and omits GA allocation guidance', async () => {
+    const body = { ...availabilityBody('seated'), available: 100, public_available: 74 };
+    stubInventory(body);
+    const response = await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT });
+    const html = await response.text();
+
+    expect(html).toMatch(/Available pool capacity:\s*<strong data-available="100">\s*100<\/strong>/);
+    expect(html).not.toContain('stays available to the public channel');
+    expect(html).not.toContain('74</strong> is currently available to the public');
+  }, 30_000);
+
   it('renders the stored allocations as text, with no editable control (COS1)', async () => {
     const puts = stubInventory(availabilityBody('seated'));
     const response = await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT });
@@ -574,8 +585,9 @@ describe('the slot page for a seated pool', () => {
     expect(button).not.toBe('');
     expect(button).not.toContain('disabled');
     expect(button).not.toContain('name=');
-    // Posts to the canonical URL, exactly as the editor does: a query on the form action
-    // could be bookmarked, and would then steer a later save (D3).
+    // The empty action retains a bookmarked query in the POST target; dispatch reads the
+    // body `_action`. This asserts only the empty action; the browser test observes the
+    // bookmarked submit (D3).
     expect(html).toMatch(/<form[^>]*action=""/);
   }, 30_000);
 
@@ -645,7 +657,8 @@ describe('the slot page for a seated pool', () => {
     expect(response.status).not.toBe(303);
     expect(puts).toHaveLength(1);
     expect(puts[0].body.allocation_revision).toBe(2);
-    expect(html).toContain('Someone else changed this slot');
+    expect(html).toContain('Someone else changed this slot’s allocations');
+    expect(html).toContain('nothing was cleared');
     expect(html).toMatch(/name="allocationRevision"[^>]*value="2"|value="2"[^>]*name="allocationRevision"/);
     expect(html).not.toMatch(/name="allocationRevision"[^>]*value="3"|value="3"[^>]*name="allocationRevision"/);
     // The stored rows stay on screen and the clear form stays offered.
@@ -662,16 +675,36 @@ describe('the slot page for a seated pool', () => {
     expect(html).not.toContain('Nothing was saved — try again');
   }, 30_000);
 
-  it('a crafted editor POST cannot clear a seated slot (COS3)', async () => {
-    // No `_action`: this is the EDITOR path, and it has no rows to submit. The editor's
-    // omission refusal must still fire, and no write may happen.
-    const puts = stubInventory(availabilityBody('seated'));
-    const response = await renderPage(SLOT_PAGE, post(slotPath, { allocationRevision: '2' }), { id: SLOT });
+  it.each([
+    ['with no rows', [['allocationRevision', '2']]],
+    ['with valid legacy rows', [
+      ['allocationRevision', '2'],
+      ['channel.0', 'reseller-acme'], ['cap.0', '40'], ['releaseAt.0', '2026-10-01T09:30:15.123456Z'],
+      ['channel.1', 'pos'], ['cap.1', '12'], ['releaseAt.1', ''],
+    ]],
+    ['with an invalid cap', [
+      ['allocationRevision', '2'], ['channel.0', 'reseller-acme'], ['cap.0', 'not-a-cap'],
+    ]],
+  ] as Array<[string, Array<[string, string]>]>)('refuses an editor POST to a seated pool %s at form level (COS3)', async (_name, entries) => {
+    const puts = stubInventory(availabilityBody('seated', _name === 'with no rows' ? [] : legacyChannels));
+    const response = await renderPage(SLOT_PAGE, postEntries(slotPath, entries), { id: SLOT });
     const html = await response.text();
 
     expect(puts).toHaveLength(0);
-    expect(response.status).not.toBe(303);
-    expect(html).toContain('allocations changed since this page was loaded');
+    expect(response.status).toBe(400);
+    expect(html).toContain('data-form-error');
+    expect(html).toContain('Use the Clear allocations action');
+    expect(html).not.toContain('data-row-error');
+    expect(html).not.toContain('data-action="save-allocations"');
+    expect(html).not.toMatch(/<input[^>]*type="(number|text|checkbox)"/);
+    const errorPosition = html.indexOf('data-form-error');
+    const tablePosition = html.indexOf('<table');
+    expect(errorPosition).toBeGreaterThanOrEqual(0);
+    expect(tablePosition === -1 || errorPosition < tablePosition).toBe(true);
+    if (_name !== 'with no rows') {
+      expect(cell(html, 'reseller-acme', 'cap')).toBe('40');
+      expect(cell(html, 'pos', 'cap')).toBe('12');
+    }
   }, 30_000);
 
   it.each([
@@ -716,6 +749,21 @@ describe('the slot page for a seated pool', () => {
 });
 
 describe('the slot page for a GA pool', () => {
+  it('shows the public-channel guidance for unallocated GA capacity', async () => {
+    stubInventory(availabilityBody('ga'));
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+
+    expect(html).toContain('stays available to the public channel');
+  }, 30_000);
+
+  it('omits the public-channel guidance when the availability read fails', async () => {
+    stubInventory('fail');
+    const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
+
+    expect(html).toContain('Inventory is unavailable');
+    expect(html).not.toContain('stays available to the public channel');
+  }, 30_000);
+
   it('refuses the clear operation with a 400 and no write, because inventory would accept an empty GA replace (D4)', async () => {
     const puts = stubInventory(availabilityBody('ga'));
     const response = await renderPage(SLOT_PAGE, postEntries(slotPath, clearEntries()), { id: SLOT });
@@ -793,6 +841,7 @@ describe('the slot page when the pool kind is unknown', () => {
     const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
 
     expect(html).toContain('Inventory is unavailable');
+    expect(html).not.toContain('stays available to the public channel');
     expect(html).not.toContain('data-action="save-allocations"');
     expect(html).not.toContain('data-action="clear-allocations"');
     expect(html).not.toContain('<form');

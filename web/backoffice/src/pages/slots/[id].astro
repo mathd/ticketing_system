@@ -154,7 +154,9 @@ if (isPost && postedForm && operations.length > 0 && !(operations.length === 1 &
       return Astro.redirect(here, 303);
     } catch (e) {
       if (e instanceof InventoryApiError) {
-        errors = allocationErrors({ error: e.message, code: e.code, channel: e.channel }, []);
+        errors = e.code === 'allocation_revision_mismatch'
+          ? { rows: {}, form: 'Someone else changed this slot’s allocations, so nothing was cleared. Reload the page before clearing them.' }
+          : allocationErrors({ error: e.message, code: e.code, channel: e.channel }, []);
       } else if (e instanceof AmbiguousMutationError) {
         errors = {
           rows: {},
@@ -165,8 +167,14 @@ if (isPost && postedForm && operations.length > 0 && !(operations.length === 1 &
       }
     }
   }
+} else if (isPost && postedForm && availability?.inventory_kind === 'seated') {
+  Astro.response.status = 400;
+  errors = {
+    rows: {},
+    form: 'This slot uses reserved seating. Use the Clear allocations action to remove stored allocations.',
+  };
 } else if (isPost && postedForm) {
-  // The EDITOR: no `_action` at all. Unchanged from before TKT-286.
+  // The GA editor save path is unchanged. The seated no-action POST refusal runs above.
   const form = postedForm;
   const rows = parseAllocationForm(form);
   submitted = rows;
@@ -289,10 +297,12 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
 
 <Layout title="Channel allocations">
   <h1>Channel allocations</h1>
-  <p>
-    How much of this slot's capacity each sales channel may sell. Everything not allocated
-    stays available to the public channel.
-  </p>
+  {!readFailed && availability?.inventory_kind === 'ga' && (
+    <p>
+      How much of this slot's capacity each sales channel may sell. Everything not allocated
+      stays available to the public channel.
+    </p>
+  )}
 
   {errors.form && <p class="error" role="alert" data-form-error>{errors.form}</p>}
 
@@ -305,8 +315,8 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
   {!readFailed && availability && seated && (
     <>
       <p data-capacity={String(availability.capacity)}>
-        Slot capacity <strong>{availability.capacity}</strong>, of which
-        <strong> {availability.public_available}</strong> is currently available to the public.
+        Inventory pool limit: <strong>{availability.capacity}</strong>.
+        Available pool capacity: <strong data-available={String(availability.available)}> {availability.available}</strong>.
       </p>
 
       <p data-seated-note>
@@ -364,8 +374,9 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
       )}
 
       {/* A SEPARATE form, not a mode of the editor. It names exactly two fields: the
-          revision this page rendered and the operation. Posts to the canonical URL, like
-          the editor, so a query string can never select it. After a refusal the SUBMITTED
+          revision this page rendered and the operation. Its empty action preserves the
+          document query on POST; dispatch reads the operation from the body `_action`, and
+          success redirects to the canonical slot URL. After a refusal the SUBMITTED
           revision is re-rendered, as in the editor (TKT-250). The button is disabled with
           nothing to clear or no usable revision; that is a UI aid, and the handler decides
           for itself. */}

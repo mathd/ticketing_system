@@ -341,4 +341,86 @@ describe('role enforcement (COS-2, COS-4, COS-6)', () => {
     });
     expect(res.status).toBe(302);
   });
+
+  it('gates the seated clear POST before its page or write path (TKT-286)', async () => {
+    const pathname = '/admin/slots/slot-286';
+    const body = new URLSearchParams([
+      ['_action', 'clear-allocations'],
+      ['allocationRevision', '7'],
+    ]).toString();
+
+    const post = (origin: string, trustedOrigin: boolean) => new Request(
+      `http://backoffice:8080${pathname}`,
+      {
+        method: 'POST',
+        headers: {
+          ...(trustedOrigin ? trusted : {
+            'x-forwarded-proto': 'http',
+            'x-forwarded-host': 'localhost:8080',
+          }),
+          origin,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      },
+    );
+
+    const anonymousCalls = { lookup: 0, lookedUpToken: '', authenticated: 0, next: 0 };
+    const anonymous = await gateRequest({
+      request: post('http://localhost:8080', true),
+      pathname,
+      sessionToken: '',
+      lookup: (token) => {
+        anonymousCalls.lookup++;
+        anonymousCalls.lookedUpToken = token;
+        return undefined as { staffId: string; organizerId: string; role: string } | undefined;
+      },
+      onAuthenticated: () => { anonymousCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        anonymousCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(anonymous.status).toBe(302);
+    expect(anonymousCalls).toEqual({ lookup: 1, lookedUpToken: '', authenticated: 0, next: 0 });
+
+    const financeCalls = { lookup: 0, authenticated: 0, next: 0 };
+    const finance = await gateRequest({
+      request: post('http://localhost:8080', true),
+      pathname,
+      sessionToken: 'finance-token',
+      lookup: () => {
+        financeCalls.lookup++;
+        return { staffId: 'finance-staff', organizerId: 'o1', role: 'finance' };
+      },
+      onAuthenticated: () => { financeCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        financeCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(finance.status).toBe(403);
+    expect(financeCalls).toEqual({ lookup: 1, authenticated: 0, next: 0 });
+
+    const hostileCalls = { lookup: 0, authenticated: 0, next: 0 };
+    const hostileOrigin = await gateRequest({
+      request: post('http://evil.example', false),
+      pathname,
+      sessionToken: 'admin-token',
+      lookup: () => {
+        hostileCalls.lookup++;
+        return { staffId: 'admin-staff', organizerId: 'o1', role: 'admin' };
+      },
+      onAuthenticated: () => { hostileCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        hostileCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(hostileOrigin.status).toBe(403);
+    expect(hostileCalls).toEqual({ lookup: 0, authenticated: 0, next: 0 });
+  });
 });
