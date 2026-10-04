@@ -5,7 +5,11 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,4 +207,223 @@ func TestRunnerReparksAnUnparkedTerminalRefundInOnePass(t *testing.T) {
 		t.Fatalf("refund calls after third pass = %d, want 2 for a parked order", payments.refundCalls)
 	}
 	assertParked("third pass")
+}
+
+// --- TKT-285: a recovered ZERO-TOTAL order, through the real claim SQL and the real completion
+// transaction (D12, D17b).
+//
+// What the runner-tier tests cannot show is that the zero branch is reachable from what the
+// database actually holds. They hand the runner a StuckOrder with Amount 0; this hands it a
+// reservation whose total_amount is 0 and lets ClaimStuckOrders read it. Replace the SQL total
+// with a positive constant and the order is a PAID order with no operation: the runner would
+// release it, and connectedInventory.Release fails this test directly.
+
+// zeroPayments permits EXACTLY ONE operation lookup, answered not-found, and fails the test on
+// anything else: a PSP-skipped order has no charge to resolve, so status, void and refund are
+// all calls about a charge that was never made. A second lookup is refused too — the runner
+// reads the evidence once.
+type zeroPayments struct {
+	t           *testing.T
+	organizerID uuid.UUID
+	key         string
+	lookups     int
+}
+
+func (p *zeroPayments) LookupOperation(_ context.Context, organizerID uuid.UUID, key string) (recovery.Operation, bool, error) {
+	p.lookups++
+	if organizerID != p.organizerID || key != p.key {
+		p.t.Errorf("unexpected LookupOperation organizer=%s key=%q", organizerID, key)
+	}
+	return recovery.Operation{}, false, nil
+}
+
+func (p *zeroPayments) Status(_ context.Context, organizerID uuid.UUID, key string) (recovery.PSPStatus, error) {
+	p.t.Errorf("unexpected Status for a PSP-skipped order organizer=%s key=%q", organizerID, key)
+	return recovery.PSPStatus{}, errors.New("unexpected status call")
+}
+
+func (p *zeroPayments) Void(_ context.Context, organizerID uuid.UUID, key string) (recovery.CompensationResult, error) {
+	p.t.Errorf("unexpected Void for a PSP-skipped order organizer=%s key=%q", organizerID, key)
+	return recovery.CompensationResult{}, errors.New("unexpected void call")
+}
+
+func (p *zeroPayments) Refund(_ context.Context, organizerID uuid.UUID, key string) (recovery.CompensationResult, error) {
+	p.t.Errorf("unexpected Refund for a PSP-skipped order organizer=%s key=%q", organizerID, key)
+	return recovery.CompensationResult{}, errors.New("unexpected refund call")
+}
+
+// confirmingInventory records the two inventory calls a zero order can legitimately make.
+type confirmingInventory struct {
+	confirms, releases int
+}
+
+func (i *confirmingInventory) Confirm(context.Context, uuid.UUID, uuid.UUID) error {
+	i.confirms++
+	return nil
+}
+
+func (i *confirmingInventory) Release(context.Context, uuid.UUID, uuid.UUID) error {
+	i.releases++
+	return nil
+}
+
+// submittedFact is one request payments' /internal/facts received.
+type submittedFact struct {
+	FactID     uuid.UUID `json:"fact_id"`
+	FactType   string    `json:"fact_type"`
+	Amount     int64     `json:"amount"`
+	Currency   string    `json:"currency"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// zeroRecoveryRun seeds a coherent zero-total order in `status`, optionally with its
+// order.created fact, and runs the REAL runner (real claim SQL, real completer, real fact
+// table and fact submission) against a payments stub. It returns what the stub saw.
+func zeroRecoveryRun(t *testing.T, status string, withIntent bool) (seeded store.StuckOrder, payments *zeroPayments, inventory *confirmingInventory, facts []submittedFact, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	db, ctx = store.OutboxDBForTest(t)
+	seeded = store.SeedZeroStuckForTest(t, status)
+	if err := db.QueryRowContext(ctx, `SELECT idempotency_key FROM orders WHERE id=$1`, seeded.OrderID).Scan(&seeded.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
+	if withIntent {
+		// Written through the same store function checkout's twin uses; the amount comes from
+		// the order read back through the claim, not from the fixture.
+		claimed := claimedZeroForRunner(t, db, ctx, seeded)
+		if _, _, err := store.RecordOrderFact(ctx, db, claimed, "order.created"); err != nil {
+			t.Fatal(err)
+		}
+		// The probe claim above leased the row; hand it back so the runner can claim it.
+		if err := store.AbandonRecoveryClaim(ctx, db, claimed.OrderID, claimed.ClaimID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	payments = &zeroPayments{t: t, organizerID: seeded.OrganizerID, key: seeded.IdempotencyKey}
+	inventory = &confirmingInventory{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var f submittedFact
+		if r.URL.Path != "/internal/facts" || json.NewDecoder(r.Body).Decode(&f) != nil {
+			t.Errorf("unexpected payments request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		facts = append(facts, f)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	journal := recovery.JournalFact{Client: server.Client(), PaymentsURL: server.URL, Token: "t", DB: recovery.StoreFactDB{DB: db}}
+	runner, err := recovery.New(isolatedStore{DBStore: recovery.DBStore{DB: db}, t: t, orderID: seeded.OrderID},
+		payments, inventory, journal, recovery.StoreCompleter{DB: db}, time.Minute, 16, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.RunOnce(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	return seeded, payments, inventory, append([]submittedFact(nil), facts...), db, ctx
+}
+
+// claimedZeroForRunner reads the order through the real claim SQL (see claimedZero in the
+// store package's own tests; this package cannot reach its unexported helpers).
+func claimedZeroForRunner(t *testing.T, db *sql.DB, ctx context.Context, s store.StuckOrder) store.StuckOrder {
+	t.Helper()
+	claimed, err := store.ClaimStuckOrders(ctx, db, 10000, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine store.StuckOrder
+	for _, c := range claimed {
+		if c.OrderID == s.OrderID {
+			mine = c
+			continue
+		}
+		if err := store.AbandonRecoveryClaim(ctx, db, c.OrderID, c.ClaimID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mine.OrderID == uuid.Nil {
+		t.Fatalf("seeded order %s was not claimable", s.OrderID)
+	}
+	return mine
+}
+
+func TestRunnerCompletesAZeroTotalOrderWithOnlyALookupAndTheJournalFacts(t *testing.T) {
+	for _, status := range []string{"created", "confirmation_pending"} {
+		t.Run(status, func(t *testing.T) {
+			seeded, payments, inventory, facts, db, ctx := zeroRecoveryRun(t, status, status == "created")
+
+			var gotStatus string
+			var guestRef sql.NullString
+			var leaseClaim sql.NullString
+			if err := db.QueryRowContext(ctx, `SELECT status, guest_order_ref::text, recovery_claim_id::text FROM orders WHERE id=$1`,
+				seeded.OrderID).Scan(&gotStatus, &guestRef, &leaseClaim); err != nil {
+				t.Fatal(err)
+			}
+			if gotStatus != "completed" || !guestRef.Valid || leaseClaim.Valid {
+				t.Fatalf("order status=%q guest_ref=%v claim=%v, want completed, a guest reference and a cleared claim", gotStatus, guestRef, leaseClaim)
+			}
+			var owed int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM completion_outbox WHERE order_id=$1`, seeded.OrderID).Scan(&owed); err != nil {
+				t.Fatal(err)
+			}
+			if owed != 1 {
+				t.Fatalf("completion outbox rows = %d, want 1: issuance depends on the event the completion owes", owed)
+			}
+			wantLookups := 1
+			if status == "confirmation_pending" {
+				wantLookups = 0
+			}
+			if payments.lookups != wantLookups {
+				t.Errorf("payments lookups = %d, want %d", payments.lookups, wantLookups)
+			}
+			if inventory.confirms != 1 || inventory.releases != 0 {
+				t.Errorf("inventory confirm/release = %d/%d, want 1/0", inventory.confirms, inventory.releases)
+			}
+			// What payments received is what commerce stored: identity, amount, currency and
+			// the first-written timestamp, for exactly the two order facts.
+			if len(facts) != 2 || facts[0].FactType != "order.created" || facts[1].FactType != "order.completed" {
+				t.Fatalf("payments received facts %+v, want exactly [order.created order.completed]", facts)
+			}
+			for _, f := range facts {
+				var amount int64
+				var currency string
+				var stored time.Time
+				if err := db.QueryRowContext(ctx, `SELECT amount, currency, occurred_at FROM order_facts WHERE fact_id=$1 AND order_id=$2`,
+					f.FactID, seeded.OrderID).Scan(&amount, &currency, &stored); err != nil {
+					t.Fatalf("%s was submitted but is not in order_facts: %v", f.FactType, err)
+				}
+				if amount != 0 || currency != "EUR" || f.Amount != 0 || f.Currency != "EUR" || !f.OccurredAt.Equal(stored) {
+					t.Errorf("%s: stored %d %s at %s, submitted %d %s at %s; want 0 EUR and equal timestamps",
+						f.FactType, amount, currency, stored, f.Amount, f.Currency, f.OccurredAt)
+				}
+			}
+		})
+	}
+}
+
+// A zero-total `created` order whose checkout never wrote its intent fact is released as
+// `not_attempted`, exactly as a paid order with no operation is — through the real SQL.
+func TestRunnerReleasesAZeroTotalOrderThatNeverRecordedItsIntent(t *testing.T) {
+	seeded, payments, inventory, facts, db, ctx := zeroRecoveryRun(t, "created", false)
+
+	var status, outcome string
+	if err := db.QueryRowContext(ctx, `SELECT status, coalesce(terminal_outcome,'') FROM orders WHERE id=$1`, seeded.OrderID).Scan(&status, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "not_attempted" || status == "completed" {
+		t.Fatalf("order status=%q outcome=%q, want a not_attempted release", status, outcome)
+	}
+	if payments.lookups != 1 || inventory.releases != 1 || inventory.confirms != 0 {
+		t.Errorf("lookups=%d releases=%d confirms=%d, want 1/1/0", payments.lookups, inventory.releases, inventory.confirms)
+	}
+	for _, f := range facts {
+		if f.FactType != "order.failed" {
+			t.Errorf("a pre-intent order journalled %s, want only order.failed", f.FactType)
+		}
+	}
 }
