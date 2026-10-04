@@ -275,3 +275,27 @@ func TestCapacityMathDoesNotWrapAtInt32Boundary(t *testing.T) {
 		t.Fatalf("boundary operational place = %v, want ErrUnavailable", err)
 	}
 }
+
+// TKT-286: the staff read reports the pool's kind, because the back office must not render
+// an allocation editor for a seated pool. Each side is asserted against a pool the
+// production provisioning path created, so a constant in the query cannot satisfy both.
+func TestStaffAvailabilityReportsThePoolKind(t *testing.T) {
+	ctx, st, _ := storeForTest(t, 10*time.Minute)
+	gaOrg, gaSlot := provisioned(t, ctx, st, 10)
+	seatedOrg, seatedSlot, _ := provisionedSeated(t, ctx, st, 10)
+
+	ga, err := st.StaffAvailability(ctx, gaOrg, gaSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ga.InventoryKind != "ga" {
+		t.Fatalf("GA pool reported inventory_kind %q, want %q", ga.InventoryKind, "ga")
+	}
+	seated, err := st.StaffAvailability(ctx, seatedOrg, seatedSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seated.InventoryKind != "seated" {
+		t.Fatalf("seated pool reported inventory_kind %q, want %q", seated.InventoryKind, "seated")
+	}
+}
