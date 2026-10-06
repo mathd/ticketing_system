@@ -60,11 +60,19 @@ func ValidKID(kid string) bool {
 		return false
 	}
 	for _, c := range rest {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if !kidChar(c) {
 			return false
 		}
 	}
 	return true
+}
+
+func kidChar(c rune) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		return true
+	}
+	return false
 }
 
 // NewVerifier builds a verifier from kid → public key. It refuses an empty set,
