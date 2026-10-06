@@ -7,6 +7,10 @@ Date: 2026-08-15
 Accepted (TKT-245; decision taken under the owner-waived gates of that run, recorded on the ticket).
 Fifth deliverable of the TKT-17 epic.
 
+**Amended by TKT-287 (2026-10-06): the assertion is now Ed25519-signed (v2), so a service other than
+catalog can verify it without being able to mint it.** See § Amendment — TKT-287 at the end; the
+HMAC description in § Decision is historical.
+
 Amends nothing. **ADR-043 draws the line for where a guard lives, and this does not move it** — the
 15 converted operations are contract operations, so their guard is a declared `security:` requirement
 enforced by the validator, exactly where that ADR puts it.
@@ -257,3 +261,61 @@ predicate instead. All 29 unsafe operations now answer the same way.
   indistinguishable refusals, and the payload shape (so a future field is a deliberate
   canonical-format change).
 - `session.test.ts` § the clamp — the session cannot outlive its assertion.
+
+## Amendment — TKT-287: an asymmetric signature (v2)
+
+**Why.** Commerce had the same gap catalog closed here: its staff credential named no tenant, and its
+refund, void and staff order read took `organizer_id` from the request. Commerce could not verify
+this assertion, because verifying an HMAC needs the key that mints it. Sharing that key would let a
+commerce compromise mint for any organizer. The owner chose a fourth option (TKT-287 D1): sign
+asymmetrically, so catalog alone can mint and any service can verify.
+
+**Wire format.** `v2.<kid>.<staff id>.<organizer id>.<unix expiry>.<signature>`. The signature is
+Ed25519 over the exact bytes of the first five fields joined by dots, raw-URL base64 (86 characters).
+The key id is `catalog-org/` followed by 1–64 of `[A-Za-z0-9_-]`. Staff and organizer stay the only
+identities, both non-nil and immutable; the role stays out (§ 4 still holds). The TTL is unchanged
+(8h). Verification is one shared parser, `shared/go/organizerassertion`, and every refusal is still
+one error.
+
+**Keys.**
+
+| Variable | Held by | Content |
+|---|---|---|
+| `CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY` | catalog only | 32-byte Ed25519 seed, raw-standard base64 (`access keygen`) |
+| `CATALOG_ORGANIZER_ASSERTION_KID` | catalog | the active key id (default `catalog-org/local-v1`) |
+| `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` | commerce | `kid=<public key>,…` — verification only |
+
+Catalog verifies with the public key derived from its own seed, so its signer and verifier cannot
+disagree. Catalog still refuses to start when the seed equals `INTERNAL_SERVICE_TOKEN` or
+`CATALOG_STAFF_WRITE_TOKEN`, for the reason in § Consequences. `CATALOG_ORGANIZER_ASSERTION_KEY` is
+no longer read.
+
+**No v1 transition (TKT-287 D4).** Catalog and every verifier accept v2 only. A v1 token is refused,
+never misparsed. This is § Consequences' coordinated cutover, unchanged: every v1 assertion lives in
+the back office's in-process session map, and the deploy that ships v2 must also redeploy the back
+office (its decoder parses the new field positions), which clears that map. Staff sign in again
+once. **If the back office ever keeps sessions across a deploy** (more than one replica, or a
+persisted store), a future format change needs a transition window, and this paragraph stops being
+true.
+
+**Rotation.** Unchanged in effect: a new seed invalidates every live assertion, and staff sign in
+again. Verifier keyrings accept several kids, so a later overlap needs a catalog keyring and nothing
+on the verifying side.
+
+**Name the adversary again (ADR-021).** Items 1–7 of § What this does NOT close still apply. What
+changed:
+
+- **A service that holds only the public key can verify and cannot mint.** A commerce compromise
+  reads assertions it is sent and forges none. That is what made sharing verification possible.
+- **The private-key holder (item 2) mints for any organizer, with any expiry.** The 8h TTL is a
+  minting policy, not a bound on what a stolen seed can sign.
+- **A compromised commerce process is not made safe.** It can skip its own checks and spend its
+  other credentials. The keypair limits what it can *mint*, nothing more.
+
+**Tests that pin this.** `shared/go/organizerassertion/assertion_test.go` signs with the standard
+library, never with catalog's minter, and covers every malformation class plus the v1 refusal.
+`TestACatalogAssertionVerifiesWithOnlyThePublicKey` builds the public keyring from the seed by hand
+and verifies a catalog-minted token with it. `credentials_test.go` drives `run()` through each
+configuration refusal with every earlier predicate satisfied. The smoke helper
+`organizerAssertionFor` mints with `crypto/ed25519` directly, so a canonical-form drift fails the
+catalog write smoke tests instead of agreeing with itself.

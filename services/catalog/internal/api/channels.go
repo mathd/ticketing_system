@@ -130,7 +130,7 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 	// Verified before removing the parameter: the back office is the ONLY caller
 	// repo-wide (web/backoffice/src/lib/catalog.ts), so no service-to-service
 	// caller loses the ability to name an organizer it is not.
-	scope, err := verifyOrganizerAssertion(s.organizerAssertionKey,
+	scope, err := verifyOrganizerAssertion(s.organizerAssertions,
 		r.Header.Get(organizerAssertionHeader), time.Now())
 	if err != nil {
 		// Same uninformative refusal as everywhere else: absent, expired, forged

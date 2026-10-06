@@ -1276,7 +1276,7 @@ type StaffCredentials struct {
 // The role is here because the back office gates on it (TKT-197). TKT-190 deliberately withheld it while the vocabulary was undecided; TKT-197 is the ticket that decided it.
 // organizer_assertion (TKT-245, ADR-058) is the signed statement catalog will accept back on writes instead of a caller-supplied organizer_id. It is a CREDENTIAL: the back office keeps it in its server-side session and never renders it into a page or hands it to browser JavaScript.
 type StaffPrincipal struct {
-	// OrganizerAssertion Version 1 wire form is `v1.<staff UUID>.<organizer UUID>.<Unix expiry>.<43-character base64url HMAC>`. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the HMAC signs the complete prefix. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+	// OrganizerAssertion Version 2 wire form (TKT-287) is `v2.<key id>.<staff UUID>.<organizer UUID>.<Unix expiry>.<86-character base64url Ed25519 signature>`. The key id is `catalog-org/` followed by 1-64 of [A-Za-z0-9_-]. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the signature covers the complete prefix. Only catalog holds the private key; any service verifies with the public key. Present the whole string unmodified in X-Catalog-Organizer-Assertion. Version 1 (HMAC) is no longer accepted anywhere.
 	// A server without a signing key refuses authentication; a successful response always carries this non-empty value.
 	OrganizerAssertion string             `json:"organizer_assertion"`
 	OrganizerId        openapi_types.UUID `json:"organizer_id"`

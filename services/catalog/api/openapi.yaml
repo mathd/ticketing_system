@@ -1796,7 +1796,8 @@ components:
 
         Obtained from POST /staff/authenticate (organizer_assertion). It is a
         bearer credential until it expires: hold it server-side, never render it
-        into a page.
+        into a page. Ed25519-signed since TKT-287, so commerce verifies the same
+        value with catalog's public key and cannot mint one.
       type: apiKey
       in: header
       name: X-Catalog-Organizer-Assertion
@@ -2243,14 +2244,18 @@ components:
           $ref: '#/components/schemas/StaffRole'
         organizer_assertion:
           type: string
-          pattern: '^v1\.[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.[0-9]{1,19}\.[A-Za-z0-9_-]{43}$'
+          pattern: '^v2\.catalog-org/[A-Za-z0-9_-]{1,64}\.[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.[0-9]{1,19}\.[A-Za-z0-9_-]{86}$'
           description: >
-            Version 1 wire form is
-            `v1.<staff UUID>.<organizer UUID>.<Unix expiry>.<43-character
-            base64url HMAC>`. The expiry is an unsigned decimal int64. The two
-            UUIDs are non-nil. The holder may read those fields but cannot change
-            them because the HMAC signs the complete prefix. Present the whole
-            string unmodified in X-Catalog-Organizer-Assertion.
+            Version 2 wire form (TKT-287) is
+            `v2.<key id>.<staff UUID>.<organizer UUID>.<Unix expiry>.<86-character
+            base64url Ed25519 signature>`. The key id is `catalog-org/` followed
+            by 1-64 of [A-Za-z0-9_-]. The expiry is an unsigned decimal int64.
+            The two UUIDs are non-nil. The holder may read those fields but
+            cannot change them because the signature covers the complete prefix.
+            Only catalog holds the private key; any service verifies with the
+            public key. Present the whole string unmodified in
+            X-Catalog-Organizer-Assertion. Version 1 (HMAC) is no longer
+            accepted anywhere.
 
             A server without a signing key refuses authentication; a successful
             response always carries this non-empty value.

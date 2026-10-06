@@ -49,37 +49,41 @@ func TestServerRefusesMissingStaffWriteCredential(t *testing.T) {
 	}
 }
 
-// TKT-245. The assertion key is a THIRD value with a third blast radius, and the
-// reason it must differ from the staff-write credential is sharper than the usual
-// separation argument.
+// TKT-245, TKT-287. The assertion signing seed is a THIRD value with a third
+// blast radius, and the reason it must differ from the staff-write credential is
+// sharper than the usual separation argument.
 //
 // The assertion exists so that holding the write credential does not let a caller
-// choose an organizer. If the signing key WERE the write credential, any holder
+// choose an organizer. If the signing seed WERE the write credential, any holder
 // could mint their own assertion for any tenant — the boundary would be exactly
-// as absent as before this ticket, while every header, test and log line said it
-// was there. That is the failure this refuses at startup.
-func TestServerRefusesAnAssertionKeyEqualToACredential(t *testing.T) {
+// as absent as before TKT-245, while every header, test and log line said it was
+// there. That is the failure this refuses at startup.
+//
+// The colliding values are VALID Ed25519 seeds, so a decode failure cannot be what
+// refuses them: the test reaches the collision guard or nothing.
+func TestServerRefusesAnAssertionSeedEqualToACredential(t *testing.T) {
 	for _, tc := range []struct{ name, collidesWith string }{
 		{"equal to the staff-write credential", "CATALOG_STAFF_WRITE_TOKEN"},
 		{"equal to the internal token", "INTERNAL_SERVICE_TOKEN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const internal = "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5"
-			const staffWrite = "1a2b3c4d5e6f70819293a4b5c6d7e8f9"
+			const internal = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"   // 32 x 0x01
+			const staffWrite = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI" // 32 x 0x02
 			t.Setenv("INTERNAL_SERVICE_TOKEN", internal)
 			t.Setenv("CATALOG_STAFF_WRITE_TOKEN", staffWrite)
 			collided := staffWrite
 			if tc.collidesWith == "INTERNAL_SERVICE_TOKEN" {
 				collided = internal
 			}
-			t.Setenv("CATALOG_ORGANIZER_ASSERTION_KEY", collided)
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY", collided)
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_KID", "catalog-org/test")
 			// Unset, so a guard that failed to fire would fail on the database
 			// instead — a different error, which is what this asserts against.
 			t.Setenv("DATABASE_URL", "")
 
 			err := run()
 			if err == nil {
-				t.Fatal("catalog started with the signing key equal to a credential")
+				t.Fatal("catalog started with the signing seed equal to a credential")
 			}
 			if !strings.Contains(err.Error(), "must differ from INTERNAL_SERVICE_TOKEN") {
 				t.Fatalf("startup failed for the wrong reason: %v", err)
@@ -91,13 +95,46 @@ func TestServerRefusesAnAssertionKeyEqualToACredential(t *testing.T) {
 	}
 }
 
-func TestServerRefusesMissingAssertionKey(t *testing.T) {
+// Each assertion-configuration refusal, with every EARLIER predicate satisfied so
+// the case reaches the one it names, and DATABASE_URL unset so a guard that does
+// not fire fails on the database instead.
+func TestServerRefusesUnusableAssertionConfiguration(t *testing.T) {
+	const validSeed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc" // 32 x 0x07
+	for _, tc := range []struct{ name, seed, kid, want string }{
+		{"missing seed", "", "catalog-org/test", "CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY required"},
+		{"seed not base64", "this-is-long-enough-but-is-not-base64-at-all!!", "catalog-org/test", "not raw-standard base64"},
+		{"seed of the wrong length", "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI", "catalog-org/test", "32-byte Ed25519 seed"},
+		{"missing kid", validSeed, "", "key id must be"},
+		{"kid outside the namespace", validSeed, "access-qr/test", "key id must be"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
+			t.Setenv("CATALOG_STAFF_WRITE_TOKEN", "1a2b3c4d5e6f70819293a4b5c6d7e8f9")
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY", tc.seed)
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_KID", tc.kid)
+			t.Setenv("DATABASE_URL", "")
+
+			err := run()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error containing %q, got %v", tc.want, err)
+			}
+			if tc.seed != "" && strings.Contains(err.Error(), tc.seed) {
+				t.Fatalf("the error echoes the seed: %v", err)
+			}
+		})
+	}
+}
+
+// The HMAC key the v1 format used is gone (TKT-287 D4). A deployment that still
+// sets it, and nothing else, must fail on the missing seed rather than start.
+func TestServerDoesNotStartOnTheRetiredHMACKeyAlone(t *testing.T) {
 	t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
 	t.Setenv("CATALOG_STAFF_WRITE_TOKEN", "1a2b3c4d5e6f70819293a4b5c6d7e8f9")
-	t.Setenv("CATALOG_ORGANIZER_ASSERTION_KEY", "")
+	t.Setenv("CATALOG_ORGANIZER_ASSERTION_KEY", "9f8e7d6c5b4a39281706f5e4d3c2b1a0")
+	t.Setenv("CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY", "")
 
 	err := run()
-	if err == nil || !strings.Contains(err.Error(), "CATALOG_ORGANIZER_ASSERTION_KEY required") {
-		t.Fatalf("want a CATALOG_ORGANIZER_ASSERTION_KEY configuration error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY required") {
+		t.Fatalf("want a CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY configuration error, got %v", err)
 	}
 }

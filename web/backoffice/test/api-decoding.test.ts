@@ -38,7 +38,7 @@ const OTHER_SLOT = '80000000-0000-4000-8000-000000000002';
 const ORDER = '90000000-0000-4000-8000-000000000001';
 const OTHER_ORDER = '90000000-0000-4000-8000-000000000002';
 const REFUND = 'a0000000-0000-4000-8000-000000000001';
-const ASSERTION = `v1.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`;
+const ASSERTION = `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`;
 const MAX_INT32 = 2_147_483_647;
 
 function answer(body: unknown, status = 200): void {
@@ -258,13 +258,17 @@ describe('catalog response decoding', () => {
   });
 
   it.each([
-    ['the wrong version', `v2.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
-    ['the wrong field count', `v1.${STAFF}.${ORGANIZER}.99999999999`],
-    ['a malformed embedded staff id', `v1.staff.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
-    ['a malformed embedded organizer id', `v1.${STAFF}.organizer.99999999999.${'A'.repeat(43)}`],
-    ['a malformed expiry', `v1.${STAFF}.${ORGANIZER}.later.${'A'.repeat(43)}`],
-    ['an overflowing expiry', `v1.${STAFF}.${ORGANIZER}.9223372036854775808.${'A'.repeat(43)}`],
-    ['a malformed signature', `v1.${STAFF}.${ORGANIZER}.99999999999.short`],
+    ['the retired v1 format', `v1.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
+    ['an unknown version', `v3.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['a key id outside the namespace', `v2.access-qr/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['an empty key id', `v2..${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['the wrong field count', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999`],
+    ['a malformed embedded staff id', `v2.catalog-org/test.staff.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['a malformed embedded organizer id', `v2.catalog-org/test.${STAFF}.organizer.99999999999.${'A'.repeat(86)}`],
+    ['a malformed expiry', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.later.${'A'.repeat(86)}`],
+    ['an overflowing expiry', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.9223372036854775808.${'A'.repeat(86)}`],
+    ['a malformed signature', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.short`],
+    ['an HMAC-length signature', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
   ])('rejects a principal whose organizer assertion has %s', async (_name, assertion) => {
     answer({
       staff_id: STAFF,
@@ -280,7 +284,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${STAFF}.${OTHER_ORGANIZER}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${STAFF}.${OTHER_ORGANIZER}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).rejects.toThrow(/organizer/);
   });
@@ -290,7 +294,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${OTHER_STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${OTHER_STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).rejects.toThrow(/staff/);
   });
@@ -300,7 +304,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${STAFF.toUpperCase()}.${ORGANIZER.toUpperCase()}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${STAFF.toUpperCase()}.${ORGANIZER.toUpperCase()}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).resolves.toMatchObject({
       staffId: STAFF,

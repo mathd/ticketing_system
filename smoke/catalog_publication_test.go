@@ -9,9 +9,8 @@ package smoke_test
 
 import (
 	"bytes"
-	"crypto/hmac"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -66,23 +65,30 @@ func organizerAssertion(t *testing.T) string {
 // present that tenant's assertion, because no request body names an organizer.
 func organizerAssertionFor(t *testing.T, organizer string) string {
 	t.Helper()
-	key := os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY")
-	if key == "" {
-		t.Fatal("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY is not set: scripts/stack-env.sh exports it, " +
-			"and without it every catalog write in this suite 401s for a reason that looks like a bug")
+	seedB64 := os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED")
+	kid := os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KID")
+	if seedB64 == "" || kid == "" {
+		t.Fatal("SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED/_KID are not set: scripts/stack-env.sh exports them, " +
+			"and without them every catalog write in this suite 401s for a reason that looks like a bug")
 	}
-	// v1.<staff>.<organizer>.<unix expiry>.<mac> -- the format catalog verifies
-	// (services/catalog/internal/api/assertion.go). Kept in step by the smoke run
-	// itself: a format change breaks these writes loudly.
+	seed, err := base64.RawStdEncoding.DecodeString(seedB64)
+	if err != nil || len(seed) != ed25519.SeedSize {
+		t.Fatalf("SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED is not a raw-standard-base64 Ed25519 seed")
+	}
+	// v2.<kid>.<staff>.<organizer>.<unix expiry>.<Ed25519 signature> -- the format
+	// catalog mints and catalog and commerce verify (shared/go/organizerassertion,
+	// TKT-287). Built here with the standard library, NOT with that package, so a
+	// canonical-form drift between the two sides fails these writes loudly instead
+	// of agreeing with itself.
 	payload := strings.Join([]string{
-		"v1",
+		"v2",
+		kid,
 		"00000000-0000-0000-0000-0000000000aa",
 		organizer,
 		strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
 	}, ".")
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte(payload))
-	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	sig := ed25519.Sign(ed25519.NewKeyFromSeed(seed), []byte(payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 func isCatalogURL(url string) bool { return strings.Contains(url, "/api/catalog/") }

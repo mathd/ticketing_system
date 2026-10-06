@@ -77,15 +77,21 @@ export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
 SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_CATALOG_STAFF_WRITE_TOKEN
 export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
-# TKT-245: catalog's organizer-assertion signing key. A separate /dev/urandom
-# read for a reason the ticket turns on -- catalog refuses to start when this
-# equals CATALOG_STAFF_WRITE_TOKEN, because a signing key equal to the write
-# credential lets anyone who can write mint their own tenancy. Deriving one from
-# the other here would make the smoke suite the one place that guard is never
-# exercised honestly.
-SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY
-export CATALOG_ORGANIZER_ASSERTION_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"
+# TKT-245, TKT-287: catalog's organizer-assertion Ed25519 pair, its own keygen
+# call. Catalog refuses to start when the seed equals CATALOG_STAFF_WRITE_TOKEN,
+# because a signing key equal to the write credential lets anyone who can write
+# mint their own tenancy; deriving one from the other here would make the smoke
+# suite the one place that guard is never exercised honestly.
+#
+# The seed is exported to the TEST PROCESS as SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED,
+# so smoke can mint an assertion for an organizer it has no staff account in (the
+# cross-tenant cases). Commerce gets only the public keyring.
+read -r SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED SMOKE_CATALOG_ORGANIZER_ASSERTION_PUB < <(cd "$ROOT/services/access" && go run ./cmd/access keygen)
+export SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED
+export CATALOG_ORGANIZER_ASSERTION_KID="catalog-org/local-v1"
+export SMOKE_CATALOG_ORGANIZER_ASSERTION_KID="$CATALOG_ORGANIZER_ASSERTION_KID"
+export CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED"
+export COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="$CATALOG_ORGANIZER_ASSERTION_KID=$SMOKE_CATALOG_ORGANIZER_ASSERTION_PUB"
 # TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
 # when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
 # when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would

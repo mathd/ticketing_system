@@ -1,6 +1,8 @@
 package api
 
-// Organizer assertion tests (TKT-245).
+// Organizer assertion tests (TKT-245; Ed25519 v2 since TKT-287). The parser's
+// malformation classes are covered in shared/go/organizerassertion; these pin
+// what catalog MINTS and that catalog's verification path is that parser.
 //
 // Every expectation here is derived from the REQUIREMENT, never from watching what
 // the code does (AGENTS.md: a green test can bless the defect). The invariant each
@@ -8,6 +10,10 @@ package api
 // that starts passing for a new reason is visible as a changed sentence.
 
 import (
+	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"strconv"
 	"strings"
@@ -15,9 +21,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"ticketing/shared/organizerassertion"
 )
 
-const testAssertionKey = organizerAssertionKey("catalog-organizer-assertion-test-key")
+func assertionSigner(t *testing.T, seedByte byte, kid string) *OrganizerAssertionSigner {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = seedByte
+	}
+	s, err := NewOrganizerAssertionSigner(base64.RawStdEncoding.EncodeToString(seed), kid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
 
 // A minted assertion names the organizer and staff member it was minted for, and
 // nothing else can be read back out of it.
@@ -25,9 +44,9 @@ func TestOrganizerAssertionRoundTrips(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 	now := time.Now()
 
-	token := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(time.Hour))
+	token := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(time.Hour))
 
-	got, err := verifyOrganizerAssertion(testAssertionKey, token, now)
+	got, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, now)
 	if err != nil {
 		t.Fatalf("verify a freshly minted assertion = %v, want nil", err)
 	}
@@ -42,15 +61,15 @@ func TestOrganizerAssertionRoundTrips(t *testing.T) {
 // The signature covers every field, so no field can be changed by its holder.
 //
 // Table-driven over each mutable position rather than one "tampering" case: a
-// single case proves the MAC covers ONE field, and the defect this refuses is a
+// single case proves the signature covers ONE field, and the defect this refuses is a
 // payload assembled so that some field falls outside it.
 func TestOrganizerAssertionRefusesEveryTamperedField(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 	now := time.Now()
-	token := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(time.Hour))
+	token := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(time.Hour))
 	parts := strings.Split(token, ".")
 
-	// Rebuild the token with one field replaced, keeping the original MAC.
+	// Rebuild the token with one field replaced, keeping the original signature.
 	swap := func(idx int, val string) string {
 		mutated := append([]string(nil), parts...)
 		mutated[idx] = val
@@ -61,14 +80,15 @@ func TestOrganizerAssertionRefusesEveryTamperedField(t *testing.T) {
 		name  string
 		token string
 	}{
-		{"a different staff member", swap(1, uuid.New().String())},
-		{"a different organizer", swap(2, uuid.New().String())},
-		{"an expiry pushed into the future", swap(3, strconv.FormatInt(now.Add(100*time.Hour).Unix(), 10))},
-		{"a forged mac", swap(4, "not-the-real-mac")},
-		{"a different version", swap(0, "v2")},
+		{"a different version", swap(0, "v3")},
+		{"a different key id", swap(1, "catalog-org/other")},
+		{"a different staff member", swap(2, uuid.New().String())},
+		{"a different organizer", swap(3, uuid.New().String())},
+		{"an expiry pushed into the future", swap(4, strconv.FormatInt(now.Add(100*time.Hour).Unix(), 10))},
+		{"a forged signature", swap(5, base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := verifyOrganizerAssertion(testAssertionKey, tc.token, now); err == nil {
+			if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), tc.token, now); err == nil {
 				t.Fatal("verify accepted a tampered assertion, want refusal")
 			}
 		})
@@ -80,9 +100,9 @@ func TestOrganizerAssertionRefusesAnotherKeysSignature(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 	now := time.Now()
 
-	token := mintOrganizerAssertion("a-different-signing-key-entirely", staffID, orgID, now.Add(time.Hour))
+	token := mintOrganizerAssertion(assertionSigner(t, 9, testOrganizerAssertionKID), staffID, orgID, now.Add(time.Hour))
 
-	if _, err := verifyOrganizerAssertion(testAssertionKey, token, now); err == nil {
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, now); err == nil {
 		t.Fatal("verify accepted an assertion signed by another key, want refusal")
 	}
 }
@@ -96,15 +116,15 @@ func TestOrganizerAssertionExpiryBoundaryIsExact(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 	now := time.Now().Truncate(time.Second)
 	expiry := now.Add(time.Hour)
-	token := mintOrganizerAssertion(testAssertionKey, staffID, orgID, expiry)
+	token := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, expiry)
 
-	if _, err := verifyOrganizerAssertion(testAssertionKey, token, expiry.Add(-time.Second)); err != nil {
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, expiry.Add(-time.Second)); err != nil {
 		t.Errorf("one second before expiry = %v, want valid", err)
 	}
-	if _, err := verifyOrganizerAssertion(testAssertionKey, token, expiry); err == nil {
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, expiry); err == nil {
 		t.Error("at the expiry instant the assertion verified, want refusal")
 	}
-	if _, err := verifyOrganizerAssertion(testAssertionKey, token, expiry.Add(time.Second)); err == nil {
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, expiry.Add(time.Second)); err == nil {
 		t.Error("one second after expiry the assertion verified, want refusal")
 	}
 }
@@ -112,7 +132,7 @@ func TestOrganizerAssertionExpiryBoundaryIsExact(t *testing.T) {
 // An expired assertion cannot be revived by rewriting its expiry, because the
 // signature covers that field.
 //
-// NOT a test of the internal check ORDER. The MAC-before-expiry ordering in
+// NOT a test of the internal check ORDER. The signature-before-expiry ordering in
 // verifyOrganizerAssertion is real and deliberate (an unauthenticated number must
 // not be parsed and believed), but it is not observable from out here: both orders
 // return the same single error for every bad token, by construction, so any test
@@ -128,36 +148,36 @@ func TestOrganizerAssertionExpiryCannotBeExtendedByItsHolder(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 
 	// A token that has already died in the holder's hands.
-	expired := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(-time.Minute))
-	if _, err := verifyOrganizerAssertion(testAssertionKey, expired, now); err == nil {
+	expired := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(-time.Minute))
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), expired, now); err == nil {
 		t.Fatal("precondition: the token must start out expired")
 	}
 
 	// The holder rewrites the expiry far into the future, keeping everything else.
 	parts := strings.Split(expired, ".")
-	parts[3] = strconv.FormatInt(now.Add(1000*time.Hour).Unix(), 10)
+	parts[4] = strconv.FormatInt(now.Add(1000*time.Hour).Unix(), 10)
 
-	if _, err := verifyOrganizerAssertion(testAssertionKey, strings.Join(parts, "."), now); err == nil {
-		t.Fatal("an expired assertion was revived by rewriting its expiry; the MAC does not cover that field")
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), strings.Join(parts, "."), now); err == nil {
+		t.Fatal("an expired assertion was revived by rewriting its expiry; the signature does not cover that field")
 	}
 }
 
 // A structurally broken token is refused rather than misread.
 func TestOrganizerAssertionRefusesMalformedTokens(t *testing.T) {
 	now := time.Now()
-	valid := mintOrganizerAssertion(testAssertionKey, uuid.New(), uuid.New(), now.Add(time.Hour))
+	valid := mintOrganizerAssertion(testOrganizerAssertionSigner(t), uuid.New(), uuid.New(), now.Add(time.Hour))
 
 	for _, tc := range []struct{ name, token string }{
 		{"empty", ""},
 		{"whitespace", "   "},
-		{"too few parts", "v1.abc.def"},
+		{"too few parts", "v2.abc.def"},
 		{"too many parts", valid + ".extra"},
 		{"truncated mid-token", valid[:len(valid)/2]},
-		{"not a uuid in the staff position", "v1.not-a-uuid." + uuid.New().String() + ".9999999999.mac"},
-		{"a non-numeric expiry", "v1." + uuid.New().String() + "." + uuid.New().String() + ".soon.mac"},
+		{"not a uuid in the staff position", "v2." + testOrganizerAssertionKID + ".not-a-uuid." + uuid.New().String() + ".9999999999.sig"},
+		{"a non-numeric expiry", "v2." + testOrganizerAssertionKID + "." + uuid.New().String() + "." + uuid.New().String() + ".soon.sig"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := verifyOrganizerAssertion(testAssertionKey, tc.token, now); err == nil {
+			if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), tc.token, now); err == nil {
 				t.Fatalf("verify accepted %q, want refusal", tc.token)
 			}
 		})
@@ -178,32 +198,82 @@ func TestOrganizerAssertionRefusesTheNilUUID(t *testing.T) {
 		{"both nil", uuid.Nil, uuid.Nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := mintOrganizerAssertion(testAssertionKey, tc.staffID, tc.orgID, now.Add(time.Hour))
-			if _, err := verifyOrganizerAssertion(testAssertionKey, token, now); err == nil {
+			token := mintOrganizerAssertion(testOrganizerAssertionSigner(t), tc.staffID, tc.orgID, now.Add(time.Hour))
+			if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), token, now); err == nil {
 				t.Fatal("verify accepted a nil uuid as a principal, want refusal")
 			}
 		})
 	}
 }
 
-// An unconfigured key verifies NOTHING, rather than verifying everything.
-//
-// Without the guard an empty key still produces a self-consistent MAC, so every
-// forged token would verify -- the one configuration nobody exercises being the
-// one that admits everybody.
-func TestOrganizerAssertionWithNoKeyConfiguredRefusesEverything(t *testing.T) {
-	now := time.Now()
-	staffID, orgID := uuid.New(), uuid.New()
-
-	// Self-consistent under the empty key: minted and verified with the same "".
-	selfConsistent := mintOrganizerAssertion("", staffID, orgID, now.Add(time.Hour))
-	if _, err := verifyOrganizerAssertion("", selfConsistent, now); err == nil {
-		t.Fatal("an unkeyed verifier accepted a token, want refusal")
-	}
-
-	valid := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(time.Hour))
-	if _, err := verifyOrganizerAssertion("", valid, now); err == nil {
+// An unconfigured signer verifies NOTHING, rather than verifying everything.
+func TestOrganizerAssertionWithNoSignerConfiguredRefusesEverything(t *testing.T) {
+	valid := mintOrganizerAssertion(testOrganizerAssertionSigner(t), uuid.New(), uuid.New(), time.Now().Add(time.Hour))
+	if _, err := verifyOrganizerAssertion(nil, valid, time.Now()); err == nil {
 		t.Fatal("an unkeyed verifier accepted a validly signed token, want refusal")
+	}
+}
+
+// The HMAC v1 format is refused outright: there is no transition window
+// (TKT-287 D4), so a v1 token held across the deploy must not verify — and must
+// not be misparsed as something else.
+func TestALegacyV1OrganizerAssertionIsRefused(t *testing.T) {
+	now := time.Now()
+	payload := strings.Join([]string{"v1", uuid.NewString(), uuid.NewString(),
+		strconv.FormatInt(now.Add(time.Hour).Unix(), 10)}, ".")
+	mac := hmac.New(sha256.New, []byte("any-legacy-hmac-key"))
+	mac.Write([]byte(payload))
+	legacy := payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if _, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), legacy, now); err == nil {
+		t.Fatal("a v1 HMAC assertion verified after the v2 cutover")
+	}
+}
+
+// What catalog mints is what another service verifies with ONLY the public key.
+// The keyring is built here from the seed by hand — not through the signer — so
+// the test cannot pass by catalog agreeing with itself.
+func TestACatalogAssertionVerifiesWithOnlyThePublicKey(t *testing.T) {
+	seed, err := base64.RawStdEncoding.DecodeString(testOrganizerAssertionSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	keyring, err := organizerassertion.ParseKeyring(testOrganizerAssertionKID + "=" + base64.RawStdEncoding.EncodeToString(public))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staffID, orgID := uuid.New(), uuid.New()
+	now := time.Now()
+	scope, err := keyring.Verify(mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(time.Hour)), now)
+	if err != nil {
+		t.Fatalf("public-key verification of a catalog assertion = %v", err)
+	}
+	if scope.StaffID != staffID || scope.OrganizerID != orgID {
+		t.Fatalf("scope = %+v, want staff %s organizer %s", scope, staffID, orgID)
+	}
+}
+
+// The signer refuses key material it cannot use, and never echoes the seed.
+func TestNewOrganizerAssertionSignerRefusesBadConfiguration(t *testing.T) {
+	seed := base64.RawStdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	for _, tc := range []struct{ name, seed, kid string }{
+		{"seed not base64", "not base64!!", testOrganizerAssertionKID},
+		{"padded standard base64", seed + "=", testOrganizerAssertionKID},
+		{"seed too short", base64.RawStdEncoding.EncodeToString(make([]byte, 31)), testOrganizerAssertionKID},
+		{"seed too long", base64.RawStdEncoding.EncodeToString(make([]byte, 64)), testOrganizerAssertionKID},
+		{"empty kid", seed, ""},
+		{"kid outside the namespace", seed, "access-qr/test"},
+		{"kid with a dot", seed, "catalog-org/a.b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewOrganizerAssertionSigner(tc.seed, tc.kid)
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if tc.seed != "" && strings.Contains(err.Error(), tc.seed) {
+				t.Fatalf("error echoes the seed: %v", err)
+			}
+		})
 	}
 }
 
@@ -212,19 +282,19 @@ func TestOrganizerAssertionWithNoKeyConfiguredRefusesEverything(t *testing.T) {
 func TestOrganizerAssertionRefusalsAreIndistinguishable(t *testing.T) {
 	now := time.Now()
 	staffID, orgID := uuid.New(), uuid.New()
-	valid := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(time.Hour))
-	expired := mintOrganizerAssertion(testAssertionKey, staffID, orgID, now.Add(-time.Hour))
-	forged := mintOrganizerAssertion("another-key", staffID, orgID, now.Add(time.Hour))
+	valid := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(time.Hour))
+	expired := mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, now.Add(-time.Hour))
+	forged := mintOrganizerAssertion(assertionSigner(t, 9, testOrganizerAssertionKID), staffID, orgID, now.Add(time.Hour))
 
 	for _, tc := range []struct{ name, token string }{
 		{"expired", expired},
 		{"forged", forged},
-		{"malformed", "v1.garbage"},
+		{"malformed", "v2.garbage"},
 		{"truncated", valid[:10]},
 		{"empty", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := verifyOrganizerAssertion(testAssertionKey, tc.token, now)
+			_, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), tc.token, now)
 			if err == nil {
 				t.Fatalf("%s verified, want refusal", tc.name)
 			}
@@ -237,12 +307,12 @@ func TestOrganizerAssertionRefusalsAreIndistinguishable(t *testing.T) {
 }
 
 // The token discloses no secret: it is signed, not encrypted, and the holder is
-// the staff member it names. What must NOT appear is the key.
+// the staff member it names. What must NOT appear is the seed.
 func TestOrganizerAssertionDoesNotCarryTheKey(t *testing.T) {
-	token := mintOrganizerAssertion(testAssertionKey, uuid.New(), uuid.New(), time.Now().Add(time.Hour))
+	token := mintOrganizerAssertion(testOrganizerAssertionSigner(t), uuid.New(), uuid.New(), time.Now().Add(time.Hour))
 
-	if strings.Contains(token, string(testAssertionKey)) {
-		t.Fatal("the minted assertion contains the signing key")
+	if strings.Contains(token, testOrganizerAssertionSeed) {
+		t.Fatal("the minted assertion contains the signing seed")
 	}
 }
 
@@ -257,19 +327,22 @@ func TestOrganizerAssertionPayloadCarriesOnlyImmutableIdentity(t *testing.T) {
 	staffID, orgID := uuid.New(), uuid.New()
 	expiry := time.Now().Add(time.Hour)
 
-	parts := strings.Split(mintOrganizerAssertion(testAssertionKey, staffID, orgID, expiry), ".")
+	parts := strings.Split(mintOrganizerAssertion(testOrganizerAssertionSigner(t), staffID, orgID, expiry), ".")
 
-	if len(parts) != 5 {
-		t.Fatalf("assertion has %d parts, want exactly 5 (version, staff, organizer, expiry, mac); "+
+	if len(parts) != 6 {
+		t.Fatalf("assertion has %d parts, want exactly 6 (version, kid, staff, organizer, expiry, signature); "+
 			"a new field is a canonical-format change, not a test update", len(parts))
 	}
-	if parts[0] != organizerAssertionVersion {
-		t.Errorf("version = %q, want %q", parts[0], organizerAssertionVersion)
+	if parts[0] != "v2" {
+		t.Errorf("version = %q, want v2", parts[0])
 	}
-	if parts[1] != staffID.String() || parts[2] != orgID.String() {
-		t.Errorf("payload = %q/%q, want staff %s and organizer %s", parts[1], parts[2], staffID, orgID)
+	if parts[1] != testOrganizerAssertionKID {
+		t.Errorf("kid = %q, want %q", parts[1], testOrganizerAssertionKID)
 	}
-	if parts[3] != strconv.FormatInt(expiry.Unix(), 10) {
-		t.Errorf("expiry = %q, want %d", parts[3], expiry.Unix())
+	if parts[2] != staffID.String() || parts[3] != orgID.String() {
+		t.Errorf("payload = %q/%q, want staff %s and organizer %s", parts[2], parts[3], staffID, orgID)
+	}
+	if parts[4] != strconv.FormatInt(expiry.Unix(), 10) {
+		t.Errorf("expiry = %q, want %d", parts[4], expiry.Unix())
 	}
 }
