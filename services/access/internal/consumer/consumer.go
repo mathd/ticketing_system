@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/store"
 	"ticketing/services/access/internal/ticket"
 	"ticketing/shared/domainevent"
@@ -124,19 +125,25 @@ func (m LogMailer) Send(_ context.Context, id uuid.UUID, email, link string) err
 }
 
 type Consumer struct {
-	js                            jetstream.JetStream
-	st                            *store.Postgres
-	signer                        *ticket.Signer
-	client                        *http.Client
-	commerceURL, token, publicURL string
-	mailer                        Mailer
-	log                           *slog.Logger
-	ready                         atomic.Bool
-	maxProcessAttempts            int
-	maxDeliver                    int
-	backoff                       []time.Duration
-	process                       func(context.Context, completed) (FailureStage, error)
-	processExchange               func(context.Context, exchanged) (FailureStage, error)
+	js                 jetstream.JetStream
+	st                 *store.Postgres
+	signer             *ticket.Signer
+	client             *http.Client
+	commerceURL, token string
+	// publicURL and addresses hold the RAW configured values: delivery's TicketLink and
+	// CommerceAddressBook each trim once, exactly as the staff resend path calls them with the
+	// same configuration, so issuance and resend build one link and one lookup (TKT-314).
+	// Trimming here as well would trim twice and make a URL ending in "//" diverge.
+	publicURL          string
+	addresses          delivery.CommerceAddressBook
+	mailer             Mailer
+	log                *slog.Logger
+	ready              atomic.Bool
+	maxProcessAttempts int
+	maxDeliver         int
+	backoff            []time.Duration
+	process            func(context.Context, completed) (FailureStage, error)
+	processExchange    func(context.Context, exchanged) (FailureStage, error)
 	// The three steps of processExchanged, overridable so their ORDER and their
 	// disposition can be exercised without a database, a broker or commerce. Nil in
 	// production, where the methods below are used directly.
@@ -160,7 +167,8 @@ func New(js jetstream.JetStream, st *store.Postgres, signer *ticket.Signer, clie
 	publishFailures, _ := meter.Int64Counter("access.event.failure_publish_errors")
 	c := &Consumer{
 		js: js, st: st, signer: signer, client: client, commerceURL: strings.TrimSuffix(commerceURL, "/"), token: token,
-		publicURL: strings.TrimSuffix(publicURL, "/"), mailer: mailer, log: log,
+		publicURL: publicURL, addresses: delivery.CommerceAddressBook{Client: client, BaseURL: commerceURL, Token: token},
+		mailer: mailer, log: log,
 		maxProcessAttempts: options.MaxProcessAttempts, maxDeliver: options.MaxDeliver, backoff: append([]time.Duration(nil), options.BackOff...),
 		failureCounter: failures, retryCounter: retries, failurePublishCounter: publishFailures,
 	}
@@ -394,28 +402,6 @@ func validateCompleted(e completed) error {
 	return nil
 }
 
-func (c *Consumer) email(ctx context.Context, buyer uuid.UUID) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.commerceURL+"/internal/buyers/"+buyer.String()+"/delivery-email", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("X-Internal-Token", c.token)
-	res, err := c.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("commerce delivery address: %d", res.StatusCode)
-	}
-	var v struct {
-		Email string `json:"email"`
-	}
-	if err = json.NewDecoder(res.Body).Decode(&v); err != nil || v.Email == "" {
-		return "", fmt.Errorf("invalid commerce delivery address")
-	}
-	return v.Email, nil
-}
 func (c *Consumer) deliver(ctx context.Context, orderID uuid.UUID) error {
 	pending, err := c.st.PendingDeliveries(ctx, orderID)
 	if err != nil {
@@ -426,11 +412,11 @@ func (c *Consumer) deliver(ctx context.Context, orderID uuid.UUID) error {
 		if err != nil {
 			return err
 		}
-		email, err := c.email(ctx, t.BuyerID)
+		email, err := c.addresses.DeliveryEmail(ctx, t.BuyerID)
 		if err != nil {
 			return err
 		}
-		link := c.publicURL + "/en/tickets/" + t.GuestOrderRef.String()
+		link := delivery.TicketLink(c.publicURL, t.GuestOrderRef)
 		if err = c.mailer.Send(ctx, id, email, link); err != nil {
 			return err
 		}
