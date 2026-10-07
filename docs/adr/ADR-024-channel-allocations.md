@@ -256,8 +256,14 @@ We adopt allocation rows with derived usage. Specifics:
           way, and asserts only that `server_time` predates the lock release. It covers admission
           **indirectly**, because `Transition` decides on `ServerTime`; a refactor that gave that
           path a separate decision-time liveness snapshot while keeping its response clock would
-          move the money-path behaviour with this test still green. No test closes that gap today.
-      Both go red if the clock they *do* pin moves — that is the designed signal, not a regression.
+          move the money-path behaviour with this test still green.
+        - `TestTransitionJudgesLivenessOnTransactionStartTime` closes that gap (TKT-288): it
+          queues a finalize on the pool lock before the hold expires, releases the lock after
+          expiry, and asserts the claim is admitted into `finalizing`. Executed mutation: scanning
+          `clock_timestamp()` into `snapshotTime` in `Transition`'s claim read turns this test red
+          (refused, status `expired`) while `TestTransitionKeepsTransactionStartClockDeliberately`
+          stays green.
+      All three go red if the clock they *do* pin moves — that is the designed signal, not a regression.
       A ticket that changes this rule updates them consciously and amends this bullet; it never
       deletes them to make a change pass.
     - **Boundaries — `clock_timestamp()`.** The allocation release predicate and the sales
