@@ -1,19 +1,10 @@
-// Package delivery carries what the staff redelivery route does: resolve a buyer's
-// address from commerce, hand the capability link to the transport, and record that
-// it was accepted.
+// Package delivery provides the commerce delivery-address lookup and the ticket-link
+// builder. Issuance (the access consumer's deliver) and the staff resend route both use
+// these definitions, with the same raw configuration, so the two cannot build different
+// links or look addresses up differently (TKT-314). Callers own the transport hand-off
+// and the lifecycle recording.
 //
-// IT DOES NOT YET SERVE ISSUANCE, and the comment here used to claim otherwise —
-// that both callers resolved through this package "because the two callers must not
-// drift". They do not. The issuance consumer keeps its own address lookup
-// (consumer.go, `email`) and builds its own link inline, and the two link builders
-// have ALREADY drifted: TicketLink trims a trailing slash from the public URL and
-// the consumer's concatenation does not, so a configured URL ending in "/" yields
-// two different capability URLs for the same order.
-//
-// Routing the consumer through this package is a behaviour change and is not this
-// package's to make unilaterally; it needs its own ticket. Until then the honest
-// statement is the one above — a reader who knows the copies exist can check both,
-// which is exactly what a reader told they cannot drift will not do.
+// The consumer may import this package; this package must not import the consumer.
 package delivery
 
 import (
@@ -81,10 +72,9 @@ func (a CommerceAddressBook) DeliveryEmail(ctx context.Context, buyerID uuid.UUI
 	return v.Email, nil
 }
 
-// TicketLink builds the guest retrieval URL for one order reference.
-//
-// Used by the staff resend path. The issuance consumer builds its own (see the package
-// comment on the trailing-slash divergence between them).
+// TicketLink builds the guest retrieval URL for one order reference, for issuance and staff
+// resend alike. It removes ONE trailing slash from the value it is given, so callers pass the
+// raw configured URL and must not trim it themselves.
 //
 // The value in it is a live bearer capability (ADR-012): anyone holding this URL can
 // retrieve the tickets, nothing revokes it, and every send widens the set of holders.
