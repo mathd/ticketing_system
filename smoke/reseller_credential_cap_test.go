@@ -5,6 +5,7 @@ package smoke_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -26,7 +27,8 @@ func TestEnrolResellerAtCapNamesTheRemedy(t *testing.T) {
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
 		code := 0
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 		} else if err != nil {
 			t.Fatalf("run enrol-reseller: %v", err)
