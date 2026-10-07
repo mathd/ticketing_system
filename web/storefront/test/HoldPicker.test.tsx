@@ -284,6 +284,7 @@ describe('a dead hold is never replayed', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
     await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
 
     act(() => { vi.advanceTimersByTime(750); });
     expect(screen.queryByRole('button', { name: /Pay/ })).not.toBeNull(); // still live
@@ -320,6 +321,14 @@ describe('a dead hold is never replayed', () => {
       settle = (r) => (r instanceof Error ? reject(r) : resolve(r));
     });
     return { promise, settle };
+  }
+
+  // A BARRIER, not a sleep: the countdown interval is registered by a React passive effect,
+  // which can run after the Pay button is already in the DOM. Advancing fake time before it
+  // exists ticks nothing, and the test either flakes or — worse — passes vacuously under a
+  // mutation (TKT-289: 3 of 18 parallel runs failed this way before the barrier).
+  async function countdownRunning() {
+    await waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0));
   }
 
   // Review pass 1 [high]: an old dead hold must not retire a NEWER request's key. Reserve is
@@ -365,7 +374,9 @@ describe('a dead hold is never replayed', () => {
     mountGA(stub);
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
     act(() => { vi.advanceTimersByTime(1250); });
     await screen.findByText('Hold expired');
     await act(async () => { payment.settle(new Response('{}', { status: 500 })); });
@@ -394,7 +405,9 @@ describe('a dead hold is never replayed', () => {
     mountGA(stub);
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
     await waitFor(() => expect(keysFor(stub, '/checkout')).toHaveLength(1));
     await screen.findByText(/sign in/i);
     act(() => { vi.advanceTimersByTime(1250); });
@@ -418,7 +431,9 @@ describe('a dead hold is never replayed', () => {
     mountGA(stub);
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
     act(() => { vi.advanceTimersByTime(1250); });
     await screen.findByText('Hold expired');
     await act(async () => { payment.settle(new Response('{"error":"unauthorized"}', { status: 401 })); });
@@ -442,7 +457,9 @@ describe('a dead hold is never replayed', () => {
     mountGA(stub);
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
     const confirmed = await screen.findByText(/confirmed/i);
     const confirmation = confirmed.textContent;
     act(() => { vi.advanceTimersByTime(1250); });
@@ -465,7 +482,9 @@ describe('a dead hold is never replayed', () => {
     mountGA(stub);
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await screen.findByRole('button', { name: /Pay/ });
+    await countdownRunning();
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
     await waitFor(() => expect(keysFor(stub, '/checkout')).toHaveLength(1));
     await waitFor(() => expect((screen.getByRole('button', { name: /Pay/ }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
