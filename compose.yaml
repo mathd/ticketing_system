@@ -258,10 +258,15 @@ services:
       # money credential alongside the shared one (ai-review S8). It refuses to
       # start if any two of its four credentials are equal.
       PAYMENTS_INTERNAL_TOKEN: ${PAYMENTS_INTERNAL_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
-      # TKT-194: the back office's credential, checked on the staff refund and on
-      # nothing else. Held by commerce and the back office only — deliberately NOT
+      # TKT-194: the back office's credential, checked on the staff refund, void
+      # and order read, each only with a verified organizer assertion (TKT-287). Held by commerce and the back office only — deliberately NOT
       # in the shared &go-env anchor.
       COMMERCE_STAFF_WRITE_TOKEN: ${COMMERCE_STAFF_WRITE_TOKEN:?no default is shipped - run 'make up' once to generate a local credential}
+      # TKT-287: catalog's PUBLIC organizer-assertion keyring. With it commerce
+      # verifies which organizer a staff refund, void or order read is for. A
+      # public key mints nothing: catalog's signing seed must never appear in this
+      # service's environment, and smoke_test.go asserts that on the rendered config.
+      COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS: ${COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
       # The HMAC key for customer checkout assertions (TKT-221). Commerce-only:
       # nothing else mints or verifies them, and the storefront deliberately gets
       # NO credential (ADR-049 §1) — it forwards an assertion the customer earned

@@ -11,6 +11,7 @@ import (
 
 	commerceevents "ticketing/services/commerce/internal/events"
 	commercestore "ticketing/services/commerce/internal/store"
+	"ticketing/shared/organizerassertion"
 )
 
 func newTestServer(db *sql.DB, client *http.Client, catalog, inventory, payments, token string, publishers ...commerceevents.Publisher) *Server {
@@ -36,6 +37,11 @@ func (s *Server) WithPaymentsToken(token string) *Server {
 
 func (s *Server) WithStaffWriteCredential(token string) *Server {
 	s.staffWriteToken = token
+	return s
+}
+
+func (s *Server) WithOrganizerAssertionVerifier(v *organizerassertion.Verifier) *Server {
+	s.organizerAssertions = v
 	return s
 }
 

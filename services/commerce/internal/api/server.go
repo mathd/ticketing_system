@@ -29,6 +29,7 @@ import (
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
+	"ticketing/shared/organizerassertion"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -44,6 +45,10 @@ type Server struct {
 	catalogURL, inventoryURL, paymentsURL, token string
 	// The back office's commerce credential (TKT-194); see staff_credential.go.
 	staffWriteToken string
+	// organizerAssertions verifies catalog's organizer assertion with catalog's
+	// PUBLIC keys (TKT-287). It can check an assertion and cannot mint one. Nil
+	// refuses every staff operation.
+	organizerAssertions *organizerassertion.Verifier
 	// paymentsToken opens payments' internal surface, and ONLY payments'
 	// (ai-review S8). `token` above still opens catalog's and inventory's; the
 	// money surface was split off it because one value shared by five services
@@ -99,6 +104,7 @@ type ServerConfig struct {
 	InternalToken        string
 	PaymentsToken        string
 	StaffWriteToken      string
+	OrganizerAssertions  *organizerassertion.Verifier
 	CustomerAssertionKey string
 	Publisher            commerceevents.Publisher
 	MoneyEvidence        MoneyEvidence
@@ -141,6 +147,7 @@ func New(config ServerConfig) *Server {
 		publisher:       config.Publisher,
 		moneyEvidence:   config.MoneyEvidence,
 	}
+	s.organizerAssertions = config.OrganizerAssertions
 	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)

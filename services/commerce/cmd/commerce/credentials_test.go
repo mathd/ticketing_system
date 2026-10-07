@@ -46,3 +46,26 @@ func TestCredentialsAreDistinctAcceptsFourDifferentValues(t *testing.T) {
 		t.Fatalf("four distinct credentials must be accepted: %v", err)
 	}
 }
+
+// TKT-287. The organizer keyring is required and must parse; a commerce started
+// without it would answer every staff operation with 404.
+func TestOrganizerAssertionsFromEnvRefusesAMissingOrMalformedKeyring(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing":               "",
+		"no kid":                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+		"outside the namespace": "access-qr/x=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+		"short key":             "catalog-org/x=AQEB",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(organizerAssertionKeysEnv, raw)
+			_, err := organizerAssertionsFromEnv()
+			if err == nil || !strings.Contains(err.Error(), organizerAssertionKeysEnv) {
+				t.Fatalf("want an error naming %s, got %v", organizerAssertionKeysEnv, err)
+			}
+		})
+	}
+	t.Setenv(organizerAssertionKeysEnv, "catalog-org/x=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+	if _, err := organizerAssertionsFromEnv(); err != nil {
+		t.Fatalf("a well-formed keyring was refused: %v", err)
+	}
+}

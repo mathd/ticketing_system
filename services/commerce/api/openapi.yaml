@@ -639,16 +639,14 @@ paths:
       # question a staff member asks before deciding what to do next. It also carries
       # money and refund idempotency keys, which must not sit in a shared cache.
       #
-      # organizer_id is a required query parameter and is the SCOPE, not the authority:
-      # the credential proves the caller is the back office, and the organizer narrows
-      # what it may see. The back office supplies it from its authenticated session, never
-      # from browser input. Commerce cannot verify the organizer itself — the signed
-      # organizer assertion (ADR-058) is minted with a catalog-only key — so a holder of
-      # COMMERCE_STAFF_WRITE_TOKEN could name another organizer. That residual is real,
-      # is unchanged by this operation, and is recorded on ADR-042.
+      # The organizer is the SCOPE, and since TKT-287 it is VERIFIED: it is read from the
+      # X-Catalog-Organizer-Assertion catalog minted at staff sign-in (ADR-058, Ed25519),
+      # which commerce checks with catalog's public key. The request carries no
+      # organizer_id. The guard is the staff credential AND that assertion, inline (ADR-043):
+      # every refusal, including a valid assertion for another organizer's order, is the
+      # same 404.
       parameters:
         - {$ref: '#/components/parameters/Id'}
-        - {$ref: '#/components/parameters/OrganizerIdQuery'}
       responses:
         '200': {description: Staff order detail, content: {application/json: {schema: {$ref: '#/components/schemas/StaffOrderDetail'}}}}
         '400': {$ref: '#/components/responses/Error'}
@@ -1341,9 +1339,12 @@ components:
       # (TKT-171). The quantity is whole-order and comes from the reservation under
       # the order row lock; a client that cannot state one cannot forge one.
       additionalProperties: false
-      required: [organizer_id, actor, reason]
+      # No organizer_id (TKT-287). The organizer is read from the verified
+      # X-Catalog-Organizer-Assertion and nowhere else, so with
+      # additionalProperties: false a body that names one is a 400. It is
+      # unsubmittable, not validated against the assertion.
+      required: [actor, reason]
       properties:
-        organizer_id: {type: string, format: uuid}
         # Staff attribution, as on RefundCreate: an operation that stops a ticket
         # admitting cannot be less attributable than one that moves money.
         actor: {type: string, minLength: 1, maxLength: 200}
@@ -1367,9 +1368,10 @@ components:
     RefundCreate:
       type: object
       additionalProperties: false
-      required: [organizer_id, quantity, actor, reason]
+      # No organizer_id (TKT-287): see VoidCreate. The tenant comes from the
+      # verified organizer assertion, never from the body.
+      required: [quantity, actor, reason]
       properties:
-        organizer_id: {type: string, format: uuid}
         quantity: {type: integer, minimum: 1, maximum: 50}
         # Staff attribution, mirroring OperationalConversionCreate: an operation that
         # moves money cannot be less attributable than one that moves a seat.

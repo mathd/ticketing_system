@@ -663,10 +663,9 @@ type RefundRefundStatus string
 
 // RefundCreate defines model for RefundCreate.
 type RefundCreate struct {
-	Actor       string             `json:"actor"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	Quantity    int                `json:"quantity"`
-	Reason      string             `json:"reason"`
+	Actor    string `json:"actor"`
+	Quantity int    `json:"quantity"`
+	Reason   string `json:"reason"`
 }
 
 // Reservation defines model for Reservation.
@@ -799,9 +798,8 @@ type StaffOrderTotalsRefundStatus string
 
 // VoidCreate defines model for VoidCreate.
 type VoidCreate struct {
-	Actor       string             `json:"actor"`
-	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	Reason      string             `json:"reason"`
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
 }
 
 // AfterOrderId defines model for AfterOrderId.
@@ -859,11 +857,6 @@ type DrawDownGroupReservationParams struct {
 // ConvertOperationalHoldParams defines parameters for ConvertOperationalHold.
 type ConvertOperationalHoldParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
-
-// GetStaffOrderDetailParams defines parameters for GetStaffOrderDetail.
-type GetStaffOrderDetailParams struct {
-	OrganizerId OrganizerIdQuery `form:"organizer_id" json:"organizer_id"`
 }
 
 // ExchangeOrderParams defines parameters for ExchangeOrder.

@@ -5,12 +5,10 @@ package smoke_test
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -22,71 +20,50 @@ import (
 // either one. The unit tier builds its own router and proves the handler refuses; only a
 // real request through the real service proves the deployed thing refuses.
 
-// getStaffOrderDetail performs the read with whatever credential the caller supplies.
-//
-// Deliberately NOT internalJSON: that helper always sets X-Internal-Token, so it cannot
-// express the case COS 2 is about — a request carrying no credential at all.
-func getStaffOrderDetail(t *testing.T, order, org, header, token string) (int, []byte) {
+// getStaffOrderDetail performs the read with exactly the headers given (TKT-287: the
+// staff credential AND an organizer assertion; no organizer_id in the query). Through
+// commerceStaffCall, so the response is contract-validated and its 200 counted for the
+// coverage gate.
+func getStaffOrderDetail(t *testing.T, order string, headers map[string]string) (int, []byte) {
 	t.Helper()
-	url := fmt.Sprintf("%s/internal/orders/%s?organizer_id=%s", commerceURL, order, org)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("bad request: %v", err)
-	}
-	if header != "" {
-		req.Header.Set(header, token)
-	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(resp.Body)
-	// Through the suite's chokepoint, like every other direct-service call. Two things
-	// depend on it and neither is optional: the response is CONTRACT-VALIDATED against
-	// commerce's OpenAPI (so a body that drifts from the schema fails here rather than in
-	// a client months later), and the 200 is recorded for the coverage gate, which fails
-	// the suite when a documented 2xx operation has no happy path driving it. A
-	// hand-rolled client that skips this passes its own assertions and leaves the
-	// operation looking untested — which is exactly what it would be.
-	if service := directService(url); service != "" {
-		if err := checkDirectServiceResponse(service, resp.Request, resp.StatusCode, resp.Header, out); err != nil {
-			t.Fatalf("%v", err)
-		}
-	}
-	return resp.StatusCode, out
+	return commerceStaffCall(t, http.MethodGet, fmt.Sprintf("%s/internal/orders/%s", commerceURL, order), "", headers, nil)
 }
 
-// TestStaffOrderDetailIsRefusedWithoutACredential is COS 2, executed.
-//
-// EVERY request here is otherwise WELL-FORMED — a real order id and a real organizer id.
-// That is load-bearing rather than tidy: organizer_id is a required query parameter, so the
-// contract validator answers 400 for a request that omits it before the credential is ever
-// compared. A refusal test that left it out would be green because the request was
-// malformed, and would say nothing at all about the credential. Each case below is a
-// request commerce would happily serve if only it were credentialed, and is refused anyway.
+// TestStaffOrderDetailIsRefusedWithoutACredential is COS 2 of TKT-201 and COS3 of TKT-287,
+// executed: every predicate, each case otherwise well-formed for an order that EXISTS.
 //
 // 404 rather than 401 is the contract (ADR-043): commerce's refusal must be
 // indistinguishable from the gateway's own edge deny on the same path, so a prober cannot
-// learn that the route exists.
+// learn that the route exists — and a valid assertion for ANOTHER organizer gets the same
+// 404, so it cannot learn whose order this is either.
 func TestStaffOrderDetailIsRefusedWithoutACredential(t *testing.T) {
 	orderID, _, _, _ := consoleFixture(t, "detail-refuse")
 
-	for _, tc := range []struct {
-		name   string
-		header string
-		token  string
-	}{
-		{"no credential at all", "", ""},
-		{"a wrong staff credential", "X-Commerce-Staff-Write-Token", uuid.NewString()},
-		{"a wrong internal token", "X-Internal-Token", uuid.NewString()},
-		{"the staff credential in the internal header", "X-Internal-Token", os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN")},
-	} {
+	cases := staffRefusals(t)
+	cases = append(cases,
+		struct {
+			name    string
+			headers map[string]string
+		}{"no credential at all", map[string]string{}},
+		struct {
+			name    string
+			headers map[string]string
+		}{"a wrong staff credential with the owner's assertion", map[string]string{
+			"X-Commerce-Staff-Write-Token": uuid.NewString(),
+			organizerAssertionHeader:       organizerAssertionFor(t, organizerID)}},
+		struct {
+			name    string
+			headers map[string]string
+		}{"the staff credential in the internal header", map[string]string{
+			"X-Internal-Token":       os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"),
+			organizerAssertionHeader: organizerAssertionFor(t, organizerID)}},
+	)
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			code, body := getStaffOrderDetail(t, orderID, organizerID, tc.header, tc.token)
+			code, body := getStaffOrderDetail(t, orderID, tc.headers)
 			if code != http.StatusNotFound {
 				t.Fatalf("status=%d want 404 — this order EXISTS and the request is well-formed, "+
-					"so anything but a refusal here means the credential check did not run; body=%.300s",
+					"so anything but a refusal here means a guard predicate did not run; body=%.300s",
 					code, body)
 			}
 			// The refusal must not be distinguishable from a missing route by its body either.
@@ -105,8 +82,7 @@ func TestStaffOrderDetailIsRefusedWithoutACredential(t *testing.T) {
 func TestStaffOrderDetailAnswersMoneyToTheStaffCredential(t *testing.T) {
 	orderID, _, _, _ := consoleFixture(t, "detail-read")
 
-	code, body := getStaffOrderDetail(t, orderID, organizerID,
-		"X-Commerce-Staff-Write-Token", os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"))
+	code, body := getStaffOrderDetail(t, orderID, staffHeaders(t, organizerID))
 	if code != http.StatusOK {
 		t.Fatalf("staff read: %d %s", code, body)
 	}
@@ -188,13 +164,13 @@ func TestStaffOrderDetailRefusesAnotherOrganizersScope(t *testing.T) {
 
 	// The order IS readable by its owner. Without this the refusal below is satisfied by a
 	// handler that refuses everything.
-	if code, body := getStaffOrderDetail(t, orderID, organizerID,
-		"X-Commerce-Staff-Write-Token", os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN")); code != http.StatusOK {
+	if code, body := getStaffOrderDetail(t, orderID, staffHeaders(t, organizerID)); code != http.StatusOK {
 		t.Fatalf("owner read: %d %s", code, body)
 	}
 
-	code, body := getStaffOrderDetail(t, orderID, uuid.NewString(),
-		"X-Commerce-Staff-Write-Token", os.Getenv("SMOKE_COMMERCE_STAFF_WRITE_TOKEN"))
+	// Since TKT-287 "scoped to another organizer" means a VALID assertion for that
+	// organizer: no request field names one any more.
+	code, body := getStaffOrderDetail(t, orderID, staffHeaders(t, uuid.NewString()))
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-organizer read = %d want 404: a valid credential scoped to another "+
 			"organizer must not read this order, and must not be told it exists; body=%.300s", code, body)

@@ -42,6 +42,33 @@ sql(
       'browser-${stamp}', '${guestRef}');`,
 );
 
+// TKT-287: two zero-price completed orders. A refund of one reaches commerce's
+// money check only AFTER the guard has accepted the staff credential AND the
+// session's organizer assertion, and is then refused for having no captured money
+// (409) — so that exact refusal proves the browser submit carried the assertion
+// through the SSR layer to commerce. The other order belongs to ANOTHER organizer:
+// commerce must answer it as not found (404). Neither writes a refund row.
+const ownZero = { reservation: randomUUID(), order: randomUUID(), ref: randomUUID() };
+const foreignZero = { reservation: randomUUID(), order: randomUUID(), ref: randomUUID() };
+const OTHER_ORGANIZER = randomUUID();
+for (const [o, organizer] of [[ownZero, ORGANIZER], [foreignZero, OTHER_ORGANIZER]]) {
+  sql(
+    PG,
+    'commerce',
+    `INSERT INTO reservations
+       (id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id, quantity,
+        unit_amount, total_amount, face_value_amount, currency, status)
+     VALUES
+       ('${o.reservation}', '${organizer}', '${randomUUID()}', '${randomUUID()}',
+        '${randomUUID()}', '${randomUUID()}', 1, 0, 0, 0, 'EUR', 'completed');
+     INSERT INTO orders
+       (id, reservation_id, status, idempotency_key, request_fingerprint, guest_order_ref)
+     VALUES
+       ('${o.order}', '${o.reservation}', 'completed', 'browser-${o.order}',
+        'browser-${o.order}', '${o.ref}');`,
+  );
+}
+
 const { check, finish } = resultRecorder('order-console browser spec');
 const browser = await chromium.launch({ channel: 'chrome' });
 
@@ -89,6 +116,33 @@ try {
        FROM orders WHERE id='${orderId}'`,
     ) === 'none|0|0',
   );
+
+  // TKT-287: a valid refund of the signed-in organizer's own zero-price order.
+  for (const [label, target, wantStatus, wantAlert] of [
+    ['own', ownZero.order, 200, 'order has no captured money to refund'],
+    ['another organizer\'s', foreignZero.order, 404, 'not found'],
+  ]) {
+    await page.goto(PATH, { waitUntil: 'domcontentloaded' });
+    await page.fill('#order_id', target);
+    await submitForm(page, page.getByRole('button', { name: 'Look it up' }));
+    const form = page.locator('form.refund:has(h2:text("Refund this order"))');
+    check(`${label} zero-price order renders the refund form`, (await form.count()) === 1);
+    await form.locator('#quantity').fill('1');
+    await form.locator('#reason').fill(`browser tenancy proof (${label})`);
+    const submitted = await submitForm(page, form.getByRole('button', { name: 'Refund' }));
+    const response = await submitted.response();
+    check(
+      `the refund of the ${label} order answers ${wantStatus}`,
+      response?.status() === wantStatus,
+      String(response?.status()),
+    );
+    const text = (await page.getByRole('alert').innerText()).trim();
+    check(`the refund of the ${label} order shows commerce's exact refusal`, text.includes(wantAlert), text);
+    check(
+      `the refund of the ${label} order wrote no refund row`,
+      sql(PG, 'commerce', `SELECT count(*) FROM order_refunds WHERE order_id='${target}'`) === '0',
+    );
+  }
 } finally {
   await browser.close();
 }
