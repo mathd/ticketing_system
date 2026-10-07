@@ -791,3 +791,117 @@ func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
 		t.Fatalf("an ungated allocation recorded the ignored code %q", *cited)
 	}
 }
+
+// TKT-313 COS1. Two DIFFERENT group placements under one key: B's counterparty, expiry and
+// channel shift a space boundary so that the old space-joined fingerprint of B equals A's.
+// B must be refused as a key reuse, not replayed as A. registryLookup runs before any channel
+// check, so B's odd channel never gets the chance to refuse it first.
+func TestGroupPlacementWithAShiftedFreeTextBoundaryIsAKeyReuse(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	// Both expiries in the future whenever the test runs; the strings are built from them.
+	early := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
+	late := early.Add(24 * time.Hour)
+	cpA := "Acme " + early.Format(time.RFC3339Nano)
+	chB := late.Format(time.RFC3339Nano) + " "
+
+	a, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, cpA, late, "", "staff", "r", "shared-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pre-TKT-313 fingerprints of A and B were equal: the setup is the collision.
+	if opFingerprint("grp-place", org, slot, int32(5), cpA, late.Format(time.RFC3339Nano), "") !=
+		opFingerprint("grp-place", org, slot, int32(5), "Acme", early.Format(time.RFC3339Nano), chB) {
+		t.Fatal("setup: A and B do not collide under the old unframed join, so this test proves nothing")
+	}
+	b, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", early, chB, "staff", "r", "shared-key")
+	if err == nil && replay {
+		t.Fatalf("a DIFFERENT placement replayed the first as a success (got %s, counterparty %q) — "+
+			"the fingerprint does not separate the two requests", b.ID, b.Counterparty)
+	}
+	if !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("got replay=%v err=%v, want ErrIdempotency", replay, err)
+	}
+	// The identical request still replays the original.
+	if again, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, cpA, late, "", "staff", "r", "shared-key"); err != nil || !replay || again.ID != a.ID {
+		t.Fatalf("the identical request did not replay: replay=%v err=%v id=%s want %s", replay, err, again.ID, a.ID)
+	}
+}
+
+// TKT-313, op-place. The readiness called op-place "not collidable" because its free-text
+// label is LAST and purpose is a closed enum — but nothing enforced the enum before the
+// fingerprint: only the database CHECK on the claim insert does, and a replay never inserts.
+// So (purpose "house front", label "of house") hashed the same as ("house", "front of house")
+// and an INVALID request replayed a valid hold as a success. The store now refuses an
+// out-of-enum purpose before fingerprinting; op-place's bytes stay unchanged (golden-pinned).
+func TestOperationalPlacementWithAPurposeOutsideTheEnumIsRefusedNotReplayed(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front of house", "staff", "r", "op-key"); err != nil {
+		t.Fatal(err)
+	}
+	h, replay, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house front", "of house", "staff", "r", "op-key")
+	if err == nil || replay {
+		t.Fatalf("a request with purpose %q was answered replay=%v hold=%s err=%v — want a refusal", "house front", replay, h.ID, err)
+	}
+	if _, replay, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front of house", "staff", "r", "op-key"); err != nil || !replay {
+		t.Fatalf("the identical request did not replay: replay=%v err=%v", replay, err)
+	}
+}
+
+// TKT-313 ai-review finding 2: the golden literals pin the WRAPPERS; this pins that each staff
+// operation stores its wrapper's bytes — op-convert and grp-draw above all, the two ADR-023's
+// crash repair replays. (refund-return's call site is not exercised here: it needs a confirmed,
+// refunded claim; its wrapper is golden-pinned.) A call site
+// that hashed differently (a new kind tag, another argument order) would still replay against
+// itself in an ordinary test, and would 409 a repair that spans the deploy.
+func TestStaffReplaysStoreTheWrapperBytes(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	stored := func(key string) string {
+		t.Helper()
+		var fp string
+		if err := db.QueryRowContext(ctx, `SELECT request_fingerprint FROM claim_history WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&fp); err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+
+	op, _, err := st.PlaceOperationalHold(ctx, org, slot, 5, "house", "foh", "staff", "r", "fp-place")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-place"), opPlaceFingerprint(org, slot, 5, "house", "foh"); got != want {
+		t.Fatalf("op-place stored %s, want the wrapper's %s", got, want)
+	}
+	if _, _, err := st.ReleaseOperational(ctx, org, op.ID, 1, "staff", "r", "fp-release"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-release"), opReleaseFingerprint(org, op.ID, 1); got != want {
+		t.Fatalf("op-release stored %s, want the wrapper's %s", got, want)
+	}
+	if _, _, err := st.AdjustCapacity(ctx, org, slot, 90, "staff", "r", "fp-adjust"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-adjust"), adjustCapacityFingerprint(org, slot, 90); got != want {
+		t.Fatalf("adjust-capacity stored %s, want the wrapper's %s", got, want)
+	}
+	tt := uuid.New()
+	if _, _, err := st.ConvertOperational(ctx, org, op.ID, tt, slot, 2, 1000, "EUR", "staff", "sell", "fp-convert"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-convert"), opConvertFingerprint(org, op.ID, tt, slot, 2, 1000, "EUR"); got != want {
+		t.Fatalf("op-convert stored %s, want the wrapper's %s", got, want)
+	}
+
+	grp, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", time.Now().Add(time.Hour), "", "staff", "r", "fp-grp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DrawDownGroupReservation(ctx, org, grp.ID, tt, slot, 2, 1000, "EUR", "staff", "sell", "fp-draw"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-draw"), groupDrawFingerprint(org, grp.ID, tt, slot, 2, 1000, "EUR"); got != want {
+		t.Fatalf("grp-draw stored %s, want the wrapper's %s", got, want)
+	}
+}

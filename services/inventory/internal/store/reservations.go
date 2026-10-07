@@ -39,20 +39,7 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	if qty <= 0 {
 		return GroupReservation{}, false, fmt.Errorf("quantity must be positive")
 	}
-	// The presale code enters the fingerprint (ai-review finding 2): without it,
-	// reusing an idempotency key with a DIFFERENT, absent, exhausted or
-	// wrong-channel code replays the original reservation as a success instead of
-	// refusing — the placement path had the same defect the hold path's
-	// plan-review caught.
-	//
-	// Appended only when non-empty, so pre-TKT-239 reservations keep their exact
-	// fingerprints; framed with lengths for the reason fingerprint() documents —
-	// channel and code are opaque strings that may contain the delimiter.
-	fpParts := []any{"grp-place", org, slot, qty, counterparty, expiresAt.UTC().Format(time.RFC3339Nano), channel}
-	if presaleCode != "" {
-		fpParts = append(fpParts, fmt.Sprintf("c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode))
-	}
-	fp := opFingerprint(fpParts...)
+	fp := groupPlaceFingerprint(org, slot, qty, counterparty, expiresAt, channel, presaleCode)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return GroupReservation{}, false, err
@@ -229,7 +216,7 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	if qty <= 0 {
 		return ConvertResult{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("grp-draw", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
+	fp := groupDrawFingerprint(org, id, ticketType, expectedSlot, qty, unitAmount, currency)
 	pool, err := p.poolOf(ctx, org, id)
 	if err != nil {
 		return ConvertResult{}, false, err
@@ -343,4 +330,35 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	}
 	res := ConvertResult{Child: child, SourceID: id, SourceRemaining: remaining, SourceStatus: status}
 	return res, false, p.commitAvailability(tx, pool)
+}
+
+// groupPlaceFingerprint is the grp-place request identity.
+//
+// FRAMED, kind "grp-place/v2" (TKT-313). counterparty and channel are free text that sit
+// BETWEEN fixed-format parts, and opFingerprint joins its parts with spaces, unframed: a
+// counterparty ending " 2027-01-01T00:00:00Z" plus a channel of "<an expiry> " gave the same
+// bytes as a different counterparty, expiry and channel, so a reused key REPLAYED the first
+// placement instead of answering ErrIdempotency — executed, not theorised. Each free-text part
+// is length-prefixed, the way fingerprint() frames its optional parts.
+//
+// The kind tag is bumped so no framed input can ever equal a LEGACY grp-place input (a legacy
+// counterparty "4:Acme" with channel "0:" would otherwise match a framed "Acme" with no
+// channel). Consequence, accepted at shaping: a grp-place retry spanning the deploy answers
+// ErrIdempotency — it fails closed, never re-executes — and a group placement is a staff hold
+// with an explicit expiry, not on ADR-023's crash-repair path. The kinds that ARE on it
+// (op-convert, grp-draw) keep their exact bytes, pinned by golden literals.
+//
+// The presale code enters the fingerprint (ai-review finding 2): without it, reusing an
+// idempotency key with a DIFFERENT, absent, exhausted or wrong-channel code replays the
+// original reservation as a success instead of refusing. It stays appended only when
+// non-empty, and framed.
+func groupPlaceFingerprint(org, slot uuid.UUID, qty int32, counterparty string, expiresAt time.Time, channel, presaleCode string) string {
+	fpParts := []any{"grp-place/v2", org, slot, qty,
+		fmt.Sprintf("%d:%s", len(counterparty), counterparty),
+		expiresAt.UTC().Format(time.RFC3339Nano),
+		fmt.Sprintf("%d:%s", len(channel), channel)}
+	if presaleCode != "" {
+		fpParts = append(fpParts, fmt.Sprintf("c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode))
+	}
+	return opFingerprint(fpParts...)
 }
