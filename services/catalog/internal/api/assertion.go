@@ -33,10 +33,10 @@ package api
 //
 // Since TKT-287 the signature is Ed25519, not HMAC. Catalog alone holds the
 // private key. A service that holds only the public key can verify the same
-// token (shared/go/organizerassertion) and mint nothing; commerce is that service
-// from TKT-287 part 2. The verifier lives in the shared package so every
-// verifier parses one canonical form; the
-// signer lives here, so no other service has a minting path even in code.
+// token (shared/go/organizerassertion) and mint nothing; commerce is that
+// service. The verifier lives in the shared package so every verifier parses one
+// canonical form; the signer lives here, so no other service has a minting path
+// even in code.
 
 import (
 	"crypto/ed25519"
@@ -233,8 +233,8 @@ const OrganizerAssertionTTL = 8 * time.Hour
 // organizerAssertionHeader carries the token. A header, not the body: the whole
 // point is that the request body cannot name an organizer, so putting the
 // replacement in the body would reintroduce the shape being removed. Commerce
-// takes the same header name in TKT-287 part 2 (D6), so the back office forwards
-// one session value to both.
+// reads the same header name (TKT-287 D6), so the back office forwards one
+// session value to both.
 const organizerAssertionHeader = "X-Catalog-Organizer-Assertion"
 
 // organizerAssertionSecurityScheme is the securityScheme name in the contract.

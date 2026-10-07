@@ -792,8 +792,6 @@ export interface components {
             status: string;
         };
         VoidCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             actor: string;
             reason: string;
         };
@@ -808,8 +806,6 @@ export interface components {
             replay: boolean;
         };
         RefundCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             quantity: number;
             actor: string;
             reason: string;
@@ -1882,9 +1878,7 @@ export interface operations {
     };
     getStaffOrderDetail: {
         parameters: {
-            query: {
-                organizer_id: components["parameters"]["OrganizerIdQuery"];
-            };
+            query?: never;
             header?: never;
             path: {
                 id: components["parameters"]["Id"];

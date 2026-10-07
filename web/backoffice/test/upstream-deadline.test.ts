@@ -135,7 +135,7 @@ describe('back-office upstream operation deadlines', () => {
       quantity: 1,
       reason: 'customer called',
       actor: 'staff-42',
-      organizerId: 'org-1',
+      assertion: 'session-assertion',
       idempotencyKey: 'refund-key-1',
     };
     const result = refundOrder(request);

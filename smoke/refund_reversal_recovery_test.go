@@ -84,9 +84,9 @@ func TestARefundTakenWhileAccessIsDownCompletesItselfAfterwards(t *testing.T) {
 	// The refund still succeeds: the money has moved and the refund row is durable, so the
 	// honest answer is a 200 reporting the reversal outstanding rather than a failure that
 	// invites a retry of money already returned (ADR-038 §6).
-	code, body := internalJSON(t, http.MethodPost,
+	code, body := commerceStaffCall(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order), "reversal-refund-"+slot,
-		map[string]any{"organizer_id": organizerID, "quantity": 1,
+		staffHeaders(t, organizerID), map[string]any{"quantity": 1,
 			"actor": "ops@example.test", "reason": "access outage reversal test"})
 	if code != http.StatusOK {
 		t.Fatalf("refund during access outage: %d %s (the money path must not fail because a "+

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -95,9 +96,22 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 		return nil
 	})
 
-	code, body = internalJSON(t, http.MethodPost,
-		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "event cancelled"})
+	// TKT-287 COS3, executed: each refusal predicate first, each with its own key.
+	// None may void anything — checked below by capacity still being held, and by the
+	// owner's void then arriving fresh (replay=false) for the whole order.
+	voidURL := fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID)
+	for i, tc := range staffRefusals(t) {
+		code, body := commerceStaffCall(t, http.MethodPost, voidURL, fmt.Sprintf("void-refused-%d-%s", i, slot),
+			tc.headers, map[string]any{"actor": "staff:tenancy", "reason": "cross-tenant probe"})
+		assertStaffRefusal(t, tc.name, code, body)
+		// After EACH refusal, not once at the end: capacity still held.
+		if _, _, _, held := staffAvailability(t, slot); held != before-2 {
+			t.Fatalf("%s: available = %d, want %d — a refused void returned capacity", tc.name, held, before-2)
+		}
+	}
+
+	code, body = commerceStaffCall(t, http.MethodPost, voidURL, "void-"+slot, staffHeaders(t, organizerID),
+		map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
 	if code != http.StatusOK {
 		t.Fatalf("void comped order: %d %s", code, body)
 	}
@@ -191,9 +205,9 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	// A replay converges on the same void rather than reversing twice — and it
 	// arrives under a DIFFERENT idempotency key, which is the case the
 	// order-derived identity exists for.
-	code, body = internalJSON(t, http.MethodPost,
+	code, body = commerceStaffCall(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-replay-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "event cancelled"})
+		staffHeaders(t, organizerID), map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
 	if code != http.StatusOK {
 		t.Fatalf("replay void: %d %s", code, body)
 	}
@@ -210,6 +224,13 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if _, _, _, back := staffAvailability(t, slot); back != before {
 		t.Fatalf("available after the replay = %d, want %d — a replay must not return capacity twice", back, before)
 	}
+	// TKT-287: an EXISTING void is no way around scope either. The owner's exact
+	// request, replayed under another organizer's valid assertion, is the same 404 —
+	// not a 200 replay that would confirm the order and leak its void.
+	code, body = commerceStaffCall(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-"+slot,
+		staffHeaders(t, uuid.NewString()), map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
+	assertStaffRefusal(t, "a cross-tenant replay of the owner's void", code, body)
 }
 
 // COS-5 through the real stack: a PAID order is refused by the void path. It has
@@ -242,9 +263,9 @@ func TestAPaidOrderCannotBeVoided(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body = internalJSON(t, http.MethodPost,
+	code, body = commerceStaffCall(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "paid-void-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "should be refused"})
+		staffHeaders(t, organizerID), map[string]any{"actor": "staff:coverage", "reason": "should be refused"})
 	if code != http.StatusConflict {
 		t.Fatalf("voiding a paid order = %d %s, want 409 — it must go through the refund", code, body)
 	}

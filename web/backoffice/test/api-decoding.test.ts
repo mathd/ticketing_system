@@ -656,7 +656,7 @@ describe('commerce and access response decoding', () => {
       quantity: 1,
       reason: 'requested',
       actor: STAFF,
-      organizerId: ORGANIZER,
+      assertion: ASSERTION,
       idempotencyKey: 'key',
     })).resolves.toMatchObject({ ok: false, kind: 'ambiguous' });
   });
@@ -786,7 +786,7 @@ describe('literal contract edges remain decodable', () => {
       quantity: 50,
       reason: 'requested',
       actor: STAFF,
-      organizerId: ORGANIZER,
+      assertion: ASSERTION,
       idempotencyKey: 'key',
     })).resolves.toMatchObject({
       ok: true,

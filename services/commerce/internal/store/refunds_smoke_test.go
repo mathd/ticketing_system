@@ -268,3 +268,36 @@ func TestRefundReadsThePaymentsSourceKeyFromTheOrder(t *testing.T) {
 		t.Fatalf("payment source key = %q, want the order's idempotency_key", r.PaymentSourceKey)
 	}
 }
+
+// TKT-287: the store predicate is what makes a cross-tenant refund move nothing.
+// The order is completed and paid, so every other check would pass for its owner;
+// a request under another organizer must find NO order (sql.ErrNoRows, which the
+// API answers as 404), write no refund row and leave the order's refund counters
+// untouched, while the owner can still refund it.
+func TestBindOrderRefundUnderAnotherOrganizerFindsNoOrder(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "refund-org", 2, 1250)
+
+	in := request(c, "refund-org-1", 1)
+	in.OrganizerID = uuid.New()
+	if _, err := BindOrderRefund(ctx, db, in); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("err = %v, want sql.ErrNoRows for an order under another organizer", err)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_refunds WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var qty int32
+	var amount int64
+	if err := db.QueryRowContext(ctx, `SELECT refund_status, refunded_quantity, refunded_amount FROM orders WHERE id=$1`,
+		c.OrderID).Scan(&state, &qty, &amount); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || state != "none" || qty != 0 || amount != 0 {
+		t.Fatalf("a cross-tenant refund left rows=%d state=%s qty=%d amount=%d, want 0/none/0/0", rows, state, qty, amount)
+	}
+	if _, err := BindOrderRefund(ctx, db, request(c, "refund-org-owner", 1)); err != nil {
+		t.Fatalf("the owner could not refund the same order: %v", err)
+	}
+}

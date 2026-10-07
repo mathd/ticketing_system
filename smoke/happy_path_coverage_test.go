@@ -192,8 +192,8 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// the tickets exist (the outbox/JetStream path is asynchronous). Refunding earlier
 	// would make tickets_voided a race.
 	refundKey := "cov-refund-" + slot
-	if code, body = internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order.OrderID), refundKey,
-		map[string]any{"organizer_id": organizerID, "quantity": 1, "actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
+	if code, body = commerceStaffCall(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, order.OrderID), refundKey,
+		staffHeaders(t, organizerID), map[string]any{"quantity": 1, "actor": "coverage@example.test", "reason": "coverage drive"}); code != http.StatusOK {
 		t.Fatalf("refund order: %d %s", code, body)
 	}
 	var refunded struct {

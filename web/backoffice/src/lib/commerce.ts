@@ -102,7 +102,12 @@ export type RefundRequest = {
   reason: string;
   /** From the session. Never from the form — see COS-5. */
   actor: string;
-  organizerId: string;
+  /**
+   * The session's organizer assertion (TKT-287). Commerce verifies it with
+   * catalog's public key and takes the organizer from it; the request body names
+   * no organizer at all. Server-side only — never rendered into a page.
+   */
+  assertion: string;
   idempotencyKey: string;
 };
 
@@ -121,9 +126,9 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
             'content-type': 'application/json',
             'Idempotency-Key': req.idempotencyKey,
             'X-Commerce-Staff-Write-Token': credential,
+            'X-Catalog-Organizer-Assertion': req.assertion,
           },
           body: JSON.stringify({
-            organizer_id: req.organizerId,
             quantity: req.quantity,
             actor: req.actor,
             reason: req.reason,

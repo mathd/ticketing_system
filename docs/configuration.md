@@ -74,8 +74,11 @@ commit real credentials or reuse local values outside development. See
 No environment variable configures it, and that is the point: the back office reaches catalog's
 public `POST /staff/authenticate` **through the gateway** (`GATEWAY_URL`, already set), exactly
 like every other call it makes. It deliberately does **not** hold `INTERNAL_SERVICE_TOKEN` — that
-one shared value also opens commerce's refunds and inventory's operational holds, and a
-public-facing SSR process is the wrong place for it (ADR-042).
+one shared value opens most services' internal surfaces, including inventory's operational holds,
+and a public-facing SSR process is the wrong place for it (ADR-042). Commerce's staff refund, void
+and order read take neither that token nor a tenant from the request: they require
+`COMMERCE_STAFF_WRITE_TOKEN` and the staff session's organizer assertion, which commerce verifies
+with `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (TKT-287).
 
 `scripts/smoke.sh` provisions a throwaway account per run and passes it to the test process as
 `SMOKE_STAFF_IDENTIFIER` / `SMOKE_STAFF_PASSWORD`. The password is generated per run and never

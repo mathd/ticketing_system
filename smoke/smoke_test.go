@@ -875,6 +875,9 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 		// TKT-221: commerce refuses to start without it, and refuses again if it
 		// equals either other credential — smoke.sh generates all three separately.
 		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
+		// TKT-287: catalog's public organizer-assertion keyring. Commerce refuses to
+		// start without it; here it would only stop the probe reaching what it observes.
+		"-e", "COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="+os.Getenv("SMOKE_COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
@@ -984,6 +987,9 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 		// TKT-221: commerce refuses to start without it, and refuses again if it
 		// equals either other credential — smoke.sh generates all three separately.
 		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
+		// TKT-287: catalog's public organizer-assertion keyring. Commerce refuses to
+		// start without it; here it would only stop the probe reaching what it observes.
+		"-e", "COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="+os.Getenv("SMOKE_COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",

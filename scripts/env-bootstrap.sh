@@ -134,7 +134,7 @@ keypair() {
 keypair ACCESS_QR_PRIVATE_KEY ACCESS_QR_PUBLIC_KEYS ACCESS_QR_KID access-qr/local-v1 "$RETIRED_QR_SEED"
 keypair ACCESS_LIFECYCLE_PRIVATE_KEY ACCESS_LIFECYCLE_PUBLIC_KEYS ACCESS_LIFECYCLE_KID access-lifecycle/local-v1 "$RETIRED_LIFECYCLE_SEED"
 # TKT-287: catalog's organizer-assertion pair. The seed is catalog's alone; the
-# public keyring is what commerce is given to verify with (wired in TKT-287 part 2). No retired seed: the HMAC key
+# public keyring is what commerce verifies with. No retired seed: the HMAC key
 # this replaces (CATALOG_ORGANIZER_ASSERTION_KEY) is a different variable and is
 # simply no longer read, so an old .env keeps working once this pair is added.
 keypair CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS CATALOG_ORGANIZER_ASSERTION_KID catalog-org/local-v1 ''

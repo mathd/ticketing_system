@@ -665,7 +665,7 @@ describe('the order console reads (TKT-193)', () => {
     );
     const got = await refundOrder({
       orderId: ORDER, quantity: 1, reason: 'customer called',
-      actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'key-1',
+      actor: 'staff-42', assertion: 'session-assertion', idempotencyKey: 'key-1',
     });
 
     expect(got).toMatchObject({ ok: true });
@@ -683,12 +683,13 @@ describe('the order console reads (TKT-193)', () => {
   // it from the form would make a refund attributable to whatever the client
   // typed, which is not attributable at all — and it matters more now that box
   // office can refund, because attribution is the control that remains.
-  it('sends only the four contract fields, with actor and organizer from the caller', async () => {
+  // TKT-287: the organizer travels as the session's ASSERTION header, never in the
+  // body. toEqual on the exact body is what catches organizer_id coming back.
+  it('sends only the three contract fields, with actor from the caller and the assertion as a header', async () => {
     const calls = spyFetch(validRefund({ amount: 1, refunded_amount: 1 }), 200);
-    await refundOrder({ orderId: ORDER, quantity: 2, reason: 'why', actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'k' });
-    expect(calls[0].body).toEqual({
-      organizer_id: 'org-1', quantity: 2, actor: 'staff-42', reason: 'why',
-    });
+    await refundOrder({ orderId: ORDER, quantity: 2, reason: 'why', actor: 'staff-42', assertion: 'session-assertion', idempotencyKey: 'k' });
+    expect(calls[0].body).toEqual({ quantity: 2, actor: 'staff-42', reason: 'why' });
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe('session-assertion');
   });
 
   it.each([
@@ -700,7 +701,7 @@ describe('the order console reads (TKT-193)', () => {
     [503, 'ambiguous'],
   ])('maps a %i to %s without inventing a refund', async (status, kind) => {
     spyFetch({ error: 'commerce says no' }, status);
-    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
     expect(got).toMatchObject({ ok: false, kind, message: 'commerce says no' });
   });
 
@@ -725,7 +726,7 @@ describe('the order console reads (TKT-193)', () => {
     ['a non-boolean tickets_voided', validRefund({ tickets_voided: 'yes' })],
   ])('treats %s as ambiguous rather than a refund', async (_name, body) => {
     spyFetch(body, 200);
-    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
     expect(got).toMatchObject({ ok: false, kind: 'ambiguous' });
   });
 

@@ -46,3 +46,44 @@ func TestCredentialsAreDistinctAcceptsFourDifferentValues(t *testing.T) {
 		t.Fatalf("four distinct credentials must be accepted: %v", err)
 	}
 }
+
+// TKT-287. The organizer keyring is required and must parse; a commerce started
+// without it would answer every staff operation with 404.
+func TestOrganizerAssertionsFromEnvRefusesAMissingOrMalformedKeyring(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing":               "",
+		"no kid":                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+		"outside the namespace": "access-qr/x=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+		"short key":             "catalog-org/x=AQEB",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(organizerAssertionKeysEnv, raw)
+			_, err := organizerAssertionsFromEnv()
+			if err == nil || !strings.Contains(err.Error(), organizerAssertionKeysEnv) {
+				t.Fatalf("want an error naming %s, got %v", organizerAssertionKeysEnv, err)
+			}
+		})
+	}
+	t.Setenv(organizerAssertionKeysEnv, "catalog-org/x=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+	if _, err := organizerAssertionsFromEnv(); err != nil {
+		t.Fatalf("a well-formed keyring was refused: %v", err)
+	}
+}
+
+// The loader is WIRED into startup, before any dependency: run() with every earlier
+// credential valid and no keyring fails on the keyring. If the call were removed or
+// moved after the NATS connect, run() would block on the broker instead (it retries
+// forever), so this test hangs rather than passes — the same tell catalog's startup
+// tests document.
+func TestCommerceRefusesToStartWithoutTheOrganizerKeyring(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5aaaa")
+	t.Setenv("COMMERCE_STAFF_WRITE_TOKEN", "1a2b3c4d5e6f70819293a4b5c6d7e8f9bbbb")
+	t.Setenv("COMMERCE_CUSTOMER_ASSERTION_KEY", "2b3c4d5e6f708192a3b4c5d6e7f8091acccc")
+	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "3c4d5e6f708192a3b4c5d6e7f8091a2bdddd")
+	t.Setenv(organizerAssertionKeysEnv, "")
+	t.Setenv("DATABASE_URL", "")
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), organizerAssertionKeysEnv+" required") {
+		t.Fatalf("want the missing-keyring refusal, got %v", err)
+	}
+}
