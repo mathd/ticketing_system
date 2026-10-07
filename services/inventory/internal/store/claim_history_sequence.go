@@ -35,7 +35,7 @@ var ErrAppendOrderSequenceBehind = errors.New("claim_history append_order sequen
 var ErrAppendOrderTriggerNotEnabled = errors.New("claim_history numbering trigger is not enabled for ordinary writes")
 
 // ErrAppendOrderSequenceSettings: the sequence no longer has 0012's settings (increment 1,
-// cache 1, no cycle). The comparison assumes them — a negative increment or a cycle hands out
+// cache 1, no cycle, min_value >= 1). The comparison assumes them — a negative increment or a cycle hands out
 // LOWER numbers, and a cache lets two sessions interleave allocation and append order — so
 // the guard refuses rather than report ok. Never repaired by this guard.
 var ErrAppendOrderSequenceSettings = errors.New("claim_history append_order sequence settings differ from migration 0012")
@@ -85,14 +85,16 @@ func CheckClaimHistoryAppendOrder(ctx context.Context, db *sql.DB, repair bool) 
 		return AppendOrderSequenceReport{}, fmt.Errorf("%w (tgenabled=%q)", ErrAppendOrderTriggerNotEnabled, enabled.String)
 	}
 
-	var increment, cache, seqMax int64
+	var increment, cache, seqMin, seqMax int64
 	var cycle bool
-	if err := tx.QueryRowContext(ctx, `SELECT seqincrement, seqcache, seqcycle, seqmax FROM pg_sequence
-		WHERE seqrelid = 'claim_history_append_order_seq'::regclass`).Scan(&increment, &cache, &cycle, &seqMax); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT seqincrement, seqcache, seqcycle, seqmin, seqmax FROM pg_sequence
+		WHERE seqrelid = 'claim_history_append_order_seq'::regclass`).Scan(&increment, &cache, &cycle, &seqMin, &seqMax); err != nil {
 		return AppendOrderSequenceReport{}, fmt.Errorf("read sequence settings: %w", err)
 	}
-	if increment != 1 || cache != 1 || cycle {
-		return AppendOrderSequenceReport{}, fmt.Errorf("%w (increment=%d cache=%d cycle=%t)", ErrAppendOrderSequenceSettings, increment, cache, cycle)
+	// min_value >= 1 is 0012's positive domain (append_order's CHECK refuses anything else), and
+	// it keeps seqMax-2 below from underflowing (pass-2 finding).
+	if increment != 1 || cache != 1 || cycle || seqMin < 1 {
+		return AppendOrderSequenceReport{}, fmt.Errorf("%w (increment=%d cache=%d cycle=%t min_value=%d)", ErrAppendOrderSequenceSettings, increment, cache, cycle, seqMin)
 	}
 
 	report, err := readAppendOrderState(ctx, tx)

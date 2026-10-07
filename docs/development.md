@@ -135,7 +135,7 @@ Since TKT-295, `append_order` leads the order of inventory's `claim_history` (AD
    the restored maximum; it never changes a row), then run the check again and require exit 0.
    These refusals are never repaired, and need an operator: the numbering trigger is missing,
    disabled or replica-only (step 3 did not happen); the sequence's settings differ from
-   migration 0012 (increment 1, cache 1, no cycle); or fewer than two numbers remain (an
+   migration 0012 (increment 1, cache 1, no cycle, a positive range); or fewer than two numbers remain (an
    ordinary append uses two).
 5. Reopen writes.
 

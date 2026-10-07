@@ -274,6 +274,7 @@ func TestAppendOrderGuardRefusesAlteredSequenceSettings(t *testing.T) {
 		"negative increment": `ALTER SEQUENCE claim_history_append_order_seq INCREMENT BY -1 MINVALUE 1`,
 		"cache":              `ALTER SEQUENCE claim_history_append_order_seq CACHE 10`,
 		"cycle":              `ALTER SEQUENCE claim_history_append_order_seq CYCLE`,
+		"non-positive range": `ALTER SEQUENCE claim_history_append_order_seq MINVALUE -10`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := historyFixture(t)
@@ -413,5 +414,24 @@ func TestAppendOrderGuardWaitsForAnInFlightRestore(t *testing.T) {
 	r := <-done
 	if r.err != nil || !r.report.Repaired || r.report.LastValue != restored {
 		t.Fatalf("after the restore committed: report=%+v err=%v, want repaired to %d", r.report, r.err, restored)
+	}
+}
+
+// The headroom check reads the sequence's OWN max_value, not the bigint ceiling: a lowered
+// maximum is refused one value early and accepted at exactly two values left.
+func TestAppendOrderGuardHeadroomUsesTheSequencesMaxValue(t *testing.T) {
+	for _, tc := range []struct {
+		seq       int64
+		exhausted bool
+	}{{999, true}, {998, false}} {
+		f := historyFixture(t)
+		if _, err := f.db.ExecContext(f.ctx, `ALTER SEQUENCE claim_history_append_order_seq MAXVALUE 1000`); err != nil {
+			t.Fatal(err)
+		}
+		setSeq(t, f, tc.seq, true)
+		_, err := CheckClaimHistoryAppendOrder(f.ctx, f.db, false)
+		if got := errors.Is(err, ErrAppendOrderSequenceExhausted); got != tc.exhausted {
+			t.Fatalf("max_value=1000 last_value=%d: err=%v, want exhausted=%v", tc.seq, err, tc.exhausted)
+		}
 	}
 }
