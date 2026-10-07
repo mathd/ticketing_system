@@ -355,8 +355,8 @@ func deliveryCommerce(t *testing.T, event completed, status int, email string) (
 			})
 		case path == "/internal/buyers/"+event.Data.BuyerID.String()+"/delivery-email":
 			addressPaths = append(addressPaths, r.URL.Path)
-			if r.Header.Get("X-Internal-Token") != "internal" {
-				t.Errorf("address lookup token = %q", r.Header.Get("X-Internal-Token"))
+			if r.Method != http.MethodGet || r.Header.Get("X-Internal-Token") != "internal" {
+				t.Errorf("address lookup = %s token=%q, want GET with the internal token", r.Method, r.Header.Get("X-Internal-Token"))
 			}
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"email": email})
@@ -405,6 +405,11 @@ func TestIssuanceDeliveryMatchesTheResendDefinitions(t *testing.T) {
 	if len(mailer.sent) != int(event.Data.Quantity) {
 		t.Fatalf("sends = %d, want %d (one per ticket)", len(mailer.sent), event.Data.Quantity)
 	}
+	// And the exact bytes, independent of the shared helper: one slash trimmed from the raw
+	// "//", as issuance produced before TKT-314.
+	if want := "https://tickets.test//en/tickets/" + event.Data.GuestOrderRef.String(); resendLink != want {
+		t.Fatalf("TicketLink = %q, want %q", resendLink, want)
+	}
 	for i, s := range mailer.sent {
 		if s.link != resendLink {
 			t.Fatalf("send %d link = %q, want the resend path's %q", i, s.link, resendLink)
@@ -420,7 +425,8 @@ func TestIssuanceDeliveryMatchesTheResendDefinitions(t *testing.T) {
 	}
 }
 
-// A failed address lookup stops delivery with delivery's error text and sends nothing.
+// A failed address lookup stops delivery with delivery's error text, sends nothing, records no
+// delivery, and is classified as a delivery-stage failure.
 func TestIssuanceDeliveryStopsOnAFailedAddressLookup(t *testing.T) {
 	db, ctx := issuanceDB(t)
 	event := issuanceEvent()
@@ -431,14 +437,16 @@ func TestIssuanceDeliveryStopsOnAFailedAddressLookup(t *testing.T) {
 	}
 	mailer := &capturingMailer{}
 	c := New(nil, store.New(db, issuanceConfig(t)), qr, commerce.Client(), commerce.URL, "internal", "https://tickets.test", mailer, slog.New(slog.DiscardHandler))
-	if err := c.issue(ctx, event); err != nil {
-		t.Fatal(err)
-	}
-	err = c.deliver(ctx, event.Data.OrderID)
-	if err == nil || err.Error() != "commerce delivery address: 503" {
-		t.Fatalf("deliver err = %v, want %q", err, "commerce delivery address: 503")
+	// Through processCompleted, so the real classification is observed: issuance succeeds,
+	// delivery fails, and the failure is attributed to the delivery stage.
+	stage, err := c.processCompleted(ctx, event)
+	if stage != StageDelivery || err == nil || err.Error() != "commerce delivery address: 503" {
+		t.Fatalf("processCompleted = (%q, %v), want (%q, %q)", stage, err, StageDelivery, "commerce delivery address: 503")
 	}
 	if len(mailer.sent) != 0 {
 		t.Fatalf("sends = %d after a failed lookup, want 0", len(mailer.sent))
+	}
+	if n := countIssuanceRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events l JOIN tickets t ON t.id=l.ticket_id WHERE t.order_id=$1 AND l.event_type='delivered'`, event.Data.OrderID); n != 0 {
+		t.Fatalf("delivered lifecycle rows after a failed lookup = %d, want 0", n)
 	}
 }
