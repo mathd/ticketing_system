@@ -445,6 +445,23 @@ func TestResellerCredentialCapAllowsRotation(t *testing.T) {
 			if n := liveCount(t, ctx, db, org, reseller); n != 2 {
 				t.Fatalf("live = %d after rotation, want 2", n)
 			}
+			// History is kept: the rotated-out predecessor is still listed, as revoked.
+			listed, err := ListResellerCredentials(ctx, db, org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, c := range listed {
+				if c.ID == first.ID {
+					found = true
+					if c.RevokedAt == nil {
+						t.Fatal("the rotated-out predecessor lists as live")
+					}
+				}
+			}
+			if !found || len(listed) != 3 {
+				t.Fatalf("after rotation the listing has %d rows (predecessor found=%v), want 3 including it", len(listed), found)
+			}
 		})
 	}
 }
@@ -455,22 +472,36 @@ func TestResellerCredentialCapIgnoresRevokedRows(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
 	org, reseller := uuid.New(), uuid.New()
-	a, _ := mustEnrol(t, ctx, db, org, reseller, "reseller-acme")
-	b, _ := mustEnrol(t, ctx, db, org, reseller, "reseller-acme")
-	for _, id := range []uuid.UUID{a.ID, b.ID} {
-		if err := RevokeResellerCredential(ctx, db, id); err != nil {
+	// Seeded directly, not through the code under test: one live, two revoked at KNOWN
+	// times, so the revoked rows can be compared exactly afterwards.
+	revokedAt := map[uuid.UUID]time.Time{
+		uuid.New(): time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		uuid.New(): time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
+	}
+	seed := func(id uuid.UUID, revoked *time.Time) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO reseller_credentials(id, reseller_id, organizer_id, channel_code, token_hash, label, revoked_at)
+			VALUES ($1, $2, $3, 'reseller-acme', $4, 'seeded', $5)`, id, reseller, org, uuid.NewString(), revoked); err != nil {
 			t.Fatal(err)
 		}
 	}
-	mustEnrol(t, ctx, db, org, reseller, "reseller-acme")
-	mustEnrol(t, ctx, db, org, reseller, "reseller-acme") // 2 live, 2 revoked: allowed
-	var total, revoked int
-	if err := db.QueryRowContext(ctx, `SELECT count(*), count(revoked_at) FROM reseller_credentials
-		WHERE organizer_id=$1 AND reseller_id=$2`, org, reseller).Scan(&total, &revoked); err != nil {
-		t.Fatal(err)
+	seed(uuid.New(), nil)
+	for id, at := range revokedAt {
+		at := at
+		seed(id, &at)
 	}
-	if total != 4 || revoked != 2 {
-		t.Fatalf("total=%d revoked=%d, want 4 and 2", total, revoked)
+
+	mustEnrol(t, ctx, db, org, reseller, "reseller-acme") // 1 live + 2 revoked: allowed
+	if n := liveCount(t, ctx, db, org, reseller); n != 2 {
+		t.Fatalf("live = %d, want 2", n)
+	}
+	for id, at := range revokedAt {
+		var got *time.Time
+		if err := db.QueryRowContext(ctx, `SELECT revoked_at FROM reseller_credentials WHERE id=$1`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || !got.Equal(at) {
+			t.Fatalf("revoked row %s now has revoked_at %v, want %v unchanged", id, got, at)
+		}
 	}
 }
 
@@ -571,7 +602,7 @@ func TestResellerCredentialCapSerializesConcurrentEnrolment(t *testing.T) {
 		return w
 	}
 	workerA, workerB := worker("tkt290-a-"+schema), worker("tkt290-b-"+schema)
-	parkedInserts = strings.Replace(parkedInserts, "WHERE ", "WHERE a.application_name LIKE 'tkt290-%-"+schema+"' AND ", 1)
+	parkedInserts = strings.Replace(parkedInserts, "WHERE ", "WHERE a.application_name IN ('tkt290-a-"+schema+"', 'tkt290-b-"+schema+"') AND ", 1)
 	identityWaiters = strings.Replace(identityWaiters, "WHERE ", "WHERE a.application_name = 'tkt290-b-"+schema+"' AND ", 1)
 
 	type res struct{ err error }
@@ -623,17 +654,45 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	refused := func(when string) {
+	// After each refusal, EVERY seeded row is re-read: a refusal must not retire a legacy
+	// credential behind the operator's back (review pass 2), and must not add a row.
+	refused := func(when string, wantRevoked map[uuid.UUID]bool) {
 		t.Helper()
-		if _, token, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-legacy", "new"); !errors.Is(err, ErrResellerCredentialCap) || token != "" {
-			t.Fatalf("%s: err=%v token=%q, want the cap refusal and no token", when, err, token)
+		cred, token, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-legacy", "new")
+		if !errors.Is(err, ErrResellerCredentialCap) || token != "" || cred != (ResellerCredential{}) {
+			t.Fatalf("%s: err=%v token=%q cred=%+v, want the cap refusal and nothing returned", when, err, token, cred)
+		}
+		rows, err := db.QueryContext(ctx, `SELECT id, revoked_at IS NOT NULL FROM reseller_credentials
+			WHERE organizer_id=$1 AND reseller_id=$2`, org, reseller)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rows.Close() }()
+		seen := 0
+		for rows.Next() {
+			var id uuid.UUID
+			var revoked bool
+			if err := rows.Scan(&id, &revoked); err != nil {
+				t.Fatal(err)
+			}
+			want, known := wantRevoked[id]
+			if !known {
+				t.Fatalf("%s: an unexpected row %s exists after a refusal", when, id)
+			}
+			if revoked != want {
+				t.Fatalf("%s: row %s revoked=%v, want %v — a refusal changed an existing credential", when, id, revoked, want)
+			}
+			seen++
+		}
+		if seen != len(ids) {
+			t.Fatalf("%s: %d rows, want %d", when, seen, len(ids))
 		}
 	}
-	refused("three live")
+	refused("three live", map[uuid.UUID]bool{ids[0]: false, ids[1]: false, ids[2]: false})
 	if err := RevokeResellerCredential(ctx, db, ids[0]); err != nil {
 		t.Fatal(err)
 	}
-	refused("two live")
+	refused("two live", map[uuid.UUID]bool{ids[0]: true, ids[1]: false, ids[2]: false})
 	if err := RevokeResellerCredential(ctx, db, ids[1]); err != nil {
 		t.Fatal(err)
 	}

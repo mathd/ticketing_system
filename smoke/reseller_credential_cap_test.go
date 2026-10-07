@@ -41,13 +41,13 @@ func TestEnrolResellerAtCapNamesTheRemedy(t *testing.T) {
 		}
 	}
 	code, out, errOut := enrol("reseller-cap-3")
-	if code == 0 {
-		t.Fatal("a third live enrolment succeeded through the CLI")
+	if code != 1 {
+		t.Fatalf("a third live enrolment exited %d, want 1; stderr %q", code, errOut)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatal("a refused enrolment printed something on stdout (where the token goes)")
+	if out != "" {
+		t.Fatalf("a refused enrolment printed %q on stdout, where the token goes", out)
 	}
-	for _, want := range []string{"cap", "revoke one first", "list-resellers"} {
+	for _, want := range []string{"reseller credential cap reached", "revoke one first", "list-resellers"} {
 		if !strings.Contains(errOut, want) {
 			t.Errorf("the refusal does not name %q: %s", want, errOut)
 		}
