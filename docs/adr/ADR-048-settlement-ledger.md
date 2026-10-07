@@ -222,15 +222,24 @@ trigger refuses any settlement whose fact is not `payment.captured`
 record that a partner owes the platform money for a sale the platform did not capture, and that is
 deliberate.
 
-Name the adversary (ADR-021): a **capture** is a fact about money that moved through the platform's
-own PSP. A **receivable** is the platform's assertion that a partner owes it money, and it rests on
-the partner's own reporting. The second is a materially weaker claim, and the ledger must never let
-it read as the first.
+The distinction that must survive any future design: a `payment.captured` fact records money the
+platform's PSP **confirmed** it charged (payments writes it after the provider confirms the charge).
+A receivable would record an **obligation** a partner has not yet paid. What evidence would back it,
+and who is authoritative when it disagrees with the partner's remittance, are for the PRD below; this
+ADR does not presume them. The risk to name (ADR-021) is not a forger but **category confusion**: an
+operator, a report or a later writer reading an outstanding obligation as money received. Today
+nothing in the ledger can produce that confusion, because nothing but a capture can carry
+settlement.
 
 **The rejected shape, recorded so it is not proposed again:** relaxing the trigger to
-`f_type IN ('payment.captured', …)`. It is a one-line change and it is wrong: it would let a fact
-that moved no money settle as if it had, which is exactly what the check exists to refuse, and it
-would turn §3's database-enforced sum-exactness back into a claim about application code.
+`f_type IN ('payment.captured', …)`. It is a one-line change and it is wrong, though not because of
+the sums: `settlement_must_balance()` would still compare each set's total with its fact's amount.
+It is wrong because it would let a fact that moved no money carry settlement entries **in the same
+vocabulary** as one that did. `capture_must_settle()` requires completeness for captures only, and
+the settlement read (`ReadOrderSettlement`, `services/payments/internal/store/settlement.go`) does
+not report which fact type a set hangs off, so a receivable would read as settled money everywhere
+the ledger is consumed. Both would need changing as well, which is why the shape below keeps the two
+apart instead.
 
 **What reopening this would need:** a PRD section on partner receivables (who reports a sale, when,
 on what evidence, and which side is authoritative when the partner's remittance disagrees with the
