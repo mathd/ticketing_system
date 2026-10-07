@@ -607,3 +607,112 @@ func TestTransitionKeepsTransactionStartClockDeliberately(t *testing.T) {
 		t.Fatalf("transition server_time %v is AFTER the lock release boundary %v: this path was converted to advancing time. That is a deliberate money-path semantics change (expired() here refuses in-flight checkouts) -- see this test's comment before updating it", r.c.ServerTime, mark.Add(waitPast))
 	}
 }
+
+// TKT-288: Transition's liveness ADMISSION clock, observed.
+//
+// TestTransitionKeepsTransactionStartClockDeliberately (above) pins only the RESPONSE clock:
+// its holds live an hour, so they survive under either clock, and it says so. Admission is the
+// money-path half — a finalize queued on the pool lock across its own hold's expiry must still
+// be ADMITTED, because liveness is judged on transaction-start time (ADR-024 § "Which clock
+// decides what"). Nothing observed that until this test: a refactor giving Transition a
+// separate decision-time snapshot, while keeping its response clock, moved the behaviour with
+// every test green.
+//
+// The arrangement mirrors TestBuyerHoldReplayJudgesLivenessOnTransactionStartTime: the finalize
+// is OBSERVED blocked on the pool lock before the hold expires (so its transaction began while
+// the hold was live), and the lock is released only after database time passes the expiry, so
+// the two clocks disagree about liveness:
+//
+//   - transaction-start (today) sees a LIVE hold and moves it to finalizing;
+//   - decision time would see it EXPIRED, flip it, and refuse with ErrConflict.
+//
+// Mutation that is the deliverable: scan clock_timestamp() into snapshotTime in Transition's
+// claim read. This test goes red; the response-clock test above stays green.
+func TestTransitionJudgesLivenessOnTransactionStartTime(t *testing.T) {
+	// Multi-second, for the reason the replay test gives: the finalize must begin before
+	// expiry and the lock must release after it, two independently controlled boundaries.
+	const livenessTTL = 3 * time.Second
+	ctx, st, db := storeForTest(t, livenessTTL)
+	org, slot := provisioned(t, ctx, st, 10)
+
+	held, replayed, err := st.CreateHold(ctx, org, slot, uuid.New(), 1, 1000, "EUR", "", "transition-liveness-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed || held.Status != "held" || held.Kind != "buyer" || held.ExpiresAt == nil {
+		t.Fatalf("setup: want a fresh buyer hold with an expiry, got replayed=%v %+v", replayed, held)
+	}
+
+	blocker := blockPool(t, ctx, db, slot)
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatal(err)
+	}
+
+	type res struct {
+		c   Claim
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		c, err := st.Transition(ctx, org, held.ID, "finalizing")
+		done <- res{c, err}
+	}()
+
+	// The finalize must be queued BEFORE the hold lapses, or its transaction would start past
+	// expiry and both clocks would refuse it — a vacuous test.
+	awaitLockWaiter(t, ctx, db, convertLock, *held.ExpiresAt)
+	// And it must be THIS blocker's waiter: convertLock is the same text ConvertOperational
+	// issues, and awaitLockWaiter alone relies on the subtests staying serial (TKT-288 D1).
+	for {
+		var bound, before bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(
+				SELECT 1 FROM pg_stat_activity a
+				JOIN pg_locks l ON l.pid = a.pid AND NOT l.granted
+				WHERE a.wait_event_type='Lock' AND a.state='active'
+				  AND a.backend_type='client backend'
+				  AND a.query LIKE $1 AND a.pid <> pg_backend_pid()
+				  AND $2::int = ANY(pg_blocking_pids(a.pid))
+			), clock_timestamp() < $3`, "%"+convertLock+"%", blockerPID, *held.ExpiresAt).Scan(&bound, &before); err != nil {
+			t.Fatal(err)
+		}
+		if bound && before {
+			break
+		}
+		if !before {
+			t.Fatal("setup: the finalize was not observed waiting on THIS blocker before the hold expired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Cross the expiry in database time while the finalize stays queued, with a second's margin.
+	holdUntil(t, ctx, db, blocker, *held.ExpiresAt, time.Second)
+
+	var lapsed bool
+	if err := db.QueryRowContext(ctx, `SELECT $1::timestamptz <= clock_timestamp()`, *held.ExpiresAt).Scan(&lapsed); err != nil {
+		t.Fatal(err)
+	}
+	if !lapsed {
+		t.Fatal("setup: the hold had not lapsed when the lock was released; the clocks cannot disagree")
+	}
+
+	var r res
+	select {
+	case r = <-done:
+	case <-ctx.Done():
+		t.Fatal("the finalize never returned")
+	}
+	if r.err != nil {
+		t.Fatalf("finalize judged liveness on decision time and refused a hold that was live when its transaction began: %v (status %q); ADR-024 admits it", r.err, r.c.Status)
+	}
+	if r.c.ID != held.ID || r.c.Status != "finalizing" {
+		t.Fatalf("finalize returned %v/%q, want %v/finalizing", r.c.ID, r.c.Status, held.ID)
+	}
+	// What was COMMITTED, not only what was returned.
+	var persisted string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM claims WHERE id=$1 AND organizer_id=$2`, held.ID, org).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != "finalizing" {
+		t.Fatalf("persisted status %q, want finalizing", persisted)
+	}
+}
