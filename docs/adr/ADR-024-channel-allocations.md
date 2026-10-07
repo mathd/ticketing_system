@@ -252,8 +252,10 @@ We adopt allocation rows with derived usage. Specifics:
       a network error); a 401 created nothing but does not clear an earlier uncertainty. This
       rule keeps a *finalizing* hold live past its TTL, so replaying the same key is what returns
       the same reservation and its checkout key after an unknown outcome — even when that replay
-      itself comes back with no time left. Otherwise the next Reserve with unchanged terms takes a
-      fresh hold rather than replaying the dead one. Retirement names the key it retires, and a
+      itself comes back with no time left. When the key is retired, the next Reserve with
+      unchanged terms takes a fresh hold rather than replaying the dead one. After a **completed**
+      checkout the key is kept, so a further Reserve replays the completed reservation rather
+      than buying again. Retirement names the key it retires, and a
       dead-on-arrival hold starts no countdown, so an old hold cannot retire a newer request's key.
       Checkout keys are unchanged.
       Pinned by `web/storefront/test/HoldPicker.test.tsx` ("a dead hold is never replayed") and
