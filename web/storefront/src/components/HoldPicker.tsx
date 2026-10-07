@@ -231,16 +231,29 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   // the same key, and changing the selection mints a new one (reusing it there is what
   // commerce answers with "idempotency key reused with different terms").
   //
-  // Except once the hold is DEAD (TKT-289). A hold that arrived with no time left, or whose
-  // countdown reached zero, can never be checked out; replaying its key only returns the same
-  // dead reservation, so the buyer could not get the seats back without changing the
-  // selection or reloading. So death retires the key, and the next Reserve mints a fresh one
-  // for the same terms. A LIVE hold's key is never retired: Reserve is disabled while the hold
-  // counts down (and while a request is in flight), so no newer key can exist when a hold
-  // dies, and retiring the current key retires exactly that hold's. An UNKNOWN outcome — a
-  // network error, an undecodable response — keeps the key: it does not prove death. If
-  // Reserve ever becomes clickable while busy or holding, that reasoning must be revisited.
+  // Except once the hold is DEAD and nothing still depends on it (TKT-289). Replaying a dead
+  // hold's key only returns the same dead reservation, so the buyer could not get the seats
+  // back without changing the selection or reloading. So the key is RETIRED, and the next
+  // Reserve mints a fresh one for the same terms, in exactly three cases:
+  //
+  //   - the reservation arrived with no time left (and then no countdown starts at all);
+  //   - its countdown reached zero BEFORE any checkout was attempted for it;
+  //   - checkout ended terminally (402/408): commerce released the hold.
+  //
+  // Not when a checkout was attempted and its outcome is unknown: inventory keeps a
+  // finalizing hold live past its TTL (ADR-024), and the replay under the SAME key is what
+  // brings back the same reservation and its checkout key. A fresh key there would take a
+  // second reservation the buyer could pay for twice.
+  //
+  // Retirement names the key it retires (`heldKey`): clearing whatever key is current would
+  // let an old hold's timer retire a NEWER request's key, whose replay is the only safe retry.
   const reserveKey = useRef<{ terms: string; key: string } | null>(null);
+  const heldKey = useRef<string | null>(null);
+  const checkoutAttempted = useRef(false);
+
+  function retireReserveKey(key: string | null) {
+    if (key !== null && reserveKey.current?.key === key) reserveKey.current = null;
+  }
   const checkoutKeys = useRef(new Map<string, string>());
 
   function keyForTerms(terms: string): string {
@@ -265,7 +278,8 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       setRemaining(next);
       if (next === 0) {
         window.clearInterval(timer);
-        reserveKey.current = null; // dead: the next Reserve takes a fresh hold (TKT-289)
+        // Expired with no checkout attempted: nothing depends on this hold (TKT-289).
+        if (!checkoutAttempted.current) retireReserveKey(heldKey.current);
         setStatus(t.holdExpired);
       }
     }, 250);
@@ -281,11 +295,12 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const claim = seated
         ? { organizer_id: organizerId, ticket_type_id: ticketTypeId, seat_identities: requestedSeats }
         : { organizer_id: organizerId, ticket_type_id: ticketTypeId, quantity };
+      const requestKey = keyForTerms(reservationTerms(seated, selection.seats, quantity));
       const response = await fetch('/api/commerce/reservations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Idempotency-Key': keyForTerms(reservationTerms(seated, selection.seats, quantity)),
+          'Idempotency-Key': requestKey,
         },
         body: JSON.stringify(claim),
       });
@@ -317,14 +332,19 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const hold = decodeReservation(await response.json(), requestedSeats);
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
-      setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold);
+      heldKey.current = requestKey;
+      checkoutAttempted.current = false;
+      setRemaining(duration); setReservation(hold);
       // Zero remaining on arrival is EXPIRED now — legitimately admitted on transaction-start
-      // time (ADR-024) — so say so here rather than "held" with no timer until a tick, and
-      // retire the key so Reserve does not replay this dead hold (TKT-289).
+      // time (ADR-024) — so say so here rather than "held" with no timer, start no countdown
+      // (a timer for a dead hold is what could later retire a newer key), and retire this
+      // hold's key so Reserve does not replay it (TKT-289).
       if (duration === 0) {
-        reserveKey.current = null;
+        setHoldId(null);
+        retireReserveKey(requestKey);
         setStatus(t.holdExpired);
       } else {
+        setHoldId(hold.hold_id);
         setStatus(t.heldFor);
       }
     } catch { setStatus(t.serviceUnavailable); }
@@ -333,6 +353,9 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
 
   async function checkout() {
     if (!reservation) return;
+    // From here the hold may be finalizing, which stays live past its TTL: its reserve key
+    // must survive the countdown so an unknown outcome replays it (TKT-289).
+    checkoutAttempted.current = true;
     setBusy(true); setStatus('');
     try {
       // Posts to the storefront's own bridge, not straight to commerce (TKT-221).
@@ -355,7 +378,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         const result = decodeOrderResult(body);
         setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
       }
-      if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return; }
+      if (response.status === 402 || response.status === 408) {
+        // Terminal: commerce released the hold, so it is dead and nothing depends on it.
+        retireReserveKey(heldKey.current);
+        setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return;
+      }
       // 401 = the customer assertion was refused (expired, or signed with a key
       // that has since rotated). It is NOT the payment-uncertainty answer, which
       // is what this fell through to before — a lie in the frightening direction.

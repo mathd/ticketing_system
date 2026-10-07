@@ -299,6 +299,98 @@ describe('a dead hold is never replayed', () => {
     expect(second).not.toBe(first);
   });
 
+  // A fetch stub whose responses are queued per path, each either a body or a deferred
+  // promise the test settles later, so a test can hold a request open across a tick.
+  type Reply = { status: number; body: unknown } | Promise<Response>;
+  function queuedFetch(queues: Record<string, Reply[]>): ReturnType<typeof vi.fn> {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = Object.keys(queues).find((p) => url.includes(p));
+      if (!path) throw new Error(`unexpected fetch ${url}`);
+      const next = queues[path].shift();
+      if (!next) throw new Error(`no reply queued for ${url}`);
+      if (next instanceof Promise) return next;
+      return new Response(JSON.stringify(next.body), { status: next.status });
+    });
+  }
+
+  function deferred() {
+    let settle!: (r: Response | Error) => void;
+    const promise = new Promise<Response>((resolve, reject) => {
+      settle = (r) => (r instanceof Error ? reject(r) : resolve(r));
+    });
+    return { promise, settle };
+  }
+
+  // Review pass 1 [high]: an old dead hold must not retire a NEWER request's key. Reserve is
+  // enabled right after a dead-on-arrival response, so a second request can be in flight
+  // when an old timer would fire; if its key were retired and its response lost, the retry
+  // would take a second hold. The pending request's replay must keep its key.
+  it('never lets a dead hold retire the key of a newer request in flight', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const pending = deferred();
+    const stub = queuedFetch({ '/reservations': [{ status: 200, body: deadOnArrival() }, pending.promise, { status: 200, body: liveFor(60_000) }] });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByText('Hold expired');
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    act(() => { vi.advanceTimersByTime(1000); }); // where an old countdown would have fired
+    await act(async () => { pending.settle(new TypeError('network')); });
+    await screen.findByText('Service unavailable');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(3));
+    const [, second, third] = keysFor(stub, '/reservations');
+    expect(third).toBe(second); // the unknown outcome replays; it does not take a second hold
+  });
+
+  // Review pass 1 [high]: once a checkout was attempted, the hold may be finalizing — live past
+  // its TTL in inventory (ADR-024). If the countdown ends while the outcome is unknown, Reserve
+  // must REPLAY the same reservation, whose checkout key replays the payment, not mint a key
+  // that would take a second reservation the buyer could pay for twice.
+  it('keeps the reserve key when the countdown ends during an unresolved checkout', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const payment = deferred();
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [payment.promise],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    act(() => { vi.advanceTimersByTime(1250); });
+    await screen.findByText('Hold expired');
+    await act(async () => { payment.settle(new Response('{}', { status: 500 })); });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    expect(second).toBe(first);
+  });
+
+  // Review pass 1 [medium]: a terminal decline (402) means commerce RELEASED the hold, so it is
+  // dead and nothing depends on it — a retry for the same terms takes a fresh hold.
+  it('re-reserves under a NEW key after a terminal payment decline', async () => {
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(60_000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [{ status: 402, body: { error: 'payment declined' } }],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    expect(second).not.toBe(first);
+  });
+
   // COS4, the invariant the terms binding exists for: a LIVE hold is not re-reserved. It
   // cannot be, from this UI — Reserve is disabled while the hold counts down — and an
   // unknown outcome still replays under the same key ('replays a failed reserve…' above).
