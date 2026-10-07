@@ -85,6 +85,11 @@ async function tokenFingerprint(token: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+// The sync line (TKT-315). Tagged so a failure note can outlive a pairing change and so a
+// network failure never replaces the instruction to pair: matching on the text would
+// decide that by accident.
+type SyncNote = { kind: 'failure' | 'success' | 'pairing'; text: string } | null
+
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
 }
@@ -94,7 +99,7 @@ function App() {
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [queuedCount, setQueuedCount] = useState(0)
-  const [syncNote, setSyncNote] = useState('')
+  const [syncNote, setSyncNote] = useState<SyncNote>(null)
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
@@ -105,6 +110,9 @@ function App() {
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
+  // The time of the last sync that completed in this page session. A ref, not state: the
+  // online listener is registered by the first render and must read the current value.
+  const lastSuccessfulSyncAt = useRef<string | null>(null)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
@@ -346,6 +354,16 @@ function App() {
     }
   }
 
+  // The note stays until a sync succeeds, with the time of the last one that did, so a stale
+  // queue count reads as stale. A standing "not paired" instruction is kept: it is the
+  // actionable one, and a failure while unpaired adds nothing to it.
+  const reportSyncFailure = (cause: 'offline' | 'unreadable', count: number) => {
+    if (!mounted.current) return
+    const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
+    const text = `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
+    setSyncNote((previous) => (previous?.kind === 'pairing' ? previous : { kind: 'failure', text }))
+  }
+
   const syncQueued = async () => {
     let store: OccurrenceStore
     let queue: OccurrenceRecord[]
@@ -357,36 +375,50 @@ function App() {
       reportStorageFailure()
       return
     }
+    // An empty queue sends nothing and proves nothing: a standing failure note stays.
     if (!queue.length) return
-    let data: ReconcileResponse
+    // Every failure below leaves the queue untouched (ADR-066) and SAYS so (TKT-315): it used
+    // to return silently, so a venue could not tell "all reconciled" from "failing for hours".
+    // The causes are the scan path's (TKT-305), told apart the same way: no answer at all is
+    // "offline"; an answer that is not a 2xx, or a 2xx that cannot be decoded, is "unreadable".
+    const request: ReconcileRequest = {
+      occurrences: queue.map((record) => ({
+        qr_payload: record.qrPayload,
+        occurrence_id: record.occurrenceId,
+        occurred_at: record.occurredAt,
+        ...(record.localDecision ? { local_decision: record.localDecision } : {}),
+      })),
+    }
+    const token = deviceTokenRef.current
+    let response: Response
     try {
-      const request: ReconcileRequest = {
-        occurrences: queue.map((record) => ({
-          qr_payload: record.qrPayload,
-          occurrence_id: record.occurrenceId,
-          occurred_at: record.occurredAt,
-          ...(record.localDecision ? { local_decision: record.localDecision } : {}),
-        })),
-      }
-      const token = deviceTokenRef.current
-      const response = await fetch(reconcileURL, {
+      response = await fetch(reconcileURL, {
         method: 'POST',
         headers: scanHeaders(token),
         body: JSON.stringify(request),
       })
-      if (response.status === 401) {
-        // The queue is untouched: an unpaired device must not discard a night of
-        // offline scans. Pair and sync again.
-        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
-        return
-      }
-      if (!response.ok) return
+    } catch {
+      reportSyncFailure('offline', queue.length)
+      return
+    }
+    if (response.status === 401) {
+      // The queue is untouched: an unpaired device must not discard a night of
+      // offline scans. Pair and sync again.
+      clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
+      return
+    }
+    if (!response.ok) {
+      reportSyncFailure('unreadable', queue.length)
+      return
+    }
+    let data: ReconcileResponse
+    try {
       data = decodeReconcileResponse(
         await response.json(),
         new Set(queue.map((record) => record.occurrenceId)),
       )
     } catch {
-      // The queue is durable. A later reconnect or manual retry sends it again.
+      reportSyncFailure('unreadable', queue.length)
       return
     }
 
@@ -401,11 +433,13 @@ function App() {
       return
     }
     if (mounted.current) {
-      setSyncNote(
-        conflicts > 0
+      lastSuccessfulSyncAt.current = new Date().toISOString()
+      setSyncNote({
+        kind: 'success',
+        text: conflicts > 0
           ? `Synced ${data.results.length} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
           : `Synced ${data.results.length} offline scan(s).`,
-      )
+      })
     }
     await refreshQueued()
   }
@@ -514,7 +548,7 @@ function App() {
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
-    setSyncNote(reason)
+    setSyncNote({ kind: 'pairing', text: reason })
   }
 
   const pairDevice = async (event: React.FormEvent) => {
@@ -540,7 +574,8 @@ function App() {
     deviceTokenRef.current = token
     setDeviceToken(token)
     setPairingInput('')
-    setSyncNote('')
+    // Pairing reconciles nothing: a failure note stays until a sync succeeds.
+    setSyncNote((previous) => (previous?.kind === 'failure' ? previous : null))
   }
 
   if (!deviceToken) {
@@ -572,7 +607,7 @@ function App() {
               {`${queuedCount} offline scan${queuedCount > 1 ? 's' : ''} are still saved on this device and will sync once it is paired.`}
             </p>
           )}
-          {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+          {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
           {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
         </section>
       </main>
@@ -600,7 +635,7 @@ function App() {
             <button type="button" onClick={() => void syncQueued()}>Sync queued scans</button>
           </p>
         )}
-        {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+        {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
         {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
       </section>
       {!hasRevocationPull && <p className="queue-note" role="status">This device holds no revocation list yet.</p>}
