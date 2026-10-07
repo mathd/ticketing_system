@@ -849,8 +849,10 @@ func TestOperationalPlacementWithAPurposeOutsideTheEnumIsRefusedNotReplayed(t *t
 	}
 }
 
-// TKT-313 ai-review finding 2: the golden literals pin the WRAPPERS; this pins that the two
-// operations ADR-023's crash repair replays actually store their wrapper's bytes. A call site
+// TKT-313 ai-review finding 2: the golden literals pin the WRAPPERS; this pins that each staff
+// operation stores its wrapper's bytes — op-convert and grp-draw above all, the two ADR-023's
+// crash repair replays. (refund-return's call site is not exercised here: it needs a confirmed,
+// refunded claim; its wrapper is golden-pinned.) A call site
 // that hashed differently (a new kind tag, another argument order) would still replay against
 // itself in an ordinary test, and would 409 a repair that spans the deploy.
 func TestStaffReplaysStoreTheWrapperBytes(t *testing.T) {
@@ -868,6 +870,21 @@ func TestStaffReplaysStoreTheWrapperBytes(t *testing.T) {
 	op, _, err := st.PlaceOperationalHold(ctx, org, slot, 5, "house", "foh", "staff", "r", "fp-place")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got, want := stored("fp-place"), opPlaceFingerprint(org, slot, 5, "house", "foh"); got != want {
+		t.Fatalf("op-place stored %s, want the wrapper's %s", got, want)
+	}
+	if _, _, err := st.ReleaseOperational(ctx, org, op.ID, 1, "staff", "r", "fp-release"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-release"), opReleaseFingerprint(org, op.ID, 1); got != want {
+		t.Fatalf("op-release stored %s, want the wrapper's %s", got, want)
+	}
+	if _, _, err := st.AdjustCapacity(ctx, org, slot, 90, "staff", "r", "fp-adjust"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-adjust"), adjustCapacityFingerprint(org, slot, 90); got != want {
+		t.Fatalf("adjust-capacity stored %s, want the wrapper's %s", got, want)
 	}
 	tt := uuid.New()
 	if _, _, err := st.ConvertOperational(ctx, org, op.ID, tt, slot, 2, 1000, "EUR", "staff", "sell", "fp-convert"); err != nil {

@@ -17,7 +17,9 @@ var (
 
 // TKT-313 COS2. The fixed-format kinds keep their EXACT bytes. Each row calls the wrapper the
 // production operation calls, so a changed kind tag or argument order goes red here; the
-// smoke test TestStaffReplaysStoreTheWrapperBytes pins that the operations call them. op-convert and grp-draw are
+// smoke test TestStaffReplaysStoreTheWrapperBytes pins that op-place, op-release, op-convert,
+// grp-draw and adjust-capacity store exactly their wrapper's bytes (refund-return's call site
+// is not exercised there). op-convert and grp-draw are
 // the ones that matter most: ADR-023 repairs a crashed staff sale by REPLAYING them with the
 // same key, so a rehash makes a repair that spans a deploy answer 409 and strands a committed
 // carve. These literals were captured from the algorithm before TKT-313; a change to any of
