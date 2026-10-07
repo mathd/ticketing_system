@@ -245,13 +245,16 @@ We adopt allocation rows with derived usage. Specifics:
       rule itself stays. The storefront defect it exposed was **fixed by TKT-289**: `HoldPicker`
       enters the expired state in the response handler when a reservation arrives with zero
       remaining time, without saying *held* or waiting for a tick, and it retires the reserve key
-      when a hold is dead **and nothing still depends on it**: it arrived dead, its countdown
-      reached zero before any checkout was attempted, or checkout ended terminally (402/408,
-      commerce released it). The next Reserve with unchanged terms then takes a fresh hold rather
-      than replaying the dead one. Once a checkout was attempted, countdown expiry does **not**
-      retire the key: this rule keeps a *finalizing* hold live past its TTL, and replaying the same
-      key is what returns the same reservation and its checkout key after an unknown outcome.
-      Retirement names the key it retires, so an old hold cannot retire a newer request's key.
+      when a hold is dead (it arrived with no time left, its countdown reached zero, or checkout
+      ended terminally with 402/408 because commerce released it) **and its reservation is not
+      depended on**. A reservation is depended on while a checkout for it is in flight, and after
+      any checkout outcome that may have created an order (a 409 recovery lease, another status,
+      a network error); a 401 created nothing but does not clear an earlier uncertainty. This
+      rule keeps a *finalizing* hold live past its TTL, so replaying the same key is what returns
+      the same reservation and its checkout key after an unknown outcome — even when that replay
+      itself comes back with no time left. Otherwise the next Reserve with unchanged terms takes a
+      fresh hold rather than replaying the dead one. Retirement names the key it retires, and a
+      dead-on-arrival hold starts no countdown, so an old hold cannot retire a newer request's key.
       Checkout keys are unchanged.
       Pinned by `web/storefront/test/HoldPicker.test.tsx` ("a dead hold is never replayed") and
       `test/browser/dead-hold-retry.mjs`. What remains is the server side as described: a

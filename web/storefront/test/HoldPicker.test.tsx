@@ -353,8 +353,13 @@ describe('a dead hold is never replayed', () => {
   it('keeps the reserve key when the countdown ends during an unresolved checkout', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
     const payment = deferred();
+    // The replay returns the SAME reservation, now with no time left: inventory keeps a
+    // finalizing hold past its TTL and commerce passes the advancing server_time through.
+    const expiredReplay = heldReservation({
+      reservation_id: LIVE_RESERVATION, hold_id: LIVE_HOLD, server_time: T0, expires_at: T0,
+    });
     const stub = queuedFetch({
-      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: expiredReplay }, { status: 200, body: expiredReplay }],
       '/checkout': [payment.promise],
     });
     mountGA(stub);
@@ -365,6 +370,84 @@ describe('a dead hold is never replayed', () => {
     await screen.findByText('Hold expired');
     await act(async () => { payment.settle(new Response('{}', { status: 500 })); });
     await waitFor(() => expect((screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    // Review pass 2 [high]: the replay comes back DEAD, and that must not retire the key
+    // either — the reservation is still depended on by the unresolved checkout.
+    await screen.findByText('Hold expired');
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(3));
+    const [first, second, third] = keysFor(stub, '/reservations');
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+  });
+
+  // Review pass 2 [medium]: a FIRST checkout refused 401 created nothing (commerce checks the
+  // assertion before any order exists), so the hold is free again and expiry retires its key.
+  it('re-reserves under a NEW key after expiry when the only checkout was refused 401', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [{ status: 401, body: { error: 'unauthorized' } }],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await waitFor(() => expect(keysFor(stub, '/checkout')).toHaveLength(1));
+    await screen.findByText(/sign in/i);
+    act(() => { vi.advanceTimersByTime(1250); });
+    await screen.findByText('Hold expired');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    expect(second).not.toBe(first);
+  });
+
+  // The countdown can end while that refused checkout is still in flight: once it settles
+  // with nothing created, the dead hold's key is retired then.
+  it('retires the key when a 401 settles after the countdown ended mid-checkout', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const payment = deferred();
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [payment.promise],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    act(() => { vi.advanceTimersByTime(1250); });
+    await screen.findByText('Hold expired');
+    await act(async () => { payment.settle(new Response('{"error":"unauthorized"}', { status: 401 })); });
+    await screen.findByText(/sign in/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    expect(second).not.toBe(first);
+  });
+
+  // ...but a 401 AFTER an uncertain attempt proves nothing: that order may exist.
+  it('keeps the key when a 401 follows an uncertain checkout', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [{ status: 500, body: {} }, { status: 401, body: { error: 'unauthorized' } }],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    await waitFor(() => expect(keysFor(stub, '/checkout')).toHaveLength(1));
+    await waitFor(() => expect((screen.getByRole('button', { name: /Pay/ }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Pay/ }));
+    await waitFor(() => expect(keysFor(stub, '/checkout')).toHaveLength(2));
+    await screen.findByText(/sign in/i);
+    act(() => { vi.advanceTimersByTime(1250); });
+    await screen.findByText('Hold expired');
 
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
     await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
