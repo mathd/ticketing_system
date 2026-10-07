@@ -230,6 +230,16 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   // So the key is bound to the TERMS, not to the click: the same request replays under
   // the same key, and changing the selection mints a new one (reusing it there is what
   // commerce answers with "idempotency key reused with different terms").
+  //
+  // Except once the hold is DEAD (TKT-289). A hold that arrived with no time left, or whose
+  // countdown reached zero, can never be checked out; replaying its key only returns the same
+  // dead reservation, so the buyer could not get the seats back without changing the
+  // selection or reloading. So death retires the key, and the next Reserve mints a fresh one
+  // for the same terms. A LIVE hold's key is never retired: Reserve is disabled while the hold
+  // counts down (and while a request is in flight), so no newer key can exist when a hold
+  // dies, and retiring the current key retires exactly that hold's. An UNKNOWN outcome — a
+  // network error, an undecodable response — keeps the key: it does not prove death. If
+  // Reserve ever becomes clickable while busy or holding, that reasoning must be revisited.
   const reserveKey = useRef<{ terms: string; key: string } | null>(null);
   const checkoutKeys = useRef(new Map<string, string>());
 
@@ -255,6 +265,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       setRemaining(next);
       if (next === 0) {
         window.clearInterval(timer);
+        reserveKey.current = null; // dead: the next Reserve takes a fresh hold (TKT-289)
         setStatus(t.holdExpired);
       }
     }, 250);
@@ -306,7 +317,16 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const hold = decodeReservation(await response.json(), requestedSeats);
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
-      setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold); setStatus(t.heldFor);
+      setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold);
+      // Zero remaining on arrival is EXPIRED now — legitimately admitted on transaction-start
+      // time (ADR-024) — so say so here rather than "held" with no timer until a tick, and
+      // retire the key so Reserve does not replay this dead hold (TKT-289).
+      if (duration === 0) {
+        reserveKey.current = null;
+        setStatus(t.holdExpired);
+      } else {
+        setStatus(t.heldFor);
+      }
     } catch { setStatus(t.serviceUnavailable); }
     finally { setBusy(false); }
   }

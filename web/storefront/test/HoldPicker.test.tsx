@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import HoldPicker, { reservationTerms } from '../src/components/HoldPicker';
@@ -195,6 +195,121 @@ describe('reserve idempotency', () => {
 
     const [first, second] = keysFor(stub, '/reservations');
     expect(second).not.toBe(first);
+  });
+});
+
+// TKT-289. A reservation can arrive with its TTL already elapsed: inventory admitted it on
+// transaction-start time while the request queued (ADR-024), and commerce passes through an
+// advancing server_time, so remaining time is ZERO on arrival. Two defects followed: the page
+// labelled it "Held for" with no timer and no way to pay, and pressing Reserve again REPLAYED
+// the same dead hold, because the key rotated only when the terms changed. The same replay
+// trap followed an ORDINARY expiry. The rule now: once a hold is known dead, the next
+// Reserve mints a fresh key; while it is live, or while an outcome is unknown, the key stays.
+describe('a dead hold is never replayed', () => {
+  const T0 = '2026-08-03T12:00:00.000Z';
+  const LIVE_RESERVATION = '00000000-0000-0000-0000-000000000021';
+  const LIVE_HOLD = '00000000-0000-0000-0000-000000000022';
+
+  function deadOnArrival() {
+    return heldReservation({ server_time: T0, expires_at: T0 });
+  }
+
+  function liveFor(ms: number) {
+    return heldReservation({
+      reservation_id: LIVE_RESERVATION, hold_id: LIVE_HOLD,
+      server_time: T0, expires_at: new Date(Date.parse(T0) + ms).toISOString(),
+    });
+  }
+
+  function reservationsReturning(...bodies: unknown[]): ReturnType<typeof vi.fn> {
+    let call = 0;
+    return vi.fn(async (input: RequestInfo | URL) => {
+      if (!String(input).includes('/reservations')) throw new Error(`unexpected fetch ${String(input)}`);
+      const body = bodies[Math.min(call, bodies.length - 1)];
+      call += 1;
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+  }
+
+  function bodiesFor(stub: ReturnType<typeof vi.fn>, path: string): string[] {
+    return stub.mock.calls
+      .filter(([url]) => String(url).includes(path))
+      .map(([, init]) => String((init as RequestInit).body));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // COS1: zero remaining time means expired NOW. Interval timers are frozen, so no tick can
+  // rescue the assertion: the expired state must come from the response handler itself.
+  it('renders a dead-on-arrival hold as expired synchronously, never as held', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const stub = reservationsReturning(deadOnArrival());
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByText('Hold expired');
+    expect(screen.queryByText(/Held for/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Pay/ })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // COS2, the deliverable: unchanged terms after a dead hold send a DIFFERENT key, so commerce
+  // takes out a fresh hold instead of replaying the dead one.
+  it('re-reserves a dead-on-arrival hold under a NEW key for unchanged terms', async () => {
+    const stub = reservationsReturning(deadOnArrival(), liveFor(10 * 60_000));
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByText('Hold expired');
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByRole('button', { name: /Pay/ });
+
+    const [first, second] = keysFor(stub, '/reservations');
+    const [firstBody, secondBody] = bodiesFor(stub, '/reservations');
+    expect(keysFor(stub, '/reservations')).toHaveLength(2);
+    expect(first).not.toBe('');
+    expect(second).not.toBe('');
+    expect(secondBody).toBe(firstBody); // unchanged terms: the rotation is not the terms rule
+    expect(second).not.toBe(first);
+  });
+
+  // COS3: the same trap after an ORDINARY expiry, reached by the countdown. performance.now
+  // is faked with the intervals, so advancing time moves the deadline the tick reads.
+  it('re-reserves under a NEW key after the countdown expires a live hold', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const stub = reservationsReturning(liveFor(1000), liveFor(10 * 60_000));
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByRole('button', { name: /Pay/ });
+
+    act(() => { vi.advanceTimersByTime(750); });
+    expect(screen.queryByRole('button', { name: /Pay/ })).not.toBeNull(); // still live
+    act(() => { vi.advanceTimersByTime(500); });
+    await screen.findByText('Hold expired');
+    expect(screen.queryByRole('button', { name: /Pay/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    const [firstBody, secondBody] = bodiesFor(stub, '/reservations');
+    expect(secondBody).toBe(firstBody);
+    expect(second).not.toBe(first);
+  });
+
+  // COS4, the invariant the terms binding exists for: a LIVE hold is not re-reserved. It
+  // cannot be, from this UI — Reserve is disabled while the hold counts down — and an
+  // unknown outcome still replays under the same key ('replays a failed reserve…' above).
+  it('keeps Reserve disabled while a live hold counts down', async () => {
+    const stub = reservationsReturning(liveFor(10 * 60_000));
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByRole('button', { name: /Pay/ });
+    expect((screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Held for/)).not.toBeNull();
   });
 });
 
