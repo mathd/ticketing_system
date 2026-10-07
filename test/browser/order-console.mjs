@@ -131,13 +131,18 @@ try {
     await form.locator('#reason').fill(`browser tenancy proof (${label})`);
     // The assertion is a bearer credential held server-side (ADR-058): it must
     // appear neither in the rendered page nor in what the browser submits.
-    // No decoding, which a single stray `%` defeats (TKT-287 ai-review): every
-    // place is searched for the assertion's kid prefix in its raw, percent-encoded
-    // and double-encoded spellings, case-insensitively.
-    const leaks = (x) =>
-      ['catalog-org/', 'catalog-org%2f', 'catalog-org%252f'].some((needle) =>
-        String(x ?? '').toLowerCase().includes(needle),
-      );
+    // Decode only VALID %HH triplets, up to three rounds (so double and triple
+    // encoding unwrap), and leave a stray `%` untouched — decodeURIComponent throws
+    // on one, and its fallback once hid a whole value (TKT-287 ai-review passes 3–4).
+    // Then look for the assertion's kid prefix, case-insensitively.
+    const unescapeTriplets = (x) => {
+      let v = String(x ?? '');
+      for (let i = 0; i < 3; i++) {
+        v = v.replace(/%([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+      }
+      return v;
+    };
+    const leaks = (x) => unescapeTriplets(x).toLowerCase().includes('catalog-org/');
     const actions = await page.locator('form').evaluateAll((forms) => forms.map((f) => f.action));
     check(
       `the ${label} order page renders no organizer assertion, in markup or any form action`,
