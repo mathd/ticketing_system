@@ -39,7 +39,6 @@ package api
 // signer lives here, so no other service has a minting path even in code.
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -48,7 +47,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 
@@ -110,33 +108,52 @@ func DecodeOrganizerAssertionSeed(seedBase64 string) ([]byte, error) {
 }
 
 // EncodesOrganizerAssertionSeed reports whether a holder of value holds the seed:
-// value IS the 32 seed bytes, or decodes to them as base64 or hex. Base64 is
-// tried once, after normalizing every spelling Go or a shell would also accept —
-// whitespace removed, the URL-safe alphabet folded into the standard one, padding
-// dropped, unused trailing bits ignored — rather than variant by variant, so a
-// mixed or reformatted alias cannot fall between two checks (TKT-287 ai-review).
+// value CONTAINS the full seed as raw bytes, as hex, or as base64. Containment, not
+// equality, after one normalization per encoding, so that wrapping, prefixes and
+// separators cannot carry the seed past the check one spelling at a time
+// (TKT-287 ai-review passes 1–3 each found another spelling):
 //
-// Name the limit: this catches a credential that IS the seed in a common text
-// form, which is what a misconfiguration produces. It cannot catch an operator
-// who deliberately derives one secret from the other in an encoding of their own
-// (base32, a KDF); no comparison can, and that is not the adversary this guard
-// is for.
+//   - hex: every hex digit in value, lowercased and concatenated, so `0x…`,
+//     `07:07:…`, mixed case and whitespace all reduce to the same digits;
+//   - base64: every base64 character in value with the URL-safe alphabet folded
+//     into the standard one and padding dropped, compared on the first 42
+//     characters — the 43rd carries 4 unused bits, so it varies between spellings
+//     of one seed and leaves only 16 candidates to an attacker anyway.
+//
+// Name the limit: this catches a credential that carries the WHOLE seed in a
+// common text form, which is what reusing a secret by mistake produces. It does
+// not catch a partial overlap or a deliberate derivation (base32, a KDF); no
+// comparison can enumerate those, and an operator doing it on purpose is not the
+// adversary this guard is for.
 func EncodesOrganizerAssertionSeed(value string, seed []byte) bool {
-	if bytes.Equal([]byte(value), seed) {
+	if strings.Contains(value, string(seed)) {
 		return true
 	}
-	compact := strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
+	hexDigits := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+			return r
+		case r >= 'A' && r <= 'F':
+			return r + ('a' - 'A')
 		}
-		return r
+		return -1
 	}, value)
-	normalized := strings.NewReplacer("-", "+", "_", "/", "=", "").Replace(compact)
-	if decoded, err := base64.RawStdEncoding.DecodeString(normalized); err == nil && bytes.Equal(decoded, seed) {
+	if strings.Contains(hexDigits, hex.EncodeToString(seed)) {
 		return true
 	}
-	decoded, err := hex.DecodeString(compact)
-	return err == nil && bytes.Equal(decoded, seed)
+	b64Chars := strings.Map(func(r rune) rune {
+		switch {
+		case r == '-':
+			return '+'
+		case r == '_':
+			return '/'
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '+', r == '/':
+			return r
+		}
+		return -1
+	}, value)
+	canonical := base64.RawStdEncoding.EncodeToString(seed)
+	return strings.Contains(b64Chars, canonical[:len(canonical)-1])
 }
 
 // organizerScope is what a verified assertion authorises. It is filled by the

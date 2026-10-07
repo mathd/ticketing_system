@@ -114,12 +114,10 @@ keypair() {
 	kid="$(env_value "$kid_var")"
 	existing="$(env_value "$pub_var")"
 	if ! needs_generation "$priv_var" "$retired" && [ -n "$existing" ]; then
-		# The pair is kept. A pair written before the key id was persisted
-		# (TKT-287) has its kid only inside the keyring; write it out, so the
-		# signer's kid stops depending on Compose's default matching the keyring.
-		if [ -z "$kid" ]; then
-			env_set "$kid_var" "${existing%%=*}"
-		fi
+		# The pair is kept exactly as it is, key id included. An unset kid stays
+		# unset and Compose's default applies, as before TKT-287: a shell cannot
+		# derive the seed's public key, so it cannot tell which keyring entry is
+		# the active one, and guessing (the first entry) picks a retired key.
 		return 0
 	fi
 	[ -n "$kid" ] || kid="$default_kid"

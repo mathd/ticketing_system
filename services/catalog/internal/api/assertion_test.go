@@ -367,9 +367,13 @@ func TestEncodesOrganizerAssertionSeedRecognisesEveryCommonAlias(t *testing.T) {
 		"padded standard":             {base64.StdEncoding.EncodeToString(seed), seed},
 		"non-canonical trailing bits": {canonical[:len(canonical)-1] + "d", seed},
 		"lower hex":                   {hex.EncodeToString(seed), seed},
-		"upper hex":                   {strings.ToUpper(hex.EncodeToString(seed)), seed},
+		"upper hex":                   {strings.ToUpper(hex.EncodeToString(bytes.Repeat([]byte{0xab}, 32))), bytes.Repeat([]byte{0xab}, 32)},
 		"whitespace inside":           {canonical[:10] + " \t" + canonical[10:], seed},
 		"the raw seed bytes":          {"0123456789abcdef0123456789abcdef", []byte("0123456789abcdef0123456789abcdef")},
+		"0x-prefixed hex":             {"0x" + hex.EncodeToString(seed), seed},
+		"colon-separated hex":         {colonHex(seed), seed},
+		"base64 behind a prefix":      {"seed:" + canonical, seed},
+		"raw bytes inside a string":   {"x-0123456789abcdef0123456789abcdef-y", []byte("0123456789abcdef0123456789abcdef")},
 		"url-safe alphabet":           {"------------------------------------------8", mixedSeed},
 		"mixed alphabets":             {"++++++++++++++++++++----------------------8", mixedSeed},
 	} {
@@ -412,4 +416,12 @@ func TestDecodeOrganizerAssertionSeedAcceptsOnlyTheCanonicalSpelling(t *testing.
 			}
 		})
 	}
+}
+
+func colonHex(b []byte) string {
+	parts := make([]string, len(b))
+	for i, c := range b {
+		parts[i] = hex.EncodeToString([]byte{c})
+	}
+	return strings.Join(parts, ":")
 }

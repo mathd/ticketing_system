@@ -105,6 +105,7 @@ func TestServerRefusesACredentialThatDecodesToTheAssertionSeed(t *testing.T) {
 		"non-canonical trailing bits": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd",
 		"padded standard base64":      "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
 		"hex":                         "0707070707070707070707070707070707070707070707070707070707070707",
+		"0x-prefixed hex":             "0x0707070707070707070707070707070707070707070707070707070707070707",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
