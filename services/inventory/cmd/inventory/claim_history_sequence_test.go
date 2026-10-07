@@ -28,3 +28,26 @@ func TestCheckClaimHistorySequenceRefusesBadUsage(t *testing.T) {
 		t.Fatalf("no DATABASE_URL: err = %v", err)
 	}
 }
+
+// A DATABASE_URL can carry a password in its query string, which pgx's own parse error quotes
+// verbatim. Neither a malformed DSN nor an unreachable database may put it in the error main
+// prints (TKT-295 review finding 1).
+func TestCheckClaimHistorySequenceNeverEchoesThePassword(t *testing.T) {
+	const secret = "REVIEW_ONLY_SECRET_295"
+	for name, dsn := range map[string]string{
+		"malformed":   "postgres://inventory@127.0.0.1:1/inventory?password=" + secret + "&connect_timeout=bad",
+		"unreachable": "postgres://inventory@127.0.0.1:1/inventory?password=" + secret + "&connect_timeout=2",
+		"userinfo":    "postgres://inventory:" + secret + "@127.0.0.1:1/inventory?connect_timeout=2",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			err := runCheckClaimHistorySequence(nil, dsn, &out)
+			if err == nil {
+				t.Fatal("want an error from an unusable database")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(out.String(), secret) {
+				t.Fatalf("the password leaked: err=%q out=%q", err, out.String())
+			}
+		})
+	}
+}

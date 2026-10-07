@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
 	"ticketing/services/inventory/internal/store"
 )
 
@@ -39,10 +42,13 @@ func runCheckClaimHistorySequence(args []string, dsn string, out io.Writer) erro
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	db, err := sql.Open("pgx", dsn)
+	// Parse here so a malformed DATABASE_URL is refused WITHOUT echoing it: pgx's parse error
+	// quotes the whole string, query-string password included (TKT-295 review finding 1).
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return errors.New("DATABASE_URL is not a valid connection string (not echoed: it can carry a password)")
 	}
+	db := stdlib.OpenDB(*cfg)
 	defer func() { _ = db.Close() }()
 
 	report, err := store.CheckClaimHistoryAppendOrder(ctx, db, *repair)

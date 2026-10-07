@@ -131,14 +131,19 @@ Since TKT-295, `append_order` leads the order of inventory's `claim_history` (AD
    ```
 
    Exit 0 (`status=ok`): continue. A refusal (`status=needs-repair`) means the next append would be
-   numbered at or below restored history. Run it with `--repair` (it only advances the sequence;
-   it never changes a row), then run the check again and require exit 0. A refusal about the
-   trigger means step 3 did not happen; `--repair` does not override it.
+   numbered at or below restored history. Run it with `--repair` (it only advances the sequence to
+   the restored maximum; it never changes a row), then run the check again and require exit 0.
+   These refusals are never repaired, and need an operator: the numbering trigger is missing,
+   disabled or replica-only (step 3 did not happen); the sequence's settings differ from
+   migration 0012 (increment 1, cache 1, no cycle); or fewer than two numbers remain (an
+   ordinary append uses two).
 5. Reopen writes.
 
-`--timeout` (default `30s`) bounds the whole check; `max(append_order)` scans the table, so give a
-large restore a longer one. The guard assumes what this step list makes true: writers are stopped,
-and the sequence keeps migration 0012's settings (increment 1, no cache, no cycle). It does not
+The guard holds `claim_history` locked for the whole check (`SHARE ROW EXCLUSIVE`), so it waits
+for any append still in flight and blocks new ones until it is done — run it while writes are
+stopped. That lock does not cover a `nextval` called outside an insert, which is one reason step 1
+stops maintenance sessions too. `--timeout` (default `30s`) bounds the whole check, lock wait
+included; `max(append_order)` scans the table, so give a large restore a longer one. It does not
 detect missing, duplicated or dishonest rows.
 
 ## Seat-pin reconciliation (TKT-112)

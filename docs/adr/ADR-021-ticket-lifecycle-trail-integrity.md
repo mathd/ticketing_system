@@ -562,11 +562,15 @@ because it now leads, that writer now controls the order directly. Two rows with
 value-preserving restore runs with the trigger disabled, so the restored numbers survive but the
 sequence does not move; the next append can then be numbered at or below restored history and sort
 before it. The guard compares the sequence's next value with `max(append_order)` (globally, across
-organizers and row shapes) and refuses if it is not above. With `--repair` it advances the sequence
-monotonically. It never rewrites a row. It also refuses when the numbering trigger is missing,
-disabled, or replica-only. It does **not** detect missing, duplicated or dishonest rows, it does not
-check that a renumbering restore's input was in append order, and it does not constrain any writer
-after it runs. Runbook: `docs/development.md` § Restoring `claim_history`.
+organizers and row shapes) and refuses if it is not above. With `--repair` it sets the sequence
+to that maximum, which is never lower, and it never rewrites a row. It runs in one transaction
+holding the table in `SHARE ROW EXCLUSIVE` mode, so an append still in flight is waited for and
+counted. It refuses, without repair, when the numbering trigger is missing, disabled or
+replica-only, when the sequence's settings differ from 0012's, and when fewer than two numbers
+remain. It does **not** detect missing, duplicated or dishonest rows, it does not check that a
+renumbering restore's input was in append order, and it does not constrain any writer after it
+runs. Runbook: `docs/development.md` § Restoring `claim_history`. Plan measurements:
+`docs/evidence/TKT-295/claim-history-order-explain.md`.
 
 **Replication** is unchanged from §Restore and replication: not configured in this repository, and
 adopting it requires a deliberate decision about who numbers rows.
