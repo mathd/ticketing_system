@@ -49,8 +49,8 @@ between the two statements. Zero-downtime rotation needs the old and new credent
 as long as the handover takes, so the constraint went rather than the workflow. `token_hash` is
 UNIQUE, so nothing that authenticates can ever collide.
 
-**Known gap, half closed (ai-review pass 2; narrowed 2026-08-27 by TKT-276).** The gap had two
-halves and only one has shipped.
+**Known gap, closed (ai-review pass 2; TKT-276 closed enumeration on 2026-08-27, TKT-290 closed
+the unbounded enrolment on 2026-10-07 under owner decision D1).** The gap had two halves.
 
 *Closed:* an operator can now enumerate a partner's credentials. `commerce list-resellers
 <organizer-id>` exposes `ListResellerCredentials`, printing each credential's id, reseller, channel,
@@ -68,12 +68,22 @@ terminal escape from breaking the one-row-per-line format, and redacts nothing. 
 metadata is non-secret by contract**: an operator who pastes a token into a label has disclosed it,
 and no listing can undo that.
 
-*Still open:* the overlap remains **unbounded** — repeated enrolment yields any number of live
-credentials for one (organizer, reseller) pair, by design, since zero-downtime rotation needs the old
-and new credentials to coexist (above). Whether to cap the live set, supersede on enrolment, or
-accept unbounded overlap explicitly is an auth-surface policy decision and is **TKT-290's**. It was
-split out deliberately rather than folded into the listing, so making the surface reconcilable was
-not held up by a policy call.
+*Closed by TKT-290:* enrolment permits **at most two live credentials per (organizer, reseller)**,
+across all channels; live means `revoked_at IS NULL`. Two is what zero-downtime rotation needs: enrol
+the replacement, move the partner to it, revoke the predecessor. `EnrolResellerCredential` takes a
+transaction advisory lock on the (organizer, reseller) identity and then inserts only if fewer than
+two live rows exist. The lock and the insert are separate statements, so at READ COMMITTED the count
+sees a row the lock holder committed during the wait. At the cap, enrolment is refused
+(`ErrResellerCredentialCap`); nothing is written and no existing credential is retired. There is
+**no override**: the CLI names the remedy, revoke one first and use `commerce list-resellers
+<organizer-id>` to choose which. Revoked rows and historical attribution are unchanged.
+
+Name the adversary (ADR-021): the bound binds every caller of the store function, the CLI included.
+A writer with commerce database access can insert rows or clear `revoked_at` directly and is not
+bound. Identities that already held more than two live credentials before the cap are not reduced
+automatically; further enrolment for them is refused until enough are revoked.
+Pinned by `TestResellerCredentialCap*` in `services/commerce/internal/store` (a forced-schedule
+concurrency test among them) and by `smoke/reseller_credential_cap_test.go` through the real CLI.
 
 Commerce and not catalog, despite catalog owning the channel *registry* (ADR-002, ADR-024). The
 credential authorises **selling**, and orders, reservations and attribution are commerce's. Issuance
