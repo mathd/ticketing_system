@@ -197,6 +197,24 @@ func TestAFailedSendIsNotRetriedImmediately(t *testing.T) {
 	d.DrainOnce(ctx)
 
 	_, _, attemptsAfterFirst, _ := rowState(t, db, ctx, id)
+	if attemptsAfterFirst != 1 {
+		t.Fatalf("setup: the first drain did not claim the row (attempts %d)", attemptsAfterFirst)
+	}
+	// The failure must have WRITTEN a backoff (next_attempt_at in the future). Then the
+	// deadline is pushed an hour out before the exclusion check: the real first backoff is
+	// two seconds, and a slow scheduler crossing it between the two drains made a correct
+	// retry read as a failure (TKT-291 review). Pushing it does not weaken the property —
+	// the claim must still refuse a row whose next_attempt_at is in the future.
+	var backedOff bool
+	if err := db.QueryRowContext(ctx, `SELECT next_attempt_at > clock_timestamp() FROM mail_outbox WHERE id=$1`, id).Scan(&backedOff); err != nil {
+		t.Fatal(err)
+	}
+	if !backedOff {
+		t.Fatal("a failed send wrote no backoff: next_attempt_at is not in the future")
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE mail_outbox SET next_attempt_at=now()+interval '1 hour' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
 	d.DrainOnce(ctx)
 	_, _, attemptsAfterSecond, _ := rowState(t, db, ctx, id)
 	if attemptsAfterSecond != attemptsAfterFirst {
@@ -247,19 +265,27 @@ func TestAPoisonMessageIsDeadLetteredAndStopsBeingClaimed(t *testing.T) {
 	}
 	stranger := uniqueRecipient()
 	strangerID := enqueue(t, db, ctx, stranger, "stranger", "eligible foreign row")
+	// Drain until the stranger is sent, in bounded passes: older eligible rows left by
+	// other tests can fill a batch ahead of it (review pass 1). The quarantined row is
+	// checked after EVERY pass, so a re-claim in any of them is caught.
 	before := len(f.Sent())
-	d.DrainOnce(ctx)
 	var strangerSent bool
-	for _, m := range f.Sent()[before:] {
-		if m.To == to {
-			t.Fatal("a dead-lettered row was claimed again")
+	for pass := 0; pass < 20 && !strangerSent; pass++ {
+		d.DrainOnce(ctx)
+		for _, m := range f.Sent()[before:] {
+			if m.To == to {
+				t.Fatal("a dead-lettered row was claimed again")
+			}
+			if m.To == stranger {
+				strangerSent = true
+			}
 		}
-		if m.To == stranger {
-			strangerSent = true
+		if _, _, after, _ := rowState(t, db, ctx, id); after != attempts {
+			t.Fatalf("the dead-lettered row was claimed again (attempts %d → %d)", attempts, after)
 		}
 	}
 	if !strangerSent {
-		t.Fatal("setup: the eligible stranger row was not sent, so this drain proves nothing about the quarantine")
+		t.Fatal("setup: the eligible stranger row was never sent, so these drains prove nothing about the quarantine")
 	}
 	if sentAt, _, after, _ := rowState(t, db, ctx, id); sentAt.Valid || after != attempts {
 		t.Fatalf("the dead-lettered row changed: sent=%v attempts %d → %d", sentAt.Valid, attempts, after)
