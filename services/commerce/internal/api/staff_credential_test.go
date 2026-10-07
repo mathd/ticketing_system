@@ -3,17 +3,22 @@ package api
 import (
 	"bytes"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"ticketing/services/commerce/internal/refunds"
 	"ticketing/shared/organizerassertion"
 )
 
@@ -266,29 +271,61 @@ func staffRequest(op staffOp, headers map[string]string) *http.Request {
 	return req
 }
 
-// The pair opens each operation. It cannot complete here — there is no database —
-// so this asserts the request gets PAST the guard, which is the half this file
-// owns: reaching the database with no database panics, and that is the proof.
-// The organizer it then acts for is proven at the smoke tier, where a real order
-// exists to be another tenant's.
+// dbProbe is a TCP listener posing as PostgreSQL. It accepts and closes every
+// connection and counts them, so a test can OBSERVE whether a request reached the
+// database — the step after the guard — instead of inferring it from a status or a
+// panic (TKT-287 ai-review: "anything but 404" also admitted a validator 400 and an
+// unrelated panic).
+func dbProbe(t *testing.T) (*sql.DB, func() int64) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connections atomic.Int64
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	db, err := sql.Open("pgx", "postgres://probe:probe@"+ln.Addr().String()+"/probe?sslmode=disable&connect_timeout=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close(); _ = ln.Close() })
+	return db, connections.Load
+}
+
+func probedStaffServer(t *testing.T) (*Server, func() int64) {
+	t.Helper()
+	db, connections := dbProbe(t)
+	return newTestServer(db, http.DefaultClient, "", "", "", internalTok).
+		WithStaffWriteCredential(staffTok).
+		WithOrganizerAssertionVerifier(testOrgVerifier(t)), connections
+}
+
+// The pair opens each operation: the request reaches the database. That is the half
+// this file owns; the organizer it then acts for is proven at the store and smoke
+// tiers, where a real order exists to be another tenant's.
 func TestStaffOperationsAcceptTheCredentialAndAssertion(t *testing.T) {
 	for _, op := range staffOperations() {
 		t.Run(op.name, func(t *testing.T) {
+			s, connections := probedStaffServer(t)
 			res := httptest.NewRecorder()
-			reached := func() (reached bool) {
-				defer func() {
-					if recover() != nil {
-						reached = true
-					}
-				}()
-				staffServer(t).Router(nil, true).ServeHTTP(res, staffRequest(op, map[string]string{
-					"X-Commerce-Staff-Write-Token": staffTok,
-					organizerAssertionHeader:       mintTestAssertion(t, testOrgKey(), someUUID, time.Now().Add(time.Hour)),
-				}))
-				return res.Code != http.StatusNotFound
-			}()
-			if !reached {
-				t.Fatalf("the credential and a valid assertion were refused: %d %.200s", res.Code, res.Body.String())
+			s.Router(nil, true).ServeHTTP(res, staffRequest(op, map[string]string{
+				"X-Commerce-Staff-Write-Token": staffTok,
+				organizerAssertionHeader:       mintTestAssertion(t, testOrgKey(), someUUID, time.Now().Add(time.Hour)),
+			}))
+			if connections() == 0 {
+				t.Fatalf("the credential and a valid assertion did not reach the database: %d %.200s", res.Code, res.Body.String())
+			}
+			if res.Code == http.StatusNotFound || res.Code == http.StatusBadRequest {
+				t.Fatalf("status %d after reaching the database: %.200s", res.Code, res.Body.String())
 			}
 		})
 	}
@@ -349,10 +386,17 @@ func TestStaffOperationsRefuseEachPredicate(t *testing.T) {
 			}},
 		} {
 			t.Run(op.name+"/"+tc.name, func(t *testing.T) {
+				db, connections := dbProbe(t)
+				s := tc.server(t)
+				s.db = db
+				s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 				res := httptest.NewRecorder()
-				tc.server(t).Router(nil, true).ServeHTTP(res, staffRequest(op, tc.headers(t)))
-				if res.Code != http.StatusNotFound {
-					t.Errorf("status=%d want 404; body=%.200s", res.Code, res.Body.String())
+				s.Router(nil, true).ServeHTTP(res, staffRequest(op, tc.headers(t)))
+				if res.Code != http.StatusNotFound || strings.TrimSpace(res.Body.String()) != `{"error":"not found"}` {
+					t.Errorf("status=%d body=%.200s, want 404 {\"error\":\"not found\"}", res.Code, res.Body.String())
+				}
+				if n := connections(); n != 0 {
+					t.Errorf("a refused request reached the database %d time(s)", n)
 				}
 			})
 		}

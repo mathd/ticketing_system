@@ -198,8 +198,10 @@ number of KDF comparisons, which are equal for an unknown identifier and a wrong
   `smoke/staff_order_detail_test.go`, one case per predicate.
 - **Anything already inside the Compose network** can address the back-office container directly and
   forge `X-Forwarded-*`, or address catalog directly and skip the gateway entirely.
-- **Anyone holding `INTERNAL_SERVICE_TOKEN`** already has every service's internal surface; nothing
-  here changes that.
+- **Anyone holding `INTERNAL_SERVICE_TOKEN`** already has almost every service's internal surface;
+  nothing here changes that. The exception since TKT-287: commerce's staff refund, void and order
+  read no longer accept it at all — they require the staff credential **and** a verified organizer
+  assertion.
 - **Anyone who can write to catalog's database** can insert a staff account. State inside the
   database cannot constrain an adversary who writes to the database (ADR-021). This is
   authentication, not tamper-evidence, and no part of it is claimed to be.

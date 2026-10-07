@@ -183,6 +183,24 @@ func TestGatewayStillEdgeDeniesCommercesRefund(t *testing.T) {
 			t.Errorf("%s is reachable from the public edge: %d %s", path, code, body)
 		}
 	}
+	// TKT-287: the full staff pair — credential AND a valid organizer assertion —
+	// with an otherwise valid request on each of the three staff operations, is still
+	// refused at the edge. Holding everything the back office holds opens nothing
+	// from the public internet.
+	order := "00000000-0000-0000-0000-000000000001"
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPost, "/api/commerce/internal/orders/" + order + "/refunds", map[string]any{"quantity": 1, "actor": "a", "reason": "r"}},
+		{http.MethodPost, "/api/commerce/internal/orders/" + order + "/voids", map[string]any{"actor": "a", "reason": "r"}},
+		{http.MethodGet, "/api/commerce/internal/orders/" + order, nil},
+	} {
+		code, body := commerceStaffCall(t, tc.method, gatewayURL+tc.path, "gateway-deny-"+tc.method, staffHeaders(t, organizerID), tc.body)
+		if code != http.StatusNotFound {
+			t.Errorf("%s %s with the full staff pair is reachable from the public edge: %d %s", tc.method, tc.path, code, body)
+		}
+	}
 }
 
 func postRaw(t *testing.T, target, staffToken string) (int, string, http.Header) {

@@ -129,7 +129,18 @@ try {
     check(`${label} zero-price order renders the refund form`, (await form.count()) === 1);
     await form.locator('#quantity').fill('1');
     await form.locator('#reason').fill(`browser tenancy proof (${label})`);
+    // The assertion is a bearer credential held server-side (ADR-058): it must
+    // appear neither in the rendered page nor in what the browser submits.
+    check(
+      `the ${label} order page renders no organizer assertion`,
+      !(await page.content()).includes('v2.catalog-org/'),
+    );
     const submitted = await submitForm(page, form.getByRole('button', { name: 'Refund' }));
+    check(
+      `the ${label} refund submit carries no organizer assertion`,
+      !(submitted.postData() ?? '').includes('catalog-org') &&
+        !Object.keys(submitted.headers()).some((h) => h.toLowerCase() === 'x-catalog-organizer-assertion'),
+    );
     const response = await submitted.response();
     check(
       `the refund of the ${label} order answers ${wantStatus}`,

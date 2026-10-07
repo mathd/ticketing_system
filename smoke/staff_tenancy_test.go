@@ -4,11 +4,16 @@ package smoke_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +73,50 @@ func commerceStaffCall(t *testing.T, method, url, key string, headers map[string
 	return resp.StatusCode, out
 }
 
+// foreignAssertionFor signs a well-formed v2 assertion with a key catalog does NOT
+// hold, under catalog's own kid: a forgery that differs from a real one only in the
+// signature.
+func foreignAssertionFor(t *testing.T, organizer string) string {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Join([]string{"v2", os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KID"),
+		"00000000-0000-0000-0000-0000000000aa", organizer, strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)}, ".")
+	return payload + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, []byte(payload)))
+}
+
+// assertStaffRefusal checks the exact D3 refusal: 404 with the same body as an
+// absent route, so no refusal says which predicate failed.
+func assertStaffRefusal(t *testing.T, what string, code int, body []byte) {
+	t.Helper()
+	if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"not found"}` {
+		t.Fatalf("%s: status=%d body=%.300s, want 404 {\"error\":\"not found\"}", what, code, body)
+	}
+}
+
+// staffOrderRefunds reads the order as its OWNER and returns its refunded quantity
+// and refund rows — what a refused attempt must not have changed.
+func staffOrderRefunds(t *testing.T, orderID string) (refundedQty int, refunds int) {
+	t.Helper()
+	code, out := commerceStaffCall(t, http.MethodGet, fmt.Sprintf("%s/internal/orders/%s", commerceURL, orderID), "",
+		staffHeaders(t, organizerID), nil)
+	if code != http.StatusOK {
+		t.Fatalf("owner read: %d %s", code, out)
+	}
+	var detail struct {
+		Totals struct {
+			RefundedQuantity int `json:"refunded_quantity"`
+		} `json:"totals"`
+		Refunds []json.RawMessage `json:"refunds"`
+	}
+	if err := json.Unmarshal(out, &detail); err != nil {
+		t.Fatal(err)
+	}
+	return detail.Totals.RefundedQuantity, len(detail.Refunds)
+}
+
 // staffRefusals are the predicate cases every staff operation must refuse with 404:
 // each is otherwise well-formed and differs from the owner's request in ONE respect.
 func staffRefusals(t *testing.T) []struct {
@@ -80,6 +129,10 @@ func staffRefusals(t *testing.T) []struct {
 		headers map[string]string
 	}{
 		{"no staff credential", map[string]string{organizerAssertionHeader: owner[organizerAssertionHeader]}},
+		{"a wrong staff credential", map[string]string{
+			"X-Commerce-Staff-Write-Token": uuid.NewString() + uuid.NewString(), organizerAssertionHeader: owner[organizerAssertionHeader]}},
+		{"an assertion signed by a key catalog does not hold", map[string]string{
+			"X-Commerce-Staff-Write-Token": owner["X-Commerce-Staff-Write-Token"], organizerAssertionHeader: foreignAssertionFor(t, organizerID)}},
 		{"no assertion", map[string]string{"X-Commerce-Staff-Write-Token": owner["X-Commerce-Staff-Write-Token"]}},
 		// The shared internal token used to open these operations on its own.
 		{"the internal token with the owner's assertion", map[string]string{
@@ -90,11 +143,11 @@ func staffRefusals(t *testing.T) []struct {
 	}
 }
 
-// TestACrossTenantRefundIsRefusedAndMovesNoMoney is TKT-287 COS2, executed. The order
-// is a real paid order (two tickets at 1250). After every refusal, the owner's own
-// refund of ONE ticket must come back as a fresh (not replayed) partial refund of
-// exactly 1250 with refunded_quantity 1 — which is only true if no refused attempt
-// bound a refund, moved money, or consumed refundable quantity.
+// TestACrossTenantRefundIsRefusedAndMovesNoMoney is TKT-287 COS2, executed against a
+// real paid order (two tickets at 1250). After EACH refusal the owner reads the order
+// and finds no refund row and nothing refunded. Then the owner refunds one ticket, and
+// a replay of that exact request under another organizer's valid assertion is refused
+// too and leaves exactly the owner's one refund.
 func TestACrossTenantRefundIsRefusedAndMovesNoMoney(t *testing.T) {
 	orderID, _, _, _ := consoleFixture(t, "tenancy-refund")
 	url := fmt.Sprintf("%s/internal/orders/%s/refunds", commerceURL, orderID)
@@ -105,13 +158,15 @@ func TestACrossTenantRefundIsRefusedAndMovesNoMoney(t *testing.T) {
 			// A distinct key per case: a shared key would let a refusal hide behind a
 			// replay of an earlier attempt.
 			code, out := commerceStaffCall(t, http.MethodPost, url, fmt.Sprintf("tenancy-refund-%d-%s", i, orderID), tc.headers, body)
-			if code != http.StatusNotFound {
-				t.Fatalf("status=%d want 404; body=%.300s", code, out)
+			assertStaffRefusal(t, tc.name, code, out)
+			if qty, rows := staffOrderRefunds(t, orderID); qty != 0 || rows != 0 {
+				t.Fatalf("after a refused refund the order shows refunded_quantity=%d and %d refund row(s), want 0 and 0", qty, rows)
 			}
 		})
 	}
 
-	code, out := commerceStaffCall(t, http.MethodPost, url, "tenancy-refund-owner-"+orderID, staffHeaders(t, organizerID), body)
+	ownerKey := "tenancy-refund-owner-" + orderID
+	code, out := commerceStaffCall(t, http.MethodPost, url, ownerKey, staffHeaders(t, organizerID), body)
 	if code != http.StatusOK {
 		t.Fatalf("the owner's refund: %d %s", code, out)
 	}
@@ -125,8 +180,15 @@ func TestACrossTenantRefundIsRefusedAndMovesNoMoney(t *testing.T) {
 		t.Fatal(err)
 	}
 	if refund.Replay || refund.Amount != 1250 || refund.RefundedQuantity != 1 || refund.RefundStatus != "partial" {
-		t.Fatalf("owner refund = %+v, want a fresh partial refund of 1250 with refunded_quantity 1 — "+
-			"anything else means a refused attempt moved money or consumed quantity", refund)
+		t.Fatalf("owner refund = %+v, want a fresh partial refund of 1250 with refunded_quantity 1", refund)
+	}
+
+	// The replay of an EXISTING result under another tenant must not become a way
+	// around scope: same key, same body, another organizer's valid assertion.
+	code, out = commerceStaffCall(t, http.MethodPost, url, ownerKey, staffHeaders(t, uuid.NewString()), body)
+	assertStaffRefusal(t, "a cross-tenant replay of the owner's refund", code, out)
+	if qty, rows := staffOrderRefunds(t, orderID); qty != 1 || rows != 1 {
+		t.Fatalf("after the cross-tenant replay the order shows refunded_quantity=%d and %d refund row(s), want 1 and 1", qty, rows)
 	}
 }
 

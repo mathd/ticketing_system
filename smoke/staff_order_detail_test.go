@@ -175,4 +175,17 @@ func TestStaffOrderDetailRefusesAnotherOrganizersScope(t *testing.T) {
 		t.Fatalf("cross-organizer read = %d want 404: a valid credential scoped to another "+
 			"organizer must not read this order, and must not be told it exists; body=%.300s", code, body)
 	}
+
+	// TKT-287: the retired organizer_id query parameter is no authority in either
+	// direction. Sent beside the owner's assertion, naming another tenant, it changes
+	// nothing; sent beside another tenant's assertion, naming the owner, it opens nothing.
+	other := uuid.NewString()
+	code, body = commerceStaffCall(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/orders/%s?organizer_id=%s", commerceURL, orderID, other), "", staffHeaders(t, organizerID), nil)
+	if code != http.StatusOK || !strings.Contains(string(body), orderID) {
+		t.Fatalf("owner read with a conflicting legacy organizer_id = %d %.300s, want the owner's 200", code, body)
+	}
+	code, body = commerceStaffCall(t, http.MethodGet,
+		fmt.Sprintf("%s/internal/orders/%s?organizer_id=%s", commerceURL, orderID, organizerID), "", staffHeaders(t, other), nil)
+	assertStaffRefusal(t, "another tenant's assertion with the owner's legacy organizer_id", code, body)
 }

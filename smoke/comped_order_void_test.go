@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -102,12 +103,11 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	for i, tc := range staffRefusals(t) {
 		code, body := commerceStaffCall(t, http.MethodPost, voidURL, fmt.Sprintf("void-refused-%d-%s", i, slot),
 			tc.headers, map[string]any{"actor": "staff:tenancy", "reason": "cross-tenant probe"})
-		if code != http.StatusNotFound {
-			t.Fatalf("%s: status=%d want 404; body=%.300s", tc.name, code, body)
+		assertStaffRefusal(t, tc.name, code, body)
+		// After EACH refusal, not once at the end: capacity still held.
+		if _, _, _, held := staffAvailability(t, slot); held != before-2 {
+			t.Fatalf("%s: available = %d, want %d — a refused void returned capacity", tc.name, held, before-2)
 		}
-	}
-	if _, _, _, held := staffAvailability(t, slot); held != before-2 {
-		t.Fatalf("available after the refused voids = %d, want %d — a refused void returned capacity", held, before-2)
 	}
 
 	code, body = commerceStaffCall(t, http.MethodPost, voidURL, "void-"+slot, staffHeaders(t, organizerID),
@@ -224,6 +224,13 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if _, _, _, back := staffAvailability(t, slot); back != before {
 		t.Fatalf("available after the replay = %d, want %d — a replay must not return capacity twice", back, before)
 	}
+	// TKT-287: an EXISTING void is no way around scope either. The owner's exact
+	// request, replayed under another organizer's valid assertion, is the same 404 —
+	// not a 200 replay that would confirm the order and leak its void.
+	code, body = commerceStaffCall(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-"+slot,
+		staffHeaders(t, uuid.NewString()), map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
+	assertStaffRefusal(t, "a cross-tenant replay of the owner's void", code, body)
 }
 
 // COS-5 through the real stack: a PAID order is refused by the void path. It has
