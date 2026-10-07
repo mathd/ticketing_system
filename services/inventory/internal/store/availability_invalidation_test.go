@@ -121,6 +121,9 @@ func TestAvailabilityMutationsUseInvalidatingCommit(t *testing.T) {
 	exempt := map[string]bool{
 		"quarantine.go":                true,
 		"availability_invalidation.go": true, // defines the helper
+		// claim_history_sequence.go (TKT-295) only setvals the append_order sequence; it
+		// writes no pool, claim or allocation row, so no availability answer changes.
+		"claim_history_sequence.go": true,
 	}
 
 	offenders, scanned, err := scanForRawCommits(".", exempt)
