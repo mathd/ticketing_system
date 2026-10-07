@@ -799,14 +799,22 @@ func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
 func TestGroupPlacementWithAShiftedFreeTextBoundaryIsAKeyReuse(t *testing.T) {
 	ctx, st, _ := storeForTest(t, time.Minute)
 	org, slot := provisioned(t, ctx, st, 100)
-	early := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-	late := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
+	// Both expiries in the future whenever the test runs; the strings are built from them.
+	early := time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
+	late := early.Add(24 * time.Hour)
+	cpA := "Acme " + early.Format(time.RFC3339Nano)
+	chB := late.Format(time.RFC3339Nano) + " "
 
-	a, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme 2027-01-01T00:00:00Z", late, "", "staff", "r", "shared-key")
+	a, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, cpA, late, "", "staff", "r", "shared-key")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", early, "2027-06-01T00:00:00Z ", "staff", "r", "shared-key")
+	// The pre-TKT-313 fingerprints of A and B were equal: the setup is the collision.
+	if opFingerprint("grp-place", org, slot, int32(5), cpA, late.Format(time.RFC3339Nano), "") !=
+		opFingerprint("grp-place", org, slot, int32(5), "Acme", early.Format(time.RFC3339Nano), chB) {
+		t.Fatal("setup: A and B do not collide under the old unframed join, so this test proves nothing")
+	}
+	b, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", early, chB, "staff", "r", "shared-key")
 	if err == nil && replay {
 		t.Fatalf("a DIFFERENT placement replayed the first as a success (got %s, counterparty %q) — "+
 			"the fingerprint does not separate the two requests", b.ID, b.Counterparty)
@@ -815,7 +823,7 @@ func TestGroupPlacementWithAShiftedFreeTextBoundaryIsAKeyReuse(t *testing.T) {
 		t.Fatalf("got replay=%v err=%v, want ErrIdempotency", replay, err)
 	}
 	// The identical request still replays the original.
-	if again, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme 2027-01-01T00:00:00Z", late, "", "staff", "r", "shared-key"); err != nil || !replay || again.ID != a.ID {
+	if again, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, cpA, late, "", "staff", "r", "shared-key"); err != nil || !replay || again.ID != a.ID {
 		t.Fatalf("the identical request did not replay: replay=%v err=%v id=%s want %s", replay, err, again.ID, a.ID)
 	}
 }
@@ -838,5 +846,45 @@ func TestOperationalPlacementWithAPurposeOutsideTheEnumIsRefusedNotReplayed(t *t
 	}
 	if _, replay, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front of house", "staff", "r", "op-key"); err != nil || !replay {
 		t.Fatalf("the identical request did not replay: replay=%v err=%v", replay, err)
+	}
+}
+
+// TKT-313 ai-review finding 2: the golden literals pin the WRAPPERS; this pins that the two
+// operations ADR-023's crash repair replays actually store their wrapper's bytes. A call site
+// that hashed differently (a new kind tag, another argument order) would still replay against
+// itself in an ordinary test, and would 409 a repair that spans the deploy.
+func TestStaffReplaysStoreTheWrapperBytes(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	stored := func(key string) string {
+		t.Helper()
+		var fp string
+		if err := db.QueryRowContext(ctx, `SELECT request_fingerprint FROM claim_history WHERE organizer_id=$1 AND idempotency_key=$2`, org, key).Scan(&fp); err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+
+	op, _, err := st.PlaceOperationalHold(ctx, org, slot, 5, "house", "foh", "staff", "r", "fp-place")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt := uuid.New()
+	if _, _, err := st.ConvertOperational(ctx, org, op.ID, tt, slot, 2, 1000, "EUR", "staff", "sell", "fp-convert"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-convert"), opConvertFingerprint(org, op.ID, tt, slot, 2, 1000, "EUR"); got != want {
+		t.Fatalf("op-convert stored %s, want the wrapper's %s", got, want)
+	}
+
+	grp, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", time.Now().Add(time.Hour), "", "staff", "r", "fp-grp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DrawDownGroupReservation(ctx, org, grp.ID, tt, slot, 2, 1000, "EUR", "staff", "sell", "fp-draw"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stored("fp-draw"), groupDrawFingerprint(org, grp.ID, tt, slot, 2, 1000, "EUR"); got != want {
+		t.Fatalf("grp-draw stored %s, want the wrapper's %s", got, want)
 	}
 }

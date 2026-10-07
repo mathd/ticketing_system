@@ -216,7 +216,7 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	if qty <= 0 {
 		return ConvertResult{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("grp-draw", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
+	fp := groupDrawFingerprint(org, id, ticketType, expectedSlot, qty, unitAmount, currency)
 	pool, err := p.poolOf(ctx, org, id)
 	if err != nil {
 		return ConvertResult{}, false, err

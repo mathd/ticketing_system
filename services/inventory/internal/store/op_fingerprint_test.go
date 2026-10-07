@@ -15,7 +15,9 @@ var (
 	fpTT   = uuid.MustParse("44444444-4444-4444-8444-444444444444")
 )
 
-// TKT-313 COS2. The fixed-format kinds keep their EXACT bytes. op-convert and grp-draw are
+// TKT-313 COS2. The fixed-format kinds keep their EXACT bytes. Each row calls the wrapper the
+// production operation calls, so a changed kind tag or argument order goes red here; the
+// smoke test TestStaffReplaysStoreTheWrapperBytes pins that the operations call them. op-convert and grp-draw are
 // the ones that matter most: ADR-023 repairs a crashed staff sale by REPLAYING them with the
 // same key, so a rehash makes a repair that spans a deploy answer 409 and strands a committed
 // carve. These literals were captured from the algorithm before TKT-313; a change to any of
@@ -26,12 +28,12 @@ func TestOpFingerprintIsByteIdenticalForFixedFormatKinds(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"op-convert", opFingerprint("op-convert", fpOrg, fpID, int32(3), fpTT, fpSlot, int64(2500), "EUR"), "96075b04d05bdadc9ff63ac9eeeb8c55bed1512d1a7bf2794f54309eb883e1ae"},
-		{"grp-draw", opFingerprint("grp-draw", fpOrg, fpID, int32(3), fpTT, fpSlot, int64(2500), "EUR"), "045a1dad8b1beb2d0d2572b128c16820c6ced89c61127a3631df4707ed365c21"},
-		{"op-place", opFingerprint("op-place", fpOrg, fpSlot, int32(3), "house", "front of house"), "fc841570567b6cae2612e6080b998e1b94cfd582d6460058c582607d3a63ddf5"},
-		{"op-release", opFingerprint("op-release", fpOrg, fpID, int32(3)), "eae704c679e3e6b267bcca92dfdd800544023b05d7b342a8285162295bf1af08"},
+		{"op-convert", opConvertFingerprint(fpOrg, fpID, fpTT, fpSlot, 3, 2500, "EUR"), "96075b04d05bdadc9ff63ac9eeeb8c55bed1512d1a7bf2794f54309eb883e1ae"},
+		{"grp-draw", groupDrawFingerprint(fpOrg, fpID, fpTT, fpSlot, 3, 2500, "EUR"), "045a1dad8b1beb2d0d2572b128c16820c6ced89c61127a3631df4707ed365c21"},
+		{"op-place", opPlaceFingerprint(fpOrg, fpSlot, 3, "house", "front of house"), "fc841570567b6cae2612e6080b998e1b94cfd582d6460058c582607d3a63ddf5"},
+		{"op-release", opReleaseFingerprint(fpOrg, fpID, 3), "eae704c679e3e6b267bcca92dfdd800544023b05d7b342a8285162295bf1af08"},
 		{"refund-return", refundReturnFingerprint(fpOrg, fpID, 3), "47e46677c028810975fdce7dff39acd2cb339a7d668f1fd02e6e2fefc0086896"},
-		{"adjust-capacity", opFingerprint("adjust-capacity", fpOrg, fpSlot, int32(80)), "82c8c72fc1895426d5cceedc619f7dd74b6767726e89acd59060e92b32424870"},
+		{"adjust-capacity", adjustCapacityFingerprint(fpOrg, fpSlot, 80), "82c8c72fc1895426d5cceedc619f7dd74b6767726e89acd59060e92b32424870"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s fingerprint = %s, want %s (byte-identical to the pre-TKT-313 algorithm)", tc.name, tc.got, tc.want)

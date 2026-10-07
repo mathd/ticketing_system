@@ -29,7 +29,7 @@ func (p *Postgres) AdjustCapacity(ctx context.Context, org, slot uuid.UUID, newC
 	if newCap <= 0 {
 		return CapacityAdjustment{}, false, fmt.Errorf("capacity must be positive")
 	}
-	fp := opFingerprint("adjust-capacity", org, slot, newCap)
+	fp := adjustCapacityFingerprint(org, slot, newCap)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return CapacityAdjustment{}, false, err

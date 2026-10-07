@@ -96,6 +96,31 @@ func opFingerprint(parts ...any) string {
 	return fmt.Sprintf("%x", sha256.Sum256(fmt.Appendf(nil, "%v", parts)))
 }
 
+// The fixed-format staff kinds, one wrapper each so the golden literals in
+// op_fingerprint_test.go pin the BYTES each operation stores, kind tag and argument order
+// included — not just opFingerprint (TKT-313 ai-review finding 2). Changing any of them is a
+// stored-fingerprint migration: op-convert and grp-draw are what ADR-023's crash repair
+// replays.
+func opPlaceFingerprint(org, slot uuid.UUID, qty int32, purpose, label string) string {
+	return opFingerprint("op-place", org, slot, qty, purpose, label)
+}
+
+func opReleaseFingerprint(org, id uuid.UUID, qty int32) string {
+	return opFingerprint("op-release", org, id, qty)
+}
+
+func opConvertFingerprint(org, id, ticketType, expectedSlot uuid.UUID, qty int32, unitAmount int64, currency string) string {
+	return opFingerprint("op-convert", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
+}
+
+func groupDrawFingerprint(org, id, ticketType, expectedSlot uuid.UUID, qty int32, unitAmount int64, currency string) string {
+	return opFingerprint("grp-draw", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
+}
+
+func adjustCapacityFingerprint(org, slot uuid.UUID, newCap int32) string {
+	return opFingerprint("adjust-capacity", org, slot, newCap)
+}
+
 // registryLookup consults the claim_history idempotency registry inside the caller's
 // pool-locked transaction. found=true means the operation already happened: the returned
 // row is its immutable outcome. A fingerprint mismatch is a key reuse.
@@ -142,7 +167,7 @@ func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID
 	default:
 		return OperationalHold{}, false, fmt.Errorf("purpose must be one of house, artist, kill, other")
 	}
-	fp := opFingerprint("op-place", org, slot, qty, purpose, label)
+	fp := opPlaceFingerprint(org, slot, qty, purpose, label)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return OperationalHold{}, false, err
@@ -238,7 +263,7 @@ func (p *Postgres) ReleaseOperational(ctx context.Context, org, id uuid.UUID, qt
 	if qty <= 0 {
 		return OperationalHold{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("op-release", org, id, qty)
+	fp := opReleaseFingerprint(org, id, qty)
 	pool, err := p.poolOf(ctx, org, id)
 	if err != nil {
 		return OperationalHold{}, false, err
@@ -304,7 +329,7 @@ func (p *Postgres) ConvertOperational(ctx context.Context, org, id, ticketType, 
 	if qty <= 0 {
 		return ConvertResult{}, false, fmt.Errorf("quantity must be positive")
 	}
-	fp := opFingerprint("op-convert", org, id, qty, ticketType, expectedSlot, unitAmount, currency)
+	fp := opConvertFingerprint(org, id, ticketType, expectedSlot, qty, unitAmount, currency)
 	pool, err := p.poolOf(ctx, org, id)
 	if err != nil {
 		return ConvertResult{}, false, err
