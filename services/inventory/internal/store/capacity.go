@@ -127,9 +127,14 @@ func (p *Postgres) CapacityHistory(ctx context.Context, org, slot uuid.UUID) ([]
 	if err != nil {
 		return nil, err
 	}
+	// Append order LEADS (TKT-295, ADR-021 § Amendment): a backward clock step must not reorder
+	// history appended in a definite order, and claim_history has no chain behind it, so this
+	// sort key IS its ordering guarantee. Legacy (pre-0012) rows have NULL append_order and
+	// come first, by occurred_at among themselves. Honest-writer consistency only: a writer
+	// that bypasses the numbering trigger supplies append_order itself.
 	rows, err := p.db.QueryContext(ctx, `SELECT id,action,actor,reason,quantity,quantity_after,status_after,target_capacity,occurred_at
 		FROM claim_history WHERE organizer_id=$1 AND pool_id=$2
-		ORDER BY occurred_at, append_order NULLS FIRST, id`, org, slot)
+		ORDER BY append_order NULLS FIRST, occurred_at, id`, org, slot)
 	if err != nil {
 		return nil, err
 	}
