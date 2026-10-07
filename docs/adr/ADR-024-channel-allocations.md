@@ -241,10 +241,17 @@ We adopt allocation rows with derived usage. Specifics:
       elapsed TTL — no longer counts the claim, and the stock is resellable to someone else. The
       admitted hold is therefore not merely stale: it is a success response over inventory that has
       already been released, with a retry path that returns it again.
-      **This is the weakest part of the rule and is recorded as such, not blessed.** The storefront
-      behaviour above is a defect of its own — a zero-duration reservation should enter the expired
-      state synchronously and rotate its key — and it is not fixed here because this ticket changes
-      no code. `sweepExpired` and every capacity read are unchanged by this rule.
+      **This is the weakest part of the rule and is recorded as such, not blessed.** The admission
+      rule itself stays. The storefront defect it exposed was **fixed by TKT-289**: `HoldPicker`
+      enters the expired state in the response handler when a reservation arrives with zero
+      remaining time, without saying *held* or waiting for a tick, and it retires the reserve key
+      whenever a hold is known dead (arrived dead, or its countdown reached zero), so the next
+      Reserve with unchanged terms takes a fresh hold rather than replaying the dead one. A live
+      hold's key, and the key after an unknown outcome, are kept. Checkout keys are unchanged.
+      Pinned by `web/storefront/test/HoldPicker.test.tsx` ("a dead hold is never replayed") and
+      `test/browser/dead-hold-retry.mjs`. What remains is the server side as described: a
+      success response over stock `liveClaims` no longer counts. `sweepExpired` and every
+      capacity read are unchanged by this rule.
       **Pinned by test, in the manner of ADR-021's rollback-gap test — but unevenly, and the gap
       is named rather than papered over.** Both live in
       `services/inventory/internal/store/buyer_ttl_clock_smoke_test.go`.
