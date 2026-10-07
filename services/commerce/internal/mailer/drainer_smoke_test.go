@@ -209,7 +209,8 @@ func TestAFailedSendIsNotRetriedImmediately(t *testing.T) {
 // forever; with it, the row stops being selected and stays visible to an operator.
 func TestAPoisonMessageIsDeadLetteredAndStopsBeingClaimed(t *testing.T) {
 	db, ctx := drainerDB(t)
-	id := enqueue(t, db, ctx, uniqueRecipient(), "s", "b")
+	to := uniqueRecipient()
+	id := enqueue(t, db, ctx, to, "s", "b")
 
 	f := mail.NewFake()
 	f.FailWith(mail.ErrFakeRefused)
@@ -229,14 +230,50 @@ func TestAPoisonMessageIsDeadLetteredAndStopsBeingClaimed(t *testing.T) {
 			store.MaxMailAttempts, attempts)
 	}
 	// Quarantined means unclaimable even with a working sender and no backoff.
+	//
+	// Asserted on THIS row, never on the drainer's total send count (TKT-291). The
+	// package's database is shared and never truncated, and the drainer claims the whole
+	// claimable set, so a stranger row — e.g. the one the backoff test above leaves on a
+	// 1s backoff — legitimately sends here once eligible. The old global count read that
+	// as "a dead-lettered row was claimed again": it failed once in a gate and passed on
+	// re-run, and seeding an eligible foreign row reproduces it every time.
+	//
+	// So a stranger is seeded ON PURPOSE. It is also the positive control: it must be
+	// sent, which proves this DrainOnce ran with a working sender — without it, a drainer
+	// that sent nothing at all would pass the quarantine check vacuously.
 	f.FailWith(nil)
 	if _, err := db.ExecContext(ctx, `UPDATE mail_outbox SET next_attempt_at=now() WHERE id=$1`, id); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
+	stranger := uniqueRecipient()
+	strangerID := enqueue(t, db, ctx, stranger, "stranger", "eligible foreign row")
+	// Drain until the stranger is sent, in bounded passes: older eligible rows left by
+	// other tests can fill a batch ahead of it (review pass 1). The quarantined row is
+	// checked after EVERY pass, so a re-claim in any of them is caught.
 	before := len(f.Sent())
-	d.DrainOnce(ctx)
-	if len(f.Sent()) != before {
-		t.Fatal("a dead-lettered row was claimed again")
+	var strangerSent bool
+	for pass := 0; pass < 20 && !strangerSent; pass++ {
+		d.DrainOnce(ctx)
+		for _, m := range f.Sent()[before:] {
+			if m.To == to {
+				t.Fatal("a dead-lettered row was claimed again")
+			}
+			if m.To == stranger {
+				strangerSent = true
+			}
+		}
+		if _, _, after, _ := rowState(t, db, ctx, id); after != attempts {
+			t.Fatalf("the dead-lettered row was claimed again (attempts %d → %d)", attempts, after)
+		}
+	}
+	if !strangerSent {
+		t.Fatal("setup: the eligible stranger row was never sent, so these drains prove nothing about the quarantine")
+	}
+	if sentAt, _, after, _ := rowState(t, db, ctx, id); sentAt.Valid || after != attempts {
+		t.Fatalf("the dead-lettered row changed: sent=%v attempts %d → %d", sentAt.Valid, attempts, after)
+	}
+	if sentAt, _, _, _ := rowState(t, db, ctx, strangerID); !sentAt.Valid {
+		t.Fatal("setup: the stranger row was sent but not retired")
 	}
 }
 
