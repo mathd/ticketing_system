@@ -475,8 +475,9 @@ func TestResellerCredentialCapIgnoresRevokedRows(t *testing.T) {
 	// Seeded directly, not through the code under test: one live, two revoked at KNOWN
 	// times, so the revoked rows can be compared exactly afterwards.
 	revokedAt := map[uuid.UUID]time.Time{
-		uuid.New(): time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-		uuid.New(): time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
+		// Non-zero MICROSECONDS, so a truncation of history is visible too (review pass 3).
+		uuid.New(): time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC),
+		uuid.New(): time.Date(2026, 2, 3, 4, 5, 6, 654321000, time.UTC),
 	}
 	seed := func(id uuid.UUID, revoked *time.Time) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO reseller_credentials(id, reseller_id, organizer_id, channel_code, token_hash, label, revoked_at)
@@ -656,13 +657,13 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 	}
 	// After each refusal, EVERY seeded row is re-read: a refusal must not retire a legacy
 	// credential behind the operator's back (review pass 2), and must not add a row.
-	refused := func(when string, wantRevoked map[uuid.UUID]bool) {
+	refused := func(when string, wantRevoked map[uuid.UUID]*time.Time) {
 		t.Helper()
 		cred, token, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-legacy", "new")
 		if !errors.Is(err, ErrResellerCredentialCap) || token != "" || cred != (ResellerCredential{}) {
 			t.Fatalf("%s: err=%v token=%q cred=%+v, want the cap refusal and nothing returned", when, err, token, cred)
 		}
-		rows, err := db.QueryContext(ctx, `SELECT id, revoked_at IS NOT NULL FROM reseller_credentials
+		rows, err := db.QueryContext(ctx, `SELECT id, revoked_at FROM reseller_credentials
 			WHERE organizer_id=$1 AND reseller_id=$2`, org, reseller)
 		if err != nil {
 			t.Fatal(err)
@@ -671,7 +672,7 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 		seen := 0
 		for rows.Next() {
 			var id uuid.UUID
-			var revoked bool
+			var revoked *time.Time
 			if err := rows.Scan(&id, &revoked); err != nil {
 				t.Fatal(err)
 			}
@@ -679,8 +680,9 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 			if !known {
 				t.Fatalf("%s: an unexpected row %s exists after a refusal", when, id)
 			}
-			if revoked != want {
-				t.Fatalf("%s: row %s revoked=%v, want %v — a refusal changed an existing credential", when, id, revoked, want)
+			// The EXACT revocation time, not just whether it is set (review pass 3).
+			if (revoked == nil) != (want == nil) || (revoked != nil && !revoked.Equal(*want)) {
+				t.Fatalf("%s: row %s revoked_at=%v, want %v — a refusal changed an existing credential", when, id, revoked, want)
 			}
 			seen++
 		}
@@ -691,11 +693,15 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 			t.Fatalf("%s: %d rows, want %d", when, seen, len(ids))
 		}
 	}
-	refused("three live", map[uuid.UUID]bool{ids[0]: false, ids[1]: false, ids[2]: false})
+	refused("three live", map[uuid.UUID]*time.Time{ids[0]: nil, ids[1]: nil, ids[2]: nil})
 	if err := RevokeResellerCredential(ctx, db, ids[0]); err != nil {
 		t.Fatal(err)
 	}
-	refused("two live", map[uuid.UUID]bool{ids[0]: true, ids[1]: false, ids[2]: false})
+	var revokedFirst time.Time
+	if err := db.QueryRowContext(ctx, `SELECT revoked_at FROM reseller_credentials WHERE id=$1`, ids[0]).Scan(&revokedFirst); err != nil {
+		t.Fatal(err)
+	}
+	refused("two live", map[uuid.UUID]*time.Time{ids[0]: &revokedFirst, ids[1]: nil, ids[2]: nil})
 	if err := RevokeResellerCredential(ctx, db, ids[1]); err != nil {
 		t.Fatal(err)
 	}
