@@ -241,10 +241,27 @@ We adopt allocation rows with derived usage. Specifics:
       elapsed TTL — no longer counts the claim, and the stock is resellable to someone else. The
       admitted hold is therefore not merely stale: it is a success response over inventory that has
       already been released, with a retry path that returns it again.
-      **This is the weakest part of the rule and is recorded as such, not blessed.** The storefront
-      behaviour above is a defect of its own — a zero-duration reservation should enter the expired
-      state synchronously and rotate its key — and it is not fixed here because this ticket changes
-      no code. `sweepExpired` and every capacity read are unchanged by this rule.
+      **This is the weakest part of the rule and is recorded as such, not blessed.** The admission
+      rule itself stays. The storefront defect it exposed was **fixed by TKT-289**: `HoldPicker`
+      enters the expired state in the response handler when a reservation arrives with zero
+      remaining time, without saying *held* or waiting for a tick, and it retires the reserve key
+      when a hold is dead (it arrived with no time left, its countdown reached zero, or checkout
+      ended terminally with 402/408 because commerce released it) **and its reservation is not
+      depended on**. A reservation is depended on while a checkout for it is in flight, and after
+      any checkout outcome that may have created an order (a 409 recovery lease, another status,
+      a network error); a 401 created nothing but does not clear an earlier uncertainty. This
+      rule keeps a *finalizing* hold live past its TTL, so replaying the same key is what returns
+      the same reservation and its checkout key after an unknown outcome — even when that replay
+      itself comes back with no time left. When the key is retired, the next Reserve with
+      unchanged terms takes a fresh hold rather than replaying the dead one. After a **completed**
+      checkout the key is kept, so a further Reserve replays the completed reservation rather
+      than buying again. Retirement names the key it retires, and a
+      dead-on-arrival hold starts no countdown, so an old hold cannot retire a newer request's key.
+      Checkout keys are unchanged.
+      Pinned by `web/storefront/test/HoldPicker.test.tsx` ("a dead hold is never replayed") and
+      `test/browser/dead-hold-retry.mjs`. What remains is the server side as described: a
+      success response over stock `liveClaims` no longer counts. `sweepExpired` and every
+      capacity read are unchanged by this rule.
       **Pinned by test, in the manner of ADR-021's rollback-gap test — but unevenly, and the gap
       is named rather than papered over.** Both live in
       `services/inventory/internal/store/buyer_ttl_clock_smoke_test.go`.
