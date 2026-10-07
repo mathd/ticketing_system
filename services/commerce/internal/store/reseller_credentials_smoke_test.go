@@ -684,6 +684,9 @@ func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
 			}
 			seen++
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		if seen != len(ids) {
 			t.Fatalf("%s: %d rows, want %d", when, seen, len(ids))
 		}
