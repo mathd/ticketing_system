@@ -87,6 +87,11 @@ type HistoryEntry struct {
 	OccurredAt     time.Time `json:"occurred_at"`
 }
 
+// opFingerprint joins its parts with spaces, UNFRAMED, so it is safe only when at most one
+// free-text part is present and it is LAST (op-place's label). A kind with free text anywhere
+// else must frame it first, as groupPlaceFingerprint does (TKT-313). Its output is stored as
+// request_fingerprint; changing this function rehashes every staff operation in the database,
+// including the op-convert / grp-draw replays ADR-023's crash repair depends on.
 func opFingerprint(parts ...any) string {
 	return fmt.Sprintf("%x", sha256.Sum256(fmt.Appendf(nil, "%v", parts)))
 }
@@ -127,6 +132,15 @@ func registryLookup(ctx context.Context, tx *sql.Tx, org uuid.UUID, key, fp stri
 func (p *Postgres) PlaceOperationalHold(ctx context.Context, org, slot uuid.UUID, qty int32, purpose, label, actor, reason, key string) (OperationalHold, bool, error) {
 	if qty <= 0 {
 		return OperationalHold{}, false, fmt.Errorf("quantity must be positive")
+	}
+	// The enum is checked HERE, before the fingerprint (TKT-313): op-place is unframed and is
+	// unambiguous only because purpose is a closed, space-free word and label is last. The
+	// database CHECK enforces the enum only on insert, and a replay never inserts, so an
+	// out-of-enum purpose ("house front" + "of house") used to replay a valid hold.
+	switch purpose {
+	case "house", "artist", "kill", "other":
+	default:
+		return OperationalHold{}, false, fmt.Errorf("purpose must be one of house, artist, kill, other")
 	}
 	fp := opFingerprint("op-place", org, slot, qty, purpose, label)
 	tx, err := p.db.BeginTx(ctx, nil)

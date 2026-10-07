@@ -791,3 +791,52 @@ func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
 		t.Fatalf("an ungated allocation recorded the ignored code %q", *cited)
 	}
 }
+
+// TKT-313 COS1. Two DIFFERENT group placements under one key: B's counterparty, expiry and
+// channel shift a space boundary so that the old space-joined fingerprint of B equals A's.
+// B must be refused as a key reuse, not replayed as A. registryLookup runs before any channel
+// check, so B's odd channel never gets the chance to refuse it first.
+func TestGroupPlacementWithAShiftedFreeTextBoundaryIsAKeyReuse(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	early := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	late := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	a, _, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme 2027-01-01T00:00:00Z", late, "", "staff", "r", "shared-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme", early, "2027-06-01T00:00:00Z ", "staff", "r", "shared-key")
+	if err == nil && replay {
+		t.Fatalf("a DIFFERENT placement replayed the first as a success (got %s, counterparty %q) — "+
+			"the fingerprint does not separate the two requests", b.ID, b.Counterparty)
+	}
+	if !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("got replay=%v err=%v, want ErrIdempotency", replay, err)
+	}
+	// The identical request still replays the original.
+	if again, replay, err := st.PlaceGroupReservation(ctx, org, slot, 5, "Acme 2027-01-01T00:00:00Z", late, "", "staff", "r", "shared-key"); err != nil || !replay || again.ID != a.ID {
+		t.Fatalf("the identical request did not replay: replay=%v err=%v id=%s want %s", replay, err, again.ID, a.ID)
+	}
+}
+
+// TKT-313, op-place. The readiness called op-place "not collidable" because its free-text
+// label is LAST and purpose is a closed enum — but nothing enforced the enum before the
+// fingerprint: only the database CHECK on the claim insert does, and a replay never inserts.
+// So (purpose "house front", label "of house") hashed the same as ("house", "front of house")
+// and an INVALID request replayed a valid hold as a success. The store now refuses an
+// out-of-enum purpose before fingerprinting; op-place's bytes stay unchanged (golden-pinned).
+func TestOperationalPlacementWithAPurposeOutsideTheEnumIsRefusedNotReplayed(t *testing.T) {
+	ctx, st, _ := storeForTest(t, time.Minute)
+	org, slot := provisioned(t, ctx, st, 100)
+	if _, _, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front of house", "staff", "r", "op-key"); err != nil {
+		t.Fatal(err)
+	}
+	h, replay, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house front", "of house", "staff", "r", "op-key")
+	if err == nil || replay {
+		t.Fatalf("a request with purpose %q was answered replay=%v hold=%s err=%v — want a refusal", "house front", replay, h.ID, err)
+	}
+	if _, replay, err := st.PlaceOperationalHold(ctx, org, slot, 2, "house", "front of house", "staff", "r", "op-key"); err != nil || !replay {
+		t.Fatalf("the identical request did not replay: replay=%v err=%v", replay, err)
+	}
+}
