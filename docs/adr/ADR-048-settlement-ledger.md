@@ -223,7 +223,9 @@ record that a partner owes the platform money for a sale the platform did not ca
 deliberate.
 
 The distinction that must survive any future design: a `payment.captured` fact records money the
-platform's PSP **confirmed** it charged (payments writes it after the provider confirms the charge).
+platform's own PSP charged. On the current charge path payments appends it only after the provider
+confirms the charge; captures written before migration `0006_provider_confirmed_amounts.sql` carry
+no recorded confirmation, and that migration deliberately leaves them so.
 A receivable would record an **obligation** a partner has not yet paid. What evidence would back it,
 and who is authoritative when it disagrees with the partner's remittance, are for the PRD below; this
 ADR does not presume them. The risk to name (ADR-021) is not a forger but **category confusion**: an
@@ -236,10 +238,12 @@ settlement.
 the sums: `settlement_must_balance()` would still compare each set's total with its fact's amount.
 It is wrong because it would let a fact that moved no money carry settlement entries **in the same
 vocabulary** as one that did. `capture_must_settle()` requires completeness for captures only, and
-the settlement read (`ReadOrderSettlement`, `services/payments/internal/store/settlement.go`) does
-not report which fact type a set hangs off, so a receivable would read as settled money everywhere
-the ledger is consumed. Both would need changing as well, which is why the shape below keeps the two
-apart instead.
+the existing settlement read (`ReadOrderSettlement`, `services/payments/internal/store/settlement.go`,
+and the API response built on it) does not report which fact type a set hangs off, so through that
+path a receivable would read as settled money. The database itself keeps the provenance
+(`settlement_entries.capture_fact_id` joins to the journal's `fact_type`), so a purpose-built report
+could tell them apart; the one-line change ships without one. Completeness and the read would both
+need changing as well, which is why the shape below keeps the two apart instead.
 
 **What reopening this would need:** a PRD section on partner receivables (who reports a sale, when,
 on what evidence, and which side is authoritative when the partner's remittance disagrees with the
