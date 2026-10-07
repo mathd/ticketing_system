@@ -212,6 +212,32 @@ below. Unknown is therefore classified as misattributed, not absent.
 The ledger enforces honest-writer consistency through database triggers; it is not tamper-evident,
 and records an obligation rather than a payout.
 
+**Merchant-of-record is the only reseller model (TKT-294, owner decision 2026-09-25).** Agency
+terms (the partner collects from the buyer and remits face value less commission) and net-rate terms
+(the partner collects at a wholesale price and keeps the margin) are **not supported**. Under both,
+the platform never captures, and settlement is bound to a capture in the database: the balance
+trigger refuses any settlement whose fact is not `payment.captured`
+(`0004_settlement_ledger.sql:132`, "attaches to a % fact, which moved no money"), and
+`capture_must_settle()` (:162-177) refuses a capture with no settlement. So the ledger has no way to
+record that a partner owes the platform money for a sale the platform did not capture, and that is
+deliberate.
+
+Name the adversary (ADR-021): a **capture** is a fact about money that moved through the platform's
+own PSP. A **receivable** is the platform's assertion that a partner owes it money, and it rests on
+the partner's own reporting. The second is a materially weaker claim, and the ledger must never let
+it read as the first.
+
+**The rejected shape, recorded so it is not proposed again:** relaxing the trigger to
+`f_type IN ('payment.captured', …)`. It is a one-line change and it is wrong: it would let a fact
+that moved no money settle as if it had, which is exactly what the check exists to refuse, and it
+would turn §3's database-enforced sum-exactness back into a claim about application code.
+
+**What reopening this would need:** a PRD section on partner receivables (who reports a sale, when,
+on what evidence, and which side is authoritative when the partner's remittance disagrees with the
+receivable), and a **parallel** fact type (for example `partner.sold`) with its own balance rule, so
+that a receivable and a capture stay distinguishable in the ledger instead of sharing one
+vocabulary.
+
 ## Consequences
 
 - **Positive:** a capture and its attribution commit together, so "captured but unattributed" is not
