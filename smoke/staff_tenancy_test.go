@@ -4,6 +4,7 @@ package smoke_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // TKT-287: commerce's three staff operations — refund, void, order read — take the
@@ -96,6 +98,25 @@ func assertStaffRefusal(t *testing.T, what string, code int, body []byte) {
 	}
 }
 
+// allRefundRows counts EVERY order_refunds row for the order, under ANY organizer,
+// straight from commerce's database. The owner's detail read filters by organizer,
+// so it cannot see a pending refund bound under an attacker's organizer — exactly
+// the row a broken guard would write.
+func allRefundRows(t *testing.T, orderID string) int {
+	t.Helper()
+	ctx := context.Background()
+	db, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
+	if err != nil {
+		t.Fatalf("connect commerce db: %v", err)
+	}
+	defer func() { _ = db.Close(ctx) }()
+	var n int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM order_refunds WHERE order_id=$1`, orderID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // staffOrderRefunds reads the order as its OWNER and returns its refunded quantity
 // and refund rows — what a refused attempt must not have changed.
 func staffOrderRefunds(t *testing.T, orderID string) (refundedQty int, refunds int) {
@@ -162,6 +183,9 @@ func TestACrossTenantRefundIsRefusedAndMovesNoMoney(t *testing.T) {
 			if qty, rows := staffOrderRefunds(t, orderID); qty != 0 || rows != 0 {
 				t.Fatalf("after a refused refund the order shows refunded_quantity=%d and %d refund row(s), want 0 and 0", qty, rows)
 			}
+			if n := allRefundRows(t, orderID); n != 0 {
+				t.Fatalf("after a refused refund the database holds %d refund row(s) for the order under any organizer, want 0", n)
+			}
 		})
 	}
 
@@ -189,6 +213,9 @@ func TestACrossTenantRefundIsRefusedAndMovesNoMoney(t *testing.T) {
 	assertStaffRefusal(t, "a cross-tenant replay of the owner's refund", code, out)
 	if qty, rows := staffOrderRefunds(t, orderID); qty != 1 || rows != 1 {
 		t.Fatalf("after the cross-tenant replay the order shows refunded_quantity=%d and %d refund row(s), want 1 and 1", qty, rows)
+	}
+	if n := allRefundRows(t, orderID); n != 1 {
+		t.Fatalf("after the cross-tenant replay the database holds %d refund row(s) for the order, want exactly the owner's 1", n)
 	}
 }
 

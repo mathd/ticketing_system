@@ -40,13 +40,23 @@ func TestStaffOperationsCannotNameAnOrganizerInTheContract(t *testing.T) {
 			t.Errorf("%s must set additionalProperties: false, or an undeclared organizer_id is accepted", name)
 		}
 	}
-	read := doc.Paths.Find("/internal/orders/{id}")
-	if read == nil || read.Get == nil {
-		t.Fatal("getStaffOrderDetail is missing")
-	}
-	for _, p := range read.Get.Parameters {
-		if p.Value != nil && p.Value.Name == "organizer_id" {
-			t.Errorf("getStaffOrderDetail still takes organizer_id in its %s", p.Value.In)
+	// Every parameter the three operations accept, INCLUDING ones inherited from the
+	// path item, which kin-openapi keeps separately from the operation's own.
+	for _, op := range []struct{ path, method string }{
+		{"/internal/orders/{id}", "GET"},
+		{"/internal/orders/{id}/refunds", "POST"},
+		{"/internal/orders/{id}/voids", "POST"},
+	} {
+		item := doc.Paths.Find(op.path)
+		if item == nil || item.GetOperation(op.method) == nil {
+			t.Fatalf("%s %s is missing", op.method, op.path)
+		}
+		params := append(openapi3.Parameters{}, item.Parameters...)
+		params = append(params, item.GetOperation(op.method).Parameters...)
+		for _, p := range params {
+			if p.Value != nil && p.Value.Name == "organizer_id" {
+				t.Errorf("%s %s still takes organizer_id in its %s", op.method, op.path, p.Value.In)
+			}
 		}
 	}
 }

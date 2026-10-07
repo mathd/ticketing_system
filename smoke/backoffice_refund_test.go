@@ -197,8 +197,11 @@ func TestGatewayStillEdgeDeniesCommercesRefund(t *testing.T) {
 		{http.MethodGet, "/api/commerce/internal/orders/" + order, nil},
 	} {
 		code, body := commerceStaffCall(t, tc.method, gatewayURL+tc.path, "gateway-deny-"+tc.method, staffHeaders(t, organizerID), tc.body)
-		if code != http.StatusNotFound {
-			t.Errorf("%s %s with the full staff pair is reachable from the public edge: %d %s", tc.method, tc.path, code, body)
+		// The GATEWAY's own refusal body, not just a 404: the order id is not a real
+		// order, so commerce would also answer 404 if the edge forwarded the request.
+		// Only this body proves the edge refused it.
+		if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"refused at the gateway edge"}` {
+			t.Errorf("%s %s with the full staff pair was not refused AT THE EDGE: %d %s", tc.method, tc.path, code, body)
 		}
 	}
 }

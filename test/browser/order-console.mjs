@@ -131,14 +131,26 @@ try {
     await form.locator('#reason').fill(`browser tenancy proof (${label})`);
     // The assertion is a bearer credential held server-side (ADR-058): it must
     // appear neither in the rendered page nor in what the browser submits.
+    const decoded = (x) => {
+      try {
+        return decodeURIComponent(x);
+      } catch {
+        return x; // a stray % in markup is not a URL; check it as written
+      }
+    };
+    const html = await page.content();
+    const actions = await page.locator('form').evaluateAll((forms) => forms.map((f) => f.action));
     check(
-      `the ${label} order page renders no organizer assertion`,
-      !(await page.content()).includes('v2.catalog-org/'),
+      `the ${label} order page renders no organizer assertion, in markup or any form action`,
+      ![html, decoded(html), ...actions.map(decoded)].some((x) =>
+        x.includes('catalog-org/'),
+      ),
     );
     const submitted = await submitForm(page, form.getByRole('button', { name: 'Refund' }));
     check(
       `the ${label} refund submit carries no organizer assertion`,
-      !(submitted.postData() ?? '').includes('catalog-org') &&
+      !decoded(submitted.url()).includes('catalog-org') &&
+        !decoded(submitted.postData() ?? '').includes('catalog-org') &&
         !Object.keys(submitted.headers()).some((h) => h.toLowerCase() === 'x-catalog-organizer-assertion'),
     );
     const response = await submitted.response();
