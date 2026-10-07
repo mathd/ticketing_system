@@ -112,6 +112,40 @@ business processing completed (that is `consumed_events`' job). Reinjected rows 
 future-schema events fall back to delayed NAKs — a deliberate, loud stall at an
 inventory-owned bound, not a drop.
 
+## Restoring `claim_history` (TKT-295)
+
+Since TKT-295, `append_order` leads the order of inventory's `claim_history` (ADR-021 §Amendment
+(TKT-295)). A restore must keep the numbers and the sequence that issues them consistent:
+
+1. Stop every inventory writer and any maintenance session before the restore.
+2. Restore the rows. Keep `append_order` (legacy NULLs included) and `occurred_at` as they are.
+   An ordinary `INSERT` or `COPY` fires `claim_history_set_append_order` and **renumbers** the
+   rows in input order — that keeps relative order only if the input is already in append order,
+   and no tool here checks that. To keep the original numbers, disable that trigger for the load.
+   A session with `session_replication_role = replica` also skips it.
+3. Re-enable the trigger, and return the restore session to its normal role.
+4. With writers still stopped, run the guard:
+
+   ```bash
+   docker compose run --rm --no-deps inventory check-claim-history-sequence
+   ```
+
+   Exit 0 (`status=ok`): continue. A refusal (`status=needs-repair`) means the next append would be
+   numbered at or below restored history. Run it with `--repair` (it only advances the sequence to
+   the restored maximum; it never changes a row), then run the check again and require exit 0.
+   These refusals are never repaired, and need an operator: the numbering trigger is missing,
+   disabled or replica-only (step 3 did not happen); the sequence's settings differ from
+   migration 0012 (increment 1, cache 1, no cycle, a positive range); or fewer than two numbers remain (an
+   ordinary append uses two).
+5. Reopen writes.
+
+The guard holds `claim_history` locked for the whole check (`SHARE ROW EXCLUSIVE`), so it waits
+for any append still in flight and blocks new ones until it is done — run it while writes are
+stopped. That lock does not cover a `nextval` called outside an insert, which is one reason step 1
+stops maintenance sessions too. `--timeout` (default `30s`) bounds the whole check, lock wait
+included; `max(append_order)` scans the table, so give a large restore a longer one. It does not
+detect missing, duplicated or dishonest rows.
+
 ## Seat-pin reconciliation (TKT-112)
 
 A seated hold pins its seats in catalog (`seat_map_pins`, `pinned_by = 'hold:<claim_id>'`) and

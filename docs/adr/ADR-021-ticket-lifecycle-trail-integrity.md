@@ -12,6 +12,10 @@ claim, while inventory's `claim_history` has no chain, so its sort key *is* its 
 and it is honest-writer consistency rather than tamper-evidence. No code changes; TKT-295 owns the
 inventory half.
 
+Amended by **TKT-295** (2026-10-07, §Amendment (TKT-295) below) — `append_order` now LEADS both
+`claim_history` reads, and an operator guard checks the sequence after a restore. Still
+honest-writer consistency, not tamper-evidence.
+
 **Implemented.** `lifecycle_events` is now chained per ticket in a companion integrity table with
 signed heads, checkpointed per organizer, and verified by `access verify-lifecycle` in the local
 gate against populated *and* deliberately corrupted data. This ADR closed the open question
@@ -440,7 +444,7 @@ wall-clock order tamper-evident; it does not make it true.** Live appends never 
 
 | | |
 |---|---|
-| **What fixes order** | Nothing cryptographic. `append_order` is a sequence-backed tie-break only: both reads are `ORDER BY occurred_at, append_order NULLS FIRST, id` (`capacity.go:132`, `operational.go:369`). |
+| **What fixes order** | Nothing cryptographic. As written on 2026-09-01, `append_order` was a sequence-backed tie-break only: both reads were `ORDER BY occurred_at, append_order NULLS FIRST, id`. **Since TKT-295 it leads** — see §Amendment (TKT-295). |
 | **What displays** | The same clause. There is no second order to fall back on. |
 | **Adversary** | **Honest-writer consistency, NOT tamper-evidence.** |
 
@@ -454,8 +458,8 @@ wording problem: **a backward clock step reorders history that was appended in a
 because the wall clock leads. Access survives this and `claim_history` does not — the asymmetry is
 the whole point of stating them separately.
 
-**Not closed here. TKT-295** owns promoting `append_order` to primary, its legacy-NULL boundary, and
-the guarded restore path. Per this ADR's pin-the-gap discipline, the exposure is asserted as
+**Not closed here — closed by TKT-295** (§Amendment (TKT-295)). As of 2026-09-01 TKT-295 owned promoting `append_order` to primary, its legacy-NULL boundary, and
+the guarded restore path. Per this ADR's pin-the-gap discipline, the exposure was asserted as
 **present** by `TestHistoryOrdersDistinctTimestampsByOccurredAt`
 (`inventory/internal/store/history_order_smoke_test.go`), which records the current wall-clock-first
 preference and carries a comment saying that TKT-295 must **reverse it deliberately rather than
@@ -516,6 +520,8 @@ procedure in this repository to enforce either. So the correct statement is that
 paths it *describes* — it does not make an arbitrary restore safe. Supplying or checking that
 ordering guarantee is part of **TKT-295**'s guarded restore path, and until it exists an operator
 restoring from an unordered dump can silently change the reconstruction of equal-timestamp rows.
+*(TKT-295 shipped a guard and a runbook for the sequence, not a check of a dump's order; this
+paragraph's last claim still holds for a renumbering restore — see §Amendment (TKT-295).)*
 
 **And the trigger's bypass is broader than replication.** It does not fire for **any** session
 running `SET session_replication_role = replica`, of which logical apply is one caller and a
@@ -526,6 +532,48 @@ honest-writer consistency, not a guarantee, and `claim_history` has nothing stro
 
 Designing the guarded restore path likewise belongs with TKT-295. Guarding a value that is currently
 a tie-break would be guarding the wrong thing.
+
+## Amendment (2026-10-07, TKT-295) — `append_order` leads `claim_history`; a guard for its sequence
+
+**Order.** Both inventory reads are now
+`ORDER BY append_order NULLS FIRST, occurred_at, id` (`CapacityHistory` in `capacity.go`,
+`History` in `operational.go`). For writers that go through the enabled numbering trigger, a row
+appended later sorts later, whatever `occurred_at` says. A backward clock step between ordinary
+inserts gives an increasing `append_order` against a decreasing `occurred_at` — **that state is
+reachable on the normal path**, with the trigger firing, which is why the 2026-09-01 gap was real.
+TKT-234's gap sentinel is reversed, not deleted: it is now
+`TestHistoryOrdersDistinctTimestampsByAppendOrder`, built with the trigger enabled.
+`TestHistoryOrdersTiedTimestampsByAppendOrder` is unchanged and green.
+
+The sequence is not a commit counter: it orders allocations. The pool lock serializes the writes for
+one claim or pool, so within one history allocation order is append order.
+
+**Legacy boundary.** Rows written before migration 0012 keep a NULL `append_order` (the trail is
+append-only and is not backfilled). They sort before every numbered row and keep
+`occurred_at, id` order among themselves. That is a stable presentation of legacy rows, not a
+recovered append order. The boundary assumes no later writer bypasses the trigger to insert a NULL.
+
+**Adversary — unchanged: honest-writer consistency, NOT tamper-evidence.** A writer that disables
+the trigger, or runs with `session_replication_role = replica`, supplies `append_order` itself, and
+because it now leads, that writer now controls the order directly. Two rows with one supplied
+`append_order` fall back to `occurred_at, id`, and their original order is lost.
+
+**The sequence guard** (`inventory check-claim-history-sequence [--repair] [--timeout]`). A
+value-preserving restore runs with the trigger disabled, so the restored numbers survive but the
+sequence does not move; the next append can then be numbered at or below restored history and sort
+before it. The guard compares the sequence's next value with `max(append_order)` (globally, across
+organizers and row shapes) and refuses if it is not above. With `--repair` it sets the sequence
+to that maximum, which is never lower, and it never rewrites a row. It runs in one transaction
+holding the table in `SHARE ROW EXCLUSIVE` mode, so an append still in flight is waited for and
+counted. It refuses, without repair, when the numbering trigger is missing, disabled or
+replica-only, when the sequence's settings differ from 0012's, and when fewer than two numbers
+remain. It does **not** detect missing, duplicated or dishonest rows, it does not check that a
+renumbering restore's input was in append order, and it does not constrain any writer after it
+runs. Runbook: `docs/development.md` § Restoring `claim_history`. Plan measurements:
+`docs/evidence/TKT-295/claim-history-order-explain.md`.
+
+**Replication** is unchanged from §Restore and replication: not configured in this repository, and
+adopting it requires a deliberate decision about who numbers rows.
 
 ### What this amendment does not claim
 
@@ -620,8 +668,8 @@ to the lifecycle trail.
 - TKT-57 (this decision) · TKT-67 (implementation follow-up) · TKT-43 (money-path hardening, which
   deferred this) · TKT-11 (fiscal archive; owns the external anchor)
 - TKT-230 (raised the wall-clock ordering finding) · **TKT-234** (the 2026-09-01 amendment above) ·
-  **TKT-295** (owns the inventory half: promoting `append_order` to primary, its legacy-NULL
-  boundary, and the guarded restore path)
+  **TKT-295** (the inventory half: `append_order` promoted to primary, its legacy-NULL boundary, and
+  the sequence guard — §Amendment (TKT-295))
 - [ADR-003 — Append-only audit trail](./ADR-003-append-only-audit-trail.md) (§Status gap closed here;
   §D2 trace-derived redemption; §D3 pseudonymity; §D4 NF525 scope)
 - [ADR-016 — Checkout recovery state machine](./ADR-016-checkout-recovery-state-machine.md) (§D7
