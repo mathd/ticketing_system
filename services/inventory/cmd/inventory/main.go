@@ -51,17 +51,20 @@ func main() {
 // subcommands are the one-shot modes (the registry shape services/access uses). migrate is the
 // out-of-band migration job (ADR-022); reprocess-quarantine republishes future-schema events a
 // newer binary now understands (TKT-68) — deploy that binary first, run this, then restart;
-// reconcile-pins reclaims catalog seat pins left behind by expired holds (TKT-112).
+// reconcile-pins reclaims catalog seat pins left behind by expired holds (TKT-112);
+// check-claim-history-sequence guards the append_order sequence after a restore (TKT-295).
 type commandCallbacks struct {
 	migrate                            func() error
 	healthcheck                        func() int
 	reprocessQuarantine, reconcilePins func([]string) error
+	checkClaimHistorySequence          func([]string) error
 }
 
 func productionCommandCallbacks() commandCallbacks {
 	return commandCallbacks{
 		migrate: migrate, healthcheck: healthcheck,
 		reprocessQuarantine: reprocessQuarantine, reconcilePins: reconcilePins,
+		checkClaimHistorySequence: checkClaimHistorySequence,
 	}
 }
 
@@ -71,10 +74,11 @@ func execute(args []string, callbacks commandCallbacks, serve func() error) cmdl
 
 func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
 	return cmdline.Registry{
-		"migrate":              cmdline.WithoutArgs(callbacks.migrate),
-		"healthcheck":          cmdline.ExitStatus(callbacks.healthcheck),
-		"reprocess-quarantine": cmdline.WithArgs(callbacks.reprocessQuarantine),
-		"reconcile-pins":       cmdline.WithArgs(callbacks.reconcilePins),
+		"migrate":                      cmdline.WithoutArgs(callbacks.migrate),
+		"healthcheck":                  cmdline.ExitStatus(callbacks.healthcheck),
+		"reprocess-quarantine":         cmdline.WithArgs(callbacks.reprocessQuarantine),
+		"reconcile-pins":               cmdline.WithArgs(callbacks.reconcilePins),
+		"check-claim-history-sequence": cmdline.WithArgs(callbacks.checkClaimHistorySequence),
 	}
 }
 

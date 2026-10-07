@@ -162,8 +162,10 @@ cd "$ROOT/services/inventory"
 # ./internal/... (not just ./internal/store): the seat-hold handler's DB-backed smoke
 # tests live in ./internal/api (TKT-80), and scoping to ./internal/store would silently
 # skip them — the exact allowlist defect the notes above warn about.
+# ./cmd/inventory: the check-claim-history-sequence command's smoke tests drive the production
+# command registry against a real schema (TKT-295).
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
-go test -tags smoke -count=1 ./internal/...
+go test -tags smoke -count=1 ./internal/... ./cmd/inventory
 
 cd "$ROOT/services/payments"
 # The journal fault-injection matrix (TKT-56 Slice 4). Its own database, for the same

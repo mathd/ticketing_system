@@ -40,6 +40,11 @@
 -- allocated at INSERT, and while allocation order equals commit order for a single claim
 -- (all its writers serialize on one pool row), it is not a commit counter in general.
 -- Both directions are pinned by tests (TKT-230).
+--
+-- SUPERSEDED by TKT-295 (owner decision, 2026-10-07): the reads now ORDER BY append_order
+-- NULLS FIRST, occurred_at, id. A backward clock step between ordinary inserts DOES reorder
+-- history under the clause above, and a later append must not sort earlier. The SQL in this
+-- migration is unchanged; only the read order moved. ADR-021 §Amendment (TKT-295).
 ALTER TABLE claim_history ALTER COLUMN occurred_at SET DEFAULT clock_timestamp();
 
 CREATE SEQUENCE claim_history_append_order_seq AS bigint;
@@ -129,6 +134,8 @@ ALTER TABLE claim_history
 -- as rows are inserted in their original order. A restore path that needs the original
 -- values must disable this trigger explicitly and resynchronize the sequence -- which is
 -- what `ALTER TABLE ... DISABLE TRIGGER` is for, and what the legacy-row test does.
+-- Since TKT-295 that resync is checked: `inventory check-claim-history-sequence [--repair]`
+-- (runbook: docs/development.md § Restoring claim_history).
 -- +goose StatementBegin
 CREATE FUNCTION claim_history_assign_append_order() RETURNS trigger AS $$
 BEGIN

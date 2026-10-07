@@ -22,9 +22,10 @@ func TestCommandRegistryInvokesEveryInventoryCallback(t *testing.T) {
 	callbacks := commandCallbacks{
 		migrate: withoutArgs("migrate"), healthcheck: func() int { invoked = "healthcheck"; return 7 },
 		reprocessQuarantine: withArgs("reprocess-quarantine"), reconcilePins: withArgs("reconcile-pins"),
+		checkClaimHistorySequence: withArgs("check-claim-history-sequence"),
 	}
 	registry := commandRegistry(callbacks)
-	names := []string{"migrate", "healthcheck", "reprocess-quarantine", "reconcile-pins"}
+	names := []string{"migrate", "healthcheck", "reprocess-quarantine", "reconcile-pins", "check-claim-history-sequence"}
 	if len(registry) != len(names) {
 		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))
 	}
