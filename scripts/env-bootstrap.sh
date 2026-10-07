@@ -110,17 +110,27 @@ fi
 # keypair <private-var> <public-keyring-var> <kid-var> <default-kid> <retired-seed>
 keypair() {
 	local priv_var="$1" pub_var="$2" kid_var="$3" default_kid="$4" retired="$5"
-	local kid seed pub
-	if ! needs_generation "$priv_var" "$retired" && [ -n "$(env_value "$pub_var")" ]; then
+	local kid seed pub existing
+	kid="$(env_value "$kid_var")"
+	existing="$(env_value "$pub_var")"
+	if ! needs_generation "$priv_var" "$retired" && [ -n "$existing" ]; then
+		# The pair is kept. A pair written before the key id was persisted
+		# (TKT-287) has its kid only inside the keyring; write it out, so the
+		# signer's kid stops depending on Compose's default matching the keyring.
+		if [ -z "$kid" ]; then
+			env_set "$kid_var" "${existing%%=*}"
+		fi
 		return 0
 	fi
-	kid="$(env_value "$kid_var")"
 	[ -n "$kid" ] || kid="$default_kid"
 	# `access keygen` prints "<seed> <public key>", both raw-standard base64 —
 	# the encoding the loaders and keyrings already read.
 	read -r seed pub < <(cd services/access && go run ./cmd/access keygen)
+	# The seed, the keyring AND the key id are written together: a signer that
+	# stamps one kid while the keyring names another verifies nothing.
 	env_set "$priv_var" "$seed"
 	env_set "$pub_var" "$kid=$pub"
+	env_set "$kid_var" "$kid"
 }
 
 keypair ACCESS_QR_PRIVATE_KEY ACCESS_QR_PUBLIC_KEYS ACCESS_QR_KID access-qr/local-v1 "$RETIRED_QR_SEED"

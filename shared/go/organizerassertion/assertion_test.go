@@ -161,10 +161,11 @@ func TestMalformedAssertionsRefuse(t *testing.T) {
 		"nil staff":     sign(k, "v2", kidA, uuid.Nil.String(), o, exp),
 		"nil organizer": sign(k, "v2", kidA, s, uuid.Nil.String(), exp),
 		// range
-		"zero expiry":        sign(k, "v2", kidA, s, o, "0"),
-		"negative expiry":    sign(k, "v2", kidA, s, o, "-1"),
-		"overflowing expiry": sign(k, "v2", kidA, s, o, "99999999999999999999"),
-		"short signature":    shortSig,
+		"zero expiry":          sign(k, "v2", kidA, s, o, "0"),
+		"expiry leading space": sign(k, "v2", kidA, s, o, " "+exp),
+		"negative expiry":      sign(k, "v2", kidA, s, o, "-1"),
+		"overflowing expiry":   sign(k, "v2", kidA, s, o, "99999999999999999999"),
+		"short signature":      shortSig,
 		// version
 		"unknown version": sign(k, "v3", kidA, s, o, exp),
 		"empty version":   sign(k, "", kidA, s, o, exp),
@@ -206,7 +207,6 @@ func TestNonCanonicalSpellingsRefuse(t *testing.T) {
 		"braced organizer uuid":                   sign(k, "v2", kidA, staff.String(), "{"+organizer.String()+"}", exp),
 		"urn staff uuid":                          sign(k, "v2", kidA, "urn:uuid:"+staff.String(), organizer.String(), exp),
 		"signed expiry":                           sign(k, "v2", kidA, staff.String(), organizer.String(), "+"+exp),
-		"expiry with leading space":               sign(k, "v2", kidA, staff.String(), organizer.String(), " "+exp),
 	}
 	for name, tok := range cases {
 		t.Run(name, func(t *testing.T) { mustRefuse(t, v, tok, now) })

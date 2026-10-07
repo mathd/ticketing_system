@@ -121,6 +121,23 @@ func TestServerRefusesACredentialThatDecodesToTheAssertionSeed(t *testing.T) {
 	}
 }
 
+// The raw-bytes alias: a 32-character credential that IS the seed's bytes, with
+// the seed configured as their base64. No decoding of the credential is involved,
+// which is exactly why a decode-only comparison missed it.
+func TestServerRefusesACredentialThatIsTheRawSeedBytes(t *testing.T) {
+	const raw = "0123456789abcdef0123456789abcdef"
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5ffff")
+	t.Setenv("CATALOG_STAFF_WRITE_TOKEN", raw)
+	t.Setenv("CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
+	t.Setenv("CATALOG_ORGANIZER_ASSERTION_KID", "catalog-org/test")
+	t.Setenv("DATABASE_URL", "")
+
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "must differ from INTERNAL_SERVICE_TOKEN") {
+		t.Fatalf("want the collision refusal, got %v", err)
+	}
+}
+
 // Each assertion-configuration refusal, with every EARLIER predicate satisfied so
 // the case reaches the one it names, and DATABASE_URL unset so a guard that does
 // not fire fails on the database instead.

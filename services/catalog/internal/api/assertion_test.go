@@ -10,10 +10,12 @@ package api
 // that starts passing for a new reason is visible as a changed sentence.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
@@ -344,5 +346,70 @@ func TestOrganizerAssertionPayloadCarriesOnlyImmutableIdentity(t *testing.T) {
 	}
 	if parts[4] != strconv.FormatInt(expiry.Unix(), 10) {
 		t.Errorf("expiry = %q, want %d", parts[4], expiry.Unix())
+	}
+}
+
+// TKT-287 ai-review: a credential "holds the seed" if it IS the seed bytes or
+// decodes to them in any common text form. Each alias below is a different string
+// from the canonical seed; each must be recognised.
+func TestEncodesOrganizerAssertionSeedRecognisesEveryCommonAlias(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 7
+	}
+	canonical := base64.RawStdEncoding.EncodeToString(seed)
+	mixedSeed := []byte{0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef}
+	for name, tc := range map[string]struct {
+		value string
+		seed  []byte
+	}{
+		"canonical":                   {canonical, seed},
+		"padded standard":             {base64.StdEncoding.EncodeToString(seed), seed},
+		"non-canonical trailing bits": {canonical[:len(canonical)-1] + "d", seed},
+		"lower hex":                   {hex.EncodeToString(seed), seed},
+		"upper hex":                   {strings.ToUpper(hex.EncodeToString(seed)), seed},
+		"whitespace inside":           {canonical[:10] + " \t" + canonical[10:], seed},
+		"the raw seed bytes":          {"0123456789abcdef0123456789abcdef", []byte("0123456789abcdef0123456789abcdef")},
+		"url-safe alphabet":           {"------------------------------------------8", mixedSeed},
+		"mixed alphabets":             {"++++++++++++++++++++----------------------8", mixedSeed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !EncodesOrganizerAssertionSeed(tc.value, tc.seed) {
+				t.Fatalf("%q was not recognised as the seed", tc.value)
+			}
+		})
+	}
+	// And the negative: a different seed in every form is NOT the seed.
+	other := make([]byte, ed25519.SeedSize)
+	for _, v := range []string{base64.RawStdEncoding.EncodeToString(other), hex.EncodeToString(other), string(other), "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5"} {
+		if EncodesOrganizerAssertionSeed(v, seed) {
+			t.Fatalf("%q was mistaken for the seed", v)
+		}
+	}
+}
+
+// One seed, one accepted string: the decoder refuses every other spelling, CR/LF
+// included, which Go's base64 decoder ignores even in Strict mode.
+func TestDecodeOrganizerAssertionSeedAcceptsOnlyTheCanonicalSpelling(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 7
+	}
+	canonical := base64.RawStdEncoding.EncodeToString(seed)
+	if got, err := DecodeOrganizerAssertionSeed(canonical); err != nil || !bytes.Equal(got, seed) {
+		t.Fatalf("canonical seed: %v", err)
+	}
+	for name, v := range map[string]string{
+		"trailing bits": canonical[:len(canonical)-1] + "d",
+		"padded":        canonical + "=",
+		"LF inside":     canonical[:20] + "\n" + canonical[20:],
+		"CR inside":     canonical[:20] + "\r" + canonical[20:],
+		"url alphabet":  base64.RawURLEncoding.EncodeToString([]byte{0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef, 0xbe, 0xfb, 0xef}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeOrganizerAssertionSeed(v); err == nil {
+				t.Fatalf("accepted %q", v)
+			}
+		})
 	}
 }

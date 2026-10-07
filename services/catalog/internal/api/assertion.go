@@ -48,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -93,12 +94,13 @@ func NewOrganizerAssertionSigner(seedBase64, kid string) (*OrganizerAssertionSig
 }
 
 // DecodeOrganizerAssertionSeed decodes a 32-byte Ed25519 seed in canonical
-// raw-standard base64. STRICT: Go's default decoder ignores the unused trailing
-// bits of the last character, so `…Bwc` and `…Bwd` are one seed. Refusing the
-// non-canonical spelling means one seed has exactly one accepted string.
+// raw-standard base64, and accepts NO other spelling of it. Go's decoder, even in
+// Strict mode, ignores CR and LF, and its default mode also ignores the unused
+// trailing bits of the last character, so the decoded bytes are re-encoded and
+// compared with the input. One seed therefore has exactly one accepted string.
 func DecodeOrganizerAssertionSeed(seedBase64 string) ([]byte, error) {
-	seed, err := base64.RawStdEncoding.Strict().DecodeString(seedBase64)
-	if err != nil {
+	seed, err := base64.RawStdEncoding.DecodeString(seedBase64)
+	if err != nil || base64.RawStdEncoding.EncodeToString(seed) != seedBase64 {
 		return nil, errors.New("organizer assertion signing key is not canonical raw-standard base64")
 	}
 	if len(seed) != ed25519.SeedSize {
@@ -107,20 +109,33 @@ func DecodeOrganizerAssertionSeed(seedBase64 string) ([]byte, error) {
 	return seed, nil
 }
 
-// EncodesOrganizerAssertionSeed reports whether value IS the seed under any
-// encoding a holder could decode it with: base64 in its four variants (lenient,
-// so non-canonical trailing bits count) and hex. A string comparison alone misses
-// these, and a credential that decodes to the seed hands its holder the power to
-// mint any tenancy (TKT-287 ai-review).
+// EncodesOrganizerAssertionSeed reports whether a holder of value holds the seed:
+// value IS the 32 seed bytes, or decodes to them as base64 or hex. Base64 is
+// tried once, after normalizing every spelling Go or a shell would also accept —
+// whitespace removed, the URL-safe alphabet folded into the standard one, padding
+// dropped, unused trailing bits ignored — rather than variant by variant, so a
+// mixed or reformatted alias cannot fall between two checks (TKT-287 ai-review).
+//
+// Name the limit: this catches a credential that IS the seed in a common text
+// form, which is what a misconfiguration produces. It cannot catch an operator
+// who deliberately derives one secret from the other in an encoding of their own
+// (base32, a KDF); no comparison can, and that is not the adversary this guard
+// is for.
 func EncodesOrganizerAssertionSeed(value string, seed []byte) bool {
-	for _, enc := range []*base64.Encoding{
-		base64.RawStdEncoding, base64.StdEncoding, base64.RawURLEncoding, base64.URLEncoding,
-	} {
-		if decoded, err := enc.DecodeString(value); err == nil && bytes.Equal(decoded, seed) {
-			return true
-		}
+	if bytes.Equal([]byte(value), seed) {
+		return true
 	}
-	decoded, err := hex.DecodeString(value)
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, value)
+	normalized := strings.NewReplacer("-", "+", "_", "/", "=", "").Replace(compact)
+	if decoded, err := base64.RawStdEncoding.DecodeString(normalized); err == nil && bytes.Equal(decoded, seed) {
+		return true
+	}
+	decoded, err := hex.DecodeString(compact)
 	return err == nil && bytes.Equal(decoded, seed)
 }
 

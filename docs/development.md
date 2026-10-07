@@ -948,6 +948,20 @@ already have. So a developer who once set `INVENTORY_STAFF_WRITE_TOKEN` equal to
 `INTERNAL_SERVICE_TOKEN` by hand keeps that value and inventory will keep refusing to start —
 delete the line from `.env` and re-run `make up` to get a fresh independent draw.
 
+**The organizer assertion is signed with an Ed25519 pair (TKT-287, ADR-058 § Amendment).** `make up`
+writes three values together: `CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY` (the private seed, catalog
+only), `CATALOG_ORGANIZER_ASSERTION_KID` (default `catalog-org/local-v1`) and
+`COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (`kid=<public key>`, for commerce to verify with). An
+`.env` from before TKT-287 keeps its values and gains the pair. The retired
+`CATALOG_ORGANIZER_ASSERTION_KEY` (HMAC) is no longer read, and you can delete it. Catalog refuses to
+start when the seed is not canonical raw-standard base64, or when another credential *is* the seed
+in a common text form (raw bytes, any base64 spelling, hex).
+
+To rotate, delete the seed and keyring lines from `.env` and run `make up`. **Every live assertion
+then fails, and staff must sign in again.** The same is true of the deploy that first ships v2:
+there is no v1 window, and catalog and the back office must be redeployed together. The back office
+holds assertions only in its in-process session map, so restarting it clears them.
+
 **Verifying a change here needs a real browser.** The smoke suite submits the login and logout
 forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot
 prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Run
