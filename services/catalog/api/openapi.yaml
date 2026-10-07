@@ -1796,8 +1796,8 @@ components:
 
         Obtained from POST /staff/authenticate (organizer_assertion). It is a
         bearer credential until it expires: hold it server-side, never render it
-        into a page. Ed25519-signed since TKT-287, so commerce verifies the same
-        value with catalog's public key and cannot mint one.
+        into a page. Ed25519-signed since TKT-287, so a service that holds only
+        catalog's public key can verify the same value and cannot mint one.
       type: apiKey
       in: header
       name: X-Catalog-Organizer-Assertion

@@ -76,7 +76,7 @@ func organizerAssertionFor(t *testing.T, organizer string) string {
 		t.Fatalf("SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED is not a raw-standard-base64 Ed25519 seed")
 	}
 	// v2.<kid>.<staff>.<organizer>.<unix expiry>.<Ed25519 signature> -- the format
-	// catalog mints and catalog and commerce verify (shared/go/organizerassertion,
+	// catalog mints and verifies (shared/go/organizerassertion,
 	// TKT-287). Built here with the standard library, NOT with that package, so a
 	// canonical-form drift between the two sides fails these writes loudly instead
 	// of agreeing with itself.

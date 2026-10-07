@@ -191,7 +191,15 @@ func run() error {
 	// organizer. If the signing seed were that same value, any holder could mint
 	// their own assertion for any tenant, and the boundary would be exactly as
 	// absent as before — while every test, header and log line said it was there.
-	if assertionSeed == internalToken || assertionSeed == staffWriteToken {
+	//
+	// Compared as KEY MATERIAL, not as strings: a credential that differs from the
+	// seed's string but decodes to the same 32 bytes (another base64 variant,
+	// non-canonical trailing bits, or hex) gives its holder the seed all the same.
+	seed, err := api.DecodeOrganizerAssertionSeed(assertionSeed)
+	if err != nil {
+		return fmt.Errorf("%s: %w", organizerAssertionSigningKeyEnv, err)
+	}
+	if api.EncodesOrganizerAssertionSeed(internalToken, seed) || api.EncodesOrganizerAssertionSeed(staffWriteToken, seed) {
 		return fmt.Errorf("%s must differ from INTERNAL_SERVICE_TOKEN and %s: a signing key equal to "+
 			"the write credential lets anyone who can write mint their own tenancy, which is the "+
 			"boundary this key exists to create", organizerAssertionSigningKeyEnv, staffWriteTokenEnv)

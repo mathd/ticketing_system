@@ -722,7 +722,7 @@ const MAX_INT64 = 9_223_372_036_854_775_807n;
 /**
  * Validate the readable fields in catalog's signed v2 assertion (TKT-287):
  * `v2.<kid>.<staff>.<organizer>.<unix expiry>.<Ed25519 signature>`. This is a
- * structural check, not verification: catalog and commerce verify the signature.
+ * structural check, not verification: catalog verifies the signature.
  */
 function decodeOrganizerAssertion(
   value: unknown,

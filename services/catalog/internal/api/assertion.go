@@ -32,14 +32,17 @@ package api
 // the back office's memory, or the database.
 //
 // Since TKT-287 the signature is Ed25519, not HMAC. Catalog alone holds the
-// private key; commerce verifies the same token with the public key
-// (shared/go/organizerassertion), and a public key mints nothing. The verifier
-// lives in the shared package so both services parse one canonical form; the
+// private key. A service that holds only the public key can verify the same
+// token (shared/go/organizerassertion) and mint nothing; commerce is that service
+// from TKT-287 part 2. The verifier lives in the shared package so every
+// verifier parses one canonical form; the
 // signer lives here, so no other service has a minting path even in code.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -72,12 +75,9 @@ type OrganizerAssertionSigner struct {
 //
 // Errors name the problem and never echo the seed.
 func NewOrganizerAssertionSigner(seedBase64, kid string) (*OrganizerAssertionSigner, error) {
-	seed, err := base64.RawStdEncoding.DecodeString(seedBase64)
+	seed, err := DecodeOrganizerAssertionSeed(seedBase64)
 	if err != nil {
-		return nil, errors.New("organizer assertion signing key is not raw-standard base64")
-	}
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("organizer assertion signing key must decode to a %d-byte Ed25519 seed", ed25519.SeedSize)
+		return nil, err
 	}
 	if !organizerassertion.ValidKID(kid) {
 		return nil, fmt.Errorf("organizer assertion key id must be %q followed by 1-64 of [A-Za-z0-9_-]", organizerassertion.KIDNamespace)
@@ -90,6 +90,38 @@ func NewOrganizerAssertionSigner(seedBase64, kid string) (*OrganizerAssertionSig
 		return nil, err
 	}
 	return &OrganizerAssertionSigner{private: private, kid: kid, verifier: verifier}, nil
+}
+
+// DecodeOrganizerAssertionSeed decodes a 32-byte Ed25519 seed in canonical
+// raw-standard base64. STRICT: Go's default decoder ignores the unused trailing
+// bits of the last character, so `…Bwc` and `…Bwd` are one seed. Refusing the
+// non-canonical spelling means one seed has exactly one accepted string.
+func DecodeOrganizerAssertionSeed(seedBase64 string) ([]byte, error) {
+	seed, err := base64.RawStdEncoding.Strict().DecodeString(seedBase64)
+	if err != nil {
+		return nil, errors.New("organizer assertion signing key is not canonical raw-standard base64")
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("organizer assertion signing key must decode to a %d-byte Ed25519 seed", ed25519.SeedSize)
+	}
+	return seed, nil
+}
+
+// EncodesOrganizerAssertionSeed reports whether value IS the seed under any
+// encoding a holder could decode it with: base64 in its four variants (lenient,
+// so non-canonical trailing bits count) and hex. A string comparison alone misses
+// these, and a credential that decodes to the seed hands its holder the power to
+// mint any tenancy (TKT-287 ai-review).
+func EncodesOrganizerAssertionSeed(value string, seed []byte) bool {
+	for _, enc := range []*base64.Encoding{
+		base64.RawStdEncoding, base64.StdEncoding, base64.RawURLEncoding, base64.URLEncoding,
+	} {
+		if decoded, err := enc.DecodeString(value); err == nil && bytes.Equal(decoded, seed) {
+			return true
+		}
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && bytes.Equal(decoded, seed)
 }
 
 // organizerScope is what a verified assertion authorises. It is filled by the
@@ -169,8 +201,8 @@ const OrganizerAssertionTTL = 8 * time.Hour
 // organizerAssertionHeader carries the token. A header, not the body: the whole
 // point is that the request body cannot name an organizer, so putting the
 // replacement in the body would reintroduce the shape being removed. Commerce
-// reads the same header name (TKT-287 D6), because the back office forwards one
-// session value to both.
+// takes the same header name in TKT-287 part 2 (D6), so the back office forwards
+// one session value to both.
 const organizerAssertionHeader = "X-Catalog-Organizer-Assertion"
 
 // organizerAssertionSecurityScheme is the securityScheme name in the contract.

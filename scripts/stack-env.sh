@@ -85,7 +85,8 @@ export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
 #
 # The seed is exported to the TEST PROCESS as SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED,
 # so smoke can mint an assertion for an organizer it has no staff account in (the
-# cross-tenant cases). Commerce gets only the public keyring.
+# cross-tenant cases). COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS carries only the
+# public half, for commerce (wired in TKT-287 part 2).
 read -r SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED SMOKE_CATALOG_ORGANIZER_ASSERTION_PUB < <(cd "$ROOT/services/access" && go run ./cmd/access keygen)
 export SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED
 export CATALOG_ORGANIZER_ASSERTION_KID="catalog-org/local-v1"

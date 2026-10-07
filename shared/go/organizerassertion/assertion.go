@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,14 @@ const Version = "v2"
 // KIDNamespace prefixes every key id, so a key from another keyring (access's
 // QR keys use `access-qr/`) cannot be configured here by mistake.
 const KIDNamespace = "catalog-org/"
+
+// signatureChars is an Ed25519 signature (64 bytes) in unpadded base64url.
+const signatureChars = 86
+
+var (
+	canonicalUUID   = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+	canonicalExpiry = regexp.MustCompile(`^[0-9]{1,19}$`)
+)
 
 // ErrInvalid is the ONLY verification failure reported. Expired, forged,
 // malformed and unknown-key are one answer: a caller probing the difference
@@ -131,11 +140,25 @@ func (v *Verifier) Verify(token string, now time.Time) (Scope, error) {
 	if !ok {
 		return Scope{}, ErrInvalid
 	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[5])
+	// Exactly the documented 86 characters, decoded STRICTLY: the default decoder
+	// ignores CR/LF and the unused trailing bits of the last character, which would
+	// give one signature several accepted spellings.
+	if len(parts[5]) != signatureChars {
+		return Scope{}, ErrInvalid
+	}
+	sig, err := base64.RawURLEncoding.Strict().DecodeString(parts[5])
 	if err != nil {
 		return Scope{}, ErrInvalid
 	}
 	if !ed25519.Verify(key, []byte(strings.Join(parts[:5], ".")), sig) {
+		return Scope{}, ErrInvalid
+	}
+	// The contract's syntax, checked BEFORE the lenient parsers: uuid.Parse also
+	// takes the compact, braced and urn forms, and strconv.ParseInt takes a sign.
+	// Catalog never mints those, so only the private-key holder could produce one,
+	// but a verifier that accepts more than the contract declares is a second
+	// definition of the format.
+	if !canonicalUUID.MatchString(parts[2]) || !canonicalUUID.MatchString(parts[3]) || !canonicalExpiry.MatchString(parts[4]) {
 		return Scope{}, ErrInvalid
 	}
 	staffID, err := uuid.Parse(parts[2])

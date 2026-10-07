@@ -176,6 +176,43 @@ func TestMalformedAssertionsRefuse(t *testing.T) {
 	}
 }
 
+// TKT-287 ai-review: one signature, one accepted spelling. Each case keeps the
+// signed bytes valid and changes only how the signature or a field is WRITTEN, so
+// a lenient decoder or parser would accept it.
+func TestNonCanonicalSpellingsRefuse(t *testing.T) {
+	k := key(t, 1)
+	v := verifier(t, map[string]ed25519.PublicKey{kidA: pub(k)})
+	token := valid(k, kidA)
+	parts := strings.Split(token, ".")
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := parts[5][len(parts[5])-1]
+	// 86 characters carry 516 bits for 512, so the last character's low 4 bits
+	// are unused: flipping one leaves the decoded signature identical.
+	trailing := parts[5][:len(parts[5])-1] + string(alphabet[strings.IndexByte(alphabet, last)^1])
+	if got, _ := base64.RawURLEncoding.DecodeString(trailing); string(got) != func() string {
+		b, _ := base64.RawURLEncoding.DecodeString(parts[5])
+		return string(b)
+	}() {
+		t.Fatal("fixture: the trailing-bit spelling must decode to the same signature")
+	}
+	withSig := func(sig string) string { return strings.Join(append(append([]string(nil), parts[:5]...), sig), ".") }
+	exp := strconv.FormatInt(expiry.Unix(), 10)
+	compact := strings.ReplaceAll(staff.String(), "-", "")
+	cases := map[string]string{
+		"signature with unused trailing bits set": withSig(trailing),
+		"signature with an embedded newline":      withSig(parts[5][:40] + "\n" + parts[5][40:]),
+		"signature with an embedded CR":           withSig(parts[5][:40] + "\r" + parts[5][40:]),
+		"compact staff uuid":                      sign(k, "v2", kidA, compact, organizer.String(), exp),
+		"braced organizer uuid":                   sign(k, "v2", kidA, staff.String(), "{"+organizer.String()+"}", exp),
+		"urn staff uuid":                          sign(k, "v2", kidA, "urn:uuid:"+staff.String(), organizer.String(), exp),
+		"signed expiry":                           sign(k, "v2", kidA, staff.String(), organizer.String(), "+"+exp),
+		"expiry with leading space":               sign(k, "v2", kidA, staff.String(), organizer.String(), " "+exp),
+	}
+	for name, tok := range cases {
+		t.Run(name, func(t *testing.T) { mustRefuse(t, v, tok, now) })
+	}
+}
+
 // The HMAC v1 format this replaces (ADR-058) must not verify through any path:
 // there is no transition window (TKT-287 D4).
 func TestALegacyV1AssertionRefuses(t *testing.T) {

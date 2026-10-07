@@ -95,6 +95,32 @@ func TestServerRefusesAnAssertionSeedEqualToACredential(t *testing.T) {
 	}
 }
 
+// TKT-287 ai-review: the collision is about KEY MATERIAL, not spelling. Each
+// credential below is a different string from the seed and decodes to the same
+// 32 bytes, so its holder holds the seed. The seed itself is canonical, so the
+// test reaches the collision guard and not the decoder.
+func TestServerRefusesACredentialThatDecodesToTheAssertionSeed(t *testing.T) {
+	const seed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc" // 32 x 0x07, canonical raw-standard base64
+	for name, alias := range map[string]string{
+		"non-canonical trailing bits": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd",
+		"padded standard base64":      "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+		"hex":                         "0707070707070707070707070707070707070707070707070707070707070707",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("INTERNAL_SERVICE_TOKEN", "0f3d1c9a8b7e6f5d4c3b2a1908f7e6d5")
+			t.Setenv("CATALOG_STAFF_WRITE_TOKEN", alias)
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY", seed)
+			t.Setenv("CATALOG_ORGANIZER_ASSERTION_KID", "catalog-org/test")
+			t.Setenv("DATABASE_URL", "")
+
+			err := run()
+			if err == nil || !strings.Contains(err.Error(), "must differ from INTERNAL_SERVICE_TOKEN") {
+				t.Fatalf("want the collision refusal, got %v", err)
+			}
+		})
+	}
+}
+
 // Each assertion-configuration refusal, with every EARLIER predicate satisfied so
 // the case reaches the one it names, and DATABASE_URL unset so a guard that does
 // not fire fails on the database instead.
@@ -102,7 +128,8 @@ func TestServerRefusesUnusableAssertionConfiguration(t *testing.T) {
 	const validSeed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc" // 32 x 0x07
 	for _, tc := range []struct{ name, seed, kid, want string }{
 		{"missing seed", "", "catalog-org/test", "CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY required"},
-		{"seed not base64", "this-is-long-enough-but-is-not-base64-at-all!!", "catalog-org/test", "not raw-standard base64"},
+		{"seed not base64", "this-is-long-enough-but-is-not-base64-at-all!!", "catalog-org/test", "not canonical raw-standard base64"},
+		{"seed with non-canonical trailing bits", "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd", "catalog-org/test", "not canonical raw-standard base64"},
 		{"seed of the wrong length", "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI", "catalog-org/test", "32-byte Ed25519 seed"},
 		{"missing kid", validSeed, "", "key id must be"},
 		{"kid outside the namespace", validSeed, "access-qr/test", "key id must be"},

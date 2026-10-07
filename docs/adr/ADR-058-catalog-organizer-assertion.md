@@ -270,6 +270,11 @@ this assertion, because verifying an HMAC needs the key that mints it. Sharing t
 commerce compromise mint for any organizer. The owner chose a fourth option (TKT-287 D1): sign
 asymmetrically, so catalog alone can mint and any service can verify.
 
+**Delivery.** TKT-287 ships in two parts. Part 1 makes catalog mint and verify v2 and adds the shared
+verifier. Part 2 makes commerce verify the assertion on its refund, void and staff order read, and
+removes `organizer_id` from those requests. **Until part 2 merges, commerce still takes the organizer
+from the request**, and the bullets below about commerce describe part 2.
+
 **Wire format.** `v2.<kid>.<staff id>.<organizer id>.<unix expiry>.<signature>`. The signature is
 Ed25519 over the exact bytes of the first five fields joined by dots, raw-URL base64 (86 characters).
 The key id is `catalog-org/` followed by 1–64 of `[A-Za-z0-9_-]`. Staff and organizer stay the only
@@ -283,7 +288,7 @@ one error.
 |---|---|---|
 | `CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY` | catalog only | 32-byte Ed25519 seed, raw-standard base64 (`access keygen`) |
 | `CATALOG_ORGANIZER_ASSERTION_KID` | catalog | the active key id (default `catalog-org/local-v1`) |
-| `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` | commerce | `kid=<public key>,…` — verification only |
+| `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` | commerce (from TKT-287 part 2) | `kid=<public key>,…` — verification only |
 
 Catalog verifies with the public key derived from its own seed, so its signer and verifier cannot
 disagree. Catalog still refuses to start when the seed equals `INTERNAL_SERVICE_TOKEN` or
