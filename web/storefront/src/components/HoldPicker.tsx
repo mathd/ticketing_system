@@ -396,6 +396,10 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       if (response.ok) {
         const result = decodeOrderResult(body);
         outcome = 'completed';
+        // Stop the countdown: a sold hold never "expires" — the tick would otherwise overwrite
+        // the confirmation with "Hold expired" and retire the key, so a further Reserve would
+        // take a fresh hold instead of replaying the completed one (TKT-289 decision audit).
+        setHoldId(null);
         setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
       }
       if (response.status === 402 || response.status === 408) {

@@ -430,6 +430,31 @@ describe('a dead hold is never replayed', () => {
     expect(second).not.toBe(first);
   });
 
+  // Decision audit [high]: a COMPLETED checkout is not a dead hold. Past the original deadline
+  // the page still says confirmed, and Reserve replays the completed reservation's key rather
+  // than buying again.
+  it('keeps the confirmation and the key after a completed checkout passes its deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const stub = queuedFetch({
+      '/reservations': [{ status: 200, body: liveFor(1000) }, { status: 200, body: liveFor(60_000) }],
+      '/checkout': [{ status: 200, body: { order_id: ORDER, guest_order_ref: GUEST_ORDER_REF, status: 'completed' } }],
+    });
+    mountGA(stub);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Pay/ }));
+    const confirmed = await screen.findByText(/confirmed/i);
+    const confirmation = confirmed.textContent;
+    act(() => { vi.advanceTimersByTime(1250); });
+    expect(screen.queryByText('Hold expired')).toBeNull();
+    expect(screen.getByText(/confirmed/i).textContent).toBe(confirmation);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await waitFor(() => expect(keysFor(stub, '/reservations')).toHaveLength(2));
+    const [first, second] = keysFor(stub, '/reservations');
+    expect(second).toBe(first);
+  });
+
   // ...but a 401 AFTER an uncertain attempt proves nothing: that order may exist.
   it('keeps the key when a 401 follows an uncertain checkout', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
