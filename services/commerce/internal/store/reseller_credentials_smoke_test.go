@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -527,6 +528,7 @@ func TestResellerCredentialCapSerializesConcurrentEnrolment(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var parkedInserts, identityWaiters string
 	// waitFor polls the database for a condition, failing the SETUP on timeout.
 	waitFor := func(what, query string) {
 		t.Helper()
@@ -544,20 +546,43 @@ func TestResellerCredentialCapSerializesConcurrentEnrolment(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	parkedInserts := `SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
+	parkedInserts = `SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
 		WHERE a.wait_event_type='Lock' AND a.query LIKE 'INSERT INTO reseller_credentials%' AND l.locktype='advisory'`
-	identityWaiters := `SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
+	identityWaiters = `SELECT count(*) FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid AND NOT l.granted
 		WHERE a.wait_event_type='Lock' AND a.query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%' AND l.locktype='advisory'`
+
+	// Each worker gets its OWN connection pool, named, so the observers match THIS test's
+	// sessions and nothing else on the server (review pass 1). The workers default to
+	// REPEATABLE READ: production must ask for READ COMMITTED explicitly, because under
+	// a snapshot taken before the lock wait B would count one and insert a third
+	// (review pass 1). Different labels as well as channels, so a lock key that wrongly
+	// included either would no longer serialize them.
+	var schema string
+	if err := db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	worker := func(name string) *sql.DB {
+		w, err := sql.Open("pgx", os.Getenv("COMMERCE_MIGRATION_TEST_DATABASE_URL")+"?search_path="+schema+
+			"&application_name="+name+"&default_transaction_isolation=repeatable%20read")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = w.Close() })
+		return w
+	}
+	workerA, workerB := worker("tkt290-a-"+schema), worker("tkt290-b-"+schema)
+	parkedInserts = strings.Replace(parkedInserts, "WHERE ", "WHERE a.application_name LIKE 'tkt290-%-"+schema+"' AND ", 1)
+	identityWaiters = strings.Replace(identityWaiters, "WHERE ", "WHERE a.application_name = 'tkt290-b-"+schema+"' AND ", 1)
 
 	type res struct{ err error }
 	results := make(chan res, 2)
-	enrol := func(channel string) {
-		_, _, err := EnrolResellerCredential(ctx, db, org, reseller, channel, "concurrent")
+	enrol := func(w *sql.DB, channel, label string) {
+		_, _, err := EnrolResellerCredential(ctx, w, org, reseller, channel, label)
 		results <- res{err}
 	}
-	go enrol("reseller-a")
+	go enrol(workerA, "reseller-a", "concurrent A")
 	waitFor("enrolment A parked inside its INSERT", "SELECT ("+parkedInserts+") = 1")
-	go enrol("reseller-b")
+	go enrol(workerB, "reseller-b", "concurrent B")
 	// B is either waiting on the identity lock (the guard works) or parked beside A in
 	// the trigger (the guard is gone). Either way it has made its decision-relevant move.
 	waitFor("enrolment B waiting", "SELECT ("+identityWaiters+") = 1 OR ("+parkedInserts+") = 2")
@@ -579,5 +604,41 @@ func TestResellerCredentialCapSerializesConcurrentEnrolment(t *testing.T) {
 	}
 	if n := liveCount(t, ctx, db, org, reseller); n != 2 || ok != 1 || refused != 1 {
 		t.Fatalf("concurrent enrolments from one live: live=%d ok=%d refused=%d, want 2/1/1", n, ok, refused)
+	}
+}
+
+// Review pass 1: identities that already held MORE than two live credentials before the
+// cap (the ADR names them) are refused, not topped up — and recover only once revocation
+// brings them below two. Seeded directly, since the cap prevents reaching three through
+// enrolment. This is what separates `< 2` from a comparator that only refuses at exactly 2.
+func TestResellerCredentialCapRefusesALegacyOverCapIdentity(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	org, reseller := uuid.New(), uuid.New()
+	ids := make([]uuid.UUID, 3)
+	for i := range ids {
+		ids[i] = uuid.New()
+		if _, err := db.ExecContext(ctx, `INSERT INTO reseller_credentials(id, reseller_id, organizer_id, channel_code, token_hash, label)
+			VALUES ($1, $2, $3, 'reseller-legacy', $4, 'legacy')`, ids[i], reseller, org, uuid.NewString()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(when string) {
+		t.Helper()
+		if _, token, err := EnrolResellerCredential(ctx, db, org, reseller, "reseller-legacy", "new"); !errors.Is(err, ErrResellerCredentialCap) || token != "" {
+			t.Fatalf("%s: err=%v token=%q, want the cap refusal and no token", when, err, token)
+		}
+	}
+	refused("three live")
+	if err := RevokeResellerCredential(ctx, db, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	refused("two live")
+	if err := RevokeResellerCredential(ctx, db, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	mustEnrol(t, ctx, db, org, reseller, "reseller-legacy")
+	if n := liveCount(t, ctx, db, org, reseller); n != 2 {
+		t.Fatalf("live = %d, want 2", n)
 	}
 }
