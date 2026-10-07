@@ -66,7 +66,7 @@ func (s *Server) authenticateOrganizerAssertion(_ context.Context, input *openap
 		return fmt.Errorf("unauthorized")
 	}
 	req := input.RequestValidationInput.Request
-	scope, err := verifyOrganizerAssertion(s.organizerAssertionKey,
+	scope, err := verifyOrganizerAssertion(s.organizerAssertions,
 		req.Header.Get(organizerAssertionHeader), time.Now())
 	if err != nil {
 		// Deliberately uninformative, and identical to the staff-credential

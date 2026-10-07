@@ -1,6 +1,6 @@
 package api
 
-// Organizer assertions (TKT-245). See ADR-058.
+// Organizer assertions (TKT-245; Ed25519 v2 since TKT-287). See ADR-058.
 //
 // The problem this exists for: ADR-042 put staff accounts in catalog and the
 // SESSION in the back-office process, and the two never speak about a specific
@@ -25,42 +25,136 @@ package api
 // in-process session, server-side only, and forwards it on the writes it proxies.
 //
 // What it is NOT: a session, a refresh token, or a general-purpose credential. It
-// authorizes exactly one thing — naming the organizer a catalog write is for — and
-// it is a BEARER token until it expires. ADR-021's question, answered: this stops
-// a caller holding the staff-write credential from naming an organizer it has no
-// session for. It stops nothing at all against someone holding the signing key,
+// authorizes exactly one thing — naming the organizer a write is for — and it is
+// a BEARER token until it expires. ADR-021's question, answered: this stops a
+// caller holding a staff-write credential from naming an organizer it has no
+// session for. It stops nothing at all against someone holding the private key,
 // the back office's memory, or the database.
+//
+// Since TKT-287 the signature is Ed25519, not HMAC. Catalog alone holds the
+// private key. A service that holds only the public key can verify the same
+// token (shared/go/organizerassertion) and mint nothing; commerce is that service
+// from TKT-287 part 2. The verifier lives in the shared package so every
+// verifier parses one canonical form; the
+// signer lives here, so no other service has a minting path even in code.
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
+	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"ticketing/shared/organizerassertion"
 )
 
 // ErrOrganizerAssertionInvalid is the ONLY verification failure reported. Expired,
 // forged, malformed and truncated are one answer: a caller probing the difference
-// learns which of their guesses was structurally right, and none of the four
-// should ever reach a well-behaved back office.
-var ErrOrganizerAssertionInvalid = errors.New("invalid organizer assertion")
+// learns which of its guesses was structurally right, and none of the four should
+// ever reach a well-behaved back office.
+var ErrOrganizerAssertionInvalid = organizerassertion.ErrInvalid
 
-// organizerAssertionVersion prefixes every token. It costs three bytes and it is
-// what makes changing the format later a migration rather than a mystery: an old
-// token presented after a format change is refused as invalid, not misparsed.
-const organizerAssertionVersion = "v1"
+// OrganizerAssertionSigner holds catalog's Ed25519 private key, its key id, and
+// the verifier for its own public key. Catalog verifies with the key derived from
+// its seed, so the two can never disagree. There is no second keyring: ADR-058
+// has no rotation overlap, and rotating invalidates every live assertion.
+type OrganizerAssertionSigner struct {
+	private  ed25519.PrivateKey
+	kid      string
+	verifier *organizerassertion.Verifier
+}
 
-// organizerAssertionKey is the HMAC key. Catalog-only, and deliberately not
-// INTERNAL_SERVICE_TOKEN (one shared value opening every service's internal
-// surface) or CATALOG_STAFF_WRITE_TOKEN (the credential this assertion is
-// presented ALONGSIDE — a key equal to it would let anyone who can write mint
-// their own tenancy). main.go refuses to start when it equals either.
-type organizerAssertionKey string
+// NewOrganizerAssertionSigner decodes a raw-standard-base64 Ed25519 seed (the
+// `access keygen` format) and a `catalog-org/` key id.
+//
+// Errors name the problem and never echo the seed.
+func NewOrganizerAssertionSigner(seedBase64, kid string) (*OrganizerAssertionSigner, error) {
+	seed, err := DecodeOrganizerAssertionSeed(seedBase64)
+	if err != nil {
+		return nil, err
+	}
+	if !organizerassertion.ValidKID(kid) {
+		return nil, fmt.Errorf("organizer assertion key id must be %q followed by 1-64 of [A-Za-z0-9_-]", organizerassertion.KIDNamespace)
+	}
+	private := ed25519.NewKeyFromSeed(seed)
+	verifier, err := organizerassertion.NewVerifier(map[string]ed25519.PublicKey{
+		kid: private.Public().(ed25519.PublicKey),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &OrganizerAssertionSigner{private: private, kid: kid, verifier: verifier}, nil
+}
+
+// DecodeOrganizerAssertionSeed decodes a 32-byte Ed25519 seed in canonical
+// raw-standard base64, and accepts NO other spelling of it. Go's decoder, even in
+// Strict mode, ignores CR and LF, and its default mode also ignores the unused
+// trailing bits of the last character, so the decoded bytes are re-encoded and
+// compared with the input. One seed therefore has exactly one accepted string.
+func DecodeOrganizerAssertionSeed(seedBase64 string) ([]byte, error) {
+	seed, err := base64.RawStdEncoding.DecodeString(seedBase64)
+	if err != nil || base64.RawStdEncoding.EncodeToString(seed) != seedBase64 {
+		return nil, errors.New("organizer assertion signing key is not canonical raw-standard base64")
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("organizer assertion signing key must decode to a %d-byte Ed25519 seed", ed25519.SeedSize)
+	}
+	return seed, nil
+}
+
+// EncodesOrganizerAssertionSeed reports whether a holder of value holds the seed:
+// value CONTAINS the full seed as raw bytes, as hex, or as base64. Containment, not
+// equality, after one normalization per encoding, so that wrapping, prefixes and
+// separators cannot carry the seed past the check one spelling at a time
+// (TKT-287 ai-review passes 1–3 each found another spelling):
+//
+//   - hex: every hex digit in value, lowercased and concatenated, so `0x…`,
+//     `07:07:…`, mixed case and whitespace all reduce to the same digits;
+//   - base64: every base64 character in value with the URL-safe alphabet folded
+//     into the standard one and padding dropped, compared on the first 42
+//     characters — the 43rd carries 4 unused bits, so it varies between spellings
+//     of one seed and leaves only 16 candidates to an attacker anyway.
+//
+// Name the limit: this catches a credential that carries the WHOLE seed in a
+// common text form, which is what reusing a secret by mistake produces. It does
+// not catch a partial overlap or a deliberate derivation (base32, a KDF); no
+// comparison can enumerate those, and an operator doing it on purpose is not the
+// adversary this guard is for.
+func EncodesOrganizerAssertionSeed(value string, seed []byte) bool {
+	if strings.Contains(value, string(seed)) {
+		return true
+	}
+	hexDigits := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+			return r
+		case r >= 'A' && r <= 'F':
+			return r + ('a' - 'A')
+		}
+		return -1
+	}, value)
+	if strings.Contains(hexDigits, hex.EncodeToString(seed)) {
+		return true
+	}
+	b64Chars := strings.Map(func(r rune) rune {
+		switch {
+		case r == '-':
+			return '+'
+		case r == '_':
+			return '/'
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '+', r == '/':
+			return r
+		}
+		return -1
+	}, value)
+	canonical := base64.RawStdEncoding.EncodeToString(seed)
+	return strings.Contains(b64Chars, canonical[:len(canonical)-1])
+}
 
 // organizerScope is what a verified assertion authorises. It is filled by the
 // authentication func and read by the handlers; nothing in it ever comes from the
@@ -68,9 +162,8 @@ type organizerAssertionKey string
 //
 // It carries the staff member as well as the organizer. Only the organizer is
 // load-bearing today — catalog enforces no roles at all, they live in the back
-// office (web/backoffice/src/lib/authorization.ts) — but the staff id is 36 signed
-// bytes that save a canonical-format migration the first time anything needs the
-// principal, and both fields are immutable per staff row (migration 0015).
+// office (web/backoffice/src/lib/authorization.ts) — but both fields are
+// immutable per staff row (migration 0015).
 //
 // The ROLE is deliberately absent, and that absence is load-bearing: ADR-042
 // snapshots role at sign-in and warns it goes stale the day a role-change surface
@@ -83,76 +176,36 @@ type organizerScope struct {
 	OrganizerID uuid.UUID
 }
 
-// mintOrganizerAssertion produces `v1.<staff id>.<organizer id>.<unix expiry>.<mac>`.
+// mintOrganizerAssertion produces
+// `v2.<kid>.<staff id>.<organizer id>.<unix expiry>.<signature>`.
 //
 // The payload is signed, not encrypted: a holder can read which staff member,
 // which organizer, and when it dies. That is fine — they are that staff member —
 // and it keeps the token debuggable. What they cannot do is change any field,
-// because the MAC covers the exact bytes that are compared on the way back in.
-func mintOrganizerAssertion(key organizerAssertionKey, staffID, organizerID uuid.UUID, expiresAt time.Time) string {
+// because the signature covers the exact bytes the verifier checks.
+func mintOrganizerAssertion(s *OrganizerAssertionSigner, staffID, organizerID uuid.UUID, expiresAt time.Time) string {
 	payload := strings.Join([]string{
-		organizerAssertionVersion,
+		organizerassertion.Version,
+		s.kid,
 		staffID.String(),
 		organizerID.String(),
 		strconv.FormatInt(expiresAt.Unix(), 10),
 	}, ".")
-	return payload + "." + organizerAssertionMAC(key, payload)
-}
-
-func organizerAssertionMAC(key organizerAssertionKey, payload string) string {
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte(payload))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.private, []byte(payload)))
 }
 
 // verifyOrganizerAssertion returns the scope the token names, or
-// ErrOrganizerAssertionInvalid.
-//
-// Order matters: the MAC is checked BEFORE the expiry is trusted, because the
-// expiry is attacker-controlled until the signature says otherwise. Checking
-// expiry first would mean parsing and believing an unauthenticated number — and an
-// attacker who could pick it would simply pick one far in the future.
-func verifyOrganizerAssertion(key organizerAssertionKey, token string, now time.Time) (organizerScope, error) {
-	if len(key) == 0 {
-		// Fail closed on an unconfigured key. Startup already refuses that, so this
-		// defends against a future construction path that forgets — without it, an
-		// empty key would still produce a self-consistent MAC and every forged token
-		// would verify.
+// ErrOrganizerAssertionInvalid. A nil signer refuses everything: a catalog that
+// cannot check an assertion must not admit one.
+func verifyOrganizerAssertion(s *OrganizerAssertionSigner, token string, now time.Time) (organizerScope, error) {
+	if s == nil {
 		return organizerScope{}, ErrOrganizerAssertionInvalid
 	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 5 || parts[0] != organizerAssertionVersion {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	payload := strings.Join(parts[:4], ".")
-	// Constant-time: the comparison target is derived from a secret, and an
-	// early-exit compare leaks how much of a forged MAC was right.
-	if subtle.ConstantTimeCompare([]byte(parts[4]), []byte(organizerAssertionMAC(key, payload))) != 1 {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	staffID, err := uuid.Parse(parts[1])
+	scope, err := s.verifier.Verify(token, now)
 	if err != nil {
 		return organizerScope{}, ErrOrganizerAssertionInvalid
 	}
-	organizerID, err := uuid.Parse(parts[2])
-	if err != nil {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	// The nil uuid is not an identity. It is what a zero value looks like, so
-	// accepting it means a construction bug upstream arrives here as an
-	// authenticated principal — and downstream it either trips a foreign key as a
-	// 503 or, worse, writes rows nobody owns. Nothing legitimate ever mints one.
-	if staffID == uuid.Nil || organizerID == uuid.Nil {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	expiry, err := strconv.ParseInt(parts[3], 10, 64)
-	if err != nil {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	if !now.Before(time.Unix(expiry, 0)) {
-		return organizerScope{}, ErrOrganizerAssertionInvalid
-	}
-	return organizerScope{StaffID: staffID, OrganizerID: organizerID}, nil
+	return organizerScope{StaffID: scope.StaffID, OrganizerID: scope.OrganizerID}, nil
 }
 
 // OrganizerAssertionTTL is how long a minted assertion lives.
@@ -179,7 +232,9 @@ const OrganizerAssertionTTL = 8 * time.Hour
 
 // organizerAssertionHeader carries the token. A header, not the body: the whole
 // point is that the request body cannot name an organizer, so putting the
-// replacement in the body would reintroduce the shape being removed.
+// replacement in the body would reintroduce the shape being removed. Commerce
+// takes the same header name in TKT-287 part 2 (D6), so the back office forwards
+// one session value to both.
 const organizerAssertionHeader = "X-Catalog-Organizer-Assertion"
 
 // organizerAssertionSecurityScheme is the securityScheme name in the contract.
@@ -192,12 +247,12 @@ const organizerAssertionSecurityScheme = "CatalogOrganizerAssertion"
 // mintForStaff is the one place an assertion is created, so the TTL cannot drift
 // between call sites.
 //
-// AuthenticateStaff checks for the key before calling this. Keep the empty-key
+// AuthenticateStaff checks for the signer before calling this. Keep the nil
 // return as a defence for direct construction paths; it must never enter a
 // StaffPrincipal response.
 func (s *Server) mintForStaff(staffID, organizerID uuid.UUID) string {
-	if len(s.organizerAssertionKey) == 0 {
+	if s.organizerAssertions == nil {
 		return ""
 	}
-	return mintOrganizerAssertion(s.organizerAssertionKey, staffID, organizerID, time.Now().Add(OrganizerAssertionTTL))
+	return mintOrganizerAssertion(s.organizerAssertions, staffID, organizerID, time.Now().Add(OrganizerAssertionTTL))
 }

@@ -135,14 +135,19 @@ func TestBackofficeOrganizerAssertionWireFormat(t *testing.T) {
 		t.Fatal("StaffPrincipal.organizer_assertion has no wire pattern")
 	}
 	pattern := regexp.MustCompile(assertion.Pattern)
-	valid := "v1.60000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000001.99999999999." + strings.Repeat("A", 43)
+	valid := "v2.catalog-org/local-v1.60000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000001.99999999999." + strings.Repeat("A", 86)
 	if !pattern.MatchString(valid) {
-		t.Error("organizer assertion pattern rejects the documented v1 form")
+		t.Error("organizer assertion pattern rejects the documented v2 form")
 	}
 	for _, malformed := range []string{
-		strings.Replace(valid, "v1.", "v2.", 1),
+		// The retired v1 HMAC form (TKT-287 D4).
+		"v1.60000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000001.99999999999." + strings.Repeat("A", 43),
+		strings.Replace(valid, "v2.", "v3.", 1),
+		strings.Replace(valid, "catalog-org/local-v1", "access-qr/local-v1", 1),
+		strings.Replace(valid, "catalog-org/local-v1", "catalog-org/", 1),
 		strings.TrimSuffix(valid, "A"),
-		"v1.staff.organizer.99999999999." + strings.Repeat("A", 43),
+		valid + "A",
+		"v2.catalog-org/local-v1.staff.organizer.99999999999." + strings.Repeat("A", 86),
 	} {
 		if pattern.MatchString(malformed) {
 			t.Errorf("organizer assertion pattern accepts %q", malformed)

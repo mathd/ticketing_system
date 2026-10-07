@@ -79,7 +79,7 @@ needs_generation() {
 # compose.yaml marks mandatory: TKT-244 added INVENTORY_STAFF_WRITE_TOKEN to
 # compose and not here, and `make up` failed on interpolation — telling the
 # developer to run `make up` to generate it (TKT-227).
-for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN CATALOG_ORGANIZER_ASSERTION_KEY COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY INVENTORY_STAFF_WRITE_TOKEN ACCESS_STAFF_WRITE_TOKEN PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY ACCESS_FEED_CURSOR_KEY NATS_ADMIN_PASSWORD NATS_CATALOG_PASSWORD NATS_INVENTORY_PASSWORD NATS_INVENTORY_REPROCESS_PASSWORD NATS_COMMERCE_PASSWORD NATS_PAYMENTS_PASSWORD NATS_ACCESS_PASSWORD; do
+for var in INTERNAL_SERVICE_TOKEN CATALOG_STAFF_WRITE_TOKEN COMMERCE_STAFF_WRITE_TOKEN COMMERCE_CUSTOMER_ASSERTION_KEY INVENTORY_STAFF_WRITE_TOKEN ACCESS_STAFF_WRITE_TOKEN PAYMENTS_INTERNAL_TOKEN ACCESS_TICKET_LINK_KEY ACCESS_FEED_CURSOR_KEY NATS_ADMIN_PASSWORD NATS_CATALOG_PASSWORD NATS_INVENTORY_PASSWORD NATS_INVENTORY_REPROCESS_PASSWORD NATS_COMMERCE_PASSWORD NATS_PAYMENTS_PASSWORD NATS_ACCESS_PASSWORD; do
 	if needs_generation "$var" "$RETIRED_TOKEN"; then
 		env_set "$var" "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 	fi
@@ -110,20 +110,33 @@ fi
 # keypair <private-var> <public-keyring-var> <kid-var> <default-kid> <retired-seed>
 keypair() {
 	local priv_var="$1" pub_var="$2" kid_var="$3" default_kid="$4" retired="$5"
-	local kid seed pub
-	if ! needs_generation "$priv_var" "$retired" && [ -n "$(env_value "$pub_var")" ]; then
+	local kid seed pub existing
+	kid="$(env_value "$kid_var")"
+	existing="$(env_value "$pub_var")"
+	if ! needs_generation "$priv_var" "$retired" && [ -n "$existing" ]; then
+		# The pair is kept exactly as it is, key id included. An unset kid stays
+		# unset and Compose's default applies, as before TKT-287: a shell cannot
+		# derive the seed's public key, so it cannot tell which keyring entry is
+		# the active one, and guessing (the first entry) picks a retired key.
 		return 0
 	fi
-	kid="$(env_value "$kid_var")"
 	[ -n "$kid" ] || kid="$default_kid"
 	# `access keygen` prints "<seed> <public key>", both raw-standard base64 —
 	# the encoding the loaders and keyrings already read.
 	read -r seed pub < <(cd services/access && go run ./cmd/access keygen)
+	# The seed, the keyring AND the key id are written together: a signer that
+	# stamps one kid while the keyring names another verifies nothing.
 	env_set "$priv_var" "$seed"
 	env_set "$pub_var" "$kid=$pub"
+	env_set "$kid_var" "$kid"
 }
 
 keypair ACCESS_QR_PRIVATE_KEY ACCESS_QR_PUBLIC_KEYS ACCESS_QR_KID access-qr/local-v1 "$RETIRED_QR_SEED"
 keypair ACCESS_LIFECYCLE_PRIVATE_KEY ACCESS_LIFECYCLE_PUBLIC_KEYS ACCESS_LIFECYCLE_KID access-lifecycle/local-v1 "$RETIRED_LIFECYCLE_SEED"
+# TKT-287: catalog's organizer-assertion pair. The seed is catalog's alone; the
+# public keyring is what commerce is given to verify with (wired in TKT-287 part 2). No retired seed: the HMAC key
+# this replaces (CATALOG_ORGANIZER_ASSERTION_KEY) is a different variable and is
+# simply no longer read, so an old .env keeps working once this pair is added.
+keypair CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS CATALOG_ORGANIZER_ASSERTION_KID catalog-org/local-v1 ''
 
 [ ! -f .env ] || chmod 600 .env

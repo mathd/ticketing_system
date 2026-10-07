@@ -719,7 +719,11 @@ export async function authenticateStaff(
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const MAX_INT64 = 9_223_372_036_854_775_807n;
 
-/** Validate the readable fields in catalog's signed v1 assertion. */
+/**
+ * Validate the readable fields in catalog's signed v2 assertion (TKT-287):
+ * `v2.<kid>.<staff>.<organizer>.<unix expiry>.<Ed25519 signature>`. This is a
+ * structural check, not verification: catalog verifies the signature.
+ */
 function decodeOrganizerAssertion(
   value: unknown,
   expectedStaffId: string,
@@ -727,22 +731,25 @@ function decodeOrganizerAssertion(
 ): string {
   const assertion = required(value, 'organizer assertion');
   const parts = assertion.split('.');
-  if (parts.length !== 5 || parts[0] !== 'v1') {
+  if (parts.length !== 6 || parts[0] !== 'v2') {
     throw new Error('response organizer assertion is malformed');
   }
+  if (!/^catalog-org\/[A-Za-z0-9_-]{1,64}$/.test(parts[1])) {
+    throw new Error('response organizer assertion key id is malformed');
+  }
 
-  const staffId = uuid(parts[1], 'organizer assertion staff id');
-  const organizerId = uuid(parts[2], 'organizer assertion organizer id');
+  const staffId = uuid(parts[2], 'organizer assertion staff id');
+  const organizerId = uuid(parts[3], 'organizer assertion organizer id');
   if (staffId.toLowerCase() === NIL_UUID || organizerId.toLowerCase() === NIL_UUID) {
     throw new Error('response organizer assertion contains a nil identity');
   }
   sameIdentity(staffId, expectedStaffId, 'organizer assertion staff id');
   sameIdentity(organizerId, expectedOrganizerId, 'organizer assertion organizer id');
 
-  if (!/^\d{1,19}$/.test(parts[3]) || BigInt(parts[3]) > MAX_INT64) {
+  if (!/^\d{1,19}$/.test(parts[4]) || BigInt(parts[4]) > MAX_INT64) {
     throw new Error('response organizer assertion expiry is malformed');
   }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(parts[4])) {
+  if (!/^[A-Za-z0-9_-]{86}$/.test(parts[5])) {
     throw new Error('response organizer assertion signature is malformed');
   }
   return assertion;

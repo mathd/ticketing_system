@@ -581,7 +581,7 @@ func TestConvertedHandlerRefusesWhenNoScopeWasVerified(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv := NewServer(e.store, e.pub, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		testInternalToken, testStaffWriteToken).WithOrganizerAssertionKey(testOrganizerAssertionKey)
+		testInternalToken, testStaffWriteToken).WithOrganizerAssertionSigner(testOrganizerAssertionSigner(t))
 	srv.CreateVenue(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {

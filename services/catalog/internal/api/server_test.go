@@ -1365,18 +1365,18 @@ func newEnv(t *testing.T) *env {
 	// Keyed, so the whole env can exercise the organizer assertion (TKT-245): an
 	// unkeyed server verifies nothing, which would make every assertion test in
 	// this package pass for the wrong reason.
-	return newEnvWithAssertionKey(t, testOrganizerAssertionKey)
+	return newEnvWithAssertionSigner(t, testOrganizerAssertionSigner(t))
 }
 
-// newEnvWithAssertionKey builds the same env with a chosen assertion key. Pass ""
-// for the unkeyed server -- the construction path that forgets, which must mint
-// and verify nothing rather than minting something unverifiable.
-func newEnvWithAssertionKey(t *testing.T, assertionKey string) *env {
+// newEnvWithAssertionSigner builds the same env with a chosen assertion signer.
+// Pass nil for the unkeyed server -- the construction path that forgets, which
+// must mint and verify nothing rather than minting something unverifiable.
+func newEnvWithAssertionSigner(t *testing.T, signer *OrganizerAssertionSigner) *env {
 	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
 	srv := NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken).
-		WithOrganizerAssertionKey(assertionKey)
+		WithOrganizerAssertionSigner(signer)
 	h, err := NewRouter(srv, true)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
@@ -1602,17 +1602,30 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 // to act as a DIFFERENT tenant than the env's default -- the cross-tenant cases.
 func (e *env) assertionFor(organizerID uuid.UUID) string {
 	e.t.Helper()
-	return mintOrganizerAssertion(testOrganizerAssertionKey, uuid.New(), organizerID, time.Now().Add(time.Hour))
+	return mintOrganizerAssertion(testOrganizerAssertionSigner(e.t), uuid.New(), organizerID, time.Now().Add(time.Hour))
 }
 
 // testStaffWriteToken is the credential newEnv configures; do() presents it on
 // unsafe requests. Guard tests use doWithHeaders to present something else.
 const testStaffWriteToken = "test-staff-write-token"
 
-// Distinct from testStaffWriteToken on purpose (TKT-245): the two answer
-// different questions, and a test suite that used one value for both could not
-// tell "the credential was accepted" from "the assertion verified".
-const testOrganizerAssertionKey = "test-organizer-assertion-key"
+// testOrganizerAssertionSeed is a fixed Ed25519 seed (32 bytes of 0x07,
+// raw-standard base64). Distinct from testStaffWriteToken on purpose (TKT-245):
+// the two answer different questions, and a test suite that used one value for
+// both could not tell "the credential was accepted" from "the assertion verified".
+const testOrganizerAssertionSeed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+
+const testOrganizerAssertionKID = "catalog-org/test"
+
+// testOrganizerAssertionSigner is the signer newEnv configures.
+func testOrganizerAssertionSigner(t testing.TB) *OrganizerAssertionSigner {
+	t.Helper()
+	signer, err := NewOrganizerAssertionSigner(testOrganizerAssertionSeed, testOrganizerAssertionKID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
 
 func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder) {
 	e.t.Helper()

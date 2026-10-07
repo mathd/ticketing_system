@@ -172,9 +172,9 @@ export function createSessionStore(): StaffSessionStore {
    */
   function assertionLifetimeMs(assertion: string, wallClockNow: number): number | undefined {
     const parts = assertion.split('.');
-    // v1.<staff>.<organizer>.<unix expiry>.<mac>
-    if (parts.length !== 5) return undefined;
-    const expiry = Number(parts[3]);
+    // v2.<kid>.<staff>.<organizer>.<unix expiry>.<signature> (TKT-287)
+    if (parts.length !== 6) return undefined;
+    const expiry = Number(parts[4]);
     if (!Number.isFinite(expiry)) return undefined;
     const remaining = expiry * 1000 - wallClockNow;
     return remaining > 0 ? remaining : 0;

@@ -936,7 +936,7 @@ export interface components {
             organizer_id: string;
             role: components["schemas"]["StaffRole"];
             /**
-             * @description Version 1 wire form is `v1.<staff UUID>.<organizer UUID>.<Unix expiry>.<43-character base64url HMAC>`. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the HMAC signs the complete prefix. Present the whole string unmodified in X-Catalog-Organizer-Assertion.
+             * @description Version 2 wire form (TKT-287) is `v2.<key id>.<staff UUID>.<organizer UUID>.<Unix expiry>.<86-character base64url Ed25519 signature>`. The key id is `catalog-org/` followed by 1-64 of [A-Za-z0-9_-]. The expiry is an unsigned decimal int64. The two UUIDs are non-nil. The holder may read those fields but cannot change them because the signature covers the complete prefix. Only catalog holds the private key; any service verifies with the public key. Present the whole string unmodified in X-Catalog-Organizer-Assertion. Version 1 (HMAC) is no longer accepted anywhere.
              *     A server without a signing key refuses authentication; a successful response always carries this non-empty value.
              */
             organizer_assertion: string;
