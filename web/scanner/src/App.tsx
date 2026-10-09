@@ -91,8 +91,9 @@ async function tokenFingerprint(token: string): Promise<string> {
 // decide that by accident. A failure that arrives while the pairing instruction stands is
 // carried under it, so pairing shows it instead of a blank line.
 type SyncNote =
-  | { kind: 'failure' | 'success'; text: string }
-  | { kind: 'pairing'; text: string; failure?: string }
+  | { kind: 'failure'; id: string; text: string }
+  | { kind: 'success'; text: string }
+  | { kind: 'pairing'; text: string; failure?: { id: string; text: string } }
   | null
 
 function readableTime(value?: string) {
@@ -126,6 +127,7 @@ function App() {
   // The time of the last sync that completed in this page session. A ref, not state: the
   // online listener is registered by the first render and must read the current value.
   const lastSuccessfulSyncAt = useRef<string | null>(null)
+  const syncFailureId = useRef(0)
   const syncInFlight = useRef(false)
   const syncRequested = useRef(false)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
@@ -373,28 +375,30 @@ function App() {
   // The deadline keeps a stalled request from blocking the line.
   // Show the failure first. A queue read can wait behind another tab's transaction.
   // A standing pairing instruction carries the failure until the device is paired.
-  const reportSyncFailure = async (cause: 'offline' | 'unreadable', batchCount: number) => {
+  const reportSyncFailure = async (cause: 'offline' | 'unreadable') => {
+    const id = String(++syncFailureId.current)
     if (!mounted.current) return
     const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
     const failureText = (count: number) => `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
-    let published: SyncNote = null
-    setSyncNote((previous) => {
-      const text = failureText(batchCount)
-      published = previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }
-      return published
-    })
+    const failure = { id, text: `Sync failed: ${QUEUED_CAUSE[cause]}. Checking the scans saved on this device…` }
+    setSyncNote((previous) => previous?.kind === 'pairing' ? { ...previous, failure } : { kind: 'failure', ...failure })
+    const correctFailure = (previous: SyncNote, text?: string): SyncNote => {
+      const current = previous?.kind === 'pairing' ? previous.failure : previous?.kind === 'failure' ? previous : null
+      if (current?.id !== id) return previous
+      if (!text) return withoutStaleFailure(previous)
+      const corrected = { id, text }
+      return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', ...corrected }
+    }
     try {
       const queue = await (await getStore()).queued()
       if (!mounted.current) return
       setQueuedCount(queue.length)
-      setSyncNote((previous) => {
-        if (previous !== published) return previous
-        if (!queue.length) return withoutStaleFailure(previous)
-        const text = failureText(queue.length)
-        return previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }
-      })
+      setSyncNote((previous) => correctFailure(previous, queue.length ? failureText(queue.length) : undefined))
     } catch {
-      // Keep the immediate note. Leave the storage alert alone.
+      // Leave the storage alert alone.
+      if (!mounted.current) return
+      const text = `Sync failed: ${QUEUED_CAUSE[cause]}. Any scans saved on this device will be sent on the next sync. Last successful sync this session: ${last}.`
+      setSyncNote((previous) => correctFailure(previous, text))
     }
   }
 
@@ -463,7 +467,7 @@ function App() {
           signal: controller.signal,
         })
       } catch {
-        void reportSyncFailure('offline', queue.length)
+        void reportSyncFailure('offline')
         return
       }
       if (response.status === 401) {
@@ -473,7 +477,7 @@ function App() {
         return
       }
       if (!response.ok) {
-        void reportSyncFailure('unreadable', queue.length)
+        void reportSyncFailure('unreadable')
         return
       }
       try {
@@ -483,7 +487,7 @@ function App() {
         )
       } catch {
         // A deadline during the body is unreadable. An answer already arrived.
-        void reportSyncFailure('unreadable', queue.length)
+        void reportSyncFailure('unreadable')
         return
       }
     } finally {
@@ -618,7 +622,7 @@ function App() {
     setHasRevocationPull(false)
     // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
     setSyncNote((previous) => {
-      if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: previous.text }
+      if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
       if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
       return { kind: 'pairing', text: reason }
     })
@@ -651,7 +655,7 @@ function App() {
     // instruction, stays until a sync succeeds.
     setSyncNote((previous) => {
       if (previous?.kind === 'failure') return previous
-      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', text: previous.failure }
+      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
       return null
     })
   }

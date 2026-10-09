@@ -52,6 +52,8 @@ vi.mock('./occurrences', async (importOriginal) => {
 // queue exactly as it was (ADR-066): these tests compare the stored rows, not only the text.
 
 const feedResponse = () => new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
+const checkingOfflineNote = 'Sync failed: No connection. Checking the scans saved on this device…'
+const unknownOfflineNote = 'Sync failed: No connection. Any scans saved on this device will be sent on the next sync. Last successful sync this session: none.'
 const offlineNote = /Sync failed: No connection\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 const unreadableNote = /Sync failed: The server answered but the reply could not be read\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 
@@ -247,7 +249,7 @@ describe('a failed sync of the offline queue', () => {
     await queueOneScan('second-ticket')
     stubFetch(() => Promise.reject(new TypeError('network down')))
     fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    const note = await screen.findByText(/^Sync failed: No connection\./)
+    const note = await screen.findByText(/^Sync failed: No connection\. 1 scan is saved on this device/)
     expect(note.textContent).toMatch(/Last successful sync this session: (?!none).+\.$/)
   })
 
@@ -361,11 +363,71 @@ describe('a failed sync of the offline queue', () => {
     expect(screen.getByText(unreadableNote)).toBeDefined()
   })
 
-  it('shows the failure immediately while its queue read waits, then clears it for an empty queue', async () => {
+  it('shows no count before the failure queue read settles, then clears it for an empty queue', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const read = holdNextQueueRead()
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await read.started
+    })
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+    expect(screen.queryByText(/\d+ scans? (is|are) saved/)).toBeNull()
+    expect(queueReads.finished).toBe(queueReads.started - 1)
+    await act(async () => { read.result.resolve([]) })
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+  })
+
+  it('corrects a failure through pairing when its queue read resolves empty', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const read = holdNextQueueRead()
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await read.started
+    })
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+    const revocation = deferred<Response>()
+    const pullStarted = deferred<void>()
+    vi.stubGlobal('fetch', vi.fn(() => {
+      pullStarted.resolve()
+      return revocation.promise
+    }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh revocation list' }))
+      await pullStarted.promise
+      revocation.resolve(new Response('', { status: 401 }))
+    })
+    expect(screen.getByLabelText(/pairing token/i)).toBeDefined()
+    await act(async () => { read.result.resolve([]) })
+    stubFetch(() => Promise.reject(new TypeError('must not be called')))
+    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+      await storedRows()
+    })
+    expect(screen.getByRole('button', { name: 'Check ticket' })).toBeDefined()
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+  })
+
+  it('corrects a failure after an intervening render in StrictMode', async () => {
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     const startup = deferred<void>()
     queueReads.onStarted = () => startup.resolve()
-    render(<StrictMode><App /></StrictMode>)
+    const view = render(<StrictMode><App /></StrictMode>)
     await startup.promise
     queueReads.onStarted = null
     await readsSettled()
@@ -374,19 +436,52 @@ describe('a failed sync of the offline queue', () => {
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'another-ticket' } })
+    // Render with no pending input update to reach React's eager updater path.
+    view.rerender(<StrictMode><App /></StrictMode>)
     const read = holdNextQueueRead()
     await act(async () => {
       first.fail(new TypeError('network down'))
       await read.started
     })
-    expect(screen.getByText(offlineNote)).toBeDefined()
-    expect(queueReads.finished).toBe(queueReads.started - 1)
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
     await act(async () => { read.result.resolve([]) })
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
   })
 
-  it('corrects the immediate batch count when another scan was queued before the failure', async () => {
+  it('a delayed failure correction does not overwrite a newer follow-up failure', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const rows = await storedRows() as OccurrenceRecord[]
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const firstRead = holdNextQueueRead()
+    window.dispatchEvent(new Event('online'))
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await firstRead.started
+    })
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+    const second = await held.next()
+    const secondRead = holdNextQueueRead()
+    await act(async () => {
+      second.answer(new Response('', { status: 502 }))
+      await secondRead.started
+    })
+    expect(screen.getByText('Sync failed: The server answered but the reply could not be read. Checking the scans saved on this device…')).toBeDefined()
+    await act(async () => { secondRead.result.resolve(rows) })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+    await act(async () => { firstRead.result.resolve([]) })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+  })
+
+  it('uses the fresh count when another scan was queued before the failure', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan('ticket-x')
@@ -402,7 +497,7 @@ describe('a failed sync of the offline queue', () => {
       first.fail(new TypeError('network down'))
       await read.started
     })
-    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
     await act(async () => { read.result.resolve(rows) })
     expect(screen.getByText(/^Sync failed: No connection\. 2 scans are saved on this device/)).toBeDefined()
   })
@@ -422,7 +517,7 @@ describe('a failed sync of the offline queue', () => {
       first.fail(new TypeError('network down'))
       await read.started
     })
-    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
     const second = await held.next()
     second.answer(recordedResponse(second.body))
     await settle()
@@ -498,7 +593,7 @@ describe('a failed sync of the offline queue', () => {
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
   })
 
-  it('a failure whose queue read throws keeps its own count and leaves the storage alert alone', async () => {
+  it('a failure whose queue read throws reports an unknown count and leaves the storage alert alone', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
@@ -506,13 +601,15 @@ describe('a failed sync of the offline queue', () => {
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const before = queueReads.started
     queueReads.failNext = true
     await act(async () => { first.fail(new TypeError('network down')) })
     expect(queueReads.failNext).toBe(false)
     expect(queueReads.started).toBe(before + 1)
     expect(queueReads.finished).toBe(queueReads.started)
-    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(screen.getByText(unknownOfflineNote)).toBeDefined()
+    expect(screen.queryByText(/\d+ scans? (is|are) saved/)).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
