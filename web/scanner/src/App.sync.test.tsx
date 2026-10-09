@@ -10,6 +10,7 @@ const queueReads = vi.hoisted(() => ({
   started: 0,
   finished: 0,
   failNext: false,
+  failMarkSyncedNext: false,
   onStarted: null as (() => void) | null,
   holdNext: null as { result: Promise<OccurrenceRecord[]>; started: () => void } | null,
 }))
@@ -22,6 +23,13 @@ vi.mock('./occurrences', async (importOriginal) => {
       const store = await actual.openOccurrenceStore(...args)
       return {
         ...store,
+        async markSynced(...args: Parameters<typeof store.markSynced>) {
+          if (queueReads.failMarkSyncedNext) {
+            queueReads.failMarkSyncedNext = false
+            throw new Error('terminal write failed')
+          }
+          return store.markSynced(...args)
+        },
         async queued() {
           queueReads.started += 1
           queueReads.onStarted?.()
@@ -61,6 +69,7 @@ beforeEach(() => {
   // A fresh IndexedDB per test: a queued row left by one test would change the next one's count.
   vi.stubGlobal('indexedDB', new IDBFactory())
   queueReads.failNext = false
+  queueReads.failMarkSyncedNext = false
   queueReads.holdNext = null
   queueReads.onStarted = null
   sessionStorage.clear()
@@ -224,6 +233,21 @@ describe('a failed sync of the offline queue', () => {
     await failSyncWith(() => Promise.resolve(new Response('<html>Bad Gateway</html>', { status: 502 })), unreadableNote)
   })
 
+  it('preserves both complete rows on an HTML 502 (COS4)', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan('ticket-x')
+    await queueOneScan('ticket-y')
+    await readsSettled()
+    const before = await storedRows()
+    expect(before).toHaveLength(2)
+    stubFetch(() => Promise.resolve(new Response('<html>Bad Gateway</html>', { status: 502 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByText(/^Sync failed: .* Last successful sync this session:/)
+    expect(await storedRows()).toEqual(before)
+    expect(screen.getByText('Sync failed: The server answered but the reply could not be read. 2 scans are saved on this device and will be sent on the next sync. Last successful sync this session: none.')).toBeDefined()
+  })
+
   it('says the reply was unreadable on a 2xx that is not JSON (COS3)', async () => {
     await failSyncWith(() => Promise.resolve(new Response('not json', { status: 200 })), unreadableNote)
   })
@@ -265,6 +289,89 @@ describe('a failed sync of the offline queue', () => {
     await waitFor(() => expect(screen.queryByText(/^Sync failed:/)).toBeNull())
     expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
+  })
+
+  it('reports a terminal-write failure without publishing success or its time', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const before = await storedRows()
+    stubFetch((body) => Promise.resolve(recordedResponse(body)))
+    queueReads.failMarkSyncedNext = true
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.')
+    expect(queueReads.failMarkSyncedNext).toBe(false)
+    expect(screen.queryByText(/^Synced /)).toBeNull()
+    expect(await storedRows()).toEqual(before)
+
+    stubFetch(() => Promise.reject(new TypeError('network down')))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    expect(await screen.findByText(offlineNote)).toBeDefined()
+  })
+
+  it('reads the exact last-success time through the first-render online listener', async () => {
+    const successfulAt = Date.parse('2026-10-09T16:23:45Z')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(successfulAt)
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    stubFetch((body) => Promise.resolve(recordedResponse(body)))
+    window.dispatchEvent(new Event('online'))
+    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
+    await readsSettled()
+
+    vi.setSystemTime(successfulAt + 60_000)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan('second-ticket')
+    await readsSettled()
+    stubFetch(() => Promise.reject(new TypeError('network down')))
+    window.dispatchEvent(new Event('online'))
+    expect(await screen.findByText(`Sync failed: No connection. 1 scan is saved on this device and will be sent on the next sync. Last successful sync this session: ${new Date(successfulAt).toLocaleString()}.`)).toBeDefined()
+  })
+
+  it('does not report no connection when reconcile request construction throws', async () => {
+    const { default: process } = await vi.importActual<{
+      default: {
+        on(event: 'unhandledRejection', listener: (reason: unknown) => void): void
+        off(event: 'unhandledRejection', listener: (reason: unknown) => void): void
+      }
+    }>('node:process')
+    const { setImmediate } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const fetchMock = stubFetch(() => Promise.reject(new TypeError('must not be called')))
+    const error = new Error('reconcile construction failed')
+    const errors: unknown[] = []
+    const catchRejection = (reason: unknown) => { errors.push(reason) }
+    const constructed = deferred<void>()
+    const stringify = JSON.stringify
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation((...args) => {
+      const value: unknown = args[0]
+      if (value && typeof value === 'object' && 'occurrences' in value) {
+        constructed.resolve()
+        throw error
+      }
+      return stringify(...args)
+    })
+    // The click handler discards the promise. Catch and assert its rejection here.
+    process.on('unhandledRejection', catchRejection)
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      await constructed.promise
+      await readsSettled()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(screen.queryByText(/^Sync failed: No connection/)).toBeNull()
+      expect(errors).toEqual([error])
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
+    } finally {
+      process.off('unhandledRejection', catchRejection)
+      spy.mockRestore()
+    }
   })
 
   it('serialises requests and coalesces an online event and a button click into one follow-up', async () => {
@@ -317,6 +424,7 @@ describe('a failed sync of the offline queue', () => {
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
     await readsSettled()
+    const before = await storedRows()
     const started = deferred<AbortSignal>()
     const followUp = deferred<void>()
     let calls = 0
@@ -336,6 +444,7 @@ describe('a failed sync of the offline queue', () => {
     const signal = await started.promise
     window.dispatchEvent(new Event('online'))
     await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+    expect(await storedRows()).toEqual(before)
     expect(screen.getByText(offlineNote)).toBeDefined()
     expect(signal.aborted).toBe(true)
     await followUp.promise
@@ -347,6 +456,7 @@ describe('a failed sync of the offline queue', () => {
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
     await readsSettled()
+    const before = await storedRows()
     const bodyStarted = deferred<void>()
     stubFetch((_, init) => Promise.resolve({
       ok: true,
@@ -360,6 +470,7 @@ describe('a failed sync of the offline queue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     await bodyStarted.promise
     await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+    expect(await storedRows()).toEqual(before)
     expect(screen.getByText(unreadableNote)).toBeDefined()
   })
 
@@ -413,13 +524,11 @@ describe('a failed sync of the offline queue', () => {
     })
     expect(screen.getByLabelText(/pairing token/i)).toBeDefined()
     await act(async () => { read.result.resolve([]) })
+    vi.useRealTimers()
     stubFetch(() => Promise.reject(new TypeError('must not be called')))
     fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-      await storedRows()
-    })
-    expect(screen.getByRole('button', { name: 'Check ticket' })).toBeDefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+    expect(await screen.findByRole('button', { name: 'Check ticket' })).toBeDefined()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
   })
 

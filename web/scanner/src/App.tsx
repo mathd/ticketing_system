@@ -454,6 +454,8 @@ function App() {
       })),
     }
     const token = deviceTokenRef.current
+    const headers = scanHeaders(token)
+    const body = JSON.stringify(request)
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
     let data: ReconcileResponse
@@ -462,8 +464,8 @@ function App() {
       try {
         response = await fetch(reconcileURL, {
           method: 'POST',
-          headers: scanHeaders(token),
-          body: JSON.stringify(request),
+          headers,
+          body,
           signal: controller.signal,
         })
       } catch {
