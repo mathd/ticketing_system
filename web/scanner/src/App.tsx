@@ -87,8 +87,12 @@ async function tokenFingerprint(token: string): Promise<string> {
 
 // The sync line (TKT-315). Tagged so a failure note can outlive a pairing change and so a
 // network failure never replaces the instruction to pair: matching on the text would
-// decide that by accident.
-type SyncNote = { kind: 'failure' | 'success' | 'pairing'; text: string } | null
+// decide that by accident. A failure that arrives while the pairing instruction stands is
+// carried under it, so pairing shows it instead of a blank line.
+type SyncNote =
+  | { kind: 'failure' | 'success'; text: string }
+  | { kind: 'pairing'; text: string; failure?: string }
+  | null
 
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
@@ -113,6 +117,11 @@ function App() {
   // The time of the last sync that completed in this page session. A ref, not state: the
   // online listener is registered by the first render and must read the current value.
   const lastSuccessfulSyncAt = useRef<string | null>(null)
+  // One sync at a time in this page (TKT-315). Two overlapping attempts would publish their
+  // notes in the order their answers arrive, so a slow failure could land after a success
+  // and stand over an empty queue. A request made during an attempt runs once after it.
+  const syncInFlight = useRef<Promise<void> | null>(null)
+  const syncRequestedAgain = useRef(false)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
@@ -355,16 +364,35 @@ function App() {
   }
 
   // The note stays until a sync succeeds, with the time of the last one that did, so a stale
-  // queue count reads as stale. A standing "not paired" instruction is kept: it is the
-  // actionable one, and a failure while unpaired adds nothing to it.
+  // queue count reads as stale. A standing "not paired" instruction stays on screen: it is
+  // the actionable one. The failure is carried under it and shown once the device is paired.
   const reportSyncFailure = (cause: 'offline' | 'unreadable', count: number) => {
     if (!mounted.current) return
     const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
     const text = `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
-    setSyncNote((previous) => (previous?.kind === 'pairing' ? previous : { kind: 'failure', text }))
+    setSyncNote((previous) => (previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }))
   }
 
-  const syncQueued = async () => {
+  const syncQueued = (): Promise<void> => {
+    if (syncInFlight.current) {
+      syncRequestedAgain.current = true
+      return syncInFlight.current
+    }
+    const run = (async () => {
+      try {
+        do {
+          syncRequestedAgain.current = false
+          await syncQueuedOnce()
+        } while (syncRequestedAgain.current && mounted.current)
+      } finally {
+        syncInFlight.current = null
+      }
+    })()
+    syncInFlight.current = run
+    return run
+  }
+
+  const syncQueuedOnce = async () => {
     let store: OccurrenceStore
     let queue: OccurrenceRecord[]
     try {
@@ -375,8 +403,16 @@ function App() {
       reportStorageFailure()
       return
     }
-    // An empty queue sends nothing and proves nothing: a standing failure note stays.
-    if (!queue.length) return
+    if (!queue.length) {
+      // Nothing on this device awaits sync, so a failure note that says scans are saved here
+      // is no longer true: another tab, or an earlier attempt, has sent them. Clear it and
+      // the count. A success or pairing line stays.
+      if (mounted.current) {
+        setQueuedCount(0)
+        setSyncNote((previous) => (previous?.kind === 'failure' ? null : previous))
+      }
+      return
+    }
     // Every failure below leaves the queue untouched (ADR-066) and SAYS so (TKT-315): it used
     // to return silently, so a venue could not tell "all reconciled" from "failing for hours".
     // The causes are the scan path's (TKT-305), told apart the same way: no answer at all is
@@ -574,8 +610,13 @@ function App() {
     deviceTokenRef.current = token
     setDeviceToken(token)
     setPairingInput('')
-    // Pairing reconciles nothing: a failure note stays until a sync succeeds.
-    setSyncNote((previous) => (previous?.kind === 'failure' ? previous : null))
+    // Pairing reconciles nothing: a failure note, or one carried under the pairing
+    // instruction, stays until a sync succeeds.
+    setSyncNote((previous) => {
+      if (previous?.kind === 'failure') return previous
+      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', text: previous.failure }
+      return null
+    })
   }
 
   if (!deviceToken) {

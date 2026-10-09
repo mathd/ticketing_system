@@ -66,8 +66,6 @@ async function storedRows(): Promise<unknown[]> {
   }
 }
 
-const syncStatus = () => screen.getByText(/^Sync failed:|^Synced /)
-
 async function failSyncWith(reconcile: Reconcile, note: RegExp) {
   render(<App />)
   stubFetch(() => Promise.reject(new TypeError('not yet')))
@@ -121,10 +119,11 @@ describe('a failed sync of the offline queue', () => {
     expect(note.textContent).toMatch(/Last successful sync this session: (?!none).+\.$/)
   })
 
-  it('keeps a standing failure note when a later sync finds the queue empty', async () => {
+  it('clears a standing failure note when a later sync finds nothing left to send', async () => {
     await failSyncWith(() => Promise.reject(new TypeError('network down')), offlineNote)
-    // Mark the queued row synced behind the app's back, then trigger a sync: the queue read
-    // is empty, nothing is sent, and nothing has succeeded — the note must not be cleared.
+    // Another tab syncs the row behind this page's back. This page's next sync finds the
+    // queue empty and sends nothing: its note, "1 scan is saved on this device", is no
+    // longer true and must go, with the count.
     const fetchMock = stubFetch(() => Promise.reject(new TypeError('must not be called')))
     const db = await new Promise<IDBDatabase>((resolve) => {
       const open = indexedDB.open('gate-occurrences')
@@ -140,13 +139,50 @@ describe('a failed sync of the offline queue', () => {
     })
     db.close()
     fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    // An empty-queue sync makes no request, so there is no response to wait for: let its
-    // IndexedDB read and the continuation after it run (fake-indexeddb completes in
-    // microseconds), then check. Mutation-checked: clearing the note on the empty return
-    // turns this red.
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    // Waits for the change itself, so it cannot pass before the sync has run.
+    await waitFor(() => expect(screen.queryByText(/^Sync failed:/)).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
-    expect(syncStatus().textContent).toMatch(offlineNote)
+  })
+
+  it('runs one sync at a time, so a slow failure cannot land after a success', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    // The first attempt hangs; a second request (the online edge) arrives meanwhile.
+    let failFirst!: (error: Error) => void
+    let inFlight = 0
+    let maxInFlight = 0
+    const answers: Array<(body: { occurrences: { occurrence_id: string }[] }) => Promise<Response>> = [
+      () => new Promise<Response>((_, reject) => { failFirst = reject }),
+      (body) => Promise.resolve(new Response(JSON.stringify({
+        results: body.occurrences.map((o) => ({ occurrence_id: o.occurrence_id, result: 'recorded' })),
+      }), { status: 200 })),
+    ]
+    const fetchMock = stubFetch(async (body) => {
+      const answer = answers.shift()
+      if (!answer) throw new TypeError('unexpected third sync')
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      try {
+        return await answer(body)
+      } finally {
+        inFlight -= 1
+      }
+    })
+    const reconcileCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations')).length
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    await waitFor(() => expect(reconcileCalls()).toBe(1))
+    window.dispatchEvent(new Event('online'))
+    // Give a second attempt every chance to reach the server while the first still hangs.
+    // One sync at a time never sends it, so this wait times out; overlapping attempts send it
+    // and it succeeds at once, which puts the failure below AFTER the success.
+    await waitFor(() => expect(reconcileCalls()).toBe(2), { timeout: 300 }).catch(() => undefined)
+    failFirst(new TypeError('network down'))
+    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    expect(reconcileCalls()).toBe(2)
+    expect(maxInFlight).toBe(1)
   })
 })
 
@@ -190,5 +226,11 @@ describe('where the failure note renders (COS6)', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(screen.getByText(pairing)).toBeDefined()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+
+    // Pairing reconciles nothing: the failure carried under the instruction is shown now.
+    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+    fireEvent.click(screen.getByRole('button', { name: /pair/i }))
+    await screen.findByRole('button', { name: 'Sync queued scans' })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
   })
 })
