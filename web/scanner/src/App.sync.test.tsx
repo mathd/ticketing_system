@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { IDBFactory } from 'fake-indexeddb'
-import App from './App'
+import { StrictMode } from 'react'
+import App, { reconcileTimeoutMs } from './App'
+import type { OccurrenceRecord } from './occurrences'
 
-// Counts the queue reads the page makes. A failure note reads the queue before it is shown, so a
-// test that expects a failure, or none, waits for that read first (see readsSettled). failNext
-// makes the next read throw.
-const queueReads = vi.hoisted(() => ({ started: 0, finished: 0, failNext: false }))
+// Controls the failure-path read without changing the stored rows.
+const queueReads = vi.hoisted(() => ({
+  started: 0,
+  finished: 0,
+  failNext: false,
+  onStarted: null as (() => void) | null,
+  holdNext: null as { result: Promise<OccurrenceRecord[]>; started: () => void } | null,
+}))
 
 vi.mock('./occurrences', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./occurrences')>()
@@ -18,10 +24,17 @@ vi.mock('./occurrences', async (importOriginal) => {
         ...store,
         async queued() {
           queueReads.started += 1
+          queueReads.onStarted?.()
           try {
             if (queueReads.failNext) {
               queueReads.failNext = false
               throw new Error('queue read failed')
+            }
+            const held = queueReads.holdNext
+            if (held) {
+              queueReads.holdNext = null
+              held.started()
+              return await held.result
             }
             return await store.queued()
           } finally {
@@ -46,6 +59,8 @@ beforeEach(() => {
   // A fresh IndexedDB per test: a queued row left by one test would change the next one's count.
   vi.stubGlobal('indexedDB', new IDBFactory())
   queueReads.failNext = false
+  queueReads.holdNext = null
+  queueReads.onStarted = null
   sessionStorage.clear()
   localStorage.setItem('scanner.device-token', 'paired-device-token')
 })
@@ -54,12 +69,13 @@ afterEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 type ReconcileBody = { occurrences: { occurrence_id: string }[] }
-type Reconcile = (body: ReconcileBody) => Promise<Response>
+type Reconcile = (body: ReconcileBody, init: RequestInit) => Promise<Response>
 
 // Every fetch the page makes: the revocation feed always answers, a scan is always offline
 // (that is how a row gets queued), and the reconcile answer is the test's.
@@ -67,7 +83,7 @@ function stubFetch(reconcile: Reconcile) {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     const u = String(url)
     if (u.includes('voided-tickets')) return Promise.resolve(feedResponse())
-    if (u.endsWith('/reconciliations')) return reconcile(JSON.parse(init!.body as string))
+    if (u.endsWith('/reconciliations')) return reconcile(JSON.parse(init!.body as string), init!)
     return Promise.reject(new TypeError('network down'))
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -78,10 +94,39 @@ function stubFetch(reconcile: Reconcile) {
 // fail on it, so the order of the answers is the test's choice, not the timer's.
 type HeldReconcile = { body: ReconcileBody; answer: (response: Response) => void; fail: (error: Error) => void }
 
-function holdReconciles(): HeldReconcile[] {
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+function holdReconciles() {
   const held: HeldReconcile[] = []
-  stubFetch((body) => new Promise<Response>((answer, fail) => { held.push({ body, answer, fail }) }))
-  return held
+  const arrivals: ReturnType<typeof deferred<HeldReconcile>>[] = []
+  let next = 0
+  stubFetch((body) => {
+    const response = deferred<Response>()
+    const request = { body, answer: response.resolve, fail: response.reject }
+    held.push(request)
+    arrivals[held.length - 1]?.resolve(request)
+    return response.promise
+  })
+  return Object.assign(held, {
+    next: () => {
+      const index = next++
+      if (held[index]) return Promise.resolve(held[index])
+      arrivals[index] = deferred<HeldReconcile>()
+      return arrivals[index].promise
+    },
+  })
+}
+
+function holdNextQueueRead() {
+  const result = deferred<OccurrenceRecord[]>()
+  const started = deferred<void>()
+  queueReads.holdNext = { result: result.promise, started: () => started.resolve() }
+  return { result, started: started.promise }
 }
 
 // A valid reconcile answer that records every occurrence the page sent.
@@ -91,23 +136,19 @@ function recordedResponse(body: ReconcileBody) {
   }), { status: 200 })
 }
 
-// Lets the page finish a request that is already answered. Only queued work remains after it.
+// Database barriers let pending work finish without a timed sleep.
 async function settle() {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await storedRows()
+    await storedRows()
   })
 }
 
-// Lets the page finish the queue reads that its latest step started, then renders what they changed.
-// A failure note reads the queue before it is shown, so a test that expects no note waits here.
+// Waits for all queue reads, then renders their corrections.
 async function readsSettled() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
+  await settle()
   await waitFor(() => expect(queueReads.finished).toBe(queueReads.started))
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
+  await settle()
 }
 
 // Waits for a queue read that starts after `before`, which the page makes once a request was sent.
@@ -224,96 +265,186 @@ describe('a failed sync of the offline queue', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
   })
 
-  it('a slow failure does not replace a later success', async () => {
+  it('serialises requests and coalesces an online event and a button click into one follow-up', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
-    const held = holdReconciles()
-    // Attempt A (the button) hangs. Attempt B (the online edge) starts while A is still out.
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(held).toHaveLength(2))
-    held[1].answer(recordedResponse(held[1].body))
-    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
-    // A fails last, after a success landed while it was out. Its failure must not show.
-    // The page reads the queue before it shows a failure, so let that read finish first.
-    held[0].fail(new TypeError('network down'))
     await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    window.dispatchEvent(new Event('online'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await settle()
+    expect(held).toHaveLength(1)
+    first.fail(new TypeError('network down'))
+    const second = await held.next()
+    expect(held).toHaveLength(2)
+    second.answer(recordedResponse(second.body))
+    await readsSettled()
+    expect(screen.getByText('Synced 1 offline scan(s).')).toBeDefined()
+    expect(held).toHaveLength(2)
+  })
+
+  it('sends only Y in the follow-up after A succeeds for X, then reports Y failing', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan('ticket-x')
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    await queueOneScan('ticket-y')
+    await readsSettled()
+    const rows = await storedRows() as OccurrenceRecord[]
+    const y = rows.find((row) => row.qrPayload === 'ticket-y')!
+    window.dispatchEvent(new Event('online'))
+    await settle()
+    expect(held).toHaveLength(1)
+    first.answer(recordedResponse(first.body))
+    const second = await held.next()
+    expect(second.body.occurrences.map((row) => row.occurrence_id)).toEqual([y.occurrenceId])
+    second.fail(new TypeError('network down'))
+    await readsSettled()
+    expect(screen.getByText(/^Sync failed: No connection\. 1 scan is saved on this device/)).toBeDefined()
+    expect(screen.queryByText('Synced 1 offline scan(s).')).toBeNull()
+  })
+
+  it('a reconcile deadline shows no connection and releases the requested follow-up', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const started = deferred<AbortSignal>()
+    const followUp = deferred<void>()
+    let calls = 0
+    stubFetch((_, init) => {
+      calls += 1
+      if (calls > 1) {
+        followUp.resolve()
+        return new Promise<Response>(() => {})
+      }
+      return new Promise<Response>((_, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+        started.resolve(init.signal!)
+      })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const signal = await started.promise
+    window.dispatchEvent(new Event('online'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(signal.aborted).toBe(true)
+    await followUp.promise
+    expect(calls).toBe(2)
+  })
+
+  it('a deadline during the response body shows unreadable', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const bodyStarted = deferred<void>()
+    stubFetch((_, init) => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => new Promise((_, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+        bodyStarted.resolve()
+      }),
+    } as Response))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await bodyStarted.promise
+    await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+  })
+
+  it('shows the failure immediately while its queue read waits, then clears it for an empty queue', async () => {
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    const startup = deferred<void>()
+    queueReads.onStarted = () => startup.resolve()
+    render(<StrictMode><App /></StrictMode>)
+    await startup.promise
+    queueReads.onStarted = null
+    await readsSettled()
+    await queueOneScan()
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    const read = holdNextQueueRead()
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await read.started
+    })
+    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(queueReads.finished).toBe(queueReads.started - 1)
+    await act(async () => { read.result.resolve([]) })
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+  })
+
+  it('corrects the immediate batch count when another scan was queued before the failure', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan('ticket-x')
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    await queueOneScan('ticket-y')
+    await readsSettled()
+    const rows = await storedRows() as OccurrenceRecord[]
+    const read = holdNextQueueRead()
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await read.started
+    })
+    expect(screen.getByText(offlineNote)).toBeDefined()
+    await act(async () => { read.result.resolve(rows) })
+    expect(screen.getByText(/^Sync failed: No connection\. 2 scans are saved on this device/)).toBeDefined()
+  })
+
+  it('a delayed failure correction does not replace a newer follow-up success', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    const staleRows = await storedRows() as OccurrenceRecord[]
+    const read = holdNextQueueRead()
+    window.dispatchEvent(new Event('online'))
+    await act(async () => {
+      first.fail(new TypeError('network down'))
+      await read.started
+    })
+    expect(screen.getByText(offlineNote)).toBeDefined()
+    const second = await held.next()
+    second.answer(recordedResponse(second.body))
+    await settle()
+    expect(screen.getByText('Synced 1 offline scan(s).')).toBeDefined()
+    await act(async () => { read.result.resolve(staleRows) })
     expect(screen.getByText('Synced 1 offline scan(s).')).toBeDefined()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
   })
 
-  it('a later failure does not stand over an earlier success that has since landed', async () => {
+  it('a late failure is cleared when another tab has emptied the queue', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
+    await readsSettled()
     const held = holdReconciles()
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(held).toHaveLength(2))
-    // X is still queued, so B's failure shows while A is still out.
-    held[1].fail(new TypeError('network down'))
-    expect(await screen.findByText(offlineNote)).toBeDefined()
-    // A lands last with a success, which replaces B's failure.
-    held[0].answer(recordedResponse(held[0].body))
-    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
-    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
-  })
-
-  it('a stalled later attempt does not hide an earlier failure', async () => {
-    render(<App />)
-    stubFetch(() => Promise.reject(new TypeError('not yet')))
-    await queueOneScan()
-    const held = holdReconciles()
-    // Attempt A (the button) hangs. Attempt B (the online edge) starts and is never answered.
-    // The fetch has no deadline, so B can stall for good.
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(held).toHaveLength(2))
-    // A fails while B is still out. X is still queued, so A's failure must show.
-    held[0].fail(new TypeError('network down'))
-    expect(await screen.findByText(offlineNote)).toBeDefined()
-  })
-
-  it('a failure shows the rows still queued after a success covered only part of its batch', async () => {
-    render(<App />)
-    stubFetch(() => Promise.reject(new TypeError('not yet')))
-    await queueOneScan('ticket-x')
-    const held = holdReconciles()
-    // Attempt A (the button) sends X and hangs.
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    // Y is queued while A is out. Attempt B (the online edge) sends X and Y, and hangs too.
-    await queueOneScan('ticket-y')
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(held).toHaveLength(2))
-    // A succeeds for X only, so Y still awaits sync.
-    held[0].answer(recordedResponse(held[0].body))
-    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
-    // B fails. Its note counts what is still queued, which is Y alone, not the two rows B sent.
-    held[1].fail(new TypeError('network down'))
-    expect(await screen.findByText(/^Sync failed: No connection\. 1 scan is saved on this device/)).toBeDefined()
-  })
-
-  it('a late failure does not restore a note over a queue that is already empty', async () => {
-    render(<App />)
-    stubFetch(() => Promise.reject(new TypeError('not yet')))
-    await queueOneScan()
-    const held = holdReconciles()
-    // Attempt A (the button) sends X and hangs.
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    // Another tab marks X synced. Attempt B (the online edge) finds the queue empty and clears the button.
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
     await markStoredRowsSynced()
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull())
-    // A fails last. Nothing awaits sync, so its failure must not show.
-    held[0].fail(new TypeError('network down'))
+    first.fail(new TypeError('network down'))
     await readsSettled()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
   })
 
   it('a failure that finds the queue empty clears a standing failure note', async () => {
@@ -371,14 +502,17 @@ describe('a failed sync of the offline queue', () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
-    const held = holdReconciles()
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(held).toHaveLength(1))
-    // The queue read that follows the failure throws.
-    queueReads.failNext = true
-    held[0].fail(new TypeError('network down'))
     await readsSettled()
-    expect(await screen.findByText(offlineNote)).toBeDefined()
+    const held = holdReconciles()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const first = await held.next()
+    const before = queueReads.started
+    queueReads.failNext = true
+    await act(async () => { first.fail(new TypeError('network down')) })
+    expect(queueReads.failNext).toBe(false)
+    expect(queueReads.started).toBe(before + 1)
+    expect(queueReads.finished).toBe(queueReads.started)
+    expect(screen.getByText(offlineNote)).toBeDefined()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -450,7 +584,7 @@ describe('where the failure note renders (COS6)', () => {
     const fetchMock = stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
     window.dispatchEvent(new Event('online'))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(true))
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await settle()
     expect(screen.getByText(pairing)).toBeDefined()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
 

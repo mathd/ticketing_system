@@ -44,6 +44,7 @@ declare global {
 
 const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
+export const reconcileTimeoutMs = 15_000
 const revocationsURL = '/api/access/scans/voided-tickets'
 const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
@@ -125,6 +126,8 @@ function App() {
   // The time of the last sync that completed in this page session. A ref, not state: the
   // online listener is registered by the first render and must read the current value.
   const lastSuccessfulSyncAt = useRef<string | null>(null)
+  const syncInFlight = useRef(false)
+  const syncRequested = useRef(false)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
@@ -366,37 +369,53 @@ function App() {
     }
   }
 
-  // The note stays until a sync succeeds, with the time of the last one that did, so a stale
-  // queue count reads as stale. A standing "not paired" instruction stays on screen: it is
-  // the actionable one. The failure is carried under it and shown once the device is paired.
-  // A failure note is shown only while rows still await sync, and its count is read when it is
-  // shown. There is no attempt ordering, because a later attempt can stall forever (the fetch has
-  // no deadline) and must not hide an earlier failure. There is no success counter either, because
-  // a success can cover fewer rows than the failed attempt sent (TKT-315).
+  // Attempts are serialised, so one note never has to describe two batches.
+  // The deadline keeps a stalled request from blocking the line.
+  // Show the failure first. A queue read can wait behind another tab's transaction.
+  // A standing pairing instruction carries the failure until the device is paired.
   const reportSyncFailure = async (cause: 'offline' | 'unreadable', batchCount: number) => {
     if (!mounted.current) return
-    let count = batchCount
+    const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
+    const failureText = (count: number) => `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
+    let published: SyncNote = null
+    setSyncNote((previous) => {
+      const text = failureText(batchCount)
+      published = previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }
+      return published
+    })
     try {
       const queue = await (await getStore()).queued()
-      if (!queue.length) {
-        // Nothing awaits sync any more, so the failure would be false. A standing one goes too.
-        if (mounted.current) {
-          setQueuedCount(0)
-          setSyncNote(withoutStaleFailure)
-        }
-        return
-      }
-      count = queue.length
+      if (!mounted.current) return
+      setQueuedCount(queue.length)
+      setSyncNote((previous) => {
+        if (previous !== published) return previous
+        if (!queue.length) return withoutStaleFailure(previous)
+        const text = failureText(queue.length)
+        return previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }
+      })
     } catch {
-      // The read failed, so the attempt's own count stands. This path leaves the storage alert alone.
+      // Keep the immediate note. Leave the storage alert alone.
     }
-    if (!mounted.current) return
-    const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
-    const text = `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
-    setSyncNote((previous) => (previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }))
   }
 
   const syncQueued = async () => {
+    if (!mounted.current) return
+    if (syncInFlight.current) {
+      syncRequested.current = true
+      return
+    }
+    syncInFlight.current = true
+    try {
+      do {
+        syncRequested.current = false
+        await syncBatch()
+      } while (syncRequested.current && mounted.current)
+    } finally {
+      syncInFlight.current = false
+    }
+  }
+
+  const syncBatch = async () => {
     let store: OccurrenceStore
     let queue: OccurrenceRecord[]
     try {
@@ -431,36 +450,44 @@ function App() {
       })),
     }
     const token = deviceTokenRef.current
-    let response: Response
-    try {
-      response = await fetch(reconcileURL, {
-        method: 'POST',
-        headers: scanHeaders(token),
-        body: JSON.stringify(request),
-      })
-    } catch {
-      await reportSyncFailure('offline', queue.length)
-      return
-    }
-    if (response.status === 401) {
-      // The queue is untouched: an unpaired device must not discard a night of
-      // offline scans. Pair and sync again.
-      clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
-      return
-    }
-    if (!response.ok) {
-      await reportSyncFailure('unreadable', queue.length)
-      return
-    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
     let data: ReconcileResponse
     try {
-      data = decodeReconcileResponse(
-        await response.json(),
-        new Set(queue.map((record) => record.occurrenceId)),
-      )
-    } catch {
-      await reportSyncFailure('unreadable', queue.length)
-      return
+      let response: Response
+      try {
+        response = await fetch(reconcileURL, {
+          method: 'POST',
+          headers: scanHeaders(token),
+          body: JSON.stringify(request),
+          signal: controller.signal,
+        })
+      } catch {
+        void reportSyncFailure('offline', queue.length)
+        return
+      }
+      if (response.status === 401) {
+        // The queue is untouched: an unpaired device must not discard a night of
+        // offline scans. Pair and sync again.
+        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
+        return
+      }
+      if (!response.ok) {
+        void reportSyncFailure('unreadable', queue.length)
+        return
+      }
+      try {
+        data = decodeReconcileResponse(
+          await response.json(),
+          new Set(queue.map((record) => record.occurrenceId)),
+        )
+      } catch {
+        // A deadline during the body is unreadable. An answer already arrived.
+        void reportSyncFailure('unreadable', queue.length)
+        return
+      }
+    } finally {
+      window.clearTimeout(timer)
     }
 
     let conflicts = 0
