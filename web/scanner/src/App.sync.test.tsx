@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { IDBFactory } from 'fake-indexeddb'
 import App from './App'
 
@@ -27,7 +27,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-type Reconcile = (body: { occurrences: { occurrence_id: string }[] }) => Promise<Response>
+type ReconcileBody = { occurrences: { occurrence_id: string }[] }
+type Reconcile = (body: ReconcileBody) => Promise<Response>
 
 // Every fetch the page makes: the revocation feed always answers, a scan is always offline
 // (that is how a row gets queued), and the reconcile answer is the test's.
@@ -40,6 +41,30 @@ function stubFetch(reconcile: Reconcile) {
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
+}
+
+// A reconcile request the test answers by hand. It waits in `held` until the test calls answer or
+// fail on it, so the order of the answers is the test's choice, not the timer's.
+type HeldReconcile = { body: ReconcileBody; answer: (response: Response) => void; fail: (error: Error) => void }
+
+function holdReconciles(): HeldReconcile[] {
+  const held: HeldReconcile[] = []
+  stubFetch((body) => new Promise<Response>((answer, fail) => { held.push({ body, answer, fail }) }))
+  return held
+}
+
+// A valid reconcile answer that records every occurrence the page sent.
+function recordedResponse(body: ReconcileBody) {
+  return new Response(JSON.stringify({
+    results: body.occurrences.map((o) => ({ occurrence_id: o.occurrence_id, result: 'recorded' })),
+  }), { status: 200 })
+}
+
+// Lets the page finish a request that is already answered. Only queued work remains after it.
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 }
 
 async function queueOneScan(value = 'offline-ticket') {
@@ -64,6 +89,23 @@ async function storedRows(): Promise<unknown[]> {
   } finally {
     db.close()
   }
+}
+
+// Marks every stored row SYNCED, as another tab would, without going through the app.
+async function markStoredRowsSynced() {
+  const db = await new Promise<IDBDatabase>((resolve) => {
+    const open = indexedDB.open('gate-occurrences')
+    open.onsuccess = () => resolve(open.result)
+  })
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction('occurrences', 'readwrite')
+    const os = tx.objectStore('occurrences')
+    os.getAll().onsuccess = (e) => {
+      for (const row of (e.target as IDBRequest).result) os.put({ ...row, state: 'SYNCED' })
+    }
+    tx.oncomplete = () => resolve()
+  })
+  db.close()
 }
 
 async function failSyncWith(reconcile: Reconcile, note: RegExp) {
@@ -125,19 +167,7 @@ describe('a failed sync of the offline queue', () => {
     // queue empty and sends nothing: its note, "1 scan is saved on this device", is no
     // longer true and must go, with the count.
     const fetchMock = stubFetch(() => Promise.reject(new TypeError('must not be called')))
-    const db = await new Promise<IDBDatabase>((resolve) => {
-      const open = indexedDB.open('gate-occurrences')
-      open.onsuccess = () => resolve(open.result)
-    })
-    await new Promise<void>((resolve) => {
-      const tx = db.transaction('occurrences', 'readwrite')
-      const os = tx.objectStore('occurrences')
-      os.getAll().onsuccess = (e) => {
-        for (const row of (e.target as IDBRequest).result) os.put({ ...row, state: 'SYNCED' })
-      }
-      tx.oncomplete = () => resolve()
-    })
-    db.close()
+    await markStoredRowsSynced()
     fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
     // Waits for the change itself, so it cannot pass before the sync has run.
     await waitFor(() => expect(screen.queryByText(/^Sync failed:/)).toBeNull())
@@ -145,44 +175,87 @@ describe('a failed sync of the offline queue', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
   })
 
-  it('runs one sync at a time, so a slow failure cannot land after a success', async () => {
+  it('a slow failure does not replace a later success', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
     await queueOneScan()
-    // The first attempt hangs; a second request (the online edge) arrives meanwhile.
-    let failFirst!: (error: Error) => void
-    let inFlight = 0
-    let maxInFlight = 0
-    const answers: Array<(body: { occurrences: { occurrence_id: string }[] }) => Promise<Response>> = [
-      () => new Promise<Response>((_, reject) => { failFirst = reject }),
-      (body) => Promise.resolve(new Response(JSON.stringify({
-        results: body.occurrences.map((o) => ({ occurrence_id: o.occurrence_id, result: 'recorded' })),
-      }), { status: 200 })),
-    ]
-    const fetchMock = stubFetch(async (body) => {
-      const answer = answers.shift()
-      if (!answer) throw new TypeError('unexpected third sync')
-      inFlight += 1
-      maxInFlight = Math.max(maxInFlight, inFlight)
-      try {
-        return await answer(body)
-      } finally {
-        inFlight -= 1
-      }
-    })
-    const reconcileCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations')).length
+    const held = holdReconciles()
+    // Attempt A (the button) hangs. Attempt B (the online edge) starts while A is still out.
     fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    await waitFor(() => expect(reconcileCalls()).toBe(1))
+    await waitFor(() => expect(held).toHaveLength(1))
     window.dispatchEvent(new Event('online'))
-    // Give a second attempt every chance to reach the server while the first still hangs.
-    // One sync at a time never sends it, so this wait times out; overlapping attempts send it
-    // and it succeeds at once, which puts the failure below AFTER the success.
-    await waitFor(() => expect(reconcileCalls()).toBe(2), { timeout: 300 }).catch(() => undefined)
-    failFirst(new TypeError('network down'))
+    await waitFor(() => expect(held).toHaveLength(2))
+    held[1].answer(recordedResponse(held[1].body))
+    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
+    // A fails last, after a success landed while it was out. Its failure must not show.
+    // The flush runs inside act, so React renders any note that the failure would publish.
+    await act(async () => {
+      held[0].fail(new TypeError('network down'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(screen.getByText('Synced 1 offline scan(s).')).toBeDefined()
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+  })
+
+  it('a later failure does not stand over an earlier success that has since landed', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    const held = holdReconciles()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    await waitFor(() => expect(held).toHaveLength(1))
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(held).toHaveLength(2))
+    // No success has landed yet, so B's failure shows while A is still out.
+    held[1].fail(new TypeError('network down'))
+    expect(await screen.findByText(offlineNote)).toBeDefined()
+    // A lands last with a success, which replaces B's failure.
+    held[0].answer(recordedResponse(held[0].body))
     expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
-    expect(reconcileCalls()).toBe(2)
-    expect(maxInFlight).toBe(1)
+  })
+
+  it('a stalled later attempt does not hide an earlier failure', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    const held = holdReconciles()
+    // Attempt A (the button) hangs. Attempt B (the online edge) starts and is never answered.
+    // The fetch has no deadline, so B can stall for good.
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    await waitFor(() => expect(held).toHaveLength(1))
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(held).toHaveLength(2))
+    // A fails while B is still out. No success has landed, so A's failure must show.
+    held[0].fail(new TypeError('network down'))
+    expect(await screen.findByText(offlineNote)).toBeDefined()
+  })
+
+  it('an empty queue drops a failure carried under the pairing instruction', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    // A 401 unpairs the device. The instruction stays, and the queue is untouched.
+    stubFetch(() => Promise.resolve(new Response('', { status: 401 })))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByLabelText(/pairing token/i)
+    // While unpaired, a 502 carries its failure under the instruction. Nothing shows it until pairing.
+    const failing = stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(failing.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(true))
+    await settle()
+    // Another tab sends the row. The next sync finds nothing to send, so the carried failure is no longer true.
+    await markStoredRowsSynced()
+    const empty = stubFetch(() => Promise.reject(new TypeError('must not be called')))
+    window.dispatchEvent(new Event('online'))
+    // The queue count is the visible part of the empty-queue sync. Waiting for it cannot pass early.
+    await waitFor(() => expect(screen.queryByText(/still saved on this device/)).toBeNull())
+    // Pairing shows any failure that is still carried. There must be none.
+    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+    fireEvent.click(screen.getByRole('button', { name: /pair/i }))
+    await screen.findByRole('button', { name: 'Check ticket' })
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    expect(empty.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
   })
 })
 
@@ -228,6 +301,49 @@ describe('where the failure note renders (COS6)', () => {
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
 
     // Pairing reconciles nothing: the failure carried under the instruction is shown now.
+    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+    fireEvent.click(screen.getByRole('button', { name: /pair/i }))
+    await screen.findByRole('button', { name: 'Sync queued scans' })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+  })
+
+  it('a repeated 401 keeps the failure carried under the pairing instruction', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    stubFetch(() => Promise.resolve(new Response('', { status: 401 })))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByLabelText(/pairing token/i)
+    // While unpaired, a 502 carries its failure under the instruction. Nothing shows it until pairing.
+    const failing = stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(failing.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(true))
+    await settle()
+    // Still unpaired. A second 401 must keep that failure.
+    const unauthorized = stubFetch(() => Promise.resolve(new Response('', { status: 401 })))
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(unauthorized.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(true))
+    await settle()
+    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+    fireEvent.click(screen.getByRole('button', { name: /pair/i }))
+    await screen.findByRole('button', { name: 'Sync queued scans' })
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+  })
+
+  it('a 401 after a failure carries that failure under the pairing instruction', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    // A 502 shows the failure while the device is paired.
+    stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    expect(await screen.findByText(unreadableNote)).toBeDefined()
+    // A 401 unpairs the device. The instruction shows, and the failure stands under it, unshown.
+    stubFetch(() => Promise.resolve(new Response('', { status: 401 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    expect(await screen.findByText('This device is not paired. Enter its pairing token to sync the queued scans.')).toBeDefined()
+    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    // Pairing shows the failure that was carried.
     fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
     fireEvent.click(screen.getByRole('button', { name: /pair/i }))
     await screen.findByRole('button', { name: 'Sync queued scans' })

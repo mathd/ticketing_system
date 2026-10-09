@@ -117,11 +117,10 @@ function App() {
   // The time of the last sync that completed in this page session. A ref, not state: the
   // online listener is registered by the first render and must read the current value.
   const lastSuccessfulSyncAt = useRef<string | null>(null)
-  // One sync at a time in this page (TKT-315). Two overlapping attempts would publish their
-  // notes in the order their answers arrive, so a slow failure could land after a success
-  // and stand over an empty queue. A request made during an attempt runs once after it.
-  const syncInFlight = useRef<Promise<void> | null>(null)
-  const syncRequestedAgain = useRef(false)
+  // Sync attempts may overlap (TKT-315), so their answers can arrive in any order. Each success
+  // is counted when it lands. A failure is dropped only if a success landed after its attempt
+  // started: see reportSyncFailure.
+  const syncSuccesses = useRef(0)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
@@ -366,33 +365,22 @@ function App() {
   // The note stays until a sync succeeds, with the time of the last one that did, so a stale
   // queue count reads as stale. A standing "not paired" instruction stays on screen: it is
   // the actionable one. The failure is carried under it and shown once the device is paired.
-  const reportSyncFailure = (cause: 'offline' | 'unreadable', count: number) => {
+  // A failure is dropped only if a success landed after its attempt started. Overlapping
+  // failures just replace each other, since each one is true while the queue is unsynced.
+  // A later attempt must not drop an earlier failure. It can stall forever, because the fetch
+  // has no deadline, and an earlier failure would stay hidden for as long as that attempt stalls
+  // (TKT-315).
+  const reportSyncFailure = (cause: 'offline' | 'unreadable', count: number, successesAtStart: number) => {
     if (!mounted.current) return
+    if (syncSuccesses.current !== successesAtStart) return
     const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
     const text = `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
     setSyncNote((previous) => (previous?.kind === 'pairing' ? { ...previous, failure: text } : { kind: 'failure', text }))
   }
 
-  const syncQueued = (): Promise<void> => {
-    if (syncInFlight.current) {
-      syncRequestedAgain.current = true
-      return syncInFlight.current
-    }
-    const run = (async () => {
-      try {
-        do {
-          syncRequestedAgain.current = false
-          await syncQueuedOnce()
-        } while (syncRequestedAgain.current && mounted.current)
-      } finally {
-        syncInFlight.current = null
-      }
-    })()
-    syncInFlight.current = run
-    return run
-  }
-
-  const syncQueuedOnce = async () => {
+  const syncQueued = async () => {
+    // Taken before the first await. A success that lands later drops this attempt's failure.
+    const successesAtStart = syncSuccesses.current
     let store: OccurrenceStore
     let queue: OccurrenceRecord[]
     try {
@@ -406,10 +394,15 @@ function App() {
     if (!queue.length) {
       // Nothing on this device awaits sync, so a failure note that says scans are saved here
       // is no longer true: another tab, or an earlier attempt, has sent them. Clear it and
-      // the count. A success or pairing line stays.
+      // the count. A pairing line keeps its text but loses any failure it carried. A success
+      // line stays.
       if (mounted.current) {
         setQueuedCount(0)
-        setSyncNote((previous) => (previous?.kind === 'failure' ? null : previous))
+        setSyncNote((previous) => {
+          if (previous?.kind === 'failure') return null
+          if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: previous.text }
+          return previous
+        })
       }
       return
     }
@@ -434,7 +427,7 @@ function App() {
         body: JSON.stringify(request),
       })
     } catch {
-      reportSyncFailure('offline', queue.length)
+      reportSyncFailure('offline', queue.length, successesAtStart)
       return
     }
     if (response.status === 401) {
@@ -444,7 +437,7 @@ function App() {
       return
     }
     if (!response.ok) {
-      reportSyncFailure('unreadable', queue.length)
+      reportSyncFailure('unreadable', queue.length, successesAtStart)
       return
     }
     let data: ReconcileResponse
@@ -454,7 +447,7 @@ function App() {
         new Set(queue.map((record) => record.occurrenceId)),
       )
     } catch {
-      reportSyncFailure('unreadable', queue.length)
+      reportSyncFailure('unreadable', queue.length, successesAtStart)
       return
     }
 
@@ -470,6 +463,8 @@ function App() {
     }
     if (mounted.current) {
       lastSuccessfulSyncAt.current = new Date().toISOString()
+      // Counted, so a failure from an attempt that started earlier is dropped (TKT-315).
+      syncSuccesses.current += 1
       setSyncNote({
         kind: 'success',
         text: conflicts > 0
@@ -584,7 +579,12 @@ function App() {
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
-    setSyncNote({ kind: 'pairing', text: reason })
+    // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
+    setSyncNote((previous) => {
+      if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: previous.text }
+      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
+      return { kind: 'pairing', text: reason }
+    })
   }
 
   const pairDevice = async (event: React.FormEvent) => {
