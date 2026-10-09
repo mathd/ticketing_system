@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { IDBFactory } from 'fake-indexeddb'
 import { StrictMode } from 'react'
@@ -358,20 +358,20 @@ describe('a failed sync of the offline queue', () => {
       }
       return stringify(...args)
     })
-    // The click handler discards the promise. Catch and assert its rejection here.
+    // The click handler discards the promise. Catch and assert its rejection here. The cleanup
+    // runs even when the test times out, so a leaked listener cannot hide a later rejection.
     process.on('unhandledRejection', catchRejection)
-    try {
-      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-      await constructed.promise
-      await readsSettled()
-      await new Promise<void>((resolve) => setImmediate(resolve))
-      expect(screen.queryByText(/^Sync failed: No connection/)).toBeNull()
-      expect(errors).toEqual([error])
-      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
-    } finally {
+    onTestFinished(() => {
       process.off('unhandledRejection', catchRejection)
       spy.mockRestore()
-    }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await constructed.promise
+    await readsSettled()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(screen.queryByText(/^Sync failed: No connection/)).toBeNull()
+    expect(errors).toEqual([error])
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(false)
   })
 
   it('serialises requests and coalesces an online event and a button click into one follow-up', async () => {
