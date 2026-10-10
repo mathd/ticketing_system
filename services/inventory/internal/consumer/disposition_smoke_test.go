@@ -313,50 +313,76 @@ func TestTKT317ArchiveWaitsForItsPublicationThenApplies(t *testing.T) {
 	}
 }
 
-// COS4 (TKT-317): a distinct publication for a slot that already has a closure record provisions
-// normally. The closure and the archive that follow apply to that pool, and are not skipped
-// because of the closure record.
-func TestTKT317RepublishProvisionsDespiteATombstone(t *testing.T) {
-	ctx, st, db := tkt317Store(t)
-	org, slot := uuid.New(), uuid.New()
+// COS4 (TKT-317, D7): a distinct publication for a slot that already has a moot record provisions
+// normally, whatever the record's source. The closure and the archive that follow apply to that pool,
+// and are not skipped because of the record. Both sources are run. A closure record authorises
+// nothing. A publication record is the one that authorises, so the publication row is the one that
+// catches a regression which stops provisioning for a slot that has a publication record.
+func TestTKT317RepublishProvisionsDespiteAMootRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		source      string
+		mootSubject string
+		moot        func(id, slot, org uuid.UUID) string
+	}{
+		{
+			name:        "a closure record",
+			source:      "closure",
+			mootSubject: subjectClosed,
+			moot:        func(id, slot, org uuid.UUID) string { return tkt317Closure(id, slot, org, 1) },
+		},
+		{
+			name:        "a publication record",
+			source:      "publication",
+			mootSubject: subjectPublished,
+			moot:        func(id, slot, org uuid.UUID) string { return tkt317SchemaOnePublication(id, slot, org) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, st, db := tkt317Store(t)
+			org, slot := uuid.New(), uuid.New()
 
-	// A moot closure leaves a closure record, which authorises nothing. Its own event id is not the publication's.
-	moot := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
-	mootClosure := tkt317Msg(subjectClosed, tkt317Closure(uuid.New(), slot, org, 1))
-	moot.handle(ctx, mootClosure)
-	if !slices.Contains(mootClosure.actions, "ack") {
-		t.Fatalf("moot closure actions = %v, want ack", mootClosure.actions)
-	}
-	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM moot_slots WHERE organizer_id=$1 AND slot_id=$2`, org, slot); n != 1 {
-		t.Fatalf("closure record rows = %d, want 1 before the republish", n)
-	}
+			// The moot event leaves a record of the source under test. The record is read back, so this
+			// row cannot pass by exercising the other source.
+			moot := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
+			mootEvt := tkt317Msg(tc.mootSubject, tc.moot(uuid.New(), slot, org))
+			moot.handle(ctx, mootEvt)
+			if !slices.Contains(mootEvt.actions, "ack") {
+				t.Fatalf("moot %s actions = %v, want ack", tc.source, mootEvt.actions)
+			}
+			if got := tkt317String(t, ctx, db, `SELECT source FROM moot_slots WHERE organizer_id=$1 AND slot_id=$2`, org, slot); got != tc.source {
+				t.Fatalf("moot record source = %q, want %q", got, tc.source)
+			}
 
-	c := offeringConsumer(st, fakeResolver{organizerID: org, capacity: 10})
-	pub := tkt317Msg(subjectPublished, tkt317SchemaTwoPublication(uuid.New(), slot, org, 10))
-	c.handle(ctx, pub)
-	if !slices.Contains(pub.actions, "ack") {
-		t.Fatalf("republish actions = %v, want ack", pub.actions)
-	}
-	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot); n != 1 {
-		t.Fatalf("republish created %d pools, want 1", n)
-	}
+			// A genuine republish: a second publication, with its own event id, for the same slot.
+			c := offeringConsumer(st, fakeResolver{organizerID: org, capacity: 10})
+			pub := tkt317Msg(subjectPublished, tkt317SchemaTwoPublication(uuid.New(), slot, org, 10))
+			c.handle(ctx, pub)
+			if !slices.Contains(pub.actions, "ack") {
+				t.Fatalf("republish actions = %v, want ack", pub.actions)
+			}
+			if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot); n != 1 {
+				t.Fatalf("republish provisioned %d pools, want 1: a moot %s record must not stop provisioning", n, tc.source)
+			}
 
-	closure := tkt317Msg(subjectClosed, tkt317Closure(uuid.New(), slot, org, 2))
-	c.handle(ctx, closure)
-	if !slices.Contains(closure.actions, "ack") {
-		t.Fatalf("closure actions = %v, want ack", closure.actions)
-	}
-	if got := tkt317String(t, ctx, db, `SELECT closure_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "closed" {
-		t.Fatalf("pool closure_status = %q after the closure, want closed: the moot record must not skip the apply", got)
-	}
+			closure := tkt317Msg(subjectClosed, tkt317Closure(uuid.New(), slot, org, 2))
+			c.handle(ctx, closure)
+			if !slices.Contains(closure.actions, "ack") {
+				t.Fatalf("closure actions = %v, want ack", closure.actions)
+			}
+			if got := tkt317String(t, ctx, db, `SELECT closure_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "closed" {
+				t.Fatalf("pool closure_status = %q after the closure, want closed: the moot record must not skip the apply", got)
+			}
 
-	arch := tkt317Msg(subjectArchived, tkt317Archive(uuid.New(), slot, org))
-	c.handle(ctx, arch)
-	if !slices.Contains(arch.actions, "ack") {
-		t.Fatalf("archive actions = %v, want ack", arch.actions)
-	}
-	if got := tkt317String(t, ctx, db, `SELECT lifecycle_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "archived" {
-		t.Fatalf("pool lifecycle_status = %q after the archive, want archived: the moot record must not skip the apply", got)
+			arch := tkt317Msg(subjectArchived, tkt317Archive(uuid.New(), slot, org))
+			c.handle(ctx, arch)
+			if !slices.Contains(arch.actions, "ack") {
+				t.Fatalf("archive actions = %v, want ack", arch.actions)
+			}
+			if got := tkt317String(t, ctx, db, `SELECT lifecycle_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "archived" {
+				t.Fatalf("pool lifecycle_status = %q after the archive, want archived: the moot record must not skip the apply", got)
+			}
+		})
 	}
 }
 

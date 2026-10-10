@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -196,5 +197,72 @@ func TestTKT317PerformanceLookupBodyIsCapped(t *testing.T) {
 				t.Fatalf("a body of exactly the cap failed: %v", err)
 			}
 		})
+	}
+}
+
+// endlessBody serves prefix, then spaces, with no end. read counts the bytes the caller takes. It
+// fails at ceiling, and when ctx ends, so a read that is not capped fails the test at once rather
+// than running for ever.
+type endlessBody struct {
+	ctx     context.Context
+	prefix  []byte
+	ceiling int64
+	read    int64
+}
+
+var errEndlessBodyCeiling = errors.New("test body ceiling reached: the read was not capped")
+
+func (b *endlessBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if b.read >= b.ceiling {
+		return 0, errEndlessBodyCeiling
+	}
+	for i := range p {
+		if b.read < int64(len(b.prefix)) {
+			p[i] = b.prefix[b.read]
+		} else {
+			p[i] = ' '
+		}
+		b.read++
+	}
+	return len(p), nil
+}
+
+func (b *endlessBody) Close() error { return nil }
+
+// roundTripFunc is a test transport. It answers each request itself, so no network is involved.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TKT-317 R3 (second review): the table above cannot tell a capped read from an uncapped one. Its
+// bodies are finite, so removing io.LimitReader still passes: ReadAll reads the whole body, and the
+// length check then refuses it. This test serves a body that never ends, and it counts the bytes the
+// lookup takes. A capped read stops at maxPerformanceBytes+1 bytes, and the answer is unusable. An
+// uncapped read reaches the body's ceiling, which is 64 times the cap, and fails there. The context
+// bounds the whole call as well.
+func TestTKT317PerformanceLookupStopsReadingAtTheCap(t *testing.T) {
+	const capBytes = 64 << 10
+	const ceiling = 4 << 20
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	body := &endlessBody{
+		ctx:     ctx,
+		prefix:  []byte(`{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10}`),
+		ceiling: ceiling,
+	}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: req}, nil
+	})}
+	_, err := NewCatalogResolver("http://catalog.invalid", "token", client).
+		PublishedPerformance(ctx, uuid.New())
+	if !errors.Is(err, errCatalogUnusable) {
+		t.Fatalf("err = %v after reading %d bytes, want errCatalogUnusable: a body past the cap is an answer that cannot be used",
+			err, body.read)
+	}
+	if body.read != capBytes+1 {
+		t.Fatalf("the lookup read %d bytes, want exactly %d: a capped read stops one byte past the cap", body.read, capBytes+1)
 	}
 }

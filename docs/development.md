@@ -169,8 +169,9 @@ No command re-drives a parked event. The steps below are manual.
   `catalog_event_parked`.
 - No catalog command re-emits a closure or an archive. The catalog re-emit commands
   (`reemit-policies`, `reemit-orphan-prevention`, `reemit-best-available-ordering`) re-emit
-  publications only, and none of them targets one event. `reemit-policies` re-emits every
-  published ungrouped slot.
+  publications only, and none of them targets one event. Each one selects the slots that are
+  published when it reads a batch, so a slot archived after that read can still be re-emitted.
+  `reemit-policies` re-emits every ungrouped slot that is published when its batch is read.
 
 1. Read the `reason` column, and repair the catalog answer.
 2. Restart inventory. For a parked closure whose pool exists, startup reconciliation reads the

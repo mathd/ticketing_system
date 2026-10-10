@@ -20,8 +20,25 @@ and `reopened` (ADR-017). Two situations stopped an event from applying as it ar
 
 Catalog moves a performance from draft to published once, and from published to archived. It has
 no path back to draft, and none from archived to published (`postgres_slots.go`,
-`postgres_transitions.go`). The three catalog re-emit commands select published slots only, so
-none of them re-emits an archived slot.
+`postgres_transitions.go`).
+
+The three catalog re-emit commands select published slots when they read a batch. That is a
+selection-time filter, and it holds only at that moment. Each command then publishes the batch's
+snapshots without checking the slot's state again (`cmd/catalog/reemit.go`,
+`cmd/catalog/reemit_orphan_prevention.go`, `cmd/catalog/reemit_best_available_ordering.go`). The
+publish step has no database handle, so it cannot read the slot either
+(`internal/events/events.go`). A batch holds up to 100 slots. So a slot that is archived after its
+batch is read, and before its publication is emitted, can still be re-emitted. The window for a slot
+runs from the batch read to that slot's own publish.
+
+What that leaves possible is a publication event for a slot that is archived when the event is
+emitted. Inventory applies a schema-2 to schema-5 publication from its payload, and for schemas 4
+and 5 from the seat-map geometry too. It does not check the slot's catalog state when the event
+arrives (`services/inventory/internal/consumer/consumer.go`, `provisionInput`). If the slot has no
+pool, the event creates one, and the pool's lifecycle defaults to `published` (migration 0005). If
+the pool exists, `Provision` updates its capacity when the pool has no claims and no claim history,
+and it does not change `lifecycle_status` (`services/inventory/internal/store/store.go`,
+`Provision`). This ADR does not analyse what that does to an archived pool.
 
 The re-emit commands do publish a slot that is already published. Each one uses an event id that
 differs from the live id (`internal/events/events.go`):
@@ -128,6 +145,9 @@ therefore be moot. The durable is created with `DeliverAllPolicy`, so it reads e
    not its trailing content.
 7. **Not tamper-evident (ADR-021).** This is honest-writer consistency. A writer with database
    access can add or delete moot records and parked rows.
+8. **A publication emitted after its slot is archived (open).** The re-emit commands select a
+   slot before they publish it, so the event can arrive after the archive (see Context). This ADR
+   does not analyse the effect on an archived pool, and no test covers it.
 
 ## Amendment (TKT-317 review)
 
@@ -139,6 +159,9 @@ The first accepted version said two things that were wrong:
 
 The review also added the body cap, the refusal of an all-zero group, and the lock in the
 migration's Down step. Each one has a test that fails without it.
+
+A second review found that the claim "re-emission after archival is excluded" held only at
+selection time. Context now says so, and item 8 under "What Is Not Claimed" is open.
 
 ## References
 
