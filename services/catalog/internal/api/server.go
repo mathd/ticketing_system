@@ -668,6 +668,11 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusBadRequest, Error{Error: "seat identity must be at most 200 characters"})
 	case errors.Is(err, store.ErrSeatMapNotPublished):
 		writeJSON(w, http.StatusConflict, Error{Error: "seat map must be published before a slot can be seated against it"})
+	case errors.Is(err, store.ErrSeatMapSeatless):
+		// TKT-318: publish, edit and create-performance all answer 409 with this
+		// message. A version with no seats cannot be published, saved as a new
+		// version, or seated against. Legacy seatless versions stay readable.
+		writeJSON(w, http.StatusConflict, Error{Error: "a seat map needs at least one seat before it can be published, saved, or seated against"})
 	case errors.Is(err, store.ErrSeatMapEditOrphansPinned):
 		// TKT-105/ADR-029: an edit that drops a seat identity pinned by a sale or
 		// hold is a conflict, not a 500. The message is actionable for the UI.

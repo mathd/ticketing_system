@@ -541,29 +541,71 @@ func TestPublishSeatMapIsScopedToTheOwningOrganizer(t *testing.T) {
 	ctx, db, st := seasonSmokeStore(t)
 	p := seedTenantPair(ctx, t, db)
 
-	m, err := st.CreateSeatMap(ctx, SeatMapInput{
-		OrganizerID: p.victimOrg, VenueID: p.victimVenue, Name: "victim map",
-	})
+	// Two victim drafts, each probed by the attacker. The seat check in the conditional
+	// UPDATE refuses a seatless draft whatever the organizer, so the seatless draft cannot
+	// show whether the UPDATE is scoped. The seated draft can. The seatless draft shows the
+	// explanation read: the attacker must get not-found, not the seatless refusal, which
+	// would reveal that the victim's map exists and is empty.
+	for _, tc := range []struct {
+		name   string
+		seated bool
+	}{
+		{"seatless victim draft", false},
+		{"seated victim draft", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := seedOwnedDraft(ctx, t, st, p.victimOrg, p.victimVenue, tc.name, tc.seated)
+
+			if _, _, err := st.PublishSeatMap(ctx, p.attackerOrg, m.ID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("cross-tenant seat-map publish = %v, want ErrNotFound", err)
+			}
+			var status string
+			if err := db.QueryRowContext(ctx, `SELECT status FROM seat_maps WHERE id=$1`, m.ID).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			if status != "draft" {
+				t.Fatalf("the victim's map was published: %q", status)
+			}
+
+			if !tc.seated {
+				// The owner gets the seatless refusal for its own empty draft.
+				if _, _, err := st.PublishSeatMap(ctx, p.victimOrg, m.ID); !errors.Is(err, ErrSeatMapSeatless) {
+					t.Fatalf("owner publish of a seatless draft = %v, want ErrSeatMapSeatless", err)
+				}
+				return
+			}
+			published, _, err := st.PublishSeatMap(ctx, p.victimOrg, m.ID)
+			if err != nil {
+				t.Fatalf("the owning organizer must still publish: %v", err)
+			}
+			if published.Status != "published" {
+				t.Fatalf("owner publish did not apply: %q", published.Status)
+			}
+		})
+	}
+}
+
+// seedOwnedDraft authors a draft map for one organizer: a section and a row, and a seat
+// when seated is true. It is local to the scoping fixtures, which need other tenants' ids.
+func seedOwnedDraft(ctx context.Context, t *testing.T, st *Postgres, org, venue uuid.UUID, name string, seated bool) SeatMap {
+	t.Helper()
+	m, err := st.CreateSeatMap(ctx, SeatMapInput{OrganizerID: org, VenueID: venue, Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if _, _, err := st.PublishSeatMap(ctx, p.attackerOrg, m.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-tenant seat-map publish = %v, want ErrNotFound", err)
-	}
-	var status string
-	if err := db.QueryRowContext(ctx, `SELECT status FROM seat_maps WHERE id=$1`, m.ID).Scan(&status); err != nil {
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: org, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if status != "draft" {
-		t.Fatalf("the victim's map was published: %q", status)
-	}
-
-	published, _, err := st.PublishSeatMap(ctx, p.victimOrg, m.ID)
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{OrganizerID: org, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1})
 	if err != nil {
-		t.Fatalf("the owning organizer must still publish: %v", err)
+		t.Fatal(err)
 	}
-	if published.Status != "published" {
-		t.Fatalf("owner publish did not apply: %q", published.Status)
+	if !seated {
+		return m
 	}
+	if _, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: org, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }

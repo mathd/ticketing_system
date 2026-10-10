@@ -58,7 +58,7 @@ func identitiesOf(ctx context.Context, t *testing.T, st *Postgres, mapID uuid.UU
 // that drops a PINNED seat is hard-rejected; an edit that drops an UNPINNED seat
 // succeeds.
 func TestEditSeatMapPreservesPinnedSeats(t *testing.T) {
-	ctx, _, st, _ := seatMapSmokeStore(t)
+	ctx, db, st, _ := seatMapSmokeStore(t)
 	m := seedPublishedMap(ctx, t, st, "Sold-case") // Orchestra/A/1
 
 	// Add two more seats to the published map via a first accepted edit so we
@@ -102,25 +102,133 @@ func TestEditSeatMapPreservesPinnedSeats(t *testing.T) {
 		t.Fatal("new Balcony/B/1 should exist exactly once")
 	}
 
-	// Edit that DROPS a pinned seat (omits Orchestra/A/2) -> hard-rejected.
+	// Edit that DROPS a pinned seat (omits Orchestra/A/2) -> hard-rejected. The
+	// submission keeps a seat, so the pin refusal answers, not the seatless one.
+	versions := familyVersionCount(ctx, t, db, v3.ID)
 	_, _, err = st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: v3.ID,
 		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1)))}})
 	if !errors.Is(err, ErrSeatMapEditOrphansPinned) {
 		t.Fatalf("dropping a pinned seat err = %v, want ErrSeatMapEditOrphansPinned", err)
 	}
 	// The rejected edit created no new version: v3 stays the current published one.
+	if n := familyVersionCount(ctx, t, db, v3.ID); n != versions {
+		t.Fatalf("rejected edit left %d versions, want %d", n, versions)
+	}
 	if ids := identitiesOf(ctx, t, st, v3.ID); ids["Orchestra/A/2"] != 1 {
 		t.Fatal("predecessor v3 must be untouched after a rejected edit")
+	}
+}
+
+// TestEditSeatMapRefusesEmptyGeometry (TKT-318 COS-2) refuses an edit that holds no seat
+// at all, whatever the shape of that empty submission. Every case here has no seat in any
+// section, so each one is a wholly seatless submission. An empty section beside seated
+// geometry is not refused (see the ADR-029 amendment). The map has no pins, so the refusal
+// cannot come from the pin check.
+func TestEditSeatMapRefusesEmptyGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sections []EditSectionInput
+	}{
+		{"nil sections", nil},
+		{"empty sections", []EditSectionInput{}},
+		{"a section with no rows", []EditSectionInput{sect("Orchestra", 1)}},
+		{"a row with no seats", []EditSectionInput{sect("Orchestra", 1, rw("A", 1))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, db, st, _ := seatMapSmokeStore(t)
+			m := seedPublishedMap(ctx, t, st, "Empty tree") // Orchestra/A/1, unpinned
+			versions := familyVersionCount(ctx, t, db, m.ID)
+
+			v, needsEmit, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Sections: tc.sections})
+			if !errors.Is(err, ErrSeatMapSeatless) {
+				t.Fatalf("empty edit err = %v, want ErrSeatMapSeatless", err)
+			}
+			if needsEmit || v.ID != uuid.Nil {
+				t.Fatalf("refused edit returned %+v needsEmit=%v, want zero value and no event owed", v, needsEmit)
+			}
+			if n := familyVersionCount(ctx, t, db, m.ID); n != versions {
+				t.Fatalf("refused edit left %d versions, want %d", n, versions)
+			}
+			if ids := identitiesOf(ctx, t, st, m.ID); len(ids) != 1 || ids["Orchestra/A/1"] != 1 {
+				t.Fatalf("predecessor geometry changed: %v", ids)
+			}
+		})
+	}
+}
+
+// TestEditSeatMapEmptyAnswersBeforeResolvingTheMap pins where the empty refusal sits. It
+// runs before the family is resolved, so an empty edit gets the same answer for any map
+// id, including an id that does not exist. A non-empty edit with valid identities of an
+// unknown map is not found.
+func TestEditSeatMapEmptyAnswersBeforeResolvingTheMap(t *testing.T) {
+	ctx, _, st, _ := seatMapSmokeStore(t)
+	unknown := uuid.New()
+	if _, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: unknown}); !errors.Is(err, ErrSeatMapSeatless) {
+		t.Fatalf("empty edit of an unknown map err = %v, want ErrSeatMapSeatless", err)
+	}
+	if _, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: unknown,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1)))}}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("seated edit of an unknown map err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestEditSeatMapEmptyWithPinsGetsSeatlessRefusal pins the order against the pin refusal.
+// An empty edit would orphan the pinned seat, but the empty answer comes first, so the
+// caller learns the version would have no seats.
+func TestEditSeatMapEmptyWithPinsGetsSeatlessRefusal(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	m := seedPublishedMap(ctx, t, st, "Pinned empty") // Orchestra/A/1
+	if err := st.PinSeat(ctx, PinSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SeatIdentity: "Orchestra/A/1", PinnedBy: "hold:empty"}); err != nil {
+		t.Fatal(err)
+	}
+	versions := familyVersionCount(ctx, t, db, m.ID)
+
+	if _, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: m.ID}); !errors.Is(err, ErrSeatMapSeatless) {
+		t.Fatalf("empty edit of a pinned map err = %v, want ErrSeatMapSeatless", err)
+	}
+	if n := familyVersionCount(ctx, t, db, m.ID); n != versions {
+		t.Fatalf("refused edit left %d versions, want %d", n, versions)
+	}
+}
+
+// TestEditSeatMapRepairsLegacySeatlessVersion (TKT-318 COS-2) keeps repair possible. A
+// version published before TKT-318 has no seats. An edit that adds seats must succeed: it
+// mints a published version in the same family, with the exact identities and an owed
+// event. The legacy predecessor keeps its empty geometry.
+func TestEditSeatMapRepairsLegacySeatlessVersion(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	legacy := seedSeatlessDraft(ctx, t, st, "Legacy repair")
+	markLegacyPublished(ctx, t, db, legacy.ID)
+
+	repaired, needsEmit, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: legacy.ID,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1), st1("2", 2)))}})
+	if err != nil {
+		t.Fatalf("repair of a legacy seatless version: %v", err)
+	}
+	if repaired.Version != legacy.Version+1 || repaired.Status != "published" {
+		t.Fatalf("repair = v%d %q, want v%d published", repaired.Version, repaired.Status, legacy.Version+1)
+	}
+	if !needsEmit {
+		t.Fatal("the repaired version must owe its event")
+	}
+	if n := familyVersionCount(ctx, t, db, legacy.ID); n != 2 {
+		t.Fatalf("family has %d versions, want 2 (legacy and repaired)", n)
+	}
+	if ids := identitiesOf(ctx, t, st, repaired.ID); len(ids) != 2 || ids["Orchestra/A/1"] != 1 || ids["Orchestra/A/2"] != 1 {
+		t.Fatalf("repaired identities = %v, want Orchestra/A/1 and Orchestra/A/2 once each", ids)
+	}
+	if n := seatCount(ctx, t, db, legacy.ID); n != 0 {
+		t.Fatalf("legacy predecessor has %d seats, want none", n)
 	}
 }
 
 func TestEditSeatMapRejectsOverlongIdentityBeforeNewVersion(t *testing.T) {
 	ctx, db, st, _ := seatMapSmokeStore(t)
 	m := seedPublishedMap(ctx, t, st, "Identity limit")
-	var before int
-	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM seat_maps WHERE map_family_id=$1`, m.ID).Scan(&before); err != nil {
-		t.Fatal(err)
+	// Count the whole family, so the check can see a version appear in it.
+	before := familyVersionCount(ctx, t, db, m.ID)
+	if before != 1 {
+		t.Fatalf("a fresh map has %d versions in its family, want 1", before)
 	}
 
 	_, _, err := st.EditSeatMap(ctx, EditSeatMapInput{
@@ -133,12 +241,7 @@ func TestEditSeatMapRejectsOverlongIdentityBeforeNewVersion(t *testing.T) {
 	if !errors.Is(err, ErrSeatIdentityTooLong) {
 		t.Fatalf("overlong edit error = %v, want ErrSeatIdentityTooLong", err)
 	}
-	var after int
-	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM seat_maps WHERE map_family_id=$1`, m.ID).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	if after != before {
+	if after := familyVersionCount(ctx, t, db, m.ID); after != before {
 		t.Fatalf("rejected edit left %d versions, want %d", after, before)
 	}
 }

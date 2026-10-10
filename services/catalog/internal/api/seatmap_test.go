@@ -29,6 +29,46 @@ func seedDraftMap(t *testing.T, e *env, venueID openapi_types.UUID, name string)
 	return decode[SeatMap](t, rec)
 }
 
+// seatlessMessage is the 409 body for a write that would leave a seat map with no
+// seats (TKT-318, store sentinel ErrSeatMapSeatless).
+const seatlessMessage = "a seat map needs at least one seat before it can be published, saved, or seated against"
+
+// seedSeatedDraftMap authors a draft with one section, row and seat, and leaves it a
+// draft. It is the success fixture for publish. seedDraftMap stays seatless for the
+// negative tests.
+func seedSeatedDraftMap(t *testing.T, e *env, venueID openapi_types.UUID, name string) SeatMap {
+	t.Helper()
+	m := seedDraftMap(t, e, venueID, name)
+	sec := decode[SeatSection](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}))
+	row := decode[SeatRow](t, e.do("POST", "/seat-maps/"+m.Id.String()+"/rows",
+		SeatMapRowCreate{SectionId: sec.Id, Label: "A", Position: 1}))
+	if rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/seats",
+		SeatMapSeatCreate{RowId: row.Id, Label: "1", Position: 1}); rec.Code != http.StatusCreated {
+		t.Fatalf("add seat: %d %s", rec.Code, rec.Body.String())
+	}
+	return m
+}
+
+// seedLegacySeatlessPublished makes a published version with no seats, the state a map
+// published before TKT-318 is in. The routes refuse this state now, so the fake is
+// written directly, the way such a row would exist.
+func seedLegacySeatlessPublished(t *testing.T, e *env, venueID openapi_types.UUID, name string) SeatMap {
+	t.Helper()
+	m := seedDraftMap(t, e, venueID, name)
+	if rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}); rec.Code != http.StatusCreated {
+		t.Fatalf("add section: %d %s", rec.Code, rec.Body.String())
+	}
+	fake := e.store.seatMaps[m.Id]
+	fake.Status = "published"
+	now := time.Now().UTC()
+	fake.PublishedAt = &now
+	e.store.seatMaps[m.Id] = fake
+	m.Status = "published"
+	return m
+}
+
 func TestCreateSeatMapDraft(t *testing.T) {
 	e := newEnv(t)
 	venueID := seedVenue(t, e, "La Grande Salle")
@@ -185,7 +225,7 @@ func seedPublishedMap(t *testing.T, e *env, venueID openapi_types.UUID, name str
 func TestPublishSeatMap(t *testing.T) {
 	e := newEnv(t)
 	venueID := seedVenue(t, e, "La Grande Salle")
-	m := seedDraftMap(t, e, venueID, "Main floor")
+	m := seedSeatedDraftMap(t, e, venueID, "Main floor")
 
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
 	if rec.Code != http.StatusOK {
@@ -214,7 +254,7 @@ func TestPublishSeatMap(t *testing.T) {
 func TestPublishSeatMapEmitFailureRetries(t *testing.T) {
 	e := newEnv(t)
 	venueID := seedVenue(t, e, "Hall")
-	m := seedDraftMap(t, e, venueID, "Floor")
+	m := seedSeatedDraftMap(t, e, venueID, "Floor")
 
 	e.pub.failSeatMapNext = true
 	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
@@ -236,6 +276,32 @@ func TestPublishSeatMapEmitFailureRetries(t *testing.T) {
 	}
 	if len(e.pub.seatMapsPub) != 1 {
 		t.Fatalf("retry must emit the owed event once, got %d", len(e.pub.seatMapsPub))
+	}
+}
+
+// TestPublishSeatMapRefusesSeatlessDraft (TKT-318 COS-1) answers a draft with no seats
+// with 409 and the seatless message. Nothing is emitted, and the draft stays a draft.
+func TestPublishSeatMapRefusesSeatlessDraft(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "Hall")
+	m := seedDraftMap(t, e, venueID, "Seatless")
+	if rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/sections",
+		SeatMapSectionCreate{Name: "Orchestra", Position: 1}); rec.Code != http.StatusCreated {
+		t.Fatalf("add section: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/publish", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("seatless publish must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	if got := decode[Error](t, rec).Error; got != seatlessMessage {
+		t.Fatalf("error = %q, want %q", got, seatlessMessage)
+	}
+	if n := len(e.pub.seatMapsPub); n != 0 {
+		t.Fatalf("a refused publish emitted %d event(s), want none", n)
+	}
+	if status := e.store.seatMaps[m.Id].Status; status != "draft" {
+		t.Fatalf("refused publish left the map %q, want draft", status)
 	}
 }
 
@@ -328,6 +394,34 @@ func TestCreateSeatedPerformanceRejectsUnpublishedOrCrossTenant(t *testing.T) {
 				t.Fatalf("want %d, got %d %s", tc.want, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestCreateSeatedPerformanceRefusesSeatlessPublishedMap (TKT-318 COS-4) refuses a seated
+// slot against a published version with no seats: 409, the seatless message, and no
+// performance created.
+func TestCreateSeatedPerformanceRefusesSeatlessPublishedMap(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	legacy := seedLegacySeatlessPublished(t, e, venueID, "Legacy")
+	event := decode[Event](t, e.do("POST", "/events", EventCreate{
+		Name: LocalizedString{"fr": "Récital", "en": "Recital"},
+	}))
+	startsAt := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+	before := len(e.store.performances)
+
+	rec := e.do("POST", "/performances", PerformanceCreate{
+		EventId: event.Id, VenueId: venueID,
+		StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapId: &legacy.Id,
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("seated slot on a seatless version must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	if got := decode[Error](t, rec).Error; got != seatlessMessage {
+		t.Fatalf("error = %q, want %q", got, seatlessMessage)
+	}
+	if n := len(e.store.performances); n != before {
+		t.Fatalf("refused create left %d performance(s), want none", n-before)
 	}
 }
 
