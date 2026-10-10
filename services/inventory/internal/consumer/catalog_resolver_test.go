@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -64,6 +65,17 @@ func TestTheCatalogResolverClassifiesEveryFailure(t *testing.T) {
 			unusable: true},
 		"a festival with zero shared capacity": {status: 200,
 			body:     `{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10,"capacity_group_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","shared_capacity":0}`,
+			unusable: true},
+		// R4 (TKT-317): an all-zero group is a non-nil pointer to uuid.Nil. It names no group, so the
+		// answer cannot be used. Each row pairs the zero group with one shared-capacity shape.
+		"a festival with an all-zero group and positive shared capacity": {status: 200,
+			body:     `{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10,"capacity_group_id":"00000000-0000-0000-0000-000000000000","shared_capacity":100}`,
+			unusable: true},
+		"a festival with an all-zero group and zero shared capacity": {status: 200,
+			body:     `{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10,"capacity_group_id":"00000000-0000-0000-0000-000000000000","shared_capacity":0}`,
+			unusable: true},
+		"a festival with an all-zero group and no shared capacity": {status: 200,
+			body:     `{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10,"capacity_group_id":"00000000-0000-0000-0000-000000000000"}`,
 			unusable: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -133,5 +145,56 @@ func TestTheCatalogResolverClassifiesEveryFailure(t *testing.T) {
 	}
 	if got.Capacity != 10 {
 		t.Fatalf("capacity = %d, want 10", got.Capacity)
+	}
+
+	// A festival with a real group and a positive shared capacity is still accepted. The table above
+	// refuses the all-zero group, and this row shows that the refusal does not refuse every festival.
+	festival := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10,"capacity_group_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","shared_capacity":100}`))
+	}))
+	defer festival.Close()
+	pair, err := NewCatalogResolver(festival.URL, "token", festival.Client()).
+		PublishedPerformance(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("a well-formed festival answer failed: %v", err)
+	}
+	if pair.CapacityGroupID == nil || pair.SharedCapacity == nil || *pair.SharedCapacity != 100 {
+		t.Fatalf("festival fields = group %v shared %v, want a group and shared capacity 100", pair.CapacityGroupID, pair.SharedCapacity)
+	}
+}
+
+// TKT-317 R3: the performance body is read through a cap before it is decoded. A body holds one
+// valid value and then more bytes than the cap. The tail is whitespace, which is valid JSON, so only
+// the cap can refuse it. A body of exactly the cap still decodes. The cap is written as a literal
+// here (64 KiB), so changing the constant is a visible change to this test.
+func TestTKT317PerformanceLookupBodyIsCapped(t *testing.T) {
+	const capBytes = 64 << 10
+	valid := `{"organizer_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","capacity":10}`
+	for name, tc := range map[string]struct {
+		size     int
+		unusable bool
+	}{
+		"a body one byte under the cap decodes":   {size: capBytes - 1},
+		"a body of exactly the cap decodes":       {size: capBytes},
+		"a body one byte over the cap is refused": {size: capBytes + 1, unusable: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := valid + strings.Repeat(" ", tc.size-len(valid))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			_, err := NewCatalogResolver(srv.URL, "token", srv.Client()).
+				PublishedPerformance(context.Background(), uuid.New())
+			if tc.unusable {
+				if !errors.Is(err, errCatalogUnusable) {
+					t.Fatalf("err = %v, want errCatalogUnusable: a body past the cap is an answer that cannot be used", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a body of exactly the cap failed: %v", err)
+			}
+		})
 	}
 }

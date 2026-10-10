@@ -116,9 +116,10 @@ inventory-owned bound, not a drop.
 
 Two kinds of catalog event leave a durable record. ADR-077 gives the decisions and the limits.
 
-- `moot_slots` holds slots that catalog did not publish when one of their events was handled.
-  The event was acked as moot. A later archive or closure for that slot is consumed without a
-  pool only when a row here matches. Rows are never deleted.
+- `moot_slots` holds moot records: slots that catalog did not publish when one of their events was
+  handled. Each record has a `source`. A `publication` record lets a later archive or closure for
+  that slot be consumed without a pool. A `closure` record is kept, and it authorises nothing: the
+  archive waits for its pool. Rows are never deleted.
 - `catalog_event_parked` holds a known catalog event whose catalog answer stayed unusable through
   five deliveries. The broker message was terminated. The row keeps the exact bytes that were
   delivered, and `reason` holds the catalog error. Only schema-1 publications and closures park,
@@ -143,8 +144,9 @@ SELECT subject, event_id, schema, organizer_id, slot_id, delivery_count, reason,
 FROM catalog_event_parked
 ORDER BY parked_at;
 
--- Moot tombstones: slots catalog did not publish when one of their events was handled.
-SELECT organizer_id, slot_id, source_event_id, recorded_at
+-- Moot records: slots catalog did not publish when one of their events was handled. Only a
+-- 'publication' source lets a later archive or closure through without a pool.
+SELECT organizer_id, slot_id, source, source_event_id, recorded_at
 FROM moot_slots
 ORDER BY recorded_at;
 ```

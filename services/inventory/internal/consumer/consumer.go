@@ -38,9 +38,9 @@ type catalogStore interface {
 	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
 	HasPendingCatalogQuarantine(ctx context.Context) (bool, error)
 	ListPublishedPoolOfferings(ctx context.Context) ([]store.PoolOffering, error)
-	// The moot disposition (TKT-317 D1): a durable tombstone, and the fallback that consumes an
-	// offering event on it when the pool is absent.
-	RecordMootSlot(ctx context.Context, eventID, organizerID, slotID uuid.UUID) error
+	// The moot disposition (TKT-317 D1): a durable record of a moot outcome, and the fallback that
+	// consumes an offering event on a publication record when the pool is absent (D7).
+	RecordMootSlot(ctx context.Context, eventID, organizerID, slotID uuid.UUID, source store.MootSource) error
 	ConsumeMootOffering(ctx context.Context, eventID, organizerID, slotID, poolID uuid.UUID) (bool, error)
 	// The unusable-answer disposition (TKT-317 D2): a durable record of a terminated event.
 	ParkCatalogEvent(ctx context.Context, e store.ParkedCatalogEvent) (bool, error)
@@ -467,19 +467,18 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		// call the CLOSURE handler already makes on this error (see handleClosure), and
 		// the two paths disagreeing about one catalog answer was the defect.
 		//
-		// The outcome is recorded before the ack (TKT-317 D1). recordMoot writes a tombstone
-		// for the organizer and slot, and this event's consumed_events row, in one
-		// transaction. A later archive finds no pool, and the tombstone lets it through.
-		// Without the tombstone the archive would wait for a pool that never comes. The
-		// tombstone is not proof that the slot's pool can never exist. See ADR-077.
+		// The outcome is recorded before the ack (TKT-317 D1). recordMoot writes a publication
+		// record for the organizer and slot, and this event's consumed_events row, in one
+		// transaction. A later archive finds no pool, and the publication record lets it through.
+		// Without the record the archive would wait for a pool that never comes. The record is not
+		// proof that the slot's pool can never exist. See ADR-077.
 		//
-		// A later publication of the same slot has a different event id (events.EventID
-		// hashes published_at), so consumed_events does not dedupe it, and it provisions
-		// normally.
+		// A later publication of the same slot, such as a catalog re-emit, has its own event id, so
+		// consumed_events does not dedupe it, and it provisions normally.
 		if errors.Is(err, ErrPerformanceNotFound) {
 			c.log.Info("publication for a no-longer-published slot; recording as moot",
 				"event_id", e.ID, "performance_id", e.Data.PerformanceID)
-			c.recordMoot(ctx, msg, e.ID, e.Data.OrganizerID, e.Data.PerformanceID)
+			c.recordMoot(ctx, msg, e.ID, e.Data.OrganizerID, e.Data.PerformanceID, store.MootSourcePublication)
 			return
 		}
 		// A CATALOG lookup failure is a dependency outage, not corrupt data, and the
@@ -611,9 +610,10 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 		// TKT-50 §Case 3), so a 404 means the slot has been archived since. The archived event
 		// later in the stream owns the pool's terminal state — this toggle is moot. Parking it
 		// instead would be poison: the slot never comes back.
-		// The outcome is recorded before the ack (TKT-317 D1).
+		// The outcome is recorded before the ack (TKT-317 D1). The record is a closure record, and it
+		// authorises nothing (D7): the archive that follows waits for its pool.
 		c.log.Info("closure event for a no-longer-published slot; recording as moot", "event_id", env.ID, "performance_id", d.PerformanceID)
-		c.recordMoot(ctx, msg, env.ID, d.OrganizerID, d.PerformanceID)
+		c.recordMoot(ctx, msg, env.ID, d.OrganizerID, d.PerformanceID, store.MootSourceClosure)
 		return
 	}
 	// Catalog answered, and the answer cannot be used. This is bounded by delivery count, and the
@@ -642,9 +642,10 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 }
 
 // recordMoot acks a moot outcome only once it is durable (TKT-317 D1). A failed write keeps the
-// message for redelivery, so an acked moot event always has its tombstone.
-func (c *Consumer) recordMoot(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID uuid.UUID) {
-	if err := c.st.RecordMootSlot(ctx, eventID, organizerID, slotID); err != nil {
+// message for redelivery, so an acked moot event always has its record. The source decides what
+// the record authorises: only a publication record lets a later archive through (D7).
+func (c *Consumer) recordMoot(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID uuid.UUID, source store.MootSource) {
+	if err := c.st.RecordMootSlot(ctx, eventID, organizerID, slotID, source); err != nil {
 		c.log.Error("record moot outcome; retrying", "subject", msg.Subject(), "event_id", eventID, "err", err)
 		_ = msg.NakWithDelay(5 * time.Second)
 		return
@@ -710,10 +711,10 @@ func (c *Consumer) countParked(ctx context.Context, subject string) {
 }
 
 // applyOffering shares the store-outcome disposition for archive/closure mutations. A missing
-// pool is offered to the moot fallback first (TKT-317 D1). A tombstone for the organizer and slot
-// consumes the event. Without one, the event waits for publication to provision the pool. Other
-// store errors retry, and success acks. Readiness is never touched, because none of these are
-// version skew.
+// pool is offered to the moot fallback first (TKT-317 D1). A publication record for the organizer
+// and slot consumes the event (D7). A closure record does not, so without a publication record the
+// event waits for publication to provision the pool. Other store errors retry, and success acks.
+// Readiness is never touched, because none of these are version skew.
 func (c *Consumer) applyOffering(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID, pool uuid.UUID, apply func() error) {
 	switch err := apply(); {
 	case errors.Is(err, store.ErrNotFound):

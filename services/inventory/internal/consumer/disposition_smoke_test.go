@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -95,7 +96,7 @@ func tkt317String(t *testing.T, ctx context.Context, db *sql.DB, query string, a
 }
 
 // COS1 (TKT-317): a schema-1 publication that catalog no longer publishes is acked as moot only
-// after its tombstone and its consumed_events row are committed. The archive that follows is then
+// after its publication record and its consumed_events row are committed. The archive that follows is then
 // acked, and no pool is ever created for the slot.
 func TestTKT317MootPublicationIsDurableBeforeItsAck(t *testing.T) {
 	ctx, st, db := tkt317Store(t)
@@ -105,7 +106,7 @@ func TestTKT317MootPublicationIsDurableBeforeItsAck(t *testing.T) {
 	pub := tkt317Msg(subjectPublished, tkt317SchemaOnePublication(pubID, slot, org))
 	pub.onAck = func() {
 		if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM moot_slots WHERE organizer_id=$1 AND slot_id=$2`, org, slot); n != 1 {
-			t.Errorf("publication acked with %d tombstones; it must commit the tombstone first", n)
+			t.Errorf("publication acked with %d moot records; it must commit the record first", n)
 		}
 		if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM consumed_events WHERE event_id=$1`, pubID); n != 1 {
 			t.Errorf("publication acked with %d consumed_events rows", n)
@@ -119,7 +120,7 @@ func TestTKT317MootPublicationIsDurableBeforeItsAck(t *testing.T) {
 	arch := tkt317Msg(subjectArchived, tkt317Archive(archiveID, slot, org))
 	c.handle(ctx, arch)
 	if !slices.Contains(arch.actions, "ack") {
-		t.Fatalf("archive actions = %v, want ack: the tombstone must let it through", arch.actions)
+		t.Fatalf("archive actions = %v, want ack: the publication record must let it through", arch.actions)
 	}
 	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot); n != 0 {
 		t.Fatalf("%d pools exist for a slot that was never published", n)
@@ -132,8 +133,10 @@ func TestTKT317MootPublicationIsDurableBeforeItsAck(t *testing.T) {
 	}
 }
 
-// COS2 (TKT-317): a moot closure records its own tombstone before its ack, and the archive that
-// follows completes. Both closure subjects are covered.
+// COS2 (TKT-317, narrowed by D7): a moot closure is acked and recorded durably, and its record
+// authorises nothing. The archive that follows finds no pool and waits for its publication. A moot
+// PUBLICATION for the same slot is the record that does authorise, so the same archive is consumed
+// once that record exists. Both closure subjects are covered.
 func TestTKT317MootClosureIsDurableBeforeItsAck(t *testing.T) {
 	for _, subject := range []string{subjectClosed, subjectReopened} {
 		t.Run(subject, func(t *testing.T) {
@@ -144,7 +147,7 @@ func TestTKT317MootClosureIsDurableBeforeItsAck(t *testing.T) {
 			closure := tkt317Msg(subject, tkt317Closure(closeID, slot, org, 2))
 			closure.onAck = func() {
 				if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM moot_slots WHERE organizer_id=$1 AND slot_id=$2`, org, slot); n != 1 {
-					t.Errorf("closure acked with %d tombstones; it must commit the tombstone first", n)
+					t.Errorf("closure acked with %d moot records; it must commit the record first", n)
 				}
 				if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM consumed_events WHERE event_id=$1`, closeID); n != 1 {
 					t.Errorf("closure acked with %d consumed_events rows", n)
@@ -155,10 +158,27 @@ func TestTKT317MootClosureIsDurableBeforeItsAck(t *testing.T) {
 				t.Fatalf("closure actions = %v, want ack", closure.actions)
 			}
 
+			// The closure's record authorises nothing, so the archive waits for its pool.
 			arch := tkt317Msg(subjectArchived, tkt317Archive(archiveID, slot, org))
 			c.handle(ctx, arch)
-			if !slices.Contains(arch.actions, "ack") {
-				t.Fatalf("archive actions = %v, want ack", arch.actions)
+			if slices.Contains(arch.actions, "ack") || !slices.Contains(arch.actions, "nak-delay") {
+				t.Fatalf("archive actions = %v, want a delayed retry: a moot closure must not authorise an archive", arch.actions)
+			}
+			if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM consumed_events WHERE event_id=$1`, archiveID); n != 0 {
+				t.Fatalf("waiting archive left %d consumed_events rows", n)
+			}
+
+			// Positive control: a moot PUBLICATION for the same slot is the record that does
+			// authorise. The same archive is consumed once it exists.
+			pub := tkt317Msg(subjectPublished, tkt317SchemaOnePublication(uuid.New(), slot, org))
+			c.handle(ctx, pub)
+			if !slices.Contains(pub.actions, "ack") {
+				t.Fatalf("publication actions = %v, want ack", pub.actions)
+			}
+			redelivered := tkt317Msg(subjectArchived, tkt317Archive(archiveID, slot, org))
+			c.handle(ctx, redelivered)
+			if !slices.Contains(redelivered.actions, "ack") {
+				t.Fatalf("archive actions after a moot publication = %v, want ack", redelivered.actions)
 			}
 			if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM inventory_pools WHERE slot_id=$1`, slot); n != 0 {
 				t.Fatalf("%d pools exist for a slot that was never published", n)
@@ -167,8 +187,71 @@ func TestTKT317MootClosureIsDurableBeforeItsAck(t *testing.T) {
 	}
 }
 
+// provisionOnce refuses its first provisioning with a transient error, so the first delivery of a
+// publication is NAKed. Every later call reaches the real store.
+type provisionOnce struct {
+	*store.Postgres
+	failed bool
+}
+
+func (s *provisionOnce) Provision(ctx context.Context, eventID, slotID, organizerID uuid.UUID, capacity int32) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("transient store failure")
+	}
+	return s.Postgres.Provision(ctx, eventID, slotID, organizerID, capacity)
+}
+
+// D7 and R1 (TKT-317): a closure's record must not let an archive overtake a publication that is
+// still pending. P is a schema-2 publication whose first delivery is NAKed. C is the slot's moot
+// closure. A is the slot's archive. A must wait until P has provisioned the pool, and then it
+// applies, and the pool ends archived. A schema-2 publication builds its pool from its payload, so
+// a delayed P can provision an open pool after an archive that was already consumed.
+func TestTKT317ClosureRecordDoesNotLetAnArchiveOvertakeAPendingPublication(t *testing.T) {
+	ctx, st, db := tkt317Store(t)
+	org, slot, pubID, closeID, archiveID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+
+	pending := offeringConsumer(&provisionOnce{Postgres: st}, nil)
+	pub := tkt317Msg(subjectPublished, tkt317SchemaTwoPublication(pubID, slot, org, 10))
+	pending.handle(ctx, pub)
+	if !slices.Contains(pub.actions, "nak") {
+		t.Fatalf("publication actions = %v, want a NAK", pub.actions)
+	}
+
+	closed := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
+	closure := tkt317Msg(subjectClosed, tkt317Closure(closeID, slot, org, 1))
+	closed.handle(ctx, closure)
+	if !slices.Contains(closure.actions, "ack") {
+		t.Fatalf("closure actions = %v, want ack", closure.actions)
+	}
+
+	c := offeringConsumer(st, nil)
+	arch := tkt317Msg(subjectArchived, tkt317Archive(archiveID, slot, org))
+	c.handle(ctx, arch)
+	if slices.Contains(arch.actions, "ack") || !slices.Contains(arch.actions, "nak-delay") {
+		t.Fatalf("archive actions = %v, want a delayed retry while the publication is pending", arch.actions)
+	}
+	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM consumed_events WHERE event_id=$1`, archiveID); n != 0 {
+		t.Fatalf("a waiting archive left %d consumed_events rows", n)
+	}
+
+	redelivered := tkt317Msg(subjectPublished, tkt317SchemaTwoPublication(pubID, slot, org, 10))
+	c.handle(ctx, redelivered)
+	if !slices.Contains(redelivered.actions, "ack") {
+		t.Fatalf("redelivered publication actions = %v, want ack", redelivered.actions)
+	}
+	again := tkt317Msg(subjectArchived, tkt317Archive(archiveID, slot, org))
+	c.handle(ctx, again)
+	if !slices.Contains(again.actions, "ack") {
+		t.Fatalf("archive actions once the pool exists = %v, want ack", again.actions)
+	}
+	if got := tkt317String(t, ctx, db, `SELECT lifecycle_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "archived" {
+		t.Fatalf("pool lifecycle_status = %q, want archived", got)
+	}
+}
+
 // COS2 (TKT-317), resolved branch: a closure whose catalog answer succeeds finds no pool, and the
-// tombstone from an earlier moot publication lets it through. Catalog does not produce this state
+// publication record from an earlier moot publication lets it through. Catalog does not produce this state
 // today (ADR-077). COS2 requires the branch, so the test pins the branch.
 func TestTKT317ClosureOnAResolvedSlotWithoutPoolUsesTheFallback(t *testing.T) {
 	ctx, st, db := tkt317Store(t)
@@ -194,7 +277,7 @@ func TestTKT317ClosureOnAResolvedSlotWithoutPoolUsesTheFallback(t *testing.T) {
 	}
 }
 
-// COS3 (TKT-317): an archive with no pool and no tombstone waits, and consumes nothing. Once the
+// COS3 (TKT-317): an archive with no pool and no publication record waits, and consumes nothing. Once the
 // publication provisions the pool, the same archive applies to that pool.
 func TestTKT317ArchiveWaitsForItsPublicationThenApplies(t *testing.T) {
 	ctx, st, db := tkt317Store(t)
@@ -230,14 +313,14 @@ func TestTKT317ArchiveWaitsForItsPublicationThenApplies(t *testing.T) {
 	}
 }
 
-// COS4 (TKT-317): a distinct publication for a slot that already has a tombstone provisions
+// COS4 (TKT-317): a distinct publication for a slot that already has a closure record provisions
 // normally. The closure and the archive that follow apply to that pool, and are not skipped
-// because of the tombstone.
+// because of the closure record.
 func TestTKT317RepublishProvisionsDespiteATombstone(t *testing.T) {
 	ctx, st, db := tkt317Store(t)
 	org, slot := uuid.New(), uuid.New()
 
-	// A moot closure leaves the tombstone. Its own event id is not the publication's.
+	// A moot closure leaves a closure record, which authorises nothing. Its own event id is not the publication's.
 	moot := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
 	mootClosure := tkt317Msg(subjectClosed, tkt317Closure(uuid.New(), slot, org, 1))
 	moot.handle(ctx, mootClosure)
@@ -245,7 +328,7 @@ func TestTKT317RepublishProvisionsDespiteATombstone(t *testing.T) {
 		t.Fatalf("moot closure actions = %v, want ack", mootClosure.actions)
 	}
 	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM moot_slots WHERE organizer_id=$1 AND slot_id=$2`, org, slot); n != 1 {
-		t.Fatalf("tombstone rows = %d, want 1 before the republish", n)
+		t.Fatalf("closure record rows = %d, want 1 before the republish", n)
 	}
 
 	c := offeringConsumer(st, fakeResolver{organizerID: org, capacity: 10})
@@ -264,7 +347,7 @@ func TestTKT317RepublishProvisionsDespiteATombstone(t *testing.T) {
 		t.Fatalf("closure actions = %v, want ack", closure.actions)
 	}
 	if got := tkt317String(t, ctx, db, `SELECT closure_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "closed" {
-		t.Fatalf("pool closure_status = %q after the closure, want closed: the tombstone must not skip the apply", got)
+		t.Fatalf("pool closure_status = %q after the closure, want closed: the moot record must not skip the apply", got)
 	}
 
 	arch := tkt317Msg(subjectArchived, tkt317Archive(uuid.New(), slot, org))
@@ -273,7 +356,7 @@ func TestTKT317RepublishProvisionsDespiteATombstone(t *testing.T) {
 		t.Fatalf("archive actions = %v, want ack", arch.actions)
 	}
 	if got := tkt317String(t, ctx, db, `SELECT lifecycle_status FROM inventory_pools WHERE slot_id=$1`, slot); got != "archived" {
-		t.Fatalf("pool lifecycle_status = %q after the archive, want archived: the tombstone must not skip the apply", got)
+		t.Fatalf("pool lifecycle_status = %q after the archive, want archived: the moot record must not skip the apply", got)
 	}
 }
 
@@ -391,7 +474,7 @@ func TestTKT317CatalogAnswersThatCannotBeUsedParkThroughTheRealResolver(t *testi
 // COS6 (TKT-317): parked rows never latch startup readiness. A restart with parked rows present
 // comes up ready. A quarantined version-skew event, the control, keeps the consumer unready.
 func TestTKT317RestartWithParkedRowsStaysReady(t *testing.T) {
-	ctx, st, _ := tkt317Store(t)
+	ctx, st, db := tkt317Store(t)
 	org, slot, id := uuid.New(), uuid.New(), uuid.New()
 	first := offeringConsumer(st, fakeResolver{err: errCatalogUnusable})
 	msg := tkt317Msg(subjectClosed, tkt317Closure(id, slot, org, 1))
@@ -399,6 +482,10 @@ func TestTKT317RestartWithParkedRowsStaysReady(t *testing.T) {
 	first.handle(ctx, msg)
 	if !slices.Contains(msg.actions, "term") {
 		t.Fatalf("parking actions = %v, want term", msg.actions)
+	}
+	// The readiness assertion below only means something if a parked row exists to be ignored.
+	if n := tkt317Count(t, ctx, db, `SELECT count(*) FROM catalog_event_parked WHERE event_id=$1`, id); n != 1 {
+		t.Fatalf("parked rows = %d, want 1 before the restart check", n)
 	}
 
 	// A new process starts unready, then reads the database at startup.

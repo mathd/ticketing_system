@@ -131,6 +131,11 @@ func NewCatalogResolver(baseURL, credential string, client *http.Client) *Catalo
 	return &CatalogResolver{baseURL: strings.TrimRight(baseURL, "/"), credential: credential, client: client}
 }
 
+// maxPerformanceBytes bounds the body of the performance lookup (TKT-317 R3). The fields this
+// consumer reads need about 170 bytes. The cap is far above that, so a catalog that adds a field
+// does not break the lookup. A body longer than the cap is an answer that cannot be used.
+const maxPerformanceBytes = 64 << 10
+
 // PublishedPerformance answers "is this slot published, and with what capacity".
 //
 // Three classes, and the handler disposes of each one differently (TKT-307, TKT-317):
@@ -140,9 +145,9 @@ func NewCatalogResolver(baseURL, credential string, client *http.Client) *Catalo
 //   - a 200 whose body cannot be used is errCatalogUnusable. The consumer bounds only this
 //     class, by delivery count, and then parks the event (ADR-077).
 //
-// The body is read in full before it is decoded. A connection that drops mid-body is then a
-// transport failure. Decoding the stream directly would make the same drop look like a
-// malformed answer, and that is the class the consumer parks.
+// The body is read in full, up to maxPerformanceBytes, before it is decoded. A connection that
+// drops mid-body is then a transport failure. Decoding the stream directly would make the same
+// drop look like a malformed answer, and that is the class the consumer parks.
 //
 // Only schema-1 publications and closures reach this function. The live catalog emits
 // performance.published at schemas 2 to 5, and none of those call this lookup.
@@ -170,9 +175,14 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 	}
-	raw, err := io.ReadAll(resp.Body)
+	// One byte past the cap is read, so an over-long body is seen as over-long. A plain limit would
+	// cut it to the cap, and a valid value followed by padding would then decode unchallenged.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxPerformanceBytes+1))
 	if err != nil {
 		return PublishedPerformance{}, fmt.Errorf("%w: read catalog performance lookup %s: %v", errResolveUnavailable, id, err)
+	}
+	if len(raw) > maxPerformanceBytes {
+		return PublishedPerformance{}, fmt.Errorf("%w: catalog performance lookup %s exceeds %d bytes", errCatalogUnusable, id, maxPerformanceBytes)
 	}
 	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
 		return PublishedPerformance{}, fmt.Errorf("%w: decode catalog performance lookup: %v", errCatalogUnusable, err)
@@ -180,7 +190,9 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 	if body.OrganizerID == uuid.Nil || body.Capacity <= 0 {
 		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog performance lookup", errCatalogUnusable)
 	}
-	if (body.CapacityGroupID == nil) != (body.SharedCapacity == nil) || body.SharedCapacity != nil && *body.SharedCapacity <= 0 {
+	// An all-zero group names no group, so it is refused like a missing one (TKT-317 R4).
+	if (body.CapacityGroupID == nil) != (body.SharedCapacity == nil) || body.SharedCapacity != nil && *body.SharedCapacity <= 0 ||
+		body.CapacityGroupID != nil && *body.CapacityGroupID == uuid.Nil {
 		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog festival capacity lookup", errCatalogUnusable)
 	}
 	return PublishedPerformance{OrganizerID: body.OrganizerID, Capacity: body.Capacity, CapacityGroupID: body.CapacityGroupID, SharedCapacity: body.SharedCapacity}, nil

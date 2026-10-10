@@ -938,6 +938,32 @@ func TestSchema1DispositionsAreRetryTerminateOrMoot(t *testing.T) {
 			delivered:  parkAfterDeliveries + 2,
 			wantParked: 1,
 		},
+		// R6 (TKT-317): the bound as literal delivery numbers. They are written out here, not derived
+		// from parkAfterDeliveries, so changing the constant moves no fixture and fails these rows.
+		// The bound is five deliveries: four retries, and five and six park.
+		"delivery 4 of an unusable answer retries (literal)": {
+			resolver:  fakeResolver{err: errCatalogUnusable},
+			body:      body,
+			want:      "nak-delay",
+			why:       "four deliveries are below the five-delivery bound",
+			delivered: 4,
+		},
+		"delivery 5 of an unusable answer parks (literal)": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "five deliveries is the bound, so the event is parked",
+			delivered:  5,
+			wantParked: 1,
+		},
+		"delivery 6 of an unusable answer parks (literal)": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "six deliveries is past the bound, so the event is parked",
+			delivered:  6,
+			wantParked: 1,
+		},
 		// Transport is never parked. Only an answer that was received and cannot be used is bounded.
 		"a transport failure past the bound still retries": {
 			resolver:  fakeResolver{err: errResolveUnavailable},

@@ -61,18 +61,25 @@ func TestTKT317ParkedEnvelopeKeepsItsFirstCopy(t *testing.T) {
 }
 
 func TestTKT317ParkedRowsDoNotLatchStartupReadiness(t *testing.T) {
-	ctx, st, _ := storeForTest(t, time.Minute)
-	if _, err := st.ParkCatalogEvent(ctx, ParkedCatalogEvent{
+	ctx, st, db := storeForTest(t, time.Minute)
+	parkedID := uuid.New()
+	inserted, err := st.ParkCatalogEvent(ctx, ParkedCatalogEvent{
 		Subject:     "platform.catalog.performance.reopened",
-		EventID:     uuid.New(),
+		EventID:     parkedID,
 		OrganizerID: uuid.New(),
 		SlotID:      uuid.New(),
 		Schema:      1,
 		Envelope:    []byte("{}"),
 		Deliveries:  5,
 		Reason:      "catalog answer unusable",
-	}); err != nil {
-		t.Fatal(err)
+	})
+	if err != nil || !inserted {
+		t.Fatalf("park: inserted=%v err=%v", inserted, err)
+	}
+	// The readiness check below only proves something if the parked row was really written.
+	var rows int
+	if err = db.QueryRowContext(ctx, `SELECT count(*) FROM catalog_event_parked WHERE event_id=$1`, parkedID).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("parked rows = %d err=%v, want 1 before the readiness check", rows, err)
 	}
 	// Parked rows are not version skew, so the startup check must not see them.
 	pending, err := st.HasPendingCatalogQuarantine(ctx)

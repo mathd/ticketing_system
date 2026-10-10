@@ -40,13 +40,15 @@ type quarantineCall struct {
 	envelope []byte
 }
 
-// mootCall is one RecordMootSlot write (TKT-317 D1).
+// mootCall is one RecordMootSlot write (TKT-317 D1). The source is part of the call, because the
+// consumer decides it: only a publication record authorises the fallback (D7).
 type mootCall struct {
 	eventID, organizer, slot uuid.UUID
+	source                   store.MootSource
 }
 
 func (c mootCall) String() string {
-	return fmt.Sprintf("{event %s organizer %s slot %s}", c.eventID, c.organizer, c.slot)
+	return fmt.Sprintf("{event %s organizer %s slot %s source %s}", c.eventID, c.organizer, c.slot, c.source)
 }
 
 // fallbackCall is one ConsumeMootOffering question, with every argument the consumer passed.
@@ -88,15 +90,15 @@ type fakeCatalogStore struct {
 	parkErr          error
 }
 
-func (s *fakeCatalogStore) RecordMootSlot(_ context.Context, eventID, organizerID, slotID uuid.UUID) error {
+func (s *fakeCatalogStore) RecordMootSlot(_ context.Context, eventID, organizerID, slotID uuid.UUID, source store.MootSource) error {
 	if s.mootErr != nil {
 		return s.mootErr
 	}
-	s.moot = append(s.moot, mootCall{eventID, organizerID, slotID})
+	s.moot = append(s.moot, mootCall{eventID, organizerID, slotID, source})
 	return nil
 }
 
-// ConsumeMootOffering answers with fallbackMatch: the test decides whether a tombstone exists.
+// ConsumeMootOffering answers with fallbackMatch: the test decides whether a publication record exists.
 func (s *fakeCatalogStore) ConsumeMootOffering(_ context.Context, eventID, organizerID, slotID, poolID uuid.UUID) (bool, error) {
 	s.fallbacks = append(s.fallbacks, fallbackCall{eventID, organizerID, slotID, poolID})
 	return s.fallbackMatch, s.fallbackErr
@@ -297,7 +299,7 @@ func TestClosureEventDispositions(t *testing.T) {
 }
 
 // TKT-317 D1: a moot closure records its outcome before its ack. The test observes the store
-// at the moment of the ack, so an acked event always has its tombstone.
+// at the moment of the ack, so an acked event always has its moot record.
 func TestTKT317MootClosureRecordsItsOutcomeBeforeItsAck(t *testing.T) {
 	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	for _, subject := range []string{subjectReopened, subjectClosed} {
@@ -316,7 +318,7 @@ func TestTKT317MootClosureRecordsItsOutcomeBeforeItsAck(t *testing.T) {
 			if !slices.Contains(msg.actions, "ack") {
 				t.Fatalf("actions = %v, want ack", msg.actions)
 			}
-			if want := (mootCall{evt, uuid.MustParse(orgID), uuid.MustParse(perfID)}); len(st.moot) != 1 || st.moot[0] != want {
+			if want := (mootCall{evt, uuid.MustParse(orgID), uuid.MustParse(perfID), store.MootSourceClosure}); len(st.moot) != 1 || st.moot[0] != want {
 				t.Fatalf("moot records = %v, want exactly [%+v]", st.moot, want)
 			}
 			if len(st.closures) != 0 {
@@ -349,7 +351,7 @@ func TestTKT317FailedMootWriteRetainsTheClosure(t *testing.T) {
 // TKT-317 D1: an archive that finds no pool is consumed only when the fallback answers yes. The
 // fallback is asked with the archive's own event, organizer, slot and pool. For a grouped archive
 // the slot is the member's performance and the pool is its capacity group.
-func TestTKT317ArchiveWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
+func TestTKT317ArchiveWithoutPoolFallsBackOnlyOnAPublicationRecord(t *testing.T) {
 	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	org, perf, grp := uuid.MustParse(orgID), uuid.MustParse(perfID), uuid.MustParse(grpID)
 	solo := `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`
@@ -363,8 +365,8 @@ func TestTKT317ArchiveWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
 		pool  uuid.UUID
 		want  string
 	}{
-		{"solo with no tombstone waits", solo, false, nil, perf, "nak-delay"},
-		{"solo with a tombstone is consumed", solo, true, nil, perf, "ack"},
+		{"solo with no publication record waits", solo, false, nil, perf, "nak-delay"},
+		{"solo with a publication record is consumed", solo, true, nil, perf, "ack"},
 		{"grouped member asks with its capacity group", grouped, true, nil, grp, "ack"},
 		{"a fallback store failure retries", solo, false, errors.New("db down"), perf, "nak-delay"},
 	} {
@@ -388,10 +390,11 @@ func TestTKT317ArchiveWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
 	}
 }
 
-// TKT-317 D1: a closure whose catalog answer resolves finds no pool, and a tombstone for the slot
-// lets it through. Catalog does not produce that state today (ADR-077), and COS2 requires the
+// TKT-317 D1: a closure whose catalog answer resolves finds no pool. The consumer asks the fallback
+// with the closure's own ids, and the store answers. A publication record for the slot is what lets
+// it through (D7). Catalog does not produce this state today (ADR-077), and COS2 requires the
 // branch, so this pins the branch and not a reachable production state.
-func TestTKT317ClosureWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
+func TestTKT317ClosureWithoutPoolFallsBackOnlyOnAPublicationRecord(t *testing.T) {
 	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 	org, perf := uuid.MustParse(orgID), uuid.MustParse(perfID)
 	body := `{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","closure_version":1}}`
@@ -401,8 +404,8 @@ func TestTKT317ClosureWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
 		match bool
 		want  string
 	}{
-		{"no tombstone waits", false, "nak-delay"},
-		{"a tombstone is consumed", true, "ack"},
+		{"no publication record waits", false, "nak-delay"},
+		{"a publication record is consumed", true, "ack"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &fakeCatalogStore{err: store.ErrNotFound, fallbackMatch: tc.match}
@@ -444,7 +447,7 @@ func TestTKT317MootPublicationIsRecordedBeforeItsAck(t *testing.T) {
 	if !slices.Contains(msg.actions, "ack") {
 		t.Fatalf("actions = %v, want ack", msg.actions)
 	}
-	if want := (mootCall{uuid.MustParse(pubUUID), uuid.MustParse(orgID), uuid.MustParse(perfID)}); len(st.moot) != 1 || st.moot[0] != want {
+	if want := (mootCall{uuid.MustParse(pubUUID), uuid.MustParse(orgID), uuid.MustParse(perfID), store.MootSourcePublication}); len(st.moot) != 1 || st.moot[0] != want {
 		t.Fatalf("moot records = %v, want exactly [%+v]", st.moot, want)
 	}
 
