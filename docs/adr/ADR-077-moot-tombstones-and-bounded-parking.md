@@ -95,6 +95,10 @@ therefore be moot. The durable is created with `DeliverAllPolicy`, so it reads e
   which counts every delivery, including transport failures). At five or more, the exact envelope
   is written to `catalog_event_parked` (the first copy is kept), the park is counted in
   `inventory.catalog.events.parked`, it is logged at ERROR, and the message is terminated.
+  Three cases do not follow that rule. If the broker's delivery metadata cannot be read, or the
+  park write fails, the message is retried with no limit, because an event that is not durably
+  parked must not be terminated. If an event id is already parked with different bytes, the
+  message is terminated, the first copy stays, and nothing is counted.
 - **Body cap.** The performance lookup reads at most 64 KiB. A longer body is an unusable answer.
 - **All-zero group.** A festival group of all zeros names no group. The answer is unusable.
 - **Not bounded.** A failure to reach catalog, or a status other than 200 or 404, retries with no
@@ -129,7 +133,7 @@ therefore be moot. The durable is created with `DeliverAllPolicy`, so it reads e
    They do not test the five-second delay, the broker's `MaxDeliver` setting, or how often the
    broker redelivers.
 3. **Two publications of one slot can consume an archive before the pool exists (accepted
-   residual).** Publication P1 is NAKed. A later schema-1 publication P2 for the same slot is
+   residual; the owner accepted it with decision D7 on the TKT-317 thread).** Publication P1 is NAKed. A later schema-1 publication P2 for the same slot is
    moot, and it writes a publication record. The archive is then consumed on P2's record. P1
    provisions an open pool later, and nothing archives that pool. The current code does not emit
    schema-1 performance publications, so P2 must be a schema-1 event that is still in the stream.
