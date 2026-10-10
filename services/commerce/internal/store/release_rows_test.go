@@ -24,8 +24,10 @@ type releaseStream struct {
 // sql.OpenDB takes a connector directly, so no driver is registered globally.
 type scriptedConnector struct{ stream releaseStream }
 
+// The connector and the connection carry the same single field, so the connection is the
+// connector's conversion. Adding a field to only one of the two stops this compiling.
 func (c scriptedConnector) Connect(context.Context) (driver.Conn, error) {
-	return scriptedConn{stream: c.stream}, nil
+	return scriptedConn(c), nil
 }
 
 func (c scriptedConnector) Driver() driver.Driver { return scriptedDriver{} }
