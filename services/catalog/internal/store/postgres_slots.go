@@ -54,9 +54,15 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 		}
 		var mapOrg, mapVenue uuid.UUID
 		var mapStatus string
+		var hasSeats bool
+		// The seat check reads the same row as the status, in one statement, so it
+		// answers for the exact version this slot binds to (TKT-318). It is not a
+		// family or table-wide check: a seat in another map does not count.
 		err = p.db.QueryRowContext(ctx,
-			`SELECT organizer_id, venue_id, status FROM seat_maps WHERE id = $1`, *in.SeatMapID).
-			Scan(&mapOrg, &mapVenue, &mapStatus)
+			`SELECT m.organizer_id, m.venue_id, m.status,
+			        EXISTS (SELECT 1 FROM seat_map_seats s WHERE s.seat_map_id = m.id)
+			 FROM seat_maps m WHERE m.id = $1`, *in.SeatMapID).
+			Scan(&mapOrg, &mapVenue, &mapStatus, &hasSeats)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Performance{}, fmt.Errorf("seat map: %w", ErrNotFound)
 		}
@@ -68,6 +74,11 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 		}
 		if mapStatus != "published" {
 			return Performance{}, ErrSeatMapNotPublished
+		}
+		// A version with no seats cannot seat a slot (TKT-318). Legacy seatless
+		// versions stay readable, but nothing can be seated against them.
+		if !hasSeats {
+			return Performance{}, ErrSeatMapSeatless
 		}
 	}
 	mode := in.ReEntry.Mode

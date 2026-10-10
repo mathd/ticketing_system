@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -11,9 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// seedPublishedMap authors a minimal draft map (one section/row/seat so it is a
-// real map) and publishes it, returning the published version's id.
-func seedPublishedMap(ctx context.Context, t *testing.T, st *Postgres, name string) SeatMap {
+// seedDraftWithSeat authors a draft map with one section, row and seat (Orchestra/A/1)
+// and leaves it unpublished. It is the success fixture for publish. seedDraftMap
+// stays seatless, for the negative tests.
+func seedDraftWithSeat(ctx context.Context, t *testing.T, st *Postgres, name string) SeatMap {
 	t.Helper()
 	m := seedDraftMap(ctx, t, st, name)
 	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
@@ -27,6 +29,65 @@ func seedPublishedMap(ctx context.Context, t *testing.T, st *Postgres, name stri
 	if _, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
 		t.Fatal(err)
 	}
+	return m
+}
+
+// seedSeatlessDraft authors a draft with one section (Orchestra) and one row (A)
+// but no seats. An operator can leave a draft in this shape by stopping halfway
+// through authoring. It is a negative fixture: do not add seats to it.
+func seedSeatlessDraft(ctx context.Context, t *testing.T, st *Postgres, name string) SeatMap {
+	t.Helper()
+	m := seedDraftMap(ctx, t, st, name)
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSeatMapRow(ctx, SeatMapRowInput{OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// markLegacyPublished puts a version into the published state by direct SQL. It
+// reproduces a map that was published before TKT-318 refused seatless publish.
+// Normal authoring cannot reach this state now: PublishSeatMap refuses a draft
+// with no seats, and EditSeatMap refuses an edit with no seats.
+func markLegacyPublished(ctx context.Context, t *testing.T, db *sql.DB, id uuid.UUID) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx,
+		`UPDATE seat_maps SET status = 'published', published_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// familyVersionCount counts every version in the map family that id belongs to.
+func familyVersionCount(ctx context.Context, t *testing.T, db *sql.DB, id uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_maps
+		 WHERE map_family_id = (SELECT map_family_id FROM seat_maps WHERE id = $1)`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// seatCount counts the seat rows of one version, read straight from the table.
+func seatCount(ctx context.Context, t *testing.T, db *sql.DB, id uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM seat_map_seats WHERE seat_map_id = $1`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// seedPublishedMap authors a minimal draft map (one section/row/seat so it is a
+// real map) and publishes it, returning the published version's id.
+func seedPublishedMap(ctx context.Context, t *testing.T, st *Postgres, name string) SeatMap {
+	t.Helper()
+	m := seedDraftWithSeat(ctx, t, st, name)
 	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatalf("publish seat map: %v", err)
@@ -44,7 +105,7 @@ func seedPublishedMap(ctx context.Context, t *testing.T, st *Postgres, name stri
 // performance publication.
 func TestPublishSeatMapMonotonic(t *testing.T) {
 	ctx, _, st, _ := seatMapSmokeStore(t)
-	m := seedDraftMap(ctx, t, st, "Main floor")
+	m := seedDraftWithSeat(ctx, t, st, "Main floor")
 
 	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
@@ -224,63 +285,223 @@ func TestPublishSeatMapCarriesOrphanPrevention(t *testing.T) {
 	}
 }
 
-// TKT-306 item 3, SPLIT OUT as TKT-318 and PINNED here.
+// TKT-306 item 3, SPLIT OUT as TKT-318 and PINNED here. TKT-318 closed the gap, so
+// this test now asserts the refusal. Do not delete it: it is the regression.
 //
-// A seat map with NO SEATS publishes, and the resulting published version satisfies
-// CreatePerformance's seated check — producing a slot that can sell nothing. Contrast
-// ErrNotSellable, which gates performance publish on having a ticket type; the analogous
-// "no sellable offer" gate is absent from the seat-map lifecycle.
-//
-// THIS TEST ASSERTS THE GAP, deliberately, following ADR-021's rollback-gap pattern: the
-// alternative is a ticket that says "we noticed" in prose nobody greps. If it goes RED,
-// the gap has been closed — update it to assert the refusal and close TKT-318; do not
-// delete it.
-//
-// Why it was split rather than fixed here: it is the only item in TKT-306 that changes
-// behaviour rather than aligning copies, and WHERE the gate belongs is a real design
-// question with three candidate homes and different consequences each way — gating
-// PublishSeatMap makes an existing seatless published map unrepairable, gating
-// CreatePerformance leaves it publishable but unusable, gating EditSeatMap catches the
-// edit and not the initial publish.
-func TestASeatlessSeatMapStillPublishes_TKT318(t *testing.T) {
-	ctx, _, st, _ := seatMapSmokeStore(t)
+// A seat map with NO SEATS used to publish, and the published version then passed
+// CreatePerformance's seated check. That produced a slot that could sell nothing.
+// TKT-318 (ADR-029 amendment) refuses the publish of a draft with no seats. A
+// published seatless version that already exists is left alone (see the legacy
+// tests below).
+func TestASeatlessSeatMapCannotPublish_TKT318(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
 
 	// A draft map with a section and a row but NO seats. Not the degenerate
 	// nothing-at-all case: a map that looks authored and sells nothing is the shape an
-	// operator actually produces, by deleting the last seat or stopping halfway.
-	m := seedDraftMap(ctx, t, st, "Seatless")
-	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{
-		OrganizerID: seatMapOrg, SeatMapID: m.ID, Name: "Orchestra", Position: 1})
-	if err != nil {
-		t.Fatal(err)
+	// operator can leave behind by stopping halfway through authoring.
+	m := seedSeatlessDraft(ctx, t, st, "Seatless")
+
+	// A populated map in the same venue. A check that asks "does ANY seat exist?"
+	// would see this seat and let the seatless draft through.
+	seedPublishedMap(ctx, t, st, "Populated neighbour")
+
+	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
+	if !errors.Is(err, ErrSeatMapSeatless) {
+		t.Fatalf("publishing a seatless draft err = %v, want ErrSeatMapSeatless", err)
 	}
-	if _, err := st.AddSeatMapRow(ctx, SeatMapRowInput{
-		OrganizerID: seatMapOrg, SeatMapID: m.ID, SectionID: sec.ID, Label: "A", Position: 1}); err != nil {
-		t.Fatal(err)
+	if needsEmit || published.ID != uuid.Nil {
+		t.Fatalf("refused publish returned map %+v needsEmit=%v, want zero value and no event owed", published, needsEmit)
 	}
 
-	published, _, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
-	if err != nil {
-		t.Fatalf("publishing a seatless map failed with %v.\n\n"+
-			"If this is a deliberate new refusal, the gap TKT-318 tracks is CLOSED: change "+
-			"this test to assert the refusal and close that ticket. Do not delete it.", err)
+	// The refused write left no trace: still a draft, no publication, no event.
+	var status string
+	var publishedAtNull, emittedAtNull bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT status, published_at IS NULL, event_emitted_at IS NULL FROM seat_maps WHERE id = $1`, m.ID).
+		Scan(&status, &publishedAtNull, &emittedAtNull); err != nil {
+		t.Fatal(err)
 	}
-	if published.Status != "published" {
-		t.Fatalf("status = %q, want published — see the message above", published.Status)
+	if status != "draft" || !publishedAtNull || !emittedAtNull {
+		t.Fatalf("refused publish changed the row: status=%q publishedAtNull=%v emittedAtNull=%v, want draft, null, null",
+			status, publishedAtNull, emittedAtNull)
+	}
+	if n := seatCount(ctx, t, db, m.ID); n != 0 {
+		t.Fatalf("fixture seeded %d seats; this test is about a map with none", n)
+	}
+}
+
+// An archived seatless map gets the lifecycle refusal, not the seatless one. The
+// seatless check applies to drafts only, so it must not shadow the lifecycle check.
+func TestArchivedSeatlessMapGetsLifecycleRefusal(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	m := seedSeatlessDraft(ctx, t, st, "Archived")
+	if _, err := db.ExecContext(ctx, `UPDATE seat_maps SET status = 'archived' WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID); !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("publishing an archived seatless map err = %v, want ErrIllegalTransition", err)
+	}
+}
+
+// A legacy seatless version (published before TKT-318) still answers a publish retry.
+// The event is owed until it is marked, and not owed after. The refusal covers drafts only.
+func TestLegacySeatlessPublishedMapStillRepublishes(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	m := seedSeatlessDraft(ctx, t, st, "Legacy")
+	markLegacyPublished(ctx, t, db, m.ID)
+
+	// Readable: the geometry read answers for the legacy version, with no seats.
+	geo, err := st.GetSeatMapGeometry(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("reading a legacy seatless version: %v", err)
+	}
+	if geo.Map.Status != "published" || len(geo.Sections) != 1 {
+		t.Fatalf("legacy read = %q with %d section(s), want published with 1", geo.Map.Status, len(geo.Sections))
 	}
 
-	// And the geometry really is empty, so this is not passing for some other reason.
-	geo, err := st.GetSeatMapGeometry(ctx, published.ID)
+	published, needsEmit, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
+	if err != nil {
+		t.Fatalf("republishing a legacy seatless version err = %v, want nil", err)
+	}
+	if published.Status != "published" || !needsEmit {
+		t.Fatalf("legacy republish = %q needsEmit=%v, want published + owed", published.Status, needsEmit)
+	}
+	if err := st.MarkSeatMapEventEmitted(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, needsEmitAfterMark, err := st.PublishSeatMap(ctx, seatMapOrg, m.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seats := 0
-	for _, s := range geo.Sections {
-		for _, r := range s.Rows {
-			seats += len(r.Seats)
+	if needsEmitAfterMark {
+		t.Fatal("after the event is marked, a legacy republish must not owe it again")
+	}
+}
+
+// seatedPerformance is a minimal performance input for one seat map reference.
+func seatedPerformance(eventID, venueID uuid.UUID, startsAt time.Time, mapID *uuid.UUID) PerformanceInput {
+	return PerformanceInput{
+		OrganizerID: seatMapOrg, EventID: eventID, VenueID: venueID,
+		StartsAt: &startsAt, Timezone: "Europe/Paris", SeatMapID: mapID,
+	}
+}
+
+// seedEvent creates one event for the seat-map organizer.
+func seedEvent(ctx context.Context, t *testing.T, st *Postgres) uuid.UUID {
+	t.Helper()
+	event, err := st.CreateEvent(ctx, EventInput{
+		OrganizerID: seatMapOrg,
+		Name:        LocalizedText{"en": "Recital", "fr": "Récital"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event.ID
+}
+
+// TestCreatePerformanceRefusesSeatlessPublishedVersion (TKT-318 COS-4) pins the seated
+// create check against the exact version id a slot is bound to.
+//
+// The fixture holds a populated neighbour in the same venue. A check that asks whether
+// ANY seat exists would accept the seatless legacy version through the neighbour's
+// seats. The legacy id is tested again after a repair, because a repair creates a new
+// version in the same family and a family-wide check would accept the old id.
+func TestCreatePerformanceRefusesSeatlessPublishedVersion(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	event := seedEvent(ctx, t, st)
+	seedPublishedMap(ctx, t, st, "Neighbour with seats")
+
+	legacy := seedSeatlessDraft(ctx, t, st, "Legacy seatless")
+	markLegacyPublished(ctx, t, db, legacy.ID)
+	legacyID := legacy.ID
+
+	countPerformances := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM performances WHERE event_id = $1`, event).Scan(&n); err != nil {
+			t.Fatal(err)
 		}
+		return n
 	}
-	if seats != 0 {
-		t.Fatalf("fixture seeded %d seats; this test is about a map with none", seats)
+
+	at := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+	if _, err := st.CreatePerformance(ctx, seatedPerformance(event, seatMapVenue, at, &legacyID)); !errors.Is(err, ErrSeatMapSeatless) {
+		t.Fatalf("seated slot on a seatless version err = %v, want ErrSeatMapSeatless", err)
+	}
+	if n := countPerformances(); n != 0 {
+		t.Fatalf("refused create left %d performance(s), want none", n)
+	}
+
+	// A GA slot never reads the seat map, so the refusal does not touch it.
+	ga := seatedPerformance(event, seatMapVenue, at.Add(24*time.Hour), nil)
+	if _, err := st.CreatePerformance(ctx, ga); err != nil {
+		t.Fatalf("GA slot err = %v, want success", err)
+	}
+
+	// Repair: an edit adds seats and mints a new version in the same family.
+	repaired, _, err := st.EditSeatMap(ctx, EditSeatMapInput{OrganizerID: seatMapOrg, SeatMapID: legacy.ID,
+		Sections: []EditSectionInput{sect("Orchestra", 1, rw("A", 1, st1("1", 1)))}})
+	if err != nil {
+		t.Fatalf("repair edit: %v", err)
+	}
+	if _, err := st.CreatePerformance(ctx, seatedPerformance(event, seatMapVenue, at.Add(48*time.Hour), &repaired.ID)); err != nil {
+		t.Fatalf("seated slot on the repaired version err = %v, want success", err)
+	}
+	if _, err := st.CreatePerformance(ctx, seatedPerformance(event, seatMapVenue, at.Add(72*time.Hour), &legacyID)); !errors.Is(err, ErrSeatMapSeatless) {
+		t.Fatalf("seated slot on the legacy id after repair err = %v, want ErrSeatMapSeatless", err)
+	}
+}
+
+// TestCreatePerformanceSeatMapRefusals keeps the existing seat-map create checks pinned
+// one at a time. Each case violates exactly one rule, so a removed check shows up as
+// the wrong answer for its own case.
+func TestCreatePerformanceSeatMapRefusals(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	event := seedEvent(ctx, t, st)
+	at := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+
+	draft := seedDraftWithSeat(ctx, t, st, "Still a draft")
+	otherVenue := uuid.New()
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO venues (id, organizer_id, name, ga_capacity) VALUES ($1, $2, 'second hall', 100)`,
+		otherVenue, seatMapOrg); err != nil {
+		t.Fatal(err)
+	}
+	// A published, seated map in the second hall. The slot below is booked in the first.
+	elsewhere, err := st.CreateSeatMap(ctx, SeatMapInput{OrganizerID: seatMapOrg, VenueID: otherVenue, Name: "Elsewhere"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, err := st.AddSeatMapSection(ctx, SeatMapSectionInput{OrganizerID: seatMapOrg, SeatMapID: elsewhere.ID, Name: "Orchestra", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AddSeatMapRow(ctx, SeatMapRowInput{OrganizerID: seatMapOrg, SeatMapID: elsewhere.ID, SectionID: sec.ID, Label: "A", Position: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSeatMapSeat(ctx, SeatMapSeatInput{OrganizerID: seatMapOrg, SeatMapID: elsewhere.ID, RowID: row.ID, Label: "1", Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.PublishSeatMap(ctx, seatMapOrg, elsewhere.ID); err != nil {
+		t.Fatal(err)
+	}
+	unknown := uuid.New()
+
+	for _, tc := range []struct {
+		name  string
+		mapID uuid.UUID
+		want  error
+	}{
+		{"unknown map is not found", unknown, ErrNotFound},
+		{"draft map is not published", draft.ID, ErrSeatMapNotPublished},
+		{"published map in another venue is a mismatch", elsewhere.ID, ErrOrganizerMismatch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := tc.mapID
+			if _, err := st.CreatePerformance(ctx, seatedPerformance(event, seatMapVenue, at, &id)); !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

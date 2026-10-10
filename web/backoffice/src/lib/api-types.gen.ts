@@ -106,7 +106,7 @@ export interface paths {
         put?: never;
         /**
          * Publish a seat map (idempotent, TKT-103)
-         * @description Flips a seat map draft to published and emits the platform.catalog.seat_map.published domain event at least once while it is owed (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). A published version is immutable — further section/row/seat authoring is refused. Publishing an already-published map returns 200 without re-emitting; an archived map is a 409.
+         * @description Flips a seat map draft to published and emits the platform.catalog.seat_map.published domain event at least once while it is owed (envelope id is deterministic per publication, so retried or raced emissions de-duplicate). A published version is immutable — further section/row/seat authoring is refused. Publishing an already-published map returns 200 without re-emitting; an archived map is a 409, and so is a draft with no seats (TKT-318).
          */
         post: operations["publishSeatMap"];
         delete?: never;
@@ -126,7 +126,7 @@ export interface paths {
         put?: never;
         /**
          * Edit a published seat map, producing a new version (TKT-105)
-         * @description Surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP. The body is the FULL replacement geometry (section -> row -> seat); seatMapId may be ANY version of the target family — the store resolves the current published version, takes a family-scoped advisory lock, and INSERTs a new published version (version+1). The predecessor stays immutable. An edit whose new geometry would orphan a seat identity pinned by a sale/hold is hard-rejected (409) — no new domain rule is introduced here, the contract is TKT-104's. Emits platform.catalog.seat_map.published for the new version at least once (deterministic id; de-duplicated on retry).
+         * @description Surfaces the TKT-104 safe-edit contract (ADR-029) over HTTP. The body is the FULL replacement geometry (section -> row -> seat); seatMapId may be ANY version of the target family — the store resolves the current published version, takes a family-scoped advisory lock, and INSERTs a new published version (version+1). The predecessor stays immutable. An edit whose new geometry would orphan a seat identity pinned by a sale/hold is hard-rejected (409) — no new domain rule is introduced here, the contract is TKT-104's. An edit whose geometry has no seats is refused with 409 (TKT-318); a published version with no seats can still be repaired by an edit that adds seats. Emits platform.catalog.seat_map.published for the new version at least once (deterministic id; de-duplicated on retry).
          */
         post: operations["editSeatMap"];
         delete?: never;
@@ -1382,7 +1382,7 @@ export interface components {
             re_entry?: components["schemas"]["ReEntryPolicy"];
             /**
              * Format: uuid
-             * @description Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated.
+             * @description Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated. The version must also have at least one seat (TKT-318).
              */
             seat_map_id?: string;
         };
@@ -1975,7 +1975,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description An archived seat map cannot be published */
+            /** @description A draft with no seats cannot be published (TKT-318), and an archived seat map cannot be published. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2014,7 +2014,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description The edit would orphan a pinned seat identity, or the new geometry has a duplicate seat identity. */
+            /** @description The edit would orphan a pinned seat identity, the new geometry has a duplicate seat identity, or the new geometry has no seats (TKT-318). The body's message names which. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2126,7 +2126,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description Seated reference to a seat map that is not published (TKT-103), or an idempotency key reused for a different request (TKT-200). One status, two causes: the body's message names which. */
+            /** @description Seated reference to a seat map that is not published (TKT-103), to a published version with no seats (TKT-318), or an idempotency key reused for a different request (TKT-200). One status, several causes: the body's message names which. */
             409: {
                 headers: {
                     [name: string]: unknown;

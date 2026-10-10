@@ -271,10 +271,26 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
 
   it('surfaces the server {error} body on a rejected edit (409 orphan), not just the status', async () => {
     spyFetch({ error: 'edit would orphan a seat identity pinned by a sale or hold' }, 409);
+    // A real orphan submits geometry. An empty edit is a different refusal (TKT-318).
+    const orphaning = {
+      sections: [{ name: 'Orchestra', position: 1, rows: [{ label: 'A', position: 1, seats: [{ label: '2', position: 1 }] }] }],
+    };
     // The actionable message reaches the UI — a bare "409" would be useless.
     await expect(
-      editSeatMap(MAP_ID, { sections: [] }, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
+      editSeatMap(MAP_ID, orphaning, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
     ).rejects.toThrow(/orphan a seat identity pinned/);
+  });
+
+  it('surfaces the seatless refusal on a publish of a map with no seats (TKT-318)', async () => {
+    spyFetch({ error: 'a seat map needs at least one seat before it can be published, saved, or seated against' }, 409);
+    await expect(publishSeatMap(MAP_ID, TEST_ASSERTION)).rejects.toThrow(/needs at least one seat before it can be published/);
+  });
+
+  it('surfaces the seatless refusal on an edit with no seats (TKT-318)', async () => {
+    spyFetch({ error: 'a seat map needs at least one seat before it can be published, saved, or seated against' }, 409);
+    await expect(
+      editSeatMap(MAP_ID, { sections: [] }, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
+    ).rejects.toThrow(/needs at least one seat before it can be published/);
   });
 
   it('throws a typed CatalogApiError carrying the status', async () => {

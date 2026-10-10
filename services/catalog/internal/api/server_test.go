@@ -176,6 +176,17 @@ func (f *fakeStore) CreateSeatMap(_ context.Context, in store.SeatMapInput) (sto
 	return m, nil
 }
 
+// seatMapHasSeats reports whether any seat belongs to this version (TKT-318). It is the
+// fake's counterpart to the store's seat existence check, and it is per version id.
+func (f *fakeStore) seatMapHasSeats(id uuid.UUID) bool {
+	for _, s := range f.seatSeats {
+		if s.seatMapID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeStore) draftMap(id, org uuid.UUID) (store.SeatMap, bool) {
 	m, ok := f.seatMaps[id]
 	return m, ok && m.OrganizerID == org && m.Status == "draft"
@@ -204,6 +215,10 @@ func (f *fakeStore) PublishSeatMap(_ context.Context, organizerID, id uuid.UUID)
 		return store.SeatMap{}, false, store.ErrIllegalTransition
 	}
 	if m.Status != "published" {
+		// TKT-318: the store flips a draft only when it has seats.
+		if !f.seatMapHasSeats(id) {
+			return store.SeatMap{}, false, store.ErrSeatMapSeatless
+		}
 		now := time.Now().UTC()
 		m.Status = "published"
 		m.PublishedAt = &now
@@ -261,6 +276,16 @@ func (f *fakeStore) pinSeat(anyVersionID uuid.UUID, identity string) {
 // new geometry. The authoritative behaviour is proven by the store smoke tests;
 // this fake exists so the HTTP handler can be tested without Postgres.
 func (f *fakeStore) EditSeatMap(_ context.Context, in store.EditSeatMapInput) (store.SeatMap, bool, error) {
+	// TKT-318: an edit with no seats is refused before the family is resolved, as in the store.
+	seats := 0
+	for _, sec := range in.Sections {
+		for _, row := range sec.Rows {
+			seats += len(row.Seats)
+		}
+	}
+	if seats == 0 {
+		return store.SeatMap{}, false, store.ErrSeatMapSeatless
+	}
 	cur, ok := f.currentPublishedInFamily(in.SeatMapID, in.OrganizerID)
 	if !ok {
 		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
@@ -685,6 +710,10 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 		}
 		if m.Status != "published" {
 			return store.Performance{}, store.ErrSeatMapNotPublished
+		}
+		// TKT-318: a version with no seats cannot seat a slot.
+		if !f.seatMapHasSeats(*in.SeatMapID) {
+			return store.Performance{}, store.ErrSeatMapSeatless
 		}
 	}
 	re := in.ReEntry

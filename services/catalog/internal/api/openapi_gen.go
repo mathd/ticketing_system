@@ -802,7 +802,7 @@ type PerformanceCreate struct {
 	// ReEntry How many admissions one entitlement grants on the slot (spike §Case 1). 'single' is the performance case; 'count_limited' requires max_entries.
 	ReEntry *ReEntryPolicy `json:"re_entry,omitempty"`
 
-	// SeatMapId Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated.
+	// SeatMapId Published seat-map version to seat this slot against (TKT-103). Omit for a GA slot. The referenced map must be published and share the slot's organizer and venue; a festival day cannot be seated. The version must also have at least one seat (TKT-318).
 	SeatMapId *openapi_types.UUID `json:"seat_map_id,omitempty"`
 
 	// StartsAt Instant for kind 'performance'; omit for day kinds
