@@ -213,6 +213,11 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrPresaleCodeInvalid):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "presale_code_invalid"})
 		return
+	// Operator-facing 400 (ADR-064), distinct from the buyer 409 above. The sentinel is
+	// a bare errors.New with no Channel method, so belowConsumption cannot claim it.
+	// This case must stay above that structural match.
+	case errors.Is(err, store.ErrPresaleCodeInvalidInput):
+		code = 400
 	// The two allocation-editor refusals (TKT-244). Both WRAP the sentinels handled
 	// below, so they MUST be matched first — the generic case would otherwise swallow
 	// them and answer the code-less 409 this ticket exists to replace.

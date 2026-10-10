@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -320,6 +322,33 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 		if got := strings.TrimSpace(res.Body.String()); got != tt.wantBody {
 			t.Fatalf("%v: body=%s want=%s", tt.err, got, tt.wantBody)
 		}
+	}
+}
+
+// The operator's malformed-input 400 and the buyer's 409 stay distinct (ADR-064).
+// The unmapped row pins the static 500, so a raw store error never reaches the body.
+func TestPresaleCodeProblemsKeepOperatorAndBuyerErrorsDistinct(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{"operator input", store.ErrPresaleCodeInvalidInput, 400, `{"error":"invalid presale code definition"}`},
+		{"operator input wrapped", fmt.Errorf("issue: %w", store.ErrPresaleCodeInvalidInput), 400, `{"error":"issue: invalid presale code definition"}`},
+		{"buyer conflict", store.ErrPresaleCodeInvalid, 409, `{"code":"presale_code_invalid","error":"invalid presale code"}`},
+		{"unmapped error", errors.New("pq: duplicate key value violates constraint presale_codes_pkey"), 500, `{"error":"internal error"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			problem(res, tt.err)
+			if res.Code != tt.wantCode {
+				t.Fatalf("%v: status=%d want=%d", tt.err, res.Code, tt.wantCode)
+			}
+			if got := strings.TrimSpace(res.Body.String()); got != tt.wantBody {
+				t.Fatalf("%v: body=%s want=%s", tt.err, got, tt.wantBody)
+			}
+		})
 	}
 }
 
