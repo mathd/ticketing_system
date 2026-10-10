@@ -2126,7 +2126,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description Seated reference to a seat map that is not published (TKT-103), to a published version with no seats (TKT-318), or an idempotency key reused for a different request (TKT-200). One status, several causes: the body's message names which. */
+            /** @description Seated reference to a seat map that is not published (TKT-103), to a published version with no seats (TKT-318), or an idempotency key reused for a different request (TKT-200). One status, several causes: the body's message names which. A repeat of a request that already succeeded, with the same key and the same terms, returns the original performance even when its seat-map version has no seats. */
             409: {
                 headers: {
                     [name: string]: unknown;

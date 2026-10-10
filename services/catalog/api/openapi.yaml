@@ -390,7 +390,9 @@ paths:
             Seated reference to a seat map that is not published (TKT-103), to a
             published version with no seats (TKT-318), or an idempotency key
             reused for a different request (TKT-200). One status, several causes:
-            the body's message names which.
+            the body's message names which. A repeat of a request that already
+            succeeded, with the same key and the same terms, returns the original
+            performance even when its seat-map version has no seats.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
