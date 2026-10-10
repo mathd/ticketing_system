@@ -723,11 +723,11 @@ change the total, and nothing here defends against that.
 
 ## Amendment (2026-10-10, TKT-322) — a release reports whether it parked the row, and a superseded claim is reported as one
 
-Before this amendment, the runner logged a park from the attempt count it read at claim time, plus the
-failure being recorded. That sum was computed before the release write, and the write decided the real
-state. So the log could say *parked* for a row the write did not park, and a release that matched no
-row could look like a failed write. TKT-322 changes what the store reports, and the runner now reads
-that report. The accounting that TKT-300 changed is corrected in place in the
+Before this amendment, the runner's log decision used the claim-time snapshot of the attempt count, plus
+one for the failure being recorded, regardless of the release write's result. So the log could say
+*parked* for a row the write did not park, and a release that matched no row could look like a failed
+write. The write, not that snapshot, decides the real state. TKT-322 changes what the store reports, and
+the runner now reads that report. The accounting that TKT-300 changed is corrected in place in the
 TKT-145 amendment above.
 
 ### Decision D1
