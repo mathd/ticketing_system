@@ -124,7 +124,9 @@ type Store interface {
 	// read of order_facts (deterministic fact id), used to tell a zero-total order that got
 	// as far as its intent fact from one that did not (TKT-285).
 	OrderFactRecorded(ctx context.Context, orderID uuid.UUID, factType string) (bool, error)
-	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error
+	// ReleaseStuckOrder reports whether this release parked the row. ErrRecoveryConflict means
+	// the claim matched no row: fail() treats it as a supersession, not as a failed write (TKT-322).
+	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) (parked bool, err error)
 	// Backlog reports the parked population for observability only. It is never read
 	// by a recovery decision — a runner that steered on its own queue depth would be
 	// deciding from an aggregate instead of from durable per-order evidence, which is
@@ -177,7 +179,7 @@ func (d DBStore) OrderFactRecorded(ctx context.Context, orderID uuid.UUID, factT
 	return store.OrderFactRecorded(ctx, d.DB, orderID, factType)
 }
 
-func (d DBStore) ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) error {
+func (d DBStore) ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) (bool, error) {
 	return store.ReleaseStuckOrder(ctx, d.DB, orderID, claimID, cause)
 }
 
@@ -682,17 +684,26 @@ func (r *Runner) fail(ctx context.Context, s store.StuckOrder, cause error) {
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 	}
-	if err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause); err != nil {
+	parked, err := r.store.ReleaseStuckOrder(ctx, s.OrderID, s.ClaimID, cause)
+	switch {
+	case errors.Is(err, store.ErrRecoveryConflict):
+		// The claim was superseded, so the row belongs to a successor that now owns the next
+		// decision. That is not a failure of this order, and no parking or retry happened here.
+		r.log.InfoContext(ctx, "recovery claim superseded",
+			"order_id", s.OrderID, "status", s.Status, "err", cause)
+		return
+	case err != nil:
+		// The release write failed, so neither a park nor a retry is true. The failure is the
+		// one notice this order gets for this pass.
 		r.log.ErrorContext(ctx, "release stuck order", "order_id", s.OrderID, "err", err)
+		return
 	}
-	// s.Attempts is the count as OBSERVED AT CLAIM, and since TKT-300 the claim no longer
-	// charges: the attempt just made is charged by the ReleaseStuckOrder above. So the
-	// count after this failure is s.Attempts+1, and that is what decides whether the row
-	// was parked. Comparing the bare s.Attempts would log "parked" one attempt after the
-	// SQL actually parked the row — and this log line is the last notice anyone gets, so
-	// being a beat late means the first notice is silence.
+	// s.Attempts is the count as OBSERVED AT CLAIM. Since TKT-300 the claim does not charge, so
+	// the release is what charges this attempt, and the count after it is s.Attempts+1. That sum
+	// is only an attribute of the log line. It never decides the message: parked comes from the
+	// same statement that parked the row, so the log and the marker cannot disagree.
 	attempts := s.Attempts + 1
-	if attempts >= store.MaxRecoveryAttempts {
+	if parked {
 		// Parked: never claimed again, so this is the last notice anyone gets that a
 		// real order is stuck.
 		r.log.ErrorContext(ctx, "stuck order parked after exhausting recovery attempts",

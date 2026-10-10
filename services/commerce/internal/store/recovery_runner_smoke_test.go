@@ -7,8 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -131,6 +134,200 @@ func (s isolatedStore) ClaimStuckOrders(ctx context.Context, _ int, lease time.D
 		}
 	}
 	return isolated, nil
+}
+
+// unreachablePayments fails the operation lookup, so the drive reaches the release without a PSP
+// answer. Every other PSP call is a test error: no status, void or refund is read for an order
+// whose evidence never arrived.
+type unreachablePayments struct {
+	t *testing.T
+}
+
+func (p *unreachablePayments) LookupOperation(context.Context, uuid.UUID, string) (recovery.Operation, bool, error) {
+	return recovery.Operation{}, false, errors.New("psp unreachable")
+}
+
+func (p *unreachablePayments) Status(context.Context, uuid.UUID, string) (recovery.PSPStatus, error) {
+	p.t.Errorf("unexpected PSP status call: the lookup failed, so no status is read")
+	return recovery.PSPStatus{}, errors.New("unexpected status call")
+}
+
+func (p *unreachablePayments) Void(context.Context, uuid.UUID, string) (recovery.CompensationResult, error) {
+	p.t.Errorf("unexpected PSP void call: the lookup failed, so no compensation is driven")
+	return recovery.CompensationResult{}, errors.New("unexpected void call")
+}
+
+func (p *unreachablePayments) Refund(context.Context, uuid.UUID, string) (recovery.CompensationResult, error) {
+	p.t.Errorf("unexpected PSP refund call: the lookup failed, so no compensation is driven")
+	return recovery.CompensationResult{}, errors.New("unexpected refund call")
+}
+
+// supersededStore hands the runner the claim the real claim SQL took, then writes a live
+// successor claim onto the same row before the drive starts. The release therefore carries a
+// token the row no longer holds, which is the state a lease lapsing mid-drive leaves behind.
+// The row is read back right after that write, so the test can show later that nothing else
+// wrote to it.
+type supersededStore struct {
+	isolatedStore
+	claimA    uuid.UUID // the claim the runner was given
+	successor uuid.UUID // the live claim written over it
+	atHandoff string    // the row immediately after the successor claim was written
+}
+
+func (s *supersededStore) ClaimStuckOrders(ctx context.Context, limit int, lease time.Duration) ([]store.StuckOrder, error) {
+	claimed, err := s.isolatedStore.ClaimStuckOrders(ctx, limit, lease)
+	if err != nil || len(claimed) != 1 {
+		return claimed, err
+	}
+	s.claimA = claimed[0].ClaimID
+	s.successor = uuid.New()
+	if _, err := s.DB.ExecContext(ctx, `
+		UPDATE orders SET recovery_claim_id=$2, recovery_lease_until=now()+interval '5 minutes'
+		WHERE id=$1 AND recovery_claim_id=$3`, s.orderID, s.successor, s.claimA); err != nil {
+		return nil, err
+	}
+	s.atHandoff = rowState(s.t, s.DB, ctx, s.orderID)
+	return claimed, nil
+}
+
+// rowState reads an order's recovery columns as one text value, so two reads compare exactly,
+// microseconds included.
+func rowState(t *testing.T, db *sql.DB, ctx context.Context, orderID uuid.UUID) string {
+	t.Helper()
+	var state string
+	if err := db.QueryRowContext(ctx, `
+		SELECT concat_ws('|',
+		       coalesce(recovery_claim_id::text,'-'), coalesce(recovery_lease_until::text,'-'),
+		       recovery_attempts::text, recovery_next_attempt_at::text,
+		       coalesce(recovery_parked_at::text,'-'), coalesce(recovery_last_error,'-'),
+		       status, updated_at::text)
+		FROM orders WHERE id=$1`, orderID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// runnerLogLine is one record of the runner's text log.
+type runnerLogLine struct {
+	level, msg, raw string
+}
+
+var runnerLogPattern = regexp.MustCompile(`level=(\S+) msg="([^"]*)"`)
+
+// runnerLogLines parses a text-handler capture, one record per line. A line that does not parse
+// fails the test, so an absence assertion cannot pass by skipping lines.
+func runnerLogLines(t *testing.T, out string) []runnerLogLine {
+	t.Helper()
+	var lines []runnerLogLine
+	for _, raw := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if raw == "" {
+			continue
+		}
+		m := runnerLogPattern.FindStringSubmatch(raw)
+		if m == nil {
+			t.Fatalf("log line does not parse as a text record: %q", raw)
+		}
+		lines = append(lines, runnerLogLine{level: m[1], msg: m[2], raw: raw})
+	}
+	return lines
+}
+
+// runnerLogged returns the records with this level and message.
+func runnerLogged(lines []runnerLogLine, level, msg string) []runnerLogLine {
+	var out []runnerLogLine
+	for _, l := range lines {
+		if l.level == level && l.msg == msg {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TKT-322, connected. A release that finds its claim superseded is logged as a supersession and
+// nothing more. The successor claim is written by a plain UPDATE in supersededStore, after the
+// real claim has run. The release is the real DBStore release, and only the payments port is
+// faked, to fail the drive. The precondition is checked before the log is read.
+func TestASupersededReleaseLogsOnceAndLeavesTheSuccessorsClaim(t *testing.T) {
+	db, ctx := store.OutboxDBForTest(t)
+	seeded := store.SeedStuckForTest(t, "created")
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_attempts=$2 WHERE id=$1`,
+		seeded.OrderID, store.MaxRecoveryAttempts-1); err != nil {
+		t.Fatal(err)
+	}
+	st := &supersededStore{isolatedStore: isolatedStore{DBStore: recovery.DBStore{DB: db}, t: t, orderID: seeded.OrderID}}
+	var logs strings.Builder
+	runner, err := recovery.New(st, &unreachablePayments{t: t}, &connectedInventory{t: t}, &connectedJournal{t: t},
+		&connectedCompleter{t: t}, time.Minute, 16, time.Minute,
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner.RunOnce(ctx)
+
+	// The precondition the log assertions depend on: the row holds a live successor claim that is
+	// distinct from the claim the runner released with. Without it, a log line proves nothing
+	// about the fence.
+	if st.successor == uuid.Nil || st.successor == st.claimA {
+		t.Fatalf("precondition: successor claim %s must differ from the runner's claim %s", st.successor, st.claimA)
+	}
+	var claim uuid.NullUUID
+	var leaseLive bool
+	if err := db.QueryRowContext(ctx, `SELECT recovery_claim_id, recovery_lease_until > now() FROM orders WHERE id=$1`,
+		seeded.OrderID).Scan(&claim, &leaseLive); err != nil {
+		t.Fatal(err)
+	}
+	if !claim.Valid || claim.UUID != st.successor || !leaseLive {
+		t.Fatalf("precondition: row claim = %v live=%t, want the live successor %s", claim, leaseLive, st.successor)
+	}
+
+	lines := runnerLogLines(t, logs.String())
+	superseded := runnerLogged(lines, "INFO", "recovery claim superseded")
+	if len(lines) != 1 || len(superseded) != 1 || !strings.Contains(superseded[0].raw, seeded.OrderID.String()) {
+		t.Fatalf("want exactly one INFO superseded record for order %s; logged %v", seeded.OrderID, lines)
+	}
+	if got := rowState(t, db, ctx, seeded.OrderID); got != st.atHandoff {
+		t.Fatalf("the successor's row changed after the handoff:\n handoff %s\n now     %s", st.atHandoff, got)
+	}
+}
+
+// TKT-322, connected. The parking the runner logs must be the parking the SQL performed. The order
+// starts one failure short of the budget, so the real release reaches it: the row must carry the
+// marker at the full attempt count, and the log must say parked and nothing else.
+func TestTheRunnerLogsParkingOnlyWhenTheRealReleaseParksTheRow(t *testing.T) {
+	db, ctx := store.OutboxDBForTest(t)
+	seeded := store.SeedStuckForTest(t, "created")
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_attempts=$2 WHERE id=$1`,
+		seeded.OrderID, store.MaxRecoveryAttempts-1); err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	runner, err := recovery.New(isolatedStore{DBStore: recovery.DBStore{DB: db}, t: t, orderID: seeded.OrderID},
+		&unreachablePayments{t: t}, &connectedInventory{t: t}, &connectedJournal{t: t}, &connectedCompleter{t: t},
+		time.Minute, 16, time.Minute, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner.RunOnce(ctx)
+
+	var parked bool
+	var attempts int
+	if err := db.QueryRowContext(ctx, `SELECT recovery_parked_at IS NOT NULL, recovery_attempts FROM orders WHERE id=$1`,
+		seeded.OrderID).Scan(&parked, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if !parked || attempts != store.MaxRecoveryAttempts {
+		t.Fatalf("row parked=%t attempts=%d, want parked at %d attempts", parked, attempts, store.MaxRecoveryAttempts)
+	}
+	lines := runnerLogLines(t, logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("logged %d records, want exactly one parking record: %v", len(lines), lines)
+	}
+	if got := lines[0]; got.level != "ERROR" || got.msg != "stuck order parked after exhausting recovery attempts" ||
+		!strings.Contains(got.raw, seeded.OrderID.String()) {
+		t.Fatalf("logged %s %q, want the parked ERROR for order %s", got.level, got.msg, seeded.OrderID)
+	}
 }
 
 func TestRunnerReparksAnUnparkedTerminalRefundInOnePass(t *testing.T) {
