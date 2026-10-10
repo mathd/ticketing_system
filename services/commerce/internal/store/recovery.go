@@ -167,6 +167,13 @@ func ReleaseStuckOrder(ctx context.Context, db OutboxDB, orderID, claimID uuid.U
 	if err := rows.Scan(&parked); err != nil {
 		return false, err
 	}
+	// Close drains the rest of the statement's result. A failure met while draining is returned
+	// by Close, and database/sql also keeps it for Err, so both are checked before a parked
+	// answer is returned. Checking Err before Close cannot see a failure that the drain has not
+	// yet reached (TKT-322).
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
 	if err := rows.Err(); err != nil {
 		return false, err
 	}

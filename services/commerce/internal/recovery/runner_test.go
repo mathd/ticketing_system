@@ -36,7 +36,7 @@ type fakeStore struct {
 	cleared   int                // ClearRecoveryClaim
 	released  []store.StuckOrder // MarkReleased
 	failed    []error            // ReleaseStuckOrder causes
-	abandoned []uuid.UUID        // AbandonRecoveryClaim (shutdown hand-back)
+	abandoned []abandonCall      // AbandonRecoveryClaim calls (shutdown hand-back), in call order
 
 	// recorded answers OrderFactRecorded: the fact types commerce holds for an order. The
 	// default (nil) is "no fact", which no pre-TKT-285 path reads.
@@ -51,9 +51,17 @@ type fakeStore struct {
 	releaseErr    error
 	releases      []releaseCall // ReleaseStuckOrder calls, in order
 
-	// abandonErrs gives AbandonRecoveryClaim's results by call; calls past its end succeed.
-	abandonErrs []error
-	abandonObs  []ctxObservation // AbandonRecoveryClaim's context, observed at each call
+	// abandonErrs scripts AbandonRecoveryClaim's failures by the claim id the caller passed, not
+	// by call position. A hand-back that passed the wrong claim id then misses the script, and
+	// the exact (order, claim) assertions in the tests see it (TKT-322).
+	abandonErrs map[uuid.UUID]error
+}
+
+// abandonCall is one AbandonRecoveryClaim call as the fake received it: the order and the claim
+// the caller passed, and the context observed at the call.
+type abandonCall struct {
+	orderID, claimID uuid.UUID
+	ctx              ctxObservation
 }
 
 // releaseCall is one ReleaseStuckOrder call as the fake received it.
@@ -135,14 +143,10 @@ func (f *fakeStore) ClearRecoveryClaim(context.Context, uuid.UUID, uuid.UUID) er
 	return nil
 }
 
-func (f *fakeStore) AbandonRecoveryClaim(ctx context.Context, orderID, _ uuid.UUID) error {
+func (f *fakeStore) AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error {
 	f.tr.add("store.AbandonRecoveryClaim")
-	f.abandoned = append(f.abandoned, orderID)
-	f.abandonObs = append(f.abandonObs, observe(ctx))
-	if i := len(f.abandoned) - 1; i < len(f.abandonErrs) {
-		return f.abandonErrs[i]
-	}
-	return nil
+	f.abandoned = append(f.abandoned, abandonCall{orderID: orderID, claimID: claimID, ctx: observe(ctx)})
+	return f.abandonErrs[claimID]
 }
 
 func (f *fakeStore) MarkReleased(_ context.Context, s store.StuckOrder) error {
@@ -521,15 +525,17 @@ func TestShutdownHandsBackUndrivenClaims(t *testing.T) {
 	if len(p.store.abandoned) != 2 {
 		t.Fatalf("handed back %d undriven claims, want 2; abandoned=%v", len(p.store.abandoned), p.store.abandoned)
 	}
-	// The exact orders that were never driven, not just any two.
+	// The exact claims that were never driven, not just any two: each undriven order, with the
+	// claim it was leased under. An order id alone would miss a hand-back of the wrong claim.
 	for i, want := range []store.StuckOrder{orders[1], orders[2]} {
-		if p.store.abandoned[i] != want.OrderID {
-			t.Errorf("abandoned[%d] = %s, want %s", i, p.store.abandoned[i], want.OrderID)
+		if got := p.store.abandoned[i]; got.orderID != want.OrderID || got.claimID != want.ClaimID {
+			t.Errorf("abandoned[%d] = order %s claim %s, want order %s claim %s",
+				i, got.orderID, got.claimID, want.OrderID, want.ClaimID)
 		}
 	}
 	// The driven order completed: its claim is cleared, not abandoned.
-	for _, id := range p.store.abandoned {
-		if id == orders[0].OrderID {
+	for _, got := range p.store.abandoned {
+		if got.orderID == orders[0].OrderID {
 			t.Error("handed back the claim of an order that was fully driven")
 		}
 	}
@@ -678,8 +684,10 @@ func TestShutdownHandsBackASupersededClaimAndContinues(t *testing.T) {
 	// Cancel as soon as the first order is driven, so the other two are claimed but undriven.
 	ctx, cancel := context.WithCancel(context.Background())
 	p.completer.onComplete = cancel
-	// The first hand-back finds its claim superseded.
-	p.store.abandonErrs = []error{fmt.Errorf("abandon: %w", store.ErrRecoveryConflict)}
+	// The first undriven claim is found superseded when it is handed back.
+	p.store.abandonErrs = map[uuid.UUID]error{
+		orders[1].ClaimID: fmt.Errorf("abandon: %w", store.ErrRecoveryConflict),
+	}
 
 	var captured strings.Builder
 	lease, err := LeaseFor(8, 10*time.Second)
@@ -696,12 +704,20 @@ func TestShutdownHandsBackASupersededClaimAndContinues(t *testing.T) {
 	if resolved != 1 {
 		t.Fatalf("resolved = %d, want 1 (cancelled after the first order)", resolved)
 	}
-	if len(p.store.abandonObs) != 2 {
-		t.Fatalf("hand-back calls = %d, want 2: a superseded claim must not stop the loop", len(p.store.abandonObs))
+	if len(p.store.abandoned) != 2 {
+		t.Fatalf("hand-back calls = %d, want 2: a superseded claim must not stop the loop", len(p.store.abandoned))
 	}
-	for i, o := range p.store.abandonObs {
-		if !o.boundedFiveSeconds() {
-			t.Errorf("hand-back %d context = %+v, want live with a deadline at most five seconds away", i, o)
+	// Each undriven order is handed back under its own claim. The conflict is scripted for the
+	// first undriven claim, so a hand-back that passed any other claim would miss it.
+	for i, want := range []store.StuckOrder{orders[1], orders[2]} {
+		if got := p.store.abandoned[i]; got.orderID != want.OrderID || got.claimID != want.ClaimID {
+			t.Errorf("hand-back %d = order %s claim %s, want order %s claim %s",
+				i, got.orderID, got.claimID, want.OrderID, want.ClaimID)
+		}
+	}
+	for i, got := range p.store.abandoned {
+		if !got.ctx.boundedFiveSeconds() {
+			t.Errorf("hand-back %d context = %+v, want live with a deadline at most five seconds away", i, got.ctx)
 		}
 	}
 	lines := parseLog(t, captured.String())

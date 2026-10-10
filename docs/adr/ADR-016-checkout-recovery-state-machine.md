@@ -482,7 +482,7 @@ amendment, because the two non-terminal ones **park differently**:
 | Attempt budget exhausted | `fail` → **`ReleaseStuckOrder`** (`store/recovery.go:123-133`) | **still `release_pending`**, `recovery_parked_at` set | 409, through the parked check |
 
 `ParkForReconciliation` changes the status; `ReleaseStuckOrder` deliberately does not
-(`recovery_parked_at=CASE WHEN recovery_attempts>=$4 THEN now() ELSE NULL END`, status untouched).
+(`recovery_parked_at=CASE WHEN recovery_attempts+1>=$4 THEN now() ELSE NULL END`, status untouched; the `+1` is the attempt this statement records).
 The second row is the only one that is `release_pending` **and** parked — and it is the reason both
 answer paths read `recovery_parked_at` rather than status alone. Reading it as *"both non-terminal
 exits leave a parked `release_pending` row"* would make the parked check look redundant on one exit
@@ -544,11 +544,13 @@ the same unobserved zero-row match.** It is out of scope for TKT-322 and is reco
 item.
 
 Two rows deserve emphasis. The `ReleaseStuckOrder` **errored** row used to be a trap. Before TKT-322,
-`fail` logged *"stuck order parked after exhausting recovery attempts"* whenever
-`s.Attempts >= MaxRecoveryAttempts`, on the value read at claim time, **regardless of whether the
-parking write succeeded or matched a row**. So the log could assert a park that did not happen. TKT-322
-removes that. The parked line now comes only from the release's own result, and a write error is logged
-as a release failure and nothing else. The last row is the liveness one. A runner that crash-loops just
+`fail` logged *"stuck order parked after exhausting recovery attempts"* whenever the attempt count read
+at claim time, plus the failure being recorded, reached `MaxRecoveryAttempts`. That sum was already the
+boundary calculation before TKT-322. What TKT-322 changes is the source of the message: the database
+result, not that sum, decides it. The old message **did not** depend on whether the parking write
+succeeded or matched a row. So the log could assert a park that did not happen. TKT-322 removes
+that. The parked line now comes only from the release's own result, and a write error is logged as a
+release failure and nothing else. The last row is the liveness one. A runner that crash-loops just
 after `ClaimStuckOrders` charges no attempt, because a claim is not an attempt (TKT-300). Each such claim
 still holds `recovery_lease_until` for the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s`
 (`recovery/runner.go:197-206`), which at the defaults (16 × 6 × 10s + 60s) is **exactly 17 minutes** —
@@ -721,10 +723,11 @@ change the total, and nothing here defends against that.
 
 ## Amendment (2026-10-10, TKT-322) — a release reports whether it parked the row, and a superseded claim is reported as one
 
-Before this amendment, the runner logged a park from a count it read before the release write. The
-write decided the real state. So the log could say *parked* for a row the write did not park, and a
-release that matched no row could look like a failed write. TKT-322 changes what the store reports, and
-the runner now reads that report. The accounting that TKT-300 changed is corrected in place in the
+Before this amendment, the runner logged a park from the attempt count it read at claim time, plus the
+failure being recorded. That sum was computed before the release write, and the write decided the real
+state. So the log could say *parked* for a row the write did not park, and a release that matched no
+row could look like a failed write. TKT-322 changes what the store reports, and the runner now reads
+that report. The accounting that TKT-300 changed is corrected in place in the
 TKT-145 amendment above.
 
 ### Decision D1
