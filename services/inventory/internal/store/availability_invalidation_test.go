@@ -124,6 +124,11 @@ func TestAvailabilityMutationsUseInvalidatingCommit(t *testing.T) {
 		// claim_history_sequence.go (TKT-295) only setvals the append_order sequence; it
 		// writes no pool, claim or allocation row, so no availability answer changes.
 		"claim_history_sequence.go": true,
+		// moot.go and parked.go (TKT-317) write consumed_events, moot_slots and catalog_event_parked
+		// rows only. The fallback consumes an event and never applies it to a pool, so no
+		// availability answer changes.
+		"moot.go":   true,
+		"parked.go": true,
 	}
 
 	offenders, scanned, err := scanForRawCommits(".", exempt)
