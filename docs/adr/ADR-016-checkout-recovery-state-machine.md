@@ -14,6 +14,10 @@ checkout is answered 202 rather than a terminal 402/408, distinguishes the two e
 one of which leaves the row `release_pending`), and states that the attempt budget bounds failed
 *claimed re-drives* rather than the buyer's elapsed wait, which has no wall-clock bound.
 
+Amended by **TKT-322** (2026-10-10, §Amendment below) — a release reports whether its own statement parked
+the row, a release or abandon that matches no row is reported as a supersession, and the runner logs
+what the store reports. Adds no audit, integrity or liveness guarantee.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -478,7 +482,7 @@ amendment, because the two non-terminal ones **park differently**:
 | Attempt budget exhausted | `fail` → **`ReleaseStuckOrder`** (`store/recovery.go:123-133`) | **still `release_pending`**, `recovery_parked_at` set | 409, through the parked check |
 
 `ParkForReconciliation` changes the status; `ReleaseStuckOrder` deliberately does not
-(`recovery_parked_at=CASE WHEN recovery_attempts>=$4 THEN now() ELSE NULL END`, status untouched).
+(`recovery_parked_at=CASE WHEN recovery_attempts+1>=$4 THEN now() ELSE NULL END`, status untouched; the `+1` is the attempt this statement records).
 The second row is the only one that is `release_pending` **and** parked — and it is the reason both
 answer paths read `recovery_parked_at` rather than status alone. Reading it as *"both non-terminal
 exits leave a parked `release_pending` row"* would make the parked check look redundant on one exit
@@ -496,55 +500,62 @@ That sentence is deliberately narrow; every wider reading of it is false, and on
 first draft of this amendment.
 
 `MaxRecoveryAttempts` is 10 (`store/recovery.go:51`). **At steady state, after migrations, the
-counter moves in three places** — and the asymmetry between them is the whole subtlety. (The fourth
-writer is a one-off: migration `0005_psp_recovery.sql:38` resets it to zero for the two populations
-it re-opens, which is an upgrade-time transition, not a runtime path.)
+counter moves in two places at runtime, and both are after a drive.** TKT-300 moved the charge from
+claim time to release time. The sentences in this amendment that placed the charge at claim time, or
+that said an abandon refunds it, were true before TKT-300 and are corrected here. (A third writer is
+a one-off: migration `0005_psp_recovery.sql:38` resets it to zero for the two populations it
+re-opens, which is an upgrade-time transition, not a runtime path.)
 
-- `ClaimStuckOrders` **increments** it when a pass **claims** the row (`store/recovery.go:92`) —
-  inside the UPDATE CTE, *before* any work is attempted.
-- `AbandonRecoveryClaim` **decrements** it (`:348`), and its only caller is `releaseUndriven`
-  (`recovery/runner.go:275`), which hands back the **undriven suffix** of a batch on an orderly
-  shutdown (`:251-259`).
+- `ReleaseStuckOrder` **increments** it, in the same statement that decides parking. A failed drive
+  is charged here and nowhere else.
 - `UnparkOrder` **resets it to zero** (`:535`) — an operator intervention, not a runner path, and
   the reason its comment calls that reset "not cosmetic" is that `ReleaseStuckOrder` would otherwise
   re-park the row on its next failure.
 
-So at runtime the budget is spent by *claims*, refunded only for the part of a batch a graceful
-shutdown never reached, and cleared only by an operator. Parking then happens in `ReleaseStuckOrder`
-(`:123-133`) or `ParkForReconciliation` (`:139-158`) — and reaching either is not sufficient, for
-the reason below the table.
+`ClaimStuckOrders` does not touch the counter, and neither does `AbandonRecoveryClaim`. A claim is
+not an attempt. An undriven hand-back costs nothing, so it needs no refund. At runtime the budget is
+therefore spent only by failed drives, and cleared only by an operator. Parking happens in
+`ReleaseStuckOrder`, whose parked flag is read back from its own statement (TKT-322), or in
+`ParkForReconciliation`. Reaching either is not sufficient, for the reason below the table.
 
-**How a claimed pass can end.** Do not read this as a list of failures; the first two rows are the
-ordinary outcomes, and they matter here because neither returns the attempt:
+**How a claimed pass can end.** Do not read this as a list of failures. The first two rows are the
+ordinary outcomes. Since TKT-300, neither of them charges an attempt, and neither does a claim:
 
 | Outcome of a claimed pass | Attempts afterwards | Parked? |
 |---|---|---|
-| Drive **succeeded** — terminal state reached, `ClearRecoveryClaim` | consumed, **retained** (`:355-359` does not touch the counter) | No — the row is done |
-| Drive routed to `ParkForReconciliation` and it succeeded | consumed | **Yes**, at *any* attempt count — this exit does not wait for the budget |
-| Drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | consumed | **Yes**, once the count reaches 10 |
-| Drive failed, `fail` ran, `ReleaseStuckOrder` **errored** | consumed | **No** — the error is logged and swallowed (`runner.go:585-587`) |
+| Drive **succeeded** — terminal state reached, `ClearRecoveryClaim` | unchanged (the row is done) | No — the row is done |
+| Drive routed to `ParkForReconciliation` and it succeeded | unchanged | **Yes**, at *any* attempt count — this exit does not wait for the budget |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **succeeded** | **+1** | **Yes** when the release's own statement parks the row, once the count reaches 10. The runner logs parked only on that result (TKT-322). |
+| Drive failed, `fail` ran, `ReleaseStuckOrder` **failed on a write error** | unchanged, or **+1** if the write committed and its result was lost | **No, as logged.** The runner logs `release stuck order` at ERROR and stops. If the write committed, the row may be parked with no parked line. |
+| Drive failed, `fail` ran, the claim was **superseded** (the release matched no row) | unchanged for this claimant; the successor owns the row | **No** — the runner logs `recovery claim superseded` at INFO and stops (TKT-322) |
 | Runner stopped **before** claiming | untouched | No — nothing advances the row at all |
-| Orderly shutdown, order in the **undriven suffix** | refunded by `AbandonRecoveryClaim` | No, and correctly so |
-| Orderly shutdown **during a drive**, or a **crash after claiming** | **consumed, never refunded** | **No** — a cancelled drive reaches `fail`; a crash reaches nothing |
+| Orderly shutdown, order in the **undriven suffix** | unchanged; `AbandonRecoveryClaim` releases the lease | No, and correctly so |
+| Orderly shutdown **during a drive** | **+1** when the drive's failure reaches `fail`, which uses a fresh five-second context | Only if that charge reaches 10 |
+| **Crash after claiming** | unchanged | No — the lease holds the row for the full lease, then it is claimable again |
 
 **And every row that says "succeeded" means the SQL returned no error, which is not the same as
-having changed the row.** `ReleaseStuckOrder` and `AbandonRecoveryClaim` are both fenced on
-`recovery_claim_id=$2` and **neither checks `RowsAffected`** (`:123-133`, `:345-350`), so a claimant
-whose lease lapsed and whose row was re-claimed by a successor gets `nil` back from a statement that
-matched nothing. The fencing is correct — it is what stops a stale claimant from disturbing its
-successor — but it means the table's outcomes describe the *intended* effect, and a stale token
-turns any of them into a silent no-op. `ParkForReconciliation` is the exception that shows the
-contrast: it *does* check, and returns `ErrRecoveryConflict` on zero rows (`:152-155`).
+having changed the row.** That was the state before TKT-322, and the gap was open. `ReleaseStuckOrder`
+and `AbandonRecoveryClaim` are both fenced on `recovery_claim_id=$2`, and neither checked whether its
+statement changed a row. A claimant whose lease lapsed, and whose row was re-claimed by a successor,
+got `nil` back from a statement that matched nothing. The fencing is correct. It is what stops a stale
+claimant from disturbing its successor. TKT-322 closes the gap in both functions: a zero-row match now
+returns `ErrRecoveryConflict`, as `ParkForReconciliation` already did. **`ClearRecoveryClaim` still has
+the same unobserved zero-row match.** It is out of scope for TKT-322 and is recorded as a separate open
+item.
 
-Two rows deserve emphasis. The `ReleaseStuckOrder` **errored** row is a genuine trap: `fail` logs
-*"stuck order parked after exhausting recovery attempts"* whenever
-`s.Attempts >= MaxRecoveryAttempts`, on the value read at claim time, **regardless of whether the
-parking write succeeded or matched a row** — so the log can assert a park that did not happen. And
-the last row is the liveness one: a runner crash-looping just after `ClaimStuckOrders` burns
-attempts without ever parking anything, and each burnt claim holds `recovery_lease_until` for the
-full lease — `batch × MaxCallsPerOrder × callTimeout + 60s` (`recovery/runner.go:197-206`), which at
-the defaults (16 × 6 × 10s + 60s) is **exactly 17 minutes** — before the row is claimable again.
-Such an order can exceed ten claims and stay unparked indefinitely.
+Two rows deserve emphasis. The `ReleaseStuckOrder` **errored** row used to be a trap. Before TKT-322,
+`fail` logged *"stuck order parked after exhausting recovery attempts"* whenever the attempt count read
+at claim time, plus the failure being recorded, reached `MaxRecoveryAttempts`. That sum was already the
+boundary calculation before TKT-322. What TKT-322 changes is the source of the message: the database
+result, not that sum, decides it. The old message **did not** depend on whether the parking write
+succeeded or matched a row. So the log could assert a park that did not happen. TKT-322 removes
+that. The parked line now comes only from the release's own result, and a write error is logged as a
+release failure and nothing else. The last row is the liveness one. A runner that crash-loops just
+after `ClaimStuckOrders` charges no attempt, because a claim is not an attempt (TKT-300). Each such claim
+still holds `recovery_lease_until` for the full lease — `batch × MaxCallsPerOrder × callTimeout + 60s`
+(`recovery/runner.go:197-206`), which at the defaults (16 × 6 × 10s + 60s) is **exactly 17 minutes** —
+before the row is claimable again. Nothing counts those claims. So such an order can be claimed more than
+ten times and stay unparked indefinitely.
 
 **And even on the ordinary path, ten attempts is not a deadline.** It bounds failed claimed
 re-drives, not elapsed time, and several things sit between the two:
@@ -578,12 +589,12 @@ stays exactly as stuck. What *would* help is noticing, so be precise about what 
 non-cancellation error (`recovery/runner.go:243-249`), and a database outage severe enough to cause
 that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`).
 
-Do not read that as *"a claim error costs nothing"*, though. The increment happens **inside** the
-UPDATE CTE (`store/recovery.go:92`), and the error can surface afterwards from `Scan`/`rows.Err` —
-so a statement PostgreSQL committed whose result stream was then lost leaves the attempt and the
-lease durable while `RunOnce` drives nothing and returns 0. **A claim failure is
-outcome-ambiguous** unless it is known the statement never executed, and the ambiguous case lands in
-the unparked-and-unmeasured population below.
+Do not read that as *"a claim error costs nothing"*, though. The lease is set **inside** the UPDATE CTE
+(`store/recovery.go:92`), and the error can surface afterwards from `Scan`/`rows.Err` — so a statement
+PostgreSQL committed whose result stream was then lost leaves the lease durable while `RunOnce` drives
+nothing and returns 0. Since TKT-300 that durable state is the lease alone, and no attempt is charged.
+**A claim failure is outcome-ambiguous** unless it is known the statement never executed, and the
+ambiguous case lands in the unparked-and-unmeasured population below.
 
 **Not observable.** A recovery goroutine that is starved, deadlocked, or never started inside an
 otherwise healthy process — and the crash-after-claim shape above — produce **no signal at all**.
@@ -603,11 +614,11 @@ parked row outside the five claimable statuses would be counted too.
 runner publishes `commerce.refund.reversal.outstanding` beside its parked gauge, with an
 `oldest_age_seconds` (`reversal/metrics.go:26-38`) — so it does have the *outstanding-work* signal
 recovery lacks. It is **not** a drop-in model, and copying it uncritically would import the wrong
-population twice over: that gauge counts every outstanding obligation **parked included**, so a
-sustained nonzero can mean permanent parked work awaiting a human rather than a downstream failing
-to recover; and its runner charges an attempt only **after** a failed drive
-(`ReleaseReversalClaim`), where recovery charges at **claim** time — which is precisely the
-asymmetry that makes recovery's unparked population interesting in the first place.
+population: that gauge counts every outstanding obligation **parked included**, so a sustained nonzero
+can mean permanent parked work awaiting a human rather than a downstream failing to recover. The charge
+point is no longer a difference. Its runner charges an attempt only **after** a failed drive
+(`ReleaseReversalClaim`), and since TKT-300 recovery does the same. The two runners share that charge
+point, so the difference that matters is the population each gauge counts.
 
 State recovery's requirement directly instead of by analogy: **the count and age of rows in a
 claimable status with `recovery_parked_at IS NULL` that are eligible now** — past
@@ -709,6 +720,79 @@ change the total, and nothing here defends against that.
   The buyer-facing fix is TKT-503.
 - **Paid recovery journal.** Recovery still completes a PAID order without submitting
   `order.completed`. Only the PSP-skipped path submits it.
+
+## Amendment (2026-10-10, TKT-322) — a release reports whether it parked the row, and a superseded claim is reported as one
+
+Before this amendment, the runner's log decision used the claim-time snapshot of the attempt count, plus
+one for the failure being recorded, regardless of the release write's result. So the log could say
+*parked* for a row the write did not park, and a release that matched no row could look like a failed
+write. The write, not that snapshot, decides the real state. TKT-322 changes what the store reports, and
+the runner now reads that report. The accounting that TKT-300 changed is corrected in place in the
+TKT-145 amendment above.
+
+### Decision D1
+
+1. `ReleaseStuckOrder` returns the parking result of its own statement. The statement ends with
+   `RETURNING (recovery_parked_at IS NOT NULL)`, so the value is the one the row now holds. The caller
+   does not compute it.
+2. A release that matches no row returns `ErrRecoveryConflict`. `AbandonRecoveryClaim` returns the same
+   error for a zero-row match, and it propagates its other errors.
+3. The claim predicates, the backoff arithmetic and the parking threshold are unchanged.
+
+### Log outcomes
+
+| Release result | Log line | Level |
+|---|---|---|
+| `ErrRecoveryConflict` | `recovery claim superseded` | INFO |
+| Any other error | `release stuck order` | ERROR |
+| Success, parked | `stuck order parked after exhausting recovery attempts` | ERROR |
+| Success, not parked | `re-drive stuck order` | WARN |
+
+The attempt count from the claim snapshot stays on the log line as an attribute. It never selects the
+message.
+
+### What the conflict proves, and what it does not
+
+- **Ownership.** Claim fencing is unchanged. A conflict proves that the claim token the caller supplied
+  matched no row. It does not prove who holds the row now. The runner does not read the row again to
+  find the owner. This amendment does not claim a verified successor identity.
+- **Adversary: none.** This is honest-caller observability. It defends against no adversary. A caller
+  that lies, or a writer with database access, is outside this change. The change adds no audit,
+  integrity, deadline or liveness guarantee.
+- **A write error can be outcome-ambiguous.** A database error can follow a committed write. If the write
+  committed and its result was lost, the row may be parked with no parked line. The runner logs the error
+  and does not claim that parking did not happen.
+- **A zero-row match has other causes.** A claim that another path cleared, or a row that was removed,
+  also matches no row. The message keeps the name `recovery claim superseded`, but it states only the
+  mismatch.
+
+### Shutdown
+
+A drive that fails after shutdown still releases its claim. The release runs on a fresh context bounded
+at five seconds, because the context the drive ran under is already cancelled. An undriven hand-back
+continues after an individual failure, including a superseded claim, and it counts only the claims it
+actually returned. This is evidenced at the runner tier only. No connected test drives a cancelled write
+against PostgreSQL.
+
+### Scope
+
+The buyer-facing 202 decision (TKT-145) is unchanged, and so is the absence of a wall-clock bound.
+`ClearRecoveryClaim` has the same unobserved zero-row match. It is out of scope for TKT-322 and remains
+open.
+
+### Evidence
+
+- Runner decision tests in `services/commerce/internal/recovery/runner_test.go`: the superseded release,
+  the write error, the parking decision by release result, the fresh shutdown context, and the hand-back
+  that continues after a superseded claim.
+- Connected supersession test in `services/commerce/internal/store/recovery_runner_smoke_test.go`. It
+  writes a live successor claim onto the row before the drive, then checks the log and the row after the
+  release.
+- Connected parking test in the same file. The real release parks the row, and the log matches it.
+- PostgreSQL tests in `services/commerce/internal/store/recovery_smoke_test.go` and
+  `recovery_unpark_smoke_test.go`: a stale release at the parking boundary and a stale abandon, each
+  leaving the successor's row unchanged field by field; a database failure that is not reported as a
+  supersession; and the parking boundary from both sides.
 
 ## References
 

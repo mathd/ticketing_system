@@ -131,8 +131,17 @@ func ClaimStuckOrders(ctx context.Context, db OutboxDB, limit int, lease time.Du
 // naming the bare column here would back off and park one attempt behind. This is the
 // off-by-one the move creates, and it is the reason the boundary is pinned from both sides
 // in the store smoke tests.
-func ReleaseStuckOrder(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID, cause error) error {
-	_, err := db.ExecContext(ctx, `
+//
+// The result reports whether THIS release parked the row. It is read back from the statement
+// that parked it (RETURNING), so the runner logs what the database did rather than inferring
+// it from a count read before the write (TKT-322). A claim that matches no row returns
+// ErrRecoveryConflict: the token supplied is not the row's token, so the release changed
+// nothing. That proves a mismatch and nothing more. It does not name the current owner, and it
+// cannot tell a cleared claim from a replaced one.
+func ReleaseStuckOrder(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID, cause error) (parked bool, err error) {
+	// QueryContext, not ExecContext: RETURNING is the only way this statement can say whether
+	// it parked the row, and OutboxDB offers no QueryRowContext to read it through.
+	rows, err := db.QueryContext(ctx, `
 		UPDATE orders
 		SET recovery_lease_until=NULL,
 		    recovery_claim_id=NULL,
@@ -140,9 +149,35 @@ func ReleaseStuckOrder(ctx context.Context, db OutboxDB, orderID, claimID uuid.U
 		    recovery_attempts=recovery_attempts+1,
 		    recovery_next_attempt_at=now() + least(make_interval(secs => power(2, least(recovery_attempts+1, 8))::double precision), interval '5 minutes'),
 		    recovery_parked_at=CASE WHEN recovery_attempts+1>=$4 THEN now() ELSE NULL END
-		WHERE id=$1 AND recovery_claim_id=$2`,
+		WHERE id=$1 AND recovery_claim_id=$2
+		RETURNING (recovery_parked_at IS NOT NULL)`,
 		orderID, claimID, cause.Error(), MaxRecoveryAttempts)
-	return err
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	// A failed query, scan or iteration is a database failure, not a supersession. Only a clean
+	// empty result means the claim matched nothing, so the two are checked separately.
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return false, err
+		}
+		return false, ErrRecoveryConflict
+	}
+	if err := rows.Scan(&parked); err != nil {
+		return false, err
+	}
+	// Close drains the rest of the statement's result. A failure met while draining is returned
+	// by Close, and database/sql also keeps it for Err, so both are checked before a parked
+	// answer is returned. Checking Err before Close cannot see a failure that the drain has not
+	// yet reached (TKT-322).
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return parked, nil
 }
 
 // ParkForReconciliation moves an order to a terminal-for-now state that only a human or
@@ -378,11 +413,25 @@ func OrderFactRecorded(ctx context.Context, db OutboxDB, orderID uuid.UUID, fact
 // It is still distinct from ClearRecoveryClaim, which drops the lease after a SUCCESSFUL
 // re-drive. The two say different things about what happened, even though the SQL is now
 // the same, and a reader arriving at one should not have to work out which.
+//
+// A token that matches no row returns ErrRecoveryConflict rather than nil (TKT-322). The caller
+// believed it held the claim, and the row says it does not. As with ReleaseStuckOrder, that
+// proves only that the token matched nothing. It does not name the current owner.
 func AbandonRecoveryClaim(ctx context.Context, db OutboxDB, orderID, claimID uuid.UUID) error {
-	_, err := db.ExecContext(ctx, `
+	result, err := db.ExecContext(ctx, `
 		UPDATE orders SET recovery_lease_until=NULL,recovery_claim_id=NULL
 		WHERE id=$1 AND recovery_claim_id=$2`, orderID, claimID)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrRecoveryConflict
+	}
+	return nil
 }
 
 // ClearRecoveryClaim drops the lease after a successful re-drive, so the row stops

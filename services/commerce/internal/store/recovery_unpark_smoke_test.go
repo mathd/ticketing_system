@@ -427,8 +427,12 @@ func TestUnparkRestoresAFullRetryBudgetNotOneAttempt(t *testing.T) {
 	if !found {
 		t.Fatal("the unparked order was not claimed")
 	}
-	if err := ReleaseStuckOrder(ctx, db, s.OrderID, claimed.ClaimID, errors.New("psp still flaky")); err != nil {
+	reported, err := ReleaseStuckOrder(ctx, db, s.OrderID, claimed.ClaimID, errors.New("psp still flaky"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if reported {
+		t.Fatal("the release reported parked after one failed attempt following an unpark")
 	}
 	if at, _ := parkedMarker(t, db, s.OrderID); at.Valid {
 		t.Fatal("one failed attempt re-parked the order: the unpark restored a single attempt, not a budget")

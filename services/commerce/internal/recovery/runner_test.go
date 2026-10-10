@@ -3,8 +3,10 @@ package recovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -34,12 +36,63 @@ type fakeStore struct {
 	cleared   int                // ClearRecoveryClaim
 	released  []store.StuckOrder // MarkReleased
 	failed    []error            // ReleaseStuckOrder causes
-	abandoned []uuid.UUID        // AbandonRecoveryClaim (shutdown hand-back)
+	abandoned []abandonCall      // AbandonRecoveryClaim calls (shutdown hand-back), in call order
 
 	// recorded answers OrderFactRecorded: the fact types commerce holds for an order. The
 	// default (nil) is "no fact", which no pre-TKT-285 path reads.
 	recorded    map[string]bool
 	recordedErr error
+
+	// releaseParked and releaseErr are the result ReleaseStuckOrder reports, and each case
+	// sets them. They are not computed from the snapshot's attempt count: parking is the
+	// decision under test, so a fake that derived it from Attempts would hand the runner the
+	// same arithmetic it is being checked against (TKT-322).
+	releaseParked bool
+	releaseErr    error
+	releases      []releaseCall // ReleaseStuckOrder calls, in order
+
+	// abandonErrs scripts AbandonRecoveryClaim's failures by the claim id the caller passed, not
+	// by call position. A hand-back that passed the wrong claim id then misses the script, and
+	// the exact (order, claim) assertions in the tests see it (TKT-322).
+	abandonErrs map[uuid.UUID]error
+}
+
+// abandonCall is one AbandonRecoveryClaim call as the fake received it: the order and the claim
+// the caller passed, and the context observed at the call.
+type abandonCall struct {
+	orderID, claimID uuid.UUID
+	ctx              ctxObservation
+}
+
+// releaseCall is one ReleaseStuckOrder call as the fake received it.
+type releaseCall struct {
+	orderID, claimID uuid.UUID
+	cause            error
+	ctx              ctxObservation
+}
+
+// ctxObservation is what a fake saw of a context at the moment a store call was made. The
+// runner cancels its own bounded contexts before returning, so reading the context after the
+// call would show that cancellation, not the one the call was given.
+type ctxObservation struct {
+	live        bool          // ctx.Err() was nil
+	hasDeadline bool          // the context carried a deadline
+	remaining   time.Duration // time until that deadline, when there is one
+}
+
+func observe(ctx context.Context) ctxObservation {
+	o := ctxObservation{live: ctx.Err() == nil}
+	if d, ok := ctx.Deadline(); ok {
+		o.hasDeadline = true
+		o.remaining = time.Until(d)
+	}
+	return o
+}
+
+// boundedFiveSeconds reports whether the context was live with a deadline at most five
+// seconds away: the fresh shutdown context that fail() and releaseUndriven both use.
+func (o ctxObservation) boundedFiveSeconds() bool {
+	return o.live && o.hasDeadline && o.remaining > 0 && o.remaining <= 5*time.Second
 }
 
 func (f *fakeStore) OrderFactRecorded(_ context.Context, _ uuid.UUID, factType string) (bool, error) {
@@ -90,10 +143,10 @@ func (f *fakeStore) ClearRecoveryClaim(context.Context, uuid.UUID, uuid.UUID) er
 	return nil
 }
 
-func (f *fakeStore) AbandonRecoveryClaim(_ context.Context, orderID, _ uuid.UUID) error {
+func (f *fakeStore) AbandonRecoveryClaim(ctx context.Context, orderID, claimID uuid.UUID) error {
 	f.tr.add("store.AbandonRecoveryClaim")
-	f.abandoned = append(f.abandoned, orderID)
-	return nil
+	f.abandoned = append(f.abandoned, abandonCall{orderID: orderID, claimID: claimID, ctx: observe(ctx)})
+	return f.abandonErrs[claimID]
 }
 
 func (f *fakeStore) MarkReleased(_ context.Context, s store.StuckOrder) error {
@@ -102,10 +155,11 @@ func (f *fakeStore) MarkReleased(_ context.Context, s store.StuckOrder) error {
 	return nil
 }
 
-func (f *fakeStore) ReleaseStuckOrder(_ context.Context, _, _ uuid.UUID, cause error) error {
+func (f *fakeStore) ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) (bool, error) {
 	f.tr.add("store.ReleaseStuckOrder")
 	f.failed = append(f.failed, cause)
-	return nil
+	f.releases = append(f.releases, releaseCall{orderID: orderID, claimID: claimID, cause: cause, ctx: observe(ctx)})
+	return f.releaseParked, f.releaseErr
 }
 
 type fakePayments struct {
@@ -293,6 +347,16 @@ func stuck(status string) store.StuckOrder {
 // run drives exactly one pass over the given orders and returns the ports for assertion.
 func run(t *testing.T, orders []store.StuckOrder, tune func(*ports)) (*ports, int) {
 	t.Helper()
+	p, resolved, _ := runLogged(t, orders, tune)
+	return p, resolved
+}
+
+// runLogged is run with the runner's log captured as text. The handler is at DEBUG so no
+// record is filtered out. The capture is returned because the release-outcome tests assert
+// which messages were written, and an absence assertion means nothing unless the logger
+// demonstrably wrote something.
+func runLogged(t *testing.T, orders []store.StuckOrder, tune func(*ports)) (*ports, int, string) {
+	t.Helper()
 	tr := &trace{}
 	p := &ports{
 		store:     &fakeStore{tr: tr, claim: orders},
@@ -309,12 +373,51 @@ func run(t *testing.T, orders []store.StuckOrder, tune func(*ports)) (*ports, in
 	if err != nil {
 		t.Fatal(err)
 	}
+	var captured strings.Builder
 	r, err := New(p.store, p.payments, p.inventory, p.journal, p.completer,
-		time.Minute, 8, lease, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		time.Minute, 8, lease, slog.New(slog.NewTextHandler(&captured, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p, r.RunOnce(context.Background())
+	resolved := r.RunOnce(context.Background())
+	return p, resolved, captured.String()
+}
+
+// logLine is one record of the runner's text log, reduced to what these tests assert: the
+// level, the message, and the whole line for attribute checks such as the order id.
+type logLine struct {
+	level, msg, raw string
+}
+
+var logLinePattern = regexp.MustCompile(`level=(\S+) msg="([^"]*)"`)
+
+// parseLog reads a text-handler capture, one record per line. A line that does not parse fails
+// the test: silently skipping it would make every absence assertion weaker than it reads.
+func parseLog(t testing.TB, out string) []logLine {
+	t.Helper()
+	var lines []logLine
+	for _, raw := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if raw == "" {
+			continue
+		}
+		m := logLinePattern.FindStringSubmatch(raw)
+		if m == nil {
+			t.Fatalf("log line does not parse as a text record: %q", raw)
+		}
+		lines = append(lines, logLine{level: m[1], msg: m[2], raw: raw})
+	}
+	return lines
+}
+
+// loggedAs returns the records with this level and message.
+func loggedAs(lines []logLine, level, msg string) []logLine {
+	var out []logLine
+	for _, l := range lines {
+		if l.level == level && l.msg == msg {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // A lease must cover every sequential call in its batch. The claim token fences the
@@ -422,17 +525,211 @@ func TestShutdownHandsBackUndrivenClaims(t *testing.T) {
 	if len(p.store.abandoned) != 2 {
 		t.Fatalf("handed back %d undriven claims, want 2; abandoned=%v", len(p.store.abandoned), p.store.abandoned)
 	}
-	// The exact orders that were never driven, not just any two.
+	// The exact claims that were never driven, not just any two: each undriven order, with the
+	// claim it was leased under. An order id alone would miss a hand-back of the wrong claim.
 	for i, want := range []store.StuckOrder{orders[1], orders[2]} {
-		if p.store.abandoned[i] != want.OrderID {
-			t.Errorf("abandoned[%d] = %s, want %s", i, p.store.abandoned[i], want.OrderID)
+		if got := p.store.abandoned[i]; got.orderID != want.OrderID || got.claimID != want.ClaimID {
+			t.Errorf("abandoned[%d] = order %s claim %s, want order %s claim %s",
+				i, got.orderID, got.claimID, want.OrderID, want.ClaimID)
 		}
 	}
 	// The driven order completed: its claim is cleared, not abandoned.
-	for _, id := range p.store.abandoned {
-		if id == orders[0].OrderID {
+	for _, got := range p.store.abandoned {
+		if got.orderID == orders[0].OrderID {
 			t.Error("handed back the claim of an order that was fully driven")
 		}
+	}
+}
+
+// TKT-322. ReleaseStuckOrder reports whether its own UPDATE parked the row, and fail() decides
+// from that report. The cases below separate the release's answer from the snapshot's count,
+// which is the pair of readings that used to be indistinguishable.
+
+// COS2. A release that finds its claim superseded means the row belongs to a successor. The
+// runner says so once, at INFO, and stops: no parking line, no failed-release ERROR and no
+// retry WARN. The order sits at the boundary, where a count-based runner would park it.
+func TestSupersededReleaseLogsOnceAndNeverParks(t *testing.T) {
+	order := stuck("created")
+	order.Attempts = store.MaxRecoveryAttempts - 1
+	p, resolved, out := runLogged(t, []store.StuckOrder{order}, func(p *ports) {
+		p.payments.err = errors.New("psp unreachable")
+		p.store.releaseErr = fmt.Errorf("release: %w", store.ErrRecoveryConflict)
+	})
+	if resolved != 0 {
+		t.Fatalf("resolved = %d, want 0", resolved)
+	}
+	if len(p.store.releases) != 1 {
+		t.Fatalf("ReleaseStuckOrder calls = %d, want 1", len(p.store.releases))
+	}
+	if c := p.store.releases[0]; c.orderID != order.OrderID || c.claimID != order.ClaimID {
+		t.Fatalf("released order %s claim %s, want order %s claim %s", c.orderID, c.claimID, order.OrderID, order.ClaimID)
+	}
+	lines := parseLog(t, out)
+	if len(lines) == 0 {
+		t.Fatal("the runner logged nothing; the record count below would pass vacuously")
+	}
+	superseded := loggedAs(lines, "INFO", "recovery claim superseded")
+	if len(superseded) != 1 || !strings.Contains(superseded[0].raw, order.OrderID.String()) {
+		t.Fatalf("want exactly one INFO superseded record naming order %s; logged %v", order.OrderID, lines)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d records, want only the superseded one: %v", len(lines), lines)
+	}
+}
+
+// COS3. An ordinary write error is a failed release, not a decision about parking. It is logged
+// as the failed release it is and goes no further, even when the release also reports parked:
+// the error takes precedence over the bool.
+func TestReleaseWriteErrorIsALogFailureNeverAParking(t *testing.T) {
+	order := stuck("created")
+	order.Attempts = store.MaxRecoveryAttempts - 1
+	_, _, out := runLogged(t, []store.StuckOrder{order}, func(p *ports) {
+		p.payments.err = errors.New("psp unreachable")
+		p.store.releaseErr = errors.New("connection reset by peer")
+		p.store.releaseParked = true
+	})
+	lines := parseLog(t, out)
+	if len(lines) == 0 {
+		t.Fatal("the runner logged nothing; the record count below would pass vacuously")
+	}
+	failed := loggedAs(lines, "ERROR", "release stuck order")
+	if len(failed) != 1 || !strings.Contains(failed[0].raw, "connection reset by peer") {
+		t.Fatalf("want one ERROR release record carrying the write error; logged %v", lines)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d records, want only the release failure: %v", len(lines), lines)
+	}
+}
+
+// COS4. Whether the runner logs a parking is the release's answer, not the snapshot's
+// arithmetic. The rows separate the two readings: a low snapshot released as parked must park,
+// and a boundary snapshot released as not parked must retry.
+func TestParkingIsDecidedByTheReleaseNotTheSnapshot(t *testing.T) {
+	const parkedMsg = "stuck order parked after exhausting recovery attempts"
+	boundary := store.MaxRecoveryAttempts - 1
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		parked   bool
+		level    string
+		msg      string
+	}{
+		{"boundary snapshot, released as parked", boundary, true, "ERROR", parkedMsg},
+		{"low snapshot, released as parked", 0, true, "ERROR", parkedMsg},
+		{"boundary snapshot, released as not parked", boundary, false, "WARN", "re-drive stuck order"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			order := stuck("created")
+			order.Attempts = tc.attempts
+			_, _, out := runLogged(t, []store.StuckOrder{order}, func(p *ports) {
+				p.payments.err = errors.New("psp unreachable")
+				p.store.releaseParked = tc.parked
+			})
+			lines := parseLog(t, out)
+			if len(lines) != 1 {
+				t.Fatalf("logged %d records, want exactly one: %v", len(lines), lines)
+			}
+			if got := lines[0]; got.level != tc.level || got.msg != tc.msg || !strings.Contains(got.raw, order.OrderID.String()) {
+				t.Fatalf("logged %s %q, want %s %q for order %s", got.level, got.msg, tc.level, tc.msg, order.OrderID)
+			}
+		})
+	}
+}
+
+// COS6. A drive that fails because shutdown cancelled it must still release its claim. The
+// release gets a context that is live and bounded to five seconds, not the cancelled one the
+// drive ran under, and the one call carries the order, claim and cause it was given.
+func TestReleaseAfterShutdownRunsOnAFreshBoundedContext(t *testing.T) {
+	order := stuck("confirmation_pending")
+	st := &fakeStore{tr: &trace{}}
+	r, err := New(st, nil, nil, nil, nil, time.Minute, 1, time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("drive interrupted by shutdown")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r.fail(cancelled, order, cause)
+
+	if len(st.releases) != 1 {
+		t.Fatalf("ReleaseStuckOrder calls = %d, want 1", len(st.releases))
+	}
+	c := st.releases[0]
+	if c.orderID != order.OrderID || c.claimID != order.ClaimID || !errors.Is(c.cause, cause) {
+		t.Fatalf("released order %s claim %s cause %v; want order %s claim %s cause %v",
+			c.orderID, c.claimID, c.cause, order.OrderID, order.ClaimID, cause)
+	}
+	if !c.ctx.boundedFiveSeconds() {
+		t.Fatalf("release context = %+v; want live, with a deadline at most five seconds away: "+
+			"a cancelled context leaves the claim leased for the full lease", c.ctx)
+	}
+}
+
+// Caller compatibility. A superseded claim is one failed hand-back among several: the shared
+// loop must keep going, count only the claims it really returned, and give every call a live
+// five-second context. This pins behaviour the release change must not disturb, so it passes
+// before and after the change. Its mutations are the regressions it exists to catch.
+func TestShutdownHandsBackASupersededClaimAndContinues(t *testing.T) {
+	orders := []store.StuckOrder{
+		stuck("confirmation_pending"), stuck("confirmation_pending"), stuck("confirmation_pending"),
+	}
+	tr := &trace{}
+	p := &ports{
+		store: &fakeStore{tr: tr, claim: orders}, payments: &fakePayments{tr: tr},
+		inventory: &fakeInventory{tr: tr}, journal: &fakeJournal{tr: tr},
+		completer: &fakeCompleter{tr: tr}, trace: tr,
+	}
+	// Cancel as soon as the first order is driven, so the other two are claimed but undriven.
+	ctx, cancel := context.WithCancel(context.Background())
+	p.completer.onComplete = cancel
+	// The first undriven claim is found superseded when it is handed back.
+	p.store.abandonErrs = map[uuid.UUID]error{
+		orders[1].ClaimID: fmt.Errorf("abandon: %w", store.ErrRecoveryConflict),
+	}
+
+	var captured strings.Builder
+	lease, err := LeaseFor(8, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(p.store, p.payments, p.inventory, p.journal, p.completer, time.Minute, 8, lease,
+		slog.New(slog.NewTextHandler(&captured, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := r.RunOnce(ctx)
+
+	if resolved != 1 {
+		t.Fatalf("resolved = %d, want 1 (cancelled after the first order)", resolved)
+	}
+	if len(p.store.abandoned) != 2 {
+		t.Fatalf("hand-back calls = %d, want 2: a superseded claim must not stop the loop", len(p.store.abandoned))
+	}
+	// Each undriven order is handed back under its own claim. The conflict is scripted for the
+	// first undriven claim, so a hand-back that passed any other claim would miss it.
+	for i, want := range []store.StuckOrder{orders[1], orders[2]} {
+		if got := p.store.abandoned[i]; got.orderID != want.OrderID || got.claimID != want.ClaimID {
+			t.Errorf("hand-back %d = order %s claim %s, want order %s claim %s",
+				i, got.orderID, got.claimID, want.OrderID, want.ClaimID)
+		}
+	}
+	for i, got := range p.store.abandoned {
+		if !got.ctx.boundedFiveSeconds() {
+			t.Errorf("hand-back %d context = %+v, want live with a deadline at most five seconds away", i, got.ctx)
+		}
+	}
+	lines := parseLog(t, captured.String())
+	if len(lines) == 0 {
+		t.Fatal("the runner logged nothing")
+	}
+	if n := len(loggedAs(lines, "WARN", "abandon undriven recovery claim")); n != 1 {
+		t.Errorf("hand-back WARN records = %d, want 1 for the superseded claim", n)
+	}
+	summary := loggedAs(lines, "INFO", "released undriven recovery claims on shutdown")
+	if len(summary) != 1 || !strings.Contains(summary[0].raw, "released=1 of=2") {
+		t.Fatalf("shutdown summary = %v, want one INFO record with released=1 of=2", summary)
 	}
 }
 
