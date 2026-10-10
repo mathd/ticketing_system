@@ -112,6 +112,82 @@ business processing completed (that is `consumed_events`' job). Reinjected rows 
 future-schema events fall back to delayed NAKs — a deliberate, loud stall at an
 inventory-owned bound, not a drop.
 
+## Inventory moot slots and parked catalog events (TKT-317)
+
+Two kinds of catalog event leave a durable record. ADR-077 gives the decisions and the limits.
+
+- `moot_slots` holds slots that catalog did not publish when one of their events was handled.
+  The event was acked as moot. A later archive or closure for that slot is consumed without a
+  pool only when a row here matches. Rows are never deleted.
+- `catalog_event_parked` holds a known catalog event whose catalog answer stayed unusable through
+  five deliveries. The broker message was terminated. The row keeps the exact bytes that were
+  delivered, and `reason` holds the catalog error. Only schema-1 publications and closures park,
+  because only they call the performance lookup. Organizer conflicts and transport failures do
+  not park.
+
+Neither record changes readiness. A parked event is not version skew, so `reprocess-quarantine`
+does not apply to it.
+
+### Inspect
+
+The inventory database is `inventory`:
+
+```bash
+docker compose exec postgres psql -U postgres -d inventory
+```
+
+```sql
+-- Parked catalog events, oldest first. envelope is the exact delivered bytes.
+SELECT subject, event_id, schema, organizer_id, slot_id, delivery_count, reason, parked_at,
+       encode(envelope, 'escape') AS envelope
+FROM catalog_event_parked
+ORDER BY parked_at;
+
+-- Moot tombstones: slots catalog did not publish when one of their events was handled.
+SELECT organizer_id, slot_id, source_event_id, recorded_at
+FROM moot_slots
+ORDER BY recorded_at;
+```
+
+### Signals
+
+- Counter `inventory.catalog.events.parked`. It rises by one for each newly parked event. The
+  `subject` attribute names the catalog subject. A duplicate park of the same bytes does not rise.
+- ERROR log `catalog event parked after unusable catalog answers; terminating`, with `subject`,
+  `event_id`, `schema`, `slot_id`, `deliveries` and `err`.
+- Below the bound, each retry logs ERROR `catalog answer unusable; retrying`.
+- This change adds no alert rule. The counter and the log are signals. The row is the durable
+  evidence.
+
+### Re-drive
+
+No command re-drives a parked event. The steps below are manual.
+
+- `inventory reprocess-quarantine` reads `catalog_event_quarantine` only. It does not read
+  `catalog_event_parked`.
+- No catalog command re-emits a closure or an archive. The catalog re-emit commands
+  (`reemit-policies`, `reemit-orphan-prevention`, `reemit-best-available-ordering`) re-emit
+  publications only, and none of them targets one event. `reemit-policies` re-emits every
+  published ungrouped slot.
+
+1. Read the `reason` column, and repair the catalog answer.
+2. Restart inventory. For a parked closure whose pool exists, startup reconciliation reads the
+   closure state from catalog and applies it. A parked publication creates no pool, so
+   reconciliation does not repair it. If reconciliation fails at startup, inventory starts
+   fail-open, and the event stream is the only convergence path. The existing durable does not
+   redeliver a terminated message.
+3. If the event must be applied, publish its stored `envelope` unchanged to the subject in the
+   `subject` column. Use a new `Nats-Msg-Id`. The broker drops a message whose id it already holds
+   inside its duplicate window. Publish with the `inventory-reprocess` principal, which holds
+   publish rights on catalog subjects (ADR-072). This step is not automated, and TKT-317 did not
+   run it.
+4. A re-driven event is not in `consumed_events` until it applies, so it applies once. If it
+   parks again with the same bytes, the row does not change. Different bytes under the same
+   event id are refused, and the first copy stays.
+
+While a parked closure stays unrepaired, the pool keeps its old closure state. An open pool in
+inventory still accepts new holds, even if catalog has closed the slot.
+
 ## Restoring `claim_history` (TKT-295)
 
 Since TKT-295, `append_order` leads the order of inventory's `claim_history` (ADR-021 §Amendment

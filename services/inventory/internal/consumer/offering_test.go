@@ -1,8 +1,10 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -38,9 +40,28 @@ type quarantineCall struct {
 	envelope []byte
 }
 
+// mootCall is one RecordMootSlot write (TKT-317 D1).
+type mootCall struct {
+	eventID, organizer, slot uuid.UUID
+}
+
+func (c mootCall) String() string {
+	return fmt.Sprintf("{event %s organizer %s slot %s}", c.eventID, c.organizer, c.slot)
+}
+
+// fallbackCall is one ConsumeMootOffering question, with every argument the consumer passed.
+type fallbackCall struct {
+	eventID, organizer, slot, pool uuid.UUID
+}
+
+func (c fallbackCall) String() string {
+	return fmt.Sprintf("{event %s organizer %s slot %s pool %s}", c.eventID, c.organizer, c.slot, c.pool)
+}
+
 // fakeCatalogStore records mutations; err is returned by every mutation.
 // quarantineErr is separate: quarantining a future variant must be testable
-// independently of the known-variant apply paths.
+// independently of the known-variant apply paths. The moot and parked fields follow the
+// same rule: each has its own error and its own recorder (TKT-317).
 type fakeCatalogStore struct {
 	archived         []uuid.UUID
 	archiveEventIDs  []uuid.UUID
@@ -58,6 +79,45 @@ type fakeCatalogStore struct {
 	quarantineErr    error
 	pending          bool
 	pendingErr       error
+	moot             []mootCall
+	mootErr          error
+	fallbacks        []fallbackCall
+	fallbackMatch    bool
+	fallbackErr      error
+	parked           []store.ParkedCatalogEvent
+	parkErr          error
+}
+
+func (s *fakeCatalogStore) RecordMootSlot(_ context.Context, eventID, organizerID, slotID uuid.UUID) error {
+	if s.mootErr != nil {
+		return s.mootErr
+	}
+	s.moot = append(s.moot, mootCall{eventID, organizerID, slotID})
+	return nil
+}
+
+// ConsumeMootOffering answers with fallbackMatch: the test decides whether a tombstone exists.
+func (s *fakeCatalogStore) ConsumeMootOffering(_ context.Context, eventID, organizerID, slotID, poolID uuid.UUID) (bool, error) {
+	s.fallbacks = append(s.fallbacks, fallbackCall{eventID, organizerID, slotID, poolID})
+	return s.fallbackMatch, s.fallbackErr
+}
+
+// ParkCatalogEvent mirrors the store: a duplicate with the same bytes is a no-op, and different
+// bytes are a collision that leaves the first copy in place.
+func (s *fakeCatalogStore) ParkCatalogEvent(_ context.Context, e store.ParkedCatalogEvent) (bool, error) {
+	if s.parkErr != nil {
+		return false, s.parkErr
+	}
+	for _, p := range s.parked {
+		if p.Subject == e.Subject && p.EventID == e.EventID {
+			if !bytes.Equal(p.Envelope, e.Envelope) {
+				return false, store.ErrCatalogParkedCollision
+			}
+			return false, nil
+		}
+	}
+	s.parked = append(s.parked, e)
+	return true, nil
 }
 
 func (s *fakeCatalogStore) ListPublishedPoolOfferings(context.Context) ([]store.PoolOffering, error) {
@@ -236,17 +296,164 @@ func TestClosureEventDispositions(t *testing.T) {
 	}
 }
 
-// The moot path must never reach the store: the pool may not even exist, and an
-// ack that also mutated would make "moot" a lie.
-func TestMootClosureDoesNotTouchTheStore(t *testing.T) {
-	st := &fakeCatalogStore{}
+// TKT-317 D1: a moot closure records its outcome before its ack. The test observes the store
+// at the moment of the ack, so an acked event always has its tombstone.
+func TestTKT317MootClosureRecordsItsOutcomeBeforeItsAck(t *testing.T) {
+	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+	for _, subject := range []string{subjectReopened, subjectClosed} {
+		t.Run(subject, func(t *testing.T) {
+			st := &fakeCatalogStore{}
+			c := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
+			msg := &fakeMsg{subject: subject, data: []byte(withSubjectType(subject, `{`+evtID+`,"schema":1,"data":{"performance_id":"`+perfID+`","organizer_id":"`+orgID+`","closure_version":3}}`))}
+			msg.onAck = func() {
+				if len(st.moot) != 1 {
+					t.Errorf("acked with %d moot records; the record must commit before the ack", len(st.moot))
+				}
+			}
+
+			c.handle(context.Background(), msg)
+
+			if !slices.Contains(msg.actions, "ack") {
+				t.Fatalf("actions = %v, want ack", msg.actions)
+			}
+			if want := (mootCall{evt, uuid.MustParse(orgID), uuid.MustParse(perfID)}); len(st.moot) != 1 || st.moot[0] != want {
+				t.Fatalf("moot records = %v, want exactly [%+v]", st.moot, want)
+			}
+			if len(st.closures) != 0 {
+				t.Fatalf("closures = %v; a moot closure must not mutate the pool", st.closures)
+			}
+			if !c.Ready() {
+				t.Fatal("a moot closure latched readiness")
+			}
+		})
+	}
+}
+
+// A failed moot write keeps the event for redelivery. An ack without the record is the defect
+// the disposition exists to remove.
+func TestTKT317FailedMootWriteRetainsTheClosure(t *testing.T) {
+	st := &fakeCatalogStore{mootErr: errors.New("db down")}
 	c := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
-	msg := &fakeMsg{subject: subjectReopened, data: []byte(withSubjectType(subjectReopened, `{`+evtID+`,"schema":1,"data":{"performance_id":"`+perfID+`","organizer_id":"`+orgID+`","closure_version":3}}`))}
+	msg := &fakeMsg{subject: subjectClosed, data: []byte(withSubjectType(subjectClosed, `{`+evtID+`,"schema":1,"data":{"performance_id":"`+perfID+`","organizer_id":"`+orgID+`","closure_version":1}}`))}
 
 	c.handle(context.Background(), msg)
 
-	if !slices.Contains(msg.actions, "ack") || len(st.closures) != 0 {
-		t.Fatalf("actions = %v closures = %v, want a pure ack", msg.actions, st.closures)
+	if slices.Contains(msg.actions, "ack") || !slices.Contains(msg.actions, "nak-delay") {
+		t.Fatalf("actions = %v, want a delayed retry and no ack", msg.actions)
+	}
+	if !c.Ready() {
+		t.Fatal("a failed moot write latched readiness")
+	}
+}
+
+// TKT-317 D1: an archive that finds no pool is consumed only when the fallback answers yes. The
+// fallback is asked with the archive's own event, organizer, slot and pool. For a grouped archive
+// the slot is the member's performance and the pool is its capacity group.
+func TestTKT317ArchiveWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
+	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+	org, perf, grp := uuid.MustParse(orgID), uuid.MustParse(perfID), uuid.MustParse(grpID)
+	solo := `{` + evtID + `,"schema":2,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`
+	grouped := `{` + evtID + `,"schema":3,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","capacity_group_id":"` + grpID + `"}}`
+
+	for _, tc := range []struct {
+		name  string
+		body  string
+		match bool
+		err   error
+		pool  uuid.UUID
+		want  string
+	}{
+		{"solo with no tombstone waits", solo, false, nil, perf, "nak-delay"},
+		{"solo with a tombstone is consumed", solo, true, nil, perf, "ack"},
+		{"grouped member asks with its capacity group", grouped, true, nil, grp, "ack"},
+		{"a fallback store failure retries", solo, false, errors.New("db down"), perf, "nak-delay"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeCatalogStore{err: store.ErrNotFound, fallbackMatch: tc.match, fallbackErr: tc.err}
+			c := offeringConsumer(st, nil)
+			msg := &fakeMsg{subject: subjectArchived, data: []byte(withSubjectType(subjectArchived, tc.body))}
+
+			c.handle(context.Background(), msg)
+
+			if !slices.Contains(msg.actions, tc.want) {
+				t.Fatalf("actions = %v, want %s", msg.actions, tc.want)
+			}
+			if want := (fallbackCall{evt, org, perf, tc.pool}); len(st.fallbacks) != 1 || st.fallbacks[0] != want {
+				t.Fatalf("fallback asked %v, want exactly [%+v]", st.fallbacks, want)
+			}
+			if len(st.archived) != 0 {
+				t.Fatalf("archived = %v; the normal apply found no pool", st.archived)
+			}
+		})
+	}
+}
+
+// TKT-317 D1: a closure whose catalog answer resolves finds no pool, and a tombstone for the slot
+// lets it through. Catalog does not produce that state today (ADR-077), and COS2 requires the
+// branch, so this pins the branch and not a reachable production state.
+func TestTKT317ClosureWithoutPoolFallsBackOnlyOnATombstone(t *testing.T) {
+	evt := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+	org, perf := uuid.MustParse(orgID), uuid.MustParse(perfID)
+	body := `{` + evtID + `,"schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","closure_version":1}}`
+
+	for _, tc := range []struct {
+		name  string
+		match bool
+		want  string
+	}{
+		{"no tombstone waits", false, "nak-delay"},
+		{"a tombstone is consumed", true, "ack"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeCatalogStore{err: store.ErrNotFound, fallbackMatch: tc.match}
+			c := offeringConsumer(st, fakeResolver{organizerID: org, capacity: 10})
+			msg := &fakeMsg{subject: subjectClosed, data: []byte(withSubjectType(subjectClosed, body))}
+
+			c.handle(context.Background(), msg)
+
+			if !slices.Contains(msg.actions, tc.want) {
+				t.Fatalf("actions = %v, want %s", msg.actions, tc.want)
+			}
+			if want := (fallbackCall{evt, org, perf, perf}); len(st.fallbacks) != 1 || st.fallbacks[0] != want {
+				t.Fatalf("fallback asked %v, want exactly [%+v]", st.fallbacks, want)
+			}
+			if len(st.closures) != 0 {
+				t.Fatalf("closures = %v; the normal apply found no pool", st.closures)
+			}
+		})
+	}
+}
+
+// TKT-317 D1: a moot publication records its outcome before its ack, with the publication's own
+// event, organizer and slot. A failed write retains the message.
+func TestTKT317MootPublicationIsRecordedBeforeItsAck(t *testing.T) {
+	const pubUUID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	body := `{"id":"` + pubUUID + `","schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `"}}`
+
+	st := &fakeCatalogStore{}
+	c := offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
+	msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	msg.onAck = func() {
+		if len(st.moot) != 1 {
+			t.Errorf("acked with %d moot records; the record must commit before the ack", len(st.moot))
+		}
+	}
+
+	c.handle(context.Background(), msg)
+
+	if !slices.Contains(msg.actions, "ack") {
+		t.Fatalf("actions = %v, want ack", msg.actions)
+	}
+	if want := (mootCall{uuid.MustParse(pubUUID), uuid.MustParse(orgID), uuid.MustParse(perfID)}); len(st.moot) != 1 || st.moot[0] != want {
+		t.Fatalf("moot records = %v, want exactly [%+v]", st.moot, want)
+	}
+
+	st = &fakeCatalogStore{mootErr: errors.New("db down")}
+	c = offeringConsumer(st, fakeResolver{err: ErrPerformanceNotFound})
+	msg = &fakeMsg{data: []byte(withSubjectType(subjectPublished, body))}
+	c.handle(context.Background(), msg)
+	if slices.Contains(msg.actions, "ack") || !slices.Contains(msg.actions, "nak-delay") {
+		t.Fatalf("failed moot write: actions = %v, want a delayed retry and no ack", msg.actions)
 	}
 }
 

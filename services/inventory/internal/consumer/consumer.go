@@ -12,6 +12,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"ticketing/services/inventory/internal/store"
 	"ticketing/shared/domainevent"
@@ -35,6 +38,12 @@ type catalogStore interface {
 	QuarantineCatalogEvent(ctx context.Context, subject string, eventID uuid.UUID, schema int, envelope []byte) error
 	HasPendingCatalogQuarantine(ctx context.Context) (bool, error)
 	ListPublishedPoolOfferings(ctx context.Context) ([]store.PoolOffering, error)
+	// The moot disposition (TKT-317 D1): a durable tombstone, and the fallback that consumes an
+	// offering event on it when the pool is absent.
+	RecordMootSlot(ctx context.Context, eventID, organizerID, slotID uuid.UUID) error
+	ConsumeMootOffering(ctx context.Context, eventID, organizerID, slotID, poolID uuid.UUID) (bool, error)
+	// The unusable-answer disposition (TKT-317 D2): a durable record of a terminated event.
+	ParkCatalogEvent(ctx context.Context, e store.ParkedCatalogEvent) (bool, error)
 }
 
 type Consumer struct {
@@ -60,10 +69,48 @@ type Consumer struct {
 	// retryBackoff paces startupConverge's reconciliation retries; the zero
 	// value (used by tests) retries immediately.
 	retryBackoff time.Duration
+	// meter is set by WithMeter and read once by New. parked counts events parked after unusable
+	// catalog answers (TKT-317 D2). It is nil only for a Consumer built as a struct literal.
+	meter  metric.Meter
+	parked metric.Int64Counter
 }
 
-func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, log *slog.Logger) *Consumer {
-	return &Consumer{js: js, st: st, resolver: resolver, log: log, retryBackoff: 5 * time.Second}
+// parkAfterDeliveries is the delivery count at which an unusable catalog answer stops being
+// retried and is parked (TKT-317 D2, ADR-077). It counts every delivery of the message, whatever
+// answered before it, so earlier transport failures do not give the message a fresh allowance.
+const parkAfterDeliveries = 5
+
+// Option tunes a Consumer at construction.
+type Option func(*Consumer)
+
+// WithMeter sets the meter that the consumer's counters are created from. Without it, New uses
+// the process-global provider. Tests pass a local provider, so they never replace the global one.
+func WithMeter(m metric.Meter) Option {
+	return func(c *Consumer) { c.meter = m }
+}
+
+// meterScope names the instrumentation scope of the consumer's counters.
+const meterScope = "ticketing/services/inventory/internal/consumer"
+
+// parkedMetric counts catalog events parked after unusable answers (TKT-317 D2).
+const parkedMetric = "inventory.catalog.events.parked"
+
+func New(js jetstream.JetStream, st catalogStore, resolver PerformanceResolver, log *slog.Logger, opts ...Option) *Consumer {
+	c := &Consumer{js: js, st: st, resolver: resolver, log: log, retryBackoff: 5 * time.Second}
+	for _, opt := range opts {
+		opt(c)
+	}
+	meter := c.meter
+	if meter == nil {
+		meter = otel.Meter(meterScope)
+	}
+	parked, err := meter.Int64Counter(parkedMetric,
+		metric.WithDescription("Catalog events parked after their catalog answer stayed unusable through the delivery bound. Each one needs an operator: the event is terminated and is not re-driven by the consumer."))
+	if err != nil {
+		log.Error("create the catalog parked counter; parks will not be counted", "err", err)
+	}
+	c.parked = parked
+	return c
 }
 
 // Ready is false once termination has been observed, whatever the latch says.
@@ -420,29 +467,19 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		// call the CLOSURE handler already makes on this error (see handleClosure), and
 		// the two paths disagreeing about one catalog answer was the defect.
 		//
-		// WHY THIS CANNOT STRAND A REPUBLISHED SLOT, since acking a publication that did
-		// not provision is the obvious thing to worry about: catalog derives the event id
-		// from `performance.id + published_at` (events.EventID), so a republish is a
-		// DIFFERENT id. It is therefore not deduped by consumed_events and provisions
-		// normally. And this branch writes no consumed_events row at all — only a
-		// successful provision does — so the ack leaves nothing behind that a later event
-		// could collide with.
+		// The outcome is recorded before the ack (TKT-317 D1). recordMoot writes a tombstone
+		// for the organizer and slot, and this event's consumed_events row, in one
+		// transaction. A later archive finds no pool, and the tombstone lets it through.
+		// Without the tombstone the archive would wait for a pool that never comes. The
+		// tombstone is not proof that the slot's pool can never exist. See ADR-077.
 		//
-		// WHAT IT DOES NOT FIX, stated so the word "moot" is not read as more than it is
-		// (ai-review [high]): no pool is created, so the ARCHIVE event that follows finds
-		// none and applyOffering NAKs it as "offering event precedes its pool", for ever.
-		// That is pre-existing and systemic rather than introduced here — before this
-		// change the publication ITSELF NAKed for ever on the same 404, so the archive was
-		// stranded either way, and handleClosure's identical "moot" ack (which this follows)
-		// has the same shape. What changes is which message occupies the slot, not whether
-		// one does. Closing it needs a durable cross-event disposition — a tombstone the
-		// archive can consume without a pool, or provisioning-then-archiving from the
-		// resolved state — which is a design decision beyond applying an existing rule.
-		// TKT-317 carries it.
+		// A later publication of the same slot has a different event id (events.EventID
+		// hashes published_at), so consumed_events does not dedupe it, and it provisions
+		// normally.
 		if errors.Is(err, ErrPerformanceNotFound) {
-			c.log.Info("publication for a no-longer-published slot; skipping as moot",
+			c.log.Info("publication for a no-longer-published slot; recording as moot",
 				"event_id", e.ID, "performance_id", e.Data.PerformanceID)
-			_ = msg.Ack()
+			c.recordMoot(ctx, msg, e.ID, e.Data.OrganizerID, e.Data.PerformanceID)
 			return
 		}
 		// A CATALOG lookup failure is a dependency outage, not corrupt data, and the
@@ -463,6 +500,12 @@ func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env
 		if errors.Is(err, errResolveUnavailable) {
 			c.log.Error("resolve publication against catalog", "event_id", e.ID, "schema", e.Schema, "err", err)
 			_ = msg.NakWithDelay(5 * time.Second)
+			return
+		}
+		// Catalog answered, and the answer cannot be used. This is bounded by delivery count, and
+		// the event is parked at the bound (TKT-317 D2).
+		if errors.Is(err, errCatalogUnusable) {
+			c.unusableAnswer(ctx, msg, env, e.Data.PerformanceID, e.Data.OrganizerID, err)
 			return
 		}
 		// Bad at a schema we know: poison. No binary can provision it, so it terminates —
@@ -532,7 +575,7 @@ func (c *Consumer) handleArchived(ctx context.Context, msg jetstream.Msg, env en
 		}
 		pool = *d.CapacityGroupID
 	}
-	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyArchive(ctx, env.ID, pool) })
+	c.applyOffering(ctx, msg, env.ID, d.OrganizerID, d.PerformanceID, pool, func() error { return c.st.ApplyArchive(ctx, env.ID, pool) })
 }
 
 type closureData struct {
@@ -568,8 +611,15 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 		// TKT-50 §Case 3), so a 404 means the slot has been archived since. The archived event
 		// later in the stream owns the pool's terminal state — this toggle is moot. Parking it
 		// instead would be poison: the slot never comes back.
-		c.log.Info("closure event for a no-longer-published slot; skipping as moot", "event_id", env.ID, "performance_id", d.PerformanceID)
-		_ = msg.Ack()
+		// The outcome is recorded before the ack (TKT-317 D1).
+		c.log.Info("closure event for a no-longer-published slot; recording as moot", "event_id", env.ID, "performance_id", d.PerformanceID)
+		c.recordMoot(ctx, msg, env.ID, d.OrganizerID, d.PerformanceID)
+		return
+	}
+	// Catalog answered, and the answer cannot be used. This is bounded by delivery count, and the
+	// event is parked at the bound (TKT-317 D2).
+	if errors.Is(err, errCatalogUnusable) {
+		c.unusableAnswer(ctx, msg, env, d.PerformanceID, d.OrganizerID, err)
 		return
 	}
 	if err != nil {
@@ -586,18 +636,99 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 	if resolved.CapacityGroupID != nil && *resolved.CapacityGroupID != uuid.Nil {
 		pool = *resolved.CapacityGroupID
 	}
-	c.applyOffering(msg, env.ID, func() error { return c.st.ApplyClosure(ctx, env.ID, pool, d.PerformanceID, closed, d.Version) })
+	c.applyOffering(ctx, msg, env.ID, d.OrganizerID, d.PerformanceID, pool, func() error {
+		return c.st.ApplyClosure(ctx, env.ID, pool, d.PerformanceID, closed, d.Version)
+	})
 }
 
-// applyOffering shares the store-outcome disposition for archive/closure mutations:
-// a missing pool parks the event until publication provisions it (the publication is
-// earlier in the stream; only a NAK-induced reorder gets us here), other store errors
-// retry, success acks. Readiness is never touched — none of these are version skew.
-func (c *Consumer) applyOffering(msg jetstream.Msg, eventID uuid.UUID, apply func() error) {
+// recordMoot acks a moot outcome only once it is durable (TKT-317 D1). A failed write keeps the
+// message for redelivery, so an acked moot event always has its tombstone.
+func (c *Consumer) recordMoot(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID uuid.UUID) {
+	if err := c.st.RecordMootSlot(ctx, eventID, organizerID, slotID); err != nil {
+		c.log.Error("record moot outcome; retrying", "subject", msg.Subject(), "event_id", eventID, "err", err)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	_ = msg.Ack()
+}
+
+// unusableAnswer disposes of a catalog answer that arrived but cannot be used (TKT-317 D2). Below
+// parkAfterDeliveries the message is retried. At the bound, the exact envelope is committed to
+// catalog_event_parked, the park is counted and logged at ERROR, and the message is terminated.
+// A store failure keeps the message for redelivery. Readiness is not touched: this is not version
+// skew, and a broken catalog must not take inventory out of service.
+func (c *Consumer) unusableAnswer(ctx context.Context, msg jetstream.Msg, env envelope, slotID, organizerID uuid.UUID, cause error) {
+	meta, err := msg.Metadata()
+	if err != nil {
+		c.log.Error("catalog event delivery count unreadable; retrying", "subject", msg.Subject(), "event_id", env.ID, "err", err)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	if meta.NumDelivered < parkAfterDeliveries {
+		c.log.Error("catalog answer unusable; retrying", "subject", msg.Subject(), "event_id", env.ID,
+			"deliveries", meta.NumDelivered, "err", cause)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	inserted, err := c.st.ParkCatalogEvent(ctx, store.ParkedCatalogEvent{
+		Subject:     msg.Subject(),
+		EventID:     env.ID,
+		OrganizerID: organizerID,
+		SlotID:      slotID,
+		Schema:      env.Schema,
+		Envelope:    append([]byte(nil), msg.Data()...),
+		Deliveries:  int64(meta.NumDelivered),
+		Reason:      cause.Error(),
+	})
+	if errors.Is(err, store.ErrCatalogParkedCollision) {
+		// Two payloads under one id is a producer invariant break (ADR-009 §5). The first copy
+		// stays parked, so the second is terminated and readiness is untouched.
+		c.log.Error("catalog event id parked with different content; terminating", "subject", msg.Subject(), "event_id", env.ID, "schema", env.Schema)
+		_ = msg.Term()
+		return
+	}
+	if err != nil {
+		c.log.Error("park catalog event; retrying", "subject", msg.Subject(), "event_id", env.ID, "err", err)
+		_ = msg.NakWithDelay(5 * time.Second)
+		return
+	}
+	if inserted {
+		c.countParked(ctx, msg.Subject())
+	}
+	c.log.Error("catalog event parked after unusable catalog answers; terminating", "subject", msg.Subject(),
+		"event_id", env.ID, "schema", env.Schema, "slot_id", slotID, "deliveries", meta.NumDelivered, "err", cause)
+	_ = msg.Term()
+}
+
+// countParked counts one newly parked event. The counter is nil only for a Consumer built as a
+// struct literal, and a count is then skipped rather than dereferenced.
+func (c *Consumer) countParked(ctx context.Context, subject string) {
+	if c.parked == nil {
+		return
+	}
+	c.parked.Add(ctx, 1, metric.WithAttributes(attribute.String("subject", subject)))
+}
+
+// applyOffering shares the store-outcome disposition for archive/closure mutations. A missing
+// pool is offered to the moot fallback first (TKT-317 D1). A tombstone for the organizer and slot
+// consumes the event. Without one, the event waits for publication to provision the pool. Other
+// store errors retry, and success acks. Readiness is never touched, because none of these are
+// version skew.
+func (c *Consumer) applyOffering(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID, pool uuid.UUID, apply func() error) {
 	switch err := apply(); {
 	case errors.Is(err, store.ErrNotFound):
-		c.log.Warn("offering event precedes its pool; parking for redelivery", "event_id", eventID)
-		_ = msg.NakWithDelay(5 * time.Second)
+		moot, mootErr := c.st.ConsumeMootOffering(ctx, eventID, organizerID, slotID, pool)
+		switch {
+		case mootErr != nil:
+			c.log.Error("consume offering event as moot", "event_id", eventID, "err", mootErr)
+			_ = msg.NakWithDelay(5 * time.Second)
+		case moot:
+			c.log.Info("offering event for a moot slot with no pool; consumed as moot", "event_id", eventID, "slot_id", slotID)
+			_ = msg.Ack()
+		default:
+			c.log.Warn("offering event precedes its pool; parking for redelivery", "event_id", eventID)
+			_ = msg.NakWithDelay(5 * time.Second)
+		}
 	case err != nil:
 		c.log.Error("apply offering event", "event_id", eventID, "err", err)
 		_ = msg.Nak()

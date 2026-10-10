@@ -26,6 +26,12 @@ var ErrSeatPinRejected = errors.New("catalog rejected seat pin")
 // been archived since the event was emitted (TKT-75), and retrying never resolves it.
 var ErrPerformanceNotFound = errors.New("performance not published")
 
+// errCatalogUnusable marks a 200 answer whose body cannot be used: it does not decode, or it fails
+// the checks in PublishedPerformance. Catalog was reached, so this is neither ErrPerformanceNotFound
+// nor errResolveUnavailable. The consumer bounds it by delivery count and parks the event (TKT-317
+// D2), because a catalog that answers badly for good must not retry for ever.
+var errCatalogUnusable = errors.New("catalog answered with an unusable body")
+
 // ErrPoolStateNotFound is the offer-state 404: catalog knows nothing under this
 // id — neither a performance in any lifecycle nor a festival. Reconciliation
 // must treat it as non-positive and touch nothing (TKT-90).
@@ -127,39 +133,19 @@ func NewCatalogResolver(baseURL, credential string, client *http.Client) *Catalo
 
 // PublishedPerformance answers "is this slot published, and with what capacity".
 //
-// EVERY failure that is not ErrPerformanceNotFound is wrapped in errResolveUnavailable
-// (TKT-307). Before that, only the schema-5 adjacency path wrapped anything, and the
-// publication handler compensated with `e.Schema == 1 ||` — retry the whole schema,
-// because the transient failures could not be told apart from the deterministic ones.
-// That is what parked poison for ever. The classification belongs HERE, where the reason
-// is known, not at the call site where only the schema is.
+// Three classes, and the handler disposes of each one differently (TKT-307, TKT-317):
+//   - a 404 is ErrPerformanceNotFound, catalog's one definitive answer;
+//   - a failure to reach catalog, or a non-404 status, is errResolveUnavailable. It is retried
+//     without a limit, because an outage can clear without any change to the event;
+//   - a 200 whose body cannot be used is errCatalogUnusable. The consumer bounds only this
+//     class, by delivery count, and then parks the event (ADR-077).
 //
-// The unusable-BODY cases are wrapped too, and that is a deliberate choice rather than an
-// oversight: a catalog that answers 200 with a body this cannot read is broken, and
-// whether it is broken transiently (a bad deploy, a proxy interposing) or permanently is
-// not knowable from here. ErrGeometryInvalid's comment above records that the first fix
-// for that pair terminated both and a blip deleted a publication. Retrying a permanently
-// bad answer costs an ack-pending slot; terminating a temporarily bad one loses a slot's
-// inventory with no way to notice. The asymmetry decides it.
+// The body is read in full before it is decoded. A connection that drops mid-body is then a
+// transport failure. Decoding the stream directly would make the same drop look like a
+// malformed answer, and that is the class the consumer parks.
 //
-// WHAT THIS COSTS, named because MaxDeliver is -1 and an unbounded retry is exactly the
-// shape TKT-307 set out to remove (ai-review [medium]).
-//
-// SCOPE, corrected after a second pass caught the first version of this comment claiming
-// a schema-5 change: this function has exactly two callers — schema-1 publication
-// resolution and closure handling. Schema 5 never reaches it (it resolves geometry via
-// SeatMapAdjacency, whose ErrGeometryInvalid/errResolveUnavailable split is the one
-// described above and is untouched here). So NO caller's disposition changes: schema 1's
-// unusable bodies were already NAKed for ever by the old `e.Schema == 1 ||` condition,
-// and closure already retried every non-404. What changes is that the reason is now
-// named instead of inferred from the schema.
-//
-// The residual is genuine and pre-existing: a catalog persistently answering 200 with an
-// unreadable body parks one ack-pending slot per affected publication, with no readiness
-// signal and no bound. It is strictly smaller than the loss it prevents and strictly
-// larger than zero. A bounded policy — N attempts, then a durable quarantine row and an
-// alert — is the real answer and is a design decision beyond this ticket. TKT-317 carries
-// it alongside the archive-disposition gap it shares a cause with.
+// Only schema-1 publications and closures reach this function. The live catalog emits
+// performance.published at schemas 2 to 5, and none of those call this lookup.
 func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID) (PublishedPerformance, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/internal/performances/"+id.String(), nil)
 	if err != nil {
@@ -184,14 +170,18 @@ func (r *CatalogResolver) PublishedPerformance(ctx context.Context, id uuid.UUID
 		CapacityGroupID *uuid.UUID `json:"capacity_group_id,omitempty"`
 		SharedCapacity  *int32     `json:"shared_capacity,omitempty"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return PublishedPerformance{}, fmt.Errorf("%w: decode catalog performance lookup: %v", errResolveUnavailable, err)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return PublishedPerformance{}, fmt.Errorf("%w: read catalog performance lookup %s: %v", errResolveUnavailable, id, err)
+	}
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
+		return PublishedPerformance{}, fmt.Errorf("%w: decode catalog performance lookup: %v", errCatalogUnusable, err)
 	}
 	if body.OrganizerID == uuid.Nil || body.Capacity <= 0 {
-		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog performance lookup", errResolveUnavailable)
+		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog performance lookup", errCatalogUnusable)
 	}
 	if (body.CapacityGroupID == nil) != (body.SharedCapacity == nil) || body.SharedCapacity != nil && *body.SharedCapacity <= 0 {
-		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog festival capacity lookup", errResolveUnavailable)
+		return PublishedPerformance{}, fmt.Errorf("%w: invalid catalog festival capacity lookup", errCatalogUnusable)
 	}
 	return PublishedPerformance{OrganizerID: body.OrganizerID, Capacity: body.Capacity, CapacityGroupID: body.CapacityGroupID, SharedCapacity: body.SharedCapacity}, nil
 }
