@@ -52,8 +52,9 @@ var (
 	// a seat-map version with no seats (TKT-318, ADR-029 amendment). Such a
 	// version sells nothing. Refused: publishing a draft with no seats, saving
 	// an edit with no seats, and creating a seated performance against a version
-	// with no seats. A published version that already has no seats stays
-	// readable, and an edit that adds seats repairs it.
+	// with no seats (a keyed repeat of an earlier create still replays its row).
+	// A published version that already has no seats stays readable, and an edit
+	// that adds seats repairs it.
 	ErrSeatMapSeatless = errors.New("seat map has no seats")
 	// ErrSeatMapEditOrphansPinned reports an EditSeatMap whose new geometry would
 	// drop (orphan) a seat identity that a sale/hold currently pins (TKT-104,

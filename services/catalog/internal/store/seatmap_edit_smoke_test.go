@@ -119,10 +119,11 @@ func TestEditSeatMapPreservesPinnedSeats(t *testing.T) {
 	}
 }
 
-// TestEditSeatMapRefusesEmptyGeometry (TKT-318 COS-2) refuses an edit whose whole tree
-// holds no seat, whatever the shape of the empty tree. The count covers the entire
-// tree, so a section with no rows and a row with no seats are refused too. The map has
-// no pins, so the refusal cannot come from the pin check.
+// TestEditSeatMapRefusesEmptyGeometry (TKT-318 COS-2) refuses an edit that holds no seat
+// at all, whatever the shape of that empty submission. Every case here has no seat in any
+// section, so each one is a wholly seatless submission. An empty section beside seated
+// geometry is not refused (see the ADR-029 amendment). The map has no pins, so the refusal
+// cannot come from the pin check.
 func TestEditSeatMapRefusesEmptyGeometry(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -157,7 +158,8 @@ func TestEditSeatMapRefusesEmptyGeometry(t *testing.T) {
 
 // TestEditSeatMapEmptyAnswersBeforeResolvingTheMap pins where the empty refusal sits. It
 // runs before the family is resolved, so an empty edit gets the same answer for any map
-// id, including an id that does not exist. A non-empty edit of an unknown map is not found.
+// id, including an id that does not exist. A non-empty edit with valid identities of an
+// unknown map is not found.
 func TestEditSeatMapEmptyAnswersBeforeResolvingTheMap(t *testing.T) {
 	ctx, _, st, _ := seatMapSmokeStore(t)
 	unknown := uuid.New()

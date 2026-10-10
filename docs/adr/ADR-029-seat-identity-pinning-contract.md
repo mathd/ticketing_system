@@ -136,20 +136,25 @@ This amends the availability of a seat-map version. The pin contract above is un
 - **Refused writes.** Three operations refuse a version with no seats, each with
   `ErrSeatMapSeatless` and HTTP 409:
   - `PublishSeatMap`: a draft with no seats does not publish.
-  - `EditSeatMap`: an edit whose geometry has no seats is refused. The count covers the
-    whole tree, so a section with no rows, or a row with no seats, is refused too.
-  - `CreatePerformance`: a seated slot cannot bind to a version with no seats.
+  - `EditSeatMap`: an edit is refused only when its whole submission has no seat. An empty
+    section or row beside seated geometry is not refused. It is copied into the new version.
+  - `CreatePerformance`: a seated slot cannot bind to a version with no seats. A keyed retry
+    of a create that succeeded earlier still returns its original performance (TKT-200). A
+    new key, or no key, is refused, and nothing is inserted.
 - **Grandfathering.** A published version with no seats, created before this amendment,
   stays readable. Its publish retry still answers, and the owed event is still owed until
   it is marked.
 - **Repair.** An edit that adds seats to such a version creates a new published version in
   the same family, as before. The legacy id still refuses new seated slots, because the
   seat check reads that exact version.
-- **Error precedence.** The empty refusal runs before the family is resolved and locked.
-  So an empty edit of a pinned map gets the seatless answer, not the pin answer. An empty
-  edit of an unknown map id also gets the seatless answer, not not-found. The answer does
-  not depend on the map, so it does not show whether an id exists. A non-empty edit keeps
-  its order: not found first, then the pin check.
+- **Error precedence.** Identity validation runs first. Then the empty check runs. Then the
+  family is resolved and locked. So:
+  - An identity longer than 200 characters gets 400, for any map id, including an unknown one.
+  - An edit with no seats gets the seatless answer, for any map id. It does not get the pin
+    answer, and it does not get not-found.
+  - For a non-empty edit with valid identities, not found comes first, then the pin check.
+  The 400 and the seatless answer do not depend on the map. So they do not show whether an
+  id exists.
 - **Not claimed.** This amendment does not change the honest-writer scope above. Direct SQL
   can still create or alter seats and pins. The amendment does not claim that a published
   version's seat set is fixed under concurrent draft writes. Its tests do not exercise that

@@ -452,6 +452,87 @@ func TestCreatePerformanceRefusesSeatlessPublishedVersion(t *testing.T) {
 	}
 }
 
+// TestCreatePerformanceReplaysKeyedRetryOnSeatlessVersion (TKT-318 review item 1) keeps
+// the Idempotency-Key contract for a version that lost its seats after a keyed create.
+// The create succeeded while the version still had seats. The seats are then removed by
+// direct SQL, which leaves the state of a version published seatless before TKT-318. A
+// retry with the same key and terms returns the original row. The same key with other
+// terms conflicts. A new key, or no key, is refused and inserts nothing.
+func TestCreatePerformanceReplaysKeyedRetryOnSeatlessVersion(t *testing.T) {
+	ctx, db, st, _ := seatMapSmokeStore(t)
+	event := seedEvent(ctx, t, st)
+	m := seedPublishedMap(ctx, t, st, "Lost its seats")
+	mapID := m.ID
+	at := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+
+	keyed := seatedPerformance(event, seatMapVenue, at, &mapID)
+	keyed.IdempotencyKey = "tkt318-keyed-retry"
+	original, err := st.CreatePerformance(ctx, keyed)
+	if err != nil {
+		t.Fatalf("keyed create while the version has seats: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM seat_map_seats WHERE seat_map_id = $1`, mapID); err != nil {
+		t.Fatal(err)
+	}
+	if n := seatCount(ctx, t, db, mapID); n != 0 {
+		t.Fatalf("fixture left %d seats on the version, want none", n)
+	}
+
+	const wantRows = 1
+	countPerformances := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM performances WHERE event_id = $1`, event).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("same key and terms return the original performance", func(t *testing.T) {
+		replayed, err := st.CreatePerformance(ctx, keyed)
+		if err != nil {
+			t.Fatalf("keyed retry err = %v, want the original performance", err)
+		}
+		if replayed.ID != original.ID {
+			t.Fatalf("keyed retry returned %s, want the original %s", replayed.ID, original.ID)
+		}
+		if n := countPerformances(); n != wantRows {
+			t.Fatalf("keyed retry left %d performance(s), want %d", n, wantRows)
+		}
+	})
+	t.Run("same key with other terms is a conflict", func(t *testing.T) {
+		other := keyed
+		later := at.Add(time.Hour)
+		other.StartsAt = &later
+		if _, err := st.CreatePerformance(ctx, other); !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("same key, other terms err = %v, want ErrIdempotencyConflict", err)
+		}
+		if n := countPerformances(); n != wantRows {
+			t.Fatalf("conflicting retry left %d performance(s), want %d", n, wantRows)
+		}
+	})
+	t.Run("a new key is refused and inserts nothing", func(t *testing.T) {
+		fresh := keyed
+		fresh.IdempotencyKey = "tkt318-new-key"
+		if _, err := st.CreatePerformance(ctx, fresh); !errors.Is(err, ErrSeatMapSeatless) {
+			t.Fatalf("new key on a seatless version err = %v, want ErrSeatMapSeatless", err)
+		}
+		if n := countPerformances(); n != wantRows {
+			t.Fatalf("refused new key left %d performance(s), want %d", n, wantRows)
+		}
+	})
+	t.Run("no key is refused and inserts nothing", func(t *testing.T) {
+		plain := keyed
+		plain.IdempotencyKey = ""
+		if _, err := st.CreatePerformance(ctx, plain); !errors.Is(err, ErrSeatMapSeatless) {
+			t.Fatalf("keyless create on a seatless version err = %v, want ErrSeatMapSeatless", err)
+		}
+		if n := countPerformances(); n != wantRows {
+			t.Fatalf("refused keyless create left %d performance(s), want %d", n, wantRows)
+		}
+	})
+}
+
 // TestCreatePerformanceSeatMapRefusals keeps the existing seat-map create checks pinned
 // one at a time. Each case violates exactly one rule, so a removed check shows up as
 // the wrong answer for its own case.

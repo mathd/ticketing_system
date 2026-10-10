@@ -221,8 +221,10 @@ every rule-enabled pool inside ADR-008's 30-second migration bound is the smalle
 Repair runs through ADR-041's correction-wave machinery: re-emit, and inventory upgrades the
 pool. Rule-on pools use schema 5. TKT-258 adds a separate rule-off wave that re-emits schema 4.
 Some rule-off maps cannot produce an inventory projection even though catalog permits their
-publication: maps with no seats, labels that differ only by trailing whitespace, and maps
-larger than inventory's 8 MiB read limit. For these maps, inventory keeps the seated pool
+publication: labels that differ only by trailing whitespace, and maps larger than
+inventory's 8 MiB read limit. Maps with no seats were a third case. Catalog refuses to
+publish a new one (TKT-318), but rows published before that remain. For these maps,
+inventory keeps the seated pool
 and its seat-map id, but provisions no adjacency rows when geometry validation fails. This
 preserves named-seat inventory; best-available returns `best_available_unsupported` for that
 pool. There is no supported repair for such a pool yet: a map edit creates a new version the

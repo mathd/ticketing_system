@@ -48,6 +48,9 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	// (ADR-005), but a grouped festival day is shared-capacity GA by definition,
 	// so a seat-map reference on one is contradictory and refused here. The check
 	// mirrors the tenancy-by-scoped-query pattern the AddSeatMap* writes use.
+	// A version with no seats cannot seat a slot (TKT-318). The refusal is recorded
+	// here and given below, once the fingerprint exists, so a keyed retry can replay.
+	seatless := false
 	if in.SeatMapID != nil {
 		if kind == KindFestivalDay {
 			return Performance{}, fmt.Errorf("festival day cannot be seated: %w", ErrIllegalTransition)
@@ -75,11 +78,7 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 		if mapStatus != "published" {
 			return Performance{}, ErrSeatMapNotPublished
 		}
-		// A version with no seats cannot seat a slot (TKT-318). Legacy seatless
-		// versions stay readable, but nothing can be seated against them.
-		if !hasSeats {
-			return Performance{}, ErrSeatMapSeatless
-		}
+		seatless = !hasSeats
 	}
 	mode := in.ReEntry.Mode
 	if mode == "" {
@@ -100,6 +99,19 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	}
 	print := performanceFingerprint(in, kind, mode)
 
+	// A seatless version refuses new seated slots. A keyed retry of a create that
+	// succeeded before the refusal existed still returns its original row, as the
+	// Idempotency-Key contract requires (TKT-200), so the replay runs first. A new
+	// key, or no key, is refused with nothing inserted. ErrSeatMapNotPublished above
+	// still precedes the replay, as it did before this check moved here.
+	if seatless {
+		replayed, found, replayErr := p.replayPerformance(ctx, in, print)
+		if replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return Performance{}, ErrSeatMapSeatless
+	}
+
 	var id uuid.UUID
 	idempotencyBarrier()
 	err = p.db.QueryRowContext(ctx,
@@ -117,25 +129,14 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 	// No row means the key is already taken — the signal to replay, not a
 	// failure. See CreateEvent for why this branch must precede the generic one.
 	if errors.Is(err, sql.ErrNoRows) {
-		existing, found, match, lookupErr := replayLookup(ctx, p.db, "performances", in.OrganizerID, in.IdempotencyKey, print)
-		if lookupErr != nil {
-			return Performance{}, fmt.Errorf("replay performance: %w", lookupErr)
+		replayed, found, replayErr := p.replayPerformance(ctx, in, print)
+		if replayErr != nil || found {
+			return replayed, replayErr
 		}
-		if !found {
-			// See CreateEvent.replayEvent: ErrNotFound so this surfaces as the
-			// declared 404 rather than a 500. Unreachable through the service —
-			// catalog archives and never deletes these rows.
-			return Performance{}, fmt.Errorf("replayed performance: %w", ErrNotFound)
-		}
-		if !match {
-			return Performance{}, ErrIdempotencyConflict
-		}
-		id = existing
-		perf, _, _, err := p.getPerformance(ctx, id)
-		if err != nil {
-			return Performance{}, err
-		}
-		return perf, nil
+		// See CreateEvent.replayEvent: ErrNotFound so this surfaces as the
+		// declared 404 rather than a 500. Unreachable through the service —
+		// catalog archives and never deletes these rows.
+		return Performance{}, fmt.Errorf("replayed performance: %w", ErrNotFound)
 	}
 	if err != nil {
 		return Performance{}, fmt.Errorf("insert performance: %w", err)
@@ -147,6 +148,29 @@ func (p *Postgres) CreatePerformance(ctx context.Context, in PerformanceInput) (
 		return Performance{}, err
 	}
 	return perf, nil
+}
+
+// replayPerformance answers a create whose idempotency key already belongs to a row
+// (TKT-200). The same key with the same terms returns that row. The same key with other
+// terms is ErrIdempotencyConflict. found is false when no row carries the key. The caller
+// decides what that means: the INSERT path reports ErrNotFound, and the seatless refusal
+// reports ErrSeatMapSeatless.
+func (p *Postgres) replayPerformance(ctx context.Context, in PerformanceInput, want string) (Performance, bool, error) {
+	existing, found, match, err := replayLookup(ctx, p.db, "performances", in.OrganizerID, in.IdempotencyKey, want)
+	if err != nil {
+		return Performance{}, false, fmt.Errorf("replay performance: %w", err)
+	}
+	if !found {
+		return Performance{}, false, nil
+	}
+	if !match {
+		return Performance{}, true, ErrIdempotencyConflict
+	}
+	perf, _, _, err := p.getPerformance(ctx, existing)
+	if err != nil {
+		return Performance{}, true, err
+	}
+	return perf, true, nil
 }
 
 func (p *Postgres) CreateTicketType(ctx context.Context, in TicketTypeInput) (TicketType, error) {
