@@ -303,23 +303,29 @@ describe('offline queue', () => {
   })
 
   it('recovers an abandoned owner only after its bounded lease expires', async () => {
+    // Recovery compares the STORED expiry with the reader's clock. It does not
+    // use the reader's lease, so the observers keep the default lease. Each store
+    // has its own constant clock: a heartbeat renewal at any time writes 1_100
+    // again (TKT-333: with one shared clock, a renewal in flight wrote 1_199).
     const dbName = `abandoned-${crypto.randomUUID()}`
-    let timestamp = 1_000
     const abandoned = await openStore(dbName, {
       ownerId: 'abandoned-tab',
       pendingLeaseMs: 100,
-      now: () => timestamp,
+      now: () => 1_000,
     })
     const pending = await abandoned.mint('abandoned-qr', '2026-09-03T20:00:00Z')
     abandoned.close()
 
-    timestamp = 1_099
-    const beforeExpiry = await openStore(dbName, { ownerId: 'observer-before-expiry', now: () => timestamp })
+    const beforeExpiry = await openStore(dbName, { ownerId: 'observer-before-expiry', now: () => 1_099 })
     expect(await beforeExpiry.queued()).toEqual([])
+    expect(await beforeExpiry.get(pending.occurrenceId)).toMatchObject({
+      state: 'PENDING',
+      ownerId: 'abandoned-tab',
+      leaseExpiresAt: 1_100,
+    })
     beforeExpiry.close()
 
-    timestamp = 1_100
-    const afterExpiry = await openStore(dbName, { ownerId: 'observer-after-expiry', now: () => timestamp })
+    const afterExpiry = await openStore(dbName, { ownerId: 'observer-after-expiry', now: () => 1_100 })
     expect((await afterExpiry.queued()).map((record) => record.occurrenceId)).toEqual([
       pending.occurrenceId,
     ])
