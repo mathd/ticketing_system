@@ -47,6 +47,10 @@ not name a mechanical check still depends on review.
 - The `security` workflow runs on every pull request, weekly, and on demand. It fails on reachable Go
   vulnerabilities, high-or-critical pnpm advisories, or high-or-critical Trivy filesystem findings
   across dependencies, IaC configuration, and detected secrets.
+- An accepted Trivy or pnpm finding goes in `.trivyignore.yaml`, with a reason, an owner and an
+  expiry of 30 days or less, and only with the owner's approval. An expired entry fails the
+  `security` workflow. govulncheck has no exception path yet (TKT-524). See
+  [ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md).
 
 ## Input and data handling
 
@@ -66,7 +70,10 @@ dependencies through Go modules and `pnpm-lock.yaml`; pin executable container/w
 described in [`dependencies-and-versions.md`](dependencies-and-versions.md). Dependabot proposes
 weekly updates but does not bypass review or the quality gates. Security findings are blocking at
 the thresholds above; suppressions require a narrow, documented rationale with an expiry or removal
-condition.
+condition. A Trivy or pnpm vulnerability is suppressed only by a reviewed `.trivyignore.yaml` entry
+([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)). `make check` refuses
+a committed `trivy.yaml`, `trivy.yml`, `trivy-secret.yaml` or `.trivyignore`, and a hand-made
+`auditConfig` ignore list.
 
 ## Not yet production-ready
 

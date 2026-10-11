@@ -67,7 +67,7 @@ jobs:
           match() { echo "$changed" | grep -Eq "$1" && echo true || echo false; }
           {
             echo "go=$(match '(^|/)(go\.mod|go\.sum)$|^go\.work(\.sum)?$|^\.github/workflows/security\.yaml$')"
-            echo "node=$(match '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$|^web/[^/]+/package\.json$|^\.github/workflows/security\.yaml$')"
+            echo "node=$(match '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.trivyignore\.yaml)$|^web/[^/]+/package\.json$|^\.github/workflows/security\.yaml$')"
           } >> "$GITHUB_OUTPUT"
 
   govulncheck:
@@ -119,6 +119,10 @@ jobs:
           node-version: "24.18.0"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # pnpm applies auditConfig.ignoreGhsas with no expiry, so the allowlist's
+      # expiry is checked here, before the audit (ADR-081). Trivy drops an
+      # expired entry by itself, so repository-scan needs no such step.
+      - run: node scripts/scan-allowlist.mjs check --now
       - run: pnpm audit --audit-level high
 
   repository-scan:
@@ -134,6 +138,9 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           format: table
+          # Reviewed, expiring exceptions (ADR-081). Without this input the
+          # allowlist is not read, and every listed finding fails the scan.
+          trivyignores: .trivyignore.yaml
 
   # --- Scheduled-failure notification (TKT-213) ----------------------------------
   #
@@ -187,10 +194,10 @@ jobs:
           Commit: \`$GITHUB_SHA\`
 
           The weekly run re-scans every dependency even when nothing changed, so it is what
-          catches a newly-disclosed CVE in code that has not been touched. A per-PR run only
-          fires when dependency or build files change, which means a failure here can sit
-          unnoticed indefinitely — open the run to see which of govulncheck, pnpm-audit or
-          the repository scan is red.
+          catches a newly-disclosed CVE in code that has not been touched. On a pull request,
+          govulncheck and pnpm-audit run only when dependency files change, so a failure here
+          can sit unnoticed indefinitely — open the run to see which of govulncheck, pnpm-audit
+          or the repository scan is red.
 
           This issue closes itself when a later scheduled run succeeds.
           EOF
@@ -227,8 +234,8 @@ jobs:
           # Evidence, not inference: a job added to this workflow but missing from the
           # needs: list above would be invisible here, and this job would close a genuine
           # outage. Ask the run what every job actually concluded. This matters more here
-          # than in hermetic.yaml — security.yaml has three top-level jobs and a matrix,
-          # so it is the one likely to grow a fourth.
+          # than in hermetic.yaml — security.yaml has four top-level jobs before the
+          # notifiers, one of them an eight-leg matrix, so it is the one likely to grow.
           # FAIL CLOSED, on STATUS as well as conclusion, and filtering on no job names.
           #
           # Four earlier versions of this guard were each wrong, and the reasons are worth

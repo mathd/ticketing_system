@@ -410,6 +410,82 @@ open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (secret scanning dropped)" check-security-workflow-trigger
 
+# 12d. The scan allowlist wiring (ADR-081). pnpm applies auditConfig.ignoreGhsas
+#      with no expiry, so an expired entry keeps hiding its advisory unless the
+#      expiry check runs before the audit. Each seed loses one wiring line, and no
+#      scan goes red for any of them.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n', '', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (allowlist expiry check dropped)" check-security-workflow-trigger
+
+# 12e. The check is present but runs after the audit, so the audit reads an
+#      expired ignore list first.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+check = '      - run: node scripts/scan-allowlist.mjs check --now\n'
+audit = '      - run: pnpm audit --audit-level high\n'
+s = s.replace(check + audit, audit + check, 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (allowlist check after the audit)" check-security-workflow-trigger
+
+# 12f. `pnpm audit --ignore` writes the ignore list and exits 0 without
+#      reporting the remaining findings, so the audit is green whatever it finds.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('      - run: pnpm audit --audit-level high\n',
+              '      - run: pnpm audit --audit-level high --ignore GHSA-7w5x-hrqm-74c2\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (pnpm audit --ignore)" check-security-workflow-trigger
+
+# 12g. The check still runs, but its failure no longer fails the job.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n',
+              '      - run: node scripts/scan-allowlist.mjs check --now\n        continue-on-error: true\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (allowlist check made tolerant)" check-security-workflow-trigger
+
+# 12h. Trivy no longer reads the allowlist.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+s = s.replace('          trivyignores: .trivyignore.yaml\n', '', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (trivyignores input dropped)" check-security-workflow-trigger
+
+# 12i. make check no longer runs the allowlist checker. The target still exists
+#      and still passes when called by name, so only the check-all list shows it.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+s = s.replace(' check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ',
+              ' check-security-workflow-trigger check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (check-scan-allowlist dropped from check-all)" check-security-workflow-trigger
+
+# 12j. The allowlist checker itself, on the real files: a pnpm mirror that is not
+#      the allowlist's (here, a GHSA that no reviewed entry names).
+expect_pass "scan allowlist (clean baseline)" check-scan-allowlist
+python3 - <<'SEED'
+p = 'pnpm-workspace.yaml'
+s = open(p).read()
+s = s.replace('  ignoreGhsas: []\n', '  ignoreGhsas:\n    - GHSA-7w5x-hrqm-74c2\n', 1)
+open(p, 'w').write(s)
+SEED
+expect_fail "scan allowlist (pnpm mirror drift)" check-scan-allowlist
+
 # 13. The hermetic workflow missing a production web image input. The enumerated
 #     path list covered the scanner and the storefront but not web/backoffice, so a
 #     broken back-office production image could merge with neither build path run —
