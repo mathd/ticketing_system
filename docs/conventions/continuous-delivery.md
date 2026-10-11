@@ -80,16 +80,28 @@ gh api --method DELETE repos/mathd/ticketing_system/rulesets/<id>
 
 Nothing compares the live ruleset with the file automatically. Compare them by hand after each
 change. The gate checks only the static invariants. `make check-check-workflow-trigger` reads the
-files line by line, so it accepts only one block-style shape and refuses everything else:
+files line by line, without a YAML library. In `check.yaml` it accepts only one block-style shape,
+and it refuses as unsupported anything it cannot read plainly:
 
-- `on:` holds exactly `push` (only `branches: [main]`) and an empty `pull_request`.
+- `on:` holds exactly `push` (only the text `branches: [main]`) and an empty `pull_request`. There
+  is no workflow-level `defaults:` or `env:`.
 - Each required context is the reported name of a `check.yaml` job: its `name:` when set, else its
   job id.
-- That job holds only `name`, `runs-on` and `steps`. It has exactly one `run: make check` step, and
-  no step has `if:` or `continue-on-error`.
-- No other job in any workflow reports the same name.
-- Flow style, quoted keys, duplicate keys, merge keys and a second YAML document are refused as
-  unsupported. So is a job `name:` that contains an expression.
+- That job holds only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes`. Its steps
+  hold only `name`, `uses`, `with`, `run` and `id`, so `if:`, `continue-on-error`, `shell:` and
+  `env:` are refused. Each step value is one plain line. At least one step is exactly
+  `run: make check`.
+- In `check.yaml`, flow style, quoted keys, duplicate keys, merge keys, a second YAML document, and
+  a multi-line or block scalar in a step are refused as unsupported.
+- No other job in any workflow reports the same name. In the other workflows the guard reads only
+  job ids and names. A job must be block style, and its `name:` must be a plain one-line scalar or
+  a quoted string with no backslash. An expression `name:` is refused only if its literal prefix
+  could still make it a required context.
+
+Threat model: the guard is a tripwire against accidental or careless edits to `check.yaml` and the
+ruleset. It does not, and cannot, stop a writer who changes the Makefile `check` target,
+`scripts/gate.sh`, a step that writes `$GITHUB_ENV`, or the guard itself. Those changes are reviewed
+in the PR like any other code.
 
 ## Pre-commit ↔ CI alignment
 

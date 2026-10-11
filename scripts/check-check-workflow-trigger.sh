@@ -4,18 +4,28 @@
 # pending, skipped, orphaned, ambiguous, or green without `make check` (TKT-324).
 # It reads files only; it does not read the live ruleset on GitHub.
 #
+# Threat model: this is a tripwire against accidental or careless edits to
+# check.yaml and the ruleset. It does not, and cannot, stop a writer who changes
+# the Makefile `check` target, scripts/gate.sh, a step that writes $GITHUB_ENV, or
+# this guard. Those are reviewed in the PR like any other code.
+#
 # The YAML reader is line-based, and a line reader cannot interpret all of YAML.
 # So the guard FAILS CLOSED: check.yaml must have the allowlisted block-style
-# shape below, and any other spelling (flow style, quoted keys, `on:` as a list,
-# a duplicate key, a second document, a merge key) is refused as unsupported.
-#   Events:  `on:` holds exactly `push` (only `branches: [main]`) and an empty
-#            `pull_request`.
+# shape below, and anything the reader cannot read plainly (flow style, quoted
+# keys, `on:` as a list, a duplicate key, a second document, a merge key, a
+# multi-line or block scalar in a step) is refused as unsupported.
+#   Events:  `on:` holds exactly `push` (only the text `branches: [main]`) and an
+#            empty `pull_request`. No workflow-level `defaults:` or `env:`.
 #   Context: every required context is the reported name (the `name:` if set,
 #            else the job id) of a check.yaml job, and the ruleset has one.
-#   Job:     that job holds only `name`, `runs-on` and `steps`; it has exactly
-#            one `run: make check` step; no step has `if:` or `continue-on-error`.
-#   Unique:  no other job in any workflow reports the same name. Jobs in other
-#            workflows must be block style with a literal `name:` (or none).
+#   Job:     that job holds only `name`, `runs-on`, `steps`, `permissions` and
+#            `timeout-minutes`. Its steps hold only `name`, `uses`, `with`, `run`
+#            and `id`. At least one step is exactly `run: make check`.
+#   Unique:  no other job in any workflow reports the same name. In the other
+#            workflows only job ids and names are inspected: a job must be block
+#            style, and its `name:` must be a plain one-line scalar or a simply
+#            quoted string. An expression name is refused only if its literal
+#            prefix could still make it a required context.
 set -euo pipefail
 
 workflow=${1:-.github/workflows/check.yaml}
@@ -34,16 +44,25 @@ failures: list[str] = []
 KEY = re.compile(
     r"""^(?P<indent> *)(?P<key>"[^"]*"|'[^']*'|[A-Za-z0-9_.-]+)[ \t]*:(?:[ \t]+(?P<value>.*))?$"""
 )
-JOB_KEYS = {"name", "runs-on", "steps"}
+WORKFLOW_KEY_REASONS = {
+    "defaults": "`defaults.run.shell` can change how `make check` runs",
+    "env": "an environment variable such as MAKEFLAGS can change what `make check` does",
+}
+JOB_KEYS = {"name", "runs-on", "steps", "permissions", "timeout-minutes"}
 JOB_KEY_REASONS = {
     "if": "a job-level `if:` can skip it",
     "needs": "a skipped or failed dependency skips it",
     "continue-on-error": "it can fail without failing the check",
+    **WORKFLOW_KEY_REASONS,
 }
+STEP_KEYS = {"name", "uses", "with", "run", "id"}
 STEP_KEY_REASONS = {
     "if": "a step-level `if:` can skip it",
     "continue-on-error": "it can fail without failing the check",
+    "shell": "a shell such as `bash -n {0}` can skip the command",
+    "env": "an environment variable such as MAKEFLAGS can change what `make check` does",
 }
+PLAIN_NAME = re.compile(r"""[^\s|>&*!%@`{}\[\]"'#,?:-][^#]*|-[^\s#][^#]*""")
 
 
 class Unsupported(Exception):
@@ -55,15 +74,10 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
-def scalar(value: str | None) -> str:
-    """The value of `key: value`, without quotes or a trailing comment."""
-    if not value:
-        return ""
-    value = value.strip()
-    if value[:1] in "\"'":
-        end = value.find(value[0], 1)
-        return value[1:end] if end > 0 else value
-    return re.sub(r"(^|\s+)#.*$", "", value).strip()
+def unquote(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
 
 
 class Line:
@@ -75,7 +89,9 @@ class Line:
         match = KEY.match(raw)
         self.key = match["key"] if match else None
         self.quoted = bool(self.key) and self.key[0] in "\"'"
-        self.value = scalar(match["value"]) if match else ""
+        # The value exactly as written, comment included. Nothing is stripped.
+        self.value = (match["value"] or "").strip() if match else ""
+        self.continued = False
 
 
 def load(path: Path) -> list[Line]:
@@ -99,9 +115,10 @@ def block(lines: list[Line], parent: int) -> list[int]:
     return found
 
 
-def mapping(lines: list[Line], parent: int, what: str) -> dict[str, int]:
+def mapping(lines: list[Line], parent: int, what: str, quoted_ok: bool = False) -> dict[str, int]:
     """The block mapping below lines[parent], read strictly: every line at the
-    child indent must be an unquoted `key:`, with no duplicate key."""
+    child indent must be a `key:`, with no duplicate key. A quoted key is
+    refused, or read unquoted when quoted_ok."""
     body = block(lines, parent)
     if not body:
         return {}
@@ -113,80 +130,114 @@ def mapping(lines: list[Line], parent: int, what: str) -> dict[str, int]:
             continue
         if line.indent < child_indent or line.key is None:
             raise Unsupported(f"{line.where}: `{line.text}` in {what} is not a block-style `key:`")
-        if line.quoted:
+        if line.quoted and not quoted_ok:
             raise Unsupported(f"{line.where}: quoted key {line.key} in {what}; write it unquoted")
-        if line.key in keys:
-            raise Unsupported(f"{line.where}: duplicate key `{line.key}` in {what}")
-        keys[line.key] = index
+        key = unquote(line.key)
+        if key in keys:
+            raise Unsupported(f"{line.where}: duplicate key `{key}` in {what}")
+        keys[key] = index
     return keys
 
 
 def block_value(lines: list[Line], index: int, what: str) -> None:
     """Refuse a value written on the key's own line (flow style, an alias, a scalar)."""
-    if lines[index].value:
+    if lines[index].value and not lines[index].value.startswith("#"):
         raise Unsupported(
             f"{lines[index].where}: {what} is written inline (`{lines[index].text}`); "
             "write it as a block"
         )
 
 
-def steps(lines: list[Line], parent: int) -> list[tuple[Line, dict[str, Line]]]:
-    """The block sequence of block-mapping steps below lines[parent]."""
+def deeper(lines: list[Line], index: int) -> bool:
+    return index + 1 < len(lines) and lines[index + 1].indent > lines[index].indent
+
+
+def steps(lines: list[Line], parent: int) -> list[dict[str, Line]]:
+    """The block sequence of block-mapping steps below lines[parent]. A key whose
+    value has more-indented lines below it is marked `continued`."""
     body = block(lines, parent)
     if not body:
         raise Unsupported(f"{lines[parent].where}: `steps:` has no block sequence below it")
     item_indent = lines[body[0]].indent
-    found: list[tuple[Line, dict[str, Line]]] = []
+    found: list[dict[str, Line]] = []
     key_column = None
+    last = None
     for index in body:
         line = lines[index]
         if line.indent == item_indent:
             rest = line.text[2:].lstrip() if line.text.startswith("- ") else ""
-            match = KEY.match(rest)
-            if not match:
+            if not KEY.match(rest):
                 raise Unsupported(f"{line.where}: step `{line.text}` is not a block-style `- key: value`")
             key_column = line.indent + len(line.text) - len(rest)
-            found.append((line, {}))
+            found.append({})
             line = Line(line.path, line.number, " " * key_column + rest)
         elif key_column is not None and line.indent > key_column:
+            if last is not None:
+                last.continued = True
             continue
         elif line.indent != key_column or line.key is None:
             raise Unsupported(f"{line.where}: `{line.text}` in a step is not a block-style `key:`")
         if line.quoted:
             raise Unsupported(f"{line.where}: quoted key {line.key} in a step; write it unquoted")
-        if line.key in found[-1][1]:
+        if line.key in found[-1]:
             raise Unsupported(f"{line.where}: duplicate key `{line.key}` in a step")
-        found[-1][1][line.key] = line
+        found[-1][line.key] = last = line
     return found
 
 
-def jobs(path: Path) -> list[dict]:
-    """Every job of a workflow with its reported name, read strictly."""
+def job_name(lines: list[Line], index: int, job_id: str, contexts: list[str]) -> str:
+    """A job's `name:`, read only if it is plain enough to read."""
+    line = lines[index]
+    value = line.value
+    if deeper(lines, index) or not value:
+        raise Unsupported(f"{line.where}: job `{job_id}`'s `name:` is not on one line")
+    if re.fullmatch(r'"[^"\\]*"', value) or re.fullmatch(r"'[^']*'", value):
+        name = value[1:-1]
+    elif PLAIN_NAME.fullmatch(value) and " #" not in value:
+        name = value
+    else:
+        raise Unsupported(
+            f"{line.where}: job `{job_id}`'s `name: {value}` is not a plain scalar or a simply "
+            "quoted string"
+        )
+    if "${{" in name:
+        prefix = name.split("${{", 1)[0]
+        if any(context.startswith(prefix) for context in contexts):
+            raise Unsupported(
+                f"{line.where}: job `{job_id}`'s `name: {value}` is an expression that could "
+                "evaluate to a required context"
+            )
+    return name
+
+
+def jobs(path: Path, contexts: list[str], strict: bool) -> list[dict]:
+    """Every job of a workflow with its reported name. In a non-strict read only
+    job ids and names matter, so quoted keys are read rather than refused."""
     lines = load(path)
-    root = mapping(lines, -1, f"{path}'s top level")
+    root = mapping(lines, -1, f"{path}'s top level", quoted_ok=not strict)
     if "jobs" not in root:
         return []
     block_value(lines, root["jobs"], "`jobs:`")
     found = []
-    for job_id, index in mapping(lines, root["jobs"], f"{path}'s jobs").items():
+    for job_id, index in mapping(lines, root["jobs"], f"{path}'s jobs", quoted_ok=not strict).items():
         block_value(lines, index, f"job `{job_id}`")
-        props = mapping(lines, index, f"job `{job_id}`")
-        name = lines[props["name"]].value if "name" in props else ""
-        if "${{" in name:
-            raise Unsupported(f"{lines[props['name']].where}: job `{job_id}` has an expression `name:`; its reported name is unknown")
+        props = mapping(lines, index, f"job `{job_id}`", quoted_ok=not strict)
+        name = job_name(lines, props["name"], job_id, contexts) if "name" in props else ""
         found.append({
             "id": job_id,
             "where": lines[index].where,
             "reported": name or job_id,
             "lines": lines,
-            "index": index,
             "props": props,
         })
     return found
 
 
-def check_events(lines: list[Line]) -> None:
+def check_workflow(lines: list[Line]) -> None:
     root = mapping(lines, -1, f"{workflow}'s top level")
+    for key, reason in WORKFLOW_KEY_REASONS.items():
+        if key in root:
+            failures.append(f"{lines[root[key]].where}: workflow-level `{key}:` is not allowed; {reason}")
     if "on" not in root:
         failures.append(f"{workflow}: no unquoted `on:` key")
         return
@@ -204,8 +255,8 @@ def check_events(lines: list[Line]) -> None:
             line = lines[index]
             if key != "branches":
                 failures.append(f"{line.where}: `push` has `{key}`; it may hold only `branches: [main]`")
-            elif re.sub(r"[\s\"']", "", line.value) != "[main]":
-                failures.append(f"{line.where}: `push` has `branches: {line.value}`; it must be `branches: [main]`")
+            elif line.value != "[main]" or deeper(lines, index):
+                failures.append(f"{line.where}: `push` has `{line.text}`; it must be exactly `branches: [main]`")
     if "pull_request" in events:
         block_value(lines, events["pull_request"], "`pull_request:`")
         for key, index in mapping(lines, events["pull_request"], "`pull_request:`").items():
@@ -219,25 +270,31 @@ def check_job(job: dict, context: str) -> None:
     lines, props = job["lines"], job["props"]
     for key, index in props.items():
         if key not in JOB_KEYS:
-            reason = JOB_KEY_REASONS.get(key, "only `name`, `runs-on` and `steps` are allowed")
+            reason = JOB_KEY_REASONS.get(key, "only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes` are allowed")
             failures.append(f"{lines[index].where}: job `{job['id']}` reports required context `{context}` and has `{key}`; {reason}")
     make_check = 0
     if "steps" in props:
         block_value(lines, props["steps"], f"job `{job['id']}`'s `steps:`")
-        for item, keys in steps(lines, props["steps"]):
-            for key, reason in STEP_KEY_REASONS.items():
-                if key in keys:
-                    failures.append(f"{keys[key].where}: a step of job `{job['id']}` has `{key}`; {reason}")
+        for keys in steps(lines, props["steps"]):
+            for key, line in keys.items():
+                if key not in STEP_KEYS:
+                    reason = STEP_KEY_REASONS.get(key, "only `name`, `uses`, `with`, `run` and `id` are allowed")
+                    failures.append(f"{line.where}: a step of job `{job['id']}` has `{key}`; {reason}")
+                if line.value and (line.continued or line.value[0] in "|>"):
+                    raise Unsupported(
+                        f"{line.where}: `{key}: {line.value}` in a step of job `{job['id']}` "
+                        "continues on more lines; write it as one plain line"
+                    )
             if "run" in keys and keys["run"].value == "make check":
                 make_check += 1
-    if make_check != 1:
-        failures.append(f"{job['where']}: job `{job['id']}` has {make_check} `run: make check` steps; it must have exactly one")
+    if make_check == 0:
+        failures.append(f"{job['where']}: job `{job['id']}` has no step that is exactly `run: make check`")
 
 
 def main() -> None:
     if not workflow.is_file():
         fail(f"workflow not found: {workflow}")
-    check_events(load(workflow))
+    check_workflow(load(workflow))
 
     try:
         data = json.loads(ruleset.read_text())
@@ -252,7 +309,7 @@ def main() -> None:
     if not contexts:
         fail(f"{ruleset}: names no required status check context")
 
-    own_jobs = jobs(workflow)
+    own_jobs = jobs(workflow, contexts, strict=True)
     producers = {}
     for context in contexts:
         producers[context] = [job for job in own_jobs if job["reported"] == context]
@@ -266,7 +323,7 @@ def main() -> None:
 
     all_jobs = []
     for path in sorted([*workflows_dir.glob("*.yaml"), *workflows_dir.glob("*.yml")]):
-        all_jobs.extend(jobs(path))
+        all_jobs.extend(own_jobs if path.resolve() == workflow.resolve() else jobs(path, contexts, strict=False))
     for context in contexts:
         holders = [job for job in all_jobs if job["reported"] == context]
         if len(holders) > 1:

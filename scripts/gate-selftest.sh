@@ -568,6 +568,9 @@ check_seed $CW '    branches: [main]\n' '    branches: [main]\n    paths: ["docs
 expect_fail "check workflow trigger (paths filter on push)" check-check-workflow-trigger
 check_seed $CW '    branches: [main]\n' '    branches: [develop]\n'
 expect_fail "check workflow trigger (push no longer targets main)" check-check-workflow-trigger
+# Quote stripping would read this as main. Only the exact text is accepted.
+check_seed $CW '    branches: [main]\n' "    branches: [\"m'a'in\"]\n"
+expect_fail "check workflow trigger (push branches spelled with quotes)" check-check-workflow-trigger
 check_seed $CW '  pull_request:\n' '  pull_request:\n    paths-ignore: ["docs/**"]\n'
 expect_fail "check workflow trigger (paths-ignore filter on pull_request)" check-check-workflow-trigger
 check_seed $CW '  pull_request:\n' '  pull_request:\n    paths: ["docs/**"]\n'
@@ -607,9 +610,9 @@ expect_fail "check workflow trigger (no on: key)" check-check-workflow-trigger
 check_seed $CW '  push:\n    branches: [main]\n' '  push: {branches: [main], paths: ["docs/**"]}\n'
 expect_fail "check workflow trigger (flow-style push)" check-check-workflow-trigger
 
-# The job that reports the context: block style, only name/runs-on/steps, and
-# no step that can be skipped or ignored. Any of these lets the required check
-# read success without `make check` deciding it.
+# The job that reports the context: block style, allowlisted job and step keys,
+# and no step that can be skipped or ignored. Any of these lets the required
+# check read success without `make check` deciding it.
 check_seed $CW "$CJOB" "${CJOB}    if: github.event_name == 'push'\n"
 expect_fail "check workflow trigger (check job made conditional)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}    needs: gate-selftest\n"
@@ -637,6 +640,40 @@ check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        <<: *step\n'
 expect_fail "check workflow trigger (merge key in a step)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" '      - run: make lint\n'
 expect_fail "check workflow trigger (make check step removed)" check-check-workflow-trigger
+# A more-indented line continues a plain scalar: GitHub runs `make check
+# --just-print`, while a line reader sees `make check`. Each step's values must
+# be one line, and a block scalar (| or >) is refused the same way.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'          --just-print\n'
+expect_fail "check workflow trigger (make check run continues with --just-print)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'          || true\n'
+expect_fail "check workflow trigger (make check run continues with || true)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - run: |\n          make check\n'
+expect_fail "check workflow trigger (block scalar run)" check-check-workflow-trigger
+# An empty block scalar has no lines below it, so only the indicator shows it.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - run: >-\n'
+expect_fail "check workflow trigger (empty block scalar run)" check-check-workflow-trigger
+# A step may hold only name, uses, with, run and id. shell and env can change what
+# `make check` does without changing its text.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        shell: bash -n {0}\n'
+expect_fail "check workflow trigger (shell on the make check step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        env:\n          MAKEFLAGS: --just-print\n'
+expect_fail "check workflow trigger (env on the make check step)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    env:\n      MAKEFLAGS: --just-print\n'
+expect_fail "check workflow trigger (env on the check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    defaults:\n      run:\n        shell: bash -n {0}\n'
+expect_fail "check workflow trigger (defaults on the check job)" check-check-workflow-trigger
+check_seed $CW 'jobs:\n' 'defaults:\n  run:\n    shell: bash -n {0}\n\njobs:\n'
+expect_fail "check workflow trigger (workflow-level defaults)" check-check-workflow-trigger
+check_seed $CW 'jobs:\n' 'env:\n  MAKEFLAGS: --just-print\n\njobs:\n'
+expect_fail "check workflow trigger (workflow-level env)" check-check-workflow-trigger
+# The OPPOSITE failure: keys that cannot make the check pass without the gate
+# must not be refused.
+check_seed $CW "$CJOB" "${CJOB}"'    permissions:\n      contents: read\n'
+expect_pass "check workflow trigger (permissions on the check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    timeout-minutes: 30\n'
+expect_pass "check workflow trigger (timeout-minutes on the check job)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}${MAKE_STEP}"
+expect_pass "check workflow trigger (two make check steps)" check-check-workflow-trigger
 
 # Ruleset: the context is the job's reported name, which is the job id, or its
 # `name:` when one is set. A rename and an added name both orphan it.
@@ -662,7 +699,10 @@ expect_fail "check workflow trigger (ruleset file missing)" check-check-workflow
 
 # One producer: no other job, in any workflow, may report the same name. It
 # could satisfy the requirement without `make check`.
+# The renamed job also runs `make check`, so it passes every job rule and only
+# the duplicate refusal can fail this seed.
 check_seed $CW '  gate-selftest:\n' '  gate-selftest:\n    name: check\n'
+check_seed $CW '      - run: make deps\n' "$MAKE_STEP"
 expect_fail "check workflow trigger (second job named check)" check-check-workflow-trigger
 check_seed $HW "$HJOB" '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
 expect_fail "check workflow trigger (job id check in another workflow)" check-check-workflow-trigger
@@ -674,6 +714,26 @@ check_seed $HW "$HJOB" '  sneaky:\n    name: ${{ '"'check'"' }}\n    runs-on: ub
 expect_fail "check workflow trigger (expression job name in another workflow)" check-check-workflow-trigger
 check_seed $HW "$HJOB" '  sneaky:\n    "name": check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
 expect_fail "check workflow trigger (quoted name: key in another workflow)" check-check-workflow-trigger
+# A job name must be a plain one-line scalar or a simply quoted string. A quoted
+# `check` is still `check`; an escape or a folded scalar cannot be read plainly.
+check_seed $HW "$HJOB" '  sneaky:\n    name: "check"\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (quoted job name check in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: "che\x63k"\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: >-\n      check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (folded job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: ch\n      eck\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (multi-line plain job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: c${{ matrix.x }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (expression name with a prefix of check)" check-check-workflow-trigger
+# The OPPOSITE failure: an expression name whose literal prefix rules out
+# `check`, and a quoted key that is not a job id or name, protect nothing.
+check_seed $HW "$HJOB" '  sneaky:\n    name: govulncheck-${{ matrix.module }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_pass "check workflow trigger (expression name that cannot be check)" check-check-workflow-trigger
+check_seed $HW "${HJOB}"'    runs-on: ubuntu-latest\n' "${HJOB}"'    runs-on: ubuntu-latest\n    "timeout-minutes": 30\n'
+expect_pass "check workflow trigger (quoted key elsewhere in another workflow)" check-check-workflow-trigger
+check_seed $HW 'name: hermetic-smoke\n' '"name": hermetic-smoke\n'
+expect_pass "check workflow trigger (quoted top-level key in another workflow)" check-check-workflow-trigger
 # The OPPOSITE failure: a job whose id is `check` but whose reported name is
 # something else does not report the context, so it must not be refused.
 check_seed $HW "$HJOB" '  check:\n    name: unrelated\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
