@@ -1,10 +1,13 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -184,5 +187,24 @@ func TestReprocessClassification(t *testing.T) {
 				t.Fatalf("outcome = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A reprocess run has no delivery count, so an unusable catalog answer takes the handler's
+// unreadable-metadata branch and defers. The operator reads only the deferred count and the log,
+// so that log line must carry the catalog answer's cause, not only "no delivery count" (TKT-326
+// review finding 1).
+func TestReprocessorLogsTheCauseOfAnUnusableAnswer(t *testing.T) {
+	cause := fmt.Errorf("%w: capacity_group_id is all zeros (cause-marker-5e1c)", errCatalogUnusable)
+	var logs bytes.Buffer
+	st := &fakeCatalogStore{}
+	process := Reprocessor(st, fakeResolver{err: cause}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	got, err := process(context.Background(), subjectPublished, rpSchema1)
+	if err != nil || got != OutcomeDeferred {
+		t.Fatalf("outcome = %d, err = %v; want a deferral", got, err)
+	}
+	if !strings.Contains(logs.String(), "cause-marker-5e1c") {
+		t.Fatalf("log = %q; want it to carry the unusable answer's cause, or the operator cannot see why the row deferred", logs.String())
 	}
 }

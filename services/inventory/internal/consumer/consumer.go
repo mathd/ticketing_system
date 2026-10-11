@@ -675,7 +675,9 @@ func (c *Consumer) recordMoot(ctx context.Context, msg delivery, eventID, organi
 func (c *Consumer) unusableAnswer(ctx context.Context, msg delivery, env envelope, slotID, organizerID uuid.UUID, cause error) {
 	meta, err := msg.Metadata()
 	if err != nil {
-		c.log.Error("catalog event delivery count unreadable; retrying", "subject", msg.Subject(), "event_id", env.ID, "err", err)
+		// cause is logged here too: reprocess-quarantine always takes this branch (it has no
+		// delivery count), and this line is the only place its operator can read why (TKT-326).
+		c.log.Error("catalog event delivery count unreadable; retrying", "subject", msg.Subject(), "event_id", env.ID, "err", err, "cause", cause)
 		_ = msg.NakWithDelay(5 * time.Second)
 		return
 	}

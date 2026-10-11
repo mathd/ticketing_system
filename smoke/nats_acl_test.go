@@ -566,3 +566,43 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 		t.Fatalf("forged ticket scan decision = %q, want accepted", scanResult.Decision)
 	}
 }
+
+// TestNATSInventoryContainerConnectsAsTheInventoryPrincipal asserts that the RUNNING inventory
+// container connects to NATS as the `inventory` principal. TestNATSInventoryServerCannotPublishCatalogSubject
+// builds its own connection with the inventory credential, so it proves what that principal can
+// do, not that the container uses it: a Compose change that pointed inventory at platform-admin
+// would leave it green. This reads the container's environment, where the property lives.
+// (Kept from TestNATSOperatorCredentialIsConfinedToTheBroker, which TKT-326 deleted with the
+// operator identity; this assertion was still valid.)
+func TestNATSInventoryContainerConnectsAsTheInventoryPrincipal(t *testing.T) {
+	ctx := context.Background()
+	container := fmt.Sprintf("%s-inventory-1", project)
+	env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
+	if err != nil {
+		t.Fatalf("docker inspect %s: %v: %s", container, err, env)
+	}
+	var natsURLs []string
+	for _, line := range strings.Split(env, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "NATS_URL="); ok {
+			natsURLs = append(natsURLs, v)
+		}
+	}
+	if len(natsURLs) != 1 {
+		t.Fatalf("%s has %d NATS_URL entries, want exactly one", container, len(natsURLs))
+	}
+	u, err := url.Parse(natsURLs[0])
+	if err != nil {
+		// Do not echo the value or the parse error: both can carry the password.
+		t.Fatalf("%s NATS_URL does not parse as a URL", container)
+	}
+	if u.User == nil || u.User.Username() != "inventory" {
+		got := "<none>"
+		if u.User != nil {
+			got = u.User.Username()
+		}
+		t.Fatalf("%s connects to NATS as %q, want exactly %q", container, got, "inventory")
+	}
+	if _, hasPassword := u.User.Password(); !hasPassword {
+		t.Fatalf("%s NATS_URL names the inventory principal with no password", container)
+	}
+}
