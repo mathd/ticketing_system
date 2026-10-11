@@ -90,6 +90,9 @@ type Server struct {
 	// thing instead, so the default is enforcement.
 	limiters *customerLimiters
 	limOnce  sync.Once
+	// afterCheckoutClaim is a TKT-319 test seam. It runs once claimOrder has committed,
+	// before the park-marker guard in executeCheckout. Nil in production.
+	afterCheckoutClaim func()
 }
 
 // ServerConfig contains every dependency and setting fixed for a server's lifetime.
@@ -1680,6 +1683,11 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		}
 		write(w, code, map[string]string{"error": message})
 		return
+	}
+	if s.afterCheckoutClaim != nil {
+		// TKT-319 test seam: a test parks checkout here so a recovery write can land between
+		// claimOrder's commit and the guard below. Nil in production.
+		s.afterCheckoutClaim()
 	}
 	if orderStatus == "completed" {
 		ref, e := s.guestReference(r.Context(), order)

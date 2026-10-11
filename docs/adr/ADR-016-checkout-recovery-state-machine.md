@@ -18,6 +18,10 @@ Amended by **TKT-322** (2026-10-10, §Amendment below) — a release reports whe
 the row, a release or abandon that matches no row is reported as a supersession, and the runner logs
 what the store reports. Adds no audit, integrity or liveness guarantee.
 
+Amended by **TKT-319** (2026-10-10, §Amendment below) — checkout takes over a recovery claim whose lease has
+expired, so a stale claimant's claim-fenced writes stop matching. It does not close the race between a
+stalled checkout and a claim taken after the stall.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -713,8 +717,10 @@ change the total, and nothing here defends against that.
 
 - **Unfenced checkout against recovery.** Checkout's writes after `claimOrder` are not fenced by the
   recovery claim. A zero checkout stalled for over two minutes before its intent fact can be released
-  as `not_attempted` while the request later resumes. A paid order has the same interleaving today
-  (TKT-319, claim and lease contract). The zero version cannot capture money.
+  as `not_attempted` while the request later resumes. A paid order has the same interleaving today.
+  TKT-319 closes the expired-claim park. It does not close this race: a stalled checkout and a new
+  claim taken after the stall stay open. A follow-up ticket owns the checkout ownership contract.
+  The zero version cannot capture money.
 - **Buyer copy.** A `not_attempted` release replays as 408, which the storefront shows as "Payment
   declined". This change adds one more producer of that answer, a zero order with no intent fact.
   The buyer-facing fix is TKT-503.
@@ -793,6 +799,89 @@ open.
   `recovery_unpark_smoke_test.go`: a stale release at the parking boundary and a stale abandon, each
   leaving the successor's row unchanged field by field; a database failure that is not reported as a
   supersession; and the parking boundary from both sides.
+
+## Amendment (2026-10-10, TKT-319) — checkout takes over an expired recovery claim, so a stale claimant cannot park the order
+
+### The gap
+
+`claimOrder` refuses an existing order only while its recovery lease is live (`services/commerce/internal/api/server.go:1389-1391`).
+An expired lease passes that check, and `recovery_claim_id` stays on the row. Nothing in checkout clears it.
+
+The claim-fenced recovery writes compare the claim id and nothing else. `ReleaseStuckOrder` matches `id` and
+`recovery_claim_id` (`services/commerce/internal/store/recovery.go:152`). `ParkForReconciliation` matches the same
+pair (`:197`). Neither reads the lease.
+
+So a worker whose lease lapsed during an external call can still park the order. Checkout reads the park marker
+inside the `claimOrder` transaction (`server.go:1368-1369`). That transaction commits before the guard uses the
+value (`server.go:1795`). A park between the commit and the guard is not seen. Checkout then goes on to the buyer's
+PII, `order.created`, the inventory finalize and the charge (`server.go:1812-1851`).
+
+### Decision
+
+When `claimOrder` finds a claim whose lease is not live, it clears `recovery_claim_id` and `recovery_lease_until`
+in the same locked transaction, before it commits. The lease is judged with the Go clock, as the live-lease check
+already is (`server.go:1389`). The clearing statement adds no lease predicate of its own. A second clock in SQL
+could call a lease expired in Go and live in the database. The claim would then survive.
+
+The steal does not touch the attempt count, the schedule, the last error or the park marker. A claim is not an
+attempt. `ClaimStuckOrders` sets only the lease and the claim (`store/recovery.go:89-91`). `ReleaseStuckOrder` is
+the statement that spends an attempt (`:149`).
+
+### Why steal
+
+The ticket named three options. This is how each one fares.
+
+- **Refuse.** Refusing an expired lease as well as a live one strands the buyer. Every retry gets 409 until the
+  runner acts on the row. The runner claims a row only when its lease is NULL or expired, its `updated_at` is
+  older than two minutes, its next attempt is due and it is not parked (`store/recovery.go:78-84`). The refusal
+  returns before the `updated_at` refresh (`server.go:1390`; the refresh is at `:1408`), so refused retries do not
+  move that clock. The wait ends on the runner's schedule, not on anything checkout does.
+- **Re-read the park marker after the point of no return.** The charge is the point of no return
+  (`server.go:1851`). A re-read before the charge leaves a window up to the charge, and a park inside that window
+  is not seen. A re-read after the charge is too late to stop it.
+- **Steal.** The old token stops matching, so the buyer is never refused. The cost is named below: a stale worker
+  that is already inside an external call can still finish that call.
+
+### The bounded guarantee
+
+- After the steal, a claim-fenced write with the old token matches no row. That covers the park
+  (`ReleaseStuckOrder` and `ParkForReconciliation`, above). It also covers every other statement in
+  `store/recovery.go` that compares `recovery_claim_id`.
+- A release that matches no row returns `ErrRecoveryConflict` (`store/recovery.go:161-166`). The runner reports
+  that as a supersession (see the TKT-322 amendment).
+- Effects that do not match on the claim id are not covered. `RecordOrderFact` inserts into `order_facts` with no
+  claim predicate (`store/recovery.go:357-364`). `CompleteOrder` checks the order status, not the claim, and its
+  order update matches on status alone (`store/store.go:118`, `:132`).
+- External calls are not covered. A database predicate cannot stop a request that has already left the process.
+  The steal stops only the writes that follow it.
+- The adversary is an honest worker that is slow. A caller that lies, or a writer with database access, is outside
+  this rule. The rule adds no audit, integrity or liveness guarantee.
+
+### Consequences
+
+- A parked order keeps its park marker through the steal. Checkout still answers 409 before any money call
+  (`server.go:1795-1798`).
+- A live lease still refuses checkout with the existing message, and the claim stays in place
+  (`server.go:1426-1429`).
+- A dead worker's expired claim no longer blocks the buyer. Checkout takes the order and resumes it.
+
+### Residual
+
+The race between a stalled checkout and a new claim stays open after this ticket. A checkout that stalls for more
+than two minutes after `claimOrder` can have a new claim taken on its order (`store/recovery.go:84`). Checkout's
+writes after the guard do not check the claim (`server.go:1812-1820`, `:1851`). A follow-up ticket owns the
+checkout ownership contract. The steal does not close this race.
+
+### Evidence
+
+- `services/commerce/internal/api/recovery_claim_steal_smoke_test.go`. Each test runs the real checkout handler
+  against PostgreSQL. The stale-claimant test also calls the real `ReleaseStuckOrder`.
+  - COS2, the stale-claimant barrier test: checkout is parked after `claimOrder` commits, and a release with the
+    old token runs at that point. Cases cover the three resumable statuses, with an expired lease and with a NULL
+    lease.
+  - COS4: a dead worker's expired claim still resumes.
+  - COS3: a live lease still refuses checkout.
+  - A parked row keeps its marker through the steal.
 
 ## References
 
