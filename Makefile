@@ -79,12 +79,12 @@ check-security-workflow-trigger:
 	@./scripts/check-security-workflow-trigger.sh
 
 ## ---- vulnerability scan allowlist (TKT-335, ADR-081) ----
-# Only the checks that read files and never the clock: the schema, the dates,
-# the 30-day cap, the pnpm mirror, the allowed pnpm settings and the refused
-# suppression files. The clock checks (`check --now`: expiry, approval date in
-# the future) and the effective pnpm configuration (`check --effective`) run in
-# the security workflow before `pnpm audit`, not in this gate. A lapsed entry
-# must not make every unrelated PR red (ADR-081).
+# Only the checks of the committed files, whose verdict does not depend on the
+# clock: the schema, the dates, the 30-day cap, the pnpm mirror, the allowed
+# pnpm settings and the refused suppression files. The clock checks (expiry,
+# approval date in the future) run in the security workflow, inside
+# `scan-allowlist.mjs audit`, before pnpm audits; not in this gate. A lapsed
+# entry must not make every unrelated PR red (ADR-081).
 check-scan-allowlist:
 	@node --test scripts/scan-allowlist.test.mjs
 	@node scripts/scan-allowlist.mjs check

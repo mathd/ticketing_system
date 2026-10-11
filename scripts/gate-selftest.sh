@@ -410,58 +410,54 @@ open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (secret scanning dropped)" check-security-workflow-trigger
 
-# 12d. The scan allowlist wiring (ADR-081). pnpm applies auditConfig.ignoreGhsas
-#      with no expiry, so an expired entry keeps hiding its advisory unless the
-#      expiry check runs before the audit. Each seed loses one wiring line, and no
-#      scan goes red for any of them.
+# 12d. The scan allowlist wiring (ADR-081). The pnpm-audit job audits only
+#      through `scan-allowlist.mjs audit`, which checks expiry and then runs pnpm
+#      in a configuration that the runner cannot change. Each seed loses one
+#      part of that wiring, and no scan goes red for any of them.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n', '', 1)
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
-expect_fail "security workflow trigger (allowlist expiry check dropped)" check-security-workflow-trigger
+expect_fail "security workflow trigger (audit wrapper step dropped)" check-security-workflow-trigger
 
-# 12e. The check is present but runs after the audit, so the audit reads an
-#      expired ignore list first.
+# 12e. The wrapper replaced by a plain `pnpm audit`: no expiry check, and pnpm
+#      reads the runner's settings and pnpmfile hooks again.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-check = '      - run: node scripts/scan-allowlist.mjs check --now\n'
-audit = '      - run: pnpm audit --audit-level high\n'
-s = s.replace(check, '', 1).replace(audit, audit + check, 1)
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: pnpm audit --audit-level high\n', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
-expect_fail "security workflow trigger (allowlist check after the audit)" check-security-workflow-trigger
+expect_fail "security workflow trigger (plain pnpm audit instead of the wrapper)" check-security-workflow-trigger
 
 # 12f. `pnpm audit --ignore` writes the ignore list and exits 0 without
-#      reporting the remaining findings, so the audit is green whatever it finds.
+#      reporting the remaining findings; a step before the wrapper adds it.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-s = s.replace('      - run: pnpm audit --audit-level high\n',
-              '      - run: pnpm audit --audit-level high --ignore GHSA-7w5x-hrqm-74c2\n', 1)
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: pnpm audit --audit-level high --ignore GHSA-7w5x-hrqm-74c2\n      - run: node scripts/scan-allowlist.mjs audit\n', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (pnpm audit --ignore)" check-security-workflow-trigger
 
-# 12g. The check still runs, but its failure no longer fails the job.
+# 12g. The wrapper still runs, but its failure no longer fails the job.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n',
-              '      - run: node scripts/scan-allowlist.mjs check --now\n        continue-on-error: true\n', 1)
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: node scripts/scan-allowlist.mjs audit\n        continue-on-error: true\n', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
-expect_fail "security workflow trigger (allowlist check made tolerant)" check-security-workflow-trigger
+expect_fail "security workflow trigger (audit wrapper made tolerant)" check-security-workflow-trigger
 
 # 12h. Trivy no longer reads the allowlist.
 python3 - <<'SEED'
@@ -506,29 +502,28 @@ open(p, 'w').write(s)
 SEED
 expect_fail "scan allowlist (pnpm mirror drift)" check-scan-allowlist
 
-# 12k. The effective-configuration step dropped: pnpm then audits with whatever
-#      it expanded or a pnpmfile hook wrote, unchecked.
+# 12k. The job timeout removed: nothing then bounds a job that hangs before the
+#      audit step.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-s = s.replace('      - run: node scripts/scan-allowlist.mjs check --effective\n', '', 1)
+s = s.replace('    timeout-minutes: 15\n', '', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
-expect_fail "security workflow trigger (effective-configuration step dropped)" check-security-workflow-trigger
+expect_fail "security workflow trigger (pnpm-audit timeout-minutes dropped)" check-security-workflow-trigger
 
-# 12l. A quoted "if" key skips the expiry step; a line matcher did not see it.
+# 12l. A quoted "if" key skips the wrapper step; a line matcher did not see it.
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
 before = s
-s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n',
-              '      - run: node scripts/scan-allowlist.mjs check --now\n        "if": false\n', 1)
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: node scripts/scan-allowlist.mjs audit\n        "if": false\n', 1)
 assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
-expect_fail "security workflow trigger (quoted if on the expiry step)" check-security-workflow-trigger
+expect_fail "security workflow trigger (quoted if on the audit wrapper step)" check-security-workflow-trigger
 
 # 12m. Trivy still runs, but its findings no longer fail the job.
 python3 - <<'SEED'
@@ -540,6 +535,18 @@ assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (Trivy exit-code 0)" check-security-workflow-trigger
+
+# 12n. `.IGNORE` makes make ignore the errors of the allowlist target, so
+#      `make check` passes while the checker fails.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+before = s
+s = s.replace('check-scan-allowlist:\n', '.IGNORE: check-scan-allowlist\ncheck-scan-allowlist:\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (.IGNORE on the allowlist target)" check-security-workflow-trigger
 
 # 13. The hermetic workflow missing a production web image input. The enumerated
 #     path list covered the scanner and the storefront but not web/backoffice, so a

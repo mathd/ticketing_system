@@ -77,8 +77,10 @@ condition. Suppress a Trivy or pnpm vulnerability only with a reviewed `.trivyig
 ([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)). `make check` refuses
 a committed `trivy.yaml`, `trivy.yml`, `trivy-secret.yaml`, `.trivyignore`, `.pnpmfile.*` or
 `.npmrc`, a hand-made `auditConfig` ignore list, and a `pnpm-workspace.yaml` setting outside the
-allowed set. The `pnpm-audit` job also compares the configuration that pnpm builds with the
-reviewed list before `pnpm audit` runs.
+allowed set. The `pnpm-audit` job runs `pnpm audit` through `scan-allowlist.mjs audit`, with a
+minimal environment, the pnpmfile hooks off, and the registry and the lockfile directory pinned,
+so no runner setting can change what it reports. Trivy reads `TRIVY_*` variables from the runner;
+GitHub-hosted runners set none, and a self-hosted runner that sets one is outside this control.
 
 ## Not yet production-ready
 

@@ -1,31 +1,35 @@
 #!/usr/bin/env node
-// Checks the vulnerability scan allowlist, its pnpm mirror and their wiring
-// (TKT-335, ADR-081).
+// Checks the vulnerability scan allowlist, its pnpm mirror and their wiring, and
+// runs the pnpm audit for CI (TKT-335, ADR-081).
 //
-//   node scripts/scan-allowlist.mjs check [--now] [--effective] [--root DIR]
+//   node scripts/scan-allowlist.mjs check [--now] [--root DIR]
+//   node scripts/scan-allowlist.mjs audit [--root DIR]
 //   node scripts/scan-allowlist.mjs sync [--root DIR]
 //   node scripts/scan-allowlist.mjs wiring [--workflow FILE] [--root DIR]
 //
-// `check` reads files only, and never reads the clock: it refuses a bad schema, a
-// bad date, a lifetime that is not 1 to 30 days, a mirror that is not the derived
-// list, a pnpm setting outside the allowed set, and the other files that can
-// suppress a finding. `make check` runs `check`.
+// `check` reads the committed files, and its verdict does not depend on the
+// clock: it refuses a bad schema, a bad date, a lifetime that is not 1 to 30
+// days, a mirror that is not the derived list, a pnpm setting outside the
+// allowed set, and the other files that can suppress a finding. `make check`
+// runs `check`.
 //
-// `check --now` adds the two checks that need the clock: an approval date in the
+// `check --now` adds the two checks that use the clock: an approval date in the
 // future, and an entry that expires within MARGIN_MS from now. Trivy drops an
-// expired entry by itself; pnpm does not, so this check is what stops an expired
-// GHSA from staying in `auditConfig.ignoreGhsas`.
+// expired entry by itself; pnpm does not.
 //
-// `check --effective` adds a check of the configuration that pnpm builds before
-// `pnpm audit` runs (`pnpm config list --json`). pnpm expands `${...}` in keys,
-// runs pnpmfile `updateConfig` hooks and reads settings from more than one place,
-// so the committed text is not the whole story. The effective auditConfig must
-// be the derived mirror, the registry must be the default one, and no setting
-// that changes what `pnpm audit` reports may be set.
+// `audit` is the only step of the pnpm-audit job that audits. It runs
+// `check --now`, and then runs `pnpm audit --audit-level high` itself, in a
+// configuration that nothing outside the repository can change: a minimal
+// environment (PATH, a fresh empty HOME and XDG directories, COREPACK_HOME), no
+// npm or pnpm setting from the environment, `--ignore-pnpmfile`, and the registry
+// and the lockfile directory given on the command line. It passes pnpm's exit
+// status through, and fails closed when pnpm cannot start, is killed or runs
+// longer than AUDIT_TIMEOUT_MS. AUDIT_TIMEOUT_MS is shorter than MARGIN_MS, so an
+// entry that `check --now` accepted cannot expire while pnpm runs. The settings
+// that pnpm still reads come from the repository files that `check` controls.
 //
-// The pnpm-audit job runs `check --now`, then `check --effective`, then
-// `pnpm audit --audit-level high` (ADR-081). `wiring` checks that order, and the
-// Trivy step, by parsing the workflow.
+// `wiring` checks, by parsing the workflow, that the pnpm-audit job ends with
+// `audit` and that the Trivy step keeps its inputs.
 //
 // `sync` writes `auditConfig.ignoreGhsas` in pnpm-workspace.yaml from the
 // allowlist. It refuses to write from an allowlist that `check` refuses.
@@ -36,9 +40,11 @@
 // quoted date makes Trivy stop with a fatal error), anchors, aliases, tags,
 // directives, more than one document and duplicate keys.
 //
-// Exit status: 0 = accepted, 1 = refused, 2 = usage error.
+// Exit status: 0 = accepted, 1 = refused, 2 = usage error. `audit` returns
+// pnpm's own status when pnpm ran to the end.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,12 +57,14 @@ export const WORKSPACE = 'pnpm-workspace.yaml';
 // again the moment the `trivyignores` input goes. Trivy reads `trivy.yaml` from
 // the working directory by default, and `scan.skip-files` in it hides findings.
 // It also reads `trivy-secret.yaml` by default, and `disable-rules` in it turns
-// secret rules off (both verified with Trivy 0.72.0 in TKT-335). pnpm runs the
-// `updateConfig` hook of `.pnpmfile.cjs` before `pnpm audit`, and the hook can
-// replace auditConfig (verified with pnpm 11.12.0); `.pnpmfile.mjs` and
-// `.pnpmfile.js` are refused too, so a later pnpm cannot start to read them
-// unseen. pnpm reads the registry from `.npmrc`, and a registry that answers
-// "no advisories" makes the audit green.
+// secret rules off (both verified with Trivy 0.72.0 in TKT-335). pnpm 11.12.0
+// runs the `updateConfig` hook of `.pnpmfile.cjs`, and of a `.pnpmfile.mjs` with a
+// named `hooks` export, before `pnpm audit`, and the hook can replace auditConfig
+// (verified). `audit` passes `--ignore-pnpmfile`, but the files are refused too,
+// for any other pnpm command; `.pnpmfile.js` is refused so a later pnpm cannot
+// start to read it unseen. pnpm reads the registry from `.npmrc`, and a registry
+// that answers "no advisories" makes the audit green; `audit` gives the registry
+// on the command line, and the file is refused too.
 export const REFUSED_FILES = [
   'trivy.yaml',
   'trivy.yml',
@@ -73,30 +81,15 @@ export const REFUSED_FILES = [
 // keys that this repository uses, so a new key fails closed: adding a pnpm
 // setting needs a change here, and a review of what it does to the audit.
 export const WORKSPACE_KEYS = ['packages', 'allowBuilds', 'overrides', 'minimumReleaseAgeExclude', 'auditConfig'];
-// Effective settings that change what `pnpm audit` reports or how it reads the
-// lockfile (the audit command's own options, and the pnpmfile settings). The
-// names are compared without "-" and case, so `ignore-unfixable` is
-// `ignoreUnfixable`.
-export const EFFECTIVE_DENIED = [
-  'ignore',
-  'ignoreUnfixable',
-  'ignoreRegistryErrors',
-  'auditLevel',
-  'fix',
-  'production',
-  'dev',
-  'only',
-  'optional',
-  'pnpmfile',
-  'globalPnpmfile',
-];
 export const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
 export const ALLOWED_OWNERS = ['mathd'];
 export const MAX_LIFETIME_DAYS = 30;
-// `check --now` refuses an entry from one hour before its expiry. The pnpm-audit
-// job runs the audit seconds after the check, so an audit that starts less than
-// one hour after the check never applies an entry that has expired.
+// `check --now` refuses an entry from one hour before its expiry. `audit` runs the
+// check and then pnpm, and stops pnpm after AUDIT_TIMEOUT_MS, which is shorter
+// than the margin: an entry that the check accepted has not expired before pnpm
+// ends.
 export const MARGIN_MS = 3_600_000;
+export const AUDIT_TIMEOUT_MS = 600_000;
 
 const DAY = 86_400_000;
 const REQUIRED = ['id', 'statement', 'owner', 'approved_at', 'expired_at'];
@@ -384,59 +377,74 @@ function staticCheck(root, options, problems) {
 }
 
 // Returns the list of problems; an empty list means the repository is accepted.
-// `expiry` turns on the two checks that read the clock `now`; without it, `now`
-// is not read.
+// `expiry` turns on the two checks that use the clock `now`; without it, the
+// verdict does not depend on `now`.
 export function checkRepository(root, { now = new Date(), expiry = false } = {}) {
   const problems = [];
   staticCheck(root, { now, expiry }, problems);
   return problems;
 }
 
-// `pnpm config list --json` prints the configuration that pnpm builds, with
-// expanded keys and pnpmfile hooks applied (verified with pnpm 11.12.0). `env` is
-// a seam for tests, which must not read the developer's own pnpm configuration.
-export function readEffectiveConfig(root, env = process.env) {
-  const run = spawnSync('pnpm', ['config', 'list', '--json'], { cwd: root, encoding: 'utf8', env });
-  if (run.error) throw run.error;
-  if (run.status !== 0) throw new Error(`pnpm config list exited ${run.status}: ${run.stderr.trim()}`);
-  return JSON.parse(run.stdout);
+// The environment for the audit: the caller PATH (to find node and pnpm), a
+// fresh empty HOME and XDG directories so that pnpm reads no user or global
+// configuration and no global pnpmfile, and COREPACK_HOME so that the Corepack
+// pnpm shim finds the pnpm that it already installed. Nothing else from the
+// caller passes: no npm_config_* or pnpm_config_* setting, no proxy, no
+// NODE_OPTIONS.
+function auditEnvironment(callerEnv, home) {
+  const env = {
+    PATH: callerEnv.PATH ?? '',
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_CACHE_HOME: join(home, 'cache'),
+    XDG_DATA_HOME: join(home, 'data'),
+    XDG_STATE_HOME: join(home, 'state'),
+  };
+  const corepack =
+    callerEnv.COREPACK_HOME ??
+    join(callerEnv.XDG_CACHE_HOME ?? join(callerEnv.HOME ?? homedir(), '.cache'), 'node', 'corepack');
+  if (existsSync(corepack)) env.COREPACK_HOME = corepack;
+  return env;
 }
 
-function normalise(key) {
-  return key.replaceAll('-', '').toLowerCase();
-}
-
-// The static check, plus the configuration that pnpm builds for `pnpm audit`.
-// `readConfig` is the seam for tests; it returns `pnpm config list --json`.
-export function checkEffective(root, { readConfig = readEffectiveConfig } = {}) {
-  const problems = [];
-  const derived = staticCheck(root, { now: new Date(), expiry: false }, problems);
-  let config;
+// Runs `pnpm audit --audit-level high` in the repository root, in the minimal
+// environment, with the pnpmfile hooks off and the registry and the lockfile
+// directory given on the command line. Returns { code, message }: pnpm's exit
+// status when pnpm ran to the end, and 1 when it could not start, was killed or
+// timed out. `env`, `registry`, `timeoutMs` and `stdio` are seams for tests; the
+// CLI uses the defaults.
+export function runAudit(
+  root,
+  { env = process.env, registry = DEFAULT_REGISTRY, timeoutMs = AUDIT_TIMEOUT_MS, stdio = 'inherit' } = {},
+) {
+  const home = mkdtempSync(join(tmpdir(), 'scan-allowlist-audit-'));
   try {
-    config = readConfig(root);
-  } catch (error) {
-    problems.push(`cannot read the effective pnpm configuration: ${error.message}`);
-    return problems;
-  }
-  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
-    problems.push('cannot read the effective pnpm configuration: it is not an object');
-    return problems;
-  }
-  const want = JSON.stringify({ ignoreGhsas: derived ?? null });
-  const got = JSON.stringify(config.auditConfig ?? null);
-  if (got !== want) {
-    problems.push(`effective auditConfig is ${got}, want ${want}; pnpm changed or added to the committed mirror`);
-  }
-  const denied = new Set(EFFECTIVE_DENIED.map(normalise));
-  for (const key of Object.keys(config)) {
-    if (denied.has(normalise(key))) {
-      problems.push(`effective setting "${key}" is set (${JSON.stringify(config[key])}); it changes what \`pnpm audit\` reports`);
+    const auditEnv = auditEnvironment(env, home);
+    for (const key of ['XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']) mkdirSync(auditEnv[key]);
+    const args = ['audit', '--audit-level', 'high', '--ignore-pnpmfile', `--registry=${registry}`, `--lockfile-dir=${root}`];
+    const run = spawnSync('pnpm', args, { cwd: root, env: auditEnv, stdio, timeout: timeoutMs, killSignal: 'SIGKILL' });
+    if (run.error?.code === 'ETIMEDOUT') {
+      return { code: 1, message: `pnpm audit timed out after ${timeoutMs} ms and was stopped` };
     }
+    if (run.error) return { code: 1, message: `cannot run pnpm: ${run.error.message}` };
+    if (run.signal) return { code: 1, message: `pnpm audit was stopped by signal ${run.signal}` };
+    if (!Number.isInteger(run.status)) return { code: 1, message: 'pnpm audit returned no exit status' };
+    return {
+      code: run.status,
+      message: run.status === 0 ? 'pnpm audit found no finding at high or above that is not ignored' : `pnpm audit exited ${run.status}`,
+    };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
-  if (config.registry !== DEFAULT_REGISTRY) {
-    problems.push(`effective registry is ${JSON.stringify(config.registry ?? null)}, want ${DEFAULT_REGISTRY}`);
+}
+
+// `check --now`, then the audit. pnpm does not run when the check refuses.
+export function auditRepository(root, { now = new Date(), env = process.env, registry, timeoutMs, stdio } = {}) {
+  const problems = checkRepository(root, { now, expiry: true });
+  if (problems.length > 0) {
+    return { code: 1, message: problems.map((p) => `scan allowlist check failed: ${p}`).join('\n') };
   }
-  return problems;
+  return runAudit(root, { env, registry, timeoutMs, stdio });
 }
 
 // Writes auditConfig.ignoreGhsas from the allowlist. Keeps the rest of the file.
@@ -453,11 +461,10 @@ export function syncWorkspace(root, { now = new Date() } = {}) {
 
 export const WORKFLOW = '.github/workflows/security.yaml';
 export const PNPM_AUDIT_IF = "github.event_name != 'pull_request' || needs.changes.outputs.node == 'true'";
-export const PNPM_AUDIT_TAIL = [
-  'node scripts/scan-allowlist.mjs check --now',
-  'node scripts/scan-allowlist.mjs check --effective',
-  'pnpm audit --audit-level high',
-];
+export const PNPM_AUDIT_STEP = 'node scripts/scan-allowlist.mjs audit';
+// The job timeout bounds a job that hangs before the audit step. The audit step
+// itself is bounded by AUDIT_TIMEOUT_MS.
+export const MAX_JOB_TIMEOUT_MINUTES = 30;
 const STEP_KEYS = ['name', 'id', 'uses', 'with', 'run'];
 const TRIVY_INPUTS = {
   version: /^v\d+\.\d+\.\d+$/,
@@ -511,7 +518,13 @@ export function checkWiring(text) {
   if (!isObject(audit)) {
     problems.push('pnpm-audit: job missing');
   } else {
-    allowedKeys('pnpm-audit: job', audit, ['name', 'needs', 'if', 'runs-on', 'steps'], problems);
+    allowedKeys('pnpm-audit: job', audit, ['name', 'needs', 'if', 'runs-on', 'timeout-minutes', 'steps'], problems);
+    const minutes = audit['timeout-minutes'];
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_JOB_TIMEOUT_MINUTES) {
+      problems.push(
+        `pnpm-audit: "timeout-minutes" must be a whole number from 1 to ${MAX_JOB_TIMEOUT_MINUTES}, got ${JSON.stringify(minutes ?? null)}`,
+      );
+    }
     if (audit.needs !== 'changes') problems.push('pnpm-audit: "needs" must be changes');
     if (audit.if !== PNPM_AUDIT_IF) problems.push(`pnpm-audit: job "if" must be exactly: ${PNPM_AUDIT_IF}`);
     const steps = Array.isArray(audit.steps) ? audit.steps : [];
@@ -519,11 +532,11 @@ export function checkWiring(text) {
       if (isObject(step)) allowedKeys('pnpm-audit: step', step, STEP_KEYS, problems);
       else problems.push('pnpm-audit: a step is not a map');
     }
-    const tail = steps.slice(-PNPM_AUDIT_TAIL.length).map((step) => (isObject(step) ? step.run : undefined));
-    const others = steps.slice(0, -PNPM_AUDIT_TAIL.length);
+    const last = steps.at(-1);
+    const others = steps.slice(0, -1);
     const stray = others.some((step) => isObject(step) && typeof step.run === 'string' && /pnpm\s+audit|scan-allowlist/.test(step.run));
-    if (JSON.stringify(tail) !== JSON.stringify(PNPM_AUDIT_TAIL) || stray) {
-      problems.push(`pnpm-audit: the last steps must be exactly ${PNPM_AUDIT_TAIL.map((r) => `\`run: ${r}\``).join(', then ')}, with no other audit or allowlist step`);
+    if (!isObject(last) || last.run !== PNPM_AUDIT_STEP || stray) {
+      problems.push(`pnpm-audit: the last step must be exactly \`run: ${PNPM_AUDIT_STEP}\`, with no other audit or allowlist step`);
     }
   }
 
@@ -560,7 +573,7 @@ export function checkWiring(text) {
 function usage(message) {
   console.error(`scan-allowlist: ${message}`);
   console.error(
-    'usage: scan-allowlist.mjs check [--now] [--effective] [--root DIR] | sync [--root DIR] | wiring [--workflow FILE] [--root DIR]',
+    'usage: scan-allowlist.mjs check [--now] [--root DIR] | audit [--root DIR] | sync [--root DIR] | wiring [--workflow FILE] [--root DIR]',
   );
   return 2;
 }
@@ -569,27 +582,27 @@ export function main(argv) {
   const [command, ...rest] = argv;
   let root = process.cwd();
   let expiry = false;
-  let effective = false;
   let workflow;
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] === '--root' && i + 1 < rest.length) root = rest[++i];
     else if (rest[i] === '--now' && command === 'check') expiry = true;
-    else if (rest[i] === '--effective' && command === 'check') effective = true;
     else if (rest[i] === '--workflow' && command === 'wiring' && i + 1 < rest.length) workflow = rest[++i];
     else return usage(`unknown option ${rest[i]}`);
   }
   if (command === 'check') {
     const problems = checkRepository(root, { now: new Date(), expiry });
-    if (effective) problems.push(...checkEffective(root).filter((p) => !problems.includes(p)));
     if (problems.length > 0) {
       for (const problem of problems) console.error(`scan allowlist check failed: ${problem}`);
       return 1;
     }
-    const extra = [expiry ? 'no entry expires within one hour' : '', effective ? 'the effective pnpm configuration matches' : '']
-      .filter(Boolean)
-      .join('; ');
-    console.log(`scan allowlist: ${ALLOWLIST} and its pnpm mirror accepted${extra ? ` (${extra})` : ''}`);
+    console.log(`scan allowlist: ${ALLOWLIST} and its pnpm mirror accepted${expiry ? ' (no entry expires within one hour)' : ''}`);
     return 0;
+  }
+  if (command === 'audit') {
+    const result = auditRepository(root);
+    const print = result.code === 0 ? console.log : console.error;
+    for (const line of result.message.split('\n')) print(line.startsWith('scan allowlist') ? line : `scan allowlist audit: ${line}`);
+    return result.code;
   }
   if (command === 'wiring') {
     const path = workflow ?? join(root, WORKFLOW);
@@ -605,7 +618,7 @@ export function main(argv) {
       for (const problem of problems) console.error(`scan allowlist wiring failed: ${problem}`);
       return 1;
     }
-    console.log(`scan allowlist wiring: ${path} runs the allowlist checks before pnpm audit and gives Trivy the allowlist`);
+    console.log(`scan allowlist wiring: ${path} ends pnpm-audit with the audit wrapper and gives Trivy the allowlist`);
     return 0;
   }
   if (command === 'sync') {
