@@ -96,8 +96,10 @@ RETURNING `+channelColumns,
 //  2. In one transaction, an organizer-scoped SELECT ... FOR UPDATE. No row
 //     means ErrNotFound: the channel does not exist, or it belongs to another
 //     organizer, and the two must not be distinguishable to a caller who
-//     guessed an id. Because ownership is decided here, first, another
-//     organizer never learns whether a revision or a code is right.
+//     guessed an id. Ownership is decided here, before the revision and the
+//     code, so another organizer never learns whether either is right. Step
+//     1 runs earlier, but it reads only the input, so it reveals nothing
+//     about any row.
 //  3. The revision comparison, UNDER THAT LOCK. A comparison before the lock,
 //     or without it, lets two writers holding the same revision both pass
 //     and both apply; the lock makes the second one wait and then read the

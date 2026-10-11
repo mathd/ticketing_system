@@ -98,8 +98,11 @@ if (Astro.request.method === 'POST') {
       }
     } else if (action === 'update' || action === 'set-enabled') {
       // Both row forms send a FULL replacement — the endpoint has no partial
-      // update — so the row's code, name, kind and enabled flag ride along in
-      // hidden fields taken from the rendered row (D6). What makes that safe is
+      // update — so the fields a form does not edit ride along in hidden
+      // inputs taken from the rendered row (D6). The rename form edits the
+      // display name and copies code, kind and enabled. The toggle form sends
+      // the inverse of the rendered enabled and copies code, display name and
+      // kind. What makes that safe is
       // the token beside them: catalog compares it under the row lock, and a
       // matching token means the stored row is the one this page rendered.
       //

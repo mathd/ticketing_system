@@ -1712,8 +1712,14 @@ paths:
         compares it under the channel's row lock and refuses a stale value with
         409 `channel_revision_mismatch`; a refusal writes nothing. Each
         successful PUT increments the revision by one, also when the values are
-        unchanged. Ownership is decided first, so another organizer's channel
-        is 404 whatever revision is sent. This is lost-update protection between
+        unchanged. The order of refusals: a body that does not match
+        ChannelUpdate (including a missing or malformed `expected_revision`)
+        is 400 from request validation; an invalid code, display name or kind
+        is 400; then, under the lock, a channel that is missing or belongs to
+        another organizer is 404; a stale revision is 409 with `code`; a
+        different code is 409 without `code`. So another organizer's channel
+        is 404 for any well-formed body, whatever revision it carries; the
+        earlier 400s read only the request. This is lost-update protection between
         honest writers, not authorization and not tamper-evidence (ADR-021): a
         caller can send any revision, and a writer with catalog DB access can
         set any value.

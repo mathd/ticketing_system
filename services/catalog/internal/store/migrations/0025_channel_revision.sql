@@ -2,11 +2,14 @@
 -- The channel carries a REVISION (TKT-325, ADR-080).
 --
 -- WHAT GOES WRONG WITHOUT IT. PUT /channels/{id} is a full replacement of the
--- mutable fields, and the back office builds it from hidden inputs taken from
--- the page it rendered. Operator A opens the page, operator B disables the
--- channel, A renames it: A's stale `enabled=true` re-enables the channel, and
--- both operators see success. The toggle form has the same shape, so a toggle
--- reverts a concurrent rename. This is the lost update TKT-250 closed for
+-- mutable fields, and each back-office form fills the fields it does not edit
+-- from hidden inputs taken from the page it rendered: the rename form edits
+-- the display name and copies code, kind and enabled; the toggle form sends the
+-- inverse of the rendered enabled and copies code, display name and kind.
+-- Operator A opens the page, operator B disables the channel, A renames it:
+-- A's stale `enabled=true` re-enables the channel, and both operators see
+-- success. In the mirror case, a toggle's stale display name reverts a
+-- concurrent rename. This is the lost update TKT-250 closed for
 -- allocations with allocation_revision (inventory 0017).
 --
 -- A MONOTONIC COUNTER, not updated_at and not a hash. A counter detects
@@ -29,8 +32,14 @@
 -- COST. The constant default is stored as metadata, so there is no table
 -- rewrite and no backfill. The CHECK is validated by one scan of the table
 -- under the ALTER's lock. The channel registry is small (operator
--- configuration), so that scan is bounded. No index: the column is only read
--- through the primary-key lookup, and ADR-020 stands.
+-- configuration), so that scan is bounded.
+--
+-- NO INDEX. The column is read by the update's locking read (a primary-key
+-- lookup), by the full-row reads (GetChannel by id, and ListChannels through
+-- the organizer-scoped list query), and by the Down guard below. No production
+-- query filters, joins or sorts on it; it is only returned. The Down guard's
+-- `revision > 0` is a one-time scan at rollback. So no index would serve a
+-- production read, and ADR-020 stands.
 ALTER TABLE channels
     ADD COLUMN revision bigint NOT NULL DEFAULT 0
         CHECK (revision >= 0);

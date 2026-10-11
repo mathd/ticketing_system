@@ -45,8 +45,9 @@ var (
 	// differs from the stored one (TKT-325). The caller built its replacement
 	// on a stale read, so the update is refused and nothing is written.
 	// Returned only for a channel the caller's organizer owns: ownership is
-	// decided first, so another organizer's channel is ErrNotFound whatever
-	// revision is sent.
+	// decided before the revision and the code, so another organizer's
+	// channel is ErrNotFound whatever revision is sent. Only the pure field
+	// gate (ErrChannelInvalidInput) runs earlier, and it reads only the input.
 	ErrChannelRevisionMismatch = errors.New("channel revision mismatch")
 )
 

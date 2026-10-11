@@ -11,8 +11,13 @@ Accepted (TKT-325). Decisions D2, D3, D5 and D6 of TKT-325. D6 supersedes D4. Th
 
 `PUT /channels/{channelId}` replaces all mutable fields of a channel: `display_name`, `kind` and
 `enabled`. `code` is required too, and must equal the stored code. The back office has two forms on
-`channels.astro` that send this PUT. The rename form and the toggle form both put `code`,
-`display_name`, `kind` and `enabled` in hidden inputs, with the values from the rendered row.
+`channels.astro` that send this PUT, and each sends all four fields:
+
+- **Rename form.** `code`, `kind` and `enabled` are hidden inputs with the rendered row's values.
+  `display_name` is the one editable input, pre-filled with the rendered name.
+- **Toggle form.** `code`, `display_name` and `kind` are hidden inputs with the rendered row's
+  values. `enabled` is a hidden input with the INVERSE of the rendered value: the button says which
+  way it goes (Disable sends `false`, Enable sends `true`).
 
 Before this ADR, the PUT had no optimistic token. That caused a lost update in two directions:
 
@@ -35,7 +40,9 @@ This is the lost-update class that TKT-250 closed for channel allocations with
   same way (TKT-251), and it reads a row that can change between the two statements.
 - **Organizer-scoped `SELECT ... FOR UPDATE`, compare in Go, then UPDATE (chosen, D2).** One
   transaction. The lock makes the comparison and the write one decision. Ownership is decided by the
-  locking read, before any other check, so a refusal never describes another organizer's row.
+  locking read, before the revision and the code are compared, so a refusal never describes another
+  organizer's row. The checks that run earlier (request validation and the pure field gate) read
+  only the request, so they reveal nothing about any row. §Decision (D2) gives the full order.
 - **Make the hidden fields unsubmittable: the page reads the row and merges the one edited field
   (D4, superseded by D6).** See §Decision (D6) for why this was not done.
 
@@ -52,16 +59,25 @@ This is the lost-update class that TKT-250 closed for channel allocations with
   and the organizer assertion together (ADR-058), and the back office is its only caller.
 - `Channel.revision` is required in every full-row response: create, the internal GET, the operator
   list and the PUT. The public projection does not change.
-- `store.UpdateChannel` does these steps, in this order:
-  1. The pure write gate (`validateChannelWrite`).
-  2. In one transaction, `SELECT ... FROM channels WHERE id = $1 AND organizer_id = $2 FOR UPDATE`.
-     No row gives `ErrNotFound`. A missing channel and another organizer's channel give the same
-     answer.
-  3. Compare the locked revision with `expected_revision`. A mismatch gives
-     `ErrChannelRevisionMismatch`.
-  4. Compare the immutable code. A mismatch gives `ErrChannelCodeImmutable`.
-  5. `UPDATE ... SET ..., revision = revision + 1, updated_at = now()`, scoped the same way,
-     `RETURNING` the full row. Then commit. Success is returned only after the commit.
+- A PUT is refused at the first of these checks that fails, in this order:
+  1. **Request validation (400).** The contract's validator runs before the handler. A missing,
+     null, non-integer, negative or above-maximum `expected_revision` is a 400, as is any other
+     body that does not match `ChannelUpdate`. No lock is taken.
+  2. **The pure field gate (400).** `store.UpdateChannel` runs `validateChannelWrite` on the code,
+     display name and kind (`ErrChannelInvalidInput`), before any database work.
+  3. **The scoped lock (404).** In one transaction,
+     `SELECT ... FROM channels WHERE id = $1 AND organizer_id = $2 FOR UPDATE`. No row gives
+     `ErrNotFound`. A missing channel and another organizer's channel give the same answer.
+  4. **The revision (409, coded).** Compare the locked revision with `expected_revision`. A
+     mismatch gives `ErrChannelRevisionMismatch`, 409 with `code: channel_revision_mismatch`.
+  5. **The code (409, no `code`).** Compare the immutable code. A mismatch gives
+     `ErrChannelCodeImmutable`.
+
+  Then `UPDATE ... SET ..., revision = revision + 1, updated_at = now()`, scoped the same way,
+  `RETURNING` the full row, and commit. Success is returned only after the commit.
+- So another organizer's channel is 404 for any **well-formed** request, whatever revision it
+  carries. Steps 1 and 2 can refuse first, but they read only the request, so they say nothing
+  about whether the id exists.
 - The UPDATE has **no** revision predicate. The row lock is the only thing that serializes the
   comparison. The contention test depends on that (see §Test seams).
 - Each successful PUT increments the revision by one, also when the values are unchanged. A refusal
@@ -89,8 +105,12 @@ This is the lost-update class that TKT-250 closed for channel allocations with
 ALTER TABLE channels ADD COLUMN revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0);
 ```
 
-- Existing rows and new creates start at 0. No backfill and no index: the column is read only
-  through the primary-key lookup, and ADR-020 stands.
+- Existing rows and new creates start at 0. No backfill and no index. The column is read in three
+  places: the update's locking read (a primary-key lookup), the full-row reads (the internal GET by
+  id and `ListChannels`, which the organizer-scoped list query serves), and the Down guard's scan.
+  No production query filters, joins or sorts on it; it is only returned. The Down guard filters on
+  `revision > 0`, but that is a one-time scan of a small table when the migration is rolled back. So
+  no index would serve a production read, and ADR-020 stands.
 - The constant default is metadata, so there is no table rewrite. The CHECK is validated by one
   scan of the table under the ALTER's lock. TKT-325's shaping called the change "metadata-only";
   that is correct for the default and not for the CHECK.
