@@ -407,8 +407,15 @@ func TestPartnerConfirmSettlesMultipleBeneficiariesSplit(t *testing.T) {
 //	  floor sum 1000, one cent left; P1 has the unique largest remainder
 //	  expected P1 401, P2 300, P3 300 (sum 1001)
 //
+//	case 1003 cents (one ticket at 1003 per ticket)
+//	  P1: 1003 × 4000 / 10000 = 401.2 → floor 401, fractional numerator 2000
+//	  P2: 1003 × 3000 / 10000 = 300.9 → floor 300, fractional numerator 9000
+//	  P3: 1003 × 3000 / 10000 = 300.9 → floor 300, fractional numerator 9000
+//	  floor sum 1001, TWO cents left; one each to the two largest remainders, P2 and P3
+//	  expected P1 401, P2 301, P3 301 (sum 1003)
+//
 // WHAT THIS DISCRIMINATES, and nothing more. Each wrong rule below fails at least
-// one case (TKT-330 D3, D4; checked by hand with exact arithmetic):
+// one case (TKT-330 D3, D4, review pass 3; checked by hand with exact arithmetic):
 //
 //	the leftover cent to the last part (id order)      1008 → 403/302/303
 //	equal remainders ranked by id DESCENDING            1008 → 403/302/303
@@ -418,15 +425,19 @@ func TestPartnerConfirmSettlesMultipleBeneficiariesSplit(t *testing.T) {
 //	the leftover cent to the smallest share (id ties)   1001 → 400/301/300
 //	round the cumulative quotas, assign the differences 1001 → 400/301/300
 //	round each part of what is left, id order, half up  1001 → 400/301/300
+//	every leftover cent to the top-ranked part          1003 → 401/302/300
 //
-// The last three give the right answer at 1008, which is why there is a second case;
-// the descending tie, the first payee and the largest share give the right answer at
-// 1001. The reseller is on P3, the tie LOSER, because on the tie winner the
+// The 1008 and 1001 cases leave ONE cent, so they cannot tell "each leftover cent
+// to the next-ranked part" from "all of them to the top-ranked part"; 1003 leaves
+// two. The smallest-share, cumulative and successive rules give the right answer at
+// 1008; the descending tie, the first payee and the largest share give it at 1001.
+// The reseller is on P3, the tie LOSER, because on the tie winner the
 // residue-to-reseller rule would pass 1008. Parts are loaded ORDER BY payee_id, so
 // the order of the INSERTs below decides nothing and is not a check.
 func TestPartnerConfirmSettlesSplitRemainderByPayeeID(t *testing.T) {
 	t.Run("fee_1008", func(t *testing.T) { tkt330SplitCase(t, 1008, [3]int64{403, 303, 302}) })
 	t.Run("fee_1001", func(t *testing.T) { tkt330SplitCase(t, 1001, [3]int64{401, 300, 300}) })
+	t.Run("fee_1003", func(t *testing.T) { tkt330SplitCase(t, 1003, [3]int64{401, 301, 301}) })
 }
 
 // tkt330SplitCase settles one partner sale whose reseller_commission of `fee` is
@@ -652,7 +663,8 @@ func tkt330TwoResellers(t *testing.T, oneSlot bool) {
 // that reuses a raw Idempotency-Key for a confirm on a DIFFERENT reservation is
 // refused with the conflict, not sold a second order. The key names the request, not
 // the reservation; a key derived from the reservation instead of the raw key passes
-// every other case in this file and accepts this one.
+// every other case in this file and accepts this one. The same second reservation
+// then sells under a FRESH raw key, so the refusal is shown to come from the key.
 func TestPartnerConfirmRefusesRawKeyReusedOnNewReservation(t *testing.T) {
 	ctx := context.Background()
 	run := uuid.NewString()[:8]
@@ -687,6 +699,19 @@ func TestPartnerConfirmRefusesRawKeyReusedOnNewReservation(t *testing.T) {
 	}
 	tkt330AssertSlotOrders(t, ctx, slot, "after the reused key on the new reservation", only)
 	tkt330AssertCaptures(t, ctx, "after the reused key on the new reservation", original.OrderID)
+
+	// The refusal must be about the KEY, not about the second reservation: the same
+	// reservation under a FRESH raw key sells. Without this, a key that ignored the
+	// raw key and took the slot instead would pass, because both reservations share
+	// the slot and its order id collides the same way (review pass 3).
+	fresh := tkt330ConfirmOK(t, cred.token, "tkt330-reuse-confirm-fresh-"+run,
+		tkt330ConfirmBody(second, "TKT330 Buyer"), "confirm of the second reservation under a fresh raw key")
+	if fresh.OrderID == original.OrderID {
+		t.Fatalf("the second reservation under a fresh key returned the first order %s", original.OrderID)
+	}
+	tkt330AssertSlotOrders(t, ctx, slot, "after the fresh-key confirm", only,
+		tkt330OrderRow{id: fresh.OrderID, status: "completed", reseller: reseller, reservation: second})
+	tkt330AssertCaptures(t, ctx, "after the fresh-key confirm", original.OrderID, fresh.OrderID)
 }
 
 // TestPartnerConfirmReplaysOriginalOrderAfterCredentialRotation (TKT-330 COS3): a
