@@ -21,6 +21,29 @@ import (
 // membership tests also compare the set that the real claim returns. Every expected value comes
 // from the requirement, not from a run of the code.
 
+// Margins and deadlines. A seed that is excluded by time (inside the grace, not yet due, under a
+// live lease) becomes eligible when the clock passes its boundary. Seeds that are eligible by time
+// only move further from their boundary as the clock runs, and a park marker has no time boundary.
+// So each test that uses margin-separated seeds must end before its smallest exclusion margin runs
+// out. The boundary test does not use margins: it reads one transaction clock.
+//
+// requireDeadlineBelow compares the test's deadline with the `margin` that the call site states. It
+// fails the test unless the context ends before that margin has passed. It does NOT read the
+// fixtures. So it catches a deadline raised above the stated margin, but not a seed margin lowered
+// below it: change a seed to now-30s and leave the number at the call, and the check stays green.
+// Anyone who changes a seed's margin must update the number at the call. The seeds take their anchor
+// time after this check, so the time left from the anchor is shorter still.
+func requireDeadlineBelow(t *testing.T, ctx context.Context, margin time.Duration) {
+	t.Helper()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("the test context has no deadline: a margin-separated seed could cross its boundary")
+	}
+	if left := time.Until(deadline); left >= margin {
+		t.Fatalf("the test deadline (%s left) is not shorter than the smallest seed margin (%s): a seed could cross its boundary while the test runs", left, margin)
+	}
+}
+
 // eligibleRow is one order, as the fixture writes it. Every field is set. No column default
 // stands in for a value that the test must choose.
 type eligibleRow struct {
@@ -200,6 +223,9 @@ func promoteRow(t *testing.T, ctx context.Context, db *sql.DB, name string, id u
 func TestEligibleUnparkedBacklogSixRowBaseline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	// Stated by hand, not read from the seeds: the smallest exclusion margin here is the
+	// inside-grace seed (updated_at = before), two minutes. Change that seed, change this number.
+	requireDeadlineBelow(t, ctx, 2*time.Minute)
 	db := migratedDB(t, ctx)
 
 	before := dbNow(t, ctx, db)
@@ -312,6 +338,9 @@ func TestEligibleUnparkedBacklogSixRowBaseline(t *testing.T) {
 func TestEligibleUnparkedAgeIsTheOldestEligibleRow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// Stated by hand, not read from the seeds: the only seed excluded by time is the live lease,
+	// 24 hours ahead. Change that seed, or add a closer one, and change this number.
+	requireDeadlineBelow(t, ctx, 24*time.Hour)
 	db := migratedDB(t, ctx)
 
 	empty, err := ReadEligibleUnparkedRecoveryBacklog(ctx, db)
@@ -385,8 +414,12 @@ func TestEligibleUnparkedAgeIsTheOldestEligibleRow(t *testing.T) {
 // Each other class differs from the eligible base by one field. So a predicate that is dropped or
 // narrowed changes the answer for the class that tests it.
 func TestEligibleUnparkedMembershipByInputClass(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// Stated by hand, not read from the seeds: the smallest exclusion margin here is the
+	// inside-grace class (updated_at = now), two minutes. Change that class, or add a closer one,
+	// and change this number.
+	requireDeadlineBelow(t, ctx, 2*time.Minute)
 	db := migratedDB(t, ctx)
 
 	classes := []struct {
@@ -419,8 +452,11 @@ func TestEligibleUnparkedMembershipByInputClass(t *testing.T) {
 		{"due in the future", func(r *eligibleRow, now time.Time) {
 			r.nextAttemptAt = now.Add(24 * time.Hour)
 		}, false},
+		// Updated at the subcase's own `now`, so the row leaves the grace two minutes later. That
+		// is longer than the whole test's deadline, so the aggregate and the claim both see it
+		// inside the grace.
 		{"inside the two-minute grace", func(r *eligibleRow, now time.Time) {
-			r.updatedAt = now.Add(-30 * time.Second)
+			r.updatedAt = now
 		}, false},
 		{"parked", func(r *eligibleRow, now time.Time) {
 			r.parkedAt = sql.NullTime{Time: now.Add(-5 * time.Minute), Valid: true}
