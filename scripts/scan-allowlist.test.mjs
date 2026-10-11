@@ -1085,8 +1085,8 @@ describe('command line (real clock)', () => {
   });
 
   it('audit with a relative --root gives pnpm the absolute root as its directory and lockfile directory', () => {
-    // pnpm runs in the root, so a relative --lockfile-dir would point one
-    // level too deep and audit some other lockfile.
+    // pnpm runs in the root, so a relative --lockfile-dir would be resolved a
+    // second time from inside it and audit some other lockfile.
     const dir = repo({ '.trivyignore.yaml': allowlist(), 'pnpm-workspace.yaml': workspace([]) });
     const bin = join(dir, 'bin');
     mkdirSync(bin);

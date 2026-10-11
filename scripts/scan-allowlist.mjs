@@ -412,11 +412,14 @@ function auditEnvironment(callerEnv, home) {
 // directory given on the command line. Returns { code, message }: pnpm's exit
 // status when pnpm ran to the end, and 1 when it could not start, was killed or
 // timed out. `env`, `registry`, `timeoutMs` and `stdio` are seams for tests; the
-// CLI uses the defaults.
+// CLI uses the defaults. The root is made absolute here, for every caller: pnpm
+// runs in the root, so a relative --lockfile-dir would be resolved a second time
+// from inside it and name another directory.
 export function runAudit(
-  root,
+  relativeOrAbsoluteRoot,
   { env = process.env, registry = DEFAULT_REGISTRY, timeoutMs = AUDIT_TIMEOUT_MS, stdio = 'inherit' } = {},
 ) {
+  const root = resolve(relativeOrAbsoluteRoot);
   const home = mkdtempSync(join(tmpdir(), 'scan-allowlist-audit-'));
   try {
     const auditEnv = auditEnvironment(env, home);
@@ -439,10 +442,7 @@ export function runAudit(
 }
 
 // `check --now`, then the audit. pnpm does not run when the check refuses.
-// The root is made absolute: pnpm runs in it, so a relative --lockfile-dir
-// would point at a lockfile one level too deep.
-export function auditRepository(relativeOrAbsoluteRoot, { now = new Date(), env = process.env, registry, timeoutMs, stdio } = {}) {
-  const root = resolve(relativeOrAbsoluteRoot);
+export function auditRepository(root, { now = new Date(), env = process.env, registry, timeoutMs, stdio } = {}) {
   const problems = checkRepository(root, { now, expiry: true });
   if (problems.length > 0) {
     return { code: 1, message: problems.map((p) => `scan allowlist check failed: ${p}`).join('\n') };
