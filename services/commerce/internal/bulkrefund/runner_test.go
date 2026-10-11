@@ -1034,6 +1034,93 @@ func (c *cancelDuringDrive) Void(ctx context.Context, in store.VoidRequest) (ref
 	return c.inner.Void(ctx, in)
 }
 
+// TKT-332. A cancellation that lands AFTER `record`'s `ctx.Err()` check and BEFORE the
+// charge write does not reach the abandon path. It reaches `chargeDriven`, and the
+// detached context there is the only thing that makes the charge land. The two statements
+// are not atomic, and this test puts the cancellation between them.
+//
+// The schedule is forced, not timed. The charge write is itself a store call, so the
+// wrapper's ChargeAttempt cancels the caller as its FIRST statement and only then hands
+// the write to the shared fake, which refuses a Done context as a driver does. By then
+// `record` has already passed its check. Nothing between the check and the write reads
+// the caller's context again, so no sleep and no goroutine is needed.
+//
+// Mutation that must make this RED: in `chargeDriven`, replace `context.WithoutCancel(ctx)`
+// with `ctx`. The charge context is then a child of the caller, the cancellation reaches
+// it, both tries refuse, and the attempt is lost.
+//
+// The ABANDON-path case is TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller: it
+// cancels inside Refund, before `record` starts, so `record` sees the cancellation and the
+// charge rides on the hand-back. That test stays green under the mutation above, which is
+// why this one exists. Keep both; they cover different routes.
+func TestChargeAttemptSurvivesCallerCancellationAfterRecordCheck(t *testing.T) {
+	order := uuid.New()
+	f := newFakeStore()
+	// Retryable, and below the budget at zero attempts, so `record` takes the charge branch.
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+	f.work = append(f.work, work(order))
+	refunder := newFakeRefunder(f)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &cancelAtChargeStore{fakeStore: f, cancelCaller: cancel}
+
+	resolved := New(s, refunder, time.Minute, 4, time.Minute).RunOnce(ctx)
+
+	// Wiring first: if the wrapper never ran, the cancellation never happened and every
+	// assertion below would describe an ordinary uncancelled pass.
+	if ctx.Err() == nil {
+		t.Fatal("the caller context was never cancelled: the wrapper's ChargeAttempt did not run, " +
+			"so this pass never reached the window between record's check and the charge")
+	}
+	// Errorf, not Fatalf: two calls means the first charge refused and chargeDriven retried,
+	// which is what the mutation produces. Reporting it and continuing keeps the lost-attempt
+	// message below in the output, and the Fatal above already covers a missing wrapper.
+	if s.charges != 1 {
+		t.Errorf("ChargeAttempt ran %d times, want 1: more than one means the first charge "+
+			"write refused and chargeDriven retried", s.charges)
+	}
+	if got := len(refunder.keys[order]); got != 1 {
+		t.Fatalf("the refund unit was called %d times, want 1", got)
+	}
+	if got := f.attempts[order]; got != 1 {
+		t.Fatalf("attempts = %d after caller cancellation inside ChargeAttempt, want 1: the "+
+			"drive happened, so the attempt is owed, and a charge on the caller's context "+
+			"loses it to a shutdown that lands after record's check", got)
+	}
+	// The charge branch keeps the lease, and the abandon branch releases it. These two
+	// prove the attempt came from the charge branch and not from an abandon-path charge.
+	if !f.leased[order] {
+		t.Fatal("the row is no longer leased: a retryable failure must keep its lease as backoff")
+	}
+	if got := f.abandon[order]; got != 0 {
+		t.Fatalf("abandon ran %d times, want 0: the cancellation landed after record's check, "+
+			"so the row must not take the abandon path", got)
+	}
+	if got, terminal := f.final[order]; terminal {
+		t.Fatalf("a retryable failure was finalized as %+v", got)
+	}
+	if resolved != 0 {
+		t.Fatalf("RunOnce resolved %d orders, want 0", resolved)
+	}
+}
+
+// cancelAtChargeStore cancels the caller's context as the FIRST statement of
+// ChargeAttempt, then counts the call and delegates to the shared fake, which refuses a
+// Done context. Used only by the TKT-332 test, so the shared fake's default behaviour
+// does not change.
+type cancelAtChargeStore struct {
+	*fakeStore
+	cancelCaller context.CancelFunc
+	charges      int
+}
+
+func (s *cancelAtChargeStore) ChargeAttempt(ctx context.Context, w store.CancellationWork) error {
+	s.cancelCaller()
+	s.charges++
+	return s.fakeStore.ChargeAttempt(ctx, w)
+}
+
 // The charge write's two failure modes, which are a dilemma unless the write is
 // idempotent. Both reach `chargeDriven` -- unlike the abandon-path test above, these
 // drive a retryable failure to completion without cancelling, so `record` passes its
