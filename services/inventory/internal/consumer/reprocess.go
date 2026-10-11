@@ -28,8 +28,12 @@ const (
 	// OutcomeApplied: handle acked the event, so its effect (a projection, or a moot record) is
 	// committed. The quarantine row can be resolved.
 	OutcomeApplied Outcome = iota + 1
-	// OutcomeTerminal: handle terminated the event. No binary will apply it. The row can be
-	// resolved, and the envelope stays in the row for inspection until retention prunes it.
+	// OutcomeTerminal: handle made its terminal decision and terminated the event. The row can be
+	// resolved, and the envelope bytes stay in the row for inspection until retention prunes them.
+	// A terminal decision does not always mean the payload is invalid: a valid seated publication
+	// that meets conflicting stored adjacency gets ErrSeatProjectionIncomplete and terminates (its
+	// transaction rolls back). For such a row, inspect the stored projection, not the envelope;
+	// repairing that state can make the same bytes applicable again.
 	OutcomeTerminal
 	// OutcomeDeferred: handle asked for a delayed redelivery, and no store write failed. Examples:
 	// an offering event before its pool, a catalog outage, an unusable catalog answer. The row

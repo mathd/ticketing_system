@@ -105,9 +105,13 @@ Each run is one pass over the unresolved rows, oldest first. It prints
 
 - **applied**: the handler acked the event. Its projection, or its moot record, is committed, and
   the row is resolved.
-- **terminal**: the handler terminated the event, because its payload is invalid at a schema this
-  binary knows. The row is resolved. Its envelope stays in the row for inspection until retention
-  prunes it.
+- **terminal**: the handler made its terminal decision and terminated the event. The row is
+  resolved. Its envelope bytes stay in the row for inspection until retention prunes them. A
+  terminal decision usually means the payload is invalid at a schema this binary knows, but not
+  always: a valid seated publication that meets conflicting stored adjacency is refused with
+  `ErrSeatProjectionIncomplete` and terminates (its transaction rolls back). For such a row,
+  inspect the stored projection, not the envelope. Repairing that stored state can make the same
+  bytes applicable again.
 - **unsupported**: this binary still cannot read the schema. The row stays pending.
 - **deferred**: the handler asked for a delayed retry and no store write failed. The causes are an
   offering event that arrives before its pool, a catalog outage, and an unusable catalog answer.

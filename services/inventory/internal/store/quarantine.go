@@ -139,8 +139,11 @@ func (p *Postgres) ListCatalogQuarantine(ctx context.Context, after *Quarantined
 // MarkCatalogEventReinjected resolves a quarantine row. The column and method keep their TKT-68
 // names, but the meaning changed with TKT-326: reprocess-quarantine now runs the consumer's
 // handler in-process and marks a row only after the handler acked it (its projection or moot
-// record is committed) or terminated it (no binary will apply it). A row marked by an earlier
-// binary means only that the broker accepted a republication, not that processing completed.
+// record is committed) or terminated it (the handler's terminal decision; the envelope bytes are
+// kept for inspection). A terminal row is not always an invalid payload: a seated publication can
+// terminate on conflicting stored adjacency, and then the stored projection, not the envelope, is
+// what to inspect. A row marked by an earlier binary means only that the broker accepted a
+// republication, not that processing completed.
 // Idempotent: marking an already-resolved row is a no-op, so a crashed reprocess run can simply
 // be re-run (consumed_events dedups the projection).
 func (p *Postgres) MarkCatalogEventReinjected(ctx context.Context, subject string, eventID uuid.UUID) error {
