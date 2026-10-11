@@ -25,7 +25,15 @@ type terminatingStream struct {
 	consumer jetstream.Consumer
 }
 
+// CreateOrUpdateConsumer is the policy consumer's path: access-slot-policy still creates its
+// own single-filter durable.
 func (f terminatingStream) CreateOrUpdateConsumer(context.Context, jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	return f.consumer, nil
+}
+
+// Consumer is the ticket issuer's path since TKT-327: it binds to the durable nats-init
+// pre-provisioned.
+func (f terminatingStream) Consumer(context.Context, string) (jetstream.Consumer, error) {
 	return f.consumer, nil
 }
 
@@ -40,6 +48,14 @@ func (f terminatingConsumer) Consume(jetstream.MessageHandler, ...jetstream.Pull
 
 func (f terminatingConsumer) Info(context.Context) (*jetstream.ConsumerInfo, error) {
 	return &jetstream.ConsumerInfo{}, nil
+}
+
+// CachedInfo returns a VALID ticket-issuer config, so Run passes verification and reaches the
+// termination path under test. A verification error would also name the durable and satisfy the
+// error-text check below; the stopped check is what fails in that case, because Run returns
+// before Consume.
+func (f terminatingConsumer) CachedInfo() *jetstream.ConsumerInfo {
+	return validTicketIssuerInfo()
 }
 
 type terminatingConsumeContext struct {

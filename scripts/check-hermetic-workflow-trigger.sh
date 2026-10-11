@@ -195,6 +195,13 @@ for input in compose.yaml compose.direct-ports.yaml compose.onsale-load.yaml com
   echo "hermetic workflow trigger: $input schedules hermetic-smoke"
 done
 
+# TKT-327: nats-init provisions two service durables from these files, and only the hermetic
+# stack runs nats-init on a PR that changes nothing else.
+for input in deploy/nats/nats-server.conf deploy/nats/consumers/access-ticket-issuer.json deploy/nats/consumers/inventory-catalog-offering.json; do
+  path_is_covered "$input" || fail "$input does not schedule hermetic-smoke"
+  echo "hermetic workflow trigger: $input schedules hermetic-smoke"
+done
+
 for app in backoffice storefront scanner; do
   for input in Dockerfile package.json; do
     changed_path="web/$app/$input"

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -342,9 +343,10 @@ func TestNATSPaymentsConnectsWithZeroSubjectRights(t *testing.T) {
 }
 
 // TestNATSResidualCredentialedForgeryStillMintsTickets pins the unknown-order refusal and one
-// still-open case from ADR-072 §6(b). A compromised principal can read order.completed payloads
-// from JetStream under §6(a) (TKT-327); this test reads the line from the database for
-// convenience and pins only the completed-order case. The read does not check status, buyer ID,
+// still-open case from ADR-072 §6(b). TKT-327 closed the JetStream read of order.completed through
+// a widened access or inventory durable (TestNATSServiceCannotWidenItsOwnPluralDurable); the
+// forgery does not need that read, because the publisher holds the real line in its own database.
+// This test reads the line from the database and pins only the completed-order case. The read does not check status, buyer ID,
 // or guest order reference. It is not a security control; signed envelopes (TKT-296) are the fix.
 func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -604,5 +606,260 @@ func TestNATSInventoryContainerConnectsAsTheInventoryPrincipal(t *testing.T) {
 	}
 	if _, hasPassword := u.User.Password(); !hasPassword {
 		t.Fatalf("%s NATS_URL names the inventory principal with no password", container)
+	}
+}
+
+// TestNATSServiceCannotWidenItsOwnPluralDurable is the executed attack from TKT-170, asserted as
+// refused (TKT-327, ADR-072 §5). The adversary is a holder of the access or inventory NATS
+// credential (ADR-021: name the adversary). Before TKT-327 each service held CREATE on its own
+// plural-filter durable, and a plural-filter create request carries its filters in the BODY, where
+// no subject permission can constrain them: inventory's credential re-created
+// inventory-catalog-offering filtered on platform.commerce.order.completed and read commerce's
+// payload back, which carries guest_order_ref.
+//
+// Each case sends a raw request, the way an attacker would, not through a client helper that
+// might refuse first. A case passes only on all three: the broker reports a publish Permissions
+// Violation for THAT exact subject, no reply arrives, and an admin INFO shows the filters
+// unchanged. With a CREATE grant restored, the broker answers the request, so the case goes red
+// on any reply, whether or not a pull later wins a race for the message.
+//
+// The body keeps every other field of the current config, so a refusal cannot come from an
+// invalid config. The legacy DURABLE.CREATE subject was never granted to either service, so its
+// case is a pin, not a mutation-checked guard.
+func TestNATSServiceCannotWidenItsOwnPluralDurable(t *testing.T) {
+	u, err := url.Parse(natsURL)
+	if err != nil {
+		t.Fatalf("parse natsURL: %v", err)
+	}
+	for _, target := range []struct {
+		principal string
+		durable   string
+		foreign   string // a subject this principal must not read
+	}{
+		{principal: "inventory", durable: "inventory-catalog-offering", foreign: "platform.commerce.order.completed"},
+		{principal: "access", durable: "access-ticket-issuer", foreign: "platform.catalog.performance.archived"},
+	} {
+		t.Run(target.principal, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			adminConn, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+			if err != nil {
+				t.Fatalf("admin connect: %v", err)
+			}
+			t.Cleanup(adminConn.Close)
+			adminJS, err := jetstream.New(adminConn)
+			if err != nil {
+				t.Fatalf("admin jetstream: %v", err)
+			}
+			stream, err := adminJS.Stream(ctx, "PLATFORM")
+			if err != nil {
+				t.Fatalf("admin get PLATFORM stream: %v", err)
+			}
+			currentConfig := func() jetstream.ConsumerConfig {
+				t.Helper()
+				cons, err := stream.Consumer(ctx, target.durable)
+				if err != nil {
+					t.Fatalf("admin INFO %s: %v", target.durable, err)
+				}
+				return cons.CachedInfo().Config
+			}
+			original := currentConfig()
+			if len(original.FilterSubjects) < 2 || original.FilterSubject != "" {
+				t.Fatalf("%s filters = %v / %q, want the plural form this attack targets", target.durable, original.FilterSubjects, original.FilterSubject)
+			}
+			// If an attempt got through (a restored grant), put the durable back as admin. It runs
+			// after EACH attempt, not once at the end: a widened durable left in place would make
+			// the next attempt fail on "filters changed" for a request that was in fact refused,
+			// and it would leave the running service consuming the foreign subject.
+			restore := func(t *testing.T) {
+				restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer restoreCancel()
+				cons, err := stream.Consumer(restoreCtx, target.durable)
+				if err != nil {
+					t.Errorf("cleanup: admin INFO %s: %v", target.durable, err)
+					return
+				}
+				got := cons.CachedInfo().Config
+				if slices.Equal(got.FilterSubjects, original.FilterSubjects) && got.FilterSubject == original.FilterSubject {
+					return
+				}
+				if _, err := stream.CreateOrUpdateConsumer(restoreCtx, original); err != nil {
+					t.Errorf("cleanup: restore %s filters as admin: %v", target.durable, err)
+				}
+			}
+
+			widened := original
+			widened.FilterSubjects = append(slices.Clone(original.FilterSubjects), target.foreign)
+			single := original
+			single.FilterSubjects = nil
+			single.FilterSubject = target.foreign
+
+			for _, attempt := range []struct {
+				name    string
+				subject string
+				config  jetstream.ConsumerConfig
+			}{
+				// The TKT-170 attack: the plural filter rides in the body of the unsuffixed subject.
+				{name: "plural body on the unsuffixed create subject",
+					subject: "$JS.API.CONSUMER.CREATE.PLATFORM." + target.durable, config: widened},
+				// The filter as a subject token: the second removed grant (CREATE.<durable>.>).
+				{name: "single filter on the suffixed create subject",
+					subject: "$JS.API.CONSUMER.CREATE.PLATFORM." + target.durable + "." + target.foreign, config: single},
+				// Pin: the pre-2.9 durable create API, never granted to either service.
+				{name: "legacy durable create subject",
+					subject: "$JS.API.CONSUMER.DURABLE.CREATE.PLATFORM." + target.durable, config: widened},
+			} {
+				t.Run(attempt.name, func(t *testing.T) {
+					t.Cleanup(func() { restore(t) })
+					body, err := json.Marshal(struct {
+						Stream string                   `json:"stream_name"`
+						Config jetstream.ConsumerConfig `json:"config"`
+					}{Stream: "PLATFORM", Config: attempt.config})
+					if err != nil {
+						t.Fatal(err)
+					}
+					asyncErrs := make(chan error, 8)
+					serviceURL := fmt.Sprintf("nats://%s:%s@%s", target.principal, natsPassword(target.principal), u.Host)
+					nc, err := nats.Connect(serviceURL,
+						nats.Timeout(3*time.Second),
+						nats.RetryOnFailedConnect(false),
+						nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+							select {
+							case asyncErrs <- err:
+							default:
+							}
+						}),
+					)
+					if err != nil {
+						t.Fatalf("%s connect: %v", target.principal, err)
+					}
+					defer nc.Close()
+
+					reply, reqErr := nc.Request(attempt.subject, body, 2*time.Second)
+					if reqErr == nil {
+						t.Fatalf("%s got a reply on %s, want a refused publish: %s", target.principal, attempt.subject, reply.Data)
+					}
+					want := fmt.Sprintf("Permissions Violation for Publish to %q", attempt.subject)
+					deadline := time.After(2 * time.Second)
+				wait:
+					for {
+						select {
+						case e := <-asyncErrs:
+							if strings.Contains(e.Error(), want) {
+								break wait
+							}
+						case <-deadline:
+							t.Fatalf("%s request on %s failed (%v) with no %s; the refusal is not proven to be the ACL", target.principal, attempt.subject, reqErr, want)
+						}
+					}
+
+					got := currentConfig()
+					if !slices.Equal(got.FilterSubjects, original.FilterSubjects) || got.FilterSubject != original.FilterSubject {
+						t.Fatalf("%s filters changed to %v / %q after a refused request, want %v", target.durable, got.FilterSubjects, got.FilterSubject, original.FilterSubjects)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries PINS A GAP; it asserts the gap is
+// PRESENT (ADR-072 §6(c)). It is not a security control, and it must not be read as one.
+//
+// Every service principal subscribes to _INBOX.>, and no service sets a custom inbox prefix, so
+// they all share nats.go's default `_INBOX.` namespace. A JetStream pull delivers each message to
+// the puller's reply inbox. So any principal can subscribe to _INBOX.> and receive copies of
+// another principal's deliveries. TKT-327 closed the body-controlled filter path
+// (TestNATSServiceCannotWidenItsOwnPluralDurable); it did not close this one. Executed during
+// TKT-327 on an isolated broker with the production ACL: the inventory credential, watching
+// _INBOX.>, read access-ticket-issuer's delivery of an order.completed carrying guest_order_ref.
+//
+// TKT-519 tracks the fix (a per-principal inbox prefix in every service's connection, with each
+// principal's subscribe grant narrowed to it). When TKT-519 lands, this test goes red because
+// inventory sees nothing; TKT-519 then flips it to assert a REFUSAL (inventory's subscribe on
+// another principal's inbox namespace is a Permissions Violation and no delivery arrives) and
+// updates ADR-072 §6(c). Until then, do not weaken or delete it.
+//
+// This test shows the mechanism without touching a service durable: the admin pulls from a
+// throwaway durable on a subject no service consumes, and the inventory credential reads the
+// delivery from the shared inbox namespace.
+func TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	u, err := url.Parse(natsURL)
+	if err != nil {
+		t.Fatalf("parse natsURL: %v", err)
+	}
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	subject := "platform.smoke.inbox-pin." + suffix
+	marker := "inbox-pin-marker-" + suffix
+
+	invConn, err := nats.Connect(fmt.Sprintf("nats://inventory:%s@%s", natsPassword("inventory"), u.Host),
+		nats.Timeout(3*time.Second), nats.RetryOnFailedConnect(false))
+	if err != nil {
+		t.Fatalf("inventory connect: %v", err)
+	}
+	defer invConn.Close()
+	seen := make(chan string, 4)
+	sub, err := invConn.Subscribe("_INBOX.>", func(m *nats.Msg) {
+		if strings.Contains(string(m.Data), marker) {
+			select {
+			case seen <- m.Subject:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("inventory subscribe _INBOX.>: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	if err := invConn.Flush(); err != nil {
+		t.Fatalf("inventory flush: %v", err)
+	}
+
+	adminConn, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+	if err != nil {
+		t.Fatalf("admin connect: %v", err)
+	}
+	defer adminConn.Close()
+	adminJS, err := jetstream.New(adminConn)
+	if err != nil {
+		t.Fatalf("admin jetstream: %v", err)
+	}
+	stream, err := adminJS.Stream(ctx, "PLATFORM")
+	if err != nil {
+		t.Fatalf("admin get PLATFORM stream: %v", err)
+	}
+	durable := "inbox-pin-" + suffix
+	cons, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable: durable, FilterSubject: subject,
+		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("create throwaway durable: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.DeleteConsumer(context.Background(), durable) })
+	if _, err := adminJS.Publish(ctx, subject, []byte(`{"marker":"`+marker+`"}`)); err != nil {
+		t.Fatalf("publish marker: %v", err)
+	}
+	batch, err := cons.Fetch(1, jetstream.FetchMaxWait(3*time.Second))
+	if err != nil {
+		t.Fatalf("admin fetch: %v", err)
+	}
+	pulled := false
+	for m := range batch.Messages() {
+		pulled = strings.Contains(string(m.Data()), marker)
+		_ = m.Ack()
+	}
+	if !pulled {
+		t.Fatal("the admin pull did not receive the marker; the fixture did not create a delivery to observe")
+	}
+	select {
+	case <-seen:
+		// The gap is present, as ADR-072 §6(c) records.
+	case <-time.After(3 * time.Second):
+		t.Fatal("the inventory credential did not see another connection's JetStream delivery on _INBOX.>; " +
+			"if TKT-519 has landed, flip this test to assert a refusal and update ADR-072 §6(c)")
 	}
 }

@@ -1,0 +1,11 @@
+{
+  "durable_name": "access-ticket-issuer",
+  "filter_subjects": [
+    "platform.commerce.order.completed",
+    "platform.commerce.order.exchanged"
+  ],
+  "deliver_policy": "all",
+  "ack_policy": "explicit",
+  "max_deliver": -1,
+  "backoff": [1000000000, 5000000000, 30000000000, 120000000000, 300000000000, 600000000000]
+}

@@ -35,17 +35,27 @@ type fakeStream struct {
 }
 
 func (f fakeStream) DeleteConsumer(context.Context, string) error { return nil }
-func (f fakeStream) CreateOrUpdateConsumer(context.Context, jetstream.ConsumerConfig) (jetstream.Consumer, error) {
-	return f.cons, nil
-}
 
 type fakeConsumer struct {
 	jetstream.Consumer
 	cc *fakeConsumeContext
 }
 
+// Consumer is Run's bind since TKT-327: nats-init pre-provisions the durable.
+func (f fakeStream) Consumer(context.Context, string) (jetstream.Consumer, error) {
+	return f.cons, nil
+}
+
 func (f fakeConsumer) Consume(jetstream.MessageHandler, ...jetstream.PullConsumeOpt) (jetstream.ConsumeContext, error) {
 	return f.cc, nil
+}
+
+// CachedInfo returns a VALID config, so Run passes verification and reaches the startup window
+// under test. A verification error would also name the durable and satisfy the error-text
+// checks below; the resolver.entered wait and the stopped check are what fail in that case,
+// because Run returns before Consume and before reconciliation.
+func (f fakeConsumer) CachedInfo() *jetstream.ConsumerInfo {
+	return validOfferingInfo()
 }
 
 type fakeConsumeContext struct {

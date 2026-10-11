@@ -6,6 +6,10 @@ Date: 2026-07-27
 
 Accepted
 
+Amended by **TKT-327** (2026-10-11, §Amendment: pre-provisioned plural-filter durables) — access
+and inventory no longer create their plural-filter durables. `nats-init` creates them, and the
+services bind to them and verify them.
+
 ## Context
 
 `docs/architecture.md` describes `shared/go` as a **shared kernel** whose additions **require an
@@ -132,7 +136,10 @@ Everything below stays with the owning service:
 
 - **Durable configuration, stream lookup, handler registration and dispatch.** The two
   `consumerConfig`s differ in filter subjects, `MaxAckPending` and `BackOff`, and inventory deletes
-  an orphaned durable on the way in.
+  an orphaned durable on the way in. Since TKT-327 the service still OWNS that configuration, but
+  `nats-init` CREATES the two plural-filter durables from it, and the service verifies the result
+  (§Amendment: pre-provisioned plural-filter durables). The verification is per service, in each
+  consumer package, not in this package.
 - **Disposition** — term, park, quarantine, NAK-with-delay, and whether readiness latches. Service
   policy, and it differs (ADR-033).
 - **Envelope decoding, per-subject known schema ranges, retry schedules, quarantine persistence,
@@ -295,6 +302,71 @@ for a join.
 broker. Consumers now require explicit `$JS.API.CONSUMER.*` publish permissions and `_INBOX.>` subscribe
 permissions to manage JetStream durables. The durable consumer lifecycle primitive in `shared/durableconsumer`
 operates without modification because credentials are provided in the broker connection URL (`NATS_URL`).
+
+### Amendment: pre-provisioned plural-filter durables (TKT-327)
+
+**What changed.** `access-ticket-issuer` and `inventory-catalog-offering` are no longer created by
+their services. `nats-init` creates them under `platform-admin` from committed files
+(`deploy/nats/consumers/`), with INFO first and ADD only when the durable is absent. Each service's
+`Run` binds with `stream.Consumer` and compares the INFO it gets with its own `consumerConfig()`
+before it calls `Consume` or changes readiness. A missing durable or a difference returns a durable-
+and field-named error. The service does not consume, does not report ready, and never creates or
+updates the durable. `access-slot-policy` is unchanged: access still creates it, because its single
+`FilterSubject` is pinned by its create subject ([ADR-072](ADR-072-nats-publisher-acls.md) §5).
+
+**Why.** Both durables declare plural `FilterSubjects`, so a create request carries the filters in
+its body, and no subject permission can constrain a body. With a CREATE grant, a holder of the
+service credential could re-create its own durable with a widened filter and read another service's
+events. TKT-170 executed that with inventory's grants. Splitting each durable into single-filter
+durables would keep creation in the service, but it was rejected: separate durables deliver
+independently, and both consumers depend on one stream order across their subjects
+(`order.completed` and `order.exchanged`; published before archived or closed).
+
+**Ownership, restated.** The configuration stays service-owned in the sense of this ADR: the code
+declares it and the code decides whether it is acceptable. Creation is what moved, together with
+the permission to create. The permission a service needs is now INFO, MSG.NEXT and ACK on its
+durable, not CREATE.
+
+**The comparison.** Only the fields `consumerConfig()` sets: the filter set (plural and singular,
+order-independent, exact), `ack_policy`, `deliver_policy`, `max_deliver`, `backoff` (access exact
+and ordered; inventory empty), inventory's `max_ack_pending`, and `headers_only`. Fields the code
+leaves to the server (`ack_wait`, access's `max_ack_pending`, `max_waiting`, replicas) are not
+compared. A durable created by the old service code and one created by `nats-init` from the same
+fields get the same server defaults, so both verify. This was executed against the pinned broker
+and CLI. A NATS upgrade that changes a default cannot cause a false refusal.
+
+**Two sources of truth.** The config now lives in `consumerConfig()` and in the committed JSON. A
+change touches both. A unit test per service compares the default JSON with `consumerConfig()`
+(that covers the `make up` path, which no gate runs), and the smoke stack's startup covers the
+`.smoke.json` variant. The access file is selectable (`NATS_ACCESS_TICKET_ISSUER_CONFIG`) because
+its `backoff` must agree with `ACCESS_EVENT_RETRY_BACKOFF`.
+
+**Consequences an operator sees.**
+
+- **A deleted durable no longer heals itself.** Before, the service recreated it on restart. Now
+  `WaitWithCause` still latches unready and the process still exits, but the restarted container
+  fails its bind and restart-loops (`restart: unless-stopped`) until `nats-init` runs again
+  (`docker compose up nats-init`, or `make up`). This is louder than before, not quieter: the old
+  self-heal hid a deletion behind a new creation timestamp ([ADR-072](ADR-072-nats-publisher-acls.md)
+  §5).
+- **Re-provisioning replays.** A recreated durable starts at `deliver_policy: all`, so it redelivers
+  everything the stream retains. That is the recreation case of
+  [ADR-017](ADR-017-domain-event-schema-evolution.md) §5(b), not an ordinary restart: dedup makes
+  the replay safe for known schemas, and a retained schema the binary does not know parks the
+  consumer unready.
+- **Drift is fixed under admin authority, never by the service.** For inventory, `nats consumer
+  edit --config` with the committed file updates a field NATS can change and keeps the cursor. For
+  access, the pinned CLI refuses that edit on a BackOff consumer, so the fix is delete plus
+  `nats-init`, with the replay above. Both were executed against the pinned CLI and broker.
+  `docs/development.md` has the steps.
+- **Residual (accepted): ADD can overwrite drift evidence.** `nats-init` treats any INFO failure as
+  "absent". If INFO fails transiently for an existing durable, ADD (create-or-update) can update it
+  to the committed config, and the evidence of an earlier drift is gone. The three alarm operator
+  durables already accept the same pattern.
+
+The termination handling above and this package's boundary are unchanged: `shared/durableconsumer`
+still imports no JetStream, and the bind and the verification live in each service's consumer
+package (`config_verification.go`).
 
 ## References
 

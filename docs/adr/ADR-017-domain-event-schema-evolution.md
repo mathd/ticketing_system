@@ -270,7 +270,8 @@ On *ordering* the two sides, given a bump is required:
       consumer resumes from its stored position and does **not** re-read acknowledged history, so
       restarting cannot resurrect an event it already processed. That is the only guarantee it
       gives. Events published **while the consumer was stopped are pending, not history**
-      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `CreateOrUpdateConsumer`), so if
+      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `consumerConfig`; since TKT-327
+      `nats-init` creates the durable from it and the service binds), so if
       catalog emitted Schema 3 during inventory's downtime, restarting the *old* binary against the
       same durable delivers them — straight to the `default` arm. Since TKT-61 that means held (now
       quarantined + acked, TKT-68) and
