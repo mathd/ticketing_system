@@ -10,6 +10,11 @@ Amended by **TKT-326** (2026-10-11, §Amendment below) — the operator identity
 Catalog is the only service principal that can publish on `platform.catalog.*`, and the stack has
 six principals.
 
+Amended by **TKT-327** (2026-10-11, §Amendment below) — access and inventory hold no CREATE grant
+for their plural-filter durables, so the body-controlled filter of §5 and §6(a) is closed for both.
+Cross-service READS are **not** closed: §6(c) records a second read path, through the shared
+`_INBOX.>` namespace, executed during TKT-327.
+
 ## Context
 
 The platform uses NATS JetStream with the `PLATFORM` stream as its event bus ([ADR-007](ADR-007-postgres-nats.md)).
@@ -46,9 +51,10 @@ We require per-principal publish and subscribe permissions to isolate service ca
       Delivers credentials through `NATS_URL` without Go code modifications.
     - Cons: Requires explicit JetStream API permissions for CONSUMERS (pure publishers need none —
       see §6). And it does **not** deliver an exact SUBSCRIBE boundary against a compromised
-      principal: two durables declare plural `FilterSubjects`, whose create subject carries no
-      filter token, so their filter is body-controlled and cannot be constrained by subject
-      permission. See §Residual risk. That limit is accepted here, not solved.
+      principal. As first accepted: two durables declare plural `FilterSubjects`, whose create
+      subject carries no filter token, so their filter was body-controlled and could not be
+      constrained by subject permission. TKT-327 closed that path (§Amendment). The shared
+      `_INBOX.>` namespace is a second path, still open (§6(c)).
 
 ## Decision
 
@@ -63,8 +69,8 @@ variables (seven until TKT-326 removed the operator identity of §4).
 | `platform-admin` | `>` | — | `>` | — | Admin migrations, `nats-init`, smoke runner |
 | `catalog` | `platform.catalog.performance.{published,archived,closed,reopened}`, `platform.catalog.seat_map.published` | — | `_INBOX.>` | — | Catalog publications |
 | `commerce` | `platform.commerce.order.completed`, `platform.commerce.order.exchanged` | — | `_INBOX.>` | — | Order completions and exchanges |
-| `access` | `platform.access.ticket-issuance.failed`, `platform.access.{lifecycle-integrity,admission-conflict,admission-policy-conflict}.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to its OWN durables for every MUTATING or CONSUMING call (`CREATE`/`MSG.NEXT`/`ACK`), with read-only `CONSUMER.INFO.PLATFORM.*` | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, the three `platform.access.*.alarm` subjects, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
-| `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, consumer APIs scoped to `inventory-catalog-offering` for every mutating or consuming call, read-only `CONSUMER.INFO.PLATFORM.*`, plus `CONSUMER.DELETE` for the single legacy durable `inventory-performance-provisioner` | All `platform.*` | `platform.catalog.performance.{published,archived,closed,reopened}`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
+| `access` | `platform.access.ticket-issuance.failed`, `platform.access.{lifecycle-integrity,admission-conflict,admission-policy-conflict}.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to its OWN durables for every MUTATING or CONSUMING call (`MSG.NEXT`/`ACK` on both; `CREATE` only for `access-slot-policy`, pinned to its one filter; none for `access-ticket-issuer`, which `nats-init` pre-provisions — TKT-327), with read-only `CONSUMER.INFO.PLATFORM.*` | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, the three `platform.access.*.alarm` subjects, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
+| `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, `CONSUMER.INFO`/`MSG.NEXT`/`ACK` scoped to `inventory-catalog-offering` (no `CREATE`: `nats-init` pre-provisions it — TKT-327), plus `CONSUMER.DELETE` for the single legacy durable `inventory-performance-provisioner` | All `platform.*` | `platform.catalog.performance.{published,archived,closed,reopened}`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
 | `payments` | — | `>` | — | `>` | Healthcheck connection only (`IsConnected`) |
 
 ### 2. The Adversary Model (ADR-021 discipline)
@@ -121,15 +127,17 @@ an error would have seen a healthy system. The `CREATE.>` half is worse in princ
 that can create a consumer with an arbitrary filter can read any subject, which would make the
 subscribe column above decorative rather than a boundary.
 
-**A residual that scoping does not close, recorded because the ADR would otherwise overclaim.** A
-durable declared with PLURAL `FilterSubjects` carries no filter token in its create subject, so its
-filter arrives in the request body and NATS cannot constrain it by subject permission. Two durables
-are affected — `access-ticket-issuer` and `inventory-catalog-offering`. Demonstrated: a principal
-holding only inventory's grants re-created its OWN durable filtered on
-`platform.commerce.order.completed` and read the payload back. **So the subscribe column above
-bounds an honest client, not a compromised one.** Closing it means pre-provisioning both durables in
-`nats-init` and removing the services' `CreateOrUpdateConsumer` calls — a change to consumer startup
-behaviour that also touches ADR-034, tracked as **TKT-327**. `access-slot-policy` is **not** affected, and the reason is worth stating because it was wrong once:
+**A residual that scoping did not close — closed by TKT-327 for this path only.** A durable
+declared with PLURAL `FilterSubjects` carries no filter token in its create subject, so its filter
+arrives in the request body and NATS cannot constrain it by subject permission. Two durables were
+affected — `access-ticket-issuer` and `inventory-catalog-offering`. Demonstrated in TKT-170: a
+principal holding only inventory's grants re-created its OWN durable filtered on
+`platform.commerce.order.completed` and read the payload back. TKT-327 removed the services' CREATE
+grants for both durables: `nats-init` pre-provisions them under `platform-admin`, and each service
+binds with INFO and verifies the config before it consumes
+([ADR-034](ADR-034-shared-durable-consumer-lifecycle.md) §Amendment: pre-provisioned plural-filter
+durables). The subscribe column above is still **not** a boundary against a compromised principal,
+for a different reason: §6(c). `access-slot-policy` is **not** affected, and the reason is worth stating because it was wrong once:
 it declares a SINGLE `FilterSubject`, so its create subject carries the filter as a suffix token —
 but that only helps if the UNSUFFIXED create subject is not also granted. It was, in the first fix
 round, which left the same body-controlled path open on a third durable (ai-review pass 3). Only the
@@ -145,18 +153,32 @@ publish authority.
 
 ### 6. Residual Risk and Pinned Gap
 
-**Two residuals, both accepted, both tracked. Neither is closed by this ADR.**
+**Three residuals. (a) is closed by TKT-327; (b) and (c) are open and accepted.**
 
-**(a) Cross-service READS by a compromised principal — TKT-327.** Demonstrated, not theoretical: a
-principal holding exactly inventory's grants re-created its own durable
+**(a) Cross-service READS through a body-controlled durable filter — closed by TKT-327.**
+Demonstrated in TKT-170: a principal holding exactly inventory's grants re-created its own durable
 (`inventory-catalog-offering`) with a filter of `platform.commerce.order.completed` and read the
-payload back. `access-ticket-issuer` has the same shape. The cause is a NATS property rather than a
+payload back. `access-ticket-issuer` had the same shape. The cause is a NATS property rather than a
 configuration mistake — a durable declared with plural `FilterSubjects` has no filter token in its
-create subject, so the filter is body-controlled. **Therefore the subscribe column of the matrix
-above is a boundary for an honest client only.** The adversary this ADR binds on the read side is
-one WITHOUT credentials; a compromised service principal is explicitly NOT bound. Closing it means
-removing body-controlled CREATE (pre-provision the durables, drop `CreateOrUpdateConsumer`), which
-touches ADR-034.
+create subject, so the filter is body-controlled. TKT-327 removed both services' CREATE authority
+over these durables (§Amendment).
+
+What is claimed now, and against whom (ADR-021): **a holder of the access or the inventory service
+credential cannot change the filters of its plural-filter durable through the JetStream consumer
+create APIs** — not the unsuffixed subject (plural filter in the body), not the suffixed subject
+(single filter as a token), and not the legacy `DURABLE.CREATE` subject.
+`TestNATSServiceCannotWidenItsOwnPluralDurable` executes each request with the real credential and
+asserts a publish Permissions Violation, no reply and unchanged filters. Restoring each removed
+grant, one at a time, was executed on an isolated broker with this ACL file and turned exactly its
+own case red. What is **not** claimed:
+
+- Nothing about `platform-admin` or the NATS host administrator (§2). Either can change a durable at
+  will, and the services verify their durable only at startup, not continuously.
+- Nothing about other read paths. §6(c) is one, executed, and still open.
+- Nothing about `access-slot-policy` beyond §5: its CREATE grant stays, pinned to its one filter.
+
+**Therefore the subscribe column of the matrix above is still a boundary for an honest client
+only** — because of (c), not (a).
 
 **(b) Forged events within a principal's own publish boundary — TKT-296.**
 
@@ -171,14 +193,37 @@ Access compares only order ID, organizer, slot, ticket type, and quantity
 order that still has a reservation row and get tickets for seats whose hold may already be released. A
 forger could also keep those checked fields from a real order and choose a different `buyer_id` or
 `guest_order_ref`. The smoke test executes only the completed-order, original-buyer case. A compromised
-Commerce service can answer the read for any forged event. As §6(a) describes, a compromised principal
-can read `order.completed` payloads from JetStream (TKT-327), which expose an order line. The seat read
-is not a security control and does not authenticate the event. TKT-296 tracks the residual: signed event
+Commerce service can answer the read for any forged event. Before TKT-327, a holder of the inventory
+credential could read `order.completed` payloads from JetStream through a widened durable (§6(a)). That
+path is closed, but §6(c) still exposes the same payloads, and the access principal reads them by design;
+each payload exposes an order line. The seat read is not a security control and does not authenticate
+the event. TKT-296 tracks the residual: signed event
 envelopes close forgery by a holder of stolen NATS credentials who does not have the signing key. A
 compromised service or signer remains outside that guarantee.
 
 Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` pins both the
 narrowed case and the still-open case. Do not remove this test.
+
+**(c) Cross-service READS through the shared inbox namespace — open, found in TKT-327, tracked as
+TKT-519.** Four service
+principals hold `subscribe: _INBOX.>` — `catalog`, `commerce`, `access` and `inventory`. (`payments`
+holds no subscribe grant at all; `platform-admin` holds `>` and is outside §2's adversary model.) No
+service sets a custom inbox prefix, so every service connection uses nats.go's default `_INBOX.`
+namespace. A JetStream pull delivers each message to the puller's reply inbox. A holder of any of
+those four credentials can therefore subscribe to `_INBOX.>` and receive copies of every pull
+delivery made to a connection that uses the default prefix — today, `access`'s and `inventory`'s
+durables. **Executed, not argued:** on an isolated broker with this ACL file and the
+TKT-327 grants, the `inventory`, `catalog` and `commerce` credentials, each watching `_INBOX.>`, read
+`access-ticket-issuer`'s delivery of an `order.completed` carrying `guest_order_ref`; the `payments`
+credential, run the same way, saw nothing. It does not need any CREATE grant, so TKT-327
+does not close it. The likely fix is a per-principal inbox prefix (each service's `nats.Connect`
+with a custom inbox prefix, and each principal's subscribe grant narrowed to that prefix); it
+touches every service's connection code, so it is its own ticket: **TKT-519**. Until TKT-519
+lands, a compromised `catalog`, `commerce`, `access` or `inventory` principal can read every event
+that `access` or `inventory` pulls from JetStream.
+`TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries` pins this gap as PRESENT. When TKT-519
+lands, that test goes red because nothing is seen; TKT-519 then updates this paragraph and flips the
+test to assert a refusal.
 
 ## Amendment (2026-10-11, TKT-326) — catalog is the only service that publishes on its prefix
 
@@ -210,15 +255,37 @@ What is true now:
   inventory's Go code to remove the republication.
 - The adversary model of §2 is unchanged. TKT-326 removes a credential that an operator had to
   deliver correctly at each invocation. It does not change what a holder of `platform-admin`, or
-  an administrator of the NATS host, can do. Residual (a), TKT-327, is untouched.
+  an administrator of the NATS host, can do. Residual (a), TKT-327, is untouched by TKT-326 (see
+  the TKT-327 amendment below).
+
+## Amendment (2026-10-11, TKT-327) — no service can create its plural-filter durable
+
+**What changed.** `deploy/nats/nats-server.conf` no longer grants
+`$JS.API.CONSUMER.CREATE.PLATFORM.access-ticket-issuer`, `...access-ticket-issuer.>`,
+`...inventory-catalog-offering` or `...inventory-catalog-offering.>`. `nats-init` creates both
+durables under `platform-admin` from `deploy/nats/consumers/`, and each service binds to its durable
+and refuses to start if it is missing or differs from the service's config
+([ADR-034](ADR-034-shared-durable-consumer-lifecycle.md) §Amendment: pre-provisioned plural-filter
+durables). Inventory now holds no CREATE grant at all. Access holds exactly one,
+`$JS.API.CONSUMER.CREATE.PLATFORM.access-slot-policy.platform.catalog.performance.published`, which
+§5 explains.
+
+**What is true now** is §6(a)'s narrowed claim, and only that. §6(c) is the read path that remains.
+Constraint 2 ("Go service source code must not change") bound TKT-170 only: TKT-327 changed both
+services' consumer startup.
+
+**Operational note.** The ACL is read when `nats` starts. On an existing stack, the removed grants
+stay in force until `docker compose restart nats` (`docs/development.md`). `make down` is not the
+way to apply it: it runs `down -v` and deletes every volume.
 
 ## Consequences
 
 - **Positive:**
     - Unauthenticated clients cannot publish or subscribe to any subject.
     - A service compromise is contained to its own **publish** subjects: a compromised principal
-      cannot publish another service's events. It is **not** contained on the read side — see the
-      residual below, which is demonstrated rather than theoretical.
+      cannot publish another service's events. It is **not** contained on the read side — see
+      §6(c), which is demonstrated rather than theoretical. Since TKT-327 a compromised access or
+      inventory principal cannot widen its own plural-filter durable (§6(a)).
     - Long-running inventory cannot forge catalog events.
     - No changes to Go application source code or event envelope wire format.
 - **Negative:**
@@ -230,6 +297,7 @@ What is true now:
 
 - TKT-170 — NATS publisher ACLs
 - TKT-326 — In-process quarantine reprocess; the operator identity is removed
+- TKT-327 — Pre-provisioned plural-filter durables; the services' CREATE grants for them are removed
 - TKT-296 — Signed event envelopes (future work)
 - [ADR-007: PostgreSQL and NATS JetStream](ADR-007-postgres-nats.md)
 - [ADR-012: Ticket issuance and QR credentials](ADR-012-ticket-issuance-and-qr-credentials.md)

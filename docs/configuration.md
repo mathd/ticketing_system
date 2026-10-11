@@ -15,7 +15,8 @@ no config files in the services.
 | `DB_CONN_MAX_LIFETIME` | maximum lifetime of a pooled connection | `30m` |
 | `DB_CONN_MAX_IDLE_TIME` | maximum time a pooled connection remains idle | `5m` |
 | `OPENAPI_RESPONSE_VALIDATION_ENABLED` | enforce ADR-028 response-drift fail-closed at runtime; off skips the response buffer and schema walk, and drifted payloads reach the client unchecked (TKT-125) | `true` |
-| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals | `1s,5s,30s,2m,5m,10m` |
+| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals. Must agree with the `backoff` of the file `NATS_ACCESS_TICKET_ISSUER_CONFIG` selects, or access refuses its durable at startup (TKT-327) | `1s,5s,30s,2m,5m,10m` |
+| `NATS_ACCESS_TICKET_ISSUER_CONFIG` | `nats-init` only: the file in `deploy/nats/consumers/` it provisions `access-ticket-issuer` from. `scripts/stack-env.sh` sets `access-ticket-issuer.smoke.json` beside its short `ACCESS_EVENT_RETRY_BACKOFF` | `access-ticket-issuer.json` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector (lgtm container) | SDK default |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` | export cadence (tightened locally) | SDK defaults |
 

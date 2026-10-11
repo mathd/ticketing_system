@@ -827,8 +827,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// durable replays retained archive/closure events the old filter skipped (safe through
 	// consumed_events). Delete the orphan so it does not linger in stream reports.
 	_ = stream.DeleteConsumer(ctx, "inventory-performance-provisioner")
-	cons, err := stream.CreateOrUpdateConsumer(ctx, c.consumerConfig())
+	// TKT-327: BIND, never create. nats-init pre-provisions this durable under the admin
+	// credential, and inventory holds no CREATE grant: its filters are plural, so a create request
+	// carries them in the body, where no subject permission can constrain them (ADR-072 §5). A
+	// missing or drifted durable stops the service before it consumes, reconciles or reports
+	// ready (ADR-034 amendment). Nothing here recreates it.
+	want := c.consumerConfig()
+	cons, err := stream.Consumer(ctx, want.Durable)
 	if err != nil {
+		return fmt.Errorf("bind pre-provisioned durable %s on stream PLATFORM (nats-init creates it; inventory cannot): %w", want.Durable, err)
+	}
+	if err := verifyOfferingConfig(want, cons.CachedInfo()); err != nil {
 		return err
 	}
 	defer c.ready.Store(false)

@@ -17,6 +17,7 @@ on:
       - compose.smoke-cadence.yaml
       - compose.onsale-load.yaml
       - deploy/nats/nats-server.conf
+      - "deploy/nats/consumers/**"
       - .dockerignore
       - go.work
       - go.work.sum

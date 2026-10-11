@@ -55,7 +55,12 @@ export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=
        CATALOG_PORT=$((15080 + SLOT)) INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \
        ACCESS_PORT=$((18580 + SLOT)) \
        ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
+       NATS_ACCESS_TICKET_ISSUER_CONFIG=access-ticket-issuer.smoke.json \
        ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
+# TKT-327: ACCESS_EVENT_RETRY_BACKOFF and NATS_ACCESS_TICKET_ISSUER_CONFIG above are ONE setting.
+# nats-init pre-provisions access-ticket-issuer from
+# deploy/nats/consumers/$NATS_ACCESS_TICKET_ISSUER_CONFIG, and access refuses to start when the
+# durable's BackOff differs from ACCESS_EVENT_RETRY_BACKOFF. Change both or neither.
 echo "$STACK: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
 
 # One credential per invocation (TKT-83): generated here so the isolated

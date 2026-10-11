@@ -120,6 +120,23 @@ services:
 
   # One-shot: provisions the PLATFORM stream (ADR-007) at stack init.
   # Idempotent; the smoke suite asserts the stream EXISTS, it no longer creates it.
+  #
+  # It also pre-provisions the two PLURAL-filter service durables (TKT-327, ADR-034
+  # amendment): inventory-catalog-offering and access-ticket-issuer. Those services
+  # hold no CREATE grant for them, because a plural-filter create request carries
+  # its filters in the BODY, where no subject permission can constrain them
+  # (ADR-072 §5). Each service binds to its durable and refuses to start when the
+  # durable is missing or differs from its consumerConfig(). The configs are the
+  # committed files in deploy/nats/consumers/; a change to a consumer's config
+  # changes the code and its file together (a unit test per service compares the
+  # default file with the code).
+  #
+  # INFO first, ADD only when absent: an existing durable (one the old service
+  # code created, or one from an earlier run) keeps its cursor and is NOT updated
+  # here. If it differs, the service refuses it and an operator reconciles it
+  # (docs/development.md). access's file is selectable because its BackOff must
+  # agree with ACCESS_EVENT_RETRY_BACKOFF; scripts/stack-env.sh selects the
+  # .smoke.json variant for the isolated stacks.
   nats-init:
     image: natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c
     depends_on:
@@ -129,6 +146,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     environment:
       NATS_ADMIN_PASSWORD: ${NATS_ADMIN_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}
+    volumes:
+      - ./deploy/nats/consumers:/consumers:ro
     command:
       # set -e: each provisioning compound must fail the init job itself —
       # without it, only the LAST compound's status survives the semicolons
@@ -138,6 +157,12 @@ services:
         nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 stream info PLATFORM >/dev/null 2>&1 ||
         nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 stream add PLATFORM
         --subjects "platform.>" --storage file --retention limits --defaults;
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM inventory-catalog-offering >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM inventory-catalog-offering
+        --config /consumers/inventory-catalog-offering.json;
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM access-ticket-issuer >/dev/null 2>&1 ||
+        nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM access-ticket-issuer
+        --config /consumers/${NATS_ACCESS_TICKET_ISSUER_CONFIG:-access-ticket-issuer.json};
         nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer info PLATFORM access-lifecycle-integrity-operator >/dev/null 2>&1 ||
         nats --server nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222 consumer add PLATFORM access-lifecycle-integrity-operator
         --filter "platform.access.lifecycle-integrity.alarm" --pull --deliver all --ack explicit --defaults;

@@ -1,0 +1,13 @@
+{
+  "durable_name": "inventory-catalog-offering",
+  "filter_subjects": [
+    "platform.catalog.performance.published",
+    "platform.catalog.performance.archived",
+    "platform.catalog.performance.closed",
+    "platform.catalog.performance.reopened"
+  ],
+  "deliver_policy": "all",
+  "ack_policy": "explicit",
+  "max_deliver": -1,
+  "max_ack_pending": 64
+}

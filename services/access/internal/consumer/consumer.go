@@ -652,8 +652,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cons, err := stream.CreateOrUpdateConsumer(ctx, c.consumerConfig("access-ticket-issuer"))
+	// TKT-327: BIND, never create. nats-init pre-provisions this durable under the admin
+	// credential, and access holds no CREATE grant for it: its filters are plural, so a create
+	// request carries them in the body, where no subject permission can constrain them (ADR-072
+	// §5). A missing or drifted durable stops the service before it consumes or reports ready
+	// (ADR-034 amendment). Nothing here recreates it.
+	const durable = "access-ticket-issuer"
+	cons, err := stream.Consumer(ctx, durable)
 	if err != nil {
+		return fmt.Errorf("bind pre-provisioned durable %s on stream PLATFORM (nats-init creates it; access cannot): %w", durable, err)
+	}
+	if err := verifyTicketIssuerConfig(c.consumerConfig(durable), cons.CachedInfo()); err != nil {
 		return err
 	}
 	c.ready.Store(true)

@@ -506,6 +506,22 @@ SEED
   expect_fail "hermetic workflow trigger ($overlay is uncovered)" check-hermetic-workflow-trigger
 done
 
+# TKT-327: nats-init provisions two service durables from deploy/nats/consumers/, under the ACL in
+# nats-server.conf. Each entry is independently required.
+for nats_input in deploy/nats/nats-server.conf '"deploy/nats/consumers/**"'; do
+  python3 - "$nats_input" <<'SEED'
+import sys
+
+p = '.github/workflows/hermetic.yaml'
+s = open(p).read()
+needle = f'      - {sys.argv[1]}\n'
+if s.count(needle) != 1:
+    raise SystemExit(f'expected one workflow path entry: {sys.argv[1]}')
+open(p, 'w').write(s.replace(needle, '', 1))
+SEED
+  expect_fail "hermetic workflow trigger ($nats_input is uncovered)" check-hermetic-workflow-trigger
+done
+
 sed -i 's/- run: make smoke-hermetic/- run: make smoke/' .github/workflows/hermetic.yaml
 expect_fail "hermetic workflow trigger (job runs the fast smoke target)" check-hermetic-workflow-trigger
 
