@@ -296,12 +296,15 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 //
 // COST, since the context is detached and so cannot be cancelled: up to 10s of charge time
 // per row (two tries of 5s). That is only reachable while the database is refusing THIS
-// write, since a row reaches here only after a drive returned a retryable failure. After a
+// write. `record` reaches here for ANY retryable outcome below the budget, driven or not:
+// a LookupRefund, OrderState or FixQuantity error before the drive is a retryable
+// `internal` outcome and is charged too. Whether it should be is open (TKT-521). After a
 // cancellation only the row in flight keeps charging: RunOnce checks the context before
 // each new drive and hands the rest of the batch back, each hand-back on its own 5s
-// context. The worker's stop grace is a HARD 5s (cmd/commerce `start`), so this charge can
-// be cut off at exit. Cut-off work behaves like a crash: a lost charge costs one extra
-// drive after the lease expires. The claim-id fence on every write blocks a stale writer
+// context. The worker's 5s stop grace (cmd/commerce `start`) is a wait limit, not a
+// cutoff: it stops waiting but does not stop the runner, and the cutoff is the process
+// exit after the other workers stop. Work still running then is cut off, and cut-off work
+// behaves like a crash: a lost charge costs one extra attempt after the lease expires. The claim-id fence on every write blocks a stale writer
 // only after a successor has reclaimed the row; it protects the successor's claim and does
 // not make a shutdown prompt. ADR-040's TKT-332 amendment records the bound and why it was
 // kept.

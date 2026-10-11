@@ -361,7 +361,7 @@ consistency, not a guarantee against a writer with access to the commerce databa
 
 ## Amendment (2026-10-11, TKT-332) — the detached charge's bound is recorded, not tightened
 
-A retryable failure is charged by `bulkrefund/runner.go` `chargeDriven`, after the drive and without
+A retryable outcome below the budget is charged by `bulkrefund/runner.go` `chargeDriven`, without
 releasing the lease (TKT-300; [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
 amendment has the accounting, and the TKT-331 "Correction to §5" above has why §5's claim-time rule no
 longer holds). The charge runs on `context.WithoutCancel` of the caller's context, with two tries of
@@ -378,9 +378,13 @@ latency and no shutdown requirement supports a shorter timeout, so a shorter one
 **The numbers.**
 
 - **Charge time per row:** up to 10 s (2 × 5 s). It is reachable only while the database refuses this
-  write, because a row reaches the charge only after a drive returned a retryable failure.
+  write. `record`'s retryable branch charges **any** retryable outcome below the budget, whether or not
+  the refund unit was called: a `LookupRefund`, `OrderState` or `FixQuantity` error before the drive
+  gives a retryable `internal` outcome through `record(..., false)`, and that attempt is charged too.
+  Whether a failure before the drive SHOULD consume the budget is an open question, tracked by
+  TKT-521; this amendment does not change the behaviour.
 - **Charge time per batch:** up to 80 s at the default batch of 8. That is the charge cost of a full
-  batch in which every row fails ambiguously and every charge write times out twice. It is **not** the
+  batch in which every row ends with a retryable outcome and every charge write times out twice. It is **not** the
   delay after a cancellation (see the corrections below).
 - **Lease:** `LeaseFor` sizes the lease from the calls, not the charge: `batch × 4 calls × 30 s + 60 s`,
   which is 1,020 s at the default batch of 8. The 80 s charge cost is counted only by the 60 s margin,
@@ -396,21 +400,28 @@ that are false:
    before each new drive, so after a cancellation only the row in flight keeps charging. The others in
    the batch are handed back undriven with `abandon(w, false)`; each hand-back is a separate
    `worklease.HandBackUndriven` call with its own 5 s context, and they run one after the other. The
-   **post-cancel tail** is therefore up to **10 s + (batch − 1) × 5 s**: 45 s at the default batch of 8.
+   **charge and hand-back component** of the post-cancel tail is therefore up to
+   **10 s + (batch − 1) × 5 s**: 45 s at the default batch of 8. That formula is not the whole tail.
+   When `Refund` returns `ErrRefundExceedsOrder`, `process` calls
+   `ClearQuantity(context.WithoutCancel(ctx), w)` with **no deadline**, so a cancellation that lands
+   while that write waits for a lock cannot interrupt it. That write is **unbounded**, and it comes
+   before the row's charge or hand-back.
 2. *"A pass that outlives its lease writes nothing."* False as stated. Every write is fenced on the
    **claim id** (`ChargeCancellationAttempt` in `store/cancellation_refunds.go`), not on lease expiry.
    An expired lease alone blocks nothing: the old claimant can still charge, finalize or abandon until
    a successor **reclaims** the row and replaces the claim id. After that, the stale writer matches
    nothing. The fence protects the successor's claim. It does not make a shutdown prompt.
 
-**What a shutdown actually does (D2).** The worker stop grace in `cmd/commerce` `start` is a **hard
-5 s**: when it lapses, the stop function logs a warning and returns without waiting for the runner,
-shutdown continues with the next worker, and the process exits when shutdown returns. A post-cancel
-tail longer than that grace is cut off. Cut-off work behaves like a crash, which the lease already
-exists to survive:
+**What a shutdown actually does (D2).** The 5 s stop grace in `cmd/commerce` `start` is a **wait
+limit, not a cutoff**. When it lapses, the stop function logs a warning and stops waiting. It does not
+terminate the runner, whose goroutine keeps running. Shutdown stops the cancellation runner first, then
+the other workers one after another, each with its own 5 s wait. The cutoff is the **process exit**,
+when shutdown returns. So a charge can finish at 7 s and still land while shutdown waits for another
+worker. Work that is still running at the exit is cut off. Cut-off work behaves like a crash, which the
+lease already exists to survive:
 
 - a lost charge means the row comes back after its lease with its old count, so it gets **one extra
-  drive** of an ambiguous failure;
+  attempt** beyond its budget;
 - a hand-back that does not happen means the row **waits out its lease** instead of being claimable at
   once.
 
