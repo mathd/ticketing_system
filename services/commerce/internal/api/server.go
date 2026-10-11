@@ -90,6 +90,9 @@ type Server struct {
 	// thing instead, so the default is enforcement.
 	limiters *customerLimiters
 	limOnce  sync.Once
+	// afterCheckoutClaim is a TKT-319 test seam. It runs once claimOrder has committed,
+	// before the park-marker guard in executeCheckout. Nil in production.
+	afterCheckoutClaim func()
 }
 
 // ServerConfig contains every dependency and setting fixed for a server's lifetime.
@@ -1389,6 +1392,17 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
 			return uuid.Nil, "", false, false, errRecoveryInProgress
 		}
+		// The live case returned above, so a claim left here has an expired or NULL lease. Clear
+		// it under the row lock this transaction holds, before commit, so after this the stale
+		// worker's claim-fenced writes match no row and cannot park, release or abandon the order
+		// through the store; external calls, such as the inventory release, are not covered whether
+		// they come before or after the steal (ADR-016, TKT-319). Attempts, schedule, last error and
+		// the park marker are left alone.
+		if recoveryClaim.Valid {
+			if _, err = tx.ExecContext(ctx, `UPDATE orders SET recovery_claim_id=NULL, recovery_lease_until=NULL WHERE id=$1`, id); err != nil {
+				return uuid.Nil, "", false, false, err
+			}
+		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
 		// and recovery can claim it while this request is live — the grace period only
@@ -1680,6 +1694,11 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		}
 		write(w, code, map[string]string{"error": message})
 		return
+	}
+	if s.afterCheckoutClaim != nil {
+		// TKT-319 test seam: a test parks checkout here so a recovery write can land between
+		// claimOrder's commit and the guard below. Nil in production.
+		s.afterCheckoutClaim()
 	}
 	if orderStatus == "completed" {
 		ref, e := s.guestReference(r.Context(), order)
