@@ -6,6 +6,10 @@ Date: 2026-09-03
 
 Accepted (TKT-170)
 
+Amended by **TKT-326** (2026-10-11, §Amendment below) — the operator identity of §4 is removed.
+Catalog is the only service principal that can publish on `platform.catalog.*`, and the stack has
+six principals.
+
 ## Context
 
 The platform uses NATS JetStream with the `PLATFORM` stream as its event bus ([ADR-007](ADR-007-postgres-nats.md)).
@@ -49,8 +53,8 @@ We require per-principal publish and subscribe permissions to isolate service ca
 ## Decision
 
 We adopt **Option 3**. We configure NATS with a single configuration file (`deploy/nats/nats-server.conf`)
-under the default account (`$G`). We define seven user identities with passwords supplied through environment
-variables.
+under the default account (`$G`). We define six user identities with passwords supplied through environment
+variables (seven until TKT-326 removed the operator identity of §4).
 
 ### 1. Subject and API Permission Matrix
 
@@ -61,7 +65,6 @@ variables.
 | `commerce` | `platform.commerce.order.completed`, `platform.commerce.order.exchanged` | — | `_INBOX.>` | — | Order completions and exchanges |
 | `access` | `platform.access.ticket-issuance.failed`, `platform.access.{lifecycle-integrity,admission-conflict,admission-policy-conflict}.alarm`, `$JS.API.STREAM.INFO.PLATFORM`, and consumer APIs scoped to its OWN durables for every MUTATING or CONSUMING call (`CREATE`/`MSG.NEXT`/`ACK`), with read-only `CONSUMER.INFO.PLATFORM.*` | — | `platform.commerce.order.completed`, `platform.commerce.order.exchanged`, `platform.catalog.performance.published`, the three `platform.access.*.alarm` subjects, `_INBOX.>` | — | Ticket issuance, policy projection, and alarms |
 | `inventory` | `$JS.API.STREAM.INFO.PLATFORM`, consumer APIs scoped to `inventory-catalog-offering` for every mutating or consuming call, read-only `CONSUMER.INFO.PLATFORM.*`, plus `CONSUMER.DELETE` for the single legacy durable `inventory-performance-provisioner` | All `platform.*` | `platform.catalog.performance.{published,archived,closed,reopened}`, `_INBOX.>` | — | Long-running inventory server. Cannot publish domain events |
-| `inventory-reprocess` | `platform.catalog.performance.{published,archived,closed,reopened}` | — | `_INBOX.>` | — | Operator quarantine reprocess command only |
 | `payments` | — | `>` | — | `>` | Healthcheck connection only (`IsConnected`) |
 
 ### 2. The Adversary Model (ADR-021 discipline)
@@ -84,26 +87,13 @@ variables.
 That identifier is strictly for deduplication and idempotency on retried publications. It provides **no cryptographic authentication**.
 Only broker-enforced credentials identify the sender at publication time.
 
-### 4. Operator Identity Separation
+### 4. Operator Identity Separation (removed by TKT-326)
 
-The `inventory-reprocess` user holds permission to publish to catalog subjects because `inventory reprocess-quarantine`
-re-emits stored catalog events. The long-running `inventory` service container does NOT hold this permission.
-`NATS_INVENTORY_REPROCESS_PASSWORD` is injected exclusively into the `nats` container. It is never passed to the `inventory`
-container environment or the shared Compose environment anchor. Operators provide the credential when invoking
-the one-shot quarantine reprocess command:
-
-```bash
-export NATS_INVENTORY_REPROCESS_PASSWORD="$(docker compose config --environment | grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' | cut -d= -f2-)"
-docker compose run --rm \
-  -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
-  inventory reprocess-quarantine
-```
-
-The export is a SEPARATE command on purpose. `make up` writes the password to `.env` without
-exporting it, and an assignment PREFIX (`VAR=x cmd "${VAR}"`) does not affect the same command's
-expansions — the shell expands `${VAR}` before the prefix takes effect, so the URL still carries an
-empty password and the run hangs on a credential-less reconnect. `docs/development.md` carries the
-same command and the same warning.
+TKT-170 defined a separate operator identity with publish rights on catalog's four performance
+subjects, because `inventory reprocess-quarantine` republished stored catalog events onto them. Its
+password was delivered only to the `nats` container, never to the long-running `inventory`
+container. TKT-326 replaced the republication with in-process reprocessing and removed the identity.
+See §Amendment (TKT-326).
 
 ### 5. Access Consumer Wildcard Rationale (read-only INFO)
 
@@ -114,7 +104,7 @@ than the diff.
 granted to all four publishers on the assumption that a JetStream publisher needs it to receive its
 ack. It does not: the ack returns on `_INBOX.>`. A pure publisher in fact needs **no** `$JS.API` grant
 at all, verified by publishing with the domain subject as its only publish permission, so
-`$JS.API.STREAM.INFO.PLATFORM` was removed from catalog, commerce and `inventory-reprocess` too.
+`$JS.API.STREAM.INFO.PLATFORM` was removed from catalog, commerce and the operator identity of §4 too.
 Only `access` and `inventory` keep it, because they open the stream explicitly to bind consumers. What the grant actually covers is `STREAM.MSG.GET` and `STREAM.MSG.DELETE`.
 Executed with commerce's real credential, it read a `platform.catalog.performance.published`
 envelope out of the stream and then **deleted** it, with the admin's re-read confirming
@@ -190,6 +180,38 @@ compromised service or signer remains outside that guarantee.
 Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_test.go` pins both the
 narrowed case and the still-open case. Do not remove this test.
 
+## Amendment (2026-10-11, TKT-326) — catalog is the only service that publishes on its prefix
+
+**The cross-prefix exception of §4 no longer exists.** `inventory reprocess-quarantine` used to
+republish quarantined catalog events onto `platform.catalog.performance.*`, under the dedicated
+`inventory-reprocess` identity. It now runs the inventory consumer's handler in-process on the
+stored envelope, against inventory's own database ([ADR-017](ADR-017-domain-event-schema-evolution.md)
+§5b recovery paragraph). It opens no NATS connection.
+
+TKT-326 therefore removed the identity and all of its plumbing: the user block in
+`deploy/nats/nats-server.conf`, its password entry in `compose.yaml`, its draw in
+`scripts/env-bootstrap.sh` and `scripts/stack-env.sh`, its exports in `scripts/smoke.sh`, and
+`TestNATSOperatorCredentialIsConfinedToTheBroker`, whose property no longer exists. The stack has
+six principals.
+
+What is true now:
+
+- Among service principals, only `catalog` can publish on `platform.catalog.*`. `platform-admin`
+  (`publish: [">"]`) stays an explicit exception, and it is the principal for the manual re-drive
+  of a parked catalog event ([ADR-077](ADR-077-moot-tombstones-and-bounded-parking.md),
+  `docs/development.md`).
+- The `inventory` principal is unchanged. It holds no `platform.*` publish. It does publish on
+  JetStream API and ack subjects (`$JS.API.*`, `$JS.ACK.*`), because a JetStream API call and an ack
+  are publishes. "Inventory holds no publish permission at all" is therefore not true, and it is
+  not claimed.
+- Constraint 4 is now met because no inventory principal has a publish grant on catalog subjects,
+  not because an operator identity is kept apart from the server.
+- Constraint 2 ("Go service source code must not change") bound TKT-170 only. TKT-326 changed
+  inventory's Go code to remove the republication.
+- The adversary model of §2 is unchanged. TKT-326 removes a credential that an operator had to
+  deliver correctly at each invocation. It does not change what a holder of `platform-admin`, or
+  an administrator of the NATS host, can do. Residual (a), TKT-327, is untouched.
+
 ## Consequences
 
 - **Positive:**
@@ -200,13 +222,14 @@ narrowed case and the still-open case. Do not remove this test.
     - Long-running inventory cannot forge catalog events.
     - No changes to Go application source code or event envelope wire format.
 - **Negative:**
-    - Seven new credentials must be managed, generated, and injected into the stack.
+    - Six credentials must be managed, generated, and injected into the stack (seven until TKT-326).
     - JetStream operations require explicit `$JS.API.*` permissions in user configurations.
     - Publishing within authorized subjects remains unauthenticated by consumers until TKT-296.
 
 ## References
 
 - TKT-170 — NATS publisher ACLs
+- TKT-326 — In-process quarantine reprocess; the operator identity is removed
 - TKT-296 — Signed event envelopes (future work)
 - [ADR-007: PostgreSQL and NATS JetStream](ADR-007-postgres-nats.md)
 - [ADR-012: Ticket issuance and QR credentials](ADR-012-ticket-issuance-and-qr-credentials.md)

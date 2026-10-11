@@ -49,8 +49,9 @@ func main() {
 }
 
 // subcommands are the one-shot modes (the registry shape services/access uses). migrate is the
-// out-of-band migration job (ADR-022); reprocess-quarantine republishes future-schema events a
-// newer binary now understands (TKT-68) — deploy that binary first, run this, then restart;
+// out-of-band migration job (ADR-022); reprocess-quarantine applies, in this process, the
+// quarantined future-schema events a newer binary now understands (TKT-68; in-process with no
+// NATS publish since TKT-326) — deploy that binary first, run this, then restart;
 // reconcile-pins reclaims catalog seat pins left behind by expired holds (TKT-112);
 // check-claim-history-sequence guards the append_order sequence after a restore (TKT-295).
 type commandCallbacks struct {

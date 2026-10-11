@@ -141,10 +141,11 @@ for role in CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
 done
 unset password
 
-# TKT-170 / ADR-072: NATS per-principal credentials. Seven independent draws.
+# TKT-170 / ADR-072: NATS per-principal credentials. Six independent draws (TKT-326 removed
+# the operator principal: reprocess-quarantine no longer uses NATS).
 # Exported for compose (NATS_<PRINCIPAL>_PASSWORD) and the smoke test process (SMOKE_NATS_<PRINCIPAL>_PASSWORD).
 # Never print credential values.
-for role in ADMIN CATALOG INVENTORY INVENTORY_REPROCESS COMMERCE PAYMENTS ACCESS; do
+for role in ADMIN CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
 	nats_pass=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 	export "NATS_${role}_PASSWORD=$nats_pass"
 	export "SMOKE_NATS_${role}_PASSWORD=$nats_pass"

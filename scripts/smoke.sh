@@ -162,8 +162,8 @@ cd "$ROOT/services/inventory"
 # ./internal/... (not just ./internal/store): the seat-hold handler's DB-backed smoke
 # tests live in ./internal/api (TKT-80), and scoping to ./internal/store would silently
 # skip them — the exact allowlist defect the notes above warn about.
-# ./cmd/inventory: the check-claim-history-sequence command's smoke tests drive the production
-# command registry against a real schema (TKT-295).
+# ./cmd/inventory: the check-claim-history-sequence (TKT-295) and reprocess-quarantine (TKT-326)
+# command smoke tests drive the production command registry against a real schema.
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/... ./cmd/inventory
 
@@ -416,14 +416,12 @@ SMOKE_PAYMENTS_INTERNAL_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN" \
 NATS_ADMIN_PASSWORD="$NATS_ADMIN_PASSWORD" \
 NATS_CATALOG_PASSWORD="$NATS_CATALOG_PASSWORD" \
 NATS_INVENTORY_PASSWORD="$NATS_INVENTORY_PASSWORD" \
-NATS_INVENTORY_REPROCESS_PASSWORD="$NATS_INVENTORY_REPROCESS_PASSWORD" \
 NATS_COMMERCE_PASSWORD="$NATS_COMMERCE_PASSWORD" \
 NATS_PAYMENTS_PASSWORD="$NATS_PAYMENTS_PASSWORD" \
 NATS_ACCESS_PASSWORD="$NATS_ACCESS_PASSWORD" \
 SMOKE_NATS_ADMIN_PASSWORD="$NATS_ADMIN_PASSWORD" \
 SMOKE_NATS_CATALOG_PASSWORD="$NATS_CATALOG_PASSWORD" \
 SMOKE_NATS_INVENTORY_PASSWORD="$NATS_INVENTORY_PASSWORD" \
-SMOKE_NATS_INVENTORY_REPROCESS_PASSWORD="$NATS_INVENTORY_REPROCESS_PASSWORD" \
 SMOKE_NATS_COMMERCE_PASSWORD="$NATS_COMMERCE_PASSWORD" \
 SMOKE_NATS_PAYMENTS_PASSWORD="$NATS_PAYMENTS_PASSWORD" \
 SMOKE_NATS_ACCESS_PASSWORD="$NATS_ACCESS_PASSWORD" \

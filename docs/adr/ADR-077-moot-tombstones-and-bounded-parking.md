@@ -7,6 +7,10 @@ Date: 2026-10-09
 Accepted (TKT-317). Owner decision D7 narrows the fallback authority to publication records. The
 residual that remains is item 3 under "What Is Not Claimed". It is accepted for TKT-317.
 
+Amended by **TKT-326** (2026-10-11, §Amendment below) — the park bound does not apply to an event
+that `reprocess-quarantine` applies in-process, and the manual re-drive publishes with
+`platform-admin`.
+
 ## Context
 
 Inventory consumes four catalog offering subjects: `performance.published`, `archived`, `closed`
@@ -167,6 +171,24 @@ migration's Down step. Each one has a test that fails without it.
 A second review found that the claim "re-emission after archival is excluded" held only at
 selection time. Context now says so, and item 8 under "What Is Not Claimed" is open.
 
+## Amendment (2026-10-11, TKT-326) — in-process reprocess never parks
+
+`inventory reprocess-quarantine` now runs the consumer's handler in-process on a quarantined
+envelope instead of republishing it ([ADR-017](./ADR-017-domain-event-schema-evolution.md) §5b,
+[ADR-072](./ADR-072-nats-publisher-acls.md) §Amendment). A quarantine row stores no broker delivery
+count, so the reprocess delivery answers `Metadata()` with an error. The handler's existing branch
+for unreadable delivery metadata is a delayed NAK, which the command reports as **deferred**:
+
+- During reprocess, an unusable catalog answer is never parked and never counted in
+  `inventory.catalog.events.parked`. The quarantine row stays pending, and readiness stays down
+  after a restart. The operator repairs catalog and runs the command again.
+- The five-delivery bound applies to live deliveries only. A delivery count is not made up for a
+  reprocess run, and runs of the command are not counted as deliveries.
+- `catalog_event_quarantine` and `catalog_event_parked` stay separate. Reprocess reads only the
+  quarantine table.
+- The manual re-drive of a parked event (step 3 in `docs/development.md`) publishes with
+  `platform-admin`. TKT-326 removed the operator identity that the step used before.
+
 ## References
 
 - TKT-317
@@ -175,4 +197,4 @@ selection time. Context now says so, and item 8 under "What Is Not Claimed" is o
 - [ADR-018](./ADR-018-catalog-slot-transition-concurrency.md) (catalog slot transitions)
 - [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) (adversary wording)
 - [ADR-022](./ADR-022-out-of-band-service-migrations.md) (migrations run out of band)
-- [ADR-072](./ADR-072-nats-publisher-acls.md) (`inventory-reprocess` publish permission)
+- [ADR-072](./ADR-072-nats-publisher-acls.md) (`platform-admin` publish permission, used for the manual re-drive of a parked event since TKT-326 removed the operator identity)
