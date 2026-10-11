@@ -53,6 +53,22 @@ const MaxRecoveryAttempts = 10
 // ErrRecoveryConflict reports that an order moved on between claim and transition.
 var ErrRecoveryConflict = errors.New("order changed state during recovery")
 
+// TKT-321 skeleton. These placeholders stand in for the shared SQL that phase 2 composes: one
+// predicate constant that both the claim and the eligible-unparked read use. Until that lands,
+// ClaimStuckOrders still inlines its own copy, and recovery_predicate_test.go fails on the count.
+//
+// TODO(TKT-321): replace these placeholders with the composed statements.
+
+// recoveryClaimablePredicate is the shared WHERE fragment (placeholder).
+const recoveryClaimablePredicate = "/* TKT-321 placeholder: shared claimable predicate */"
+
+// claimStuckOrdersSQL is the claim query, composed from recoveryClaimablePredicate (placeholder).
+const claimStuckOrdersSQL = "/* TKT-321 placeholder: ClaimStuckOrders still inlines its own SQL */"
+
+// eligibleUnparkedRecoveryBacklogSQL is the eligible-unparked aggregate (placeholder). It returns
+// the zero value, as ReadEligibleUnparkedRecoveryBacklog does, so the tests fail on the count.
+const eligibleUnparkedRecoveryBacklogSQL = `SELECT 0::bigint, 0::bigint`
+
 // ClaimStuckOrders leases orders that need re-driving, oldest first.
 //
 // `created` is included deliberately: it is the default row value and covers several
@@ -669,6 +685,9 @@ type RecoveryBacklog struct {
 	// A count cannot distinguish a small, old backlog from a large, fresh one, and those
 	// are different incidents: the first is something stuck, the second something down.
 	OldestAgeSeconds int64
+	// EligibleUnparked is the population ClaimStuckOrders would select now that is NOT parked.
+	// TKT-321 skeleton: ReadRecoveryBacklog does not populate it yet.
+	EligibleUnparked EligibleUnparkedRecoveryBacklog
 }
 
 // ReadRecoveryBacklog reports the parked population for observability. It is not a gate:
@@ -699,4 +718,21 @@ func ReadRecoveryBacklog(ctx context.Context, db *sql.DB) (RecoveryBacklog, erro
 		return RecoveryBacklog{}, fmt.Errorf("read recovery backlog: %w", err)
 	}
 	return b, nil
+}
+
+// EligibleUnparkedRecoveryBacklog is the unparked population the claim would select right now:
+// how many such orders there are, and the age of the oldest, measured from recovery_next_attempt_at.
+//
+// TKT-321 skeleton. No read produces it yet.
+type EligibleUnparkedRecoveryBacklog struct {
+	Count            int64
+	OldestAgeSeconds int64
+}
+
+// ReadEligibleUnparkedRecoveryBacklog reports the eligible unparked population.
+//
+// TODO(TKT-321): stub. It returns the zero value, so recovery_eligible_smoke_test.go fails on the
+// count. Phase 2 replaces it with one aggregate over eligibleUnparkedRecoveryBacklogSQL.
+func ReadEligibleUnparkedRecoveryBacklog(ctx context.Context, db *sql.DB) (EligibleUnparkedRecoveryBacklog, error) {
+	return EligibleUnparkedRecoveryBacklog{}, nil
 }

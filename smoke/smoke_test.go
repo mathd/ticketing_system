@@ -1071,13 +1071,14 @@ func TestMetricsIngested(t *testing.T) {
 // way out (here, the Prometheus the real binary exports to) closes it. Delete the
 // ObserveMetrics call and TestMetricsIngested stays green while this fails.
 //
-// All FOUR series are required by exact name, not a name-family regex. A family match is
+// All SIX series are required by exact name, not a name-family regex. A family match is
 // satisfied by any one member, so a registration that dropped three instruments would
 // still pass (ai-review F2). The OTLP-to-Prometheus translation is the exporter's rule
 // rather than this repo's — dots become underscores, and counters gain a `_total` suffix
 // that gauges do not (`access.event.failures` arrives as `access_event_failures_total`,
-// access_consumer_test.go) — so these four names were confirmed against a real run, not
-// derived on paper.
+// access_consumer_test.go) — so the four parked names were confirmed against a real run, not
+// derived on paper. The two eligible_unparked names (TKT-321) follow the same rule but have
+// not been observed in a run yet; they are unverified until the compose gate runs.
 //
 // Staleness is not a concern here and the reason is worth stating, because the assertion
 // would be worthless if it were: scripts/smoke.sh runs `compose down -v` from an EXIT trap
@@ -1089,6 +1090,8 @@ func TestRecoveryParkedGaugesIngested(t *testing.T) {
 		"commerce_recovery_parked_reconciliation_required",
 		"commerce_recovery_parked_total",
 		"commerce_recovery_parked_oldest_age_seconds",
+		"commerce_recovery_eligible_unparked",
+		"commerce_recovery_eligible_unparked_oldest_age_seconds",
 	} {
 		retry(t, 60*time.Second, func() error {
 			query := url.QueryEscape(name + `{service_name="commerce"}`)
