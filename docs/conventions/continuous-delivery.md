@@ -79,10 +79,17 @@ gh api --method DELETE repos/mathd/ticketing_system/rulesets/<id>
 ```
 
 Nothing compares the live ruleset with the file automatically. Compare them by hand after each
-change. The gate checks only the static invariants: `make check-check-workflow-trigger` refuses a
-path filter on `check.yaml`'s `push` or `pull_request`, a job-level `if:` on the job that reports a
-required context, a required context that no `check.yaml` job reports, and a second job with that
-id or name in any workflow.
+change. The gate checks only the static invariants. `make check-check-workflow-trigger` reads the
+files line by line, so it accepts only one block-style shape and refuses everything else:
+
+- `on:` holds exactly `push` (only `branches: [main]`) and an empty `pull_request`.
+- Each required context is the reported name of a `check.yaml` job: its `name:` when set, else its
+  job id.
+- That job holds only `name`, `runs-on` and `steps`. It has exactly one `run: make check` step, and
+  no step has `if:` or `continue-on-error`.
+- No other job in any workflow reports the same name.
+- Flow style, quoted keys, duplicate keys, merge keys and a second YAML document are refused as
+  unsupported. So is a job `name:` that contains an expression.
 
 ## Pre-commit ↔ CI alignment
 

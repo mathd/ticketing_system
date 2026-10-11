@@ -533,86 +533,118 @@ SEED
 expect_fail "hermetic workflow trigger (smoke failure ignored)" check-hermetic-workflow-trigger
 
 # 13b. The main ruleset requires the `check` context (TKT-324). That context must
-#      report on every PR, come from check.yaml's `check` job, and have exactly one
-#      producer. Each seed breaks one predicate of check-check-workflow-trigger.
-#      The four path-filter seeds are separate because the guard reads each event
-#      and each filter key on its own: a guard that reads only one of them must
-#      fail one of these seeds.
-expect_pass "check workflow trigger (clean baseline)" check-check-workflow-trigger
-for seed in "push|    branches: [main]|paths-ignore" "push|    branches: [main]|paths" \
-            "pull_request|  pull_request:|paths-ignore" "pull_request|  pull_request:|paths"; do
-  IFS='|' read -r event anchor filter <<<"$seed"
-  python3 - "$anchor" "$filter" <<'SEED'
+#      report on every PR, come from check.yaml's `check` job, run `make check`, and
+#      have exactly one producer. The guard reads YAML line by line, so it accepts
+#      only an allowlisted block-style shape and refuses every other shape (fail
+#      closed). Each seed breaks one refusal. A YAML spelling that the guard
+#      silently misread would pass, so the spelling seeds (flow style, quoted keys,
+#      a list, a second document) matter as much as the policy seeds.
+# check_seed FILE OLD NEW: replace the one OLD in FILE with NEW (\n is a newline).
+check_seed() {
+  python3 - "$@" <<'SEED'
 import sys
 
-p = '.github/workflows/check.yaml'
+p, old, new = sys.argv[1], sys.argv[2].replace('\\n', '\n'), sys.argv[3].replace('\\n', '\n')
 s = open(p).read()
-anchor, key = sys.argv[1] + '\n', sys.argv[2]
-if s.count(anchor) != 1:
-    raise SystemExit(f'expected one check.yaml anchor: {anchor!r}')
-open(p, 'w').write(s.replace(anchor, anchor + f'    {key}: ["docs/**"]\n', 1))
+if s.count(old) != 1:
+    raise SystemExit(f'expected one {old!r} in {p}')
+open(p, 'w').write(s.replace(old, new, 1))
 SEED
-  expect_fail "check workflow trigger ($filter filter on $event)" check-check-workflow-trigger
-done
+}
+CW=.github/workflows/check.yaml
+HW=.github/workflows/hermetic.yaml
+CJOB='  check:\n    runs-on: ubuntu-latest\n'
+MAKE_STEP='      - run: make check\n'
+LAST_STEP='      - run: ./scripts/gate-selftest.sh\n'
+HJOB='  hermetic-smoke:\n'
+expect_pass "check workflow trigger (clean baseline)" check-check-workflow-trigger
 
-# The same filter in flow style sits on the event's own line, not below it.
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  pull_request:\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one pull_request trigger')
-open(p, 'w').write(s.replace(needle, '  pull_request: { paths-ignore: ["docs/**"] }\n', 1))
-SEED
-expect_fail "check workflow trigger (flow-style filter on pull_request)" check-check-workflow-trigger
-
-# Without the pull_request event no PR reports the required check at all.
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  pull_request:\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one pull_request trigger')
-open(p, 'w').write(s.replace(needle, '', 1))
-SEED
+# Events: only push (branches: [main]) and an empty pull_request are allowed. A
+# path filter, a branch or type filter, or a missing event can skip the workflow,
+# and a skipped workflow leaves a required check pending.
+check_seed $CW '    branches: [main]\n' '    branches: [main]\n    paths-ignore: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths-ignore filter on push)" check-check-workflow-trigger
+check_seed $CW '    branches: [main]\n' '    branches: [main]\n    paths: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths filter on push)" check-check-workflow-trigger
+check_seed $CW '    branches: [main]\n' '    branches: [develop]\n'
+expect_fail "check workflow trigger (push no longer targets main)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    paths-ignore: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths-ignore filter on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    paths: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths filter on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    branches-ignore: [main]\n'
+expect_fail "check workflow trigger (branches-ignore on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    types: [labeled]\n'
+expect_fail "check workflow trigger (types on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' ''
 expect_fail "check workflow trigger (pull_request event removed)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' ''
+expect_fail "check workflow trigger (push event removed)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n  workflow_dispatch:\n'
+expect_fail "check workflow trigger (extra event)" check-check-workflow-trigger
 
-# Predicate 2: a job-level condition can skip the job that reports the context,
-# while the event above it still looks unfiltered.
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  check:\n    runs-on: ubuntu-latest\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one check job')
-open(p, 'w').write(s.replace(needle, needle + "    if: github.event_name == 'push'\n", 1))
-SEED
+# Spellings the line reader cannot interpret. Each one hides a filter, a
+# condition or an event from a reader that expects block style.
+check_seed $CW '  pull_request:\n' '  pull_request: { paths-ignore: ["docs/**"] }\n'
+expect_fail "check workflow trigger (flow-style event)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request: {"paths-ignore": ["docs/**"]}\n'
+expect_fail "check workflow trigger (quoted key in a flow-style event)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' "  'pull_request':\n"
+expect_fail "check workflow trigger (quoted event key)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n    branches: [main]\n  pull_request:\n' 'on: [push, pull_request]\n'
+expect_fail "check workflow trigger (on: as a list)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n' '"on":\n  push:\n'
+expect_fail "check workflow trigger (quoted on: key)" check-check-workflow-trigger
+# The bad copy comes FIRST: a reader where the last duplicate wins sees only the
+# clean one.
+check_seed $CW 'on:\n  push:\n' 'on:\n  pull_request:\n    paths-ignore: ["docs/**"]\non:\n  push:\n'
+expect_fail "check workflow trigger (second on: block)" check-check-workflow-trigger
+# A second document holding only keys the first lacks: no duplicate key shows it.
+check_seed $CW "$LAST_STEP" "${LAST_STEP}"'---\nenv:\n  SECOND_DOCUMENT: "1"\n'
+expect_fail "check workflow trigger (second YAML document)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n' 'true:\n  push:\n'
+expect_fail "check workflow trigger (no on: key)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' '  push: {branches: [main], paths: ["docs/**"]}\n'
+expect_fail "check workflow trigger (flow-style push)" check-check-workflow-trigger
+
+# The job that reports the context: block style, only name/runs-on/steps, and
+# no step that can be skipped or ignored. Any of these lets the required check
+# read success without `make check` deciding it.
+check_seed $CW "$CJOB" "${CJOB}    if: github.event_name == 'push'\n"
 expect_fail "check workflow trigger (check job made conditional)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    needs: gate-selftest\n"
+expect_fail "check workflow trigger (check job needs another job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    continue-on-error: true\n"
+expect_fail "check workflow trigger (check job ignores failure)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    <<: *defaults\n"
+expect_fail "check workflow trigger (merge key in check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" '  check-old:\n    runs-on: ubuntu-latest\n'
+check_seed $CW '  check-old:\n' '  check: {runs-on: ubuntu-latest, if: false, steps: [{run: make check}]}\n  check-old:\n'
+expect_fail "check workflow trigger (flow-style check job)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}        if: false\n"
+expect_fail "check workflow trigger (make check step made conditional)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}        continue-on-error: true\n"
+expect_fail "check workflow trigger (make check step ignores failure)" check-check-workflow-trigger
+# The step seeds keep the `make check` step, so the step count cannot be what
+# refuses them.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - { run: echo extra, if: false }\n'
+expect_fail "check workflow trigger (flow-style step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        "if": false\n'
+expect_fail "check workflow trigger (quoted key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" '      - run: make lint\n        run: make check\n'
+expect_fail "check workflow trigger (duplicate key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        <<: *step\n'
+expect_fail "check workflow trigger (merge key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" '      - run: make lint\n'
+expect_fail "check workflow trigger (make check step removed)" check-check-workflow-trigger
 
-# Predicate 3: the context is the job's check-run name, which is the job id, or
-# its `name:` when one is set. A rename and an added name both orphan it.
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  check:\n    runs-on: ubuntu-latest\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one check job')
-open(p, 'w').write(s.replace(needle, '  gate:\n    runs-on: ubuntu-latest\n', 1))
-SEED
+# Ruleset: the context is the job's reported name, which is the job id, or its
+# `name:` when one is set. A rename and an added name both orphan it.
+check_seed $CW "$CJOB" '  gate:\n    runs-on: ubuntu-latest\n'
 expect_fail "check workflow trigger (check job renamed)" check-check-workflow-trigger
-
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  check:\n    runs-on: ubuntu-latest\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one check job')
-open(p, 'w').write(s.replace(needle, '  check:\n    name: gate\n    runs-on: ubuntu-latest\n', 1))
-SEED
+check_seed $CW "$CJOB" '  check:\n    name: gate\n    runs-on: ubuntu-latest\n'
 expect_fail "check workflow trigger (check job given another name)" check-check-workflow-trigger
-
-# A ruleset that names no required check makes predicate 3 vacuous, so the guard
-# refuses it instead of passing it.
+# A ruleset that names no required check makes that comparison vacuous.
 python3 - <<'SEED'
 import json
 
@@ -625,32 +657,27 @@ if len(data['rules']) != before - 1:
 open(p, 'w').write(json.dumps(data, indent=2) + '\n')
 SEED
 expect_fail "check workflow trigger (ruleset names no required check)" check-check-workflow-trigger
+rm .github/rulesets/main.json
+expect_fail "check workflow trigger (ruleset file missing)" check-check-workflow-trigger
 
-# Predicate 4: a second producer of the context, by `name:` in the same workflow
-# or by job id in another one, can satisfy the requirement without `make check`.
-python3 - <<'SEED'
-p = '.github/workflows/check.yaml'
-s = open(p).read()
-needle = '  gate-selftest:\n    runs-on: ubuntu-latest\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one gate-selftest job')
-open(p, 'w').write(s.replace(needle, '  gate-selftest:\n    name: check\n    runs-on: ubuntu-latest\n', 1))
-SEED
+# One producer: no other job, in any workflow, may report the same name. It
+# could satisfy the requirement without `make check`.
+check_seed $CW '  gate-selftest:\n' '  gate-selftest:\n    name: check\n'
 expect_fail "check workflow trigger (second job named check)" check-check-workflow-trigger
-
-python3 - <<'SEED'
-p = '.github/workflows/hermetic.yaml'
-s = open(p).read()
-needle = '  hermetic-smoke:\n'
-if s.count(needle) != 1:
-    raise SystemExit('expected one hermetic-smoke job')
-open(p, 'w').write(s.replace(
-    needle,
-    '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n' + needle,
-    1,
-))
-SEED
+check_seed $HW "$HJOB" '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
 expect_fail "check workflow trigger (job id check in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky: {name: check, runs-on: ubuntu-latest, steps: [{run: "true"}]}\n\n'"$HJOB"
+expect_fail "check workflow trigger (flow-style job in another workflow)" check-check-workflow-trigger
+printf 'on: push\njobs: {check: {runs-on: ubuntu-latest, steps: [{run: "true"}]}}\n' > .github/workflows/sneaky.yaml
+expect_fail "check workflow trigger (flow-style jobs: in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: ${{ '"'check'"' }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (expression job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    "name": check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (quoted name: key in another workflow)" check-check-workflow-trigger
+# The OPPOSITE failure: a job whose id is `check` but whose reported name is
+# something else does not report the context, so it must not be refused.
+check_seed $HW "$HJOB" '  check:\n    name: unrelated\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_pass "check workflow trigger (job id check reports another name)" check-check-workflow-trigger
 
 # 14. Every tracked generated API output must have a registry entry. Otherwise
 #     deleting an entry stops regeneration and leaves the stale tracked file
