@@ -841,10 +841,30 @@ func TestAReaderThatQueuedForASlotJoinsTheFlightStartedWhileItWaited(t *testing.
 			t.Fatalf("key loaded %d times, want 1 — a reader that queued for a slot started a second load instead of joining the flight registered while it waited", got)
 		}
 
+		// The load is not complete, thus no reader of the key can have an answer.
+		// A reader that returns now did not wait for the flight.
+		for name, ch := range map[string]<-chan readResult{"first": first, "second": second} {
+			select {
+			case r := <-ch:
+				t.Fatalf("%s reader of the key returned (%+v, err %v) before the load completed — it did not wait for the flight", name, r.value, r.err)
+			default:
+			}
+		}
+
 		openAll(releaseK)
-		for _, ch := range []<-chan readResult{u1, u2, first, second} {
+		for _, ch := range []<-chan readResult{u1, u2} {
 			if r := <-ch; r.err != nil {
 				t.Fatalf("Read: %v", r.err)
+			}
+		}
+		for name, ch := range map[string]<-chan readResult{"first": first, "second": second} {
+			r := <-ch
+			if r.err != nil {
+				t.Fatalf("%s reader of the key: Read: %v", name, r.err)
+			}
+			// The value must be the one that the load got from the source.
+			if r.value.SlotID != slot || !slices.Equal(r.value.Unavailable, []string{"A1"}) || r.value.RemainingCapacity != 9 {
+				t.Fatalf("%s reader of the key got %+v, want slot %s with unavailable [A1] and remaining capacity 9 — the value of the load", name, r.value, slot)
 			}
 		}
 		if got := src.keyCount(org, slot); got != 1 {
