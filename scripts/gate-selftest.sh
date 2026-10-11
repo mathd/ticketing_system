@@ -674,6 +674,10 @@ check_seed $CW "$CJOB" "${CJOB}"'    timeout-minutes: 30\n'
 expect_pass "check workflow trigger (timeout-minutes on the check job)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}${MAKE_STEP}"
 expect_pass "check workflow trigger (two make check steps)" check-check-workflow-trigger
+# A comment after `with:` leaves its value empty; the mapping below it is not a
+# continued scalar.
+check_seed $CW '        with:\n          path: ~/.cache/golangci-lint\n' '        with: # tool cache\n          path: ~/.cache/golangci-lint\n'
+expect_pass "check workflow trigger (comment after with:)" check-check-workflow-trigger
 
 # Ruleset: the context is the job's reported name, which is the job id, or its
 # `name:` when one is set. A rename and an added name both orphan it.
@@ -734,6 +738,23 @@ check_seed $HW "${HJOB}"'    runs-on: ubuntu-latest\n' "${HJOB}"'    runs-on: ub
 expect_pass "check workflow trigger (quoted key elsewhere in another workflow)" check-check-workflow-trigger
 check_seed $HW 'name: hermetic-smoke\n' '"name": hermetic-smoke\n'
 expect_pass "check workflow trigger (quoted top-level key in another workflow)" check-check-workflow-trigger
+# But a quoted key with an escape decodes to another key: "na\x6de" is `name`,
+# "jo\x62s" is `jobs`, "che\x63k" is the job id `check`. Stripping the quotes
+# without decoding misreads all three, so any quoted key with a backslash is
+# refused, in every workflow.
+check_seed $HW "$HJOB" '  sneaky:\n    "na\x6de": check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped name key in another workflow)" check-check-workflow-trigger
+cat > .github/workflows/sneaky.yaml <<'WORKFLOW'
+on: push
+"jo\x62s":
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+WORKFLOW
+expect_fail "check workflow trigger (escaped jobs key in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  "che\x63k":\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped job id in another workflow)" check-check-workflow-trigger
 # The OPPOSITE failure: a job whose id is `check` but whose reported name is
 # something else does not report the context, so it must not be refused.
 check_seed $HW "$HJOB" '  check:\n    name: unrelated\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"

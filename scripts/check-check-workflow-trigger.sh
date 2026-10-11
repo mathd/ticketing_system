@@ -74,10 +74,14 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
-def unquote(text: str) -> str:
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+def quoted_string(text: str) -> str | None:
+    """The content of a simply quoted string, or None. The one rule for every
+    quoted key and name: a double-quoted string with no backslash (an escape such
+    as \\x6d decodes to another character), or a single-quoted string with no ''
+    (the KEY pattern cannot match one, so such a key is a non-key line)."""
+    if re.fullmatch(r'"[^"\\]*"', text) or re.fullmatch(r"'[^']*'", text):
         return text[1:-1]
-    return text
+    return None
 
 
 class Line:
@@ -130,9 +134,14 @@ def mapping(lines: list[Line], parent: int, what: str, quoted_ok: bool = False) 
             continue
         if line.indent < child_indent or line.key is None:
             raise Unsupported(f"{line.where}: `{line.text}` in {what} is not a block-style `key:`")
+        key = quoted_string(line.key) if line.quoted else line.key
+        if key is None:
+            raise Unsupported(
+                f"{line.where}: quoted key {line.key} in {what} has an escape, so YAML may "
+                "decode it to another key; write it unquoted"
+            )
         if line.quoted and not quoted_ok:
             raise Unsupported(f"{line.where}: quoted key {line.key} in {what}; write it unquoted")
-        key = unquote(line.key)
         if key in keys:
             raise Unsupported(f"{line.where}: duplicate key `{key}` in {what}")
         keys[key] = index
@@ -191,8 +200,13 @@ def job_name(lines: list[Line], index: int, job_id: str, contexts: list[str]) ->
     value = line.value
     if deeper(lines, index) or not value:
         raise Unsupported(f"{line.where}: job `{job_id}`'s `name:` is not on one line")
-    if re.fullmatch(r'"[^"\\]*"', value) or re.fullmatch(r"'[^']*'", value):
-        name = value[1:-1]
+    if value[:1] in "\"'":
+        name = quoted_string(value)
+        if name is None:
+            raise Unsupported(
+                f"{line.where}: job `{job_id}`'s `name: {value}` is not a plain scalar or a simply "
+                "quoted string"
+            )
     elif PLAIN_NAME.fullmatch(value) and " #" not in value:
         name = value
     else:
@@ -280,7 +294,8 @@ def check_job(job: dict, context: str) -> None:
                 if key not in STEP_KEYS:
                     reason = STEP_KEY_REASONS.get(key, "only `name`, `uses`, `with`, `run` and `id` are allowed")
                     failures.append(f"{line.where}: a step of job `{job['id']}` has `{key}`; {reason}")
-                if line.value and (line.continued or line.value[0] in "|>"):
+                # A comment-only value (`with: # note`) is empty, as in block_value().
+                if line.value and not line.value.startswith("#") and (line.continued or line.value[0] in "|>"):
                     raise Unsupported(
                         f"{line.where}: `{key}: {line.value}` in a step of job `{job['id']}` "
                         "continues on more lines; write it as one plain line"
