@@ -98,6 +98,7 @@ function validChannel(overrides: Record<string, unknown> = {}) {
     display_name: 'Box office',
     kind: 'pos',
     enabled: true,
+    revision: 0,
     created_at: '2026-07-20T12:00:00Z',
     updated_at: '2026-07-20T12:00:00Z',
     ...overrides,
@@ -861,6 +862,12 @@ describe('the channel registry client (TKT-236)', () => {
     ['display_name', { display_name: undefined }],
     ['kind', { kind: 'affiliate' }],
     ['enabled', { enabled: 'yes' }],
+    ['revision (missing)', { revision: undefined }],
+    ['revision (null)', { revision: null }],
+    ['revision (string)', { revision: '1' }],
+    ['revision (negative)', { revision: -1 }],
+    ['revision (fractional)', { revision: 1.5 }],
+    ['revision (unsafe integer)', { revision: 9007199254740992 }],
     ['created_at', { created_at: undefined }],
     ['updated_at', { updated_at: undefined }],
   ])('refuses a channel with an invalid %s', async (_field, replacement) => {
@@ -904,9 +911,9 @@ describe('the channel registry client (TKT-236)', () => {
   // The PUT is a full replacement. An omitted field is not "unchanged" — it is
   // absent, and for `enabled` that reads as false.
   it('sends every mutable field on update, and NO organizer', async () => {
-    const calls = spyFetch(validChannel({ display_name: 'Counter', enabled: false }), 200);
+    const calls = spyFetch(validChannel({ display_name: 'Counter', enabled: false, revision: 8 }), 200);
     await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
-      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false,
+      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false, expectedRevision: 7,
     });
     expect(calls[0].url).toContain(`/api/catalog/channels/${CHANNEL_ID}`);
     // The write is still scoped to a tenant -- the channel id comes from a form
@@ -918,8 +925,64 @@ describe('the channel registry client (TKT-236)', () => {
       display_name: 'Counter',
       kind: 'pos',
       enabled: false,
+      // TKT-325: the token the caller passed, unchanged — not re-read, not
+      // defaulted. 7, not 0, so a client that dropped it would fail here.
+      expected_revision: 7,
     });
     expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
+  });
+
+  it('sends expected_revision 0 as a number, not as an omission', async () => {
+    const calls = spyFetch(validChannel({ revision: 1 }), 200);
+    await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    });
+    expect(calls[0].body).toHaveProperty('expected_revision', 0);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe', 9007199254740992],
+    ['NaN', Number.NaN],
+  ])('refuses a %s expected revision before any request', async (_name, expectedRevision) => {
+    const calls = spyFetch(validChannel(), 200);
+    await expect(updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision,
+    })).rejects.toThrow(/revision/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('decodes the revision the update answered', async () => {
+    spyFetch(validChannel({ revision: 8 }), 200);
+    const got = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 7,
+    });
+    expect(got.revision).toBe(8);
+  });
+
+  // The 409 has two causes, and only `code` tells them apart. A parsed error that
+  // dropped it would classify every stale refusal as a code-field error.
+  it('keeps the machine code of a coded refusal', async () => {
+    spyFetch({ error: 'channel changed since it was read; nothing was saved', code: 'channel_revision_mismatch' }, 409);
+    const error = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CatalogApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: 'channel_revision_mismatch',
+      message: 'channel changed since it was read; nothing was saved',
+    });
+  });
+
+  it('leaves code undefined on an uncoded refusal', async () => {
+    spyFetch({ error: 'channel code is immutable' }, 409);
+    const error = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CatalogApiError);
+    expect((error as CatalogApiError).code).toBeUndefined();
   });
 });
 

@@ -825,6 +825,7 @@ export interface paths {
          * Update a channel's display name, kind or enabled flag (TKT-235)
          * @description The code is IMMUTABLE. It is required in the body and must equal the stored code; a different value is refused with 409 rather than renaming the row. Renaming would silently orphan the code already recorded on live claims, fee rules and split schedules — none of which reference this table (ADR-024), so nothing would cascade and nothing would complain. A rename is a new channel plus disabling the old one.
          *     There is no GET beside this PUT. Catalog's contract holds an invariant (TKT-191, write_credential_test.go): every unsafe operation requires the staff-write credential and every SAFE one opts out with `security: []`. The credential is a write credential, so a staff-authenticated read cannot be expressed here — the operator read that shows disabled channels is a hand-mounted /internal/ route instead, following the same convention as catalog's other internal reads.
+         *     Optimistic revision (TKT-325, ADR-080). The body is a full replacement, so it carries `expected_revision`: the revision the caller read. Catalog compares it under the channel's row lock and refuses a stale value with 409 `channel_revision_mismatch`; a refusal writes nothing. Each successful PUT increments the revision by one, also when the values are unchanged. The order of refusals: a body that does not match ChannelUpdate (including a missing or malformed `expected_revision`) is 400 from request validation; an invalid code, display name or kind is 400; then, under the lock, a channel that is missing or belongs to another organizer is 404; a stale revision is 409 with `code`; a different code is 409 without `code`. So another organizer's channel is 404 for any well-formed body, whatever revision it carries; the earlier 400s read only the request. This is lost-update protection between honest writers, not authorization and not tamper-evidence (ADR-021): a caller can send any revision, and a writer with catalog DB access can set any value.
          */
         put: operations["updateChannel"];
         post?: never;
@@ -1638,6 +1639,20 @@ export interface components {
             display_name: string;
             kind: components["schemas"]["ChannelKind"];
             enabled: boolean;
+            /**
+             * Format: int64
+             * @description The channel revision this replacement is based on (TKT-325), as read from Channel.revision. REQUIRED, with no default and no unconditional arm: zero is a real revision (every channel starts there), not "skip the check". Compared under the row lock; a mismatch is 409 `channel_revision_mismatch` and nothing is written. The maximum is the largest integer a JavaScript client holds exactly, as for inventory's allocation_revision. Honest-writer lost-update protection, not authorization (ADR-021).
+             */
+            expected_revision: number;
+        };
+        /** @description The PUT /channels/{channelId} 409 body. `code` is present only on a stale-revision refusal; the code-immutability refusal has no `code`. */
+        ChannelUpdateConflict: {
+            error: string;
+            /**
+             * @description `channel_revision_mismatch` (TKT-325): `expected_revision` did not match the stored revision, so nothing was written. Another writer (or an earlier attempt by this caller whose response was lost) changed the channel after it was read. Read it again before a new attempt.
+             * @enum {string}
+             */
+            code?: "channel_revision_mismatch";
         };
         Channel: {
             /** Format: uuid */
@@ -1648,6 +1663,11 @@ export interface components {
             display_name: string;
             kind: components["schemas"]["ChannelKind"];
             enabled: boolean;
+            /**
+             * Format: int64
+             * @description The channel's optimistic revision (TKT-325). Zero at create; plus one on each successful PUT. Send it back as ChannelUpdate.expected_revision.
+             */
+            revision: number;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -3241,13 +3261,13 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["StaffWriteUnauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description The submitted code differs from the stored one — codes are immutable */
+            /** @description Two refusals share this status, and `code` tells them apart. With `code: channel_revision_mismatch` (TKT-325), `expected_revision` is stale: another writer changed the channel after the caller read it, so nothing was written. Read the channel again and re-apply the change. Without `code`, the submitted code differs from the stored one: codes are immutable. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Error"];
+                    "application/json": components["schemas"]["ChannelUpdateConflict"];
                 };
             };
             500: components["responses"]["InternalError"];

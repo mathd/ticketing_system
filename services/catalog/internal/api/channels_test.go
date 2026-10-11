@@ -2,13 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"ticketing/services/catalog/internal/store"
 )
 
 // The sales-channel registry's HTTP surface (TKT-235 / epic TKT-17).
@@ -181,9 +186,21 @@ func TestUpdateChannelRefusesToRenameTheCode(t *testing.T) {
 	// reference this table, so nothing would cascade and nothing would complain.
 	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
 		"code": "pos", "display_name": "Old box office", "kind": "pos", "enabled": true,
+		"expected_revision": created.Revision,
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("renaming the code = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	// TKT-325: the PUT's 409 has two causes, and only the stale-revision one
+	// carries `code`. The token above is current, so this must be the
+	// immutability refusal, exactly — a client keys on `code`, and a
+	// mislabeled refusal sends the operator to reload when the fix is a field.
+	var conflict map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &conflict); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if want := (map[string]any{"error": "channel code is immutable; create a new channel and disable this one instead of renaming"}); !reflect.DeepEqual(conflict, want) {
+		t.Fatalf("code-immutability 409 body = %v, want exactly %v", conflict, want)
 	}
 
 	// And the stored row is untouched.
@@ -215,6 +232,7 @@ func TestUpdateChannelChangesTheMutableFields(t *testing.T) {
 
 	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
 		"code": "web", "display_name": "Main website", "kind": "web", "enabled": false,
+		"expected_revision": created.Revision,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -238,6 +256,7 @@ func TestUpdateUnknownChannelIs404NotAnImmutabilityConflict(t *testing.T) {
 	// it guessed is real.
 	rec := channelWrite(e, http.MethodPut, "/channels/"+uuid.New().String(), uuid.New(), map[string]any{
 		"code": "pos", "display_name": "Box office", "kind": "pos", "enabled": true,
+		"expected_revision": 0,
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PUT to an unknown channel = %d, want 404: %s", rec.Code, rec.Body.String())
@@ -732,6 +751,7 @@ func TestUpdateChannelRefusesAnotherOrganizersChannel(t *testing.T) {
 	// forged form can be in — and still must not touch the row.
 	rec = channelWrite(e, http.MethodPut, "/channels/"+theirs.Id.String(), attacker, map[string]any{
 		"code": "pos", "display_name": "Hijacked", "kind": "web", "enabled": false,
+		"expected_revision": theirs.Revision,
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-tenant update = %d, want 404 — a channel id is not an authorization "+
@@ -772,6 +792,7 @@ func TestUpdateChannelAcceptsTheOwningOrganizer(t *testing.T) {
 	}
 	rec = channelWrite(e, http.MethodPut, "/channels/"+created.Id.String(), org, map[string]any{
 		"code": "pos", "display_name": "Counter", "kind": "pos", "enabled": false,
+		"expected_revision": created.Revision,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner update = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -846,6 +867,7 @@ func TestStaffCredentialAloneCanNoLongerEnumerateOrMutateAcrossTenants(t *testin
 	attacker := uuid.New()
 	if rec := channelWrite(e, http.MethodPut, "/channels/"+seeded.Id.String(), attacker, map[string]any{
 		"code": "pos", "display_name": "Renamed by a token holder", "kind": "web", "enabled": false,
+		"expected_revision": seeded.Revision,
 	}); rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-tenant update = %d, want 404.\n\nIf this SUCCEEDS again, the boundary "+
 			"TKT-245 built has regressed and ADR-058's claim is false.\nbody: %s",
@@ -896,5 +918,207 @@ func TestStaffCredentialAloneCanNoLongerEnumerateOrMutateAcrossTenants(t *testin
 			"no longer declares the assertion, so the only thing refusing is the handler's "+
 			"fallback — a boundary that exists only as a fallback.\nbody: %s",
 			rec.Code, rec.Body.String())
+	}
+}
+
+// ---- TKT-325: the channel PUT's optimistic revision (ADR-080) ----
+//
+// Through the real router, so the request validator and the ADR-028 response
+// validator both run. The fake compares the revision in Go: these tests prove
+// the contract refuses malformed tokens, the handler forwards the token it was
+// given, and the refusal maps to the declared 409. The row lock and the SQL
+// order are proved at the store tier (channels_smoke_test.go).
+
+// createChannelForRevision creates a channel through the API and returns it.
+func createChannelForRevision(e *env, org uuid.UUID, code, name string) Channel {
+	e.t.Helper()
+	rec := channelWrite(e, http.MethodPost, "/channels", org, createChannelBody(code, name, "web", nil))
+	if rec.Code != http.StatusCreated {
+		e.t.Fatalf("create %q = %d: %s", code, rec.Code, rec.Body.String())
+	}
+	var c Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		e.t.Fatal(err)
+	}
+	return c
+}
+
+// readChannel reads one channel through the internal GET.
+func readChannel(e *env, id uuid.UUID) Channel {
+	e.t.Helper()
+	rec := operatorGet(e, "/internal/channels/"+id.String())
+	if rec.Code != http.StatusOK {
+		e.t.Fatalf("GET channel = %d: %s", rec.Code, rec.Body.String())
+	}
+	var c Channel
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		e.t.Fatal(err)
+	}
+	return c
+}
+
+// sameChannel compares every field, timestamps by instant.
+func sameChannel(a, b Channel) bool {
+	return a.Id == b.Id && a.OrganizerId == b.OrganizerId && a.Code == b.Code &&
+		a.DisplayName == b.DisplayName && a.Kind == b.Kind && a.Enabled == b.Enabled &&
+		a.Revision == b.Revision && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
+}
+
+func channelPut(e *env, org uuid.UUID, c Channel, name string, enabled bool, expected int64) *httptest.ResponseRecorder {
+	e.t.Helper()
+	return channelWrite(e, http.MethodPut, "/channels/"+c.Id.String(), org, map[string]any{
+		"code": c.Code, "display_name": name, "kind": string(c.Kind), "enabled": enabled,
+		"expected_revision": expected,
+	})
+}
+
+// Create answers revision 0; each PUT answers the next revision, and GET and the
+// operator list return the stored value. The second PUT sends revision 1: a
+// handler that dropped the token would send 0 and be refused, so this is what
+// proves the token is forwarded rather than defaulted.
+func TestChannelPutAnswersTheNextRevisionAndReadsExposeIt(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	c := createChannelForRevision(e, org, "web", "Website")
+	if c.Revision != 0 {
+		t.Fatalf("create answered revision %d, want 0", c.Revision)
+	}
+	for _, step := range []struct{ expected, want int64 }{{0, 1}, {1, 2}} {
+		rec := channelPut(e, org, c, "Website", true, step.expected)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT with revision %d = %d, want 200: %s", step.expected, rec.Code, rec.Body.String())
+		}
+		var got Channel
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Revision != step.want {
+			t.Fatalf("PUT with revision %d answered revision %d, want %d", step.expected, got.Revision, step.want)
+		}
+	}
+	if got := readChannel(e, c.Id); got.Revision != 2 {
+		t.Fatalf("GET revision = %d, want 2", got.Revision)
+	}
+	rec := operatorListChannels(e, org)
+	var list ChannelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Channels) != 1 || list.Channels[0].Revision != 2 {
+		t.Fatalf("operator list = %+v, want one channel at revision 2", list.Channels)
+	}
+}
+
+// A stale PUT is the exact declared 409, and nothing is written.
+func TestStaleChannelPutIsTheCodedConflictAndWritesNothing(t *testing.T) {
+	e := newEnv(t)
+	org := uuid.New()
+	c := createChannelForRevision(e, org, "web", "Website")
+
+	// B toggles with the revision both read.
+	if rec := channelPut(e, org, c, "Website", false, 0); rec.Code != http.StatusOK {
+		t.Fatalf("B's PUT = %d: %s", rec.Code, rec.Body.String())
+	}
+	after := readChannel(e, c.Id)
+
+	// A renames from the same, now stale, read; its snapshot says enabled.
+	rec := channelPut(e, org, c, "Renamed by A", true, 0)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale PUT = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]any{
+		"error": "channel changed since it was read; nothing was saved",
+		"code":  "channel_revision_mismatch",
+	}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("stale PUT body = %v, want exactly %v", body, want)
+	}
+	if got := readChannel(e, c.Id); !sameChannel(got, after) {
+		t.Fatalf("a refused PUT changed the row:\n got  %+v\n want %+v", got, after)
+	}
+}
+
+// A malformed token is refused by the contract before the store is reached.
+//
+// The row is at revision 0 on purpose (A3). A missing or null token that got
+// past the validator would decode to Go's zero and MATCH this row, so the PUT
+// would succeed: only this fixture shows that the validator, not a decoded
+// zero, is what refuses.
+func TestChannelPutRefusesAMissingOrMalformedRevision(t *testing.T) {
+	cases := []struct{ name, token string }{
+		{"missing", ""},
+		{"null", `,"expected_revision":null`},
+		{"string", `,"expected_revision":"0"`},
+		{"fractional", `,"expected_revision":0.5`},
+		{"negative", `,"expected_revision":-1`},
+		{"above the JavaScript-safe maximum", `,"expected_revision":9007199254740992`},
+		{"overflowing int64", `,"expected_revision":9223372036854775808`},
+		{"far beyond int64", `,"expected_revision":1e30`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			org := uuid.New()
+			c := createChannelForRevision(e, org, "web", "Website")
+			before := readChannel(e, c.Id)
+			body := `{"code":"web","display_name":"Renamed","kind":"web","enabled":false` + tc.token + `}`
+			rec := e.doWithHeaders(http.MethodPut, "/channels/"+c.Id.String(), body, map[string]string{
+				staffWriteHeader:         testStaffWriteToken,
+				organizerAssertionHeader: e.assertionFor(org),
+			})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("PUT with token %q = %d, want 400: %s", strings.TrimPrefix(tc.token, ","), rec.Code, rec.Body.String())
+			}
+			if got := readChannel(e, c.Id); !sameChannel(got, before) {
+				t.Fatalf("a refused PUT changed the row:\n got  %+v\n want %+v", got, before)
+			}
+		})
+	}
+}
+
+// Ownership is decided before the revision: another organizer's channel is 404
+// with the current token and with a stale one, never 409. A 409 would confirm
+// the id is real and say whether the guessed revision is current.
+func TestCrossTenantChannelPutIs404WhateverTheRevision(t *testing.T) {
+	e := newEnv(t)
+	victim, attacker := uuid.New(), uuid.New()
+	c := createChannelForRevision(e, victim, "pos", "Their box office")
+	if rec := channelPut(e, victim, c, "Their box office", true, 0); rec.Code != http.StatusOK {
+		t.Fatalf("owner PUT = %d: %s", rec.Code, rec.Body.String())
+	}
+	theirs := readChannel(e, c.Id)
+	if theirs.Revision != 1 {
+		t.Fatalf("victim's channel at revision %d, want 1 — the stale case needs a current value above 0", theirs.Revision)
+	}
+	for _, expected := range []int64{theirs.Revision, theirs.Revision - 1} {
+		rec := channelPut(e, attacker, theirs, "Hijacked", false, expected)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("cross-tenant PUT with revision %d = %d, want 404: %s", expected, rec.Code, rec.Body.String())
+		}
+		if got := readChannel(e, c.Id); !sameChannel(got, theirs) {
+			t.Fatalf("cross-tenant PUT changed the victim's row: %+v", got)
+		}
+	}
+}
+
+// The mapping uses errors.Is, so a wrapped sentinel still answers the coded 409.
+func TestWrappedChannelRevisionMismatchMapsToTheCodedConflict(t *testing.T) {
+	srv := NewServer(newFakeStore(), &fakePublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil)), testInternalToken, testStaffWriteToken)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/channels/x", nil)
+	srv.writeStoreError(rec, req, fmt.Errorf("update channel: %w", store.ErrChannelRevisionMismatch))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("wrapped mismatch = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var got ChannelUpdateConflict
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Code == nil || *got.Code != ChannelRevisionMismatch {
+		t.Fatalf("wrapped mismatch body = %s, want code channel_revision_mismatch", rec.Body.String())
 	}
 }

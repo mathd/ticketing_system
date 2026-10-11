@@ -44,6 +44,21 @@ func (e ChannelKind) Valid() bool {
 	}
 }
 
+// Defines values for ChannelUpdateConflictCode.
+const (
+	ChannelRevisionMismatch ChannelUpdateConflictCode = "channel_revision_mismatch"
+)
+
+// Valid indicates whether the value is a known member of the ChannelUpdateConflictCode enum.
+func (e ChannelUpdateConflictCode) Valid() bool {
+	switch e {
+	case ChannelRevisionMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ClosureStatus.
 const (
 	Closed ClosureStatus = "closed"
@@ -506,7 +521,10 @@ type Channel struct {
 	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
 	Kind        ChannelKind        `json:"kind"`
 	OrganizerId openapi_types.UUID `json:"organizer_id"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+
+	// Revision The channel's optimistic revision (TKT-325). Zero at create; plus one on each successful PUT. Send it back as ChannelUpdate.expected_revision.
+	Revision  int64     `json:"revision"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ChannelCode An exact, opaque, case-sensitive string. The bound mirrors claims.channel_code and channel_allocations.channel_code in inventory (ADR-024) and fee_rules.channel_code, split_schedules.channel_code, price_rules.channel_code (TKT-237) and channels.code (TKT-235) in catalog — all six must agree, or a code legal in one place is unusable in another. Nothing normalizes, trims or case-folds it.
@@ -540,9 +558,22 @@ type ChannelUpdate struct {
 	DisplayName string      `json:"display_name"`
 	Enabled     bool        `json:"enabled"`
 
+	// ExpectedRevision The channel revision this replacement is based on (TKT-325), as read from Channel.revision. REQUIRED, with no default and no unconditional arm: zero is a real revision (every channel starts there), not "skip the check". Compared under the row lock; a mismatch is 409 `channel_revision_mismatch` and nothing is written. The maximum is the largest integer a JavaScript client holds exactly, as for inventory's allocation_revision. Honest-writer lost-update protection, not authorization (ADR-021).
+	ExpectedRevision int64 `json:"expected_revision"`
+
 	// Kind What kind of sales channel this is. A CLOSED enum, deliberately: the four values are the ones the PRD names, and adding a fifth is a coordinated change to this document, the generated Go and TypeScript types, and the SQL CHECK — not a database-only edit. A data-driven vocabulary would be more machinery than four fixed values justify.
 	Kind ChannelKind `json:"kind"`
 }
+
+// ChannelUpdateConflict The PUT /channels/{channelId} 409 body. `code` is present only on a stale-revision refusal; the code-immutability refusal has no `code`.
+type ChannelUpdateConflict struct {
+	// Code `channel_revision_mismatch` (TKT-325): `expected_revision` did not match the stored revision, so nothing was written. Another writer (or an earlier attempt by this caller whose response was lost) changed the channel after it was read. Read it again before a new attempt.
+	Code  *ChannelUpdateConflictCode `json:"code,omitempty"`
+	Error string                     `json:"error"`
+}
+
+// ChannelUpdateConflictCode `channel_revision_mismatch` (TKT-325): `expected_revision` did not match the stored revision, so nothing was written. Another writer (or an earlier attempt by this caller whose response was lost) changed the channel after it was read. Read it again before a new attempt.
+type ChannelUpdateConflictCode string
 
 // Closure Weather-closure state (spike §Case 3), orthogonal to the draft/published/archived lifecycle. A closed slot is still published.
 type Closure struct {

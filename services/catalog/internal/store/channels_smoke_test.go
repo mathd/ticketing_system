@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -99,14 +100,15 @@ func TestChannelCodeIsImmutableAndTheRefusalDoesNotPartiallyApply(t *testing.T) 
 
 	_, err = st.UpdateChannel(ctx, org, created.ID, ChannelUpdate{
 		Code: "pos", DisplayName: "Renamed", Kind: ChannelKindPOS, Enabled: true,
+		ExpectedRevision: created.Revision,
 	})
 	if !errors.Is(err, ErrChannelCodeImmutable) {
 		t.Fatalf("rename = %v, want ErrChannelCodeImmutable", err)
 	}
 
-	// Nothing was written. The UPDATE carries the code comparison in its WHERE
-	// clause, so a mismatch matches no row — there is no window in which the
-	// display name lands and the code does not.
+	// Nothing was written. The code is compared under the row lock, before the
+	// UPDATE runs, and the refusal rolls the transaction back — there is no
+	// window in which the display name lands and the code does not.
 	after, err := st.GetChannel(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +130,7 @@ func TestUpdateChannelWritesUpdatedAtAndTheMutableFields(t *testing.T) {
 	}
 	updated, err := st.UpdateChannel(ctx, org, created.ID, ChannelUpdate{
 		Code: "web", DisplayName: "Main website", Kind: ChannelKindWeb, Enabled: false,
+		ExpectedRevision: created.Revision,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +155,7 @@ func TestUpdateUnknownChannelIsNotFound(t *testing.T) {
 	_ = seedChannelOrganizer(ctx, t, db, "missing")
 	_, err := st.UpdateChannel(ctx, uuid.New(), uuid.New(), ChannelUpdate{
 		Code: "pos", DisplayName: "Box office", Kind: ChannelKindPOS, Enabled: true,
+		ExpectedRevision: 0,
 	})
 	// Not ErrChannelCodeImmutable: reporting the immutability conflict for an id
 	// that does not exist would tell a caller that an id it guessed is real.
@@ -416,6 +420,7 @@ func TestUpdateChannelIsScopedToTheOwningOrganizer(t *testing.T) {
 	// field and the code is visible on the storefront selector.
 	_, err = st.UpdateChannel(ctx, attacker, theirs.ID, ChannelUpdate{
 		Code: "pos", DisplayName: "Hijacked", Kind: ChannelKindWeb, Enabled: false,
+		ExpectedRevision: theirs.Revision,
 	})
 	// ErrNotFound, not ErrChannelCodeImmutable and not a mismatch error: an
 	// answer that distinguished "not yours" from "no such channel" would confirm
@@ -437,6 +442,7 @@ func TestUpdateChannelIsScopedToTheOwningOrganizer(t *testing.T) {
 	// And the owner is unaffected — a boundary, not a wall.
 	updated, err := st.UpdateChannel(ctx, victim, theirs.ID, ChannelUpdate{
 		Code: "pos", DisplayName: "Counter", Kind: ChannelKindPOS, Enabled: false,
+		ExpectedRevision: theirs.Revision,
 	})
 	if err != nil {
 		t.Fatalf("the owning organizer must still update: %v", err)
@@ -444,4 +450,344 @@ func TestUpdateChannelIsScopedToTheOwningOrganizer(t *testing.T) {
 	if updated.DisplayName != "Counter" || updated.Enabled {
 		t.Fatalf("owner update did not apply: %+v", updated)
 	}
+}
+
+// ---- TKT-325: the channel's optimistic revision (ADR-080) ----
+//
+// These live at the store tier because the mechanism does: the comparison runs
+// under a row lock in UpdateChannel's transaction, and the organizer predicate
+// is SQL. The API fake compares in Go, so an API test passes with the lock or the
+// predicate deleted (AGENTS.md, TKT-236). Every write that moves a revision here
+// goes through UpdateChannel, never a raw UPDATE, so the counter really moves
+// (AGENTS.md, TKT-250: a fixture that writes the guarded table directly does not
+// move the counter, and the "stale" value then still matches).
+
+// createRevisionChannel creates an enabled web channel and checks it starts at 0.
+func createRevisionChannel(ctx context.Context, t *testing.T, st *Postgres, org uuid.UUID, code, name string) Channel {
+	t.Helper()
+	c, err := st.CreateChannel(ctx, ChannelInput{
+		OrganizerID: org, Code: code, DisplayName: name, Kind: ChannelKindWeb, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create %q: %v", code, err)
+	}
+	if c.Revision != 0 {
+		t.Fatalf("create %q returned revision %d, want 0", code, c.Revision)
+	}
+	return c
+}
+
+// assertChannelRow re-reads the row and compares it with want field by field,
+// including the revision and the exact updated_at.
+func assertChannelRow(ctx context.Context, t *testing.T, st *Postgres, want Channel, why string) {
+	t.Helper()
+	got, err := st.GetChannel(ctx, want.ID)
+	if err != nil {
+		t.Fatalf("%s: re-read: %v", why, err)
+	}
+	if got.Code != want.Code || got.DisplayName != want.DisplayName || got.Kind != want.Kind ||
+		got.Enabled != want.Enabled || got.Revision != want.Revision ||
+		!got.UpdatedAt.Equal(want.UpdatedAt) || !got.CreatedAt.Equal(want.CreatedAt) {
+		t.Fatalf("%s:\n got  %+v\n want %+v", why, got, want)
+	}
+}
+
+// Create starts at 0, and every full-row read returns the STORED value. The
+// reads are checked after a bump on purpose: at 0 a read that forgot to select
+// the column would return the Go zero value and pass.
+func TestChannelRevisionStartsAtZeroAndEveryReadReturnsIt(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	org := seedChannelOrganizer(ctx, t, db, "revision-reads")
+	c := createRevisionChannel(ctx, t, st, org, "web", "Website")
+
+	for _, step := range []struct {
+		expected, want int64
+	}{{0, 1}, {1, 2}} {
+		updated, err := st.UpdateChannel(ctx, org, c.ID, ChannelUpdate{
+			Code: "web", DisplayName: "Website", Kind: ChannelKindWeb, Enabled: true,
+			ExpectedRevision: step.expected,
+		})
+		if err != nil {
+			t.Fatalf("update with revision %d: %v", step.expected, err)
+		}
+		if updated.Revision != step.want {
+			t.Fatalf("update with revision %d returned revision %d, want %d", step.expected, updated.Revision, step.want)
+		}
+	}
+
+	got, err := st.GetChannel(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 2 {
+		t.Fatalf("GetChannel revision = %d, want 2", got.Revision)
+	}
+	list, err := st.ListChannels(ctx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Revision != 2 {
+		t.Fatalf("ListChannels = %+v, want one row at revision 2", list)
+	}
+}
+
+// The reported defect and its mirror image (D1), at the store tier. B writes
+// through UpdateChannel with the revision both read; A then sends a full
+// replacement built from the same, now stale, read. A is refused, and B's row
+// survives exactly: every field, the timestamp and the revision.
+func TestStaleChannelUpdateIsRefusedInBothDirections(t *testing.T) {
+	cases := []struct {
+		name string
+		// b is the other writer's change; a is the stale writer's full replacement.
+		b, a func(c Channel) ChannelUpdate
+	}{
+		{
+			name: "rename after a concurrent toggle",
+			b: func(c Channel) ChannelUpdate {
+				return ChannelUpdate{Code: c.Code, DisplayName: c.DisplayName, Kind: c.Kind, Enabled: false, ExpectedRevision: c.Revision}
+			},
+			// A's stale snapshot still says enabled=true.
+			a: func(c Channel) ChannelUpdate {
+				return ChannelUpdate{Code: c.Code, DisplayName: "Renamed by A", Kind: c.Kind, Enabled: true, ExpectedRevision: c.Revision}
+			},
+		},
+		{
+			name: "toggle after a concurrent rename",
+			b: func(c Channel) ChannelUpdate {
+				return ChannelUpdate{Code: c.Code, DisplayName: "Renamed by B", Kind: c.Kind, Enabled: c.Enabled, ExpectedRevision: c.Revision}
+			},
+			// A's stale snapshot still carries the old name.
+			a: func(c Channel) ChannelUpdate {
+				return ChannelUpdate{Code: c.Code, DisplayName: c.DisplayName, Kind: c.Kind, Enabled: false, ExpectedRevision: c.Revision}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, db, st := seasonSmokeStore(t)
+			org := seedChannelOrganizer(ctx, t, db, "stale")
+			read := createRevisionChannel(ctx, t, st, org, "web", "Website")
+
+			bRow, err := st.UpdateChannel(ctx, org, read.ID, tc.b(read))
+			if err != nil {
+				t.Fatalf("B's update: %v", err)
+			}
+			if bRow.Revision != read.Revision+1 {
+				t.Fatalf("B's update returned revision %d, want %d", bRow.Revision, read.Revision+1)
+			}
+
+			_, err = st.UpdateChannel(ctx, org, read.ID, tc.a(read))
+			if !errors.Is(err, ErrChannelRevisionMismatch) {
+				t.Fatalf("A's stale update = %v, want ErrChannelRevisionMismatch", err)
+			}
+			assertChannelRow(ctx, t, st, bRow, "after A's refused update, B's row must survive unchanged")
+
+			// A second click with the same stale token is refused again and
+			// still moves nothing.
+			_, err = st.UpdateChannel(ctx, org, read.ID, tc.a(read))
+			if !errors.Is(err, ErrChannelRevisionMismatch) {
+				t.Fatalf("A's repeated stale update = %v, want ErrChannelRevisionMismatch", err)
+			}
+			assertChannelRow(ctx, t, st, bRow, "after A's second refused update")
+		})
+	}
+}
+
+// Every successful PUT bumps once, including one whose values are unchanged: the
+// revision counts writes, not differences. Plus one, not plus two.
+func TestUnchangedChannelReplacementBumpsTheRevisionOnce(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	org := seedChannelOrganizer(ctx, t, db, "unchanged")
+	c := createRevisionChannel(ctx, t, st, org, "web", "Website")
+
+	same := ChannelUpdate{Code: c.Code, DisplayName: c.DisplayName, Kind: c.Kind, Enabled: c.Enabled, ExpectedRevision: 0}
+	updated, err := st.UpdateChannel(ctx, org, c.ID, same)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Revision != 1 {
+		t.Fatalf("an unchanged replacement returned revision %d, want exactly 1", updated.Revision)
+	}
+	assertChannelRow(ctx, t, st, updated, "the stored row must equal what the update returned")
+	// The old token is now stale, even though no value changed.
+	if _, err := st.UpdateChannel(ctx, org, c.ID, same); !errors.Is(err, ErrChannelRevisionMismatch) {
+		t.Fatalf("revision 0 after an unchanged replacement = %v, want ErrChannelRevisionMismatch", err)
+	}
+	assertChannelRow(ctx, t, st, updated, "a refusal must not move the revision")
+}
+
+// Ownership is decided before the revision and the code. Another organizer gets
+// ErrNotFound with the CURRENT revision and code (the strongest forged
+// position) and with a stale revision and a wrong code: an answer that
+// distinguished a mismatch would confirm the id is real and leak whether the
+// guessed revision is current. The victim's row is at revision 1, so "current"
+// and "stale" are different values.
+func TestChannelRevisionIsCheckedOnlyAfterOwnership(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	victim := seedChannelOrganizer(ctx, t, db, "rev-victim")
+	attacker := seedChannelOrganizer(ctx, t, db, "rev-attacker")
+	c := createRevisionChannel(ctx, t, st, victim, "pos", "Their box office")
+	theirs, err := st.UpdateChannel(ctx, victim, c.ID, ChannelUpdate{
+		Code: "pos", DisplayName: "Their box office", Kind: ChannelKindWeb, Enabled: true, ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   ChannelUpdate
+	}{
+		{"current revision and code", ChannelUpdate{Code: "pos", DisplayName: "Hijacked", Kind: ChannelKindPOS, Enabled: false, ExpectedRevision: theirs.Revision}},
+		{"stale revision and wrong code", ChannelUpdate{Code: "other", DisplayName: "Hijacked", Kind: ChannelKindPOS, Enabled: false, ExpectedRevision: theirs.Revision - 1}},
+	} {
+		_, err := st.UpdateChannel(ctx, attacker, theirs.ID, tc.in)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: cross-tenant update = %v, want ErrNotFound", tc.name, err)
+		}
+		assertChannelRow(ctx, t, st, theirs, tc.name+": the victim's row must not move")
+	}
+
+	// A boundary, not a wall: the owner still updates with the current token.
+	owned, err := st.UpdateChannel(ctx, victim, theirs.ID, ChannelUpdate{
+		Code: "pos", DisplayName: "Counter", Kind: ChannelKindPOS, Enabled: false, ExpectedRevision: theirs.Revision,
+	})
+	if err != nil {
+		t.Fatalf("the owner must still update: %v", err)
+	}
+	if owned.Revision != theirs.Revision+1 || owned.DisplayName != "Counter" || owned.Enabled {
+		t.Fatalf("owner update = %+v, want revision %d, Counter, disabled", owned, theirs.Revision+1)
+	}
+}
+
+// The code-immutability refusal stays distinct when the token is current, and a
+// stale token is reported before a wrong code (A5's order: revision, then code).
+func TestChannelCodeRefusalIsDistinctFromTheRevisionRefusal(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	org := seedChannelOrganizer(ctx, t, db, "code-vs-revision")
+	c := createRevisionChannel(ctx, t, st, org, "web", "Website")
+	bumped, err := st.UpdateChannel(ctx, org, c.ID, ChannelUpdate{
+		Code: "web", DisplayName: "Website", Kind: ChannelKindWeb, Enabled: true, ExpectedRevision: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpdateChannel(ctx, org, c.ID, ChannelUpdate{
+		Code: "renamed", DisplayName: "Website", Kind: ChannelKindWeb, Enabled: true, ExpectedRevision: bumped.Revision,
+	})
+	if !errors.Is(err, ErrChannelCodeImmutable) {
+		t.Fatalf("wrong code, current revision = %v, want ErrChannelCodeImmutable", err)
+	}
+	_, err = st.UpdateChannel(ctx, org, c.ID, ChannelUpdate{
+		Code: "renamed", DisplayName: "Website", Kind: ChannelKindWeb, Enabled: true, ExpectedRevision: 0,
+	})
+	if !errors.Is(err, ErrChannelRevisionMismatch) {
+		t.Fatalf("wrong code, stale revision = %v, want ErrChannelRevisionMismatch", err)
+	}
+	assertChannelRow(ctx, t, st, bumped, "neither refusal may write")
+}
+
+// The comparison is made UNDER THE ROW LOCK (A9). Two writers present the same
+// revision at the same moment; exactly one wins and the revision moves once.
+//
+// The schedule is forced, not hoped for (AGENTS.md, TKT-308): a lock holder on a
+// dedicated connection takes the row first, both writers are started, and the
+// test waits until PostgreSQL itself reports both blocked behind the holder
+// before releasing it. No sleep stands in for "both reached the lock".
+//
+// The wait counts the holder's TRANSITIVE waiters. A direct
+// `$holder = ANY(pg_blocking_pids(pid))` reaches only 1: the second row-lock
+// waiter queues on the TUPLE lock the first waiter holds, so pg_blocking_pids
+// names the first waiter, not the holder (verified against PostgreSQL 18).
+//
+// What this catches that the sequential tests cannot: with `FOR UPDATE` removed
+// and the Go comparison kept, both writers read revision 0 without waiting, both
+// pass the comparison, both then queue on the UPDATE, and both apply. That run
+// ends with two successes and revision 2.
+func TestConcurrentChannelUpdatesWithOneRevisionApplyExactlyOnce(t *testing.T) {
+	ctx, db, st := seasonSmokeStore(t)
+	org := seedChannelOrganizer(ctx, t, db, "contention")
+	c := createRevisionChannel(ctx, t, st, org, "web", "Website")
+
+	holder, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	var holderPID int
+	if err := holder.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
+	holdTx, err := holder.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holdTx.Rollback() }()
+	if _, err := holdTx.ExecContext(ctx, `SELECT 1 FROM channels WHERE id = $1 FOR UPDATE`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		row Channel
+		err error
+	}
+	results := make(chan result, 2)
+	for _, in := range []ChannelUpdate{
+		{Code: "web", DisplayName: "Renamed", Kind: ChannelKindWeb, Enabled: true, ExpectedRevision: 0},
+		{Code: "web", DisplayName: "Website", Kind: ChannelKindWeb, Enabled: false, ExpectedRevision: 0},
+	} {
+		go func(in ChannelUpdate) {
+			row, err := st.UpdateChannel(ctx, org, c.ID, in)
+			results <- result{row, err}
+		}(in)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var blocked int
+		if err := db.QueryRowContext(ctx, `
+WITH RECURSIVE waiters AS (
+    SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))
+    UNION
+    SELECT a.pid FROM pg_stat_activity a JOIN waiters w ON w.pid = ANY(pg_blocking_pids(a.pid))
+)
+SELECT count(*) FROM waiters`, holderPID).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked == 2 {
+			break
+		}
+		if blocked > 2 {
+			t.Fatalf("%d backends wait behind the holder, want 2 — something else is touching this row", blocked)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of 2 writers blocked behind the lock holder within 10s", blocked)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := holdTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	var won []Channel
+	var refused int
+	for range 2 {
+		r := <-results
+		switch {
+		case r.err == nil:
+			won = append(won, r.row)
+		case errors.Is(r.err, ErrChannelRevisionMismatch):
+			refused++
+		default:
+			t.Fatalf("writer failed with %v, want success or ErrChannelRevisionMismatch", r.err)
+		}
+	}
+	if len(won) != 1 || refused != 1 {
+		t.Fatalf("%d writers succeeded and %d were refused, want exactly 1 and 1 — "+
+			"the revision must be compared under the row lock", len(won), refused)
+	}
+	if won[0].Revision != 1 {
+		t.Fatalf("winner's revision = %d, want 1", won[0].Revision)
+	}
+	assertChannelRow(ctx, t, st, won[0], "the stored row must be the winner's, at revision 1")
 }

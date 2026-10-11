@@ -26,16 +26,37 @@ FROM channels
 WHERE organizer_id = $1 AND enabled
 ORDER BY code`
 
+// channelColumns is the full-row projection every operator read, the create
+// and the update return, in the order scanChannel reads it. One list, so a
+// column added later (as revision was, TKT-325) cannot reach some reads and
+// silently come back as Go's zero value from others.
+const channelColumns = `id, organizer_id, code, display_name, kind, enabled, revision, created_at, updated_at`
+
 const operatorChannelsQuery = `
-SELECT id, organizer_id, code, display_name, kind, enabled, created_at, updated_at
+SELECT ` + channelColumns + `
 FROM channels
 WHERE organizer_id = $1
 ORDER BY code`
 
 const getChannelQuery = `
-SELECT id, organizer_id, code, display_name, kind, enabled, created_at, updated_at
+SELECT ` + channelColumns + `
 FROM channels
 WHERE id = $1`
+
+// lockChannelForUpdateQuery reads the caller's channel under a row lock. The
+// organizer predicate is in the locking read itself, so another organizer's
+// row is never locked, never compared and never described (TKT-251: scoping a
+// write means scoping its failure path too).
+const lockChannelForUpdateQuery = `
+SELECT ` + channelColumns + `
+FROM channels
+WHERE id = $1 AND organizer_id = $2
+FOR UPDATE`
+
+// scanChannel reads one channelColumns row.
+func scanChannel(row interface{ Scan(...any) error }, c *Channel) error {
+	return row.Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
+}
 
 // CreateChannel registers a channel.
 //
@@ -48,12 +69,13 @@ func (p *Postgres) CreateChannel(ctx context.Context, in ChannelInput) (Channel,
 		return Channel{}, err
 	}
 	var c Channel
-	err = p.db.QueryRowContext(ctx, `
+	// revision is left to its column default, 0 (0025).
+	err = scanChannel(p.db.QueryRowContext(ctx, `
 INSERT INTO channels (organizer_id, code, display_name, kind, enabled)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, organizer_id, code, display_name, kind, enabled, created_at, updated_at`,
+RETURNING `+channelColumns,
 		in.OrganizerID, code, in.DisplayName, string(in.Kind), in.Enabled,
-	).Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	), &c)
 	switch {
 	case isUniqueViolation(err):
 		return Channel{}, ErrChannelCodeTaken
@@ -65,66 +87,81 @@ RETURNING id, organizer_id, code, display_name, kind, enabled, created_at, updat
 	return c, nil
 }
 
-// UpdateChannel replaces a channel's mutable fields.
+// UpdateChannel replaces a channel's mutable fields, if the caller's
+// expected revision is still the stored one (TKT-325, ADR-080).
 //
-// The code is immutable. It is compared under the same statement that writes, so
-// there is no read-then-write window in which another writer could change the
-// code between the check and the update: the WHERE clause carries the comparison
-// and a mismatch simply matches no row. Distinguishing "no such channel" from
-// "code differs" then takes one follow-up read, which only runs on the error
-// path.
+// The order is the contract, and each step is in its place for a reason:
 //
-// updated_at is written explicitly — catalog has no updated_at trigger anywhere,
-// so a store that forgets leaves a stale value rather than failing loudly.
+//  1. The pure write gate, before any database work.
+//  2. In one transaction, an organizer-scoped SELECT ... FOR UPDATE. No row
+//     means ErrNotFound: the channel does not exist, or it belongs to another
+//     organizer, and the two must not be distinguishable to a caller who
+//     guessed an id. Ownership is decided here, before the revision and the
+//     code, so another organizer never learns whether either is right. Step
+//     1 runs earlier, but it reads only the input, so it reveals nothing
+//     about any row.
+//  3. The revision comparison, UNDER THAT LOCK. A comparison before the lock,
+//     or without it, lets two writers holding the same revision both pass
+//     and both apply; the lock makes the second one wait and then read the
+//     first one's revision. There is no revision predicate on the UPDATE, so
+//     this lock is the only thing that serializes the comparison.
+//  4. The immutable code. After the revision, so a stale editor is told to
+//     reload rather than that a field is wrong.
+//  5. The UPDATE, scoped like the read, with revision = revision + 1 on every
+//     success, including an unchanged replacement.
+//
+// Success is returned only after the commit succeeds. A refusal rolls back
+// and writes nothing: no field, no timestamp, no revision.
+//
+// The organizer predicate is what makes this a TENANT boundary rather than a
+// convention (TKT-236 ai-review). Without it, a caller holding a channel's id
+// and code could rename, re-kind, enable or disable another organizer's
+// channel. An id is not an authorization boundary, and the back office takes
+// the id from a form field.
+//
+// updated_at is written explicitly. Catalog has no updated_at trigger
+// anywhere, so a store that forgets leaves a stale value rather than failing
+// loudly.
 func (p *Postgres) UpdateChannel(ctx context.Context, organizerID, id uuid.UUID, in ChannelUpdate) (Channel, error) {
 	code, err := validateChannelWrite(in.Code, in.DisplayName, in.Kind)
 	if err != nil {
 		return Channel{}, err
 	}
-	var c Channel
-	err = p.db.QueryRowContext(ctx, `
-UPDATE channels
-SET display_name = $4, kind = $5, enabled = $6, updated_at = now()
-WHERE id = $1 AND organizer_id = $2 AND code = $3
-RETURNING id, organizer_id, code, display_name, kind, enabled, created_at, updated_at`,
-		id, organizerID, code, in.DisplayName, string(in.Kind), in.Enabled,
-	).Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Three ways to match no row, and they must not be distinguishable to a
-		// caller who guessed: the channel does not exist, it belongs to another
-		// organizer, or the submitted code differs from the stored one.
-		//
-		// The organizer predicate is what makes this a TENANT boundary rather
-		// than a convention (TKT-236 ai-review). Without it, a caller holding a
-		// channel's id and code could rename, re-kind, enable or disable another
-		// organizer's channel — an id is not an authorization boundary, and the
-		// back office takes the id from a form field.
-		//
-		// The follow-up read is scoped the same way, so "exists but is not
-		// yours" reports ErrNotFound rather than the immutability conflict: an
-		// answer that distinguished them would confirm the id is real.
-		if _, getErr := p.getChannelForOrganizer(ctx, organizerID, id); getErr != nil {
-			return Channel{}, getErr
-		}
-		return Channel{}, ErrChannelCodeImmutable
-	}
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Channel{}, err
 	}
-	return c, nil
-}
+	defer func() { _ = tx.Rollback() }()
 
-// getChannelForOrganizer is GetChannel scoped to one tenant. Used only to
-// disambiguate a failed update, where an unscoped read would leak whether a
-// guessed id exists in another organizer.
-func (p *Postgres) getChannelForOrganizer(ctx context.Context, organizerID, id uuid.UUID) (Channel, error) {
-	var c Channel
-	err := p.db.QueryRowContext(ctx, getChannelQuery+` AND organizer_id = $2`, id, organizerID).
-		Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	var current Channel
+	err = scanChannel(tx.QueryRowContext(ctx, lockChannelForUpdateQuery, id, organizerID), &current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Channel{}, ErrNotFound
 	}
 	if err != nil {
+		return Channel{}, err
+	}
+	if current.Revision != in.ExpectedRevision {
+		return Channel{}, ErrChannelRevisionMismatch
+	}
+	if current.Code != code {
+		return Channel{}, ErrChannelCodeImmutable
+	}
+
+	var c Channel
+	err = scanChannel(tx.QueryRowContext(ctx, `
+UPDATE channels
+SET display_name = $3, kind = $4, enabled = $5, revision = revision + 1, updated_at = now()
+WHERE id = $1 AND organizer_id = $2
+RETURNING `+channelColumns,
+		id, organizerID, in.DisplayName, string(in.Kind), in.Enabled,
+	), &c)
+	if err != nil {
+		// The row is locked by this transaction and scoped the same way, so
+		// no-rows here is not a refusal anyone can cause; report it as is.
+		return Channel{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Channel{}, err
 	}
 	return c, nil
@@ -133,8 +170,7 @@ func (p *Postgres) getChannelForOrganizer(ctx context.Context, organizerID, id u
 // GetChannel returns one channel, enabled or not.
 func (p *Postgres) GetChannel(ctx context.Context, id uuid.UUID) (Channel, error) {
 	var c Channel
-	err := p.db.QueryRowContext(ctx, getChannelQuery, id).
-		Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	err := scanChannel(p.db.QueryRowContext(ctx, getChannelQuery, id), &c)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Channel{}, ErrNotFound
 	}
@@ -155,7 +191,7 @@ func (p *Postgres) ListChannels(ctx context.Context, organizerID uuid.UUID) ([]C
 	out := []Channel{}
 	for rows.Next() {
 		var c Channel
-		if err := rows.Scan(&c.ID, &c.OrganizerID, &c.Code, &c.DisplayName, &c.Kind, &c.Enabled, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := scanChannel(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

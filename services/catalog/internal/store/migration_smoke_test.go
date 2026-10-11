@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
@@ -36,6 +37,7 @@ const (
 	versionBeforeMoneyBounds        = 20 // roll 0021_ticket_type_money_bounds down (TKT-154)
 	versionBeforeSeatIdentityLength = 21 // roll 0022_seat_identity_length down
 	versionBeforeSeatMapPinLengths  = 22 // roll 0023_seat_map_pin_lengths down
+	versionBeforeChannelRevision    = 24 // roll 0025_channel_revision down (TKT-325)
 )
 
 func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
@@ -984,6 +986,148 @@ func TestArchivedLifecycleMigrationRollbackGuard(t *testing.T) {
 		}
 		if constraints != 0 {
 			t.Fatalf("0023 down left %d seat_map_pins constraints", constraints)
+		}
+	})
+	// TKT-325 (ADR-080). 0025 adds channels.revision. A channel that existed
+	// before it keeps every field and starts at revision 0: the default needs
+	// no backfill, and zero is what a client reads and sends back.
+	t.Run("0025 starts an existing channel at revision 0 and keeps its fields", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.UpTo(ctx, versionBeforeChannelRevision); err != nil {
+			t.Fatalf("up to 24: %v", err)
+		}
+		var id uuid.UUID
+		var before struct {
+			code, name, kind string
+			enabled          bool
+			created, updated time.Time
+		}
+		if err := db.QueryRowContext(ctx, `WITH o AS (
+			INSERT INTO organizers(name) VALUES('pre-revision') RETURNING id
+		)
+		INSERT INTO channels(organizer_id,code,display_name,kind,enabled,created_at,updated_at)
+		SELECT id,'pos','Box office','pos',false,
+		       TIMESTAMPTZ '2026-01-02 03:04:05.123456+00', TIMESTAMPTZ '2026-02-03 04:05:06.654321+00'
+		FROM o
+		RETURNING id, code, display_name, kind, enabled, created_at, updated_at`).
+			Scan(&id, &before.code, &before.name, &before.kind, &before.enabled, &before.created, &before.updated); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatalf("apply 0025: %v", err)
+		}
+		var revision int64
+		var code, name, kind string
+		var enabled bool
+		var created, updated time.Time
+		if err := db.QueryRowContext(ctx, `SELECT code, display_name, kind, enabled, created_at, updated_at, revision
+			FROM channels WHERE id=$1`, id).Scan(&code, &name, &kind, &enabled, &created, &updated, &revision); err != nil {
+			t.Fatal(err)
+		}
+		if revision != 0 {
+			t.Fatalf("pre-existing channel has revision %d after 0025, want 0", revision)
+		}
+		if code != before.code || name != before.name || kind != before.kind || enabled != before.enabled ||
+			!created.Equal(before.created) || !updated.Equal(before.updated) {
+			t.Fatalf("0025 changed an existing channel: got %q %q %q %v %v %v, want %+v",
+				code, name, kind, enabled, created, updated, before)
+		}
+	})
+
+	// The CHECK, proved with raw SQL: the store never writes a negative value,
+	// so going through it would prove the store. The SQLSTATE is asserted
+	// because "column revision does not exist" is also an error, and a test
+	// that accepted any error would pass with the migration missing.
+	t.Run("0025 CHECK refuses a negative revision", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(name) VALUES('negative') RETURNING id
+		)
+		INSERT INTO channels(organizer_id,code,display_name,kind) SELECT id,'pos','Box office','pos' FROM o`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := db.ExecContext(ctx, `UPDATE channels SET revision = -1`)
+		type coder interface{ SQLState() string }
+		var c coder
+		if !errors.As(err, &c) || c.SQLState() != "23514" {
+			t.Fatalf("UPDATE to revision -1 = %v, want a CHECK violation (23514)", err)
+		}
+	})
+
+	// The half that makes it a guard rather than a wall: every channel is still
+	// at 0, so nothing relies on the revision yet and the rollback proceeds.
+	t.Run("0025 down succeeds while every revision is 0", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `WITH o AS (
+			INSERT INTO organizers(name) VALUES('zero') RETURNING id
+		)
+		INSERT INTO channels(organizer_id,code,display_name,kind) SELECT id,'pos','Box office','pos' FROM o`); err != nil {
+			t.Fatal(err)
+		}
+		// Present first, or "gone afterwards" proves nothing: with no 0025 the
+		// Down is a no-op and the column is absent in both halves.
+		var present bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='channels' AND column_name='revision')`).Scan(&present); err != nil {
+			t.Fatal(err)
+		}
+		if !present {
+			t.Fatal("channels.revision is absent before the Down — 0025 did not apply")
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeChannelRevision); err != nil {
+			t.Fatalf("0025 down with every revision at 0 should succeed: %v", err)
+		}
+		var hasColumn bool
+		var rows int
+		if err := db.QueryRowContext(ctx, `SELECT
+			EXISTS(SELECT 1 FROM information_schema.columns
+			       WHERE table_schema=current_schema() AND table_name='channels' AND column_name='revision'),
+			(SELECT count(*) FROM channels)`).Scan(&hasColumn, &rows); err != nil {
+			t.Fatal(err)
+		}
+		if hasColumn || rows != 1 {
+			t.Fatalf("0025 down: revision column present=%v, channel rows=%d; want the column gone and the row kept", hasColumn, rows)
+		}
+	})
+
+	// A revision above 0 means an editor relies on the protection now; dropping
+	// the column would return its saves to last-write-wins. The revision is
+	// moved through UpdateChannel, not a raw UPDATE, so the guard is tested
+	// against the state production creates.
+	t.Run("0025 down refuses once a revision is in use", func(t *testing.T) {
+		db, provider := newDB(t)
+		if _, err := provider.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		st := &Postgres{db: db}
+		var org uuid.UUID
+		if err := db.QueryRowContext(ctx, `INSERT INTO organizers(name) VALUES('in-use') RETURNING id`).Scan(&org); err != nil {
+			t.Fatal(err)
+		}
+		c, err := st.CreateChannel(ctx, ChannelInput{OrganizerID: org, Code: "pos", DisplayName: "Box office", Kind: ChannelKindPOS, Enabled: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpdateChannel(ctx, org, c.ID, ChannelUpdate{
+			Code: "pos", DisplayName: "Counter", Kind: ChannelKindPOS, Enabled: true, ExpectedRevision: c.Revision,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.DownTo(ctx, versionBeforeChannelRevision); err == nil {
+			t.Fatal("0025 down unexpectedly dropped a revision in use")
+		}
+		var revision int64
+		if err := db.QueryRowContext(ctx, `SELECT revision FROM channels WHERE id=$1`, c.ID).Scan(&revision); err != nil {
+			t.Fatalf("after a refused 0025 down the revision column must remain: %v", err)
+		}
+		if revision != 1 {
+			t.Fatalf("revision = %d after a refused down, want 1", revision)
 		}
 	})
 }
