@@ -24,14 +24,15 @@ import (
 
 // TKT-319. Checkout resumed an order whose recovery claim had EXPIRED, and did not fence it off.
 //
-// claimOrder refused only a LIVE lease (server.go:1389-1391). An expired lease left
-// recovery_claim_id set. Every recovery write is fenced on that id alone: ReleaseStuckOrder
+// Before the fix, claimOrder refused only a LIVE lease (server.go:1392-1394). An expired lease
+// left recovery_claim_id set. Every recovery write is fenced on that id alone: ReleaseStuckOrder
 // matches `id AND recovery_claim_id` (store/recovery.go:152), and so does ParkForReconciliation
 // (:197). So a worker whose lease had lapsed could still park the order after checkout had read
-// it as unparked and committed.
+// it as unparked and committed. The fix clears such a claim under the same row lock
+// (server.go:1400-1404), so the stale worker's fenced writes match no row (ADR-016, TKT-319).
 //
 // THE SCHEDULE IS FORCED. afterCheckoutClaim parks checkout after claimOrder has committed and
-// before the park-marker guard (server.go:1795). The test then makes the stale claimant's write
+// before the park-marker guard (server.go:1813). The test then makes the stale claimant's write
 // with the OLD token, reads the row, and only then lets checkout continue. Nothing sleeps. Every
 // wait has a deadline, and cleanup joins the request before the database closes.
 //
@@ -80,7 +81,7 @@ func expiredLease() sql.NullTime {
 //
 // The row has an expired or NULL lease, an attempt budget one short of parking, and no park
 // marker. While checkout is parked at the seam, the stale claimant releases with the old token.
-// At HEAD that release matches and parks the row. After the steal the claim is already gone, so
+// Before the fix that release matches and parks the row. After the steal the claim is already gone, so
 // the release matches nothing and returns ErrRecoveryConflict.
 func TestAStaleClaimantCannotParkAnOrderCheckoutTookOverFromAnExpiredClaim(t *testing.T) {
 	for _, status := range parkableResumableStatuses {
@@ -192,9 +193,9 @@ func TestAStaleClaimantCannotParkAnOrderCheckoutTookOverFromAnExpiredClaim(t *te
 	}
 }
 
-// TKT-319 COS4. An expired claim left by a worker that died must not refuse the buyer. Nothing
-// clears the claim here, and checkout still takes the order and completes it, as it did before
-// this ticket.
+// TKT-319 COS4. An expired claim left by a worker that died must not refuse the buyer. No stale
+// writer runs here. Checkout's own claimOrder takes the claim, and checkout still completes the
+// order, as it did before this ticket.
 func TestAnExpiredClaimFromADeadWorkerStillResumesCheckout(t *testing.T) {
 	for _, status := range parkableResumableStatuses {
 		for _, shape := range staleLeaseShapes() {
@@ -276,7 +277,7 @@ func TestALiveRecoveryLeaseStillRefusesCheckoutAndKeepsItsClaim(t *testing.T) {
 // TKT-319. An already-parked order keeps its park marker when checkout takes its expired claim.
 //
 // The steal clears the claim and the lease and nothing else. The parked check that follows still
-// answers 409 before any money call (TKT-292), as it does without the steal.
+// answers 409 before any money call (TKT-292), as it did before the fix.
 //
 // The claim on a parked row is a fixture. The writers that park a row also clear the claim in the
 // same statement (ReleaseStuckOrder at store/recovery.go:147, ParkForReconciliation at :193), so

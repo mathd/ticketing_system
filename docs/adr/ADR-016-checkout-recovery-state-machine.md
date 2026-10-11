@@ -19,7 +19,7 @@ the row, a release or abandon that matches no row is reported as a supersession,
 what the store reports. Adds no audit, integrity or liveness guarantee.
 
 Amended by **TKT-319** (2026-10-10, §Amendment below) — checkout takes over a recovery claim whose lease has
-expired, so a stale claimant's claim-fenced writes stop matching. It does not close the race between a
+expired or is NULL, so a stale claimant's claim-fenced writes stop matching. It does not close the race between a
 stalled checkout and a claim taken after the stall.
 
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
@@ -804,23 +804,25 @@ open.
 
 ### The gap
 
-`claimOrder` refuses an existing order only while its recovery lease is live (`services/commerce/internal/api/server.go:1389-1391`).
-An expired lease passes that check, and `recovery_claim_id` stays on the row. Nothing in checkout clears it.
+Before this amendment, `claimOrder` refused an existing order only while its recovery lease was live
+(`services/commerce/internal/api/server.go:1392-1394`). An expired lease passed that check, and
+`recovery_claim_id` stayed on the row. Nothing in checkout cleared it.
 
 The claim-fenced recovery writes compare the claim id and nothing else. `ReleaseStuckOrder` matches `id` and
 `recovery_claim_id` (`services/commerce/internal/store/recovery.go:152`). `ParkForReconciliation` matches the same
 pair (`:197`). Neither reads the lease.
 
 So a worker whose lease lapsed during an external call can still park the order. Checkout reads the park marker
-inside the `claimOrder` transaction (`server.go:1368-1369`). That transaction commits before the guard uses the
-value (`server.go:1795`). A park between the commit and the guard is not seen. Checkout then goes on to the buyer's
-PII, `order.created`, the inventory finalize and the charge (`server.go:1812-1851`).
+inside the `claimOrder` transaction (`server.go:1371-1372`). That transaction commits before the guard uses the
+value (`server.go:1813`). A park between the commit and the guard is not seen. Checkout then goes on to the buyer's
+PII, `order.created`, the inventory finalize and the charge (`server.go:1830-1869`).
 
 ### Decision
 
 When `claimOrder` finds a claim whose lease is not live, it clears `recovery_claim_id` and `recovery_lease_until`
 in the same locked transaction, before it commits. The lease is judged with the Go clock, as the live-lease check
-already is (`server.go:1389`). The clearing statement adds no lease predicate of its own. A second clock in SQL
+already is (`server.go:1392`). The clearing runs after the live-lease check and before the `updated_at` refresh
+(`server.go:1400-1404`). The clearing statement adds no lease predicate of its own. A second clock in SQL
 could call a lease expired in Go and live in the database. The claim would then survive.
 
 The steal does not touch the attempt count, the schedule, the last error or the park marker. A claim is not an
@@ -831,13 +833,13 @@ the statement that spends an attempt (`:149`).
 
 The ticket named three options. This is how each one fares.
 
-- **Refuse.** Refusing an expired lease as well as a live one strands the buyer. Every retry gets 409 until the
+- **Refuse.** Refusing an expired lease as well as a live one delays the buyer. Every retry gets 409 until the
   runner acts on the row. The runner claims a row only when its lease is NULL or expired, its `updated_at` is
   older than two minutes, its next attempt is due and it is not parked (`store/recovery.go:78-84`). The refusal
-  returns before the `updated_at` refresh (`server.go:1390`; the refresh is at `:1408`), so refused retries do not
+  returns before the `updated_at` refresh (`server.go:1393`; the refresh is at `:1421`), so refused retries do not
   move that clock. The wait ends on the runner's schedule, not on anything checkout does.
 - **Re-read the park marker after the point of no return.** The charge is the point of no return
-  (`server.go:1851`). A re-read before the charge leaves a window up to the charge, and a park inside that window
+  (`server.go:1869`). A re-read before the charge leaves a window up to the charge, and a park inside that window
   is not seen. A re-read after the charge is too late to stop it.
 - **Steal.** The old token stops matching, so the buyer is never refused. The cost is named below: a stale worker
   that is already inside an external call can still finish that call.
@@ -860,16 +862,18 @@ The ticket named three options. This is how each one fares.
 ### Consequences
 
 - A parked order keeps its park marker through the steal. Checkout still answers 409 before any money call
-  (`server.go:1795-1798`).
+  (`server.go:1813-1816`).
 - A live lease still refuses checkout with the existing message, and the claim stays in place
-  (`server.go:1426-1429`).
-- A dead worker's expired claim no longer blocks the buyer. Checkout takes the order and resumes it.
+  (`server.go:1439-1442`).
+- A dead worker's expired claim no longer blocks the buyer. The steal runs for every order that reaches the
+  existing-row branch with a claim, whatever its status. For a resumable order, checkout then resumes the order.
+  For any other status, the answer does not change.
 
 ### Residual
 
 The race between a stalled checkout and a new claim stays open after this ticket. A checkout that stalls for more
 than two minutes after `claimOrder` can have a new claim taken on its order (`store/recovery.go:84`). Checkout's
-writes after the guard do not check the claim (`server.go:1812-1820`, `:1851`). A follow-up ticket owns the
+writes after the guard do not check the claim (`server.go:1830-1838`, `:1869`). A follow-up ticket owns the
 checkout ownership contract. The steal does not close this race.
 
 ### Evidence
