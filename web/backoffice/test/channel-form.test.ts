@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   CHANNEL_CODE_MAX,
   CHANNEL_DISPLAY_NAME_MAX,
+  INVALID_CHANNEL_REVISION_MESSAGE,
+  STALE_CHANNEL_MESSAGE,
   asChannelKind,
   checkboxChecked,
   classifyCatalogError,
   hasErrors,
+  parseChannelRevision,
   validateSubmission,
 } from '../src/lib/channel-form';
 
@@ -114,5 +117,71 @@ describe('checkboxChecked', () => {
     // only submits it when checked, so the string is irrelevant.
     expect(checkboxChecked('false')).toBe(true);
     expect(checkboxChecked('')).toBe(true);
+  });
+});
+
+// TKT-325 (ADR-080). The token is the revision of the row the page RENDERED, and
+// it travels back unchanged. Parsing is strict because `Number('')` is 0: a blank
+// token would otherwise match every channel that was never edited, and the
+// protection would be off for exactly the rows nobody has touched (A2).
+describe('parseChannelRevision', () => {
+  it.each([
+    ['empty', ''],
+    ['blank', ' '],
+    ['padded', ' 1'],
+    ['negative', '-1'],
+    ['fractional', '1.5'],
+    ['exponent', '1e3'],
+    ['hex', '0x10'],
+    ['above the safe-integer range', '9007199254740993'],
+    ['text', 'abc'],
+  ])('refuses a %s token', (_name, raw) => {
+    expect(parseChannelRevision(raw)).toBeUndefined();
+  });
+
+  it('refuses an absent token', () => {
+    expect(parseChannelRevision(null)).toBeUndefined();
+  });
+
+  it('accepts 0, a real revision and not "skip the check"', () => {
+    expect(parseChannelRevision('0')).toBe(0);
+  });
+
+  it('accepts the largest safe integer exactly', () => {
+    expect(parseChannelRevision('9007199254740991')).toBe(9007199254740991);
+    expect(parseChannelRevision('42')).toBe(42);
+  });
+});
+
+describe('classifyCatalogError and the channel revision (TKT-325)', () => {
+  it('classifies a coded stale 409 as a row-level refusal, not a code-field error', () => {
+    const errors = classifyCatalogError(
+      409,
+      'channel changed since it was read; nothing was saved',
+      ok,
+      'channel_revision_mismatch',
+    );
+    expect(errors).toEqual({ fields: {}, form: STALE_CHANNEL_MESSAGE, review: true });
+  });
+
+  it('uses the neutral message that blames nobody (A6)', () => {
+    expect(STALE_CHANNEL_MESSAGE).toBe('This channel changed since this page was loaded, so nothing was saved.');
+  });
+
+  // The code-immutability 409 has no `code`. It must stay on the code field,
+  // or the operator is sent to review when the fix is somewhere else.
+  it('keeps an uncoded 409 on the code field', () => {
+    const errors = classifyCatalogError(409, 'channel code is immutable', ok, undefined);
+    expect(errors).toEqual({ fields: { code: 'channel code is immutable' } });
+  });
+
+  it('does not treat an unknown 409 code as stale', () => {
+    const errors = classifyCatalogError(409, 'something else', ok, 'some_other_code');
+    expect(errors.review).toBeUndefined();
+    expect(errors.fields.code).toBe('something else');
+  });
+
+  it('names the refusal of a malformed token and offers a review', () => {
+    expect(INVALID_CHANNEL_REVISION_MESSAGE).toMatch(/nothing was saved/);
   });
 });

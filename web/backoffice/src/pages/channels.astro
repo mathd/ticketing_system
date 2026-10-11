@@ -2,9 +2,9 @@
 // The sales-channel registry admin (TKT-236 / US-CH2): define the channels this
 // organizer sells through, and retire one without deleting it.
 //
-// One page, three actions, no query-string state — the whole registry fits on
-// one screen, so there is nothing to page through and nothing to carry across
-// requests. Same idiom as events/new.astro and venues/[id].astro: `_action`
+// One page, four actions (create, rename, enable/disable, review), no
+// query-string state — the whole registry fits on one screen, so there is
+// nothing to page through and nothing to carry across requests. Same idiom as events/new.astro and venues/[id].astro: `_action`
 // dispatch, post/redirect/get on success, re-render with the error on failure,
 // and RELATIVE form actions (an absolute one trips the origin handling even
 // same-origin — TKT-105; `checkOrigin` is off and gate.ts is authoritative).
@@ -13,6 +13,12 @@
 // the URL: catalog authenticates this process, not the staff member behind it
 // (ADR-021), so it cannot tell a legitimate organizer from one typed into the
 // address bar. That check has to live here to live anywhere.
+//
+// OPTIMISTIC TOKEN (TKT-325, ADR-080). Both row forms carry the row's revision
+// as rendered, and catalog refuses a stale one with a coded 409. Without it, a
+// rename from an open page re-enabled a channel another operator had just
+// disabled, and a toggle reverted another operator's rename, both with a 303
+// reporting success. Honest-writer lost-update protection, not authorization.
 //
 // DISABLE, NEVER DELETE. There is no delete endpoint by design (TKT-235): a code
 // removed from the registry is still recorded on live claims, fee rules and
@@ -32,10 +38,12 @@ import {
 import {
   CHANNEL_KINDS,
   type ChannelFormErrors,
+  INVALID_CHANNEL_REVISION_MESSAGE,
   asChannelKind,
   checkboxChecked,
   classifyCatalogError,
   hasErrors,
+  parseChannelRevision,
   validateSubmission,
 } from '../lib/channel-form';
 
@@ -47,15 +55,25 @@ const here = `${base}/channels`;
 
 let errors: ChannelFormErrors = { fields: {} };
 let submitted: Record<string, string> = {};
+let action = '';
 // Which form the errors belong to. Without this every refusal renders against
 // the CREATE form — so an overlong rename flagged the create field and copied
 // the attempted name into it, sending the operator to edit the wrong input
 // (ai-review). `null` on the create path; the channel id on a row action.
 let failedChannelId: string | null = null;
+// The optimistic token the refused form SUBMITTED, exactly as it arrived
+// (TKT-325, ADR-080). The failed row renders it back on BOTH of its forms, so a
+// second click is refused again. Rendering the fresh revision instead would let
+// that second click apply the change the refusal just stopped (TKT-250).
+let submittedToken = '';
+// "Review current channel" (A8): the row to show fresh, and the name the
+// operator tried, when the refused action was a rename.
+let reviewChannelId: string | null = null;
+let reviewName: string | null = null;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
-  const action = String(form.get('_action') ?? '');
+  action = String(form.get('_action') ?? '');
   const field = (name: string) => String(form.get(name) ?? '');
   submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
@@ -78,15 +96,30 @@ if (Astro.request.method === 'POST') {
         });
         return Astro.redirect(here, 303);
       }
-    } else if (action === 'update') {
-      // A full replacement, so every field goes: the code (which catalog compares
-      // and refuses to rename), the display name, the kind, and the enabled flag.
-      // Omitting `enabled` here would send false, not "leave it alone".
+    } else if (action === 'update' || action === 'set-enabled') {
+      // Both row forms send a FULL replacement — the endpoint has no partial
+      // update — so the row's code, name, kind and enabled flag ride along in
+      // hidden fields taken from the rendered row (D6). What makes that safe is
+      // the token beside them: catalog compares it under the row lock, and a
+      // matching token means the stored row is the one this page rendered.
+      //
+      // The token is the SUBMITTED one, forwarded unchanged. This handler reads
+      // nothing from catalog before the PUT: a token taken from a read made
+      // while handling this request would be compared with itself and match
+      // every time ("a precondition that cannot fail", TKT-250).
+      failedChannelId = field('channel_id');
+      submittedToken = field('expected_revision');
       const input = { code: field('code'), displayName: field('display_name'), kind: field('kind') };
-      const local = validateSubmission(input);
+      const expectedRevision = parseChannelRevision(form.get('expected_revision'));
+      // The rename's name is validated locally; the toggle's name is a hidden
+      // copy of the rendered row and is not the operator's input.
+      const local = action === 'update' ? validateSubmission(input) : { fields: {} };
       if (hasErrors(local)) {
         errors = local;
-        failedChannelId = field('channel_id');
+      } else if (expectedRevision === undefined) {
+        // Absent or malformed: no request. `Number('')` is 0, so a lenient
+        // parse would match every never-edited channel (A2).
+        errors = { fields: {}, form: INVALID_CHANNEL_REVISION_MESSAGE, review: true };
       } else {
         await updateChannel(staff.organizerAssertion, staff.organizerId, field('channel_id'), {
           code: input.code,
@@ -95,34 +128,26 @@ if (Astro.request.method === 'POST') {
           // A literal, not checkboxChecked: this comes from a HIDDEN input that
           // always submits, so "absent means false" does not apply and an empty
           // value would read as true. Only the create form has a real checkbox.
+          // On the toggle form the value states which way the button goes.
           enabled: field('enabled') === 'true',
+          expectedRevision,
         });
         return Astro.redirect(here, 303);
       }
-    } else if (action === 'set-enabled') {
-      // The one-click enable/disable on a row. It is still a full PUT — the
-      // endpoint has no partial update — so the row's current code, name and
-      // kind ride along in hidden fields. `enabled` here is an explicit value
-      // rather than a checkbox: the button states which way it is going, so
-      // there is no unchecked-box ambiguity to resolve.
-      await updateChannel(staff.organizerAssertion, staff.organizerId, field('channel_id'), {
-        code: field('code'),
-        displayName: field('display_name'),
-        kind: asChannelKind(field('kind'))!,
-        enabled: field('enabled') === 'true',
-      });
-      return Astro.redirect(here, 303);
+    } else if (action === 'review') {
+      // Read-only (A8): no token is read and updateChannel is not called. The
+      // page below renders the row from the fresh read, with its fresh token,
+      // so the operator sees the other change before deciding again.
+      reviewChannelId = field('channel_id');
+      reviewName = form.get('display_name') === null ? null : field('display_name');
     }
   } catch (e) {
-    if (action === 'update' || action === 'set-enabled') {
-      failedChannelId = field('channel_id');
-    }
     errors = e instanceof CatalogApiError
       ? classifyCatalogError(e.status, e.message, {
             code: String(submitted.code ?? ''),
             displayName: String(submitted.display_name ?? ''),
             kind: String(submitted.kind ?? ''),
-          })
+          }, e.code)
       : e instanceof AmbiguousMutationError
         ? {
             fields: {},
@@ -142,16 +167,34 @@ try {
   readFailed = true;
 }
 
-const val = (name: string) => (failedChannelId === null ? (submitted[name] ?? '') : '');
+// The create form is re-filled only from a refused CREATE. A row action or a
+// review submits fields with the same names, and they must not land there.
+const val = (name: string) => (action === 'create' ? (submitted[name] ?? '') : '');
 // Create-form errors only. A row action's refusal belongs beside that row.
 const fieldError = (name: 'code' | 'display_name' | 'kind') =>
   failedChannelId === null ? errors.fields[name] : undefined;
+const rowFailed = (channelId: string) => failedChannelId === channelId && hasErrors(errors);
 // The refusal for one row, whichever field it landed on — the row has a single
 // editable input, so there is nowhere else for it to go.
 const rowError = (channelId: string) =>
-  failedChannelId === channelId
+  rowFailed(channelId)
     ? (errors.fields.display_name ?? errors.fields.code ?? errors.fields.kind ?? errors.form)
     : undefined;
+// The token a row's forms carry: the SUBMITTED one on a refused row, otherwise
+// the revision of the row as read for this render.
+const tokenFor = (channel: Channel) => (rowFailed(channel.id) ? submittedToken : String(channel.revision));
+// The rename input. The attempted name is kept only when the refused action was
+// a RENAME (A1), or when a review carries one back. After a refused toggle it
+// shows the current name: the toggle's hidden name is the stale snapshot, and
+// pre-filling it would let one habitual Rename click overwrite the other
+// operator's rename.
+const renameValue = (channel: Channel) => {
+  if (rowFailed(channel.id) && action === 'update') return submitted.display_name ?? channel.display_name;
+  if (reviewChannelId === channel.id && reviewName !== null) return reviewName;
+  return channel.display_name;
+};
+// The review form carries the attempted name only after a refused rename.
+const reviewCarriesName = (channelId: string) => rowFailed(channelId) && action === 'update';
 ---
 
 <Layout title="Sales channels">
@@ -161,7 +204,7 @@ const rowError = (channelId: string) =>
     Channels carry their own prices, fees and capacity elsewhere; this page defines which exist.
   </p>
 
-  {errors.form && failedChannelId === null && <p class="error" role="alert">{errors.form}</p>}
+  {errors.form && (failedChannelId === null || readFailed) && <p class="error" role="alert">{errors.form}</p>}
 
   {readFailed && (
     <p class="error" role="alert">
@@ -198,18 +241,23 @@ const rowError = (channelId: string) =>
               </span>
             </td>
             <td>
-              <form method="post" action="">
+              <form method="post" action="" data-form="toggle">
                 <input type="hidden" name="_action" value="set-enabled" />
                 <input type="hidden" name="channel_id" value={channel.id} />
                 <input type="hidden" name="code" value={channel.code} />
                 <input type="hidden" name="display_name" value={channel.display_name} />
                 <input type="hidden" name="kind" value={channel.kind} />
+                {/* The direction comes from the row as read for THIS render,
+                    also after a refusal (A7): the button says what it will do
+                    to the channel as it is now, not as it was. */}
                 <input type="hidden" name="enabled" value={channel.enabled ? 'false' : 'true'} />
+                {/* TKT-325: the optimistic token. See tokenFor. */}
+                <input type="hidden" name="expected_revision" value={tokenFor(channel)} />
                 <button type="submit" data-action={channel.enabled ? 'disable' : 'enable'}>
                   {channel.enabled ? 'Disable' : 'Enable'}
                 </button>
               </form>
-              <form method="post" action="">
+              <form method="post" action="" data-form="rename">
                 <input type="hidden" name="_action" value="update" />
                 <input type="hidden" name="channel_id" value={channel.id} />
                 <input type="hidden" name="code" value={channel.code} />
@@ -221,11 +269,12 @@ const rowError = (channelId: string) =>
                     correctly calls true, and a rename would re-enable a disabled
                     channel. Found at ai-review. */}
                 <input type="hidden" name="enabled" value={String(channel.enabled)} />
+                <input type="hidden" name="expected_revision" value={tokenFor(channel)} />
                 <label for={`name-${channel.id}`}>Display name</label>
                 <input
                   id={`name-${channel.id}`}
                   name="display_name"
-                  value={failedChannelId === channel.id ? (submitted.display_name ?? channel.display_name) : channel.display_name}
+                  value={renameValue(channel)}
                   data-rename-for={channel.code}
                   aria-invalid={rowError(channel.id) ? 'true' : undefined}
                   required
@@ -235,6 +284,24 @@ const rowError = (channelId: string) =>
                   <p class="error" role="alert" data-row-error={channel.code}>{rowError(channel.id)}</p>
                 )}
               </form>
+              {rowFailed(channel.id) && errors.review && (
+                // Recovery without a reload (D5, A8). A read, never a write:
+                // the page renders this row fresh, with its fresh token, and
+                // the operator decides again.
+                <form method="post" action="" data-form="review">
+                  <input type="hidden" name="_action" value="review" />
+                  <input type="hidden" name="channel_id" value={channel.id} />
+                  {reviewCarriesName(channel.id) && (
+                    <input type="hidden" name="display_name" value={submitted.display_name ?? ''} />
+                  )}
+                  <button type="submit" data-review-for={channel.code}>Review current channel</button>
+                </form>
+              )}
+              {reviewChannelId === channel.id && (
+                <p data-row-review={channel.code}>
+                  These are the channel's current values. Make your change again to save it.
+                </p>
+              )}
             </td>
           </tr>
         ))}
@@ -287,7 +354,7 @@ const rowError = (channelId: string) =>
     {fieldError('kind') && <p class="error" id="kind-error" role="alert">{fieldError('kind')}</p>}
 
     <label for="enabled">
-      <input id="enabled" type="checkbox" name="enabled" checked={submitted.enabled !== undefined || Astro.request.method !== 'POST'} />
+      <input id="enabled" type="checkbox" name="enabled" checked={action !== 'create' || submitted.enabled !== undefined} />
       Available for sale
     </label>
 

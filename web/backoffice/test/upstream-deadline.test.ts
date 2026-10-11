@@ -85,6 +85,7 @@ describe('back-office upstream operation deadlines', () => {
           displayName: 'Box office',
           kind: 'pos',
           enabled: true,
+          expectedRevision: 0,
         }),
     ],
     [

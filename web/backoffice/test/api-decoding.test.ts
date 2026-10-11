@@ -101,6 +101,7 @@ function channel(overrides: Record<string, unknown> = {}) {
     display_name: 'Box office',
     kind: 'pos',
     enabled: true,
+    revision: 3,
     created_at: '2026-09-01T10:00:00Z',
     updated_at: '2026-09-01T10:00:00Z',
     ...overrides,
@@ -386,7 +387,7 @@ describe('catalog response decoding', () => {
   it('rejects an update response for another channel', async () => {
     answer(channel({ id: '70000000-0000-4000-8000-000000000002' }));
     const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
-      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true,
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
     }).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AmbiguousMutationError);
     expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/not the one requested/) });
@@ -413,7 +414,7 @@ describe('catalog response decoding', () => {
   it('rejects an updated channel attributed to another organizer', async () => {
     answer(channel({ organizer_id: OTHER_ORGANIZER }));
     const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
-      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true,
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
     }).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AmbiguousMutationError);
     expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/organizer_id/) });
@@ -569,6 +570,37 @@ describe('catalog response decoding', () => {
 
     answer({ channels: [channel({ code: '🎫'.repeat(101) })] });
     await expect(listChannelsForOperator(ASSERTION, ORGANIZER)).rejects.toThrow(/100 characters/);
+  });
+
+  // TKT-325. The revision is the token both channel forms send back, so a
+  // missing or malformed one must make the read UNAVAILABLE. Synthesizing 0
+  // would render a token that matches every never-edited channel, and the page
+  // would quietly offer an unprotected write.
+  it('returns the stored revision exactly', async () => {
+    answer({ channels: [channel({ revision: 9007199254740991 })] });
+    const [got] = await listChannelsForOperator(ASSERTION, ORGANIZER);
+    expect(got?.revision).toBe(9007199254740991);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['a string', '3'],
+    ['negative', -1],
+    ['fractional', 2.5],
+    ['beyond the safe-integer range', 9007199254740992],
+  ])('makes the channel read unavailable when the revision is %s', async (_name, revision) => {
+    answer({ channels: [channel({ revision })] });
+    await expect(listChannelsForOperator(ASSERTION, ORGANIZER)).rejects.toThrow(/revision/);
+  });
+
+  it('rejects an update response with a malformed revision as ambiguous, never as revision 0', async () => {
+    answer(channel({ revision: undefined }));
+    const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AmbiguousMutationError);
+    expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/revision/) });
   });
 
   it('rejects any listed channel attributed to another organizer', async () => {

@@ -158,6 +158,16 @@ Each assertion is at the tier where its mechanism is (AGENTS.md):
   current and a stale token. The code-immutability 409 has no `code`.
 - **The API fake** compares in Go, in the store's order, and bumps only on success. It proves the
   handler forwards the token and maps the refusal. It cannot prove the lock or the SQL predicate.
+- **Back-office unit and page tests** (`web/backoffice/test/`). `channel-form.test.ts`: the token
+  parser accepts digits only and a safe integer (`''`, `' '`, `-1`, `1.5`, `1e3`, `0x10` and
+  `9007199254740993` are refused; `0` is accepted), and a coded 409 is classified as a stale
+  refusal before the "every 409 is about `code`" branch. `api.test.ts` and `api-decoding.test.ts`:
+  the client sends `expected_revision` unchanged, keeps the error `code`, and makes the read fail on
+  a missing or malformed revision, never 0. `channels-page.test.ts` renders the real page against a
+  stubbed catalog. It checks which token each form carries after a refusal, that the toggle
+  direction comes from the fresh state, that the rename input is pre-filled only after a refused
+  rename, and that Review and a malformed token send no PUT. The page makes the PUT itself, so
+  counting it at this tier is valid.
 - **Browser spec** (`test/browser/channel-revision.mjs`, back-office half). Two actors, both
   directions, all writes through the forms, so the counter moves. A test that writes the table
   directly does not move the revision, and the "stale" token then still matches.
