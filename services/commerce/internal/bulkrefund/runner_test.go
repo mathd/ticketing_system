@@ -1402,7 +1402,8 @@ func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
 		return nil, nil
 	})
 
-	resolved := New(s, newFakeRefunder(f), time.Minute, 2, time.Minute).RunOnce(context.Background())
+	r := newFakeRefunder(f)
+	resolved := New(s, r, time.Minute, 2, time.Minute).RunOnce(context.Background())
 
 	for _, w := range []store.CancellationWork{first, second} {
 		if _, ok := s.verdicts[rowIdentity{w.OrganizerID, w.RunID, w.OrderID}]; !ok {
@@ -1413,7 +1414,18 @@ func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
 	if resolved != 2 {
 		t.Fatalf("resolved = %d, want 2", resolved)
 	}
-	// The two rows converge on ONE refund, because its key is (slot, order).
+	// The two rows converge on ONE refund. `moved` alone cannot show that: the fake refunder
+	// deduplicates by ORDER, so a key that also carried the run would still move money once
+	// here. Production identifies a refund by organizer plus idempotency key (store.RefundID),
+	// so the property is that both rows reach the refund unit under the SAME key, and that key
+	// is the (slot, order) derivation, which knows nothing of the run (ADR-040 §3). The second
+	// row reaches the refund unit because it finds the refund the first one bound under that
+	// key and replays it.
+	want := store.CancellationRefundKey(first.SlotID, order)
+	if keys := r.keys[order]; len(keys) != 2 || keys[0] != want || keys[1] != want {
+		t.Fatalf("refund keys for the order = %q, want both rows under the one key %q: a key that "+
+			"differs per run binds a second refund for the same order in production", keys, want)
+	}
 	if f.orders[order].moved != 1 {
 		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
 	}

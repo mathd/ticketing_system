@@ -330,8 +330,10 @@ unchanged, and each replica is still fenced by the lease and the claim token (se
 lease lapsed" above).
 
 **The cost is throughput under a large book.** Before, a fast pass drained the whole book. Now a pass
-stops after 64 batches (512 rows at the default batch of 8) and the rest waits up to the runner interval
-(10 s by default) for the next tick.
+stops after 64 batches (512 rows at the default batch of 8), and the next pass starts at the next tick,
+up to the runner interval (10 s by default) later. That is when the next pass starts, not when a given
+row is reached: each pass takes at most 512 rows, so a row late in claim order can wait several ticks.
+For example, a book of 1,025 rows at batch 8 needs three passes, and its last row waits two ticks.
 
 **Why a local loop and not `worklease.Drain`.** `Drain` abandons a duplicate, which would clear the
 backoff lease, and hands back the rest of a batch at shutdown before it checks identity. Making it serve

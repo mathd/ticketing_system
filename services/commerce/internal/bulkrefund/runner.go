@@ -143,8 +143,11 @@ const maxAttempts = 5
 // runners (reversal, exchangesweep). Without it a book that refills at or above the
 // processing rate keeps one RunOnce running for ever: the ticker never fires again and the
 // per-pass `driven` set grows for the life of the process. What the bound leaves is not lost:
-// it stays claimable and the next tick reaches it. It bounds claims, not elapsed time, and
-// not the enumeration prelude.
+// it stays claimable, and the NEXT PASS starts at the next tick. That does not mean a given
+// row is reached at the next tick: each pass takes at most MaxBatchesPerPass batches, so under
+// a large book a row late in claim order waits several ticks (1,025 rows at a batch of 8 is
+// three passes, so the last row waits two ticks). It bounds claims, not elapsed time, and not
+// the enumeration prelude.
 const MaxBatchesPerPass = 64
 
 // ledgerRow is a cancellation ledger row's identity: the primary key of
@@ -185,7 +188,8 @@ type ledgerRow struct{ organizer, run, order uuid.UUID }
 // per process and per pass: replicas behave as before, each fenced by the lease.
 //
 // The cost is throughput under a large book: a pass now stops after MaxBatchesPerPass
-// batches and the rest waits for the next tick.
+// batches, the next pass starts at the next tick, and a row late in claim order can wait
+// several ticks (see MaxBatchesPerPass).
 func (r *Runner) RunOnce(ctx context.Context) int {
 	runs, err := r.store.Runs(ctx, runListLimit)
 	if err != nil {
