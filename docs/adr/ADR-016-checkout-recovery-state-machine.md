@@ -808,9 +808,9 @@ Before this amendment, `claimOrder` refused an existing order only while its rec
 (`services/commerce/internal/api/server.go:1392-1394`). An expired lease passed that check, and
 `recovery_claim_id` stayed on the row. Nothing in checkout cleared it.
 
-The claim-fenced recovery writes compare the claim id and nothing else. `ReleaseStuckOrder` matches `id` and
+The claim-fenced recovery writes compare the claim id and do not read the lease. `ReleaseStuckOrder` matches `id` and
 `recovery_claim_id` (`services/commerce/internal/store/recovery.go:152`). `ParkForReconciliation` matches the same
-pair (`:197`). Neither reads the lease.
+pair (`:197`).
 
 So a worker whose lease lapsed during an external call can still park the order. Checkout reads the park marker
 inside the `claimOrder` transaction (`server.go:1371-1372`). That transaction commits before the guard uses the

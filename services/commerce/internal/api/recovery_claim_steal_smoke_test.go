@@ -25,16 +25,19 @@ import (
 // TKT-319. Checkout resumed an order whose recovery claim had EXPIRED, and did not fence it off.
 //
 // Before the fix, claimOrder refused only a LIVE lease (server.go:1392-1394). An expired lease
-// left recovery_claim_id set. Every recovery write is fenced on that id alone: ReleaseStuckOrder
-// matches `id AND recovery_claim_id` (store/recovery.go:152), and so does ParkForReconciliation
-// (:197). So a worker whose lease had lapsed could still park the order after checkout had read
-// it as unparked and committed. The fix clears such a claim under the same row lock
-// (server.go:1400-1404), so the stale worker's fenced writes match no row (ADR-016, TKT-319).
+// left recovery_claim_id set. The claim-fenced writes compare the claim id, not the lease:
+// ReleaseStuckOrder matches `id AND recovery_claim_id` (store/recovery.go:152), and so do other
+// statements in store/recovery.go, including ParkForReconciliation (:197). Some recovery writes
+// check no claim at all: RecordOrderFact and CompleteOrder (store/recovery.go:357-364;
+// store/store.go:118, :132). So a worker whose lease had lapsed could still park the order after
+// checkout had read it as unparked and committed. The fix clears such a claim under the same row
+// lock (server.go:1400-1404), so the stale worker's claim-fenced writes match no row (ADR-016, TKT-319).
 //
 // THE SCHEDULE IS FORCED. afterCheckoutClaim parks checkout after claimOrder has committed and
 // before the park-marker guard (server.go:1813). The test then makes the stale claimant's write
-// with the OLD token, reads the row, and only then lets checkout continue. Nothing sleeps. Every
-// wait has a deadline, and cleanup joins the request before the database closes.
+// with the OLD token, reads the row, and only then lets checkout continue. Nothing sleeps. The
+// waits in the test body have deadlines. Cleanup cancels the request and joins it before the
+// database closes.
 //
 // THE TIER IS THE POINT. The row lock, the claim fencing and the park marker exist only in
 // PostgreSQL. These tests run the real handler and the real store function against a real
@@ -95,13 +98,16 @@ func TestAStaleClaimantCannotParkAnOrderCheckoutTookOverFromAnExpiredClaim(t *te
 				seeded := readRecoveryRow(t, db, ctx, so.order)
 				assertStaleSeed(t, seeded, status, so.claim, shape.lease, commercestore.MaxRecoveryAttempts-1, false)
 
+				// The request runs under its own context. Cleanup cancels it, so a request that is still
+				// running stops at its next call that takes the request context.
+				reqCtx, cancelReq := context.WithCancel(context.Background())
+
 				// The seam. Checkout signals once after claimOrder commits, then waits for permission.
+				// The wait also ends when the request is cancelled.
 				reached := make(chan struct{}, 1)
 				proceed := make(chan struct{})
 				var openOnce sync.Once
 				openSeam := func() { openOnce.Do(func() { close(proceed) }) }
-				waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
-				t.Cleanup(cancelWait)
 				srv.afterCheckoutClaim = func() {
 					select {
 					case reached <- struct{}{}:
@@ -109,7 +115,7 @@ func TestAStaleClaimantCannotParkAnOrderCheckoutTookOverFromAnExpiredClaim(t *te
 					}
 					select {
 					case <-proceed:
-					case <-waitCtx.Done():
+					case <-reqCtx.Done():
 					}
 				}
 
@@ -117,21 +123,22 @@ func TestAStaleClaimantCannotParkAnOrderCheckoutTookOverFromAnExpiredClaim(t *te
 				r.Post("/reservations/{id}/checkout", srv.checkout)
 				var rec *httptest.ResponseRecorder
 				done := make(chan struct{})
+				// Registered after the stubs and the fixtures, so it runs before them. It cancels the request
+				// and then joins it. The join has no deadline on purpose. The checkout path passes the request
+				// context to its database and HTTP calls, so a cancelled request returns at its next such call,
+				// and the fixtures must not be torn down while a handler may still be running.
+				t.Cleanup(func() {
+					cancelReq()
+					<-done
+				})
 				go func() {
 					defer close(done)
-					rec = submitCheckout(t, r, reservation, staleBuyerName, staleBuyerEmail, staleBuyerToken, so.key)
+					rec = staleCheckout(reqCtx, r, reservation, so.key)
 				}()
-				// Registered after the stubs and the database, so it runs before them. It releases a
-				// checkout that is still parked, and waits for that checkout to return.
-				t.Cleanup(func() {
-					openSeam()
-					select {
-					case <-done:
-					case <-waitCtx.Done():
-						t.Errorf("checkout did not return after the seam was released")
-					}
-				})
 
+				// The waits in the test body have deadlines.
+				waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancelWait()
 				select {
 				case <-reached:
 				case <-done:
@@ -319,6 +326,13 @@ func TestAParkedOrderKeepsItsMarkerWhenCheckoutTakesItsExpiredClaim(t *testing.T
 				t.Fatalf("the answer must echo the durable status %q, got %v", status, got)
 			}
 			after := readRecoveryRow(t, db, ctx, so.order)
+			// The steal runs for a parked row too, so the claim id and the lease must be NULL after the refusal.
+			if after.claim.Valid {
+				t.Fatalf("the claim id survived checkout on a parked order: %v; want NULL", after.claim.UUID)
+			}
+			if after.lease.Valid {
+				t.Fatalf("the recovery lease survived checkout on a parked order: %v; want NULL", after.lease.Time)
+			}
 			if !after.parked.Valid {
 				t.Fatal("the steal cleared the park marker of a parked order")
 			}
@@ -379,6 +393,20 @@ func budgetChanges(before, after recoveryRow) []string {
 func staleFingerprint(reservation uuid.UUID) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s",
 		reservation, staleBuyerName, strings.ToLower(staleBuyerEmail), staleBuyerToken))))
+}
+
+// staleCheckout sends one checkout through the real router under ctx. A test that may stop early
+// passes a cancellable context, so cleanup can end a request that is still running. The buyer fields
+// are the ones the seeded fingerprint was built from.
+func staleCheckout(ctx context.Context, r chi.Router, reservation uuid.UUID, key string) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"reservation_id":%q,"name":%q,"email":%q,"payment_token":%q}`,
+		reservation, staleBuyerName, staleBuyerEmail, staleBuyerToken)
+	req := httptest.NewRequest(http.MethodPost, "/reservations/"+reservation.String()+"/checkout", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req.WithContext(ctx))
+	return rec
 }
 
 // seedStaleClaim mints the order through the REAL claimOrder, then writes the recovery state a

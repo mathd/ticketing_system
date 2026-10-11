@@ -1393,10 +1393,11 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 			return uuid.Nil, "", false, false, errRecoveryInProgress
 		}
 		// The live case returned above, so a claim left here has an expired or NULL lease. Clear
-		// it under the row lock this transaction holds, before commit. A stale worker's fenced
-		// writes compare recovery_claim_id, so after this they match no row and cannot park,
-		// release or abandon the order (ADR-016, TKT-319). Attempts, schedule, last error and the
-		// park marker are left alone.
+		// it under the row lock this transaction holds, before commit, so after this the stale
+		// worker's claim-fenced writes match no row and cannot park, release or abandon the order
+		// through the store; external calls, such as the inventory release, are not covered whether
+		// they come before or after the steal (ADR-016, TKT-319). Attempts, schedule, last error and
+		// the park marker are left alone.
 		if recoveryClaim.Valid {
 			if _, err = tx.ExecContext(ctx, `UPDATE orders SET recovery_claim_id=NULL, recovery_lease_until=NULL WHERE id=$1`, id); err != nil {
 				return uuid.Nil, "", false, false, err
