@@ -89,6 +89,10 @@ func TestVerifyOfferingConfig(t *testing.T) {
 		{name: "backoff present", field: "backoff", edit: func(c *jetstream.ConsumerConfig) {
 			c.BackOff = []time.Duration{time.Second}
 		}},
+		// No BackOff bounds it: a crash with all 64 acks pending blocks delivery for the whole wait.
+		{name: "long ack wait", field: "ack_wait", edit: func(c *jetstream.ConsumerConfig) {
+			c.AckWait = 24 * time.Hour
+		}},
 		// TKT-68: the backpressure bound is explicit, not the server default of 1000.
 		{name: "max ack pending", field: "max_ack_pending", edit: func(c *jetstream.ConsumerConfig) {
 			c.MaxAckPending = 1000
@@ -283,6 +287,9 @@ func TestCommittedOfferingConfigMatchesTheCode(t *testing.T) {
 	if cfg.MaxAckPending != 64 {
 		t.Fatalf("max_ack_pending = %d, want 64", cfg.MaxAckPending)
 	}
+	// The file sets no ack_wait (the key check above), so the broker fills in its default, as INFO
+	// of an init-created durable shows. Model that, rather than weaken the verifier.
+	cfg.AckWait = serverDefaultAckWait
 	if err := verifyOfferingConfig((&Consumer{}).consumerConfig(), &jetstream.ConsumerInfo{Config: cfg}); err != nil {
 		t.Fatalf("committed file does not match consumerConfig(): %v", err)
 	}

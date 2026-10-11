@@ -394,6 +394,8 @@ fi
 cd "$ROOT/smoke"
 status=0
 suite_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# SMOKE_NATS_ACL_FILE is pinned to the repository file below, so the gate's CREATE grant-set test
+# (smoke/nats_acl_grants_test.go) can never judge a mutated copy left in the caller's environment.
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
@@ -427,6 +429,7 @@ SMOKE_NATS_PAYMENTS_PASSWORD="$NATS_PAYMENTS_PASSWORD" \
 SMOKE_NATS_ACCESS_PASSWORD="$NATS_ACCESS_PASSWORD" \
 SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL="nats://platform-admin:${NATS_ADMIN_PASSWORD}@localhost:${NATS_PORT}" \
+SMOKE_NATS_ACL_FILE="$ROOT/deploy/nats/nats-server.conf" \
 SMOKE_PG=localhost:${POSTGRES_PORT} \
 SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
 SMOKE_CATALOG_URL=http://localhost:${CATALOG_PORT} \

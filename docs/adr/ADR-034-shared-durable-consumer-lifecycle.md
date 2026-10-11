@@ -332,30 +332,48 @@ durable, not CREATE.
 1. *The fields `consumerConfig()` sets*, compared with the code: the filter set (plural and
    singular, order-independent, exact), `ack_policy`, `deliver_policy`, `max_deliver`, `backoff`
    (access exact and ordered; inventory empty), inventory's `max_ack_pending`, and `headers_only`.
-2. *The settings that would let the service report ready while it consumes nothing, or lose the
-   durable* (added after TKT-327's review), each required to be absent: `durable_name` must be the
-   expected name (without it the consumer is ephemeral); `inactive_threshold`, `max_batch`,
-   `max_expires` and `max_bytes` must be unset; `pause_until` must not be in the future;
-   `replay_policy` must be `instant`; and `mem_storage` must be false (on this single-server broker
-   a restart lost a `mem_storage` durable, while a file-backed one beside it survived). Executed against the pinned broker and client: with
-   `max_batch` below `Consume`'s batch of 500, or `max_expires` below its 30s request, every pull is
-   refused with a 409 that nats.go reports only to the consume error callback, which the services
-   do not treat as terminal. A future `pause_until` delivers nothing and reports nothing. The broker
-   deleted a durable with `inactive_threshold: 2s` and an ephemeral consumer (no `durable_name`;
-   the server gave it a 5s threshold) once each had been idle for 8s, so a service that is down
-   longer than the threshold comes back to no durable. `replay_policy: original` delivers the
-   backlog at its original pacing. `max_bytes`
-   does not refuse today's pulls, which set no byte limit, but it would refuse a byte-bounded pull.
+2. *A DENYLIST of explicit settings known to starve the consumer or lose the durable* (added in
+   TKT-327's review rounds). It is a denylist, not an allowlist: these settings are refused
+   because each was shown to stop consumption while readiness reports true, or to lose the durable,
+   and **a setting outside this list is not caught**. The list:
+   - `durable_name` must be the expected name. Without it the consumer is ephemeral.
+   - `inactive_threshold` must be unset.
+   - `max_batch`, `max_expires` and `max_bytes` must be unset.
+   - `pause_until` must not be in the future.
+   - `replay_policy` must be `instant`.
+   - `mem_storage` must be false.
+   - Inventory only: `ack_wait` must be the server default of 30s, the value both creation paths
+     get. Inventory has no BackOff, so a long `ack_wait` with all 64 `max_ack_pending` slots held
+     by a process that crashed blocks redelivery and new delivery until it expires, while the
+     restarted service reports ready. Access needs no such check: with a BackOff the server sets
+     `ack_wait` to the first BackOff interval and ignores an explicit value (executed: a 24h
+     `ack_wait` sent with a BackOff, on create and on update, read back as 1s), and access's BackOff
+     is compared.
 
-Fields left to the server and harmless to consumption (`ack_wait`, access's `max_ack_pending`,
-`max_waiting`, replicas) are not compared. `max_waiting: 1` and `max_ack_pending: 1` were executed
-and still deliver. A `priority_policy` is not compared either, because `Consume` itself refuses a
-priority consumer without a group, so `Run` fails loudly. A durable created by the old service code
-and one created by `nats-init` from the same fields get the same server defaults, and both report
-every setting in part 2 as unset (`pause_until` as the zero time from `nats-init`, omitted by the
-old path), so both verify. This was executed against the pinned broker and CLI. A NATS upgrade that
-changes a default cannot cause a false refusal. A startup check sees only startup: a pause or limit
-that `platform-admin` applies later is not detected, and ADR-072 §2 does not bind that principal.
+   Executed against the pinned broker and client:
+   - With `max_batch` below `Consume`'s batch of 500, or `max_expires` below its 30s request, every
+     pull is refused with a 409 that nats.go reports only to the consume error callback, which the
+     services do not treat as terminal.
+   - A future `pause_until` delivers nothing and reports nothing.
+   - The broker deleted a durable with `inactive_threshold: 2s`, and an ephemeral consumer (no
+     `durable_name`; the server gave it a 5s threshold), once each had been idle for 8s. A service
+     that is down longer than the threshold comes back to no durable.
+   - On this single-server broker, a restart lost a `mem_storage` durable, while a file-backed one
+     beside it survived.
+   - `replay_policy: original` delivers the backlog at its original pacing.
+   - `max_bytes` does not refuse today's pulls, which set no byte limit, but it would refuse a
+     byte-bounded pull.
+
+Not on the list, and checked: `max_waiting: 1` and access's `max_ack_pending: 1` were executed and
+still deliver; a `priority_policy` makes `Consume` itself refuse to start, so `Run` fails loudly.
+Other server-filled fields (replicas, metadata) are not compared. A durable created by the old
+service code and one created by `nats-init` from the same fields get the same server defaults
+(`ack_wait` 30s for inventory; `pause_until` the zero time from `nats-init`, omitted by the old
+path), so both verify. This was executed against the pinned broker and CLI. One server default is
+now compared: if a NATS upgrade changed the default `ack_wait`, a NEWLY created inventory durable
+would be refused at startup, loudly, while an existing one keeps its stored 30s. A startup check
+sees only startup: a pause or limit that `platform-admin` applies later is not detected, and
+ADR-072 §2 does not bind that principal.
 
 **Two sources of truth.** The config now lives in `consumerConfig()` and in the committed JSON. A
 change touches both. A unit test per service compares the default JSON with `consumerConfig()`

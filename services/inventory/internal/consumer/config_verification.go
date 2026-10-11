@@ -9,6 +9,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// serverDefaultAckWait is the ack_wait the broker gives a consumer that sets none, which is what
+// consumerConfig() and deploy/nats/consumers/inventory-catalog-offering.json both do.
+const serverDefaultAckWait = 30 * time.Second
+
 // verifyOfferingConfig compares the durable that nats-init pre-provisioned with the config this
 // binary expects, before Run consumes from it (TKT-327, ADR-034 amendment).
 //
@@ -20,16 +24,16 @@ import (
 // deploy/nats/consumers/inventory-catalog-offering.json. This check makes a forgotten half fail at
 // startup instead of silently.
 //
-// It compares ONLY the fields consumerConfig() sets. Fields the code leaves to the server default
-// (AckWait, MaxWaiting, replicas) are not compared: a durable the old service created and one
-// nats-init creates from the same fields get the same defaults, and a NATS upgrade that changes a
-// default cannot cause a false refusal.
+// It compares the fields consumerConfig() sets. Of the fields the code leaves to the server, only
+// AckWait is compared (against the server default, see below); MaxWaiting and replicas are not. A
+// durable the old service created and one nats-init creates from the same fields get the same
+// defaults, so both verify.
 //
 // The filter set is order-independent and exact, and it includes the singular FilterSubject, so
 // a filter added through either field is refused.
 //
-// It also requires every setting that could stop consumption while readiness reports true to be
-// absent: see consumptionDrift.
+// It also refuses a DENYLIST of explicit settings known to stop consumption while readiness reports
+// true, or to lose the durable: see consumptionDrift. A setting outside that list is not caught.
 func verifyOfferingConfig(want jetstream.ConsumerConfig, info *jetstream.ConsumerInfo) error {
 	if info == nil {
 		return fmt.Errorf("durable %s on stream PLATFORM: the bind returned no consumer info to verify", want.Durable)
@@ -52,6 +56,15 @@ func verifyOfferingConfig(want jetstream.ConsumerConfig, info *jetstream.Consume
 	// list is accepted and any interval is refused.
 	if !slices.Equal(got.BackOff, want.BackOff) {
 		drift = append(drift, fmt.Sprintf("backoff is %v, want %v", got.BackOff, want.BackOff))
+	}
+	// The code sets no AckWait, so both creation paths get the server's 30s (executed on the pinned
+	// broker, init-created and old-code durables alike). It is compared because inventory has no
+	// BackOff to bound it: with a long ack_wait and all max_ack_pending slots held by a process that
+	// crashed, nothing is redelivered and nothing new is delivered until it expires, while the
+	// restarted service reports ready. (access needs no such check: with a BackOff the server sets
+	// ack_wait to BackOff[0] and ignores an explicit value, and access's BackOff is compared.)
+	if got.AckWait != serverDefaultAckWait {
+		drift = append(drift, fmt.Sprintf("ack_wait is %v, want %v (the server default both creation paths get)", got.AckWait, serverDefaultAckWait))
 	}
 	// TKT-68: the backpressure bound is explicit in code, so it is compared exactly.
 	if got.MaxAckPending != want.MaxAckPending {

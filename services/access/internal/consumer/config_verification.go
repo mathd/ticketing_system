@@ -27,8 +27,10 @@ import (
 // The filter set is order-independent and exact, and it includes the singular FilterSubject, so
 // a filter added through either field is refused.
 //
-// It also requires every setting that could stop consumption while readiness reports true to be
-// absent: see consumptionDrift.
+// It also refuses a DENYLIST of explicit settings known to stop consumption while readiness reports
+// true, or to lose the durable: see consumptionDrift. A setting outside that list is not caught.
+// AckWait needs no check here: with a BackOff the server sets it to BackOff[0] and ignores an
+// explicit value (executed on the pinned broker), and BackOff is compared exactly.
 func verifyTicketIssuerConfig(want jetstream.ConsumerConfig, info *jetstream.ConsumerInfo) error {
 	if info == nil {
 		return fmt.Errorf("durable %s on stream PLATFORM: the bind returned no consumer info to verify", want.Durable)
