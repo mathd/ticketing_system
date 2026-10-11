@@ -15,4 +15,9 @@
 #     expired_at: YYYY-MM-DD        # 1 to 30 days after approved_at; expires at 00:00 UTC
 #     pnpm_ids:                     # copied from the finding's VendorIDs in Trivy JSON output
 #       - GHSA-xxxx-xxxx-xxxx
-vulnerabilities: []
+vulnerabilities:
+  - id: GHSA-26w7-cxv4-gfx2
+    statement: "TKT-335 CI proof only, never merged: a seeded EXPIRED entry must fail pnpm-audit."
+    owner: mathd
+    approved_at: 2026-10-01
+    expired_at: 2026-10-10

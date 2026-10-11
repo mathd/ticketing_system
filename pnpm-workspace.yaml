@@ -22,4 +22,5 @@ minimumReleaseAgeExclude:
 # Do not edit by hand: `make check` refuses a list that is not the mirror of the
 # allowlist, and the pnpm-audit job refuses an expired entry before `pnpm audit`.
 auditConfig:
-  ignoreGhsas: []
+  ignoreGhsas:
+    - GHSA-26w7-cxv4-gfx2
