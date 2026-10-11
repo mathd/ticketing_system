@@ -102,6 +102,39 @@ func TestVerifyTicketIssuerConfig(t *testing.T) {
 		{name: "headers only", field: "headers_only", edit: func(c *jetstream.ConsumerConfig) {
 			c.HeadersOnly = true
 		}},
+		// TKT-327 review: settings that let the service bind and report ready while it consumes
+		// nothing, or lose the durable. One case per check in consumptionDrift.
+		{name: "pause_until zero, as a nats-init durable reports it", edit: func(c *jetstream.ConsumerConfig) {
+			c.PauseUntil = &time.Time{}
+		}},
+		{name: "pause_until in the past", edit: func(c *jetstream.ConsumerConfig) {
+			past := time.Now().Add(-time.Hour)
+			c.PauseUntil = &past
+		}},
+		{name: "ephemeral: no durable name", field: "durable_name", edit: func(c *jetstream.ConsumerConfig) {
+			c.Durable = ""
+		}},
+		{name: "inactive threshold", field: "inactive_threshold", edit: func(c *jetstream.ConsumerConfig) {
+			c.InactiveThreshold = time.Hour
+		}},
+		// Consume asks for 500 messages; the broker refuses each pull with 409 Exceeded
+		// MaxRequestBatch, and nats.go reports that only to the consume error callback.
+		{name: "max batch below the client's", field: "max_batch", edit: func(c *jetstream.ConsumerConfig) {
+			c.MaxRequestBatch = 10
+		}},
+		{name: "max expires below the client's", field: "max_expires", edit: func(c *jetstream.ConsumerConfig) {
+			c.MaxRequestExpires = time.Second
+		}},
+		{name: "max bytes", field: "max_bytes", edit: func(c *jetstream.ConsumerConfig) {
+			c.MaxRequestMaxBytes = 1024
+		}},
+		{name: "paused into the future", field: "pause_until", edit: func(c *jetstream.ConsumerConfig) {
+			future := time.Now().Add(time.Hour)
+			c.PauseUntil = &future
+		}},
+		{name: "replay at original pacing", field: "replay_policy", edit: func(c *jetstream.ConsumerConfig) {
+			c.ReplayPolicy = jetstream.ReplayOriginalPolicy
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			info := validTicketIssuerInfo()

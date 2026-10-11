@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -26,6 +27,9 @@ import (
 //
 // The filter set is order-independent and exact, and it includes the singular FilterSubject, so
 // a filter added through either field is refused.
+//
+// It also requires every setting that could stop consumption while readiness reports true to be
+// absent: see consumptionDrift.
 func verifyOfferingConfig(want jetstream.ConsumerConfig, info *jetstream.ConsumerInfo) error {
 	if info == nil {
 		return fmt.Errorf("durable %s on stream PLATFORM: the bind returned no consumer info to verify", want.Durable)
@@ -56,6 +60,7 @@ func verifyOfferingConfig(want jetstream.ConsumerConfig, info *jetstream.Consume
 	if got.HeadersOnly != want.HeadersOnly {
 		drift = append(drift, fmt.Sprintf("headers_only is %t, want %t", got.HeadersOnly, want.HeadersOnly))
 	}
+	drift = append(drift, consumptionDrift(want, got, time.Now())...)
 	if len(drift) > 0 {
 		return fmt.Errorf("durable %s on stream PLATFORM does not match this binary's consumer config: %s "+
 			"(nats-init provisions it from deploy/nats/consumers; see docs/development.md to reconcile it)",
@@ -72,4 +77,46 @@ func filterSet(cfg jetstream.ConsumerConfig) []string {
 	}
 	slices.Sort(set)
 	return set
+}
+
+// consumptionDrift reports the settings that would let the service bind, pass the field comparison,
+// report ready, and still consume nothing or lose the durable (TKT-327 review). Each must be
+// absent. Executed on the pinned broker and client: with max_batch below Consume's batch of 500,
+// or max_expires below its 30s request, every pull is refused, and nats.go reports it only to the
+// consume error callback, which the services do not treat as terminal; a future pause_until
+// delivers nothing and reports nothing. max_bytes does not refuse today's pulls, which set no byte
+// limit, but it would refuse a byte-bounded pull, so it is refused too. Without durable_name the
+// consumer is ephemeral, and with an inactive_threshold the broker deletes it after that idle
+// time; either way it can disappear while the service is down. replay_policy original delivers
+// the backlog at its original pacing, so a restart after downtime catches up no faster than the
+// events were published. Both creation paths (the old service code and nats-init's file) leave
+// every one of these unset; init returns pause_until as the zero time and the old path omits it,
+// so only a pause that is still in the future is refused.
+//
+// A startup check sees only startup: a pause or a limit that platform-admin applies later is not
+// detected (ADR-072 §2 does not bind platform-admin).
+func consumptionDrift(want, got jetstream.ConsumerConfig, now time.Time) []string {
+	var drift []string
+	if got.Durable != want.Durable {
+		drift = append(drift, fmt.Sprintf("durable_name is %q, want %q (without it the consumer is ephemeral)", got.Durable, want.Durable))
+	}
+	if got.InactiveThreshold != want.InactiveThreshold {
+		drift = append(drift, fmt.Sprintf("inactive_threshold is %v, want %v (the broker deletes an idle consumer)", got.InactiveThreshold, want.InactiveThreshold))
+	}
+	if got.MaxRequestBatch != want.MaxRequestBatch {
+		drift = append(drift, fmt.Sprintf("max_batch is %d, want %d (it refuses the client's pulls)", got.MaxRequestBatch, want.MaxRequestBatch))
+	}
+	if got.MaxRequestExpires != want.MaxRequestExpires {
+		drift = append(drift, fmt.Sprintf("max_expires is %v, want %v (it refuses the client's pulls)", got.MaxRequestExpires, want.MaxRequestExpires))
+	}
+	if got.MaxRequestMaxBytes != want.MaxRequestMaxBytes {
+		drift = append(drift, fmt.Sprintf("max_bytes is %d, want %d (it refuses byte-bounded pulls)", got.MaxRequestMaxBytes, want.MaxRequestMaxBytes))
+	}
+	if got.PauseUntil != nil && got.PauseUntil.After(now) {
+		drift = append(drift, fmt.Sprintf("pause_until is %s, want no pause (a paused consumer delivers nothing)", got.PauseUntil.UTC().Format(time.RFC3339)))
+	}
+	if got.ReplayPolicy != want.ReplayPolicy {
+		drift = append(drift, fmt.Sprintf("replay_policy is %v, want %v", got.ReplayPolicy, want.ReplayPolicy))
+	}
+	return drift
 }
