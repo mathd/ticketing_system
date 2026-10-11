@@ -790,3 +790,144 @@ func (p *panickingSource) Availability(context.Context, uuid.UUID, uuid.UUID, st
 }
 
 func (p *panickingSource) RegisterAvailabilityInvalidator(func(uuid.UUID)) {}
+
+// setRelease changes the channel that later source calls block on. Each call
+// keeps the channel that it found when it started, so a load that is already in
+// the source does not change channel.
+func (f *fakeSource) setRelease(ch chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.release = ch
+}
+
+// keyCount is the number of source calls for one key, on the default channel.
+func (f *fakeSource) keyCount(org, slot uuid.UUID) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.perKey[org.String()+"|"+slot.String()+"|"]
+}
+
+// openAll closes each channel that is not closed. Only the test goroutine calls
+// it, thus the check and the close cannot race.
+func openAll(chs ...chan struct{}) {
+	for _, ch := range chs {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}
+}
+
+type readResult struct {
+	value store.Availability
+	err   error
+}
+
+func startRead(svc *Service, org, slot uuid.UUID) <-chan readResult {
+	out := make(chan readResult, 1)
+	go func() {
+		r, err := svc.Read(context.Background(), org, slot, "")
+		out <- readResult{r.Value, err}
+	}()
+	return out
+}
+
+// TestAFollowerJoinsTheFlightBeforeQueueingForASlot (TKT-334): a follower that
+// arrives during the leader's load joins the flight BEFORE it waits for a
+// semaphore slot (the first join in Read).
+//
+// TestConcurrentMissesLoadOnce cannot see this join. Without it, the follower
+// gets a free slot, finds the flight at the second check and joins there. Thus
+// this fixture keeps no slot free: the leader's load holds the only slot. And
+// the leader's load returns an error, which the cache never keeps. A follower
+// that does not join waits for the slot, finds no entry and no flight, and
+// calls the source a second time.
+func TestAFollowerJoinsTheFlightBeforeQueueingForASlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		errLoad := errors.New("source failed")
+		src := newFakeSource()
+		src.err = errLoad
+		src.release = make(chan struct{})
+		svc := New(src, WithMaxInFlight(1))
+		org, slot := uuid.New(), uuid.New()
+
+		leader := startRead(svc, org, slot)
+		synctest.Wait() // the leader's load is in the source and holds the only slot
+
+		follower := startRead(svc, org, slot)
+		synctest.Wait() // the follower is blocked: on the flight, or on the semaphore
+
+		close(src.release)
+		l, f := <-leader, <-follower
+
+		if got := src.count(); got != 1 {
+			t.Fatalf("source called %d times, want 1 — a follower that arrived during the leader's load queued for a slot instead of joining the flight", got)
+		}
+		if !errors.Is(l.err, errLoad) || !errors.Is(f.err, errLoad) {
+			t.Fatalf("leader err = %v, follower err = %v, want both %v — the follower must get the flight's own outcome", l.err, f.err, errLoad)
+		}
+	})
+}
+
+// TestAReaderThatQueuedForASlotJoinsTheFlightStartedWhileItWaited (TKT-334): a
+// reader that found no flight at the first check, and then waited for a slot,
+// joins the flight that started while it waited (the second join in Read, after
+// the semaphore).
+//
+// Two unrelated loads hold both slots. Thus the two readers of the key find no
+// flight at the first check, and both wait for a slot. The first free slot goes
+// to one of them, and that reader starts the load. Then the second slot becomes
+// free while that load continues. Only the check after the reader gets its slot
+// stops the other reader from a second load.
+func TestAReaderThatQueuedForASlotJoinsTheFlightStartedWhileItWaited(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		src := newFakeSource()
+		src.setAvailable(7)
+		svc := New(src, WithMaxInFlight(2))
+		org, slot := uuid.New(), uuid.New()
+
+		releaseU1, releaseU2, releaseK := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		// If an assertion fails, release all loads so that the goroutines in the
+		// bubble can stop. If not, synctest reports a deadlock and stops the test
+		// binary.
+		defer openAll(releaseU1, releaseU2, releaseK)
+		src.setRelease(releaseU1)
+		u1 := startRead(svc, org, uuid.New())
+		synctest.Wait() // the first slot is held
+		src.setRelease(releaseU2)
+		u2 := startRead(svc, org, uuid.New())
+		synctest.Wait() // the second slot is held
+
+		src.setRelease(releaseK)
+		first := startRead(svc, org, slot)
+		synctest.Wait()
+		second := startRead(svc, org, slot)
+		synctest.Wait() // the two readers of the key wait for a slot, and no flight exists
+		if got := src.keyCount(org, slot); got != 0 {
+			t.Fatalf("key loaded %d times while every slot was held, want 0 — the fixture did not queue both readers", got)
+		}
+
+		openAll(releaseU1)
+		synctest.Wait() // one reader of the key got the free slot; its load is in the source
+		if got := src.keyCount(org, slot); got != 1 {
+			t.Fatalf("key loaded %d times after one slot freed, want 1", got)
+		}
+
+		openAll(releaseU2)
+		synctest.Wait() // the other reader got the second slot while that load continues
+		if got := src.keyCount(org, slot); got != 1 {
+			t.Fatalf("key loaded %d times, want 1 — a reader that queued for a slot started a second load instead of joining the flight registered while it waited", got)
+		}
+
+		openAll(releaseK)
+		for _, ch := range []<-chan readResult{u1, u2, first, second} {
+			if r := <-ch; r.err != nil {
+				t.Fatalf("Read: %v", r.err)
+			}
+		}
+		if got := src.keyCount(org, slot); got != 1 {
+			t.Fatalf("key loaded %d times in total, want 1", got)
+		}
+	})
+}
