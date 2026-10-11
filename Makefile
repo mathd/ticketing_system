@@ -16,7 +16,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
 
 # `make check` IS the wrapper. It holds .gate.lock so nothing edits the tree
 # mid-run (TKT-240), captures the log, and writes .gate.verdict from the exit
@@ -27,7 +27,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 check:
 	@./scripts/gate.sh
 
-check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-go-standalone test build smoke
+check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-go-standalone test build smoke
 
 # The lock must be THIS run's, not merely present: a hand-made or stale lock is
 # not evidence that a wrapper is holding the tree still. GATE_LOCK is a variable
@@ -77,6 +77,17 @@ check-go-standalone: lint-go
 ## ---- workflow triggers ----
 check-security-workflow-trigger:
 	@./scripts/check-security-workflow-trigger.sh
+
+## ---- vulnerability scan allowlist (TKT-335, ADR-081) ----
+# Only the checks of the committed files, whose verdict does not depend on the
+# clock: the schema, the dates, the 30-day cap, the pnpm mirror, the allowed
+# pnpm settings and the refused suppression files. The clock checks (expiry,
+# approval date in the future) run in the security workflow, inside
+# `scan-allowlist.mjs audit`, before pnpm audits; not in this gate. A lapsed
+# entry must not make every unrelated PR red (ADR-081).
+check-scan-allowlist:
+	@node --test scripts/scan-allowlist.test.mjs
+	@node scripts/scan-allowlist.mjs check
 
 check-hermetic-workflow-trigger:
 	@./scripts/check-hermetic-workflow-trigger.sh

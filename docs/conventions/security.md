@@ -47,6 +47,13 @@ not name a mechanical check still depends on review.
 - The `security` workflow runs on every pull request, weekly, and on demand. It fails on reachable Go
   vulnerabilities, high-or-critical pnpm advisories, or high-or-critical Trivy filesystem findings
   across dependencies, IaC configuration, and detected secrets.
+- An accepted Trivy or pnpm finding goes in `.trivyignore.yaml`, with a reason, an owner and an
+  expiry of 30 days or less, and only with the owner's approval. An expired entry fails the
+  `pnpm-audit` job when it runs: on every scheduled run, and on a pull request that changes
+  dependency files or `.trivyignore.yaml`. Trivy drops an expired entry silently, so
+  `repository-scan` fails again only if the advisory still exists. govulncheck has no exception
+  path yet (TKT-524). See
+  [ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md).
 
 ## Input and data handling
 
@@ -66,7 +73,14 @@ dependencies through Go modules and `pnpm-lock.yaml`; pin executable container/w
 described in [`dependencies-and-versions.md`](dependencies-and-versions.md). Dependabot proposes
 weekly updates but does not bypass review or the quality gates. Security findings are blocking at
 the thresholds above; suppressions require a narrow, documented rationale with an expiry or removal
-condition.
+condition. Suppress a Trivy or pnpm vulnerability only with a reviewed `.trivyignore.yaml` entry
+([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)). `make check` refuses
+a committed `trivy.yaml`, `trivy.yml`, `trivy-secret.yaml`, `.trivyignore`, `.pnpmfile.*` or
+`.npmrc`, a hand-made `auditConfig` ignore list, and a `pnpm-workspace.yaml` setting outside the
+allowed set. The `pnpm-audit` job runs `pnpm audit` through `scan-allowlist.mjs audit`, with a
+minimal environment, the pnpmfile hooks off, and the registry and the lockfile directory pinned,
+so no runner setting can change what it reports. Trivy reads `TRIVY_*` variables from the runner;
+GitHub-hosted runners set none, and a self-hosted runner that sets one is outside this control.
 
 ## Not yet production-ready
 

@@ -27,7 +27,13 @@ builds, and the isolated Compose smoke suite. `gate-selftest` independently conf
 when lint, test, or build defects are seeded. A GitHub ruleset on `main` requires the `check` job;
 see [Main ruleset](#main-ruleset). `gate-selftest` and the security workflow are not required
 checks. The security workflow is a separate blocking signal for review: Go findings are
-reachability-aware, while pnpm and Trivy fail on high or critical findings.
+reachability-aware, while pnpm and Trivy fail on high or critical findings. A finding that a bump
+cannot fix yet goes in the reviewed, expiring allowlist `.trivyignore.yaml`, not in a per-PR
+override. `make check` validates the allowlist and its pnpm mirror, and its verdict does not
+depend on the clock. The `pnpm-audit` job audits only through `node scripts/scan-allowlist.mjs
+audit`, which fails on an entry that expires within one hour and then runs `pnpm audit` in a
+configuration that no runner setting can change
+([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)).
 
 Run this locally before handoff:
 
