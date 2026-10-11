@@ -50,7 +50,7 @@ template is currently configured.
 
 ### Tests & Validation
 
-- Ensure all tests pass — the [CI pipeline](continuous-delivery.md#triggers--required-checks) will block merge if any required check fails.
+- Ensure all tests pass — the [CI pipeline](continuous-delivery.md#triggers--required-checks) will block merge for actors without bypass if any required check fails. The repository admin role (the owner) bypasses it.
 - For changes that depend on real infrastructure (UI, data migrations, external APIs, infra/config), validate in a non-prod environment before requesting review — note the steps in the PR description.
 
 ### Before Submitting
