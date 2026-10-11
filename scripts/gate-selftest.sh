@@ -583,6 +583,8 @@ check_seed $CW '  pull_request:\n' ''
 expect_fail "check workflow trigger (pull_request event removed)" check-check-workflow-trigger
 check_seed $CW '  push:\n    branches: [main]\n' ''
 expect_fail "check workflow trigger (push event removed)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' '  push:\n'
+expect_fail "check workflow trigger (push branches removed)" check-check-workflow-trigger
 check_seed $CW '  pull_request:\n' '  pull_request:\n  workflow_dispatch:\n'
 expect_fail "check workflow trigger (extra event)" check-check-workflow-trigger
 

@@ -7,7 +7,9 @@
 # Threat model: this is a tripwire against accidental or careless edits to
 # check.yaml and the ruleset. It does not, and cannot, stop a writer who changes
 # the Makefile `check` target, scripts/gate.sh, a step that writes $GITHUB_ENV, or
-# this guard. Those are reviewed in the PR like any other code.
+# this guard. It does not read action inputs (`with:`), so an input that changes
+# the checked-out ref (`ref: main` on actions/checkout) or the environment passes.
+# Those are reviewed in the PR like any other code.
 #
 # The YAML reader is line-based, and a line reader cannot interpret all of YAML.
 # So the guard FAILS CLOSED: check.yaml must have the allowlisted block-style
@@ -265,7 +267,10 @@ def check_workflow(lines: list[Line]) -> None:
             failures.append(f"{lines[index].where}: event `{event}` is not allowed; `on:` must hold exactly push and pull_request")
     if "push" in events:
         block_value(lines, events["push"], "`push:`")
-        for key, index in mapping(lines, events["push"], "`push:`").items():
+        push = mapping(lines, events["push"], "`push:`")
+        if "branches" not in push:
+            failures.append(f"{lines[events['push']].where}: `push` has no `branches:`; it must hold exactly `branches: [main]`")
+        for key, index in push.items():
             line = lines[index]
             if key != "branches":
                 failures.append(f"{line.where}: `push` has `{key}`; it may hold only `branches: [main]`")

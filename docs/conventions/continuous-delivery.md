@@ -50,8 +50,9 @@ source of truth, and the live ruleset is applied from the merged file.
   owner, `mathd`. Agent sessions authenticate as `mathd`, so the host refuses nothing they do. The
   host refusal binds Dependabot and any future collaborator. `AGENTS.md` states the rule that agents
   follow.
-- The refusal for an actor without bypass was executed on a twin ruleset with no bypass actor, not on
-  `main` itself. TKT-324's closeout records the commands and the output.
+- The refusal for an actor without bypass (TKT-324's COS3) is verified against a temporary twin
+  ruleset with no bypass actor, on a probe branch, not on `main` itself. TKT-324's ticket thread
+  records the commands and their output.
 - Every PR and every push to `main` runs `check.yaml`, with no path filter. A skipped workflow leaves
   a required check pending.
 
@@ -90,20 +91,23 @@ and it refuses as unsupported anything it cannot read plainly:
 - That job holds only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes`. Its steps
   hold only `name`, `uses`, `with`, `run` and `id`, so `if:`, `continue-on-error`, `shell:` and
   `env:` are refused. Each step key's own value is one plain line. The guard does not read the
-  inputs below `with:`, so a block scalar there passes; action inputs cannot skip the job or change
-  how `make check` runs. At least one step is exactly `run: make check`.
+  inputs below `with:`, so it accepts any action input (see the threat model below). At least one
+  step is exactly `run: make check`.
 - In `check.yaml`, flow style, quoted keys, duplicate keys, merge keys, a second YAML document, and
   a multi-line or block scalar in a step are refused as unsupported.
 - No other job in any workflow reports the same name. In the other workflows the guard reads only
   job ids and names. A job must be block style, and its `name:` must be a plain one-line scalar or
-  a quoted string with no backslash. A quoted key is read there, but a quoted key with a backslash
-  is refused in every workflow, because YAML can decode an escape to another key. An expression
+  a simply quoted string (a double-quoted string with no backslash). A quoted key is read there,
+  but a double-quoted key with a backslash is refused in every workflow, because YAML can decode
+  an escape to another key. A single-quoted string takes a backslash literally. An expression
   `name:` is refused only if its literal prefix could still make it a required context.
 
 Threat model: the guard is a tripwire against accidental or careless edits to `check.yaml` and the
 ruleset. It does not, and cannot, stop a writer who changes the Makefile `check` target,
-`scripts/gate.sh`, a step that writes `$GITHUB_ENV`, or the guard itself. Those changes are reviewed
-in the PR like any other code.
+`scripts/gate.sh`, a step that writes `$GITHUB_ENV`, or the guard itself. It does not read action
+inputs either. An input that changes the checked-out ref (for example `ref: main` on
+`actions/checkout`, which makes the gate run `main`'s code instead of the PR's) or the environment
+passes the guard. Those changes are reviewed in the PR like any other code.
 
 ## Pre-commit ↔ CI alignment
 
