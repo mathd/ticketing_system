@@ -719,7 +719,7 @@ change the total, and nothing here defends against that.
   recovery claim. A zero checkout stalled for over two minutes before its intent fact can be released
   as `not_attempted` while the request later resumes. A paid order has the same interleaving today.
   TKT-319 closes the expired-claim park. It does not close this race: a stalled checkout and a new
-  claim taken after the stall stay open. A follow-up ticket owns the checkout ownership contract.
+  claim taken after the stall stay open. TKT-517 owns the checkout ownership contract.
   The zero version cannot capture money.
 - **Buyer copy.** A `not_attempted` release replays as 408, which the storefront shows as "Payment
   declined". This change adds one more producer of that answer, a zero order with no intent fact.
@@ -814,15 +814,15 @@ pair (`:197`).
 
 So a worker whose lease lapsed during an external call can still park the order. Checkout reads the park marker
 inside the `claimOrder` transaction (`server.go:1371-1372`). That transaction commits before the guard uses the
-value (`server.go:1813`). A park between the commit and the guard is not seen. Checkout then goes on to the buyer's
-PII, `order.created`, the inventory finalize and the charge (`server.go:1830-1869`).
+value (`server.go:1814`). A park between the commit and the guard is not seen. Checkout then goes on to the buyer's
+PII, `order.created`, the inventory finalize and the charge (`server.go:1831-1870`).
 
 ### Decision
 
 When `claimOrder` finds a claim whose lease is not live, it clears `recovery_claim_id` and `recovery_lease_until`
 in the same locked transaction, before it commits. The lease is judged with the Go clock, as the live-lease check
 already is (`server.go:1392`). The clearing runs after the live-lease check and before the `updated_at` refresh
-(`server.go:1400-1404`). The clearing statement adds no lease predicate of its own. A second clock in SQL
+(`server.go:1401-1405`). The clearing statement adds no lease predicate of its own. A second clock in SQL
 could call a lease expired in Go and live in the database. The claim would then survive.
 
 The steal does not touch the attempt count, the schedule, the last error or the park marker. A claim is not an
@@ -836,12 +836,12 @@ The ticket named three options. This is how each one fares.
 - **Refuse.** Refusing an expired lease as well as a live one delays the buyer. Every retry gets 409 until the
   runner acts on the row. The runner claims a row only when its lease is NULL or expired, its `updated_at` is
   older than two minutes, its next attempt is due and it is not parked (`store/recovery.go:78-84`). The refusal
-  returns before the `updated_at` refresh (`server.go:1393`; the refresh is at `:1421`), so refused retries do not
+  returns before the `updated_at` refresh (`server.go:1393`; the refresh is at `:1422`), so refused retries do not
   move that clock. The wait ends on the runner's schedule, not on anything checkout does.
 - **Re-read the park marker after the point of no return.** The charge is the point of no return
-  (`server.go:1869`). A re-read before the charge leaves a window up to the charge, and a park inside that window
+  (`server.go:1870`). A re-read before the charge leaves a window up to the charge, and a park inside that window
   is not seen. A re-read after the charge is too late to stop it.
-- **Steal.** The old token stops matching, so the buyer is never refused. The cost is named below: a stale worker
+- **Steal.** The old token stops matching, so the expired claim does not refuse the buyer. The cost is named below: a stale worker
   that is already inside an external call can still finish that call.
 
 ### The bounded guarantee
@@ -862,18 +862,24 @@ The ticket named three options. This is how each one fares.
 ### Consequences
 
 - A parked order keeps its park marker through the steal. Checkout still answers 409 before any money call
-  (`server.go:1813-1816`).
+  (`server.go:1814-1817`).
 - A live lease still refuses checkout with the existing message, and the claim stays in place
-  (`server.go:1439-1442`).
+  (`server.go:1440-1443`).
 - A dead worker's expired claim no longer blocks the buyer. The steal runs for every order that reaches the
-  existing-row branch with a claim, whatever its status. For a resumable order, checkout then resumes the order.
-  For any other status, the answer does not change.
+  existing-row branch with a claim, whatever its status. The outcome then depends on the order.
+  - A paid order in `created`, `payment_unknown` or `confirmation_pending` resumes in checkout, unless a live lease
+    holds it (409, as before) or it is parked (409, as before).
+  - A zero-total order in those statuses that this request did not insert, and that is neither parked nor held by a
+    live lease, loses any stale claim it has and gets 202 with its durable status and no other work
+    (`server.go:1827-1830`). Recovery keeps that work, and reclaims the order when its own claim conditions allow
+    (`store/recovery.go:78-84`).
+  - Any other status keeps its answer.
 
 ### Residual
 
 The race between a stalled checkout and a new claim stays open after this ticket. A checkout that stalls for more
 than two minutes after `claimOrder` can have a new claim taken on its order (`store/recovery.go:84`). Checkout's
-writes after the guard do not check the claim (`server.go:1830-1838`, `:1869`). A follow-up ticket owns the
+writes after the guard do not check the claim (`server.go:1831-1839`, `:1870`). TKT-517 owns the
 checkout ownership contract. The steal does not close this race.
 
 ### Evidence
@@ -883,7 +889,7 @@ checkout ownership contract. The steal does not close this race.
   - COS2, the stale-claimant barrier test: checkout is parked after `claimOrder` commits, and a release with the
     old token runs at that point. Cases cover the three resumable statuses, with an expired lease and with a NULL
     lease.
-  - COS4: a dead worker's expired claim still resumes.
+  - COS4: a dead worker's expired claim on a paid, unparked order still resumes.
   - COS3: a live lease still refuses checkout.
   - A parked row keeps its marker through the steal.
 

@@ -31,10 +31,10 @@ import (
 // check no claim at all: RecordOrderFact and CompleteOrder (store/recovery.go:357-364;
 // store/store.go:118, :132). So a worker whose lease had lapsed could still park the order after
 // checkout had read it as unparked and committed. The fix clears such a claim under the same row
-// lock (server.go:1400-1404), so the stale worker's claim-fenced writes match no row (ADR-016, TKT-319).
+// lock (server.go:1401-1405), so the stale worker's claim-fenced writes match no row (ADR-016, TKT-319).
 //
 // THE SCHEDULE IS FORCED. afterCheckoutClaim parks checkout after claimOrder has committed and
-// before the park-marker guard (server.go:1813). The test then makes the stale claimant's write
+// before the park-marker guard (server.go:1814). The test then makes the stale claimant's write
 // with the OLD token, reads the row, and only then lets checkout continue. Nothing sleeps. The
 // waits in the test body have deadlines. Cleanup cancels the request and joins it before the
 // database closes.
