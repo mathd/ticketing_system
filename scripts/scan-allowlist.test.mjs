@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -1082,6 +1082,23 @@ describe('command line (real clock)', () => {
     assert.equal(env.TKT335_LEAK, undefined);
     assert.notEqual(env.HOME, callerHome);
     assert.ok(env.HOME?.includes('scan-allowlist-audit-'), `HOME=${env.HOME} is not the fresh directory`);
+  });
+
+  it('audit with a relative --root gives pnpm the absolute root as its directory and lockfile directory', () => {
+    // pnpm runs in the root, so a relative --lockfile-dir would point one
+    // level too deep and audit some other lockfile.
+    const dir = repo({ '.trivyignore.yaml': allowlist(), 'pnpm-workspace.yaml': workspace([]) });
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\npwd > "${dir}/cwd"\nprintf '%s\\n' "$@" > "${dir}/argv"\nexit 0\n`, { mode: 0o755 });
+    const run = spawnSync(process.execPath, [SCRIPT, 'audit', '--root', basename(dir)], {
+      cwd: dirname(dir),
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(join(dir, 'cwd'), 'utf8').trim(), dir);
+    assert.ok(readFileSync(join(dir, 'argv'), 'utf8').split('\n').includes(`--lockfile-dir=${dir}`));
   });
 
   it('audit refuses a lapsed entry and does not run pnpm', () => {

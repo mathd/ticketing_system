@@ -45,7 +45,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isMap, isScalar, isSeq, parseAllDocuments, parseDocument, visit } from 'yaml';
@@ -439,7 +439,10 @@ export function runAudit(
 }
 
 // `check --now`, then the audit. pnpm does not run when the check refuses.
-export function auditRepository(root, { now = new Date(), env = process.env, registry, timeoutMs, stdio } = {}) {
+// The root is made absolute: pnpm runs in it, so a relative --lockfile-dir
+// would point at a lockfile one level too deep.
+export function auditRepository(relativeOrAbsoluteRoot, { now = new Date(), env = process.env, registry, timeoutMs, stdio } = {}) {
+  const root = resolve(relativeOrAbsoluteRoot);
   const problems = checkRepository(root, { now, expiry: true });
   if (problems.length > 0) {
     return { code: 1, message: problems.map((p) => `scan allowlist check failed: ${p}`).join('\n') };
