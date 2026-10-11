@@ -532,6 +532,126 @@ open(p, 'w').write(s.replace(needle, needle + '        continue-on-error: true\n
 SEED
 expect_fail "hermetic workflow trigger (smoke failure ignored)" check-hermetic-workflow-trigger
 
+# 13b. The main ruleset requires the `check` context (TKT-324). That context must
+#      report on every PR, come from check.yaml's `check` job, and have exactly one
+#      producer. Each seed breaks one predicate of check-check-workflow-trigger.
+#      The four path-filter seeds are separate because the guard reads each event
+#      and each filter key on its own: a guard that reads only one of them must
+#      fail one of these seeds.
+expect_pass "check workflow trigger (clean baseline)" check-check-workflow-trigger
+for seed in "push|    branches: [main]|paths-ignore" "push|    branches: [main]|paths" \
+            "pull_request|  pull_request:|paths-ignore" "pull_request|  pull_request:|paths"; do
+  IFS='|' read -r event anchor filter <<<"$seed"
+  python3 - "$anchor" "$filter" <<'SEED'
+import sys
+
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+anchor, key = sys.argv[1] + '\n', sys.argv[2]
+if s.count(anchor) != 1:
+    raise SystemExit(f'expected one check.yaml anchor: {anchor!r}')
+open(p, 'w').write(s.replace(anchor, anchor + f'    {key}: ["docs/**"]\n', 1))
+SEED
+  expect_fail "check workflow trigger ($filter filter on $event)" check-check-workflow-trigger
+done
+
+# The same filter in flow style sits on the event's own line, not below it.
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  pull_request:\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one pull_request trigger')
+open(p, 'w').write(s.replace(needle, '  pull_request: { paths-ignore: ["docs/**"] }\n', 1))
+SEED
+expect_fail "check workflow trigger (flow-style filter on pull_request)" check-check-workflow-trigger
+
+# Without the pull_request event no PR reports the required check at all.
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  pull_request:\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one pull_request trigger')
+open(p, 'w').write(s.replace(needle, '', 1))
+SEED
+expect_fail "check workflow trigger (pull_request event removed)" check-check-workflow-trigger
+
+# Predicate 2: a job-level condition can skip the job that reports the context,
+# while the event above it still looks unfiltered.
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  check:\n    runs-on: ubuntu-latest\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one check job')
+open(p, 'w').write(s.replace(needle, needle + "    if: github.event_name == 'push'\n", 1))
+SEED
+expect_fail "check workflow trigger (check job made conditional)" check-check-workflow-trigger
+
+# Predicate 3: the context is the job's check-run name, which is the job id, or
+# its `name:` when one is set. A rename and an added name both orphan it.
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  check:\n    runs-on: ubuntu-latest\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one check job')
+open(p, 'w').write(s.replace(needle, '  gate:\n    runs-on: ubuntu-latest\n', 1))
+SEED
+expect_fail "check workflow trigger (check job renamed)" check-check-workflow-trigger
+
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  check:\n    runs-on: ubuntu-latest\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one check job')
+open(p, 'w').write(s.replace(needle, '  check:\n    name: gate\n    runs-on: ubuntu-latest\n', 1))
+SEED
+expect_fail "check workflow trigger (check job given another name)" check-check-workflow-trigger
+
+# A ruleset that names no required check makes predicate 3 vacuous, so the guard
+# refuses it instead of passing it.
+python3 - <<'SEED'
+import json
+
+p = '.github/rulesets/main.json'
+data = json.load(open(p))
+before = len(data['rules'])
+data['rules'] = [r for r in data['rules'] if r['type'] != 'required_status_checks']
+if len(data['rules']) != before - 1:
+    raise SystemExit('expected one required_status_checks rule')
+open(p, 'w').write(json.dumps(data, indent=2) + '\n')
+SEED
+expect_fail "check workflow trigger (ruleset names no required check)" check-check-workflow-trigger
+
+# Predicate 4: a second producer of the context, by `name:` in the same workflow
+# or by job id in another one, can satisfy the requirement without `make check`.
+python3 - <<'SEED'
+p = '.github/workflows/check.yaml'
+s = open(p).read()
+needle = '  gate-selftest:\n    runs-on: ubuntu-latest\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one gate-selftest job')
+open(p, 'w').write(s.replace(needle, '  gate-selftest:\n    name: check\n    runs-on: ubuntu-latest\n', 1))
+SEED
+expect_fail "check workflow trigger (second job named check)" check-check-workflow-trigger
+
+python3 - <<'SEED'
+p = '.github/workflows/hermetic.yaml'
+s = open(p).read()
+needle = '  hermetic-smoke:\n'
+if s.count(needle) != 1:
+    raise SystemExit('expected one hermetic-smoke job')
+open(p, 'w').write(s.replace(
+    needle,
+    '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n' + needle,
+    1,
+))
+SEED
+expect_fail "check workflow trigger (job id check in another workflow)" check-check-workflow-trigger
+
 # 14. Every tracked generated API output must have a registry entry. Otherwise
 #     deleting an entry stops regeneration and leaves the stale tracked file
 #     outside the drift comparison.

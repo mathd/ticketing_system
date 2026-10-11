@@ -24,10 +24,10 @@ automation should only be extracted after real repetition appears.
 
 `make check` is the merge gate and runs generation drift checks, Go/TypeScript lint and tests,
 builds, and the isolated Compose smoke suite. `gate-selftest` independently confirms the gate fails
-when lint, test, or build defects are seeded. Repository branch-protection settings are outside this
-repo; do not claim a required-review/check policy that is not visible or verified. The security
-workflow is a separate blocking signal: Go findings are reachability-aware, while pnpm and Trivy
-fail on high or critical findings.
+when lint, test, or build defects are seeded. A GitHub ruleset on `main` requires the `check` job;
+see [Main ruleset](#main-ruleset). `gate-selftest` and the security workflow are not required
+checks. The security workflow is a separate blocking signal for review: Go findings are
+reachability-aware, while pnpm and Trivy fail on high or critical findings.
 
 Run this locally before handoff:
 
@@ -38,6 +38,51 @@ make check
 
 Use focused package tests while iterating. Do not weaken or skip a failing check to make a branch
 green; diagnose flakes and record non-obvious fixes in `docs/LEARNINGS.md`.
+
+### Main ruleset
+
+`main` has a GitHub repository ruleset. Its payload is `.github/rulesets/main.json`. That file is the
+source of truth, and the live ruleset is applied from the merged file.
+
+- It requires a pull request and a successful `check` from GitHub Actions (`integration_id` 15368).
+  It requires no approvals, no up-to-date branch, and no other check.
+- The repository admin role has `always` bypass. On this personal repository, that role is only the
+  owner, `mathd`. Agent sessions authenticate as `mathd`, so the host refuses nothing they do. The
+  host refusal binds Dependabot and any future collaborator. `AGENTS.md` states the rule that agents
+  follow.
+- The refusal for an actor without bypass was executed on a twin ruleset with no bypass actor, not on
+  `main` itself. TKT-324's closeout records the commands and the output.
+- Every PR and every push to `main` runs `check.yaml`, with no path filter. A skipped workflow leaves
+  a required check pending.
+
+Apply the ruleset from the merged file:
+
+```bash
+gh api --method POST repos/mathd/ticketing_system/rulesets --input .github/rulesets/main.json
+```
+
+Read it back and compare it with the file:
+
+```bash
+gh api repos/mathd/ticketing_system/rulesets/<id>
+gh api repos/mathd/ticketing_system/rules/branches/main
+```
+
+Compare `name`, `target`, `enforcement`, `conditions`, `bypass_actors` and `rules`. Ignore ids, URLs
+and timestamps. Make sure that `current_user_can_bypass` is `always` for `mathd`. If it is `never`,
+delete the ruleset immediately.
+
+To roll back, delete the ruleset, then read `rules/branches/main` again and correct this section:
+
+```bash
+gh api --method DELETE repos/mathd/ticketing_system/rulesets/<id>
+```
+
+Nothing compares the live ruleset with the file automatically. Compare them by hand after each
+change. The gate checks only the static invariants: `make check-check-workflow-trigger` refuses a
+path filter on `check.yaml`'s `push` or `pull_request`, a job-level `if:` on the job that reports a
+required context, a required context that no `check.yaml` job reports, and a second job with that
+id or name in any workflow.
 
 ## Pre-commit ↔ CI alignment
 
