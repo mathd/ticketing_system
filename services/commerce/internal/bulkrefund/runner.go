@@ -294,13 +294,17 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 // fence made it safe — it did not, and the fix for that was first to drop the retry, which
 // traded a double charge for an unbounded loss. The guard is what lets both go.
 //
-// COST, since the context is detached and so cannot be cancelled: up to 10s per row, and
-// at the default batch of 8 up to 80s added to a shutdown. That is only reachable while
-// the database is refusing THIS write and the refund unit is still healthy, since a row
-// reaches here only after a drive returned a retryable failure. It can also push a pass
-// past its lease, whose margin is 60s — harmless in itself, because every write in this
-// file is claim-id fenced, so a pass that outlives its lease writes nothing rather than
-// racing its successor.
+// COST, since the context is detached and so cannot be cancelled: up to 10s of charge time
+// per row (two tries of 5s). That is only reachable while the database is refusing THIS
+// write, since a row reaches here only after a drive returned a retryable failure. After a
+// cancellation only the row in flight keeps charging: RunOnce checks the context before
+// each new drive and hands the rest of the batch back, each hand-back on its own 5s
+// context. The worker's stop grace is a HARD 5s (cmd/commerce `start`), so this charge can
+// be cut off at exit. Cut-off work behaves like a crash: a lost charge costs one extra
+// drive after the lease expires. The claim-id fence on every write blocks a stale writer
+// only after a successor has reclaimed the row; it protects the successor's claim and does
+// not make a shutdown prompt. ADR-040's TKT-332 amendment records the bound and why it was
+// kept.
 func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
 	var err error
 	for try := 0; try < 2; try++ {

@@ -358,3 +358,75 @@ one order each driven. Each was mutation-checked against the change it guards.
 
 The per-pass set is process memory and the lease is database state. This is honest-writer
 consistency, not a guarantee against a writer with access to the commerce database.
+
+## Amendment (2026-10-11, TKT-332) — the detached charge's bound is recorded, not tightened
+
+A retryable failure is charged by `bulkrefund/runner.go` `chargeDriven`, after the drive and without
+releasing the lease (TKT-300; [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
+amendment has the accounting, and the TKT-331 "Correction to §5" above has why §5's claim-time rule no
+longer holds). The charge runs on `context.WithoutCancel` of the caller's context, with two tries of
+5 s each. `record`'s cancellation check and this call are not atomic, so a cancellation that lands
+between them reaches the charge and not the abandon path, and the detached context is the only reason
+that charge lands. TKT-300 recorded the cost of that context and did not act on it. This amendment
+decides it.
+
+**Decision (D1): record the bound; keep two tries of 5 s.** The detached context is what makes an
+attempt land after a cancellation, and the retry recovers a transient write failure. A lost charge is
+not self-correcting: nothing else bounds re-drives of an ambiguous failure. No measured database
+latency and no shutdown requirement supports a shorter timeout, so a shorter one would be a guess.
+
+**The numbers.**
+
+- **Charge time per row:** up to 10 s (2 × 5 s). It is reachable only while the database refuses this
+  write, because a row reaches the charge only after a drive returned a retryable failure.
+- **Charge time per batch:** up to 80 s at the default batch of 8. That is the charge cost of a full
+  batch in which every row fails ambiguously and every charge write times out twice. It is **not** the
+  delay after a cancellation (see the corrections below).
+- **Lease:** `LeaseFor` sizes the lease from the calls, not the charge: `batch × 4 calls × 30 s + 60 s`,
+  which is 1,020 s at the default batch of 8. The 80 s charge cost is counted only by the 60 s margin,
+  so a batch whose calls also run to their timeouts can outlive its lease.
+- **Per pass:** at most 64 batches (TKT-331), so at most 512 drives at the default batch. The charge
+  component alone can then reach 5,120 s. That is a bound on one component, not on the elapsed time
+  of a pass; the enumeration prelude is outside it.
+
+**Corrections (D1, D2).** TKT-300, the ticket text and the `chargeDriven` comment stated two things
+that are false:
+
+1. *"Up to 80 s of shutdown delay at the default batch of 8."* False. `RunOnce` checks the context
+   before each new drive, so after a cancellation only the row in flight keeps charging. The others in
+   the batch are handed back undriven with `abandon(w, false)`; each hand-back is a separate
+   `worklease.HandBackUndriven` call with its own 5 s context, and they run one after the other. The
+   **post-cancel tail** is therefore up to **10 s + (batch − 1) × 5 s**: 45 s at the default batch of 8.
+2. *"A pass that outlives its lease writes nothing."* False as stated. Every write is fenced on the
+   **claim id** (`ChargeCancellationAttempt` in `store/cancellation_refunds.go`), not on lease expiry.
+   An expired lease alone blocks nothing: the old claimant can still charge, finalize or abandon until
+   a successor **reclaims** the row and replaces the claim id. After that, the stale writer matches
+   nothing. The fence protects the successor's claim. It does not make a shutdown prompt.
+
+**What a shutdown actually does (D2).** The worker stop grace in `cmd/commerce` `start` is a **hard
+5 s**: when it lapses, the stop function logs a warning and returns without waiting for the runner,
+shutdown continues with the next worker, and the process exits when shutdown returns. A post-cancel
+tail longer than that grace is cut off. Cut-off work behaves like a crash, which the lease already
+exists to survive:
+
+- a lost charge means the row comes back after its lease with its old count, so it gets **one extra
+  drive** of an ambiguous failure;
+- a hand-back that does not happen means the row **waits out its lease** instead of being claimable at
+  once.
+
+Neither commits a wrong verdict, and neither is new: both are what a crash at the same instant does.
+
+**Evidence.** `bulkrefund/runner_test.go`
+`TestChargeAttemptSurvivesCallerCancellationAfterRecordCheck` puts a cancellation between `record`'s
+check and the charge write. A store wrapper cancels the caller as the first statement of
+`ChargeAttempt` and then delegates to the fake, which refuses a Done context as a driver does. The test
+asserts that the attempt lands, the row stays leased and nothing is abandoned. Replacing
+`context.WithoutCancel(ctx)` with `ctx` in `chargeDriven` turns it red. The abandon-path case
+(cancellation before `record` starts) stays with
+`TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller`, which that mutation does not reach.
+No database cancellation latency or deployment termination behaviour was measured for this decision.
+
+### Integrity language, unchanged (ADR-021)
+
+The attempt count, the lease and the claim id are commerce database state. This is honest-writer
+consistency, not a guarantee against a writer with access to the commerce database.
