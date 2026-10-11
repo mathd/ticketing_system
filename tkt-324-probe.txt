@@ -1,0 +1,1 @@
+TKT-324 probe fixture, deleted after the test.
