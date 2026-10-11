@@ -397,9 +397,12 @@ latency and no shutdown requirement supports a shorter timeout, so a shorter one
 that are false:
 
 1. *"Up to 80 s of shutdown delay at the default batch of 8."* False. `RunOnce` checks the context
-   before each new drive, so after a cancellation only the row in flight keeps charging. The others in
-   the batch are handed back undriven with `abandon(w, false)`; each hand-back is a separate
-   `worklease.HandBackUndriven` call with its own 5 s context, and they run one after the other. The
+   before each new drive, so after a cancellation only the row in flight keeps charging. Of the other
+   rows remaining in the batch, only those NOT already driven in this pass are handed back undriven
+   with `abandon(w, false)`. A row already driven in this pass is skipped as a duplicate BEFORE the
+   cancellation check (TKT-331), gets no store call, and keeps the lease its claim renewed. Each
+   hand-back is a separate `worklease.HandBackUndriven` call with its own 5 s context, and they run one
+   after the other. The
    **charge and hand-back component** of the post-cancel tail is therefore up to
    **10 s + (batch − 1) × 5 s**: 45 s at the default batch of 8. That formula is not the whole tail.
    When `Refund` returns `ErrRefundExceedsOrder`, `process` calls

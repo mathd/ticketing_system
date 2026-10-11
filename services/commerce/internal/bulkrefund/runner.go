@@ -300,14 +300,16 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 // a LookupRefund, OrderState or FixQuantity error before the drive is a retryable
 // `internal` outcome and is charged too. Whether it should be is open (TKT-521). After a
 // cancellation only the row in flight keeps charging: RunOnce checks the context before
-// each new drive and hands the rest of the batch back, each hand-back on its own 5s
-// context. The worker's 5s stop grace (cmd/commerce `start`) is a wait limit, not a
+// each new drive. Of the rows remaining in the batch, it hands back only those NOT already
+// driven in this pass, each hand-back on its own 5s context; a row already driven in this
+// pass is skipped as a duplicate BEFORE the cancellation check (TKT-331) and keeps its
+// renewed lease. The worker's 5s stop grace (cmd/commerce `start`) is a wait limit, not a
 // cutoff: it stops waiting but does not stop the runner, and the cutoff is the process
 // exit after the other workers stop. Work still running then is cut off, and cut-off work
-// behaves like a crash: a lost charge costs one extra attempt after the lease expires. The claim-id fence on every write blocks a stale writer
-// only after a successor has reclaimed the row; it protects the successor's claim and does
-// not make a shutdown prompt. ADR-040's TKT-332 amendment records the bound and why it was
-// kept.
+// behaves like a crash: a lost charge costs one extra attempt after the lease expires.
+// The claim-id fence on every write blocks a stale writer only after a successor has
+// reclaimed the row; it protects the successor's claim and does not make a shutdown
+// prompt. ADR-040's TKT-332 amendment records the bound and why it was kept.
 func (r *Runner) chargeDriven(ctx context.Context, w store.CancellationWork) error {
 	var err error
 	for try := 0; try < 2; try++ {
