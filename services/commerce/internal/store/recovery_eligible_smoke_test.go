@@ -30,6 +30,9 @@ type eligibleRow struct {
 	nextAttemptAt time.Time
 	leaseUntil    sql.NullTime
 	parkedAt      sql.NullTime
+	// claimID is the recovery claim token. A claimant that crashed after its claim leaves it
+	// set, with the lease that will expire.
+	claimID uuid.NullUUID
 }
 
 // eligibleBase is claimable on every predicate, with margin on each. Its three timestamps are
@@ -72,10 +75,11 @@ func insertEligibleRow(t *testing.T, ctx context.Context, x dbExec, r eligibleRo
 	}
 	if _, err := x.ExecContext(ctx, `
 		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,
-		                   created_at,updated_at,recovery_next_attempt_at,recovery_lease_until,recovery_parked_at)
-		VALUES($1,$2,$3,$4,'fingerprint',$5,$6,$7,$8,$9)`,
+		                   created_at,updated_at,recovery_next_attempt_at,recovery_lease_until,recovery_parked_at,
+		                   recovery_claim_id)
+		VALUES($1,$2,$3,$4,'fingerprint',$5,$6,$7,$8,$9,$10)`,
 		orderID, resID, r.status, "eligible-"+uuid.NewString(),
-		r.createdAt, r.updatedAt, r.nextAttemptAt, r.leaseUntil, r.parkedAt); err != nil {
+		r.createdAt, r.updatedAt, r.nextAttemptAt, r.leaseUntil, r.parkedAt, r.claimID); err != nil {
 		t.Fatal(err)
 	}
 	return orderID
@@ -210,8 +214,11 @@ func TestEligibleUnparkedBacklogSixRowBaseline(t *testing.T) {
 	leased.leaseUntil = sql.NullTime{Time: before.Add(24 * time.Hour), Valid: true}
 	leasedID := insertEligibleRow(t, ctx, db, leased)
 
+	// Updated at the instant the test started. The row leaves the grace two minutes later, which
+	// is more than the 90-second deadline of this test. So it cannot drift into the population
+	// while the test runs.
 	inGrace := base
-	inGrace.updatedAt = before.Add(-30 * time.Second)
+	inGrace.updatedAt = before
 	inGraceID := insertEligibleRow(t, ctx, db, inGrace)
 
 	notDue := base
@@ -347,6 +354,26 @@ func TestEligibleUnparkedAgeIsTheOldestEligibleRow(t *testing.T) {
 		t.Errorf("oldest eligible age = %ds, want within [%d, %d]: the two-hour row, not the one-hour row (minimum), and not the five-hour locked row (outside the population)",
 			got.OldestAgeSeconds, lo, hi)
 	}
+
+	// The locked seed must earn its place. Without this step, deleting it changes nothing above.
+	// When its lease expires it joins the population, and then it is the oldest row, so the age
+	// becomes five hours. If the seed is missing, the count stays at two and the age at two hours.
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_lease_until=NULL WHERE id=$1`, lockedID); err != nil {
+		t.Fatal(err)
+	}
+	unlocked, err := ReadEligibleUnparkedRecoveryBacklog(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterUnlock := dbNow(t, ctx, db)
+	if unlocked.Count != 3 {
+		t.Errorf("after the lease is cleared: eligible count = %d, want 3", unlocked.Count)
+	}
+	ulo, uhi := ageBounds(5*time.Hour, before, afterUnlock)
+	if unlocked.OldestAgeSeconds < ulo || unlocked.OldestAgeSeconds > uhi {
+		t.Errorf("after the lease is cleared: oldest eligible age = %ds, want within [%d, %d] (the five-hour row)",
+			unlocked.OldestAgeSeconds, ulo, uhi)
+	}
 }
 
 // COS1, membership by input class (TKT-321).
@@ -379,6 +406,13 @@ func TestEligibleUnparkedMembershipByInputClass(t *testing.T) {
 		{"lease expired", func(r *eligibleRow, now time.Time) {
 			r.leaseUntil = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
 		}, true},
+		// The crash-after-claim shape: the claim token stays, and the lease has expired. The
+		// predicate does not read the token, so the row is eligible again. The ADR-016 TKT-321
+		// amendment says this work becomes visible after lease expiry; this case is that claim.
+		{"lease expired, claim token retained", func(r *eligibleRow, now time.Time) {
+			r.leaseUntil = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
+			r.claimID = uuid.NullUUID{UUID: uuid.New(), Valid: true}
+		}, true},
 		{"lease live", func(r *eligibleRow, now time.Time) {
 			r.leaseUntil = sql.NullTime{Time: now.Add(24 * time.Hour), Valid: true}
 		}, false},
@@ -389,6 +423,12 @@ func TestEligibleUnparkedMembershipByInputClass(t *testing.T) {
 			r.updatedAt = now.Add(-30 * time.Second)
 		}, false},
 		{"parked", func(r *eligibleRow, now time.Time) {
+			r.parkedAt = sql.NullTime{Time: now.Add(-5 * time.Minute), Valid: true}
+		}, false},
+		// Unparked reconciliation_required is queued compensation and is eligible (above). Parked,
+		// it waits for a human and is not.
+		{"status reconciliation_required, parked", func(r *eligibleRow, now time.Time) {
+			r.status = "reconciliation_required"
 			r.parkedAt = sql.NullTime{Time: now.Add(-5 * time.Minute), Valid: true}
 		}, false},
 	}

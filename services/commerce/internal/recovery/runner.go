@@ -127,7 +127,8 @@ type Store interface {
 	// ReleaseStuckOrder reports whether this release parked the row. ErrRecoveryConflict means
 	// the claim matched no row: fail() treats it as a supersession, not as a failed write (TKT-322).
 	ReleaseStuckOrder(ctx context.Context, orderID, claimID uuid.UUID, cause error) (parked bool, err error)
-	// Backlog reports the parked population for observability only. It is never read
+	// Backlog reports two populations for observability only: the parked orders, and the
+	// unparked orders that ClaimStuckOrders would select now (TKT-321). It is never read
 	// by a recovery decision — a runner that steered on its own queue depth would be
 	// deciding from an aggregate instead of from durable per-order evidence, which is
 	// exactly what ADR-016 §Decision 2 forbids.

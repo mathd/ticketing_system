@@ -22,6 +22,10 @@ Amended by **TKT-319** (2026-10-10, §Amendment below) — checkout takes over a
 expired or is NULL, so a stale claimant's claim-fenced writes stop matching. It does not close the race between a
 stalled checkout and a claim taken after the stall.
 
+Amended by **TKT-321** (2026-10-10, §Amendment below) — two gauges count the unparked orders that recovery
+could claim now, from the same SQL predicate as `ClaimStuckOrders`. The parked gauges are unchanged. Adds no
+alert, readiness gate or progress guarantee.
+
 Amends [ADR-011](./ADR-011-checkout-journal-protocol.md) — its recovery story only; the protocol is
 unchanged. Also **scopes [ADR-003](./ADR-003-append-only-audit-trail.md)'s "inalterable history"**
 wording (§Decision 7): that phrase describes *application-level append-only behaviour*, not a
@@ -594,20 +598,25 @@ non-cancellation error (`recovery/runner.go:243-249`), and a database outage sev
 that also fails the health probes (`cmd/commerce/main.go`, `mountHealth`).
 
 Do not read that as *"a claim error costs nothing"*, though. The lease is set **inside** the UPDATE CTE
-(`store/recovery.go:92`), and the error can surface afterwards from `Scan`/`rows.Err` — so a statement
+(`claimStuckOrdersSQL` in `store/recovery.go`), and the error can surface afterwards from `Scan`/`rows.Err` — so a statement
 PostgreSQL committed whose result stream was then lost leaves the lease durable while `RunOnce` drives
 nothing and returns 0. Since TKT-300 that durable state is the lease alone, and no attempt is charged.
 **A claim failure is outcome-ambiguous** unless it is known the statement never executed, and the
-ambiguous case lands in the unparked-and-unmeasured population below.
+ambiguous case lands in the unparked population below. Since TKT-321 a gauge counts that population
+after the lease expires.
 
-**Not observable.** A recovery goroutine that is starved, deadlocked, or never started inside an
-otherwise healthy process — and the crash-after-claim shape above — produce **no signal at all**.
-No metric measures the count or age of *eligible, unparked* recovery rows, which is the quantity
-that grows when nothing is draining. `ReadRecoveryBacklog`, which feeds every `commerce.recovery.*`
-gauge, is scoped `WHERE recovery_parked_at IS NOT NULL` (`store/recovery.go:601-613`), so unparked
-rows are excluded by construction.
+**Observable since TKT-321, with limits.** A recovery goroutine that is starved, deadlocked, or never
+started inside an otherwise healthy process — and the crash-after-claim shape above — produced **no
+signal at all** before TKT-321. Until then no metric measured the count or age of *eligible, unparked*
+recovery rows, which is the quantity that grows when nothing is draining. `ReadRecoveryBacklog`, which
+feeds every `commerce.recovery.*` gauge, read only `WHERE recovery_parked_at IS NOT NULL`, so unparked
+rows were excluded by construction. Now the same statement also reads the eligible-unparked population,
+and two gauges report it: `commerce.recovery.eligible_unparked` and
+`commerce.recovery.eligible_unparked.oldest_age_seconds`. The gauges count only rows that are eligible
+now. A row under a live lease is not counted, so the crash-after-claim shape shows only after its lease
+expires. No alert reads the gauges. The TKT-321 amendment below states the population and its limits.
 
-Two corrections to how those gauges are sometimes described, since this amendment relies on them:
+Two corrections to how the parked gauges are sometimes described, since this amendment relies on them:
 they do **not** correspond to the two exits above, and neither is scoped to `release_pending`.
 `commerce.recovery.parked` counts parked rows whose status `IS DISTINCT FROM
 'reconciliation_required'`; `commerce.recovery.parked.reconciliation_required` counts the rest.
@@ -617,7 +626,7 @@ parked row outside the five claimable statuses would be counted too.
 **A loose precedent exists, and its differences matter as much as its shape.** The sibling reversal
 runner publishes `commerce.refund.reversal.outstanding` beside its parked gauge, with an
 `oldest_age_seconds` (`reversal/metrics.go:26-38`) — so it does have the *outstanding-work* signal
-recovery lacks. It is **not** a drop-in model, and copying it uncritically would import the wrong
+recovery lacked until TKT-321. It is **not** a drop-in model, and copying it uncritically would import the wrong
 population: that gauge counts every outstanding obligation **parked included**, so a sustained nonzero
 can mean permanent parked work awaiting a human rather than a downstream failing to recover. The charge
 point is no longer a difference. Its runner charges an attempt only **after** a failed drive
@@ -628,8 +637,10 @@ State recovery's requirement directly instead of by analogy: **the count and age
 claimable status with `recovery_parked_at IS NULL` that are eligible now** — past
 `recovery_next_attempt_at`, past the `updated_at` grace, lease lapsed or absent. That is the
 quantity that grows when nothing is draining, and it is the one signal that would surface every
-unparked shape in the table above, the ambiguous claim failure included. **Out of scope here,
-recorded as an open item** — not as an implied guarantee.
+unparked shape in the table above, the ambiguous claim failure included. It was **out of scope for
+TKT-145 and recorded as an open item**, not as an implied guarantee. **TKT-321 closed that item:**
+the two `commerce.recovery.eligible_unparked` gauges measure this population. See the TKT-321 amendment
+below for what they do and do not show.
 
 ### What this amendment does not claim
 
@@ -639,7 +650,9 @@ Per ADR-021's name-the-claim discipline, and because prose is not compiled:
 - **Not** that the buyer's wait is bounded in wall-clock time. `MaxRecoveryAttempts` bounds failed
   *claimed* re-drives; the schedule, the backoff, the batch size and whether the runner is running
   at all sit between it and any elapsed-time figure.
-- **Not** that a wedged runner is observed. It is not — see the residual above.
+- **Not** that a wedged runner is detected. Before TKT-321 it was not observed at all. Since TKT-321 its
+  due work shows in the eligible-unparked gauges, within the limits that amendment states. No alert
+  reads those gauges, and nothing restarts the runner — see the residual above.
 - **Not** that `terminal_outcome` proves the order failed. It proves **no capture**, and that is all
   it is read for here.
 - **Not** that the two paths agree by construction. They agree because
@@ -893,6 +906,108 @@ checkout ownership contract. The steal does not close this race.
   - COS3: a live lease still refuses checkout.
   - A parked row keeps its marker through the steal.
 
+## Amendment (2026-10-10, TKT-321) — two gauges count the unparked orders that recovery could claim now
+
+### The gap
+
+The TKT-145 amendment above names it (§The residual, and exactly how much of it is observable). Every
+`commerce.recovery.*` gauge read only parked rows. A runner that does not drive orders spends no attempts,
+so its orders never park, and no gauge moved.
+
+### A correction to the ticket's premise
+
+The ticket says the reversal runner charges an attempt on release, not at claim, and calls that the
+asymmetry that makes recovery's unparked population interesting. That premise is stale. Since TKT-300,
+recovery also charges on release. `ReleaseStuckOrder` increments `recovery_attempts`
+(`services/commerce/internal/store/recovery.go:178`), and its comment says *"THE ATTEMPT IS CHARGED HERE,
+not at claim time (TKT-300)"* (`:151`). The TKT-145 amendment records the same change (§What ends the 202:
+*"TKT-300 moved the charge from claim time to release time"*). So the reason is not a difference in charge
+point. It is this: a runner that does not drive does not charge, so nothing parks.
+
+### Decision
+
+- **Population.** Orders that `ClaimStuckOrders` would select now: status in `created`, `payment_unknown`,
+  `confirmation_pending`, `release_pending` or `reconciliation_required`; `recovery_parked_at IS NULL`;
+  `recovery_next_attempt_at <= now()`; `recovery_lease_until` NULL or `<= now()`;
+  `updated_at < now() - interval '2 minutes'`.
+- **One predicate.** That WHERE clause is the constant `recoveryClaimablePredicate` in
+  `store/recovery.go`. The claim statement `claimStuckOrdersSQL` and the aggregate
+  `eligibleUnparkedRecoveryBacklogSQL` are built from it by constant concatenation. No user input goes into
+  them. An edit to the predicate changes both statements.
+- **Instruments.** `commerce.recovery.eligible_unparked` (the count) and
+  `commerce.recovery.eligible_unparked.oldest_age_seconds` (the age), both `Int64ObservableGauge`, are
+  registered in `recovery/metrics.go` beside the four parked gauges.
+- **Age origin.** The age is `now() - recovery_next_attempt_at` of the oldest eligible row, in whole
+  seconds, and zero when no row qualifies. It is how long that row has been due. It includes time that a
+  lease or the grace period held the row back, so it is not the time since the row became claimable. A row
+  that was due an hour ago, and whose lease expired one second ago, reads one hour.
+- **The parked series are unchanged.** Their aggregate is now the constant `parkedRecoveryBacklogSQL`, with
+  the same predicates and the same age expression as before.
+- **One statement.** `recoveryBacklogSQL` cross-joins the parked aggregate and the eligible aggregate. Each
+  returns one row. `ReadRecoveryBacklog` reads all six values from that one statement, and the gauge
+  callback reads `Backlog` once and observes all six. So all six values come from one snapshot.
+- **Index.** No migration. The existing partial index `orders_recovery_claimable_idx`
+  (`store/migrations/0005_psp_recovery.sql`, Up section, lines 26-30) covers the same status set with
+  `recovery_parked_at IS NULL`, and is keyed on `recovery_next_attempt_at`. The lease and grace conditions
+  filter the rows that the index returns. The query plan is recorded in
+  [`docs/evidence/TKT-321/explain.md`](../evidence/TKT-321/explain.md). The index does not make the read
+  constant-cost: the read visits every due candidate, also the ones that the lease or the grace rejects.
+
+### What the drift guard proves
+
+- `TestClaimAndEligibleQueriesComposeTheSharedPredicate` checks the SQL text: each statement contains the
+  predicate once, and the combined statement contains each aggregate once. A reference replaced by an
+  identical literal passes it. It is not proof that the two queries select the same rows.
+- The behavioural evidence is in `store/recovery_eligible_smoke_test.go`. For each input class, one row is
+  seeded alone. The real aggregate and the real `ClaimStuckOrders` (in a rolled-back transaction) must both
+  select it or both not select it. Each boundary case runs in one transaction, so `now()` is one instant
+  for the seed, the aggregate and the claim.
+- A shared constant cannot catch a rule that is wrong in both statements. The expected values in those
+  tests come from the requirement above, not from a run of the code.
+
+### Not a gate
+
+A failed read is a collection error. The callback returns the store error before it observes any value, so
+the gauges do not report zeros that read as an empty backlog. The gauges are never a readiness gate. The
+callback holds no readiness state, and a failure to register the gauges only logs a warning; the runner
+still starts (`cmd/commerce/main.go:580-583`).
+
+### What this amendment does not claim
+
+- **No alert, no progress guarantee and no buyer deadline.** A nonzero value is due work that nothing has
+  claimed yet. It does not say why. A healthy runner also leaves rows eligible between two ticks, so the
+  count measures pending work, not runner health.
+- **A row under a live lease is not counted.** Work held by a claimant that crashed after the claim becomes
+  visible only after the lease expires (17 minutes at the defaults, per the TKT-145 amendment). A runner that
+  crash-loops and reclaims the row hides it again for each new lease. So the signal can be intermittent.
+- **A row inside the grace period, or not yet due, is not counted.**
+- **A failed read gives no value.** During a database outage the callback returns the read error and
+  observes nothing, so the gauges carry no reading for that collection.
+- Line citations into `store/recovery.go` in the earlier amendments refer to the file as it was when each
+  amendment was written. TKT-321 moved the claim statement into constants, so those line numbers moved.
+
+### Evidence
+
+- `services/commerce/internal/store/recovery_eligible_smoke_test.go`, against PostgreSQL in a private schema:
+  - `TestEligibleUnparkedBacklogSixRowBaseline`: one eligible row and five rows that each fail one predicate.
+    The count is one through the standalone read and through the combined read, the age is from
+    `recovery_next_attempt_at`, the parked fields count only the parked row, and the real claim selects only
+    the eligible row. Each excluded row is then made eligible by its one blocking field, and the count must
+    become two.
+  - `TestEligibleUnparkedAgeIsTheOldestEligibleRow`: the oldest eligible row sets the age, an older row under
+    a live lease does not, and an empty population reads zero.
+  - `TestEligibleUnparkedMembershipByInputClass`: every status in and out of the set, lease NULL, expired,
+    expired with a retained claim token, and live, due past and future, inside the grace, and parked.
+  - `TestEligibleUnparkedBoundariesAreExactInOneTransaction`: lease, due time and grace at the exact instant
+    and one microsecond each side.
+- `services/commerce/internal/store/recovery_predicate_test.go`: the text check above.
+- `services/commerce/internal/recovery/metrics_test.go`: `TestObserveMetricsReportsEveryBacklogSeries` (six
+  distinct values, one store read) and `TestObserveMetricsPropagatesAStoreFailure`.
+- `smoke/smoke_test.go`: `TestRecoveryParkedGaugesIngested` requires the exported names
+  `commerce_recovery_eligible_unparked` and `commerce_recovery_eligible_unparked_oldest_age_seconds` from the
+  real binary through Prometheus.
+- [`docs/evidence/TKT-321/explain.md`](../evidence/TKT-321/explain.md): the query plan of the combined statement.
+
 ## References
 
 - [ADR-011 — Checkout finalization and canonical money journal](./ADR-011-checkout-journal-protocol.md) (recovery story amended by this ADR)
@@ -901,5 +1016,5 @@ checkout ownership contract. The steal does not close this race.
 - [ADR-062 — Refund reversal reconciliation](./ADR-062-refund-reversal-reconciliation.md) (§2 *observed, not predicted* is the precedent the TKT-262 amendment applies; §4 assigns unparking to TKT-146)
 - [ADR-032 — Stripe behind the PSP port](./ADR-032-stripe-behind-the-psp-port.md) (the status/refund contract `resolveReconciliation` reads; its TKT-115 amendment shipped the same-pass refund)
 - TKT-116 (the 202 branch this ADR's TKT-145 amendment records) · TKT-280 (`TestParkedReleasePendingGetsTheSameAnswerFromBothPaths`, the tripwire that pins both the parked 409 and the unparked 202)
-- TKT-285 (the PSP-skipped zero-total order) · TKT-319 · TKT-502 · TKT-503
+- TKT-285 (the PSP-skipped zero-total order) · TKT-319 · TKT-321 (the eligible-unparked gauges) · TKT-502 · TKT-503
 - TKT-43 · TKT-28 (the walking skeleton this hardens) · TKT-11 (fiscal archive; owns the anchor choice) · TKT-33 (PII erasure machinery)

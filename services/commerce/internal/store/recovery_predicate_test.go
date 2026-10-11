@@ -25,4 +25,15 @@ func TestClaimAndEligibleQueriesComposeTheSharedPredicate(t *testing.T) {
 			t.Errorf("%s contains the shared predicate %d times, want 1: it must compose recoveryClaimablePredicate", q.name, n)
 		}
 	}
+	// The gauge reads the combined statement, not the standalone one. It must compose both
+	// aggregate constants once each. This is a text check too; the six-row baseline in
+	// recovery_eligible_smoke_test.go reads the combined statement against real rows.
+	for _, part := range []struct{ name, sql string }{
+		{"eligibleUnparkedRecoveryBacklogSQL", eligibleUnparkedRecoveryBacklogSQL},
+		{"parkedRecoveryBacklogSQL", parkedRecoveryBacklogSQL},
+	} {
+		if n := strings.Count(recoveryBacklogSQL, part.sql); n != 1 {
+			t.Errorf("recoveryBacklogSQL contains %s %d times, want 1", part.name, n)
+		}
+	}
 }
