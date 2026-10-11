@@ -64,15 +64,12 @@ touching either.
 > what keeps §3's awaiting-switch rule where it belongs rather than in a caller's boolean.
 >
 > Two runners deliberately do not use `Drain`, for different reasons. Recovery claims one batch per
-> tick, so a duplicate map and a pass bound could never fire there. Bulk refund keeps its own loop
-> because its enumeration prelude and completion postlude are its own and its retained lease is its
-> backoff — **not** because a row cannot be revisited inside a pass. An earlier draft of this
-> paragraph claimed that, and it is false: `RunOnce` drains until the book is empty while a retained
-> lease expires at a fixed time, so a slow later batch can make an earlier failed row claimable again
-> in the same pass. That gap predates TKT-300 and is carried by **TKT-331**; adopting `Drain`'s
-> duplicate map there would change bulk refund's retry behaviour rather than merely share its
-> lifecycle, which is a decision that needs its own evidence. Both runners share the hand-back and
-> the charging discipline.
+> tick, so a duplicate map and a pass bound could never fire there. Bulk refund keeps its own loop;
+> since **TKT-331** that loop drives each ledger row at most once per pass and is bounded at 64
+> batches, but it keeps a skipped duplicate's lease instead of abandoning it as `Drain` does. The
+> rule, the change in retry behaviour and the reasons are in the TKT-331 amendment of
+> [ADR-040](./ADR-040-event-cancellation-bulk-refund-runs.md).
+> Both runners share the hand-back and the charging discipline.
 
 ### 2. The sweep NEVER writes `tickets_exchanged_at` — and that is a safety property, not a scope note
 
