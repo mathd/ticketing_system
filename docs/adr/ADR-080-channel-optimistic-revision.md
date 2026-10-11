@@ -69,8 +69,17 @@ This is the lost-update class that TKT-250 closed for channel allocations with
 - A mismatch is HTTP 409 with the generated `ChannelUpdateConflict` body:
   `{"error": "channel changed since it was read; nothing was saved", "code": "channel_revision_mismatch"}`.
   `code` is optional in the schema, with `enum: [channel_revision_mismatch]`, so the
-  code-immutability 409 (which has no `code`) still validates under ADR-028. `writeStoreError`
-  builds the generated type, so if the schema is removed, the build fails.
+  code-immutability 409 (which has no `code`) still validates under ADR-028. Two protections
+  cover two different edits:
+    - The **build** protects the type. `writeStoreError` builds the generated
+      `ChannelUpdateConflict`, so if that component is deleted, catalog does not compile.
+    - The build does **not** protect the declaration. If only the operation's `'409'` response is
+      deleted, the type is still generated (`codegen.yaml` sets `skip-prune: true`), catalog
+      compiles, and ADR-028's response validator turns every stale refusal into a 500. The router
+      test `TestStaleChannelPutIsTheCodedConflictAndWritesNothing` (`channels_test.go`) protects the
+      declaration: it asserts the exact stale 409 through `env.validateResponse`, which fails on a
+      masked response. Verified by deleting only that `'409'`: catalog built, and the test failed
+      with "production validator masked the response ... (status 500)".
 - The message does not blame another operator. After a lost response, the change can be the
   caller's own earlier write.
 
@@ -178,8 +187,9 @@ Each assertion is at the tier where its mechanism is (AGENTS.md):
     - A stale channel replacement is refused, not applied, in both directions.
     - The refusal needs no follow-up read, so the failure path is scoped by the same locking read
       as the write (TKT-251).
-    - The 409 body is the generated type, so the contract and the handler cannot drift apart
-      silently.
+    - The 409 body is the generated type, so the build catches a deleted schema component, and
+      `TestStaleChannelPutIsTheCodedConflictAndWritesNothing` catches a deleted `'409'`
+      declaration. Neither check alone covers both edits.
 - **Negative:**
     - Every PUT client must read a revision and send it back. Today the back office is the only
       client. Between the catalog half and the back-office half, its PUT is refused with 400.

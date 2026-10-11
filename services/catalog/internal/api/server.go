@@ -687,8 +687,16 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusConflict, Error{Error: "channel code is immutable; create a new channel and disable this one instead of renaming"})
 	case errors.Is(err, store.ErrChannelRevisionMismatch):
 		// TKT-325 (ADR-080): the PUT's expected_revision is stale, so nothing
-		// was written. Built from the generated ChannelUpdateConflict type, so
-		// removing the declared 409 schema breaks the build, not the client.
+		// was written. Built from the generated ChannelUpdateConflict type.
+		// Two protections, and they cover different edits. The BUILD protects
+		// the type: delete the ChannelUpdateConflict component and this does not
+		// compile. It does NOT protect the declaration: delete only the
+		// operation's '409' response and the type is still generated
+		// (codegen.yaml sets skip-prune: true), this compiles, and ADR-028's
+		// response validator turns every stale refusal into a 500. The router
+		// test TestStaleChannelPutIsTheCodedConflictAndWritesNothing
+		// (channels_test.go) protects the declaration: it asserts this exact
+		// 409 through env.validateResponse, which fails on a masked response.
 		// The `code` is what tells this 409 apart from the code-immutability
 		// one beside it; the message does not blame another operator, because
 		// after a lost response the change may be the caller's own.
