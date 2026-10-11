@@ -685,6 +685,18 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		// which reference the registry (ADR-024), so nothing would cascade and
 		// nothing would complain. The message says what to do instead.
 		writeJSON(w, http.StatusConflict, Error{Error: "channel code is immutable; create a new channel and disable this one instead of renaming"})
+	case errors.Is(err, store.ErrChannelRevisionMismatch):
+		// TKT-325 (ADR-080): the PUT's expected_revision is stale, so nothing
+		// was written. Built from the generated ChannelUpdateConflict type, so
+		// removing the declared 409 schema breaks the build, not the client.
+		// The `code` is what tells this 409 apart from the code-immutability
+		// one beside it; the message does not blame another operator, because
+		// after a lost response the change may be the caller's own.
+		code := ChannelRevisionMismatch
+		writeJSON(w, http.StatusConflict, ChannelUpdateConflict{
+			Error: "channel changed since it was read; nothing was saved",
+			Code:  &code,
+		})
 	case errors.Is(err, store.ErrChannelInvalidInput):
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid channel: code 1..100 bytes, display_name 1..200, kind one of web/pos/presale/reseller"})
 	case errors.Is(err, store.ErrIdempotencyConflict):

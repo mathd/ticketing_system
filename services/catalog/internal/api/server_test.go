@@ -3262,12 +3262,21 @@ func (f *fakeStore) UpdateChannel(_ context.Context, organizerID, id uuid.UUID, 
 	if !ok || c.OrganizerID != organizerID {
 		return store.Channel{}, store.ErrNotFound
 	}
+	// TKT-325: the same order as the real store — ownership, then revision,
+	// then code — and the bump happens only on success. This fake compares in
+	// Go with no lock, so API tests prove the handler forwards the token and
+	// maps the refusal; the lock and the SQL order are proved by the store
+	// smoke tests (channels_smoke_test.go), the tier where they exist.
+	if in.ExpectedRevision != c.Revision {
+		return store.Channel{}, store.ErrChannelRevisionMismatch
+	}
 	if in.Code != c.Code {
 		return store.Channel{}, store.ErrChannelCodeImmutable
 	}
 	c.DisplayName = in.DisplayName
 	c.Kind = in.Kind
 	c.Enabled = in.Enabled
+	c.Revision++
 	// Written explicitly, as the real store does — there is no trigger.
 	c.UpdatedAt = time.Now().UTC().Add(time.Millisecond)
 	f.channels[id] = c

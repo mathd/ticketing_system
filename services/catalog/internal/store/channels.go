@@ -41,6 +41,13 @@ var (
 	// Checked here so a bad write is refused before it reaches Postgres and
 	// comes back as an opaque constraint violation.
 	ErrChannelInvalidInput = errors.New("invalid channel input")
+	// ErrChannelRevisionMismatch: an update presented an expected revision that
+	// differs from the stored one (TKT-325). The caller built its replacement
+	// on a stale read, so the update is refused and nothing is written.
+	// Returned only for a channel the caller's organizer owns: ownership is
+	// decided first, so another organizer's channel is ErrNotFound whatever
+	// revision is sent.
+	ErrChannelRevisionMismatch = errors.New("channel revision mismatch")
 )
 
 // ChannelKind is what kind of sales channel this is. Closed: the four values
@@ -87,8 +94,11 @@ type Channel struct {
 	DisplayName string
 	Kind        ChannelKind
 	Enabled     bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Revision is the optimistic token (TKT-325, ADR-080): 0 at create, plus
+	// one on each successful UpdateChannel.
+	Revision  int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // PublicChannel is what a storefront selector needs: a label to show and the
@@ -115,11 +125,17 @@ type ChannelInput struct {
 // which code it believes it is updating, and a mismatch is refused with
 // ErrChannelCodeImmutable. That turns a misidentified channel into an error
 // instead of a silent write to the wrong row.
+//
+// ExpectedRevision is the revision the caller read (TKT-325, ADR-080). The
+// store compares it under the row lock and refuses a mismatch with
+// ErrChannelRevisionMismatch. Zero is a real revision, not "skip the check":
+// there is no unconditional update.
 type ChannelUpdate struct {
-	Code        string
-	DisplayName string
-	Kind        ChannelKind
-	Enabled     bool
+	Code             string
+	DisplayName      string
+	Kind             ChannelKind
+	Enabled          bool
+	ExpectedRevision int64
 }
 
 // validateChannelWrite gates both create and update, and RETURNS THE CODE THE

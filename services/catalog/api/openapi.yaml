@@ -1706,6 +1706,17 @@ paths:
         cannot be expressed here — the operator read that shows disabled
         channels is a hand-mounted /internal/ route instead, following the same
         convention as catalog's other internal reads.
+
+        Optimistic revision (TKT-325, ADR-080). The body is a full replacement,
+        so it carries `expected_revision`: the revision the caller read. Catalog
+        compares it under the channel's row lock and refuses a stale value with
+        409 `channel_revision_mismatch`; a refusal writes nothing. Each
+        successful PUT increments the revision by one, also when the values are
+        unchanged. Ownership is decided first, so another organizer's channel
+        is 404 whatever revision is sent. This is lost-update protection between
+        honest writers, not authorization and not tamper-evidence (ADR-021): a
+        caller can send any revision, and a writer with catalog DB access can
+        set any value.
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       requestBody:
@@ -1726,10 +1737,16 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: The submitted code differs from the stored one — codes are immutable
+          description: >
+            Two refusals share this status, and `code` tells them apart. With
+            `code: channel_revision_mismatch` (TKT-325), `expected_revision` is
+            stale: another writer changed the channel after the caller read it,
+            so nothing was written. Read the channel again and re-apply the
+            change. Without `code`, the submitted code differs from the stored
+            one: codes are immutable.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema: { $ref: '#/components/schemas/ChannelUpdateConflict' }
   /public/channels:
     get:
       operationId: listPublicChannels
@@ -3568,7 +3585,7 @@ components:
     ChannelUpdate:
       type: object
       additionalProperties: false
-      required: [code, display_name, kind, enabled]
+      required: [code, display_name, kind, enabled, expected_revision]
       description: >
         A full replacement of the mutable fields. `code` is required and must
         equal the stored code — it is present so an update cannot be written
@@ -3585,10 +3602,42 @@ components:
           $ref: '#/components/schemas/ChannelKind'
         enabled:
           type: boolean
+        expected_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: >
+            The channel revision this replacement is based on (TKT-325), as read
+            from Channel.revision. REQUIRED, with no default and no
+            unconditional arm: zero is a real revision (every channel starts
+            there), not "skip the check". Compared under the row lock; a
+            mismatch is 409 `channel_revision_mismatch` and nothing is written.
+            The maximum is the largest integer a JavaScript client holds
+            exactly, as for inventory's allocation_revision. Honest-writer
+            lost-update protection, not authorization (ADR-021).
+    ChannelUpdateConflict:
+      type: object
+      required: [error]
+      description: >
+        The PUT /channels/{channelId} 409 body. `code` is present only on a
+        stale-revision refusal; the code-immutability refusal has no `code`.
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [channel_revision_mismatch]
+          description: >
+            `channel_revision_mismatch` (TKT-325): `expected_revision` did not
+            match the stored revision, so nothing was written. Another writer
+            (or an earlier attempt by this caller whose response was lost)
+            changed the channel after it was read. Read it again before a new
+            attempt.
     Channel:
       type: object
       additionalProperties: false
-      required: [id, organizer_id, code, display_name, kind, enabled, created_at, updated_at]
+      required: [id, organizer_id, code, display_name, kind, enabled, revision, created_at, updated_at]
       properties:
         id:
           type: string
@@ -3604,6 +3653,15 @@ components:
           $ref: '#/components/schemas/ChannelKind'
         enabled:
           type: boolean
+        revision:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+          description: >
+            The channel's optimistic revision (TKT-325). Zero at create; plus
+            one on each successful PUT. Send it back as
+            ChannelUpdate.expected_revision.
         created_at:
           type: string
           format: date-time
