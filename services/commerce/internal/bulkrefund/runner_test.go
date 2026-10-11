@@ -1423,8 +1423,9 @@ func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
 	// key and replays it.
 	want := store.CancellationRefundKey(first.SlotID, order)
 	if keys := r.keys[order]; len(keys) != 2 || keys[0] != want || keys[1] != want {
-		t.Fatalf("refund keys for the order = %q, want both rows under the one key %q: a key that "+
-			"differs per run binds a second refund for the same order in production", keys, want)
+		t.Fatalf("refund keys for the order = %q, want both rows under the one key %q: with a key that "+
+			"differs per run, the second run does not converge on the first run's refund, so its row "+
+			"can fail to resolve or leave the refund's reversal work stranded", keys, want)
 	}
 	if f.orders[order].moved != 1 {
 		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)

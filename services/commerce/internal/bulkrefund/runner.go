@@ -175,11 +175,12 @@ type ledgerRow struct{ organizer, run, order uuid.UUID }
 //     worklease.Drain, which ABANDONS a duplicate so that it is due again at once; that is
 //     right for rows whose backoff is a timestamp the claim does not move, and wrong here,
 //     where the lease is the backoff.
-//   - There is no "nothing fresh in this batch" exit (Drain has one). Drain needs it because
-//     its abandoned duplicates come straight back and would spin. Here a skipped duplicate
-//     stays leased, so the empty claim and the batch bound already end the pass; the extra
-//     exit would only end it early and clear the set, letting the next tick re-drive the
-//     batch-1 rows about one lease later.
+//   - There is no "nothing fresh in this batch" exit (Drain has one). MaxBatchesPerPass
+//     already guarantees that the pass ends, so the exit would be a second stopping rule that
+//     is not necessary. Without it, a pass whose leases expire between claims can claim only
+//     duplicates until the bound; the bound makes that safe, and a skipped duplicate costs no
+//     drive and no attempt. The exit does not change retry cadence: the claim renews a
+//     reclaimed duplicate's lease whether the pass then stops or continues.
 //
 // What this changes in retry behaviour, on purpose: a second drive inside one pass is
 // suppressed. Across passes the retry is still lease-based, with the same lease, ticker and

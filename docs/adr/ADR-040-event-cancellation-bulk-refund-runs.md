@@ -309,17 +309,19 @@ at or above the processing rate kept one `RunOnce` running and the ticker never 
 - **A skipped duplicate gets no store call.** It is not abandoned and not charged. Its claim has already
   renewed its lease, so it keeps a full lease of backoff from that claim. The check runs before the
   shutdown branch, so a duplicate is not handed back at shutdown either: a hand-back would clear the
-  lease and a successor would re-drive the row at once. Only rows this pass has not driven are handed
-  back.
+  lease and a successor would re-drive the row at once. At shutdown the claim loop hands back only the
+  rows of the batch it has not yet driven. A row whose drive or classification is in flight when the
+  shutdown lands is a different case: `record` releases it with `abandon(w, drove)`, as before.
 - **A pass makes at most 64 claims** (`bulkrefund.MaxBatchesPerPass`, the same number the reversal and
   exchange-sweep runners use). At the bound it logs and stops; it does not make a 65th claim to find out
   whether work remains. The bound covers the claim loop only, not the enumeration prelude. The
   `CompleteRuns` postlude and the return value are unchanged.
-- **There is no "no fresh row in this batch" exit**, unlike `worklease.Drain`. `Drain` needs it because
-  it abandons a duplicate, which is then due again at once and would spin. Here a skipped duplicate
-  stays leased, so the empty claim and the bound already end the pass. The extra exit would only end the
-  pass early and clear the set, and the next tick would then re-drive the first batch's rows about one
-  lease later.
+- **There is no "no fresh row in this batch" exit**, unlike `worklease.Drain`. The 64-batch bound
+  already guarantees that a pass ends, so the exit would be a second stopping rule that is not
+  necessary. Without it, a pass whose leases expire between claims can claim only duplicates until the
+  bound; the bound makes that safe, and each skipped duplicate costs no drive and no attempt. The exit
+  does not change retry cadence either way: the claim renews a reclaimed duplicate's lease whether the
+  pass then stops or continues, so the next drive becomes possible at the same time in both variants.
 
 **Retry behaviour changes, on purpose.** A second drive inside one pass is suppressed. Across passes
 the retry is still lease-based, with the same lease, ticker and `maxAttempts`, with one difference: a
