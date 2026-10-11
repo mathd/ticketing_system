@@ -125,8 +125,6 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce enumerates every unfinished run's next pages, then drains the claimable work in
-// bounded batches, then completes whatever finished. Returns the number of orders resolved.
 // runListLimit bounds how many unfinished runs one pass enumerates. Deliberately NOT the
 // order batch: the order batch is sized for how many refunds fit in one lease, and reusing
 // it here means N concurrent cancellations starve the N+1th out of enumeration entirely —
@@ -141,6 +139,58 @@ const runListLimit = 64
 // is terminal immediately and never consumes an attempt.
 const maxAttempts = 5
 
+// MaxBatchesPerPass bounds one pass's claim loop (TKT-331), as it bounds the two draining
+// runners (reversal, exchangesweep). Without it a book that refills at or above the
+// processing rate keeps one RunOnce running for ever: the ticker never fires again and the
+// per-pass `driven` set grows for the life of the process. What the bound leaves is not lost:
+// it stays claimable, and the NEXT PASS starts at the next tick. That does not mean a given
+// row is reached at the next tick: each pass takes at most MaxBatchesPerPass batches, so under
+// a large book a row late in claim order waits several ticks (1,025 rows at a batch of 8 is
+// three passes, so the last row waits two ticks). It bounds claims, not elapsed time, and not
+// the enumeration prelude.
+const MaxBatchesPerPass = 64
+
+// ledgerRow is a cancellation ledger row's identity: the primary key of
+// cancellation_refund_orders. NOT the claim id, which changes on every reclaim, and NOT the
+// order id alone: two runs over one slot each own a row for the same order, and each needs
+// its own verdict or that run never completes.
+type ledgerRow struct{ organizer, run, order uuid.UUID }
+
+// RunOnce enumerates every unfinished run's next pages, then drains the claimable work in
+// batches, then completes whatever finished. Returns the number of orders resolved.
+//
+// The drain drives each ledger row AT MOST ONCE per pass (TKT-331). A retryable failure keeps
+// its lease, and that lease is its backoff; but the lease is sized for one batch
+// (`LeaseFor`) and expires at a fixed time while the pass keeps claiming. A slow pass could
+// therefore reclaim an earlier failed row and drive it again before its backoff was meant to
+// elapse, spending the attempt budget of an AMBIGUOUS failure (the money may already have
+// moved) inside one pass. So the loop records every row it submits to `process`, and a row
+// that comes back in a later batch of the same pass is skipped:
+//
+//   - The identity check runs right after the claim and BEFORE the cancellation branch. A
+//     duplicate at shutdown is skipped too, not handed back: handing it back would clear its
+//     lease, and a successor would re-drive it at once.
+//   - A skipped duplicate gets NO store call. Its claim has already renewed its lease, so the
+//     skip keeps a full lease of backoff from that claim. This is where it differs from
+//     worklease.Drain, which ABANDONS a duplicate so that it is due again at once; that is
+//     right for rows whose backoff is a timestamp the claim does not move, and wrong here,
+//     where the lease is the backoff.
+//   - There is no "nothing fresh in this batch" exit (Drain has one). MaxBatchesPerPass
+//     already guarantees that the pass ends, so the exit would be a second stopping rule that
+//     is not necessary. Without it, a pass whose leases expire between claims can claim only
+//     duplicates until the bound; the bound makes that safe, and a skipped duplicate costs no
+//     drive and no attempt. The exit does not change retry cadence: the claim renews a
+//     reclaimed duplicate's lease whether the pass then stops or continues.
+//
+// What this changes in retry behaviour, on purpose: a second drive inside one pass is
+// suppressed. Across passes the retry is still lease-based, with the same lease, ticker and
+// maxAttempts, except that a skipped duplicate's renewed lease can make the next drive LATER,
+// never sooner. So a runner process never drives a row more often than before. The set is
+// per process and per pass: replicas behave as before, each fenced by the lease.
+//
+// The cost is throughput under a large book: a pass now stops after MaxBatchesPerPass
+// batches, the next pass starts at the next tick, and a row late in claim order can wait
+// several ticks (see MaxBatchesPerPass).
 func (r *Runner) RunOnce(ctx context.Context) int {
 	runs, err := r.store.Runs(ctx, runListLimit)
 	if err != nil {
@@ -164,7 +214,14 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 	}
 
 	resolved := 0
-	for ctx.Err() == nil {
+	driven := make(map[ledgerRow]struct{})
+	for batch := 0; ctx.Err() == nil; batch++ {
+		if batch == MaxBatchesPerPass {
+			slog.Default().InfoContext(ctx,
+				"cancellation drain hit its per-pass bound; remaining work, if any, waits for the next tick",
+				"batches", MaxBatchesPerPass, "driven", len(driven))
+			break
+		}
 		claimed, err := r.store.Claim(ctx, r.batch, r.lease)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "claim cancellation orders", "err", err)
@@ -174,6 +231,13 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 			break
 		}
 		for _, w := range claimed {
+			// Already driven in this pass: skip it, with no store call, so the lease its
+			// claim just renewed stays as its backoff. Checked BEFORE the cancellation
+			// branch below, which would hand it back and clear that lease. See RunOnce.
+			k := ledgerRow{w.OrganizerID, w.RunID, w.OrderID}
+			if _, seen := driven[k]; seen {
+				continue
+			}
 			// The context is checked per ORDER, not per batch: an interrupted runner must
 			// leave the rest of its claim reclaimable rather than half-driving it.
 			if ctx.Err() != nil {
@@ -182,6 +246,9 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 				r.abandon(w, false)
 				continue
 			}
+			// Recorded BEFORE the drive: a retryable failure returns false, and it is
+			// exactly the row that must not be driven again in this pass.
+			driven[k] = struct{}{}
 			if r.process(ctx, w) {
 				resolved++
 			}
@@ -198,23 +265,10 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 // owns the detached context this needs: the whole point is to record the release, and the
 // caller's context is already cancelled.
 //
-// Like recovery, and unlike the draining runners, this one does NOT use worklease.Drain.
-// The enumeration prelude and the CompleteRuns postlude are its own, and the retained
-// lease on a retryable failure is its backoff rather than a thing the loop manages.
-//
-// It does NOT follow that a row cannot be revisited inside one pass, and an earlier
-// version of this comment claimed exactly that (ai-review pass 1 [medium] refuted it).
-// `RunOnce` claims until the book is drained, while a retained lease expires at a fixed
-// time: if later batches take longer than that lease, an earlier failed row becomes
-// claimable again in the SAME pass and can spend more of its budget than the backoff
-// intends. That gap predates this ticket and is untouched by it -- the loop is unchanged
-// -- but it is a real one, and TKT-331 carries it rather than leaving it implied by a
-// comment that says the opposite.
-//
-// What is true, and is why Drain is not simply dropped in here: Drain's duplicate map is
-// per-pass and would suppress the SECOND drive of such a row, which changes this runner's
-// retry behaviour rather than merely sharing its lifecycle. That is a decision with its
-// own evidence, and it belongs in TKT-331 with a test, not in a refactor.
+// It is called only for a row this pass did NOT drive in an earlier batch: RunOnce skips
+// such a duplicate before reaching the cancellation branch, because a hand-back would
+// clear the lease that is its backoff (TKT-331; RunOnce has the reasons, including why the
+// loop is local rather than worklease.Drain).
 func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 	worklease.HandBackUndriven([]store.CancellationWork{w},
 		func(ctx context.Context, w store.CancellationWork) error {
@@ -386,9 +440,13 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 		return false
 	}
 	// A retryable failure deliberately does NOT release the claim. Leaving the lease in
-	// place IS the backoff — releasing it would let the very next claim in the same pass
+	// place IS the backoff between passes — releasing it would let the very next claim
 	// re-drive an unavailable downstream, burning the whole attempt budget in a tight loop
 	// instead of spreading it over lease-length intervals.
+	//
+	// The lease alone does not stop a re-drive INSIDE the pass: it is sized for one batch
+	// and can lapse while later batches run. RunOnce's per-pass set does that (TKT-331), so
+	// a row is driven at most once per pass and the lease spaces the passes.
 	//
 	// The attempt is charged here, without releasing the lease (TKT-300). The charge and
 	// the lease are separate things: the charge records that a drive happened, the lease

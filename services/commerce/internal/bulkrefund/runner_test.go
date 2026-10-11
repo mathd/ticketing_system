@@ -52,7 +52,22 @@ type fakeStore struct {
 	leased   map[uuid.UUID]bool
 	claims   int
 	enumDone bool
+	// beforeClaim, when set, runs synchronously inside Claim after `claims` is incremented
+	// and before any row is selected, with the 1-based number of this claim. It is how a
+	// test expresses time passing DURING a pass (TKT-331): expireLeases models the gap
+	// between passes and clears every lease, while a lease that lapses mid-pass is ONE row's
+	// lease, and lapseLease is the call that expresses it. Nil by default, so every other
+	// test sees the old behaviour.
+	beforeClaim func(n int)
+	// claimIDs records the claim id of every claim of each order, in order. It is how a test
+	// proves a row really WAS claimed twice in a pass before it trusts a drive count: a skip
+	// that is never offered a duplicate proves nothing.
+	claimIDs map[uuid.UUID][]uuid.UUID
 }
+
+// lapseLease expires ONE row's lease, which is a slow batch outliving the lease an earlier
+// batch took on a retryable failure.
+func (f *fakeStore) lapseLease(order uuid.UUID) { delete(f.leased, order) }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
@@ -60,6 +75,7 @@ func newFakeStore() *fakeStore {
 		final: map[uuid.UUID]store.CancellationOutcome{}, abandon: map[uuid.UUID]int{},
 		cleared: map[uuid.UUID]int{}, attempts: map[uuid.UUID]int{}, leased: map[uuid.UUID]bool{},
 		prior:    map[uuid.UUID]bool{},
+		claimIDs: map[uuid.UUID][]uuid.UUID{},
 		enumDone: true,
 	}
 }
@@ -71,6 +87,9 @@ func (f *fakeStore) Enumerate(context.Context, uuid.UUID, uuid.UUID, int) (bool,
 
 func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]store.CancellationWork, error) {
 	f.claims++
+	if f.beforeClaim != nil {
+		f.beforeClaim(f.claims)
+	}
 	var out []store.CancellationWork
 	for _, w := range f.work {
 		if _, done := f.final[w.OrderID]; done {
@@ -92,7 +111,11 @@ func (f *fakeStore) Claim(_ context.Context, limit int, _ time.Duration) ([]stor
 		// assertion agree with itself and prove nothing about the shipped SQL.
 		w.Attempts = f.attempts[w.OrderID]
 		w.ClaimID = uuid.New()
+		// The claim RENEWS the lease, as the store's claim does. A row whose lease lapsed
+		// and was reclaimed is leased again from this claim, whatever the runner then does
+		// with it.
 		f.leased[w.OrderID] = true
+		f.claimIDs[w.OrderID] = append(f.claimIDs[w.OrderID], w.ClaimID)
 		out = append(out, w)
 	}
 	return out, nil
@@ -1061,4 +1084,350 @@ func TestTheChargeWriteIsIdempotentPerClaim(t *testing.T) {
 				"nothing, or a recoverable row parks early", got)
 		}
 	})
+}
+
+// ---- TKT-331: a row is driven at most once per pass, and a pass is bounded ----
+//
+// A retryable failure keeps its lease, and that lease is its backoff. But the lease is sized
+// for ONE batch and expires at a fixed time, while a pass keeps claiming. Before TKT-331 a
+// slow pass could reclaim an earlier failed row after its lease lapsed and drive it again in
+// the SAME pass, spending the attempt budget of an AMBIGUOUS failure (the money may already
+// have moved) faster than the backoff intends. These tests lapse a lease mid-pass with
+// beforeClaim, which expireLeases (between passes only) cannot express.
+
+// ambiguousOrder fails on every drive with a failure where the money may already have moved:
+// retryable, and the class maxAttempts exists to bound.
+func ambiguousOrder() *fakeOrder {
+	return &fakeOrder{state: completedOrder(1, 1000), refuse: refunds.ErrPaymentsUnresolved}
+}
+
+// COS1. Batch 1 claims A and B; A fails ambiguously and keeps its lease. Batch 1 is then
+// slow enough that A's lease lapses before claim 2, so batch 2 claims A again with C. The
+// rule: one drive of A in this pass, and the second claim's lease left in place as backoff.
+func TestALeaseLapsingMidPassDoesNotReDriveTheRowInThatPass(t *testing.T) {
+	f := newFakeStore()
+	a, b, c := uuid.New(), uuid.New(), uuid.New()
+	f.orders[a] = ambiguousOrder()
+	f.orders[b] = &fakeOrder{state: completedOrder(1, 1000)}
+	f.orders[c] = &fakeOrder{state: completedOrder(1, 1000)}
+	for _, id := range []uuid.UUID{a, b, c} {
+		f.work = append(f.work, work(id))
+	}
+	f.beforeClaim = func(n int) {
+		if n == 2 {
+			f.lapseLease(a)
+		}
+	}
+	r := newFakeRefunder(f)
+
+	resolved := New(f, r, time.Minute, 2, time.Minute).RunOnce(context.Background())
+
+	// First prove the fixture reached the state: A was offered to this pass twice, under two
+	// different claims. Without this, a drive count of 1 could mean the duplicate never came.
+	if ids := f.claimIDs[a]; len(ids) < 2 || ids[0] == ids[1] {
+		t.Fatalf("A was claimed under %v; want at least two different claims in this pass, or the "+
+			"test never offered the runner a duplicate and proves nothing", ids)
+	}
+	if got := len(r.keys[a]); got != 1 {
+		t.Fatalf("A was driven %d times in one pass, want 1: a lapsed lease let the pass re-drive an "+
+			"ambiguous failure before its backoff elapsed", got)
+	}
+	if got := f.attempts[a]; got != 1 {
+		t.Fatalf("A has %d attempts after one drive, want 1", got)
+	}
+	if _, terminal := f.final[a]; terminal {
+		t.Fatalf("A was finalized as %+v; one ambiguous failure must stay pending for retry", f.final[a])
+	}
+	if !f.leased[a] {
+		t.Fatal("A's lease was released: the second claim's lease is its backoff, and without it the " +
+			"next claim offers A again at once")
+	}
+	if f.abandon[a] != 0 {
+		t.Fatalf("A was abandoned %d times; a skipped duplicate must make no store call", f.abandon[a])
+	}
+	// Exactly two: the duplicate claim's renewed lease holds A for the rest of the pass.
+	if got := len(f.claimIDs[a]); got != 2 {
+		t.Fatalf("A was claimed %d times in one pass, want 2: a skipped duplicate keeps its lease, "+
+			"so nothing can offer it a third time", got)
+	}
+	if f.final[b].Outcome != "refunded" || f.final[c].Outcome != "refunded" {
+		t.Fatalf("B=%q C=%q, want both refunded: skipping A must not skip the rows beside it",
+			f.final[b].Outcome, f.final[c].Outcome)
+	}
+	if resolved != 2 {
+		t.Fatalf("RunOnce resolved %d, want 2 (B and C)", resolved)
+	}
+}
+
+// A batch made only of a duplicate. The skip renews nothing and releases nothing, so the
+// lease the duplicate claim took stays, and the NEXT claim is empty: that empty claim ends
+// the pass. There is deliberately no "nothing fresh in this batch" exit (TKT-331 D3), so
+// this expects three claims; a fresh==0 exit would end the pass after two and clear the
+// per-pass set early.
+func TestADuplicateOnlyBatchKeepsItsLeaseAndTheEmptyClaimEndsThePass(t *testing.T) {
+	f := newFakeStore()
+	a := uuid.New()
+	f.orders[a] = ambiguousOrder()
+	f.work = append(f.work, work(a))
+	f.beforeClaim = func(n int) {
+		if n == 2 {
+			f.lapseLease(a)
+		}
+	}
+	r := newFakeRefunder(f)
+
+	New(f, r, time.Minute, 1, time.Minute).RunOnce(context.Background())
+
+	if got := len(f.claimIDs[a]); got < 2 {
+		t.Fatalf("A was claimed %d times, want at least 2: the fixture must offer the duplicate", got)
+	}
+	if got := len(r.keys[a]); got != 1 {
+		t.Fatalf("A was driven %d times in one pass, want 1", got)
+	}
+	if got := f.attempts[a]; got != 1 {
+		t.Fatalf("A has %d attempts, want 1", got)
+	}
+	if !f.leased[a] {
+		t.Fatal("the duplicate's lease was released; it is the row's backoff")
+	}
+	if f.abandon[a] != 0 {
+		t.Fatalf("A was abandoned %d times, want 0", f.abandon[a])
+	}
+	if got := len(f.claimIDs[a]); got != 2 {
+		t.Fatalf("A was claimed %d times, want exactly 2: the skipped duplicate keeps its lease", got)
+	}
+	if f.claims != 3 {
+		t.Fatalf("claims = %d, want 3: drive A, skip the duplicate A, then an empty claim ends the pass", f.claims)
+	}
+}
+
+// rowIdentity is one ledger row's primary key (cancellation_refund_orders: organizer, run,
+// order). Declared here, apart from the runner's own key, so the test does not restate the
+// code under test.
+type rowIdentity struct{ organizer, run, order uuid.UUID }
+
+// scriptedStore is the fake with a SCRIPTED Claim: each claim's batch comes from `next`, not
+// from f.work. The fake's own Claim selects by order id, so it can neither replenish forever
+// nor return two ledger rows for one order. Finalize records each verdict by the ledger
+// row's full identity for the same reason. Everything else is the embedded fakeStore.
+type scriptedStore struct {
+	*fakeStore
+	next     func(n, limit int) ([]store.CancellationWork, error)
+	verdicts map[rowIdentity]store.CancellationOutcome
+}
+
+func newScriptedStore(f *fakeStore, next func(n, limit int) ([]store.CancellationWork, error)) *scriptedStore {
+	return &scriptedStore{fakeStore: f, next: next, verdicts: map[rowIdentity]store.CancellationOutcome{}}
+}
+
+func (s *scriptedStore) Claim(_ context.Context, limit int, _ time.Duration) ([]store.CancellationWork, error) {
+	s.claims++
+	return s.next(s.claims, limit)
+}
+
+func (s *scriptedStore) Finalize(_ context.Context, w store.CancellationWork, out store.CancellationOutcome, _ bool) error {
+	k := rowIdentity{w.OrganizerID, w.RunID, w.OrderID}
+	if _, done := s.verdicts[k]; done {
+		return store.ErrCancellationClaimLost
+	}
+	s.verdicts[k] = out
+	return nil
+}
+
+// COS2. A book that refills on every claim must not keep one RunOnce running: the ticker
+// would never fire again and the per-pass set would grow for the life of the process.
+//
+// The tripwire is the literal 65, not the production constant, and it RETURNS AN ERROR so
+// that deleting the bound fails on the claim count rather than hanging until the test
+// times out. A claim error ends the pass, so without the bound claims reads 65.
+func TestAPassIsBoundedAgainstABookThatNeverEmpties(t *testing.T) {
+	f := newFakeStore()
+	tripped := false
+	s := newScriptedStore(f, func(n, limit int) ([]store.CancellationWork, error) {
+		if n >= 65 {
+			tripped = true
+			return nil, errors.New("tripwire: a 65th claim in one pass")
+		}
+		out := make([]store.CancellationWork, 0, limit)
+		for range limit {
+			id := uuid.New()
+			f.orders[id] = &fakeOrder{state: completedOrder(1, 1000)}
+			out = append(out, work(id))
+		}
+		return out, nil
+	})
+
+	resolved := New(s, newFakeRefunder(f), time.Minute, 2, time.Minute).RunOnce(context.Background())
+
+	if tripped {
+		t.Error("the claim-65 tripwire fired: the pass is not bounded")
+	}
+	if f.claims != 64 {
+		t.Fatalf("claims = %d, want exactly 64: the pass must stop AT its bound, not before or after", f.claims)
+	}
+	if resolved != 64*2 {
+		t.Fatalf("resolved = %d, want %d (64 full batches of 2 refundable orders)", resolved, 64*2)
+	}
+}
+
+// COS3. maxAttempts bounds drives ACROSS passes: each pass may drive the ambiguous row once,
+// however often a lapsed lease offers it again, so the budget of 5 takes 5 passes. Each pass
+// lapses A's lease before its second claim, so every pass is offered a duplicate.
+func TestTheAttemptBudgetIsSpentOneDrivePerPass(t *testing.T) {
+	f := newFakeStore()
+	a := uuid.New()
+	f.orders[a] = ambiguousOrder()
+	f.work = append(f.work, work(a))
+	passStart := 0
+	f.beforeClaim = func(n int) {
+		if n == passStart+2 {
+			f.lapseLease(a)
+		}
+	}
+	r := newFakeRefunder(f)
+	runner := New(f, r, time.Minute, 1, time.Minute)
+	pass := func() {
+		passStart = f.claims
+		runner.RunOnce(context.Background())
+	}
+
+	for p := 1; p <= 4; p++ {
+		pass()
+		if got := len(f.claimIDs[a]); got != 2*p {
+			t.Fatalf("pass %d: A claimed %d times in total, want %d: each pass offers A once fresh and "+
+				"once as a duplicate, and the duplicate's kept lease holds it after that", p, got, 2*p)
+		}
+		if got := len(r.keys[a]); got != p {
+			t.Fatalf("pass %d: A driven %d times in total, want %d (one new drive per pass)", p, got, p)
+		}
+		if got := f.attempts[a]; got != p {
+			t.Fatalf("pass %d: attempts = %d, want %d", p, got, p)
+		}
+		if _, terminal := f.final[a]; terminal {
+			t.Fatalf("pass %d: A is terminal (%+v) with budget left", p, f.final[a])
+		}
+		if p == 1 {
+			// An immediate pass, before any lease expires: the backoff holds, so nothing is
+			// driven. The skipped duplicate's renewed lease is what is holding it here.
+			pass()
+			if got := len(r.keys[a]); got != 1 {
+				t.Fatalf("a pass before the lease expired drove A (%d drives in total, want 1)", got)
+			}
+		}
+		f.expireLeases()
+	}
+
+	pass() // pass 5: the last drive the budget allows
+	got, terminal := f.final[a]
+	if !terminal || got.Outcome != "failed" || got.FailureCode != "unavailable" {
+		t.Fatalf("after pass 5 A = %+v (terminal=%v), want terminal failed/unavailable", got, terminal)
+	}
+	if drives, attempts := len(r.keys[a]), f.attempts[a]; drives != maxAttempts || attempts != maxAttempts {
+		t.Fatalf("after pass 5: drives=%d attempts=%d, want exactly %d of each", drives, attempts, maxAttempts)
+	}
+
+	f.expireLeases()
+	pass() // pass 6: a terminal row is not claimable
+	if drives, attempts := len(r.keys[a]), f.attempts[a]; drives != maxAttempts || attempts != maxAttempts {
+		t.Fatalf("pass 6 changed A: drives=%d attempts=%d, want %d of each", drives, attempts, maxAttempts)
+	}
+}
+
+// Shutdown lands as batch 2 returns duplicate A with fresh C. The identity check comes
+// before the cancellation branch: A keeps its renewed lease as backoff and costs nothing
+// more, and only C, which this pass never drove, is handed back for a successor at once.
+// The fake's Claim ignores its context, so cancelling inside beforeClaim models a claim that
+// committed just before the shutdown reached the loop.
+func TestCancellationKeepsADuplicateLeasedAndHandsBackOnlyFreshWork(t *testing.T) {
+	f := newFakeStore()
+	a, b, c := uuid.New(), uuid.New(), uuid.New()
+	f.orders[a] = ambiguousOrder()
+	f.orders[b] = &fakeOrder{state: completedOrder(1, 1000)}
+	f.orders[c] = &fakeOrder{state: completedOrder(1, 1000)}
+	for _, id := range []uuid.UUID{a, b, c} {
+		f.work = append(f.work, work(id))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.beforeClaim = func(n int) {
+		if n == 2 {
+			f.lapseLease(a)
+			cancel()
+		}
+	}
+	r := newFakeRefunder(f)
+
+	New(f, r, time.Minute, 2, time.Minute).RunOnce(ctx)
+
+	if len(f.claimIDs[a]) != 2 || len(f.claimIDs[c]) != 1 {
+		t.Fatalf("claims of A=%d C=%d, want 2 and 1: batch 2 must hold duplicate A and fresh C",
+			len(f.claimIDs[a]), len(f.claimIDs[c]))
+	}
+	if got := len(r.keys[a]); got != 1 || f.attempts[a] != 1 {
+		t.Fatalf("A: drives=%d attempts=%d, want 1 and 1", got, f.attempts[a])
+	}
+	if f.abandon[a] != 0 || !f.leased[a] {
+		t.Fatalf("A: abandoned %d times, leased=%v; a duplicate keeps its lease even at shutdown, "+
+			"or a restart re-drives an ambiguous failure before its backoff", f.abandon[a], f.leased[a])
+	}
+	if got := len(r.keys[c]); got != 0 {
+		t.Fatalf("C was driven %d times after the shutdown", got)
+	}
+	if f.abandon[c] != 1 || f.leased[c] || f.attempts[c] != 0 {
+		t.Fatalf("C: abandoned %d times, leased=%v, attempts=%d; want handed back once, undriven, at zero cost",
+			f.abandon[c], f.leased[c], f.attempts[c])
+	}
+	if _, terminal := f.final[c]; terminal {
+		t.Fatalf("C was finalized as %+v during a shutdown", f.final[c])
+	}
+}
+
+// The per-pass set is keyed by the ledger row (organizer, run, order), not by the order. Two
+// runs over one cancelled slot each own a ledger row for the same order, and each row needs
+// its own verdict or that run never completes. Keying by order alone would skip the second
+// row as a "duplicate" of the first.
+func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
+	first := work(order)
+	second := first
+	second.RunID, second.ClaimID = uuid.New(), uuid.New()
+	// Only so the fake's LookupRefund can find the slot of the refund the first row binds.
+	f.work = append(f.work, first)
+	s := newScriptedStore(f, func(n, _ int) ([]store.CancellationWork, error) {
+		if n == 1 {
+			return []store.CancellationWork{first, second}, nil
+		}
+		return nil, nil
+	})
+
+	r := newFakeRefunder(f)
+	resolved := New(s, r, time.Minute, 2, time.Minute).RunOnce(context.Background())
+
+	for _, w := range []store.CancellationWork{first, second} {
+		if _, ok := s.verdicts[rowIdentity{w.OrganizerID, w.RunID, w.OrderID}]; !ok {
+			t.Fatalf("run %s's ledger row for the order got no verdict: it was skipped as a duplicate of "+
+				"another run's row, and its run can never complete", w.RunID)
+		}
+	}
+	if resolved != 2 {
+		t.Fatalf("resolved = %d, want 2", resolved)
+	}
+	// The two rows converge on ONE refund. `moved` alone cannot show that: the fake refunder
+	// deduplicates by ORDER, so a key that also carried the run would still move money once
+	// here. Production identifies a refund by organizer plus idempotency key (store.RefundID),
+	// so the property is that both rows reach the refund unit under the SAME key, and that key
+	// is the (slot, order) derivation, which knows nothing of the run (ADR-040 §3). The second
+	// row reaches the refund unit because it finds the refund the first one bound under that
+	// key and replays it.
+	want := store.CancellationRefundKey(first.SlotID, order)
+	if keys := r.keys[order]; len(keys) != 2 || keys[0] != want || keys[1] != want {
+		t.Fatalf("refund keys for the order = %q, want both rows under the one key %q: with a key that "+
+			"differs per run, the second run does not converge on the first run's refund, so its row "+
+			"can fail to resolve or leave the refund's reversal work stranded", keys, want)
+	}
+	if f.orders[order].moved != 1 {
+		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
+	}
 }
