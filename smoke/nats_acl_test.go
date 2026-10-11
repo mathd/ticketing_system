@@ -767,13 +767,16 @@ func TestNATSServiceCannotWidenItsOwnPluralDurable(t *testing.T) {
 // TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries PINS A GAP; it asserts the gap is
 // PRESENT (ADR-072 §6(c)). It is not a security control, and it must not be read as one.
 //
-// Every service principal subscribes to _INBOX.>, and no service sets a custom inbox prefix, so
-// they all share nats.go's default `_INBOX.` namespace. A JetStream pull delivers each message to
-// the puller's reply inbox. So any principal can subscribe to _INBOX.> and receive copies of
-// another principal's deliveries. TKT-327 closed the body-controlled filter path
+// Four service principals hold subscribe _INBOX.>: catalog, commerce, access and inventory
+// (payments holds no subscribe grant; platform-admin holds `>`). No service sets a custom inbox
+// prefix, so every service connection uses nats.go's default `_INBOX.` namespace. A JetStream pull
+// delivers each message to the puller's reply inbox. So a holder of any of those four credentials
+// can subscribe to _INBOX.> and receive copies of every pull delivery made to a connection that
+// uses the default prefix: today, access's and inventory's durables. TKT-327 closed the body-controlled filter path
 // (TestNATSServiceCannotWidenItsOwnPluralDurable); it did not close this one. Executed during
-// TKT-327 on an isolated broker with the production ACL: the inventory credential, watching
-// _INBOX.>, read access-ticket-issuer's delivery of an order.completed carrying guest_order_ref.
+// TKT-327 on an isolated broker with the production ACL: the inventory, catalog and commerce
+// credentials, each watching _INBOX.>, read access-ticket-issuer's delivery of an order.completed
+// carrying guest_order_ref; payments saw nothing.
 //
 // TKT-519 tracks the fix (a per-principal inbox prefix in every service's connection, with each
 // principal's subscribe grant narrowed to it). When TKT-519 lands, this test goes red because
@@ -822,7 +825,11 @@ func TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin connect: %v", err)
 	}
-	defer adminConn.Close()
+	// A t.Cleanup, not a defer: a deferred Close runs when the test function returns, BEFORE any
+	// t.Cleanup, so the durable's delete below went through a closed connection, its error was
+	// discarded, and every run leaked an inbox-pin-* durable. Cleanups run last-registered-first,
+	// so registering the Close here, before the delete, keeps the connection open for it.
+	t.Cleanup(adminConn.Close)
 	adminJS, err := jetstream.New(adminConn)
 	if err != nil {
 		t.Fatalf("admin jetstream: %v", err)
@@ -839,7 +846,13 @@ func TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create throwaway durable: %v", err)
 	}
-	t.Cleanup(func() { _ = stream.DeleteConsumer(context.Background(), durable) })
+	t.Cleanup(func() {
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer deleteCancel()
+		if err := stream.DeleteConsumer(deleteCtx, durable); err != nil {
+			t.Errorf("cleanup: delete throwaway durable %s: %v", durable, err)
+		}
+	})
 	if _, err := adminJS.Publish(ctx, subject, []byte(`{"marker":"`+marker+`"}`)); err != nil {
 		t.Fatalf("publish marker: %v", err)
 	}

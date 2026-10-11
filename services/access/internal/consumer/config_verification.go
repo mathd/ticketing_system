@@ -84,9 +84,11 @@ func filterSet(cfg jetstream.ConsumerConfig) []string {
 // consumer is ephemeral, and with an inactive_threshold the broker deletes it after that idle
 // time; either way it can disappear while the service is down. replay_policy original delivers
 // the backlog at its original pacing, so a restart after downtime catches up no faster than the
-// events were published. Both creation paths (the old service code and nats-init's file) leave
-// every one of these unset; init returns pause_until as the zero time and the old path omits it,
-// so only a pause that is still in the future is refused.
+// events were published. With mem_storage the consumer's state lives in memory, and a restart of
+// the broker loses the consumer and its cursor (executed on the pinned broker). Both creation paths
+// (the old service code and nats-init's file) leave every one of these unset; init returns
+// pause_until as the zero time and the old path omits it, so only a pause that is still in the
+// future is refused.
 //
 // A startup check sees only startup: a pause or a limit that platform-admin applies later is not
 // detected (ADR-072 §2 does not bind platform-admin).
@@ -112,6 +114,9 @@ func consumptionDrift(want, got jetstream.ConsumerConfig, now time.Time) []strin
 	}
 	if got.ReplayPolicy != want.ReplayPolicy {
 		drift = append(drift, fmt.Sprintf("replay_policy is %v, want %v", got.ReplayPolicy, want.ReplayPolicy))
+	}
+	if got.MemoryStorage != want.MemoryStorage {
+		drift = append(drift, fmt.Sprintf("mem_storage is %t, want %t (a broker restart loses an in-memory consumer and its cursor)", got.MemoryStorage, want.MemoryStorage))
 	}
 	return drift
 }

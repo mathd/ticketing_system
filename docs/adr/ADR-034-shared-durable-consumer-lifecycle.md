@@ -335,8 +335,9 @@ durable, not CREATE.
 2. *The settings that would let the service report ready while it consumes nothing, or lose the
    durable* (added after TKT-327's review), each required to be absent: `durable_name` must be the
    expected name (without it the consumer is ephemeral); `inactive_threshold`, `max_batch`,
-   `max_expires` and `max_bytes` must be unset; `pause_until` must not be in the future; and
-   `replay_policy` must be `instant`. Executed against the pinned broker and client: with
+   `max_expires` and `max_bytes` must be unset; `pause_until` must not be in the future;
+   `replay_policy` must be `instant`; and `mem_storage` must be false (on this single-server broker
+   a restart lost a `mem_storage` durable, while a file-backed one beside it survived). Executed against the pinned broker and client: with
    `max_batch` below `Consume`'s batch of 500, or `max_expires` below its 30s request, every pull is
    refused with a 409 that nats.go reports only to the consume error callback, which the services
    do not treat as terminal. A future `pause_until` delivers nothing and reports nothing. The broker

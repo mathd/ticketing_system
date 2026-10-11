@@ -205,18 +205,22 @@ Test `TestNATSResidualCredentialedForgeryStillMintsTickets` in `smoke/nats_acl_t
 narrowed case and the still-open case. Do not remove this test.
 
 **(c) Cross-service READS through the shared inbox namespace — open, found in TKT-327, tracked as
-TKT-519.** Every
-service principal subscribes to `_INBOX.>`, and no service sets a custom inbox prefix, so all of them
-share nats.go's default `_INBOX.` namespace. A JetStream pull delivers each message to the puller's
-reply inbox. Any principal can therefore subscribe to `_INBOX.>` and receive copies of another
-principal's deliveries. **Executed, not argued:** on an isolated broker with this ACL file and the
-TKT-327 grants, the inventory credential, watching `_INBOX.>`, read `access-ticket-issuer`'s delivery
-of an `order.completed` carrying `guest_order_ref`. It does not need any CREATE grant, so TKT-327
+TKT-519.** Four service
+principals hold `subscribe: _INBOX.>` — `catalog`, `commerce`, `access` and `inventory`. (`payments`
+holds no subscribe grant at all; `platform-admin` holds `>` and is outside §2's adversary model.) No
+service sets a custom inbox prefix, so every service connection uses nats.go's default `_INBOX.`
+namespace. A JetStream pull delivers each message to the puller's reply inbox. A holder of any of
+those four credentials can therefore subscribe to `_INBOX.>` and receive copies of every pull
+delivery made to a connection that uses the default prefix — today, `access`'s and `inventory`'s
+durables. **Executed, not argued:** on an isolated broker with this ACL file and the
+TKT-327 grants, the `inventory`, `catalog` and `commerce` credentials, each watching `_INBOX.>`, read
+`access-ticket-issuer`'s delivery of an `order.completed` carrying `guest_order_ref`; the `payments`
+credential, run the same way, saw nothing. It does not need any CREATE grant, so TKT-327
 does not close it. The likely fix is a per-principal inbox prefix (each service's `nats.Connect`
 with a custom inbox prefix, and each principal's subscribe grant narrowed to that prefix); it
-touches every service's connection code, so it is its own ticket: **TKT-519** ("Any service
-credential can read every other service's JetStream pull deliveries through `_INBOX.>`"). Until
-TKT-519 lands, a compromised service principal can read every event any other service consumes.
+touches every service's connection code, so it is its own ticket: **TKT-519**. Until TKT-519
+lands, a compromised `catalog`, `commerce`, `access` or `inventory` principal can read every event
+that `access` or `inventory` pulls from JetStream.
 `TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries` pins this gap as PRESENT. When TKT-519
 lands, that test goes red because nothing is seen; TKT-519 then updates this paragraph and flips the
 test to assert a refusal.

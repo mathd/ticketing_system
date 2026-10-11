@@ -129,6 +129,9 @@ func TestVerifyOfferingConfig(t *testing.T) {
 		{name: "replay at original pacing", field: "replay_policy", edit: func(c *jetstream.ConsumerConfig) {
 			c.ReplayPolicy = jetstream.ReplayOriginalPolicy
 		}},
+		{name: "in-memory consumer state", field: "mem_storage", edit: func(c *jetstream.ConsumerConfig) {
+			c.MemoryStorage = true
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			info := validOfferingInfo()
