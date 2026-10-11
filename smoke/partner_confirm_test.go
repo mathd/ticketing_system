@@ -391,25 +391,49 @@ func TestPartnerConfirmSettlesMultipleBeneficiariesSplit(t *testing.T) {
 // the largest fractional remainders, ties broken by payee id ascending.
 //
 //	payees  P1 = <prefix>…01, P2 = <prefix>…02, P3 = <prefix>…03 (the reseller)
-//	shares  P1 4000 bps, P2 3000 bps, P3 3000 bps (sum 10000)
-//	amount  1008 cents (one ticket at 1008 per ticket)
+//	shares  P1 4000 bps, P2 3000 bps, P3 3000 bps (sum 10000), in both cases
 //
-//	q, r = 1008 / 10000, 1008 % 10000 = 0, 1008
-//	P1: 1008 × 4000 = 4,032,000 → floor 403, fractional numerator 2000
-//	P2: 1008 × 3000 = 3,024,000 → floor 302, fractional numerator 4000
-//	P3: 1008 × 3000 = 3,024,000 → floor 302, fractional numerator 4000
-//	floor sum 403 + 302 + 302 = 1007, so one cent is left over
-//	largest remainder: P2 and P3 tie at 4000; P2 has the lower id and wins
-//	expected P1 403, P2 303, P3 302 (sum 1008); the reseller P3 gets 302
+//	case 1008 cents (one ticket at 1008 per ticket)
+//	  P1: 1008 × 4000 / 10000 = 403.2 → floor 403, fractional numerator 2000
+//	  P2: 1008 × 3000 / 10000 = 302.4 → floor 302, fractional numerator 4000
+//	  P3: 1008 × 3000 / 10000 = 302.4 → floor 302, fractional numerator 4000
+//	  floor sum 1007, one cent left; P2 and P3 tie at 4000, P2 has the lower id
+//	  expected P1 403, P2 303, P3 302 (sum 1008)
 //
-// Every plausible wrong rule gives a different answer on this fixture (TKT-330 D3):
-// the cent to the last part, a reversed tie, or the cent to the reseller gives
-// 403/302/303; the cent to the first payee or to the largest share gives
-// 404/302/302. The reseller is on P3, the tie LOSER, on purpose: on the tie winner,
-// "floor every share and give the residue to the reseller" would also give
-// 403/303/302 and pass. Parts are loaded ORDER BY payee_id, so the order of the
-// INSERTs below decides nothing and is not a check.
+//	case 1001 cents (one ticket at 1001 per ticket)
+//	  P1: 1001 × 4000 / 10000 = 400.4 → floor 400, fractional numerator 4000
+//	  P2: 1001 × 3000 / 10000 = 300.3 → floor 300, fractional numerator 3000
+//	  P3: 1001 × 3000 / 10000 = 300.3 → floor 300, fractional numerator 3000
+//	  floor sum 1000, one cent left; P1 has the unique largest remainder
+//	  expected P1 401, P2 300, P3 300 (sum 1001)
+//
+// WHAT THIS DISCRIMINATES, and nothing more. Each wrong rule below fails at least
+// one case (TKT-330 D3, D4; checked by hand with exact arithmetic):
+//
+//	the leftover cent to the last part (id order)      1008 → 403/302/303
+//	equal remainders ranked by id DESCENDING            1008 → 403/302/303
+//	floor every share, the residue to the reseller      1008 → 403/302/303
+//	the leftover cent to the first payee (id order)     1008 → 404/302/302
+//	the leftover cent to the largest share              1008 → 404/302/302
+//	the leftover cent to the smallest share (id ties)   1001 → 400/301/300
+//	round the cumulative quotas, assign the differences 1001 → 400/301/300
+//	round each part of what is left, id order, half up  1001 → 400/301/300
+//
+// The last three give the right answer at 1008, which is why there is a second case;
+// the descending tie, the first payee and the largest share give the right answer at
+// 1001. The reseller is on P3, the tie LOSER, because on the tie winner the
+// residue-to-reseller rule would pass 1008. Parts are loaded ORDER BY payee_id, so
+// the order of the INSERTs below decides nothing and is not a check.
 func TestPartnerConfirmSettlesSplitRemainderByPayeeID(t *testing.T) {
+	t.Run("fee_1008", func(t *testing.T) { tkt330SplitCase(t, 1008, [3]int64{403, 303, 302}) })
+	t.Run("fee_1001", func(t *testing.T) { tkt330SplitCase(t, 1001, [3]int64{401, 300, 300}) })
+}
+
+// tkt330SplitCase settles one partner sale whose reseller_commission of `fee` is
+// split 4000/3000/3000 over P1 < P2 < P3 (the reseller on P3), and requires the
+// three commission lines to be exactly `want`, in payee id order. Each case has its
+// own reseller, channel, slot and event, so its fee rule and schedule match only it.
+func tkt330SplitCase(t *testing.T, fee int64, want [3]int64) {
 	ctx := context.Background()
 	run := uuid.NewString()[:8]
 	reseller := uuid.NewString()
@@ -424,11 +448,10 @@ func TestPartnerConfirmSettlesSplitRemainderByPayeeID(t *testing.T) {
 	}
 	defer func() { _ = cat.Close(ctx) }()
 
-	const feeAmountPerTicket = int64(1008)
 	if _, err := cat.Exec(ctx, `INSERT INTO fee_rules
 		(organizer_id, scope_level, scope_id, fee_code, basis, amount, currency, incidence, channel_code)
 		VALUES($1, 'event', $2, 'reseller_commission', 'per_ticket_fixed', $3, 'EUR', 'passed_on', $4)`,
-		organizerID, eventID, feeAmountPerTicket, channel); err != nil {
+		organizerID, eventID, fee, channel); err != nil {
 		t.Fatalf("seed fee rule: %v", err)
 	}
 
@@ -537,24 +560,24 @@ func TestPartnerConfirmSettlesSplitRemainderByPayeeID(t *testing.T) {
 	if feeRows != 3 || len(commission) != 3 {
 		t.Fatalf("got %d fee lines over %d payees, want exactly 3 reseller_commission lines: %v", feeRows, len(commission), commission)
 	}
-	want := map[string]feeLine{
-		p1.String(): {externalRef: "", currency: "EUR", incidence: "passed_on", amount: 403},
-		p2.String(): {externalRef: "", currency: "EUR", incidence: "passed_on", amount: 303},
-		p3.String(): {externalRef: resellerRef, currency: "EUR", incidence: "passed_on", amount: 302},
+	wantLines := map[string]feeLine{
+		p1.String(): {externalRef: "", currency: "EUR", incidence: "passed_on", amount: want[0]},
+		p2.String(): {externalRef: "", currency: "EUR", incidence: "passed_on", amount: want[1]},
+		p3.String(): {externalRef: resellerRef, currency: "EUR", incidence: "passed_on", amount: want[2]},
 	}
 	var commissionSum int64
-	for payee, w := range want {
+	for payee, w := range wantLines {
 		got, ok := commission[payee]
 		if !ok {
 			t.Fatalf("no reseller_commission line for payee %s: %v", payee, commission)
 		}
 		if got != w {
-			t.Errorf("payee %s settled %+v, want %+v (largest remainder, ties by payee id)", payee, got, w)
+			t.Errorf("fee %d: payee %s settled %+v, want %+v (largest remainder, ties by payee id)", fee, payee, got, w)
 		}
 		commissionSum += got.amount
 	}
-	if commissionSum != feeAmountPerTicket {
-		t.Errorf("reseller_commission lines sum to %d, want the whole fee %d", commissionSum, feeAmountPerTicket)
+	if commissionSum != fee {
+		t.Errorf("reseller_commission lines sum to %d, want the whole fee %d", commissionSum, fee)
 	}
 }
 
@@ -563,19 +586,43 @@ func TestPartnerConfirmSettlesSplitRemainderByPayeeID(t *testing.T) {
 // order. The derivation namespaces the key by reseller; this proves the namespace
 // reaches the order the second request returns, not only the string it derives.
 //
-// Both resellers sell on ONE channel code, so the reseller is the only thing that
-// separates their requests: a key namespaced by organizer and channel instead of
-// reseller would collide here. One channel cannot carry two sellers on one slot (an
-// allocation binds one seller per channel), so each reseller sells on its own slot.
+// Two arrangements, because each one holds a different property fixed while the
+// reseller varies (TKT-330 D4), and a key namespaced by that property instead of the
+// reseller would collide in it:
+//
+//   - one_slot_two_channels: both resellers sell on ONE slot, each on its own
+//     channel. A slot-derived key collides here.
+//   - one_channel_two_slots: both resellers sell on ONE channel code, each on its own
+//     slot (an allocation binds one seller per channel on a slot). A channel-derived
+//     key collides here.
 func TestPartnerConfirmSameRawKeyFromTwoResellersMakesTwoOrders(t *testing.T) {
+	t.Run("one_slot_two_channels", func(t *testing.T) { tkt330TwoResellers(t, true) })
+	t.Run("one_channel_two_slots", func(t *testing.T) { tkt330TwoResellers(t, false) })
+}
+
+// tkt330TwoResellers runs COS2 with both resellers on one slot and two channels
+// (oneSlot) or on one channel and two slots.
+func tkt330TwoResellers(t *testing.T, oneSlot bool) {
 	ctx := context.Background()
 	run := uuid.NewString()[:8]
 	resellerA, resellerB := uuid.NewString(), uuid.NewString()
-	channel := "tkt330-shared-" + run
-	credA := tkt330Enrol(t, ctx, resellerA, channel, "tkt330 reseller A")
-	credB := tkt330Enrol(t, ctx, resellerB, channel, "tkt330 reseller B")
-	slotA, ticketTypeA := tkt330Slot(t, "TKT-330 Two Resellers Hall A", tkt330Alloc{channel: channel, reseller: resellerA})
-	slotB, ticketTypeB := tkt330Slot(t, "TKT-330 Two Resellers Hall B", tkt330Alloc{channel: channel, reseller: resellerB})
+	var channelA, channelB, slotA, slotB, ticketTypeA, ticketTypeB string
+	if oneSlot {
+		channelA, channelB = "tkt330-a-"+run, "tkt330-b-"+run
+		// ONE allocation PUT for both channels: it replaces the slot's whole set, so a
+		// second PUT would remove the first channel's allocation.
+		slotA, ticketTypeA = tkt330Slot(t, "TKT-330 Two Resellers One Slot Hall",
+			tkt330Alloc{channel: channelA, reseller: resellerA},
+			tkt330Alloc{channel: channelB, reseller: resellerB})
+		slotB, ticketTypeB = slotA, ticketTypeA
+	} else {
+		channelA = "tkt330-shared-" + run
+		channelB = channelA
+		slotA, ticketTypeA = tkt330Slot(t, "TKT-330 Two Resellers Hall A", tkt330Alloc{channel: channelA, reseller: resellerA})
+		slotB, ticketTypeB = tkt330Slot(t, "TKT-330 Two Resellers Hall B", tkt330Alloc{channel: channelB, reseller: resellerB})
+	}
+	credA := tkt330Enrol(t, ctx, resellerA, channelA, "tkt330 reseller A")
+	credB := tkt330Enrol(t, ctx, resellerB, channelB, "tkt330 reseller B")
 	tkt330AssertSlotOrders(t, ctx, slotA, "before any confirm (slot A)")
 	tkt330AssertSlotOrders(t, ctx, slotB, "before any confirm (slot B)")
 
@@ -585,16 +632,61 @@ func TestPartnerConfirmSameRawKeyFromTwoResellersMakesTwoOrders(t *testing.T) {
 	rawKey := "tkt330-two-confirm-" + run
 	orderA := tkt330ConfirmOK(t, credA.token, rawKey, tkt330ConfirmBody(reservationA, "TKT330 Buyer"), "confirm by reseller A")
 	orderB := tkt330ConfirmOK(t, credB.token, rawKey, tkt330ConfirmBody(reservationB, "TKT330 Buyer"),
-		"confirm by reseller B under the same raw key on the same channel")
+		"confirm by reseller B under the same raw key")
 	if orderA.OrderID == orderB.OrderID {
 		t.Fatalf("two resellers' confirms under one raw key returned the same order %s", orderA.OrderID)
 	}
 
-	tkt330AssertSlotOrders(t, ctx, slotA, "after both confirms (slot A)",
-		tkt330OrderRow{id: orderA.OrderID, status: "completed", reseller: resellerA, reservation: reservationA})
-	tkt330AssertSlotOrders(t, ctx, slotB, "after both confirms (slot B)",
-		tkt330OrderRow{id: orderB.OrderID, status: "completed", reseller: resellerB, reservation: reservationB})
+	rowA := tkt330OrderRow{id: orderA.OrderID, status: "completed", reseller: resellerA, reservation: reservationA}
+	rowB := tkt330OrderRow{id: orderB.OrderID, status: "completed", reseller: resellerB, reservation: reservationB}
+	if oneSlot {
+		tkt330AssertSlotOrders(t, ctx, slotA, "after both confirms (one slot)", rowA, rowB)
+	} else {
+		tkt330AssertSlotOrders(t, ctx, slotA, "after both confirms (slot A)", rowA)
+		tkt330AssertSlotOrders(t, ctx, slotB, "after both confirms (slot B)", rowB)
+	}
 	tkt330AssertCaptures(t, ctx, "after both confirms", orderA.OrderID, orderB.OrderID)
+}
+
+// TestPartnerConfirmRefusesRawKeyReusedOnNewReservation (TKT-330 D4): one reseller
+// that reuses a raw Idempotency-Key for a confirm on a DIFFERENT reservation is
+// refused with the conflict, not sold a second order. The key names the request, not
+// the reservation; a key derived from the reservation instead of the raw key passes
+// every other case in this file and accepts this one.
+func TestPartnerConfirmRefusesRawKeyReusedOnNewReservation(t *testing.T) {
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	reseller := uuid.NewString()
+	channel := "tkt330-reuse-" + run
+	cred := tkt330Enrol(t, ctx, reseller, channel, "tkt330 reuse")
+	slot, ticketType := tkt330Slot(t, "TKT-330 Key Reuse Hall", tkt330Alloc{channel: channel, reseller: reseller})
+	tkt330AssertSlotOrders(t, ctx, slot, "before any confirm")
+
+	first := tkt330Reserve(t, cred.token, ticketType, "tkt330-reuse-reserve-1-"+run)
+	second := tkt330Reserve(t, cred.token, ticketType, "tkt330-reuse-reserve-2-"+run)
+	if first == second {
+		t.Fatalf("two reserves with different keys returned one reservation %s", first)
+	}
+	key := "tkt330-reuse-confirm-" + run
+	original := tkt330ConfirmOK(t, cred.token, key, tkt330ConfirmBody(first, "TKT330 Buyer"), "confirm of the first reservation")
+	only := tkt330OrderRow{id: original.OrderID, status: "completed", reseller: reseller, reservation: first}
+	tkt330AssertSlotOrders(t, ctx, slot, "after the first confirm", only)
+	tkt330AssertCaptures(t, ctx, "after the first confirm", original.OrderID)
+
+	code, out := partnerDoAs(t, cred.token, http.MethodPost, "/api/commerce/partners/orders", key,
+		tkt330ConfirmBody(second, "TKT330 Buyer"))
+	if code != http.StatusConflict {
+		t.Fatalf("the same raw key on a new reservation was answered %d, want 409: %s", code, out)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode the 409 body %q: %v", out, err)
+	}
+	if wantBody := map[string]any{"error": "checkout conflicts with an existing request"}; !reflect.DeepEqual(got, wantBody) {
+		t.Fatalf("409 body = %v, want exactly %v", got, wantBody)
+	}
+	tkt330AssertSlotOrders(t, ctx, slot, "after the reused key on the new reservation", only)
+	tkt330AssertCaptures(t, ctx, "after the reused key on the new reservation", original.OrderID)
 }
 
 // TestPartnerConfirmReplaysOriginalOrderAfterCredentialRotation (TKT-330 COS3): a
