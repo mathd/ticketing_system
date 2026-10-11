@@ -60,63 +60,18 @@ awk '
 ' "$workflow" || fail "repository-scan is missing, conditional, or lacks Trivy secret/misconfiguration scanning"
 
 # The scan allowlist (ADR-081) is wired in three places, and each one can be
-# lost without any scan going red. pnpm applies auditConfig.ignoreGhsas with no
-# expiry, so the pnpm-audit job must run the expiry check before the audit, with
-# nothing that can skip the check or hide the audit's exit status. The audit
-# must be the exact command: `pnpm audit --ignore` writes the ignore list and
-# exits 0 without reporting the remaining findings.
+# lost without any scan going red. The workflow half is checked by parsing the
+# YAML, not by matching lines, so text in a `name:` block or a quoted `"if":` key
+# reads as what it is: pnpm-audit must end with `check --now`, `check --effective`
+# and exactly `pnpm audit --audit-level high`, with nothing that can skip them or
+# hide a failure; the changes filter must match .trivyignore.yaml; the Trivy step
+# must keep its inputs (exit-code "1", HIGH,CRITICAL, trivyignores) and nothing
+# may skip it. Needs node_modules (the `yaml` package), so it runs after deps.
 [[ -f "$makefile" ]] || fail "Makefile not found: $makefile"
+node scripts/scan-allowlist.mjs wiring --workflow "$workflow" >/dev/null ||
+  fail "the scan allowlist wiring in $workflow is wrong (see the lines above)"
 
-awk '
-  $0 == "  pnpm-audit:" {
-    found = 1
-    in_job = 1
-    next
-  }
-  in_job && /^  [[:alnum:]_-]+:/ {
-    in_job = 0
-  }
-  in_job && /continue-on-error/ {
-    tolerant = 1
-  }
-  in_job && /^        if:/ {
-    step_if = 1
-  }
-  in_job && $0 == "      - run: node scripts/scan-allowlist.mjs check --now" {
-    checks++
-    check_line = NR
-  }
-  in_job && $0 == "      - run: pnpm audit --audit-level high" {
-    audits++
-    audit_line = NR
-  }
-  /pnpm audit/ && $0 != "      - run: pnpm audit --audit-level high" {
-    other_audit = 1
-  }
-  END {
-    exit !(found && !tolerant && !step_if && !other_audit && checks == 1 && audits == 1 && check_line < audit_line)
-  }
-' "$workflow" || fail "pnpm-audit must run 'node scripts/scan-allowlist.mjs check --now' and then exactly 'pnpm audit --audit-level high', with no step-level if, no continue-on-error and no other pnpm audit command"
-
-# Trivy reads the allowlist only through this input. Without it every listed
-# finding fails the scan again, and a plain .trivyignore would be read instead.
-awk '
-  $0 == "  repository-scan:" {
-    in_job = 1
-    next
-  }
-  in_job && /^  [[:alnum:]_-]+:/ {
-    in_job = 0
-  }
-  in_job && $0 == "          trivyignores: .trivyignore.yaml" {
-    wired = 1
-  }
-  END {
-    exit !wired
-  }
-' "$workflow" || fail "repository-scan does not pass 'trivyignores: .trivyignore.yaml' to Trivy"
-
-# make check runs the deterministic half of the checker and its tests. The
+# make check runs the clock-free check and its tests. The
 # recipe lines must be exact: a "-" prefix or "|| true" would ignore a failure.
 awk '
   /^check-all:/ {

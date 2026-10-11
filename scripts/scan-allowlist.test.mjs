@@ -6,15 +6,17 @@
 // dates are calculated at run time and never expire.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkRepository, syncWorkspace } from './scan-allowlist.mjs';
+import { checkEffective, checkRepository, checkWiring, readEffectiveConfig, syncWorkspace } from './scan-allowlist.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./scan-allowlist.mjs', import.meta.url));
+const REPO = fileURLToPath(new URL('..', import.meta.url));
+const PACKAGE_MANAGER = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).packageManager;
 const DAY = 86_400_000;
 // The injected clock: noon UTC, so "today" is the same date in every zone test.
 const NOW = new Date(Date.UTC(2030, 5, 15, 12, 0, 0));
@@ -146,11 +148,21 @@ describe('expiry (the clock-dependent check)', () => {
     refuses({ '.trivyignore.yaml': allowlist(entry({ approved_at: day(-5), expired_at: day(0) })) }, /expired/);
   });
 
-  it('the boundary is the first millisecond of the expiry date', () => {
+  it('an entry is refused from one hour before the start of its expiry date (the margin)', () => {
     const files = { '.trivyignore.yaml': allowlist(entry({ approved_at: day(-5), expired_at: day(1) })) };
-    const midnight = new Date(Date.UTC(2030, 5, 16));
-    refuses(files, /expired/, { now: midnight });
-    passes(files, { now: new Date(midnight.getTime() - 1) });
+    const midnight = Date.UTC(2030, 5, 16);
+    refuses(files, /expired/, { now: new Date(midnight - 3_600_000) });
+    passes(files, { now: new Date(midnight - 3_600_000 - 1) });
+  });
+});
+
+describe('the deterministic check does not read the clock', () => {
+  it('a valid repository gives the same result at any clock value', () => {
+    for (const now of [new Date(0), NOW, new Date(8.64e15)]) passes({}, { now, expiry: false });
+  });
+
+  it('an approval date in the future passes without the clock checks', () => {
+    passes({ '.trivyignore.yaml': allowlist(entry({ approved_at: day(1), expired_at: day(5) })) }, { expiry: false });
   });
 });
 
@@ -171,7 +183,7 @@ describe('lifetime and approval date', () => {
     });
   });
 
-  it('an approval date in the future fails', () => {
+  it('an approval date in the future fails with the clock checks', () => {
     refuses({ '.trivyignore.yaml': allowlist(entry({ approved_at: day(1), expired_at: day(5) })) }, /future/);
   });
 });
@@ -414,11 +426,351 @@ describe('the pnpm mirror', () => {
 });
 
 describe('other suppression files', () => {
-  for (const name of ['trivy.yaml', 'trivy.yml', 'trivy-secret.yaml', '.trivyignore']) {
+  for (const name of [
+    'trivy.yaml',
+    'trivy.yml',
+    'trivy-secret.yaml',
+    '.trivyignore',
+    '.pnpmfile.cjs',
+    '.pnpmfile.mjs',
+    '.pnpmfile.js',
+    '.npmrc',
+  ]) {
     it(`a committed ${name} fails`, () => {
       refuses({ [name]: 'x\n' }, new RegExp(`${name.replace('.', '\\.')}.*refused`));
     });
   }
+});
+
+describe('pnpm settings outside the mirror', () => {
+  // pnpm reads every top-level key of pnpm-workspace.yaml as a setting, and some of
+  // them change what `pnpm audit` reports. Only the keys this repository uses pass.
+  for (const [key, value] of [
+    ['ignore', '\n  - GHSA-w27v-7q3p-w38r'],
+    ['ignoreUnfixable', ' true'],
+    ['ignoreRegistryErrors', ' true'],
+    ['registry', ' https://127.0.0.1:9/'],
+    ['auditLevel', ' critical'],
+    ['pnpmfile', ' hooks/x.cjs'],
+    ['globalPnpmfile', ' hooks/x.cjs'],
+    ['production', ' true'],
+  ]) {
+    it(`a top-level "${key}" setting fails`, () => {
+      refuses(
+        { 'pnpm-workspace.yaml': `${workspace(['GHSA-7w5x-hrqm-74c2'])}${key}:${value}\n` },
+        new RegExp(`top-level key "${key}" is not allowed`),
+      );
+    });
+  }
+
+  it('a key that pnpm expands from the environment fails (top level)', () => {
+    refuses(
+      {
+        'pnpm-workspace.yaml': `${workspace(['GHSA-7w5x-hrqm-74c2'])}"audit\${TKT335_UNSET:-Config}":\n  ignoreGhsas:\n    - GHSA-w27v-7q3p-w38r\n`,
+      },
+      /\$\{.*expand/,
+    );
+  });
+
+  it('a key that pnpm expands from the environment fails (nested)', () => {
+    refuses(
+      { 'pnpm-workspace.yaml': workspace(['GHSA-7w5x-hrqm-74c2']).replace("'left-pad@<1.3.0'", "'left-pad@${X:-<1.3.0}'") },
+      /\$\{.*expand/,
+    );
+  });
+
+  it('an anchor anywhere in pnpm-workspace.yaml fails', () => {
+    refuses({ 'pnpm-workspace.yaml': workspace(['GHSA-7w5x-hrqm-74c2']).replace('packages:\n', 'packages: &p\n') }, /anchor/);
+  });
+
+  it('a pnpm field in the root package.json fails', () => {
+    refuses({ 'package.json': '{"name":"x","pnpm":{"auditConfig":{"ignoreGhsas":[]}}}\n' }, /package\.json.*"pnpm"/);
+  });
+
+  it('a root package.json without a pnpm field passes', () => {
+    passes({ 'package.json': '{"name":"x","private":true}\n' });
+  });
+});
+
+describe('the effective pnpm configuration (injected)', () => {
+  const clean = {
+    auditConfig: { ignoreGhsas: ['GHSA-7w5x-hrqm-74c2'] },
+    registry: 'https://registry.npmjs.org/',
+    json: true,
+    packages: [],
+  };
+  function effective(config, files = {}) {
+    return checkEffective(repo({ ...VALID, ...files }), { readConfig: () => config });
+  }
+
+  it('the derived mirror and the default registry pass', () => {
+    assert.deepEqual(effective(clean), []);
+  });
+
+  it('an effective ignoreGhsas that differs from the derived list fails', () => {
+    const found = effective({ ...clean, auditConfig: { ignoreGhsas: ['GHSA-7w5x-hrqm-74c2', 'GHSA-w27v-7q3p-w38r'] } });
+    assert.ok(found.some((p) => /effective auditConfig/.test(p)), found.join('\n'));
+  });
+
+  it('a missing effective auditConfig fails', () => {
+    const { auditConfig, ...rest } = clean;
+    assert.ok(effective(rest).some((p) => /effective auditConfig/.test(p)));
+  });
+
+  it('another key in the effective auditConfig fails', () => {
+    const found = effective({ ...clean, auditConfig: { ...clean.auditConfig, ignoreCves: ['CVE-2026-1'] } });
+    assert.ok(found.some((p) => /effective auditConfig/.test(p)), found.join('\n'));
+  });
+
+  for (const key of [
+    'ignore',
+    'ignoreUnfixable',
+    'ignore-unfixable',
+    'ignoreRegistryErrors',
+    'auditLevel',
+    'fix',
+    'production',
+    'dev',
+    'only',
+    'optional',
+    'pnpmfile',
+    'globalPnpmfile',
+  ]) {
+    it(`an effective "${key}" setting fails`, () => {
+      const found = effective({ ...clean, [key]: true });
+      assert.ok(found.some((p) => p.includes(`effective setting "${key}"`)), found.join('\n'));
+    });
+  }
+
+  it('another registry fails', () => {
+    const found = effective({ ...clean, registry: 'https://127.0.0.1:9/' });
+    assert.ok(found.some((p) => /effective registry/.test(p)), found.join('\n'));
+  });
+
+  it('a missing registry fails', () => {
+    const { registry, ...rest } = clean;
+    assert.ok(effective(rest).some((p) => /effective registry/.test(p)));
+  });
+
+  it('a failure to read the configuration fails', () => {
+    const found = checkEffective(repo(VALID), {
+      readConfig: () => {
+        throw new Error('pnpm exited 1');
+      },
+    });
+    assert.ok(found.some((p) => /cannot read the effective pnpm configuration/.test(p)), found.join('\n'));
+  });
+
+  it('a pnpm that exits non-zero fails, even when it prints a clean configuration', () => {
+    const dir = repo(VALID);
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\necho '${JSON.stringify(clean)}'\nexit 3\n`, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    const found = checkEffective(dir, { readConfig: (root) => readEffectiveConfig(root, env) });
+    assert.ok(found.some((p) => /cannot read the effective pnpm configuration: pnpm config list exited 3/.test(p)), found.join('\n'));
+  });
+
+  it('a configuration that is not an object fails', () => {
+    assert.ok(effective([]).some((p) => /cannot read the effective pnpm configuration/.test(p)));
+  });
+
+  it('an allowlist that the static check refuses fails', () => {
+    const found = effective(clean, { '.trivyignore.yaml': allowlist(entry({ owner: 'someone' })) });
+    assert.ok(found.some((p) => /not in the allowed set/.test(p)), found.join('\n'));
+  });
+});
+
+describe('the effective pnpm configuration (real pnpm)', () => {
+  // These run `pnpm config list --json`, the configuration that `pnpm audit` also
+  // reads. The static check refuses each of these files too; here the effective
+  // check must refuse them by itself.
+  const base = {
+    '.trivyignore.yaml': allowlist(),
+    'package.json': `${JSON.stringify({ name: 'fixture', private: true, packageManager: PACKAGE_MANAGER })}\n`,
+    'pnpm-workspace.yaml': 'packages: []\nauditConfig:\n  ignoreGhsas: []\n',
+  };
+  const HOOK = "module.exports = { hooks: { updateConfig(config) { config.auditConfig = { ignoreGhsas: ['GHSA-w27v-7q3p-w38r'] }; return config; } } };\n";
+  // The developer's user .npmrc and global pnpm configuration stay out of the
+  // fixture: a local registry mirror there would make the clean fixture fail.
+  function effective(files) {
+    const dir = repo({ ...base, ...files, 'user.npmrc': '' });
+    const env = { ...process.env, npm_config_userconfig: join(dir, 'user.npmrc'), XDG_CONFIG_HOME: dir };
+    return checkEffective(dir, { readConfig: (root) => readEffectiveConfig(root, env) });
+  }
+
+  it('a clean fixture passes', () => {
+    assert.deepEqual(effective({}), []);
+  });
+
+  it('a key that pnpm expands into auditConfig fails', () => {
+    const found = effective({
+      'pnpm-workspace.yaml': `${base['pnpm-workspace.yaml']}"audit\${TKT335_UNSET:-Config}":\n  ignoreGhsas:\n    - GHSA-w27v-7q3p-w38r\n`,
+    });
+    assert.ok(found.some((p) => /effective auditConfig/.test(p)), found.join('\n'));
+  });
+
+  it('a .pnpmfile.cjs updateConfig hook fails', () => {
+    const found = effective({ '.pnpmfile.cjs': HOOK });
+    assert.ok(found.some((p) => /effective auditConfig/.test(p)), found.join('\n'));
+  });
+
+  it('a pnpmfile setting fails', () => {
+    const found = effective({
+      'hook.cjs': HOOK,
+      'pnpm-workspace.yaml': `${base['pnpm-workspace.yaml']}pnpmfile: hook.cjs\n`,
+    });
+    assert.ok(found.some((p) => /effective (auditConfig|setting "pnpmfile")/.test(p)), found.join('\n'));
+  });
+
+  it('a top-level ignore setting fails', () => {
+    const found = effective({ 'pnpm-workspace.yaml': `${base['pnpm-workspace.yaml']}ignore:\n  - GHSA-w27v-7q3p-w38r\n` });
+    assert.ok(found.some((p) => p.includes('effective setting "ignore"')), found.join('\n'));
+  });
+});
+
+describe('workflow wiring (structural)', () => {
+  const REAL = readFileSync(join(REPO, '.github/workflows/security.yaml'), 'utf8');
+  function mutated(old, replacement) {
+    assert.ok(REAL.includes(old), `fixture text not found: ${old}`);
+    return REAL.replace(old, replacement);
+  }
+  function refusesWiring(text, pattern) {
+    const found = checkWiring(text);
+    if (!pattern.source.includes('parse error')) {
+      assert.ok(!found.some((p) => /parse error/.test(p)), `the mutated fixture does not parse:\n  ${found.join('\n  ')}`);
+    }
+    assert.ok(found.some((p) => pattern.test(p)), `want ${pattern}, got:\n  ${found.join('\n  ') || '(none)'}`);
+  }
+  const CHECK = '      - run: node scripts/scan-allowlist.mjs check --now\n';
+  const EFFECTIVE = '      - run: node scripts/scan-allowlist.mjs check --effective\n';
+  const AUDIT = '      - run: pnpm audit --audit-level high\n';
+  const TRIVY_WITH = '          exit-code: "1"\n';
+
+  it('the real workflow passes', () => {
+    assert.deepEqual(checkWiring(REAL), []);
+  });
+
+  it('the expiry step only as text in a job name fails', () => {
+    refusesWiring(
+      mutated(`  pnpm-audit:\n    needs: changes\n`, `  pnpm-audit:\n    name: |\n${CHECK.replace('      - ', '      ')}    needs: changes\n`).replace(CHECK, ''),
+      /pnpm-audit: the last steps/,
+    );
+  });
+
+  it('a quoted "if" key on the expiry step fails', () => {
+    refusesWiring(mutated(CHECK, `${CHECK}        "if": false\n`), /step key "if"/);
+  });
+
+  it('a continue-on-error on the effective step fails', () => {
+    refusesWiring(mutated(EFFECTIVE, `${EFFECTIVE}        continue-on-error: true\n`), /step key "continue-on-error"/);
+  });
+
+  it('an env on the audit step fails', () => {
+    refusesWiring(mutated(AUDIT, `${AUDIT}        env:\n          npm_config_registry: https://127.0.0.1:9/\n`), /step key "env"/);
+  });
+
+  it('a pnpm-audit job that is always skipped fails', () => {
+    refusesWiring(
+      mutated("      github.event_name != 'pull_request' || needs.changes.outputs.node == 'true'\n", '      false\n'),
+      /pnpm-audit.*"if"/,
+    );
+  });
+
+  it('a pnpm-audit job with continue-on-error fails', () => {
+    refusesWiring(mutated('  pnpm-audit:\n    needs: changes\n', '  pnpm-audit:\n    needs: changes\n    continue-on-error: true\n'), /pnpm-audit.*key "continue-on-error"/);
+  });
+
+  it('the effective step missing fails', () => {
+    refusesWiring(mutated(EFFECTIVE, ''), /pnpm-audit.*last steps/);
+  });
+
+  it('the expiry step after the audit fails', () => {
+    refusesWiring(mutated(`${CHECK}${EFFECTIVE}${AUDIT}`, `${EFFECTIVE}${AUDIT}${CHECK}`), /pnpm-audit.*last steps/);
+  });
+
+  it('a step between the effective check and the audit fails', () => {
+    refusesWiring(mutated(`${EFFECTIVE}${AUDIT}`, `${EFFECTIVE}      - run: printf 'ignore:\\n  - GHSA-w27v-7q3p-w38r\\n' >> pnpm-workspace.yaml\n${AUDIT}`), /pnpm-audit.*last steps/);
+  });
+
+  it('pnpm audit --ignore fails', () => {
+    refusesWiring(mutated(AUDIT, '      - run: pnpm audit --audit-level high --ignore GHSA-w27v-7q3p-w38r\n'), /pnpm-audit.*last steps/);
+  });
+
+  it('the expiry check without --now fails', () => {
+    refusesWiring(mutated(CHECK, '      - run: node scripts/scan-allowlist.mjs check\n'), /pnpm-audit.*last steps/);
+  });
+
+  it('a workflow-level env fails', () => {
+    refusesWiring(mutated('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n\nenv:\n  npm_config_registry: https://127.0.0.1:9/\n'), /workflow key "env"/);
+  });
+
+  it('.trivyignore.yaml missing from the changes filter fails', () => {
+    refusesWiring(mutated('pnpm-workspace\\.yaml|\\.trivyignore\\.yaml)$', 'pnpm-workspace\\.yaml)$'), /changes.*\.trivyignore/);
+  });
+
+  it('a continue-on-error on the Trivy step fails', () => {
+    refusesWiring(mutated('      - uses: aquasecurity/trivy-action@', '      - continue-on-error: true\n        uses: aquasecurity/trivy-action@'), /Trivy step key "continue-on-error"/);
+  });
+
+  it('a step-level if on the Trivy step fails', () => {
+    refusesWiring(mutated('      - uses: aquasecurity/trivy-action@', '      - if: false\n        uses: aquasecurity/trivy-action@'), /Trivy step key "if"/);
+  });
+
+  it('exit-code "0" fails', () => {
+    refusesWiring(mutated(TRIVY_WITH, '          exit-code: "0"\n'), /Trivy input "exit-code"/);
+  });
+
+  it('a severity change fails', () => {
+    refusesWiring(mutated('          severity: HIGH,CRITICAL\n', '          severity: CRITICAL\n'), /Trivy input "severity"/);
+  });
+
+  it('a missing trivyignores input fails', () => {
+    refusesWiring(mutated('          trivyignores: .trivyignore.yaml\n', ''), /Trivy input "trivyignores"/);
+  });
+
+  it('an extra Trivy input fails (skip-files)', () => {
+    refusesWiring(mutated(TRIVY_WITH, `${TRIVY_WITH}          skip-files: pnpm-lock.yaml\n`), /Trivy input "skip-files"/);
+  });
+
+  it('a job-level if on repository-scan fails', () => {
+    refusesWiring(mutated('  repository-scan:\n    runs-on: ubuntu-latest\n', '  repository-scan:\n    if: false\n    runs-on: ubuntu-latest\n'), /repository-scan.*key "if"/);
+  });
+
+  it('a duplicate key fails', () => {
+    refusesWiring(mutated(TRIVY_WITH, `${TRIVY_WITH}          exit-code: "0"\n`), /parse error/);
+  });
+
+  it('another pnpm audit step before the checks fails', () => {
+    refusesWiring(mutated(CHECK, `      - run: pnpm audit --ignore GHSA-w27v-7q3p-w38r\n${CHECK}`), /pnpm-audit.*last steps/);
+  });
+
+  it('a pnpm-audit job that needs another job fails', () => {
+    refusesWiring(mutated('  pnpm-audit:\n    needs: changes\n', '  pnpm-audit:\n    needs: govulncheck\n'), /pnpm-audit: "needs"/);
+  });
+
+  it('a non-pull-request run that does not set node=true fails', () => {
+    refusesWiring(mutated("printf 'go=true\\nnode=true\\n'", "printf 'go=true\\nnode=false\\n'"), /changes: a run that is not a pull request/);
+  });
+
+  it('a workflow-level defaults fails', () => {
+    refusesWiring(mutated('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n\ndefaults:\n  run:\n    shell: bash\n'), /workflow key "defaults"/);
+  });
+
+  it('a run step in repository-scan fails', () => {
+    refusesWiring(mutated('      - uses: aquasecurity/trivy-action@', '      - run: printf "x" > trivy.yaml\n      - uses: aquasecurity/trivy-action@'), /repository-scan: a run step/);
+  });
+
+  it('a second Trivy step fails', () => {
+    const start = REAL.indexOf('      - uses: aquasecurity/trivy-action@');
+    const end = REAL.indexOf('\n\n', start);
+    const step = REAL.slice(start, end + 1);
+    refusesWiring(mutated(step, `${step}${step}`), /exactly one aquasecurity\/trivy-action step/);
+  });
+
+  it('a Trivy version that is not pinned fails', () => {
+    refusesWiring(mutated('          version: v0.72.0\n', '          version: latest\n'), /Trivy input "version"/);
+  });
 });
 
 describe('sync', () => {

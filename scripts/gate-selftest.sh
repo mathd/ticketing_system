@@ -417,7 +417,9 @@ expect_fail "security workflow trigger (secret scanning dropped)" check-security
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
+before = s
 s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (allowlist expiry check dropped)" check-security-workflow-trigger
@@ -427,9 +429,11 @@ expect_fail "security workflow trigger (allowlist expiry check dropped)" check-s
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
+before = s
 check = '      - run: node scripts/scan-allowlist.mjs check --now\n'
 audit = '      - run: pnpm audit --audit-level high\n'
-s = s.replace(check + audit, audit + check, 1)
+s = s.replace(check, '', 1).replace(audit, audit + check, 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (allowlist check after the audit)" check-security-workflow-trigger
@@ -439,8 +443,10 @@ expect_fail "security workflow trigger (allowlist check after the audit)" check-
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
+before = s
 s = s.replace('      - run: pnpm audit --audit-level high\n',
               '      - run: pnpm audit --audit-level high --ignore GHSA-7w5x-hrqm-74c2\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (pnpm audit --ignore)" check-security-workflow-trigger
@@ -449,8 +455,10 @@ expect_fail "security workflow trigger (pnpm audit --ignore)" check-security-wor
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
+before = s
 s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n',
               '      - run: node scripts/scan-allowlist.mjs check --now\n        continue-on-error: true\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (allowlist check made tolerant)" check-security-workflow-trigger
@@ -459,7 +467,9 @@ expect_fail "security workflow trigger (allowlist check made tolerant)" check-se
 python3 - <<'SEED'
 p = '.github/workflows/security.yaml'
 s = open(p).read()
+before = s
 s = s.replace('          trivyignores: .trivyignore.yaml\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (trivyignores input dropped)" check-security-workflow-trigger
@@ -469,22 +479,67 @@ expect_fail "security workflow trigger (trivyignores input dropped)" check-secur
 python3 - <<'SEED'
 p = 'Makefile'
 s = open(p).read()
+before = s
 s = s.replace(' check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ',
               ' check-security-workflow-trigger check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (check-scan-allowlist dropped from check-all)" check-security-workflow-trigger
 
 # 12j. The allowlist checker itself, on the real files: a pnpm mirror that is not
-#      the allowlist's (here, a GHSA that no reviewed entry names).
+#      the allowlist's. The seed adds a GHSA that no reviewed entry names, so it
+#      makes drift whatever the mirror holds today, empty or not.
 expect_pass "scan allowlist (clean baseline)" check-scan-allowlist
 python3 - <<'SEED'
 p = 'pnpm-workspace.yaml'
 s = open(p).read()
-s = s.replace('  ignoreGhsas: []\n', '  ignoreGhsas:\n    - GHSA-7w5x-hrqm-74c2\n', 1)
+before = s
+extra = '    - GHSA-2222-2222-2222\n'
+if '  ignoreGhsas: []\n' in s:
+    s = s.replace('  ignoreGhsas: []\n', '  ignoreGhsas:\n' + extra, 1)
+else:
+    assert '  ignoreGhsas:\n' in s, 'the mirror is not in the block form that sync writes'
+    s = s.replace('  ignoreGhsas:\n', '  ignoreGhsas:\n' + extra, 1)
+assert s != before, 'the seed did not apply; update it to the current file'
 open(p, 'w').write(s)
 SEED
 expect_fail "scan allowlist (pnpm mirror drift)" check-scan-allowlist
+
+# 12k. The effective-configuration step dropped: pnpm then audits with whatever
+#      it expanded or a pnpmfile hook wrote, unchecked.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs check --effective\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (effective-configuration step dropped)" check-security-workflow-trigger
+
+# 12l. A quoted "if" key skips the expiry step; a line matcher did not see it.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs check --now\n',
+              '      - run: node scripts/scan-allowlist.mjs check --now\n        "if": false\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (quoted if on the expiry step)" check-security-workflow-trigger
+
+# 12m. Trivy still runs, but its findings no longer fail the job.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('          exit-code: "1"\n', '          exit-code: "0"\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (Trivy exit-code 0)" check-security-workflow-trigger
 
 # 13. The hermetic workflow missing a production web image input. The enumerated
 #     path list covered the scanner and the storefront but not web/backoffice, so a

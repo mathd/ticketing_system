@@ -121,8 +121,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # pnpm applies auditConfig.ignoreGhsas with no expiry, so the allowlist's
       # expiry is checked here, before the audit (ADR-081). Trivy drops an
-      # expired entry by itself, so repository-scan needs no such step.
+      # expired entry by itself, so repository-scan needs no such step. Then the
+      # configuration that pnpm builds for the audit (expanded keys, pnpmfile
+      # hooks, other settings) must match the reviewed list. These three steps
+      # stay last and in this order; `scan-allowlist.mjs wiring` refuses a change.
       - run: node scripts/scan-allowlist.mjs check --now
+      - run: node scripts/scan-allowlist.mjs check --effective
       - run: pnpm audit --audit-level high
 
   repository-scan:

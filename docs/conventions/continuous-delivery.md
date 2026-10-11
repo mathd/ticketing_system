@@ -29,8 +29,9 @@ see [Main ruleset](#main-ruleset). `gate-selftest` and the security workflow are
 checks. The security workflow is a separate blocking signal for review: Go findings are
 reachability-aware, while pnpm and Trivy fail on high or critical findings. A finding that a bump
 cannot fix yet goes in the reviewed, expiring allowlist `.trivyignore.yaml`, not in a per-PR
-override. `make check` validates the allowlist and its pnpm mirror; the `pnpm-audit` job fails on an
-expired entry before `pnpm audit` runs
+override. `make check` validates the allowlist and its pnpm mirror without reading the clock; the
+`pnpm-audit` job fails on an entry that expires within one hour, and on an effective pnpm
+configuration that differs from the reviewed list, before `pnpm audit` runs
 ([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)).
 
 Run this locally before handoff:
