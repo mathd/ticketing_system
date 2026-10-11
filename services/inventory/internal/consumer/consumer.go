@@ -333,6 +333,20 @@ var knownSchemas = map[string]struct{ min, max int }{
 // decode into until this consumer has chosen an arm.
 type envelope = domainevent.Raw
 
+// delivery is the part of a jetstream.Msg that the handlers below use. A jetstream.Msg satisfies
+// it, and so does reprocess-quarantine's recording delivery (TKT-326 D5). The handlers stay the
+// ONE implementation of every disposition: reprocess runs them unchanged and reads which call
+// they made.
+type delivery interface {
+	Subject() string
+	Data() []byte
+	Metadata() (*jetstream.MsgMetadata, error)
+	Ack() error
+	Nak() error
+	NakWithDelay(time.Duration) error
+	Term() error
+}
+
 // handle is the message handler, split out of Run's Consume closure so the disposition it actually
 // ships can be tested against a fake jetstream.Msg (the shape services/access already uses). The
 // disposition is what dropped inventory in TKT-61, so it does not get to go untested.
@@ -340,7 +354,7 @@ type envelope = domainevent.Raw
 // The order of the three questions below is load-bearing, and they are asked from the outside in:
 // is the envelope readable, is the variant ours to judge, and only then is the payload valid. Ask
 // them in any other order and a future variant gets judged by rules that were never written for it.
-func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
+func (c *Consumer) handle(ctx context.Context, msg delivery) {
 	// Read the envelope only. Dispatch on (subject, `schema`) before `data` is decoded — see
 	// envelope's doc comment for why the ordering is the whole fix and not a style choice.
 	// The bottom-end rule (`schema <= 0`) is the shared one; everything below it here — the
@@ -449,7 +463,7 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	}
 }
 
-func (c *Consumer) handlePublication(ctx context.Context, msg jetstream.Msg, env envelope) {
+func (c *Consumer) handlePublication(ctx context.Context, msg delivery, env envelope) {
 	// Known variant: now it is ours to judge, so read and validate `data` as this schema defines it.
 	var e publication
 	if err := json.Unmarshal(msg.Data(), &e); err != nil {
@@ -549,7 +563,7 @@ type archivedData struct {
 // handleArchived marks the pool terminally archived (TKT-75). Schema 2 is a solo slot,
 // schema 3 a grouped one whose pool is the festival's capacity group — the same pool
 // convergence the publication path uses.
-func (c *Consumer) handleArchived(ctx context.Context, msg jetstream.Msg, env envelope) {
+func (c *Consumer) handleArchived(ctx context.Context, msg delivery, env envelope) {
 	var d archivedData
 	if err := json.Unmarshal(env.Data, &d); err != nil {
 		c.log.Error("invalid archived event", "event_id", env.ID, "err", err)
@@ -587,7 +601,7 @@ type closureData struct {
 // (TKT-75). The payload carries no capacity group, so the pool is resolved against catalog —
 // a grouped day converges on the shared festival pool, closing it whole (owner decision at
 // Gate 2; day-level offer state is TKT-14's).
-func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env envelope, closed bool) {
+func (c *Consumer) handleClosure(ctx context.Context, msg delivery, env envelope, closed bool) {
 	var d closureData
 	if err := json.Unmarshal(env.Data, &d); err != nil {
 		c.log.Error("invalid closure event", "event_id", env.ID, "err", err)
@@ -644,7 +658,7 @@ func (c *Consumer) handleClosure(ctx context.Context, msg jetstream.Msg, env env
 // recordMoot acks a moot outcome only once it is durable (TKT-317 D1). A failed write keeps the
 // message for redelivery, so an acked moot event always has its record. The source decides what
 // the record authorises: only a publication record lets a later archive through (D7).
-func (c *Consumer) recordMoot(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID uuid.UUID, source store.MootSource) {
+func (c *Consumer) recordMoot(ctx context.Context, msg delivery, eventID, organizerID, slotID uuid.UUID, source store.MootSource) {
 	if err := c.st.RecordMootSlot(ctx, eventID, organizerID, slotID, source); err != nil {
 		c.log.Error("record moot outcome; retrying", "subject", msg.Subject(), "event_id", eventID, "err", err)
 		_ = msg.NakWithDelay(5 * time.Second)
@@ -658,7 +672,7 @@ func (c *Consumer) recordMoot(ctx context.Context, msg jetstream.Msg, eventID, o
 // catalog_event_parked, the park is counted and logged at ERROR, and the message is terminated.
 // A store failure keeps the message for redelivery. Readiness is not touched: this is not version
 // skew, and a broken catalog must not take inventory out of service.
-func (c *Consumer) unusableAnswer(ctx context.Context, msg jetstream.Msg, env envelope, slotID, organizerID uuid.UUID, cause error) {
+func (c *Consumer) unusableAnswer(ctx context.Context, msg delivery, env envelope, slotID, organizerID uuid.UUID, cause error) {
 	meta, err := msg.Metadata()
 	if err != nil {
 		c.log.Error("catalog event delivery count unreadable; retrying", "subject", msg.Subject(), "event_id", env.ID, "err", err)
@@ -715,7 +729,7 @@ func (c *Consumer) countParked(ctx context.Context, subject string) {
 // and slot consumes the event (D7). A closure record does not, so without a publication record the
 // event waits for publication to provision the pool. Other store errors retry, and success acks.
 // Readiness is never touched, because none of these are version skew.
-func (c *Consumer) applyOffering(ctx context.Context, msg jetstream.Msg, eventID, organizerID, slotID, pool uuid.UUID, apply func() error) {
+func (c *Consumer) applyOffering(ctx context.Context, msg delivery, eventID, organizerID, slotID, pool uuid.UUID, apply func() error) {
 	switch err := apply(); {
 	case errors.Is(err, store.ErrNotFound):
 		moot, mootErr := c.st.ConsumeMootOffering(ctx, eventID, organizerID, slotID, pool)

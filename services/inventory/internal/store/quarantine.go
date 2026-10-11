@@ -24,7 +24,8 @@ var (
 // not config surface: tune it here when operational evidence demands it (TKT-68 plan-final).
 const MaxCatalogQuarantinePending = 10_000
 
-// CatalogQuarantineRetention keeps reinjected rows for post-incident inspection before pruning.
+// CatalogQuarantineRetention keeps resolved rows (reinjected_at set) for post-incident inspection
+// before pruning.
 const CatalogQuarantineRetention = 7 * 24 * time.Hour
 
 type QuarantinedCatalogEvent struct {
@@ -48,7 +49,7 @@ func (p *Postgres) QuarantineCatalogEvent(ctx context.Context, subject string, e
 	if _, err = tx.ExecContext(ctx, `LOCK TABLE catalog_event_quarantine IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return err
 	}
-	// Retention pruning lives here and only here (plan-final A4): reinjected rows past their
+	// Retention pruning lives here and only here (plan-final A4): resolved rows past their
 	// retention age go as a side effect of the next write.
 	if _, err = tx.ExecContext(ctx, `DELETE FROM catalog_event_quarantine
 		WHERE reinjected_at IS NOT NULL AND reinjected_at < now() - $1::interval`,
@@ -104,8 +105,8 @@ func (p *Postgres) HasPendingCatalogQuarantine(ctx context.Context) (bool, error
 }
 
 // ListCatalogQuarantine returns unresolved rows oldest-first, keyset-paginated after the given
-// row (nil = from the start). The cursor moves past unsupported rows too — rows the current
-// binary cannot re-inject must not starve supported rows behind them.
+// row (nil = from the start). The cursor moves past unsupported and deferred rows too — rows the
+// current binary cannot apply yet must not starve supported rows behind them.
 func (p *Postgres) ListCatalogQuarantine(ctx context.Context, after *QuarantinedCatalogEvent, limit int) ([]QuarantinedCatalogEvent, error) {
 	var rows *sql.Rows
 	var err error
@@ -135,9 +136,13 @@ func (p *Postgres) ListCatalogQuarantine(ctx context.Context, after *Quarantined
 	return out, rows.Err()
 }
 
-// MarkCatalogEventReinjected records that the broker accepted the republication. It means
-// exactly that — not that inventory business processing completed. Idempotent: marking an
-// already-resolved row is a no-op, so a crashed reprocess run can simply be re-run.
+// MarkCatalogEventReinjected resolves a quarantine row. The column and method keep their TKT-68
+// names, but the meaning changed with TKT-326: reprocess-quarantine now runs the consumer's
+// handler in-process and marks a row only after the handler acked it (its projection or moot
+// record is committed) or terminated it (no binary will apply it). A row marked by an earlier
+// binary means only that the broker accepted a republication, not that processing completed.
+// Idempotent: marking an already-resolved row is a no-op, so a crashed reprocess run can simply
+// be re-run (consumed_events dedups the projection).
 func (p *Postgres) MarkCatalogEventReinjected(ctx context.Context, subject string, eventID uuid.UUID) error {
 	_, err := p.db.ExecContext(ctx, `UPDATE catalog_event_quarantine SET reinjected_at=now()
 		WHERE subject=$1 AND event_id=$2 AND reinjected_at IS NULL`, subject, eventID)

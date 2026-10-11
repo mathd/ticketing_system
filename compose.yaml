@@ -103,15 +103,12 @@ services:
     environment:
       # NATS server publisher ACL credentials (TKT-170, ADR-072).
       # Held by nats to configure per-user authorization in nats-server.conf.
-      # NATS_INVENTORY_REPROCESS_PASSWORD is intentionally delivered ONLY here
-      # and never to the inventory container.
       # Wrapped in quotes so NATS internal config lexer (conf/parse.go parseEnv)
       # parses environment variable expansions as strings even when a random hex
       # draw resembles scientific notation (e.g. 34e084f3).
       NATS_ADMIN_PASSWORD: "\"${NATS_ADMIN_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
       NATS_CATALOG_PASSWORD: "\"${NATS_CATALOG_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
       NATS_INVENTORY_PASSWORD: "\"${NATS_INVENTORY_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
-      NATS_INVENTORY_REPROCESS_PASSWORD: "\"${NATS_INVENTORY_REPROCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
       NATS_COMMERCE_PASSWORD: "\"${NATS_COMMERCE_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
       NATS_PAYMENTS_PASSWORD: "\"${NATS_PAYMENTS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""
       NATS_ACCESS_PASSWORD: "\"${NATS_ACCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}\""

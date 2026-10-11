@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -230,8 +229,9 @@ func TestNATSCommerceCannotPublishAccessSubject(t *testing.T) {
 		"stream contains event %s published by unauthorized commerce principal")
 }
 
-// TestNATSInventoryServerCannotPublishCatalogSubject asserts that the long-running inventory
-// credential cannot publish to catalog subjects, demonstrating separation from inventory-reprocess.
+// TestNATSInventoryServerCannotPublishCatalogSubject asserts that the inventory credential
+// cannot publish to catalog subjects. Since TKT-326 no inventory principal can: reprocess-quarantine
+// applies quarantined events in-process, so catalog is the only service that publishes on its prefix.
 func TestNATSInventoryServerCannotPublishCatalogSubject(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -564,106 +564,5 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	}
 	if scanResult.Decision != "accepted" {
 		t.Fatalf("forged ticket scan decision = %q, want accepted", scanResult.Decision)
-	}
-}
-
-// TestNATSOperatorCredentialIsConfinedToTheBroker asserts the ticket's CENTRAL claim: the
-// inventory-reprocess operator password reaches the nats container and NOTHING else. In
-// particular it must never enter the long-running inventory server's environment.
-//
-// Why this test exists (ai-review F3). Every other test here is a NEGATIVE about the
-// `inventory` principal: they prove that credential cannot publish on catalog's prefix. None of
-// them observes the operator credential at all, so adding NATS_INVENTORY_REPROCESS_PASSWORD to
-// compose's shared &go-env anchor would leave this entire file green while voiding the
-// separation the ADR claims. A mitigation whose failure no test can see is a claim, not a
-// control.
-//
-// It asserts on the ENVIRONMENT rather than on a refusal because that is where the property
-// lives. The broker cannot tell us who else holds a password; only the container's environment
-// can. Per ADR-021: state inside a system cannot constrain what is handed to it from outside.
-func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
-	ctx := context.Background()
-	const operatorVar = "NATS_INVENTORY_REPROCESS_PASSWORD"
-
-	envOf := func(service string) string {
-		t.Helper()
-		container := fmt.Sprintf("%s-%s-1", project, service)
-		out, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
-		if err != nil {
-			t.Fatalf("docker inspect %s: %v: %s", container, err, out)
-		}
-		return out
-	}
-
-	// The operator password must be absent from every long-running service, by NAME and by
-	// VALUE. The name check catches the obvious regression (someone adds the variable to the
-	// shared anchor); the value check catches it arriving under a different name, e.g. folded
-	// into a NATS_URL.
-	// FAIL rather than skip when the value is unavailable. A `!= ""` guard here would let the
-	// value check silently become a no-op in any environment that does not export the password,
-	// leaving a test that still passes while performing half the job it documents — the
-	// green-test-that-cannot-reach-the-failing-state shape. If this fires, the harness is
-	// misconfigured (scripts/smoke.sh exports it), not the code under test.
-	operatorPassword := strings.TrimSpace(os.Getenv(operatorVar))
-	if operatorPassword == "" {
-		t.Fatalf("%s is not set in the test environment, so the value check cannot run; "+
-			"scripts/smoke.sh must export it (a name-only check would pass while a renamed "+
-			"copy of the credential sat in a service's environment)", operatorVar)
-	}
-	// Sweep every container the project has INSTANTIATED, not a hand-listed subset. A fixed list
-	// of the five Go services would pass while the credential sat in the gateway, a web app, or a
-	// one-shot job (ai-review pass 2), and the property is "nothing but the broker holds it", so
-	// the target set is discovered rather than enumerated.
-	//
-	// The bound is honest: `compose ps --all` reports containers that EXIST, so a service behind
-	// an inactive profile, or one never started, is not covered (ai-review pass 3). Within the
-	// gate that is the whole stack, and an inspect failure now fails the test rather than
-	// silently reducing the sweep.
-	listed, err := dockerRun(ctx, "compose", "-p", project, "ps", "--all", "--format", "{{.Name}}")
-	if err != nil {
-		t.Fatalf("docker compose ps: %v: %s", err, listed)
-	}
-	containers := strings.Fields(listed)
-	if len(containers) < 5 {
-		t.Fatalf("found only %d containers in project %s; the sweep below would prove almost nothing", len(containers), project)
-	}
-	broker := fmt.Sprintf("%s-nats-1", project)
-	swept := 0
-	for _, container := range containers {
-		if container == broker {
-			continue // the broker is the one component that MUST hold it
-		}
-		env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
-		if err != nil {
-			// FAIL rather than skip. A one-shot job is exactly the kind of container that could
-			// receive the credential and then exit, and a `continue` here would let the sweep
-			// report success having never looked at it (ai-review pass 3).
-			t.Errorf("cannot inspect %s, so its environment is unchecked: %v: %s", container, err, env)
-			continue
-		}
-		swept++
-		if strings.Contains(env, operatorVar+"=") {
-			t.Errorf("%s holds %s; the operator credential must reach only %s", container, operatorVar, broker)
-		}
-		if strings.Contains(env, operatorPassword) {
-			t.Errorf("%s holds the operator password VALUE; it must reach only %s", container, broker)
-		}
-	}
-	if swept == 0 {
-		t.Fatalf("swept no containers; the assertions above proved nothing")
-	}
-	t.Logf("swept %d containers (excluding %s)", swept, broker)
-
-	// And the inventory server must hold its OWN credential, so the check above is not passing
-	// merely because the service has no NATS credential at all.
-	inventoryEnv := envOf("inventory")
-	if !strings.Contains(inventoryEnv, "nats://inventory:") {
-		t.Errorf("inventory does not carry its own `inventory` principal; the absence assertions above prove nothing")
-	}
-
-	// The broker DOES need it: it is the component that enforces the identity. If this fails,
-	// the operator credential is not configured anywhere and the recovery path is dead.
-	if natsEnv := envOf("nats"); !strings.Contains(natsEnv, operatorVar+"=") {
-		t.Errorf("the nats container lacks %s; the operator identity cannot be enforced", operatorVar)
 	}
 }
