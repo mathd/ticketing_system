@@ -101,13 +101,46 @@ async function createThroughForm(page, code, name) {
  * page as it was before the submit. Returns the browser's POST and its status:
  * 303 is a saved change (post/redirect/get), 200 a re-rendered refusal.
  */
-async function submit(page, button) {
+async function submit(page, button, { timeout } = {}) {
   const [response] = await Promise.all([
-    page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/admin/channels')),
-    page.waitForEvent('domcontentloaded'),
-    button.click(),
+    page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/admin/channels'), { timeout }),
+    page.waitForEvent('domcontentloaded', { timeout }),
+    button.click({ timeout }),
   ]);
   return { request: response.request(), status: response.status() };
+}
+
+/**
+ * A wait that succeeds ONLY on the refusal page (the Review button exists only
+ * there). Short, so a mutant whose submit redirected instead of refusing fails
+ * in seconds instead of hanging for Playwright's 30 s default.
+ */
+const REFUSAL_ONLY_TIMEOUT = 5_000;
+
+/** Click the row's Review button, which exists only after a refusal. */
+async function review(page, code, label) {
+  const button = page.locator(`[data-review-for="${code}"]`);
+  const offered = (await button.count()) === 1;
+  check(`${label} the refusal offers Review`, offered);
+  if (!offered) {
+    throw new Error('no Review button: the stale submit was not refused, so the rest of this direction cannot run');
+  }
+  return submit(page, button, { timeout: REFUSAL_ONLY_TIMEOUT });
+}
+
+/**
+ * Run one direction so that it cannot stop the other (AGENTS.md: an earlier
+ * failure must not short-circuit the cases after it). An exception is recorded
+ * as a FAIL through the same recorder and the spec continues. Under a mutant,
+ * direction (a) can throw (its page redirects where a refusal was expected);
+ * without this, direction (b) never runs and is never shown to discriminate.
+ */
+async function direction(label, body) {
+  try {
+    await body();
+  } catch (e) {
+    check(`${label} aborted: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`, false);
+  }
 }
 
 /** Submit a row form that must be saved: a 303, then the list again. */
@@ -134,7 +167,7 @@ try {
   // Direction (a): A opens; B DISABLES through its form; A RENAMES from the
   // still-open page. The reported defect.
   // ---------------------------------------------------------------------------
-  {
+  await direction('(a)', async () => {
     const code = codeA;
     const attempted = `Renamed by A ${stamp}`;
     await pageA.goto('/admin/channels', { waitUntil: 'domcontentloaded' });
@@ -172,8 +205,8 @@ try {
       same(afterSecond, afterB), `${show(afterSecond)} vs ${show(afterB)}`);
 
     // Review: a read. No write, fresh token, B's values on screen.
-    const review = await submit(pageA, pageA.locator(`[data-review-for="${code}"]`));
-    check('(a) Review is a POST that sends no token', review.request.postData()?.includes('_action=review') === true && postedToken(review.request) === null);
+    const reviewed = await review(pageA, code, '(a)');
+    check('(a) Review is a POST that sends no token', reviewed.request.postData()?.includes('_action=review') === true && postedToken(reviewed.request) === null);
     const afterReview = stored(code);
     check('(a) Review writes nothing: revision and updated_at unchanged',
       same(afterReview, afterB), `${show(afterReview)} vs ${show(afterB)}`);
@@ -190,13 +223,14 @@ try {
     const afterSave = stored(code);
     check('(a) the deliberate save applies A\'s rename and keeps B\'s disable',
       afterSave.displayName === attempted && afterSave.enabled === false && afterSave.revision === 2, show(afterSave));
-  }
+  });
 
   // ---------------------------------------------------------------------------
   // Direction (b): A opens; B RENAMES through its form; A TOGGLES from the
-  // still-open page. The mirror image (D1).
+  // still-open page. The mirror image (D1). It starts from a fresh page load, so
+  // it does not depend on where direction (a) stopped.
   // ---------------------------------------------------------------------------
-  {
+  await direction('(b)', async () => {
     const code = codeB;
     const renamedByB = `Renamed by B ${stamp}`;
     await pageA.goto('/admin/channels', { waitUntil: 'domcontentloaded' });
@@ -230,8 +264,8 @@ try {
     check('(b) the second refusal leaves revision and updated_at unchanged',
       same(afterSecond, afterB), `${show(afterSecond)} vs ${show(afterB)}`);
 
-    const review = await submit(pageA, pageA.locator(`[data-review-for="${code}"]`));
-    check('(b) Review is a POST that sends no token', review.request.postData()?.includes('_action=review') === true && postedToken(review.request) === null);
+    const reviewed = await review(pageA, code, '(b)');
+    check('(b) Review is a POST that sends no token', reviewed.request.postData()?.includes('_action=review') === true && postedToken(reviewed.request) === null);
     const afterReview = stored(code);
     check('(b) Review writes nothing: revision and updated_at unchanged',
       same(afterReview, afterB), `${show(afterReview)} vs ${show(afterB)}`);
@@ -245,7 +279,7 @@ try {
     const afterSave = stored(code);
     check('(b) the deliberate save disables the channel and keeps B\'s rename',
       afterSave.enabled === false && afterSave.displayName === renamedByB && afterSave.revision === 2, show(afterSave));
-  }
+  });
 } finally {
   await browser.close();
   if (!recorder.finish()) {
