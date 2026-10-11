@@ -974,8 +974,10 @@ still starts (`cmd/commerce/main.go:580-583`).
 
 ### What this amendment does not claim
 
-- **No alert, no progress guarantee and no buyer deadline.** A nonzero value is due work that nothing has
-  claimed yet. It does not say why. A healthy runner also leaves rows eligible between two ticks, so the
+- **No alert, no progress guarantee and no buyer deadline.** A nonzero value is due work with no live
+  lease. That includes a row whose claim token is still set but whose lease has expired, such as the
+  crash-after-claim case, so a counted row is not necessarily one that was never claimed. It does not say
+  why the row waits. A healthy runner also leaves rows eligible between two ticks, so the
   count measures pending work, not runner health.
 - **A row under a live lease is not counted.** Work held by a claimant that crashed after the claim becomes
   visible only after the lease expires (17 minutes at the defaults, per the TKT-145 amendment). A runner that

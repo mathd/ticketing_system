@@ -30,7 +30,10 @@ import (
 // claiming does not spend attempts, so its orders never park and the four parked series stay
 // flat. The eligible series count the rows that ClaimStuckOrders would select now: the store
 // uses one predicate constant for the claim and for this count. A sustained nonzero value
-// means due work that nothing has claimed. It does not say why, and it is not an alert.
+// means due work with no live lease. That includes a row whose claim token is still set after
+// its lease expired (a claimant that crashed after the claim), so a counted row is not
+// necessarily one that was never claimed. It does not say why the row waits, and it is not an
+// alert.
 //
 // Following internal/reversal and internal/exchangesweep, including their rule: they are
 // observability, not a gate. Nothing here can make commerce unready — checkout must not
