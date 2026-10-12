@@ -21,6 +21,23 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrUnavailable = errors.New("insufficient capacity")
 	ErrConflict    = errors.New("conflicting terminal state")
+	// ErrSoldOut: an unchannelled GA hold found zero public headroom at the locked
+	// decision (TKT-341, ADR-082). Public headroom is the admission expression:
+	// limit - confirmed - live held - capacity reserved for active channels.
+	//
+	// It WRAPS ErrUnavailable, so every caller that matches ErrUnavailable behaves as
+	// before. The code is additional information, not a new classification.
+	//
+	// It is point-in-time, not permanent. Live holds expire and channel reservations
+	// release, so the same request can succeed later.
+	//
+	// Only the public path returns it. A partial shortage (0 < headroom < quantity)
+	// stays ErrUnavailable, because the buyer can buy fewer now. Every capacity or
+	// seller refusal of a channel request stays ErrUnavailable too (the window and
+	// presale refusals keep their own sentinels): a distinct channel code would tell
+	// a prober which channels exist and who sells them (TKT-246). It has no Channel() method,
+	// so the structural match in the API mapper cannot claim it (TKT-307).
+	ErrSoldOut = fmt.Errorf("%w: sold out", ErrUnavailable)
 	// ErrChannelWindowClosed: the channel has an allocation with headroom and the
 	// pool has capacity, but the channel's sales window is not open right now
 	// (TKT-238 / ADR-054).
@@ -681,10 +698,20 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, err
 	}
 	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
-	if int64(confirmed)+int64(held)+int64(qty) > int64(limit) {
-		return Claim{}, false, ErrUnavailable
-	}
+	//
+	// The global bound is computed here and applied on both paths, but the public
+	// path applies it only AFTER it classifies the refusal (TKT-341). Refusing here
+	// first answered the code-less refusal when the global headroom was below the
+	// quantity and the public headroom was already zero, which is a sellout.
+	globalShort := int64(confirmed)+int64(held)+int64(qty) > int64(limit)
 	if channel != "" {
+		// Every capacity refusal of a channel request stays the code-less
+		// ErrUnavailable, never ErrSoldOut (TKT-246, ADR-082): a distinct code would
+		// tell a prober which channels exist and who sells them. The window and
+		// presale refusals above keep their own sentinels.
+		if globalShort {
+			return Claim{}, false, ErrUnavailable
+		}
 		// The allocation and its window were read above, before the pool-capacity
 		// check, so a closed window refuses as a closed window whatever the pool
 		// looks like. What remains here is the CAP check, which is genuinely
@@ -710,7 +737,21 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		if err = tx.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
 			return Claim{}, false, err
 		}
-		if int64(confirmed)+int64(held)+int64(qty)+reserved > int64(limit) {
+		// ONE expression for admission and for the sellout classification (ADR-082).
+		// A demand term that a later change adds to admission (for example ADR-075's
+		// pending captures) must go here, and then it moves both.
+		publicRemaining := int64(limit) - int64(confirmed) - int64(held) - reserved
+		// Zero OR LESS: a draining cut or oversized allocations can make the
+		// headroom negative, and that is a sellout too.
+		if publicRemaining <= 0 {
+			return Claim{}, false, ErrSoldOut
+		}
+		// A partial shortage is not a sellout: the buyer can buy fewer now.
+		//
+		// globalShort is implied by the headroom check while reservedForChannelsSQL
+		// clamps every allocation at zero (GREATEST). It stays as the oversell bound
+		// that does not depend on that clamp or on activeAllocation's clock.
+		if int64(qty) > publicRemaining || globalShort {
 			return Claim{}, false, ErrUnavailable
 		}
 	}

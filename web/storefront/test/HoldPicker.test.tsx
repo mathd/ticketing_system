@@ -453,3 +453,56 @@ describe('checkout idempotency', () => {
     expect(keysFor(stub, '/checkout')[0]).not.toBe(keysFor(stub, '/reservations')[0]);
   });
 });
+
+// TKT-341 / ADR-082. Commerce answers a public GA reserve on a pool with zero public
+// headroom with 409 `sold_out`. The picker says "Sold out" for that exact answer, and
+// for nothing else: every other refusal keeps "Quantity unavailable", so a closed slot
+// or a malformed answer never reads as a sellout. No waitlist action yet.
+describe('GA sellout refusal', () => {
+  function gaRefusal(body: string, status = 409): ReturnType<typeof vi.fn> {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/reservations')) return new Response(body, { status });
+      throw new Error(`unexpected fetch ${String(input)}`);
+    });
+  }
+
+  function mountGAIn(stub: ReturnType<typeof vi.fn>, locale: 'en' | 'fr') {
+    vi.stubGlobal('fetch', stub);
+    render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale={locale} />);
+  }
+
+  const SOLD_OUT = JSON.stringify({ error: 'sold out', code: 'sold_out' });
+
+  it.each([
+    ['en', 'Reserve', 'Sold out'],
+    ['fr', 'Réserver', 'Complet'],
+  ] as const)('shows the localized sellout for an exact sold_out refusal (%s)', async (locale, reserve, soldOut) => {
+    mountGAIn(gaRefusal(SOLD_OUT), locale);
+    fireEvent.click(screen.getByRole('button', { name: reserve }));
+    await screen.findByText(soldOut);
+    expect(screen.queryByRole('button', { name: /^(Pay|Payer)/ })).toBeNull();
+    expect(screen.queryByText(/waitlist|liste d'attente/i)).toBeNull();
+  });
+
+  it.each([
+    ['a code-less refusal', JSON.stringify({ error: 'inventory unavailable' }), 409],
+    ['another code', JSON.stringify({ error: 'x', code: 'seated_pool_unsupported' }), 409],
+    ['the code in another case', JSON.stringify({ error: 'sold out', code: 'SOLD_OUT' }), 409],
+    ['the code without an error string', JSON.stringify({ code: 'sold_out' }), 409],
+    ['an error of another type', JSON.stringify({ error: 7, code: 'sold_out' }), 409],
+    ['a body that is not JSON', 'sold_out', 409],
+    ['an empty body', '', 409],
+    ['the code on another status', SOLD_OUT, 400],
+  ])('keeps the neutral refusal for %s', async (_name, body, status) => {
+    mountGAIn(gaRefusal(body, status), 'en');
+    fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
+    await screen.findByText('Quantity unavailable');
+    expect(screen.queryByText('Sold out')).toBeNull();
+  });
+
+  it('keeps the neutral refusal for a seated reservation answered with sold_out', async () => {
+    await selectAndReserve(seatedFetch({ error: 'sold out', code: 'sold_out' }, 409));
+    await screen.findByText('Quantity unavailable');
+    expect(screen.queryByText('Sold out')).toBeNull();
+  });
+});

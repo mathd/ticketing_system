@@ -197,6 +197,34 @@ async function reserve(page, scenario) {
   await page.getByLabel('Email').fill(`buyer-${stamp}@example.test`);
 }
 
+// TKT-341 / ADR-082. Click the real Reserve control and return the refusal the page
+// received and rendered. A refusal renders in the picker's live status region; it never
+// renders a checkout form.
+async function reserveRefused(page, scenario, reserveLabel) {
+  await page.waitForLoadState('networkidle');
+  const reservationResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === '/api/commerce/reservations');
+  await page.getByRole('button', { name: reserveLabel, exact: true }).click();
+  const response = await reservationResponse;
+  const text = await response.text();
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // Not JSON: the checks below report it.
+  }
+  const status = page.locator('span[aria-live="polite"]');
+  await status.filter({ hasText: /\S/ }).waitFor();
+  const rendered = (await status.innerText()).trim();
+  check(`${scenario}: the refusal posts through the storefront bridge`,
+    new URL(response.url()).pathname === '/api/commerce/reservations', response.url());
+  check(`${scenario}: no checkout form renders`, (await page.locator('.checkout-form').count()) === 0);
+  check(`${scenario}: no waitlist action renders`,
+    (await page.getByText(/waitlist|liste d'attente/i).count()) === 0);
+  return { status: response.status(), body, text, rendered };
+}
+
 const browser = await chromium.launch({ channel: 'chrome' });
 
 try {
@@ -303,6 +331,45 @@ try {
     offering_status: 'open',
   });
   check('a declined payment returns to a reservable state', await page.getByRole('button', { name: 'Reserve', exact: true }).isEnabled());
+
+  // TKT-341 / ADR-082. One unit is left. Two asked for is a partial shortage: the
+  // buyer can buy fewer now, so it is not a sellout.
+  await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle');
+  await page.getByLabel('Quantity').fill('2');
+  const partial = await reserveRefused(page, 'partial shortage', 'Reserve');
+  check('a partial shortage is a code-less 409',
+    partial.status === 409 && partial.body?.error === 'inventory unavailable' && partial.body?.code === undefined,
+    `${partial.status} ${partial.text}`);
+  check('a partial shortage renders the neutral refusal', partial.rendered === 'Quantity unavailable', partial.rendered);
+
+  // A live hold takes the last unit. The pool is held out, not sold: that is a
+  // sellout at the locked decision (point-in-time, ADR-082).
+  await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });
+  await reserve(page, 'exhausting hold');
+  await waitForAvailability(page, performanceId, {
+    capacity: FIXTURE_CAPACITY,
+    held: 1,
+    confirmed: 1,
+    available: 0,
+    offering_status: 'open',
+  });
+
+  // A different buyer, in a fresh browser context, in each locale.
+  for (const [locale, reserveLabel, soldOut] of [['en', 'Reserve', 'Sold out'], ['fr', 'Réserver', 'Complet']]) {
+    const buyer = await browser.newContext({ baseURL: BASE });
+    try {
+      const fresh = await buyer.newPage();
+      await fresh.goto(`/${locale}/events/${eventId}`, { waitUntil: 'domcontentloaded' });
+      const refused = await reserveRefused(fresh, `sellout (${locale})`, reserveLabel);
+      check(`an exhausted pool answers 409 sold_out (${locale})`,
+        refused.status === 409 && refused.body?.code === 'sold_out' && refused.body?.error === 'sold out',
+        `${refused.status} ${refused.text}`);
+      check(`an exhausted pool renders the localized sellout (${locale})`, refused.rendered === soldOut, refused.rendered);
+    } finally {
+      await buyer.close();
+    }
+  }
 } finally {
   await browser.close();
   if (!recorder.finish()) process.exitCode = 1;
