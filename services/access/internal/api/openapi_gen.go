@@ -4,8 +4,11 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -79,6 +82,54 @@ func (e ScanRequestDirection) Valid() bool {
 	case Entry:
 		return true
 	case Exit:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TicketValidStatus.
+const (
+	Valid TicketValidStatus = "valid"
+)
+
+// Valid indicates whether the value is a known member of the TicketValidStatus enum.
+func (e TicketValidStatus) Valid() bool {
+	switch e {
+	case Valid:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TicketVoidedReason.
+const (
+	Exchanged TicketVoidedReason = "exchanged"
+	Refunded  TicketVoidedReason = "refunded"
+)
+
+// Valid indicates whether the value is a known member of the TicketVoidedReason enum.
+func (e TicketVoidedReason) Valid() bool {
+	switch e {
+	case Exchanged:
+		return true
+	case Refunded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TicketVoidedStatus.
+const (
+	Voided TicketVoidedStatus = "voided"
+)
+
+// Valid indicates whether the value is a known member of the TicketVoidedStatus enum.
+func (e TicketVoidedStatus) Valid() bool {
+	switch e {
+	case Voided:
 		return true
 	default:
 		return false
@@ -172,6 +223,9 @@ type Ticket struct {
 	QrPayload string             `json:"qr_payload"`
 	QrUrl     string             `json:"qr_url"`
 	TicketId  openapi_types.UUID `json:"ticket_id"`
+
+	// Validity The presentation verdict for one ticket (TKT-355, ADR-012 § TKT-355 amendment). Access derives it from the ticket's lifecycle history each time it serves the bundle; it is not stored. A refund makes the ticket voided with reason refunded; otherwise an exchange makes it voided with reason exchanged; otherwise it is valid. "valid" means "no recorded refund or exchange". It does not promise admission: the gate decides admission from Access state, and this verdict controls only what a ticket view shows.
+	Validity TicketValidity `json:"validity"`
 }
 
 // TicketBundle defines model for TicketBundle.
@@ -204,6 +258,31 @@ type TicketRefundCreate struct {
 	Quantity    int                `json:"quantity"`
 	RefundId    openapi_types.UUID `json:"refund_id"`
 }
+
+// TicketValid defines model for TicketValid.
+type TicketValid struct {
+	Status TicketValidStatus `json:"status"`
+}
+
+// TicketValidStatus defines model for TicketValid.Status.
+type TicketValidStatus string
+
+// TicketValidity The presentation verdict for one ticket (TKT-355, ADR-012 § TKT-355 amendment). Access derives it from the ticket's lifecycle history each time it serves the bundle; it is not stored. A refund makes the ticket voided with reason refunded; otherwise an exchange makes it voided with reason exchanged; otherwise it is valid. "valid" means "no recorded refund or exchange". It does not promise admission: the gate decides admission from Access state, and this verdict controls only what a ticket view shows.
+type TicketValidity struct {
+	union json.RawMessage
+}
+
+// TicketVoided defines model for TicketVoided.
+type TicketVoided struct {
+	Reason TicketVoidedReason `json:"reason"`
+	Status TicketVoidedStatus `json:"status"`
+}
+
+// TicketVoidedReason defines model for TicketVoided.Reason.
+type TicketVoidedReason string
+
+// TicketVoidedStatus defines model for TicketVoided.Status.
+type TicketVoidedStatus string
 
 // VoidedTicketFeed defines model for VoidedTicketFeed.
 type VoidedTicketFeed struct {
@@ -260,3 +339,92 @@ type ScanTicketJSONRequestBody = ScanRequest
 
 // ReconcileScansJSONRequestBody defines body for ReconcileScans for application/json ContentType.
 type ReconcileScansJSONRequestBody = ReconcileRequest
+
+// AsTicketValid returns the union data inside the TicketValidity as a TicketValid
+func (t TicketValidity) AsTicketValid() (TicketValid, error) {
+	var body TicketValid
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTicketValid overwrites any union data inside the TicketValidity as the provided TicketValid
+func (t *TicketValidity) FromTicketValid(v TicketValid) error {
+	v.Status = "valid"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTicketValid performs a merge with any union data inside the TicketValidity, using the provided TicketValid
+func (t *TicketValidity) MergeTicketValid(v TicketValid) error {
+	v.Status = "valid"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTicketVoided returns the union data inside the TicketValidity as a TicketVoided
+func (t TicketValidity) AsTicketVoided() (TicketVoided, error) {
+	var body TicketVoided
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTicketVoided overwrites any union data inside the TicketValidity as the provided TicketVoided
+func (t *TicketValidity) FromTicketVoided(v TicketVoided) error {
+	v.Status = "voided"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTicketVoided performs a merge with any union data inside the TicketValidity, using the provided TicketVoided
+func (t *TicketValidity) MergeTicketVoided(v TicketVoided) error {
+	v.Status = "voided"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t TicketValidity) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"status"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t TicketValidity) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "valid":
+		return t.AsTicketValid()
+	case "voided":
+		return t.AsTicketVoided()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
+}
+
+func (t TicketValidity) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *TicketValidity) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,22 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatalf("replay must return the same single ticket without re-voiding: %+v", voided)
 	}
 
+	// TKT-355: the buyer's page after a PARTIAL refund. The refunded ticket's id comes from
+	// access's own answer above, not from the bundle, so the check below cannot agree with
+	// itself: that ticket must carry voided/refunded and have no QR on the page, and the
+	// other ticket of the order must stay valid with its QR.
+	refundedTicket := voided.TicketIDs[0]
+	if err := poll(20*time.Second, 250*time.Millisecond, func() error {
+		return checkTicketPageVerdicts(t, order.GuestOrderRef, func(id string) map[string]any {
+			if id == refundedTicket {
+				return map[string]any{"status": "voided", "reason": "refunded"}
+			}
+			return map[string]any{"status": "valid"}
+		}, 2, "Refunded")
+	}); err != nil {
+		t.Fatalf("buyer ticket page after a partial refund: %v", err)
+	}
+
 	// inventory: replay the capacity return directly. Same reason as the access replay —
 	// commerce drives this service-to-service, where the smoke client cannot observe it,
 	// so the ADR-030 coverage gate needs a direct call.
@@ -297,6 +314,12 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForExchangeTickets(t, exchangeSource.OrderID, 1)
+	// TKT-355: the source ticket ids, read BEFORE the exchange, so the page check after it
+	// knows which tickets must be dead without reading that from the same bundle.
+	exchangeSourceTickets := bundleTicketIDs(t, exchangeSource.GuestOrderRef)
+	if len(exchangeSourceTickets) != 1 {
+		t.Fatalf("exchange source has %d tickets before the exchange, want 1", len(exchangeSourceTickets))
+	}
 	// A dearer and a cheaper ticket type on the same performance, so all three money
 	// directions are exercised. The first version of this test used the SAME type and
 	// asserted delta 0 — which meant both payment branches could be deleted and it still
@@ -437,51 +460,19 @@ func TestDocumentedOperationHappyPathDrivers(t *testing.T) {
 	// every one of them as an identically numbered QR is how a buyer ends up at the gate
 	// finding out which two work. The page must suppress the dead ones — and it must still
 	// render, because the code path that decides this only runs for buyers who exchanged.
+	//
+	// TKT-355: checked against the WIRE verdict and keyed by ticket id. The source ticket
+	// was read before the exchange, so it must be voided/exchanged with no QR on the page;
+	// every other ticket under the reference is a replacement and must be valid with its
+	// QR. The check once classified tickets from their history, the same rule the page
+	// used, so it could not see a page that disagreed with access.
 	if err := poll(20*time.Second, 250*time.Millisecond, func() error {
-		code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+exchangeSource.GuestOrderRef+"/tickets")
-		if code != http.StatusOK {
-			return fmt.Errorf("ticket bundle %d %s", code, body)
-		}
-		var bundle struct {
-			Tickets []struct {
-				History []struct {
-					Type string `json:"type"`
-				} `json:"history"`
-			} `json:"tickets"`
-		}
-		if err := json.Unmarshal(body, &bundle); err != nil {
-			return err
-		}
-		var voided, live int
-		for _, tk := range bundle.Tickets {
-			isVoid := false
-			for _, e := range tk.History {
-				if e.Type == "exchanged" {
-					isVoid = true
-				}
+		return checkTicketPageVerdicts(t, exchangeSource.GuestOrderRef, func(id string) map[string]any {
+			if exchangeSourceTickets[id] {
+				return map[string]any{"status": "voided", "reason": "exchanged"}
 			}
-			if isVoid {
-				voided++
-			} else {
-				live++
-			}
-		}
-		if voided == 0 || live == 0 {
-			return fmt.Errorf("bundle has %d voided and %d live tickets, want both under one reference", voided, live)
-		}
-		// The page itself, server-rendered: it must come back 200 and it must show one QR
-		// per LIVE ticket, not one per ticket.
-		pageCode, page := get(t, gatewayURL+"/en/tickets/"+exchangeSource.GuestOrderRef, nil)
-		if pageCode != http.StatusOK {
-			return fmt.Errorf("ticket page %d", pageCode)
-		}
-		if qrs := strings.Count(string(page), "<img"); qrs != live {
-			return fmt.Errorf("ticket page renders %d QR images for %d live and %d voided tickets", qrs, live, voided)
-		}
-		if !strings.Contains(string(page), "No longer valid") {
-			return fmt.Errorf("ticket page does not tell the buyer the exchanged tickets are dead")
-		}
-		return nil
+			return map[string]any{"status": "valid"}
+		}, 2, "No longer valid")
 	}); err != nil {
 		t.Fatalf("buyer ticket page after an exchange: %v", err)
 	}
@@ -701,4 +692,85 @@ func assertNoExchangeCharge(t *testing.T, organizerID, exchangeID string) {
 	if code != http.StatusNotFound {
 		t.Fatalf("a downgrade created a charge operation: %d %s", code, body)
 	}
+}
+
+// bundleTicketIDs reads the ticket ids under one guest reference through the gateway.
+func bundleTicketIDs(t *testing.T, guestRef string) map[string]bool {
+	t.Helper()
+	code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
+	if code != http.StatusOK {
+		t.Fatalf("ticket bundle %d %s", code, body)
+	}
+	var bundle struct {
+		Tickets []struct {
+			TicketID string `json:"ticket_id"`
+		} `json:"tickets"`
+	}
+	if err := json.Unmarshal(body, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, tk := range bundle.Tickets {
+		ids[tk.TicketID] = true
+	}
+	return ids
+}
+
+// checkTicketPageVerdicts compares one guest reference's wire verdicts and its English
+// SSR page with what the caller expects for each ticket id (TKT-355). want gives the
+// expected verdict for an id; a valid ticket must have its own QR path on the page, and a
+// voided one must not. tickets is the exact number of tickets the bundle must hold, and
+// notice is a text the page must show.
+func checkTicketPageVerdicts(t *testing.T, guestRef string, want func(id string) map[string]any, tickets int, notice string) error {
+	t.Helper()
+	code, body, _ := getWithHeaders(t, gatewayURL+"/api/access/orders/"+guestRef+"/tickets")
+	if code != http.StatusOK {
+		return fmt.Errorf("ticket bundle %d %s", code, body)
+	}
+	var bundle struct {
+		Tickets []struct {
+			TicketID string         `json:"ticket_id"`
+			Validity map[string]any `json:"validity"`
+		} `json:"tickets"`
+	}
+	if err := json.Unmarshal(body, &bundle); err != nil {
+		return err
+	}
+	if len(bundle.Tickets) != tickets {
+		return fmt.Errorf("bundle has %d tickets, want %d", len(bundle.Tickets), tickets)
+	}
+	pageCode, page := get(t, gatewayURL+"/en/tickets/"+guestRef, nil)
+	if pageCode != http.StatusOK {
+		return fmt.Errorf("ticket page %d", pageCode)
+	}
+	html := string(page)
+	valid := 0
+	for _, tk := range bundle.Tickets {
+		w := want(tk.TicketID)
+		if !reflect.DeepEqual(tk.Validity, w) {
+			return fmt.Errorf("ticket %s wire validity = %v, want %v", tk.TicketID, tk.Validity, w)
+		}
+		qrPath := "/tickets/" + tk.TicketID + "/qr.png"
+		switch w["status"] {
+		case "valid":
+			valid++
+			if !strings.Contains(html, qrPath) {
+				return fmt.Errorf("ticket page has no QR for valid ticket %s", tk.TicketID)
+			}
+		default:
+			if strings.Contains(html, qrPath) {
+				return fmt.Errorf("ticket page renders a QR for voided ticket %s", tk.TicketID)
+			}
+		}
+	}
+	if valid == 0 || valid == len(bundle.Tickets) {
+		return fmt.Errorf("bundle has %d valid of %d tickets, want a mixed bundle", valid, len(bundle.Tickets))
+	}
+	if images := strings.Count(html, "<img"); images != valid {
+		return fmt.Errorf("ticket page renders %d QR images for %d valid tickets", images, valid)
+	}
+	if !strings.Contains(html, notice) {
+		return fmt.Errorf("ticket page does not show %q", notice)
+	}
+	return nil
 }

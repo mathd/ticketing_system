@@ -261,7 +261,11 @@ func (s *Server) tickets(w http.ResponseWriter, r *http.Request) {
 		// link that outlived its page does, which is the link that leaked.
 		qrURL := "/api/access/orders/" + ref.String() + "/tickets/" + t.ID.String() + "/qr.png" +
 			s.qrLinks.mint(ref, t.ID, s.clock())
-		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": qrURL})
+		// The verdict comes from the SAME history slice this response carries (TKT-355),
+		// so a client never sees a verdict that its own history contradicts. It is a
+		// presentation verdict: the gate decides admission on its own path.
+		validity := store.DeriveTicketValidity(history)
+		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": qrURL, "validity": validity})
 	}
 	write(w, 200, map[string]any{"order_ref": ref, "tickets": out})
 }

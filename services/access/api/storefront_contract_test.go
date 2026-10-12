@@ -1,6 +1,7 @@
 package apispec
 
 import (
+	"encoding/json"
 	"regexp"
 	"testing"
 
@@ -54,5 +55,63 @@ func TestStorefrontAccessDatesExcludeLeapSeconds(t *testing.T) {
 		if pattern.MatchString("2016-12-31T23:59:60Z") {
 			t.Errorf("%s.%s accepts a leap second", field[0], field[1])
 		}
+	}
+}
+
+// TKT-355. Every ticket carries one presentation verdict, and the contract admits only
+// its three meaningful forms. The nine refusals are one per malformation CLASS
+// (absence, null, wrong type, unknown value, invalid pair, extra field), not examples:
+// "valid with a reason" and "voided without one" are the pairs a flat schema would let
+// through.
+func TestStorefrontTicketValidityForms(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := doc.Components.Schemas["Ticket"]
+	if ticket == nil || ticket.Value == nil {
+		t.Fatal("schema Ticket is missing")
+	}
+	cases := []struct {
+		name, validity string // "" means the key is absent
+		accepted       bool
+	}{
+		{"valid", `{"status":"valid"}`, true},
+		{"voided by refund", `{"status":"voided","reason":"refunded"}`, true},
+		{"voided by exchange", `{"status":"voided","reason":"exchanged"}`, true},
+		{"absent", ``, false},
+		{"null", `null`, false},
+		{"bare string", `"valid"`, false},
+		{"empty object", `{}`, false},
+		{"unknown status", `{"status":"suspended"}`, false},
+		{"unknown reason", `{"status":"voided","reason":"stolen"}`, false},
+		{"valid with a reason", `{"status":"valid","reason":"refunded"}`, false},
+		{"voided without a reason", `{"status":"voided"}`, false},
+		{"extra field", `{"status":"valid","note":"x"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			value := map[string]any{
+				"ticket_id":  "22222222-2222-4222-8222-222222222222",
+				"qr_payload": "credential",
+				"issued_at":  "2026-01-01T00:00:00Z",
+				"history":    []any{},
+				"qr_url":     "/qr.png",
+			}
+			if c.validity != "" {
+				var validity any
+				if err := json.Unmarshal([]byte(c.validity), &validity); err != nil {
+					t.Fatal(err)
+				}
+				value["validity"] = validity
+			}
+			err := ticket.Value.VisitJSON(value)
+			if c.accepted && err != nil {
+				t.Errorf("contract refused %s: %v", c.validity, err)
+			}
+			if !c.accepted && err == nil {
+				t.Errorf("contract accepted %q", c.validity)
+			}
+		})
 	}
 }
