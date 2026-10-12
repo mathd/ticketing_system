@@ -327,6 +327,56 @@ describe('role enforcement (COS-2, COS-4, COS-6)', () => {
     expect(await real.text()).toBe(await imaginary.text());
   });
 
+  // TKT-368: the UI-language endpoint goes through the same gate as every other
+  // write. Anonymous callers are sent to sign in and a cross-site POST is refused,
+  // and in both cases the endpoint (which would set the cookie) never runs.
+  it('sends an anonymous language switch to sign in without running the endpoint', async () => {
+    let reached = 0;
+    const res = await gateRequest({
+      request: new Request('http://backoffice:8080/admin/ui-language', { method: 'POST', headers: trusted }),
+      pathname: '/admin/ui-language',
+      sessionToken: '',
+      lookup: () => undefined as { staffId: string; organizerId: string; role: string } | undefined,
+      onAuthenticated: () => {},
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        reached++;
+        return new Response(null, { status: 303 });
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(reached).toBe(0);
+  });
+
+  it('refuses a cross-site language switch before the endpoint runs', async () => {
+    let reached = 0;
+    const res = await gateRequest({
+      request: new Request('http://backoffice:8080/admin/ui-language', {
+        method: 'POST',
+        headers: { ...trusted, origin: 'https://evil.example' },
+      }),
+      pathname: '/admin/ui-language',
+      sessionToken: 'tok',
+      lookup: () => ({ staffId: 's1', organizerId: 'o1', role: 'admin' }),
+      onAuthenticated: () => {},
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        reached++;
+        return new Response(null, { status: 303 });
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(reached).toBe(0);
+  });
+
+  it('lets every signed-in role reach the language switch', async () => {
+    for (const role of ['admin', 'box_office', 'finance']) {
+      const { calls, res } = run('/admin/ui-language', role);
+      expect((await res).status, role).toBe(200);
+      expect(calls.next, role).toBe(1);
+    }
+  });
+
   // COS-7: authentication still precedes authorization, and the difference is
   // observable — anonymous gets a redirect, wrong-role gets a refusal.
   it('redirects an anonymous caller rather than refusing them', async () => {

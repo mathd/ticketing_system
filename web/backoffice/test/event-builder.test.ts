@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseMinorUnits, parseCurrency, parseLocalizedName } from '../src/lib/event-builder';
+import {
+  catalogRefusalKey,
+  parseMinorUnits,
+  parseCurrency,
+  parseLocalizedName,
+} from '../src/lib/event-builder';
+import { UI_STRINGS } from '../src/lib/ui-strings';
 
 /**
  * TKT-192 COS-5. Money is integer minor units + ISO currency (ADR-001), and
@@ -99,5 +105,70 @@ describe('localized names (COS-4)', () => {
       ok: true,
       value: { en: 'Night', fr: 'Nuit' },
     });
+  });
+});
+
+/**
+ * TKT-368. A refusal names a message KEY, not English prose, so the page can say
+ * it in the operator's UI language. The key is the whole contract: the wording
+ * lives in the string table, and the field still says WHERE.
+ */
+describe('parser refusals are message keys (TKT-368)', () => {
+  it('names the missing locale and the key for it', () => {
+    expect(parseLocalizedName({ en: 'Night', fr: '  ' })).toEqual({
+      ok: false,
+      field: 'fr',
+      error: { key: 'nameRequired', params: { locale: 'FR' } },
+    });
+    expect(parseLocalizedName({ en: '', fr: 'Nuit' })).toEqual({
+      ok: false,
+      field: 'en',
+      error: { key: 'nameRequired', params: { locale: 'EN' } },
+    });
+  });
+
+  it('tells a malformed amount from one too large to represent', () => {
+    expect(parseMinorUnits('45.50')).toEqual({ ok: false, field: 'amount', error: { key: 'amountInvalid' } });
+    expect(parseMinorUnits('9007199254740992')).toEqual({
+      ok: false,
+      field: 'amount',
+      error: { key: 'amountTooLarge' },
+    });
+    expect(parseMinorUnits('0'.repeat(100000))).toEqual({
+      ok: false,
+      field: 'amount',
+      error: { key: 'amountTooLarge' },
+    });
+  });
+
+  it('keys a malformed currency', () => {
+    expect(parseCurrency('eur')).toEqual({ ok: false, field: 'currency', error: { key: 'currencyInvalid' } });
+  });
+
+  it('keeps the English wording the parsers used to return', () => {
+    // The keys moved the prose into the table; English must read as it did.
+    expect(UI_STRINGS.en.nameRequired).toBe('A name in {locale} is required.');
+    expect(UI_STRINGS.en.amountTooLarge).toBe('That amount is too large to represent exactly.');
+    expect(UI_STRINGS.en.amountInvalid).toBe(
+      'Enter the amount in minor units — digits only, no decimal point (€45.50 is 4550).',
+    );
+    expect(UI_STRINGS.en.currencyInvalid).toBe('Use a three-letter uppercase ISO code, e.g. EUR.');
+  });
+});
+
+/**
+ * TKT-368 / D1(d). A catalog refusal gets a lead in the UI language chosen by
+ * STATUS CLASS, then catalog's own text. No matching on catalog's prose: catalog
+ * sends no stable codes for these, and a sentence match would drift silently.
+ */
+describe('catalog refusal lead by status class (TKT-368)', () => {
+  it('leads a conflict as a refused change', () => {
+    expect(catalogRefusalKey(409)).toBe('catalogRefusedChange');
+  });
+
+  it('leads every other refusal as a refused step', () => {
+    for (const status of [400, 404, 401, 403, 422]) {
+      expect(catalogRefusalKey(status), String(status)).toBe('catalogRefusedStep');
+    }
   });
 });
