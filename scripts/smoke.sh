@@ -429,6 +429,7 @@ SMOKE_GATEWAY_URL=http://localhost:${GATEWAY_PORT} \
 SMOKE_NATS_URL="nats://platform-admin:${NATS_ADMIN_PASSWORD}@localhost:${NATS_PORT}" \
 SMOKE_PG=localhost:${POSTGRES_PORT} \
 SMOKE_PROM_URL=http://localhost:${PROM_PORT} \
+SMOKE_GRAFANA_URL=http://localhost:${GRAFANA_PORT} \
 SMOKE_CATALOG_URL=http://localhost:${CATALOG_PORT} \
  SMOKE_INVENTORY_URL=http://localhost:${INVENTORY_PORT} \
 SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \

@@ -1,0 +1,21 @@
+# TKT-337 first-increment probe (lone grafana/otel-lgtm 0.30.0 container, pinned digest)
+# One OTLP counter series http_server_request_duration_seconds_count{service_name="firstinc",http_response_status_code="500"}:
+# first 500 recorded at t+20s, second at t+80s, 5 s export interval. Queries ran at the offsets shown.
+first 500 2026-10-12T00:31:06Z
+second 500 2026-10-12T00:32:06Z
+t+45 00:31:51
+ raw500: [('500', '1')]
+ rate4m500: [(None, '0')]
+ increase4m500: [(None, '0')]
+t+70 00:33:16
+ raw500: [('500', '2')]
+ rate4m500: [(None, '0.0043749999999999995')]
+ increase4m500: [(None, '1.0499999999999998')]
+t+100 00:33:46
+ raw500: [('500', '2')]
+ rate4m500: [(None, '0.0043749999999999995')]
+ increase4m500: [(None, '1.0499999999999998')]
+t+125 00:34:11
+ raw500: [('500', '2')]
+ rate4m500: [(None, '0.0043749999999999995')]
+ increase4m500: [(None, '1.0499999999999998')]

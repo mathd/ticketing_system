@@ -1,0 +1,19 @@
+# TKT-337: file provider for the versioned checkout-path dashboard.
+#
+# compose.yaml mounts this ONE file into the lgtm image's dashboard provisioning
+# directory, beside the image's own provider files, which stay active. It also
+# mounts deploy/grafana/dashboards at /ticketing-dashboards.
+#
+# The committed JSON is the only definition: Grafana refuses to save an edit
+# made in the UI (allowUiUpdates: false), and it does not delete the dashboard
+# if someone deletes it in the UI (disableDeletion: true).
+apiVersion: 1
+providers:
+  - name: ticketing-checkout-path
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /ticketing-dashboards
+      foldersFromFilesStructure: false

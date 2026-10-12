@@ -1,0 +1,361 @@
+{
+  "uid": "ticketing-checkout-path",
+  "title": "Checkout path (gateway, inventory, commerce, payments)",
+  "description": "TKT-337: request rate, 5xx rate and latency of the checkout path, by service, with trace drill-down.",
+  "tags": [
+    "ticketing",
+    "checkout",
+    "TKT-337"
+  ],
+  "editable": false,
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "graphTooltip": 1,
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "custom",
+        "query": "gateway,inventory,commerce,payments",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "method",
+        "label": "Method",
+        "type": "custom",
+        "query": "POST,GET,PUT,PATCH,DELETE",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "POST"
+          ],
+          "value": [
+            "POST"
+          ]
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to read this view",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Use this view during `make onsale-load-full` or any local checkout run. Compare the four services in each panel.\n\n* **Slow inventory claim path**: inventory latency goes up. Commerce and gateway latency go up with it, because they wait for inventory. Payments latency and all 5xx rates stay flat.\n* **Payment failure**: the payments 5xx rate goes up. Commerce answers `202 payment_unknown`, so commerce and gateway 5xx stay at 0, and latency stays flat.\n\nTo open a trace: click an exemplar point on the latency panel (Trace link), or click a trace ID in a traces table. A checkout trace starts at the commerce `POST /orders` span. The gateway span is in the same trace only if the client sent a `traceparent` header.\n\nA new error series starts at 1, and `rate()` cannot see that first increment. One isolated 5xx can thus show as 0. These panels are local Compose evidence, not production capacity, and have no alert rules (ADR-065). Procedure: docs/verification/checkout-dashboard/README.md."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Request rate by service",
+      "description": "Requests per second by service, for the selected methods. Limits: the Prometheus datasource of the lgtm image sets a 60 s scrape interval, so $__rate_interval is at least 4 minutes. A change shows within seconds, but it is averaged over 4 minutes and stays visible for 4 minutes after it stops. Inventory, commerce and payments export no route label, so their panels include all their POST endpoints. The gateway exports only the proxy prefix, and these panels keep /api/inventory/, /api/commerce/ and /api/payments/.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\"}[$__rate_interval]))",
+          "legendFormat": "{{service_name}}",
+          "range": true,
+          "instant": false,
+          "exemplar": false,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "5xx rate by service",
+      "description": "Responses with a 5xx status per second, by service. A service with requests and no 5xx shows 0. A new error series starts at 1 and rate() cannot see that first increment, so one isolated 5xx can show as 0. Limits: the Prometheus datasource of the lgtm image sets a 60 s scrape interval, so $__rate_interval is at least 4 minutes. A change shows within seconds, but it is averaged over 4 minutes and stays visible for 4 minutes after it stops. Inventory, commerce and payments export no route label, so their panels include all their POST endpoints. The gateway exports only the proxy prefix, and these panels keep /api/inventory/, /api/commerce/ and /api/payments/.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\",http_response_status_code=~\"5..\"}[$__rate_interval]))\nor on (service_name)\n0 * sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\"}[$__rate_interval]))",
+          "legendFormat": "{{service_name}}",
+          "range": true,
+          "instant": false,
+          "exemplar": false,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Latency by service (p50, p95, p99)",
+      "description": "Server request duration quantiles in seconds, from the OpenTelemetry histogram (largest finite bucket 10 s: a quantile above 10 s shows as 10 s). Exemplar points link to the trace of one real request. Limits: the Prometheus datasource of the lgtm image sets a 60 s scrape interval, so $__rate_interval is at least 4 minutes. A change shows within seconds, but it is averaged over 4 minutes and stays visible for 4 minutes after it stops. Inventory, commerce and payments export no route label, so their panels include all their POST endpoints. The gateway exports only the proxy prefix, and these panels keep /api/inventory/, /api/commerce/ and /api/payments/.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} p50",
+          "range": true,
+          "instant": false,
+          "exemplar": true,
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} p95",
+          "range": true,
+          "instant": false,
+          "exemplar": true,
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket{service_name=~\"${service:regex}\",http_request_method=~\"${method:regex}\",http_route=~\"/api/(inventory|commerce|payments)/|\"}[$__rate_interval])))",
+          "legendFormat": "{{service_name}} p99",
+          "range": true,
+          "instant": false,
+          "exemplar": true,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Checkout traces: commerce POST /orders",
+      "description": "Recent checkout traces from Tempo for the dashboard time range. Click a trace ID to open its spans: commerce POST /orders, then its calls to inventory and payments. The gateway span is in the same trace only if the client sent a traceparent header.",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{resource.service.name=\"commerce\" && span.http.request.method=\"POST\" && span.url.path=\"/orders\"}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Payment failures: payments spans with status 5xx",
+      "description": "Traces that hold a payments server span with a 5xx status. Click a trace ID to see which checkout it belongs to.",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{resource.service.name=\"payments\" && span.http.response.status_code >= 500}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    }
+  ]
+}
