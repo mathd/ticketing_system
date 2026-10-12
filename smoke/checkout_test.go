@@ -115,6 +115,14 @@ func setupCheckoutOffer(t *testing.T, suffix string) (string, string) {
 // real path — rather than a reservation row edited after the fact.
 func setupCheckoutOfferAt(t *testing.T, suffix string, price int64) (string, string) {
 	t.Helper()
+	return setupCheckoutOfferIn(t, suffix, price, "UTC")
+}
+
+// setupCheckoutOfferIn is setupCheckoutOfferAt with an explicit performance time zone.
+// TKT-365 needs a zone that is not UTC, so a ticket bundle that fell back to UTC, or
+// carried no zone, cannot pass.
+func setupCheckoutOfferIn(t *testing.T, suffix string, price int64, timezone string) (string, string) {
+	t.Helper()
 	catalog := gatewayURL + "/api/catalog"
 	venue := created(t, catalog+"/venues", map[string]any{"name": "Checkout " + suffix, "ga_capacity": 5})
 	event := created(t, catalog+"/events", map[string]any{"name": map[string]string{"fr": "Paiement " + suffix, "en": "Checkout " + suffix}})
@@ -122,7 +130,7 @@ func setupCheckoutOfferAt(t *testing.T, suffix string, price int64) (string, str
 	// 2026 date silently ages into the past and would eventually publish a
 	// performance that has already started.
 	startsAt := time.Now().UTC().AddDate(0, 0, 90).Truncate(time.Second).Format(time.RFC3339)
-	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": "UTC"})
+	perf := created(t, catalog+"/performances", map[string]any{"event_id": event["id"], "venue_id": venue["id"], "starts_at": startsAt, "timezone": timezone})
 	tt := created(t, catalog+"/ticket-types", map[string]any{"performance_id": perf["id"], "name": map[string]string{"fr": "GA", "en": "GA"}, "price": map[string]any{"amount": price, "currency": "EUR"}})
 	if code, body := postJSON(t, fmt.Sprintf("%s/performances/%v/publish", catalog, perf["id"]), nil); code != 200 {
 		t.Fatalf("publish %d %s", code, body)

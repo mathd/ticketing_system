@@ -97,6 +97,8 @@ func TestStorefrontTicketValidityForms(t *testing.T) {
 				"issued_at":  "2026-01-01T00:00:00Z",
 				"history":    []any{},
 				"qr_url":     "/qr.png",
+				// TKT-365: required, so every case here carries it.
+				"performance_timezone": "Europe/Paris",
 			}
 			if c.validity != "" {
 				var validity any
@@ -111,6 +113,58 @@ func TestStorefrontTicketValidityForms(t *testing.T) {
 			}
 			if !c.accepted && err == nil {
 				t.Errorf("contract accepted %q", c.validity)
+			}
+		})
+	}
+}
+
+// TKT-365 (ADR-083). Each ticket carries its performance zone, required and nullable: null
+// says Catalog did not answer, which a client shows as labelled UTC; an absent field is a
+// different fact and a contract break. One case per class: a zone, null, absence, empty,
+// wrong type.
+func TestStorefrontTicketPerformanceZoneForms(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := doc.Components.Schemas["Ticket"]
+	if ticket == nil || ticket.Value == nil {
+		t.Fatal("schema Ticket is missing")
+	}
+	cases := []struct {
+		name, zone string // "" means the key is absent
+		accepted   bool
+	}{
+		{"a zone", `"Asia/Kolkata"`, true},
+		{"null", `null`, true},
+		{"absent", ``, false},
+		{"empty", `""`, false},
+		{"number", `5`, false},
+		{"object", `{"name":"Asia/Kolkata"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			value := map[string]any{
+				"ticket_id":  "22222222-2222-4222-8222-222222222222",
+				"qr_payload": "credential",
+				"issued_at":  "2026-01-01T00:00:00Z",
+				"history":    []any{},
+				"qr_url":     "/qr.png",
+				"validity":   map[string]any{"status": "valid"},
+			}
+			if c.zone != "" {
+				var zone any
+				if err := json.Unmarshal([]byte(c.zone), &zone); err != nil {
+					t.Fatal(err)
+				}
+				value["performance_timezone"] = zone
+			}
+			err := ticket.Value.VisitJSON(value)
+			if c.accepted && err != nil {
+				t.Errorf("contract refused %s: %v", c.zone, err)
+			}
+			if !c.accepted && err == nil {
+				t.Errorf("contract accepted %q", c.zone)
 			}
 		})
 	}

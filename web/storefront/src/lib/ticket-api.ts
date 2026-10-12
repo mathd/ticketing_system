@@ -1,5 +1,7 @@
 import { UPSTREAM_DEADLINE_MS, withUpstreamDeadline } from './upstream';
 import type { components } from './access-api-types.gen';
+import { formatHistoryTime, historyLabel } from './format';
+import type { Locale } from './locales';
 import { dateTimeField, sameUuid, uuidField } from './wire-primitives';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
@@ -61,6 +63,18 @@ function decodeValidity(value: unknown, name: string): TicketValidity {
   throw new TypeError(`${name} is not a declared ticket verdict`);
 }
 
+/**
+ * The ticket's performance zone (TKT-365, ADR-083): required and nullable. Null is Access
+ * saying Catalog did not answer, and the page shows labelled UTC. An ABSENT field, or a
+ * value that is not a non-empty string, is a contract break and refuses the bundle like
+ * every other malformed field. Whether ICU knows the zone is the formatter's question.
+ */
+function decodeZone(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value === 'string' && value.length > 0) return value;
+  throw new TypeError(`${name} must be null or a non-empty string`);
+}
+
 function decodeTicketBundle(value: unknown, expectedOrderRef: string): TicketBundle {
   const body = objectBody(value, 'ticket bundle');
   const orderRef = uuidField(body.order_ref, 'order_ref');
@@ -79,6 +93,7 @@ function decodeTicketBundle(value: unknown, expectedOrderRef: string): TicketBun
         issued_at: dateTimeField(ticket.issued_at, `tickets[${ticketIndex}].issued_at`),
         qr_url: stringField(ticket.qr_url, `tickets[${ticketIndex}].qr_url`),
         validity: decodeValidity(ticket.validity, `tickets[${ticketIndex}].validity`),
+        performance_timezone: decodeZone(ticket.performance_timezone, `tickets[${ticketIndex}].performance_timezone`),
         history: ticket.history.map((value, eventIndex) => {
           const event = objectBody(value, `tickets[${ticketIndex}].history[${eventIndex}]`);
           const sequence = event.sequence;
@@ -171,7 +186,13 @@ export async function getTicketBundle(orderRef: string): Promise<TicketBundleRes
 export type TicketForDisplay = {
   qrUrl: string;
   validity: DisplayValidity;
-  history: ReadonlyArray<{ type: string; occurredAt: string }>;
+  /**
+   * TKT-365: everything the page shows about one history entry, decided here in checked
+   * TypeScript. `label` is localized (historyOther for an unknown type), `time` is
+   * formatted in the ticket's performance zone (labelled UTC when Access sent none), and
+   * `occurredAt` is the raw instant for `<time datetime>`.
+   */
+  history: ReadonlyArray<{ label: string; time: string; occurredAt: string }>;
 };
 
 /**
@@ -206,12 +227,13 @@ function displayValidity(validity: TicketValidity): DisplayValidity {
   }
 }
 
-export function ticketsForDisplay(bundle: TicketBundle): TicketForDisplay[] {
+export function ticketsForDisplay(bundle: TicketBundle, locale: Locale): TicketForDisplay[] {
   return bundle.tickets.map((ticket) => ({
     qrUrl: ticket.qr_url,
     validity: displayValidity(ticket.validity),
     history: ticket.history.map((event) => ({
-      type: event.type,
+      label: historyLabel(event.type, locale),
+      time: formatHistoryTime(event.occurred_at, ticket.performance_timezone, locale),
       occurredAt: event.occurred_at,
     })),
   }));

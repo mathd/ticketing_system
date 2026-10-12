@@ -233,6 +233,8 @@ export interface components {
         Ticket: {
             /** Format: uuid */
             ticket_id: string;
+            /** @description The IANA time zone of this ticket's performance (TKT-365, ADR-083). A ticket view shows history times in this zone. Access reads it from Catalog each time it serves the bundle. It is null when Catalog cannot answer in time or does not know the performance; a client then shows times in labelled UTC. Per ticket, because an exchange can put tickets for different performances under one reference. Required and nullable: "the zone is unknown" is a different fact from "the field is absent". */
+            performance_timezone: string | null;
             qr_payload: string;
             /** Format: date-time */
             issued_at: string;

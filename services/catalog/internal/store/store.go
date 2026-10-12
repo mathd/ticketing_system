@@ -180,6 +180,9 @@ type PerformanceDisplayName struct {
 	// and opening hours instead of an instant (ADR-014). A plain time.Time here
 	// makes the resolver fail on exactly the purchases a festival wallet contains.
 	StartsAt *time.Time
+	// Timezone is the performance's IANA zone (TKT-365, ADR-083). Access shows ticket
+	// history times in it. NOT NULL in the schema, so every row has one.
+	Timezone string
 }
 
 type Venue struct {

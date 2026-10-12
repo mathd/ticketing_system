@@ -118,6 +118,17 @@ feature. What expires is the image URL, which is what ends up in a screenshot, a
 or a proxy log. The bundle page mints fresh links on every successful load, so a buyer with a valid
 order reference can replace an expired image URL by reloading the bundle.
 
+## Access: CATALOG_URL and ticket time zones
+
+`CATALOG_URL` is the Catalog base URL that Access reads each ticket's performance time zone
+from when it serves the ticket bundle (TKT-365,
+[ADR-083](adr/ADR-083-access-reads-performance-time-zones-from-catalog.md)). Access refuses to
+start without it. Access sends the shared `INTERNAL_SERVICE_TOKEN` and asks for at most 20
+performances per request, all requests within one 1.5 s deadline. A request that fails or does
+not finish in time leaves the zones it asked for `null`; zones from requests that succeeded are
+kept. The bundle still loads, and the storefront shows a `null` zone's history times in labelled
+UTC.
+
 ## Scanner devices
 
 The scan routes require `X-Scanner-Token` from an enrolled device (ai-review S1). No

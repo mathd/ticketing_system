@@ -851,6 +851,9 @@ type PerformanceDisplayName struct {
 
 	// StartsAt Null for a performance that has no single instant — a FESTIVAL DAY has an operating date and opening hours instead (ADR-014). Required and nullable rather than optional: "this kind of performance has no start time" is a different fact from "we did not say".
 	StartsAt *time.Time `json:"starts_at"`
+
+	// Timezone The performance's IANA time zone (TKT-365, ADR-083). Access reads it to show ticket history times in the zone of the performance. Every performance has one, festival days included, and no write path changes it after create.
+	Timezone string `json:"timezone"`
 }
 
 // PerformanceDisplayNames defines model for PerformanceDisplayNames.
