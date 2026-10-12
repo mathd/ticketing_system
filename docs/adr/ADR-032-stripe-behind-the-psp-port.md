@@ -19,6 +19,10 @@ provider-confirmed amounts distinctly from requested ones and fails closed on a 
 lifts the bound TKT-168 wrote into this ADR — the one saying these fields must not be cited as proof
 the *provider* moved that money.
 
+Amended by **TKT-347** (§Refund rule 3, and §Amendment — a provider-failed refund is never
+re-submitted): the platform never re-submits a refund that the provider marks `failed` or
+`canceled`. This is the owner's decision D1 (2026-09-25).
+
 ## Context
 
 TKT-43 shipped the checkout recovery state machine (ADR-016) against a **fake PSP** whose
@@ -268,9 +272,12 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
   3. **A matched refund whose status is `failed` or `canceled` does not license a resubmit.** The
      money did not come back, so re-submitting is a fresh money movement chosen by a heuristic.
      Payments reports this terminal refusal as `psp.ErrRefundFailed` and a declared 422 with its
-     usable `re_` reference. Commerce parks the order on the first answer and keeps the reference
-     in `recovery_last_error` for reconciliation. This legible state does not license a resubmit;
-     the resubmission policy belongs to TKT-347.
+     usable `re_` reference. On the recovery path, commerce parks the order on the first answer
+     and keeps the reference in `recovery_last_error` for reconciliation. *Amended (TKT-347):*
+     the platform **never** re-submits such a refund, automatically or by an operator command, on
+     any of the three refund paths. An operator resolves it outside the platform. §Amendment — a
+     provider-failed refund is never re-submitted (TKT-347) records the reason, what each path
+     does today, the operator route and the limits.
   Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
   the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the
@@ -377,6 +384,156 @@ boot depend on Stripe's availability. If that trade is ever worth making it is a
 its own ADR, not an amendment here.
 
 Live `sk_test_` verification remains manual and out-of-gate, per §Constraints.
+
+### Amendment — a provider-failed refund is never re-submitted (TKT-347)
+
+**The decision (owner, D1, 2026-09-25).** When the provider marks a refund `failed` or `canceled`,
+the platform does not re-submit it. No code path re-submits it automatically, and no operator
+command re-submits it. The rule is the same for the three callers below. TKT-144 made this state
+legible: the adapter returns `psp.ErrRefundFailed` (a `*psp.RefundFailedError` that carries the
+`re_` reference), and payments answers a declared 422 with code `provider_refund_failed` and the
+`re_` reference (`services/payments/api/openapi.yaml`, schema `ProviderRefundFailed`). Only the
+Stripe adapter produces this error; the fake PSP's `Refund` always answers `refunded`.
+
+**Why.** A re-submission is, by construction, a new money movement for one obligation:
+
+- On the whole-refund path, the `payment_compensations` PRIMARY KEY
+  `(organizer_id, source_idempotency_key, kind)` makes every duplicate converge onto one provider
+  key (`store.CompensationKey`). The request to `/internal/psp/refund` carries only `organizer_id`
+  and `idempotency_key`, so a caller cannot name a second key. A re-submission needs a new key, and
+  a new key is a new compensation.
+- On the leg path (`payment_refund_legs`, ADR-037 §2), the provider key comes from
+  `(organizer_id, source key, refund key)` (`store.RefundLegKey`), and the caller makes the refund
+  key. A re-submission needs a new refund key, and a new refund key is a new leg and a new provider
+  refund.
+
+On both paths the platform would choose, by a heuristic, to move money a second time for one
+obligation. The platform does not have the evidence to make that choice. The cause of the failure
+(for example a closed card or a disputed charge) is outside the platform, and the buyer can already
+have received the money by a different route. "Never" is the smallest policy and the easiest to
+reverse.
+
+**ADR-003.** The failed attempt stays as it is. Payments appends `payment.refunded` only on a
+`refunded` outcome, so no money fact exists for the failed attempt. Its `payment_compensations` row
+or `payment_refund_legs` row stays bound and is not changed. If a later decision allows a remedy,
+that remedy is a new fact with its own identity. It is never an update to the failed attempt.
+
+**What each caller does today** (verified at `1d29b4e2`):
+
+1. **Recovery compensation (whole refund).** `HTTPClients.compensate`
+   (`services/commerce/internal/recovery/clients.go`) decodes the 422 into a
+   `ProviderRefundFailedError` only when the `re_` reference is usable. `resolveReconciliation`
+   (`services/commerce/internal/recovery/runner.go`) then calls `ParkForReconciliation` with the
+   reason `provider_refund_failed: provider refused the refund (re_…); manual reconciliation
+   required`. `ParkForReconciliation` (`services/commerce/internal/store/recovery.go`) sets
+   `status='reconciliation_required'` and `recovery_parked_at`, and writes the reason to
+   `recovery_last_error`. The `re_` reference is kept there, in `orders.recovery_last_error`. In
+   payments, the compensation row stays bound and does not store the `re_` reference: `compensate`
+   (`services/payments/internal/api/psp.go`) records a provider reference only for
+   `ErrRefundPending`.
+2. **Post-purchase refunds (ADR-037).** Two entry points use `refunds.Service.Refund`
+   (`services/commerce/internal/refunds/service.go`): the staff endpoint
+   `POST /internal/orders/{id}/refunds` and the event-cancellation bulk runner (TKT-159).
+   `refundPayment` changes the 422 into `refunds.ErrProviderRefundFailed` and drops the `re_`
+   reference. The staff handler (`refundOrder`, `services/commerce/internal/api/refunds.go`)
+   answers 422 with `provider_refund_failed`; commerce's `ProviderRefundFailed` schema
+   (`services/commerce/api/openapi.yaml`) has no `provider_ref`. The bulk runner records a terminal
+   `failed` outcome with code `refund_refused` after one attempt (`refundFailureCode`,
+   `services/commerce/internal/bulkrefund/runner.go`). The `order_refunds` row stays `pending`, and
+   the `payment_refund_legs` row stays `bound` with no `provider_ref`. No platform table keeps the
+   `re_` reference for this caller. It exists only at the provider, where the next resolution pass
+   finds it again by its `metadata[compensation_key]` stamp.
+3. **Exchange downgrades.** `settleExchangeDelta` (`services/commerce/internal/api/exchanges.go`)
+   calls `/internal/psp/partial-refund` with the refund key `exchange-refund:<exchange id>`.
+   `providerRefundFailure` changes the 422 into `refunds.ErrProviderRefundFailed`, with the `re_`
+   reference in the error text. `completeExchangeFromBasis` answers 422 with
+   `provider_refund_failed` and does not include the reference. The `order_exchanges` row keeps its
+   basis and stays unsettled (`settled_at IS NULL`). The settling marker that `MarkExchangeSettling`
+   wrote before the provider call stays (that write is best-effort). The leg stays `bound`. As for
+   caller 2, no platform table keeps the `re_` reference.
+
+**A retry with the same key converges. It does not re-submit.** Each existing retry uses the same
+key again. A recovery re-drive after `unpark-order` sends the same operation key, and payments
+resumes the same bound compensation with its stored provider key (`BindCompensation` loads the
+existing row). A staff refund sent again with the same `Idempotency-Key` gets the same refund id
+(`store.RefundID`), so the same refund key. The bulk runner's key does not contain the run
+(`store.CancellationRefundKey`, `cancel:<slot>:<order>`). An exchange sent again with the same
+`Idempotency-Key` gets the same exchange id (`store.ExchangeID`), and the refund key comes from that
+id. On each path the Stripe adapter lists the refunds first. When the listing contains the stamped
+`failed` refund, the adapter matches it and returns `psp.ErrRefundFailed` without a POST (rule 3,
+`resolveRefund`). That Stripe keeps a failed refund in the listing is Stripe's behaviour; the
+recorded fixtures assume it, and the gate cannot prove it (§Consequences).
+
+**Existing constraints limit a new key. No check is specific to this case.** A staff refund under
+a *new* `Idempotency-Key` is a new refund. ADR-037 §4 counts bound attempts against both ceilings:
+`BindOrderRefund` sums `order_refunds.quantity` with no status filter, and `BindRefundLeg` sums
+`payment_refund_legs.amount` with no status filter. So the failed refund keeps its quantity and its
+amount reserved, and a new refund can only take the tickets that remain on the order. It cannot take
+the same tickets again. The orders of the other two callers cannot get a staff refund at all. A
+`reconciliation_required` order is not `completed`, so `BindOrderRefund` refuses it, and
+`BindRefundLeg` refuses every leg while a whole-refund compensation exists (`ErrWholeRefundBound`).
+An order with an exchange row cannot be refunded (`BindOrderRefund` counts `order_exchanges`), and
+it cannot get a second exchange under a new key (unique index `order_exchanges_one_per_source`).
+
+**The operator route.** An operator resolves the money with the PSP or with the buyer, outside the
+platform. Then the operator uses the existing surfaces. This is what each one does to such an order:
+
+- **Recovery.** `commerce list-parked` shows the order with `status=reconciliation_required` and
+  `last_error=provider_refund_failed: … (re_…)`. It is read-only. `commerce unpark-order <order-id>
+  <reason>` (`UnparkOrder`, `services/commerce/internal/store/recovery.go`) writes an
+  `order_recovery_unparks` row with the reason and the state before the unpark. It clears
+  `recovery_parked_at`, sets `recovery_attempts` to 0, keeps `recovery_last_error`, and does not
+  change `status`. The runner then claims the order, calls the refund again with the same key, gets
+  the same terminal answer, and parks the order again with the same reason in one pass. A refund that
+  the operator makes in the provider dashboard does not change this result. That refund has no
+  `compensation_key` stamp, so resolution ignores it (rule 1) and still matches the failed one.
+- **Exchange downgrade.** `commerce list-wedged-exchanges` shows the exchange (it selects
+  `settled_at IS NULL`) with `money="possible: downgrade, …"`, and with `settling="YES since …"` if
+  the marker was written. `commerce unwind-exchange` refuses and changes nothing. Payments holds a
+  bound leg for `exchange-refund:<id>` that is not completed, `LookupRefundLeg`
+  (`services/commerce/internal/exchangeunwind/client.go`) reports it as `Indeterminate`, and the
+  unwind returns `ErrMoneyIndeterminate`.
+- **Post-purchase refund.** No operator command exists. The staff order read
+  (`GET /internal/orders/{id}`) shows the refund row with `status=pending`. The bulk cancellation
+  report (`GET /internal/cancellation-refunds/{id}`) shows the order with the failure code
+  `refund_refused`.
+
+**The limit, stated plainly.** No existing surface can record "refunded outside the platform".
+`unpark-order` records a reason, and the order parks again: it does not close the order. No command
+marks an `order_refunds` row, a `payment_refund_legs` row or an exchange as resolved by an operator.
+So the failed attempt stays bound with no end. On the leg path it also keeps its allowance reserved
+against both ceilings. ADR-037 §4 accepted that cost for an attempt that "may still settle"; a
+failed attempt will not settle. This amendment adds no command. Two later changes are possible, and
+each one is additive and needs its own ADR decision: a surface that records an outcome reached
+outside the platform, and an operator-triggered re-submit. Neither one changes a path that exists
+today.
+
+**What the tests pin, and what they do not.**
+
+- `TestStripeRefundResolutionFailsClosedOnAFailedRefund`
+  (`services/payments/internal/psp/stripe_test.go`): a listing that holds a stamped `failed` refund
+  gives `psp: refund failed` with the `re_` reference, exactly one GET, and no POST.
+  `TestStripeRefundPostSurfacesFailedAndCanceledAsTerminal` pins that a POST answered `failed` or
+  `canceled` gives `psp.ErrRefundFailed` after exactly one POST. These are adapter tests, so they
+  hold for each caller that reaches `Refund` with the same key.
+- Recovery: `TestRunnerReparksAnUnparkedTerminalRefundInOnePass`
+  (`services/commerce/internal/store/recovery_runner_smoke_test.go`) pins that a re-drive after an
+  unpark calls payments one more time with the same operation key, parks again, and makes no call
+  while parked. `TestTerminalRefundParksOnFirstAnswer`
+  (`services/commerce/internal/recovery/runner_test.go`) pins one refund call and one park.
+- Post-purchase: `TestRefundOrderProviderTerminalFailureAnswers422AndStaysPending` pins the 422 and
+  the `pending` row for one request. `TestProviderTerminalRefundIsImmediateCancellationFailure` pins
+  one attempt in the bulk runner.
+- Exchange: `TestDowngradeProviderTerminalRefundIsReported` pins one refund submission per request
+  and an unsettled exchange.
+- Payments: `TestWholeRefundTerminalFailureIsDeclared422` and
+  `TestPartialRefundTerminalFailureIsDeclared422` pin the 422 and a row that stays bound.
+
+**Gaps.** For the post-purchase and exchange callers, no test sends the request again after a
+failed refund and asserts that the same refund key reaches payments. The key derivation in the code
+holds that property, and no test pins it for this case. No payments test sends a second call after
+the 422 and asserts that the adapter receives the same stored provider key. The recovery caller is
+the only one with a connected test that repeats the call after a failed refund.
 
 ### Delivery slices (TKT-56)
 
