@@ -131,6 +131,17 @@ describe('what the matrix says (COS-2, COS-3)', () => {
     }
   });
 
+  it('lets every signed-in role switch the UI language, and nobody anonymous', () => {
+    // TKT-368 / D1(a). The language is a preference with no security weight, so
+    // every role may set it. But the switch is NOT anonymous: the login page
+    // stays English and has no switch, so an anonymous route here would widen
+    // the unauthenticated surface for nothing.
+    for (const role of STAFF_ROLES) {
+      expect(canAccessRoute('/admin/ui-language', role)).toBe(true);
+    }
+    expect(isAnonymousRoute('/admin/ui-language')).toBe(false);
+  });
+
 });
 
 describe('unclassified and unknown fail closed (COS-6)', () => {
