@@ -180,9 +180,14 @@ services:
     # file: a directory mount over the image's provisioning/dashboards would
     # hide the image's own provider files. Grafana reads the provider at start-up
     # and then polls /ticketing-dashboards for changes to the JSON.
+    # TKT-338: the local checkout-path 5xx alert rule, also ONE file, beside the
+    # image's alerting sample. Grafana reads it at start-up only, so an edit
+    # (in place: a new inode breaks the file mount) needs
+    # `docker compose restart lgtm`.
     volumes:
       - ./deploy/grafana/provisioning/dashboards/checkout-path.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/checkout-path.yaml:ro
       - ./deploy/grafana/dashboards:/ticketing-dashboards:ro
+      - ./deploy/grafana/provisioning/alerting/checkout-5xx.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/checkout-5xx.yaml:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
       interval: 10s

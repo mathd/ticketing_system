@@ -1,0 +1,110 @@
+# TKT-338: local demo alert for server errors on the checkout path.
+#
+# compose.yaml mounts this ONE file into the lgtm image's alerting provisioning
+# directory, beside the image's own sample.yaml. Grafana reads it at start-up
+# only: edit this file IN PLACE, then run `docker compose restart lgtm` (the
+# dashboard JSON, in contrast, is read again every 10 s). A save that replaces
+# the file (new inode, e.g. `sed -i`) breaks the single-file mount; see "Change
+# the rule" in docs/verification/checkout-dashboard/README.md.
+#
+# It is a local demo, not a production paging rule. The threshold is "> 0 in a
+# 1-minute window" on one host with a fake payment provider.
+# docs/verification/checkout-dashboard/README.md tells why this number cannot be
+# a production paging threshold. It is not ADR-065's production alerting
+# decision, and it does not use the parked-order gauges.
+#
+# This file adds no contact point, notification policy or mute timing. The
+# image's only contact point is the receiver "empty", which has no integration,
+# so Grafana sends no notification. A provisioned policy tree would replace the
+# whole policy tree of the Grafana instance.
+#
+# Do not add `settings: {mode: strict}` to the Reduce step: Grafana 13.1.1 loads
+# the file and then fails every evaluation. Strict is the mode when `settings`
+# is absent.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: checkout-local
+    folder: Ticketing local
+    # 10 s is the image's minimum interval (unified_alerting.min_interval).
+    interval: 10s
+    rules:
+      - uid: ticketing-checkout-5xx
+        title: Checkout path 5xx (local demo)
+        condition: C
+        data:
+          # A: the 5xx rate of each service over 1 minute, POST only, with the
+          # dashboard's route scope. The zero fallback gives each service that has
+          # POST traffic but no 5xx series the value 0, so it has its own Normal
+          # instance.
+          - refId: A
+            relativeTimeRange:
+              from: 60
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: >-
+                sum by (service_name) (
+                  rate(http_server_request_duration_seconds_count{
+                    service_name=~"gateway|inventory|commerce|payments",
+                    http_request_method="POST",
+                    http_route=~"/api/(inventory|commerce|payments)/|",
+                    http_response_status_code=~"5.."
+                  }[1m])
+                )
+                or on (service_name)
+                0 * sum by (service_name) (
+                  http_server_request_duration_seconds_count{
+                    service_name=~"gateway|inventory|commerce|payments",
+                    http_request_method="POST",
+                    http_route=~"/api/(inventory|commerce|payments)/|"
+                  }
+                )
+          - refId: B
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              datasource:
+                type: __expr__
+                uid: __expr__
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          environment: local
+          scope: checkout
+          ticket: TKT-338
+        annotations:
+          summary: "{{ $labels.service_name }} answered a POST request with a 5xx status in the last minute (local demo)."
+          # Links the alert to the "5xx rate by service" panel. Grafana 13.1.1
+          # ignores the dashboardUid and panelId rule fields in a provisioning file.
+          __dashboardUid__: ticketing-checkout-path
+          __panelId__: "3"
+          description: "Local demo threshold: a 5xx rate above 0 in a 1-minute window. Not a production paging threshold. See docs/verification/checkout-dashboard/README.md."
