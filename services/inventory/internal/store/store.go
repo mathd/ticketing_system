@@ -32,9 +32,10 @@ var (
 	// release, so the same request can succeed later.
 	//
 	// Only the public path returns it. A partial shortage (0 < headroom < quantity)
-	// stays ErrUnavailable, because the buyer can buy fewer now. Every channel
-	// refusal stays ErrUnavailable too: a distinct channel code would tell a prober
-	// which channels exist and who sells them (TKT-246). It has no Channel() method,
+	// stays ErrUnavailable, because the buyer can buy fewer now. Every capacity or
+	// seller refusal of a channel request stays ErrUnavailable too (the window and
+	// presale refusals keep their own sentinels): a distinct channel code would tell
+	// a prober which channels exist and who sells them (TKT-246). It has no Channel() method,
 	// so the structural match in the API mapper cannot claim it (TKT-307).
 	ErrSoldOut = fmt.Errorf("%w: sold out", ErrUnavailable)
 	// ErrChannelWindowClosed: the channel has an allocation with headroom and the
@@ -704,9 +705,10 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// quantity and the public headroom was already zero, which is a sellout.
 	globalShort := int64(confirmed)+int64(held)+int64(qty) > int64(limit)
 	if channel != "" {
-		// Every channel refusal stays the code-less ErrUnavailable, never ErrSoldOut
-		// (TKT-246, ADR-082): a distinct code would tell a prober which channels
-		// exist and who sells them.
+		// Every capacity refusal of a channel request stays the code-less
+		// ErrUnavailable, never ErrSoldOut (TKT-246, ADR-082): a distinct code would
+		// tell a prober which channels exist and who sells them. The window and
+		// presale refusals above keep their own sentinels.
 		if globalShort {
 			return Claim{}, false, ErrUnavailable
 		}

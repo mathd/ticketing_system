@@ -125,7 +125,8 @@ const ENGLISH_UI_STRINGS = {
     quantityUnavailable: 'Quantity unavailable',
     // Only for commerce's exact 409 `sold_out` on a GA reserve (TKT-341, ADR-082): zero
     // public headroom at the locked decision. Point-in-time, so the copy does not say
-    // "permanently". Every other refusal keeps quantityUnavailable.
+    // "permanently". Every other GA refusal keeps quantityUnavailable; seated
+    // refusals keep their own messages.
     soldOut: 'Sold out',
     orderConfirmed: 'Order confirmed',
     viewMyTickets: 'View my tickets',

@@ -18,8 +18,9 @@ path in `services/inventory/internal/store/store.go`:
 - a channel cap with too little headroom;
 - a public request that would use capacity reserved for active channel allocations.
 
-Commerce flattened every inventory refusal to `409 {"error":"inventory unavailable"}`, and the
-storefront showed "Quantity unavailable" for all of them. A buyer could not tell a sold-out pool
+For a GA request, commerce flattened every inventory capacity refusal to
+`409 {"error":"inventory unavailable"}` (only `seated_pool_unsupported` and the seated codes kept
+their own answers), and the storefront showed "Quantity unavailable" for all of them. A buyer could not tell a sold-out pool
 from a closed slot, a closed channel window or a partial shortage.
 
 The waitlist epic (TKT-38) needs a refusal that means "sold out". A later story uses it as the
@@ -79,8 +80,8 @@ public_remaining = limit - confirmed - live_held - reserved_for_active_channels
 sold out         = public_remaining <= 0
 ```
 
-`live_held` is `liveClaims`: buyer holds that have not expired, finalizing claims and
-operational holds. `reserved_for_active_channels` is `reservedForChannelsSQL`: unused capacity of
+`live_held` is `liveClaims`: buyer holds and group reservations that have not expired,
+finalizing claims and operational holds. `reserved_for_active_channels` is `reservedForChannelsSQL`: unused capacity of
 every active allocation, also when its sales window is closed (ADR-054 §Decision B). The
 classification uses the same expression as admission, in the same transaction, under the pool row
 lock. A demand term that a later change adds to admission (for example the pending captures and
@@ -90,8 +91,9 @@ offers of ADR-075) must go into that expression, and then it moves both.
 `ErrUnavailable`: the buyer can buy fewer now, so it is not a waitlist condition. Every capacity
 or seller refusal of a request that names a channel stays `ErrUnavailable`: pool, cap, no
 allocation and seller mismatch, whatever the pool looks like. A channel request keeps its own
-coded refusals (`channel_window_closed`, `presale_code_invalid`). Group, operational and seated refusals stay
-`ErrUnavailable`.
+coded refusals (`channel_window_closed`, `presale_code_invalid`). The capacity refusals of the
+group, operational and seated paths stay `ErrUnavailable`; their other refusals (closure, window,
+seat selection) keep their own errors.
 
 **Precedence.** Replay, offering state, channel window, seller and presale code are judged before
 capacity, as before. So a closed or archived slot answers its own code, also on a full pool. The
