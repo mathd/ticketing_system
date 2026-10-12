@@ -59,6 +59,13 @@ the gateway, plus named infra assertions:
   and a broker cannot report who else was given one
 - DB credential isolation — service A's role cannot connect to service B's database
 - metrics ingestion — `http_server_*` series queryable in Prometheus after traffic
+- checkout-path dashboard (TKT-337, `smoke/checkout_dashboard_test.go`) — Grafana serves the
+  provisioned dashboard, and each panel query runs through Grafana's `/api/ds/query`. After two
+  `fake-auth-hold` checkouts, payments shows a 5xx rate above 0 and commerce and gateway show 0.
+  The trace panel finds the test's own traced checkout, and Tempo returns its spans. The
+  induced slow-inventory example in `smoke/checkout_dashboard_induced_test.go` is opt-in
+  (`SMOKE_CHECKOUT_DASHBOARD_INDUCE=1`) and is not part of the gate:
+  [procedure and evidence](./verification/checkout-dashboard/README.md)
 - US-004/006 checkout and gate scan — authoritative EUR price, capture+confirm,
   issuance/delivery, accepted scan, trace-derived duplicate rejection, and a concurrent
   real-PostgreSQL redemption race

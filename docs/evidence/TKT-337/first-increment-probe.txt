@@ -1,0 +1,20 @@
+# TKT-337 first-increment probe (lone grafana/otel-lgtm 0.30.0 container, pinned digest).
+# A Go OpenTelemetry SDK program exported one counter series every 5 s:
+#   http_server_request_duration_seconds_count{service_name="firstinc",http_response_status_code="500"}
+# It also recorded status 200 every 5 s, so the service existed before the first 500.
+# Times are UTC wall-clock times from the probe log and the query log. Offsets count from
+# the first 500 (T0 = 00:31:06).
+#
+# event / query time   offset    raw count   rate(...[4m])   increase(...[4m])
+first 500 recorded     00:31:06  T0+0s       -           -               -
+query                  00:31:51  T0+45s      1           0               0
+second 500 recorded    00:32:06  T0+60s      -           -               -
+query                  00:33:16  T0+130s     2           0.004375        1.05
+query                  00:33:46  T0+160s     2           0.004375        1.05
+query                  00:34:11  T0+185s     2           0.004375        1.05
+#
+# Reading: 45 s after the first 500 the raw counter is 1, but rate() and increase() are 0,
+# because the series starts at 1 and Prometheus has no earlier sample to subtract.
+# After the second 500, increase() sees exactly one increment (1.05 with extrapolation).
+# So one isolated 5xx can show as 0 on the 5xx panel, and the gate test sends two failures
+# in different exports.

@@ -176,6 +176,13 @@ services:
   lgtm:
     image: grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8
     restart: unless-stopped
+    # TKT-337: the versioned checkout-path dashboard. Mount the provider as ONE
+    # file: a directory mount over the image's provisioning/dashboards would
+    # hide the image's own provider files. Grafana reads the provider at start-up
+    # and then polls /ticketing-dashboards for changes to the JSON.
+    volumes:
+      - ./deploy/grafana/provisioning/dashboards/checkout-path.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/checkout-path.yaml:ro
+      - ./deploy/grafana/dashboards:/ticketing-dashboards:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
       interval: 10s
@@ -574,6 +581,12 @@ services:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # The same local export cadence as the &go-env services (TKT-337, decision D1).
+      # At the SDK default of 60 s the gateway's dashboard panels lag the other
+      # services by up to a minute, and a 1-minute rate() never shows the gateway.
+      OTEL_METRIC_EXPORT_INTERVAL: "5000"
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_BLRP_SCHEDULE_DELAY: "1000"
       CATALOG_URL: http://catalog:8080
       INVENTORY_URL: http://inventory:8080
       COMMERCE_URL: http://commerce:8080

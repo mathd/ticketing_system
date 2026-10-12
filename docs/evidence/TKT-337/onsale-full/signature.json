@@ -1,0 +1,34 @@
+{
+  "commerce": {
+    "5xx_per_second_max_pay_phase": 0,
+    "5xx_per_second_max_slow_phase": 0,
+    "5xx_per_second_max_whole_run": 0,
+    "p95_seconds_before_slow_phase": 0.06773512279307503,
+    "p95_seconds_max_payment_phase": 0.04750000000000001,
+    "p95_seconds_max_slow_phase": 4.875
+  },
+  "gateway": {
+    "5xx_per_second_max_pay_phase": 0,
+    "5xx_per_second_max_slow_phase": 0,
+    "5xx_per_second_max_whole_run": 0,
+    "p95_seconds_before_slow_phase": 0.06835182106144193,
+    "p95_seconds_max_payment_phase": 0.0475,
+    "p95_seconds_max_slow_phase": 4.875
+  },
+  "inventory": {
+    "5xx_per_second_max_pay_phase": 0,
+    "5xx_per_second_max_slow_phase": 0,
+    "5xx_per_second_max_whole_run": 0,
+    "p95_seconds_before_slow_phase": 0.020666826708849582,
+    "p95_seconds_max_payment_phase": 0.023499999999999997,
+    "p95_seconds_max_slow_phase": 4.875
+  },
+  "payments": {
+    "5xx_per_second_max_pay_phase": 0.030380625840892315,
+    "5xx_per_second_max_slow_phase": 0,
+    "5xx_per_second_max_whole_run": 0.030380625840892315,
+    "p95_seconds_before_slow_phase": 0.02246153846153846,
+    "p95_seconds_max_payment_phase": 0.0223,
+    "p95_seconds_max_slow_phase": 0.02275
+  }
+}

@@ -52,6 +52,9 @@ back office in `web/backoffice` (served under `/admin/`, ADR-042), and the React
 
 Every service calls `obs.Setup()`: OTLP export (traces, metrics, logs) to the `lgtm`
 container + structured JSON on stdout with `trace_id`/`span_id`. Grafana at :3000.
+Grafana loads the versioned checkout-path dashboard from `deploy/grafana/` (uid
+`ticketing-checkout-path`, TKT-337). Change the JSON file, not the dashboard in the UI: Grafana
+refuses to save a provisioned dashboard. How to read it: `docs/verification/checkout-dashboard/README.md`.
 Cross-service calls must use `obs.Client()` so W3C trace context propagates.
 
 ## Access failed-event recovery
