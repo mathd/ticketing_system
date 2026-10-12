@@ -79,14 +79,23 @@ show. Grafana evaluated each panel query; the values below come from those resul
 
 Phases (UTC, 2026-10-12): slow inventory 01:32:51–01:36:55 (69 rounds, 277 reservations, each
 3.02–3.08 s at the client), payment failure 01:41:56–01:43:41 (8 checkouts), run end 01:48:42.
-`TestOnsaleLoadProof` started after this run ended. The p95 value 4.875 s is the interpolation
-inside the 2.5–5 s histogram bucket.
+`TestOnsaleLoadProof` started after this run ended. So the induced example ran in the same smoke
+run as the full profile, but before its load, not under it. The p95 value 4.875 s is the
+interpolation inside the 2.5–5 s histogram bucket.
 
 On this host (WSL2, 16 CPUs, other Compose stacks running), `TestOnsaleLoadProof`'s full profile
-did not give a verdict in any run: the NFR window passed, then a sweep stage ended inconclusive
-(client transport errors) or unstable. The same thing occurred on an unchanged copy of `c16ef536`,
-so it is a property of the host, not of this ticket. The TKT-82 report of these runs went to a
-scratch file and is not evidence here.
+did not give a verdict in any of the three runs:
+
+- In each run, a sweep stage ended inconclusive (client transport errors) or unstable. The same
+  thing occurred on an unchanged copy of `c16ef536`, so the sweep failures are a property of the
+  host, not of this ticket.
+- In one run, the NFR window also failed its accounting check: 27001 `claim_history` inserts,
+  27000 expected. That run was before the gate test cleaned up its `payment_unknown` orders. The
+  probable cause is that the recovery runner released those orders inside the measured window.
+  The cleanup was added for this reason, and the next run counted exactly 27000. The cause is
+  probable, not proven.
+
+The TKT-82 report of these runs went to a scratch file and is not evidence here.
 
 **Run on a kept-up smoke stack** (`docs/evidence/TKT-337/kept-up-run/`, the same test and compose
 files; this run also has a screenshot):
