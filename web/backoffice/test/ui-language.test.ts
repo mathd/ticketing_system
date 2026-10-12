@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { ROUTE_MATRIX } from '../src/lib/authorization';
 import { publicSchemeIsHttps } from '../src/lib/forwarded';
 import {
   UI_LANGUAGE_COOKIE,
+  UI_LANGUAGE_PATH,
   safeReturnTo,
   uiLanguageCookieOptions,
   uiLanguageFrom,
@@ -55,10 +57,32 @@ describe('safeReturnTo', () => {
     expect(safeReturnTo(raw)).toBe('/admin/');
   });
 
+  // A protocol-relative value that names the placeholder host itself resolves
+  // to the placeholder origin, so the origin check passes and its path is kept.
+  // That is still safe: only the path is returned, and the path is under the
+  // base, so the redirect stays on this origin. Pinned as what it does.
+  it('keeps only the path of a protocol-relative value naming the placeholder host', () => {
+    expect(safeReturnTo('//return-to.invalid/admin/events/new')).toBe('/admin/events/new');
+    expect(safeReturnTo('//return-to.invalid/elsewhere')).toBe('/admin/');
+  });
+
   it('falls back when the field is absent or not text', () => {
     expect(safeReturnTo(null)).toBe('/admin/');
     expect(safeReturnTo(undefined)).toBe('/admin/');
     expect(safeReturnTo(new File(['/admin/'], 'x'))).toBe('/admin/');
+  });
+});
+
+describe('the switch posts where the matrix classifies a page', () => {
+  // The Layout's form action is UI_LANGUAGE_PATH; ROUTE_MATRIX spells its row as
+  // a literal. If the two drift, the switch posts to a path the gate refuses as
+  // unclassified (or, worse, one some other row covers).
+  it('is a page row of ROUTE_MATRIX, for every staff role and not anonymous', () => {
+    const row = ROUTE_MATRIX.find((r) => r.template === UI_LANGUAGE_PATH);
+    expect(UI_LANGUAGE_PATH).toBe('/admin/ui-language');
+    expect(row?.source).toBe('page');
+    expect(row?.anonymous).toBeUndefined();
+    expect([...(row?.roles ?? [])].sort()).toEqual(['admin', 'box_office', 'finance']);
   });
 });
 

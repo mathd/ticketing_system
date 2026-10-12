@@ -37,7 +37,11 @@ const nameFr = `Soirée langue ${stamp}`;
 const ticketEn = `Balcony ${stamp}`;
 const ticketFr = `Balcon ${stamp}`;
 const VENUE = '00000000-0000-0000-0000-0000000000a1';
-const startsAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+// Non-zero seconds AND milliseconds, so a truncation anywhere on the path shows
+// in the read-back. A whole-minute instant would hide one.
+const startsAtDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+startsAtDate.setUTCSeconds(45, 123);
+const startsAt = startsAtDate.toISOString();
 
 provisionAdmin(CATALOG, identifier, password);
 
@@ -147,6 +151,9 @@ try {
   // --- Steps 2 and 3 in French, filled by LABEL as an operator does -----------
   // Filling by label is what sees a render that swaps the two content names
   // behind correct labels (codex review finding 2).
+  const dateForm = page.locator('form:has(input[name="_action"][value="create-performance"])');
+  const performanceKey = await dateForm.locator('input[name="idempotency_key"]').inputValue();
+  check('the date form renders an idempotency key', Boolean(performanceKey), performanceKey);
   await page.getByLabel('Salle', { exact: true }).selectOption(VENUE);
   await page.getByLabel('Début', { exact: true }).fill(startsAt);
   await page.getByLabel('Fuseau horaire (IANA)', { exact: true }).fill('UTC');
@@ -154,6 +161,22 @@ try {
   check('the French date form posted to the builder', new URL(request.url()).pathname === PATH, request.url());
   const performanceId = new URL(page.url()).searchParams.get('performance');
   check('the date step redirects with its id', Boolean(performanceId), page.url());
+  // The whole saved slot, exactly: the instant to the millisecond (in UTC, so
+  // the comparison does not depend on the database's session time zone), and
+  // the key the PAGE rendered — the browser cannot see the SSR write that
+  // carries it, so the row is the only place this tier can observe it.
+  check(
+    'the saved slot is exactly what the French page submitted',
+    sql(
+      PG,
+      'catalog',
+      `SELECT event_id::text || '|' || venue_id::text || '|' ||
+              to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') || '|' ||
+              timezone || '|' || organizer_id::text || '|' || idempotency_key
+       FROM performances WHERE id='${performanceId}'`,
+    ) === `${eventId}|${VENUE}|${startsAt}|UTC|${ORGANIZER}|${performanceKey}`,
+    sql(PG, 'catalog', `SELECT to_char(starts_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') || ' key=' || idempotency_key FROM performances WHERE id='${performanceId}'`),
+  );
   check('step 3 renders in French', (await page.textContent('h2')) === '3. Le prix');
   check(
     'the ticket content fields keep their content language under a French UI',
@@ -161,6 +184,8 @@ try {
   );
   const priceForm = page.locator('form:has(input[name="_action"][value="create-ticket-type"])');
   check('the price form action is literally relative', (await priceForm.getAttribute('action')) === '');
+  const ticketTypeKey = await priceForm.locator('input[name="idempotency_key"]').inputValue();
+  check('the price form renders an idempotency key', Boolean(ticketTypeKey), ticketTypeKey);
   await page.getByLabel('Nom du billet (anglais)', { exact: true }).fill(ticketEn);
   await page.getByLabel('Nom du billet (français)', { exact: true }).fill(ticketFr);
   await page.getByLabel('Montant en unités mineures', { exact: true }).fill('4550');
@@ -174,13 +199,14 @@ try {
     sql(PG, 'catalog', `SELECT string_agg(k, ',' ORDER BY k) FROM ticket_types, jsonb_object_keys(name) k WHERE id='${ticketTypeId}'`) === 'en,fr',
   );
   check(
-    'the saved ticket names and price are exactly what the French page submitted',
+    'the saved ticket type is exactly what the French page submitted',
     sql(
       PG,
       'catalog',
-      `SELECT (name->>'en') || '|' || (name->>'fr') || '|' || performance_id::text || '|' || price_amount::text || '|' || currency
+      `SELECT (name->>'en') || '|' || (name->>'fr') || '|' || performance_id::text || '|' ||
+              price_amount::text || '|' || currency || '|' || organizer_id::text || '|' || idempotency_key
        FROM ticket_types WHERE id='${ticketTypeId}'`,
-    ) === `${ticketEn}|${ticketFr}|${performanceId}|4550|EUR`,
+    ) === `${ticketEn}|${ticketFr}|${performanceId}|4550|EUR|${ORGANIZER}|${ticketTypeKey}`,
   );
   check('step 4 renders in French', (await page.textContent('h2')) === '4. Publication');
 

@@ -5,8 +5,11 @@
 // One page, four actions, state in the query string. That is the idiom
 // venues/[id].astro already proves for four writes plus a publish: `_action`
 // dispatch, post/redirect/get on success, re-render with the error on failure,
-// relative form actions (an absolute one trips the origin handling even
-// same-origin — TKT-105). Each extra page would be another ROUTE_MATRIX row,
+// relative form actions (`action=""` posts back to this URL with its query, which
+// is the progress). The action is not a CSRF matter: TKT-105's "absolute action"
+// trap was Astro's checkOrigin, which is off (astro.config.mjs), and the gate
+// (gateRequest) compares the request's Origin with the forwarded public origin
+// whatever the action is. Each extra page would be another ROUTE_MATRIX row,
 // another role test and another browser check, for no domain benefit.
 //
 // The query string carries IDENTITY only — which event, which slot — never
@@ -116,8 +119,9 @@ try {
 // regardless — the value is rendered into a hidden input server-side.
 const freshKey = () => crypto.randomUUID();
 
-// Keys for the forms this request renders. On a failed submit these are
-// REPLACED below by the submitted ones (see `carriedKey`).
+// Keys for the forms this request renders. When a POST re-renders the form it
+// received, that form's key is REPLACED below by the submitted one (see
+// `carriedKey`).
 let eventKey = freshKey();
 let performanceKey = freshKey();
 let ticketTypeKey = freshKey();
@@ -128,12 +132,28 @@ if (Astro.request.method === 'POST') {
   const field = (name: string) => String(form.get(name) ?? '');
   submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
-  // The SUBMITTED key, not a fresh one. On a validation failure this page
-  // re-renders the form the operator just posted, and re-rendering a NEW key
-  // there would mean the corrected resubmit is a different request as far as
-  // catalog is concerned — so a double-click on the corrected form would once
-  // again produce two rows. Falls back to a fresh key only when the field is
-  // absent entirely, which is a form that predates this change.
+  // The SUBMITTED key, not a fresh one, whenever this request re-renders the
+  // form it received.
+  //
+  // The case that needs it is the AMBIGUOUS write: when catalog's answer is lost
+  // (a reset connection, a 5xx, an unreadable success — AmbiguousMutationError),
+  // catalog may already have created the row under that key. Re-rendering the
+  // same key makes the operator's retry the SAME request, so catalog answers
+  // with the row it may have created instead of creating a second one. A fresh
+  // key there would make the retry a new write and could duplicate the row.
+  //
+  // After a definite refusal (a local validation failure, or a catalog 4xx) THIS
+  // submit created no row — catalog stores the key on the row it creates
+  // (migration 0020) — so carrying the key adds nothing and costs nothing. If an
+  // earlier ambiguous write did commit under it, a resubmit with different terms
+  // gets catalog's 409 "idempotency key reused with different terms", which is
+  // the reconcile-first answer the ambiguous message asks for.
+  //
+  // Double-click protection does not depend on any of this: two clicks on ONE
+  // rendered form both send that form's hidden key, whichever key was rendered.
+  //
+  // A fresh key is minted when the submitted value is EMPTY or the field is
+  // absent: `||` treats the two alike.
   const carriedKey = (name: string) => field(name) || freshKey();
   if (action === 'create-event') eventKey = carriedKey('idempotency_key');
   if (action === 'create-performance') performanceKey = carriedKey('idempotency_key');

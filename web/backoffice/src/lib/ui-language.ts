@@ -13,6 +13,13 @@ import { parseUiLanguage, type UiLanguage } from './ui-strings';
 /** Deliberately not `bo_sid`-like: a preference, not a credential. */
 export const UI_LANGUAGE_COOKIE = 'bo_ui_language';
 
+/**
+ * Where the switch form posts: src/pages/ui-language.ts, under Astro's base.
+ * ROUTE_MATRIX spells its row out as a literal ('/admin/ui-language'), like every
+ * other row; a unit test (ui-language.test.ts) asserts the two agree.
+ */
+export const UI_LANGUAGE_PATH = `${BASE}/ui-language`;
+
 /** The whole back office, so a choice made on one page holds on every page. */
 export const UI_LANGUAGE_COOKIE_PATH = BASE;
 
@@ -64,8 +71,13 @@ const PLACEHOLDER_ORIGIN = 'http://return-to.invalid';
  * returning the repaired form: a relative path (resolved from the root it would
  * be kept), a backslash (read as `/`), whitespace or a control character
  * (stripped by the parser, so `/admin/\nLocation: …` would come back as a
- * path), and a protocol-relative URL (`//host/admin/…`) whose path happens to
- * be under the base. Each falls back to the venue list instead.
+ * path), and a protocol-relative URL (`//host/admin/…`) naming any host other
+ * than the placeholder. Each falls back to the venue list instead. A
+ * protocol-relative URL that names the placeholder host itself
+ * (`//return-to.invalid/admin/…`) resolves to the placeholder origin, passes
+ * the origin check, and comes back as its path (`/admin/…`). That is still
+ * same-origin, because only the path is returned and the path must be under
+ * the base; a test pins it.
  *
  * The fragment is dropped; the query is kept, because that is where the event
  * builder carries its progress.
