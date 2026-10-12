@@ -50,8 +50,9 @@ Constraints:
         - The smallest change.
     - Cons:
         - A partial shortage reads as a sellout, but the buyer can buy fewer now.
-        - The channel causes become distinguishable from each other, which opens the TKT-246
-          oracle.
+        - A seller mismatch and a missing allocation would also read as a sellout. They stay
+          indistinguishable from each other, so this opens no oracle, but the buyer and the
+          later waitlist get a false entry condition for causes that are not a sellout.
 - **Option 3: Distinguish "held out" (zero because of live holds) from "sold out".**
     - Pros:
         - The copy can say that tickets can come back.
@@ -86,9 +87,10 @@ lock. A demand term that a later change adds to admission (for example the pendi
 offers of ADR-075) must go into that expression, and then it moves both.
 
 **What stays code-less.** A partial shortage (`0 < public_remaining < quantity`) stays
-`ErrUnavailable`: the buyer can buy fewer now, so it is not a waitlist condition. Every refusal of
-a request that names a channel stays `ErrUnavailable`: pool, cap, no allocation and seller
-mismatch, whatever the pool looks like. Group, operational and seated refusals stay
+`ErrUnavailable`: the buyer can buy fewer now, so it is not a waitlist condition. Every capacity
+or seller refusal of a request that names a channel stays `ErrUnavailable`: pool, cap, no
+allocation and seller mismatch, whatever the pool looks like. A channel request keeps its own
+coded refusals (`channel_window_closed`, `presale_code_invalid`). Group, operational and seated refusals stay
 `ErrUnavailable`.
 
 **Precedence.** Replay, offering state, channel window, seller and presale code are judged before
@@ -99,6 +101,13 @@ first and then refuses with it.
 **Point-in-time.** `sold_out` is the state at the locked decision. It is not permanent. Holds
 expire and channel reservations release, so the same request can succeed later. The contract and
 the storefront copy do not say "permanently".
+
+The "locked decision" uses the transaction's start time to decide which holds are live
+(`liveClaims` and `sweepExpired` use `now()`, which ADR-024 keeps as the accounting clock). A
+request that waits for the pool lock while the last live hold expires still counts that hold, and
+answers `sold_out`. An availability read made at the same moment can already show headroom. The
+same request was refused before this ADR too (as a code-less 409); this ADR changes only its label. A
+retry succeeds.
 
 **Wire contract.**
 
@@ -130,8 +139,9 @@ account eligibility on the server.
       decide later whether the copy adds "tickets may become available".
     - `sold_out` is per slot (pool). A slot with more than one GA ticket type sells out as one.
     - Name the adversary (ADR-021): the code adds no information that the public availability
-      read does not already give (`available`, `held`, `offering_status`). It gives a fresher
-      answer, because inventory takes it under the lock.
+      read does not already give (`available`, `held`, `offering_status`). Inventory takes it
+      under the lock, so it reflects the claims committed before the decision, but it judges
+      hold expiry at the transaction's start time (see **Point-in-time**).
 
 ## References *(optional)*
 

@@ -13,7 +13,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description A 409 with `code: sold_out` means that inventory found zero public headroom for this GA request at its locked decision (TKT-341, ADR-082). It is point-in-time and retryable. A partial shortage, a closed slot and every other inventory refusal keep the code-less 409. A seated request keeps its own codes. */
+        /** @description A 409 with `code: sold_out` means that inventory found zero public headroom for this GA request at its locked decision (TKT-341, ADR-082). It is point-in-time and retryable. A partial shortage, a closed slot and every other inventory refusal keep the code-less 409, except `seated_pool_unsupported` for a quantity request on a seated pool. A seated request keeps its own codes. */
         post: operations["createReservation"];
         delete?: never;
         options?: never;
