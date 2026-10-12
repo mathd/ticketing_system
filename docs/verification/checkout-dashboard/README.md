@@ -380,7 +380,9 @@ reads the rule and the alert state that Grafana serves, not the rule file. It:
   the counters of the other three services did not grow;
 - requires, within 120 s, payments Normal again, after an evaluation later than the one that made
   it fire. It requires all four instances, so an instance that disappears is not a resolution, and
-  an instance that is `Normal (NoData)` is not a resolution either.
+  an instance that is `Normal (NoData)` is not a resolution either;
+- requires again, after resolution, that payments grew by exactly 2 in total. The check after
+  Firing can pass before the second failure is exported; this one runs about a minute later.
 
 The file sorts before `checkout_dashboard_test.go`, so the test runs before the dashboard test and
 before `TestOnsaleLoadProof`. It ends only after payments is Normal again. It takes about 100 s.
@@ -415,9 +417,11 @@ state before it checks the counters. Write each mutation into the rule file in p
 [Change the rule](#change-the-rule)).
 
 The counters have no label for each request. The test therefore requires EXACT growth: payments
-by exactly 1 after the first failure and exactly 2 at the end, the other three by 0. A 5xx from
-another source during the test makes the growth too large and fails the test; it cannot stand in
-for one of the test's own failures. The test does not call `t.Parallel()`, so Go runs no other
+by exactly 1 after the first failure, exactly 2 after Firing and again after resolution, the
+other three by 0. A payments 5xx from another source between the first failure and the last
+check makes the growth 3 and fails the test. Two cases stay open: a 5xx after the last check,
+which can no longer change the result, and one of the test's own failures that is never
+exported while another 5xx takes its place. The test does not call `t.Parallel()`, so Go runs no other
 test of the smoke package at the same time. The module's other package,
 `smoke/internal/loadtest`, uses only local `httptest` servers, and `make check` runs its stages
 one at a time (`make -j1`). A background worker of the stack, such as commerce's recovery runner,

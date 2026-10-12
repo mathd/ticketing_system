@@ -38,6 +38,7 @@ package smoke_test
 //     made it fire, the rule is still present and not paused, within 120 s. An instance
 //     that disappears is not a resolution: the test requires all four instances. An
 //     instance that is "Normal (NoData)" is not a resolution either.
+//  8. The counters again, after resolution: payments grew by exactly 2 in total.
 //
 // Grafana sends no notification for this rule: the image's only contact point is the
 // receiver "empty", which has no integration. The alert shows only in Grafana's alerting
@@ -192,6 +193,14 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 	})
 	t.Logf("payments Normal again %.0f s after it was seen Alerting, %.0f s after the second failure",
 		time.Since(firedAt).Seconds(), time.Since(secondFailure).Seconds())
+
+	// Step 8: the counters again, now about a minute after the second failure, so many
+	// exports later. Step 6 can pass before the second failure is exported: if a payments 5xx
+	// from another source arrived in the gap, the growth is already exactly 2 there. Here
+	// that 5xx makes the growth 3, and the test fails.
+	if err := assertCheckoutAlertCounters(t, errorSelector, trafficStart, 2); err != nil {
+		t.Fatalf("after resolution: %v", err)
+	}
 }
 
 // require checks the rule's health and settings, and that there are exactly four instances,
