@@ -49,16 +49,20 @@ func TestEveryLifecycleTypeHasAValidityEffect(t *testing.T) {
 		t.Fatalf("want exactly one event_type CHECK on lifecycle_events, got %d: %v", len(defs), defs)
 	}
 
-	// Any SQL string literal, not only [a-z_]: a type such as 'revoked_v2' or 'revoked-v2'
-	// must be seen, or it passes both directions unclassified. A doubled quote is the SQL
-	// escape for a quote inside the literal.
-	admitted := map[string]bool{}
-	matches := regexp.MustCompile(`'((?:[^']|'')*)'::text`).FindAllStringSubmatch(defs[0], -1)
-	for _, m := range matches {
-		admitted[strings.ReplaceAll(m[1], "''", "'")] = true
+	// The CHECK must have exactly the shape PostgreSQL deparses for
+	// `event_type IN ('a', 'b', ...)`: one ANY over an ARRAY of text literals and nothing
+	// else. Only for that shape is "the literals" the same set as "the admitted values". Any
+	// other shape (a concatenation, a second branch, another cast) fails here, so the test
+	// is updated with the CHECK instead of passing on a set it did not read. A literal is any
+	// SQL string, not only [a-z_] ('revoked_v2', 'revoked-v2'); '' is an escaped quote.
+	const lit = `'(?:[^']|'')*'::text`
+	shape := regexp.MustCompile(`^CHECK \(\(event_type = ANY \(ARRAY\[` + lit + `(?:, ` + lit + `)*\]\)\)\)$`)
+	if !shape.MatchString(defs[0]) {
+		t.Fatalf("the event_type CHECK is not a plain IN list of text literals; update this test with the CHECK: %s", defs[0])
 	}
-	if n := strings.Count(defs[0], "::text"); n != len(matches) {
-		t.Fatalf("parsed %d literals from %d ::text casts in the CHECK; the parser missed a type: %s", len(matches), n, defs[0])
+	admitted := map[string]bool{}
+	for _, m := range regexp.MustCompile(`'((?:[^']|'')*)'::text`).FindAllStringSubmatch(defs[0], -1) {
+		admitted[strings.ReplaceAll(m[1], "''", "'")] = true
 	}
 	var unclassified, unknown []string
 	for typ := range admitted {

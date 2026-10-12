@@ -98,9 +98,10 @@ The order of the events has no effect. A later event does not restore validity. 
 `delivered`, `redelivered` and admission events after a void, and each of them is a fact about a dead
 ticket.
 
-**Refund precedence.** Rule 1 comes before rule 2 because the gate checks in the same order. The
-single-entry scan, the pass scan and offline reconciliation all check for a refund first and for an
-exchange second (`postgres.go`, `scan.go` and `reconcile.go` in the Access store).
+**Refund precedence.** Rule 1 comes before rule 2 because the live gate checks in the same order. The
+single-entry scan and the pass scan check for a refund first and for an exchange second (`postgres.go`
+and `scan.go` in the Access store). Offline reconciliation does not choose a reason: it raises one
+alarm for `refunded || exchanged` (`reconcile.go`).
 [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) records the refund decision. Thus the page and
 the gate give the same reason. Today Commerce refuses to refund an exchanged order and to exchange a refunded order, so a
 history with both events comes only from the Access writers. This changes the page for that one
@@ -109,9 +110,10 @@ case. Before, the page showed the first void event in the history, so exchange t
 
 **Every type is classified.** A table in the Access store gives the effect of each of the nine
 lifecycle types. A store smoke test (`TestEveryLifecycleTypeHasAValidityEffect`) reads the
-`event_type` CHECK from a migrated database. It fails when the table and the CHECK differ in either
-direction. Thus a migration that adds a type cannot pass the gate until the type has an effect in the
-table. Because of this test, the derivation keeps the verdict for an unknown type, as the gate does.
+`event_type` CHECK from a migrated database. It fails when the CHECK is not a plain `IN` list of text
+literals (the only shape for which the literals are the admitted set), and when the table and the
+CHECK differ in either direction. Thus a migration that adds a type, or rewrites the CHECK in another
+shape, cannot pass the gate until the test and the table are updated. Because of this test, the derivation keeps the verdict for an unknown type, as the gate does.
 It does not refuse the bundle. A refusal would return 500 for the whole page, valid tickets included,
 and it would be stricter than the gate.
 

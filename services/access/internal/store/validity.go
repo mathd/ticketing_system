@@ -40,9 +40,10 @@ const (
 )
 
 // lifecycleEffects classifies EVERY event type the lifecycle_events CHECK admits.
-// TestEveryLifecycleTypeHasAValidityEffect reads that CHECK from a migrated database and
-// fails when this table and the CHECK differ in either direction, so a migration that
-// adds a type cannot ship until the type is classified here.
+// TestEveryLifecycleTypeHasAValidityEffect reads that CHECK from a migrated database. It
+// fails when the CHECK is not a plain IN list of text literals, and when this table and
+// the CHECK differ in either direction, so a migration that adds a type cannot ship until
+// the type is classified here.
 //
 // The voiding entries match the gate. Both scan paths refuse a refunded ticket first and
 // an exchanged ticket second (scan.go), and no other type voids a ticket there.
