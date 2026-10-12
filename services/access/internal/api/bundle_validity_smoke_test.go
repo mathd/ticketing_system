@@ -73,11 +73,18 @@ func TestTicketBundleCarriesEachTicketsVerdict(t *testing.T) {
 	if len(bundle.Tickets) != len(want) {
 		t.Fatalf("bundle has %d tickets, want %d: %s", len(bundle.Tickets), len(want), rec.Body.String())
 	}
+	// Each expected ticket exactly once: a duplicate standing in for a missing ticket with
+	// the same verdict would otherwise pass the length and membership checks.
+	seen := map[uuid.UUID]bool{}
 	for _, tk := range bundle.Tickets {
 		w, ok := want[tk.TicketID]
 		if !ok {
 			t.Fatalf("unexpected ticket %s in the bundle", tk.TicketID)
 		}
+		if seen[tk.TicketID] {
+			t.Fatalf("ticket %s appears twice in the bundle: %s", tk.TicketID, rec.Body.String())
+		}
+		seen[tk.TicketID] = true
 		if !reflect.DeepEqual(tk.Validity, w) {
 			t.Errorf("ticket %s validity = %v, want %v", tk.TicketID, tk.Validity, w)
 		}

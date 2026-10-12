@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,9 +49,16 @@ func TestEveryLifecycleTypeHasAValidityEffect(t *testing.T) {
 		t.Fatalf("want exactly one event_type CHECK on lifecycle_events, got %d: %v", len(defs), defs)
 	}
 
+	// Any SQL string literal, not only [a-z_]: a type such as 'revoked_v2' or 'revoked-v2'
+	// must be seen, or it passes both directions unclassified. A doubled quote is the SQL
+	// escape for a quote inside the literal.
 	admitted := map[string]bool{}
-	for _, m := range regexp.MustCompile(`'([a-z_]+)'::text`).FindAllStringSubmatch(defs[0], -1) {
-		admitted[m[1]] = true
+	matches := regexp.MustCompile(`'((?:[^']|'')*)'::text`).FindAllStringSubmatch(defs[0], -1)
+	for _, m := range matches {
+		admitted[strings.ReplaceAll(m[1], "''", "'")] = true
+	}
+	if n := strings.Count(defs[0], "::text"); n != len(matches) {
+		t.Fatalf("parsed %d literals from %d ::text casts in the CHECK; the parser missed a type: %s", len(matches), n, defs[0])
 	}
 	var unclassified, unknown []string
 	for typ := range admitted {
