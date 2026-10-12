@@ -2,8 +2,10 @@
 #
 # compose.yaml mounts this ONE file into the lgtm image's alerting provisioning
 # directory, beside the image's own sample.yaml. Grafana reads it at start-up
-# only: after an edit, run `docker compose restart lgtm` (the dashboard JSON, in
-# contrast, is read again every 10 s).
+# only: edit this file IN PLACE, then run `docker compose restart lgtm` (the
+# dashboard JSON, in contrast, is read again every 10 s). A save that replaces
+# the file (new inode, e.g. `sed -i`) breaks the single-file mount; see "Change
+# the rule" in docs/verification/checkout-dashboard/README.md.
 #
 # It is a local demo, not a production paging rule. The threshold is "> 0 in a
 # 1-minute window" on one host with a fake payment provider.

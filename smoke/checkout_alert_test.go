@@ -24,8 +24,8 @@ package smoke_test
 //  4. Two fake-auth-hold checkouts. Payments answers each one 500, and commerce answers
 //     202 payment_unknown. A new status="500" series starts at 1, and rate() cannot see
 //     that first increment, so the second failure, in a later sample, is what makes the
-//     payments rate positive. The test sends the second failure only after Prometheus has
-//     the first one under the rule's OWN 5xx selector, and at least
+//     payments rate positive. The test sends the second failure only after the payments
+//     counter under the rule's OWN 5xx selector has grown by 1 in Prometheus, and at least
 //     checkoutDashboardFailureGap after it. A broken status selector fails here with a
 //     clear message.
 //  5. Firing: payments is Alerting and the other three are Normal, within 60 s. The test
@@ -130,10 +130,11 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 		return s.require(alertStateNormal, "")
 	})
 
-	// Step 4: the induced failures. The second failure is sent only after Prometheus has
-	// the first one under the rule's own 5xx selector. A sleep alone does not make two
-	// samples: if the payments export stalls across the gap, Prometheus first sees a new
-	// 500 series at 2, and rate() never goes above 0.
+	// Step 4: the induced failures. The second failure is sent only after the payments
+	// counter under the rule's own 5xx selector has grown by 1. The counter has no label for
+	// each request, so this relies on exclusive traffic (see the README). A sleep alone does
+	// not make two samples: if the payments export stalls across the gap, Prometheus first
+	// sees a new 500 series at 2, and rate() never goes above 0.
 	trafficStart := time.Now()
 	tracedCheckout(t, holdOffer1, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 	firstFailure := time.Now()
@@ -173,7 +174,8 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 	// Step 6: both failures reached Prometheus under the rule's 5xx selector, and the other
 	// three services had no 5xx. The alert can fire on the first failure when the payments
 	// 500 series already exists, so the second increment can arrive after the Firing state.
-	retry(t, 30*time.Second, func() error {
+	// 60 s, the same budget as the first-failure wait: Firing is already recorded.
+	retry(t, 60*time.Second, func() error {
 		return assertCheckoutAlertCounters(t, errorSelector, trafficStart, 2)
 	})
 

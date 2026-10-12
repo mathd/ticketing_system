@@ -182,7 +182,8 @@ services:
     # and then polls /ticketing-dashboards for changes to the JSON.
     # TKT-338: the local checkout-path 5xx alert rule, also ONE file, beside the
     # image's alerting sample. Grafana reads it at start-up only, so an edit
-    # needs `docker compose restart lgtm`.
+    # (in place: a new inode breaks the file mount) needs
+    # `docker compose restart lgtm`.
     volumes:
       - ./deploy/grafana/provisioning/dashboards/checkout-path.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/checkout-path.yaml:ro
       - ./deploy/grafana/dashboards:/ticketing-dashboards:ro

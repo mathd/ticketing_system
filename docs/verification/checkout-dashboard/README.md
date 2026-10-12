@@ -301,7 +301,7 @@ the 5 s export cadence; the gate test ran on the smoke stack.
 |---|---|
 | New 5xx series, two failures 12 s apart | The first failure does not show. Alerting 6–8 s after the second failure. |
 | 5xx series that already exists | One failure fires within one export and one evaluation. |
-| Resolution | Normal 50–64 s after the test saw Alerting, 58–68 s after the last failure. |
+| Resolution | Normal 50–68 s after the test saw Alerting, 56–68 s after the last failure (all gate-test runs, both versions of the test). |
 
 ### Notifications
 
@@ -316,8 +316,13 @@ replace the policies of an operator.
 
 ### Change the rule
 
-1. Edit `deploy/grafana/provisioning/alerting/checkout-5xx.yaml`.
-2. Run `docker compose restart lgtm`.
+1. Edit `deploy/grafana/provisioning/alerting/checkout-5xx.yaml` **in place**. compose.yaml mounts
+   this one file. A tool that saves by writing a new file and renaming it (for example `sed -i`,
+   or some editors) gives the file a new inode. Docker Desktop then keeps the old file in the
+   mount, and step 2 fails with `no such file or directory`.
+2. Run `docker compose restart lgtm`. If it fails as above, run
+   `docker compose up -d --force-recreate lgtm`. This repairs the mount and deletes the Grafana
+   and Prometheus data.
 
 Grafana reads alerting provisioning files only at start-up. The anonymous Admin cannot call the
 provisioning reload API, because that API needs the `provisioning:reload` permission. A restart
@@ -363,8 +368,9 @@ reads the rule and the alert state that Grafana serves, not the rule file. It:
   Grafana shows the stored states until it evaluates the rule again, so an earlier evaluation is
   not evidence. A state with a reason, such as `Normal (NoData)`, is not Normal. The `value`
   field cannot replace this check: Grafana sends an empty value for every Normal instance;
-- sends two `fake-auth-hold` checkouts. It sends the second one only after Prometheus has the
-  first failure under the rule's own 5xx selector, and at least 12 seconds after the first. A
+- sends two `fake-auth-hold` checkouts. It sends the second one only after the payments counter
+  under the rule's own 5xx selector has grown by 1 in Prometheus, and at least 12 seconds after
+  the first. A
   sleep alone does not make two samples: if the payments export stalls across the gap,
   Prometheus first sees a new 500 series at 2, and `rate()` stays at 0. The test arms the
   recovery cleanup before it submits each order, as the dashboard test does;
@@ -401,13 +407,22 @@ fails at the baseline. An earlier version also required the zero-fallback select
 text. That killed the zero-fallback mutation without any alert state, so the test now requires
 only the 5xx selector, and the instance check catches the mutation.
 
-A cross-model review of that version found three gaps, and the test now closes each one: a
-`Normal (NoData)` instance must not count as Normal (the last row above shows it refused); the
-second failure waits until Prometheus has the first one; and the test reads the Firing state
-before it checks the counters. Write a mutation into the rule file in place. An editor or tool
-that replaces the file (for example `sed -i`) gives it a new inode. Docker Desktop then keeps the
-old file in the single-file mount, and `docker compose restart lgtm` fails with `no such file or
-directory`. `docker compose up -d --force-recreate lgtm` repairs the mount and deletes the data.
+A cross-model review of that version raised three points. (1) A `Normal (NoData)` instance must
+not count as Normal. The earlier exact comparison with `Normal` already refused it, because
+Grafana puts the reason in the state string. The test now names the reason in its message, and
+the no-data row above is the mutation evidence. (2) The second failure now waits until the
+payments 5xx counter under the rule's selector has grown by 1. (3) The test now reads the Firing
+state before it checks the counters. Write each mutation into the rule file in place (see
+[Change the rule](#change-the-rule)).
+
+The counters have no label for each request, so the test cannot prove that the 5xx increments
+come from its own two checkouts. It relies on exclusive traffic: the test does not call
+`t.Parallel()`, so Go runs no other test of the smoke package at the same time. The module's
+other package, `smoke/internal/loadtest`, uses only local `httptest` servers, and `make check`
+runs its stages one at a time (`make -j1`). A background worker of the stack, such as commerce's
+recovery runner, can still call payments during the test. The check that gateway, inventory and
+commerce did not grow detects some interference, but not another payments 5xx. The two gate runs
+on record show no such 5xx.
 
 Determinism: 8 consecutive passes (`-count=8`, 88–95 s each) against one kept-up smoke stack, after
 the last change to the test. On that stack the payments 500 series already existed, so the first
