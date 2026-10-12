@@ -28,6 +28,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # its own slot so the two stacks can be up at once in one worktree (TKT-228).
 . "$ROOT/scripts/stack-env.sh" browser
 
+# The origin commerce builds password-reset links on (TKT-366). compose.yaml defaults
+# PUBLIC_BASE_URL to http://localhost:8080, which is NOT this stack: it is the gateway of
+# a developer's `make up` stack, when one is running. The reset spec follows the link
+# exactly as it is stored in mail_outbox, so with the default it would open the link on
+# the developer's stack, not on this one. Point it at this stack's own gateway.
+#
+# Here and not in stack-env.sh, so the smoke stack is unchanged: no smoke test follows a
+# mailed link, it only reads the token out of it. Access gets the same value; it only
+# hashes the ticket link into a log line, so no spec reads it.
+export PUBLIC_BASE_URL="http://localhost:${GATEWAY_PORT}"
+
 # Fast path only (host-built artifacts, compose.smoke.yaml), deliberately not
 # `make up`. Same images, same wiring, same gateway — only the build source
 # differs, and none of what this gate checks lives in the build, so paying for

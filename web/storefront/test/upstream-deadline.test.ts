@@ -71,7 +71,7 @@ describe('storefront upstream operation deadlines', () => {
     ],
     [
       'password-reset request',
-      () => requestPasswordReset('buyer@example.test'),
+      () => requestPasswordReset('buyer@example.test', 'en'),
       { ok: false },
       UPSTREAM_DEADLINE_MS,
     ],

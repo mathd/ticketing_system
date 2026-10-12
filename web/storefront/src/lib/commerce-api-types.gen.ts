@@ -612,6 +612,12 @@ export interface components {
         /** @description An address to send a reset link to (TKT-226). minLength 1, deliberately — not 3 as on registration. A floor that refuses a short address BEFORE the lookup would answer differently from one that reaches it, which is the same oracle CustomerCredentials avoids by using 1 instead of 8 on the password. */
         PasswordResetRequest: {
             email: string;
+            /**
+             * @description The language of the message and of the link's page (TKT-366). The storefront sends the locale of the route the form was submitted on. It selects fixed copy and the fixed path /{locale}/account/reset-password and nothing else: the link's origin stays server-configured and the recipient stays the registered address.
+             *     OPTIONAL, and absent means en. A caller built before this field (the storefront still on its old build during a rolling deploy) must keep getting its English message, not a refusal. A present value outside the set is refused with 400 before the address is looked up, so the refusal is the same for every address. Deploy commerce before the storefront: an older commerce refuses this field (ADR-050 § TKT-366 amendment).
+             * @enum {string}
+             */
+            locale?: "en" | "fr";
         };
         /**
          * @description A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.

@@ -59,7 +59,7 @@ describe('a 429 from commerce is its own reason, never a neighbouring one', () =
 
   it('a throttled reset REQUEST is not reported as sent', async () => {
     respondWith(429);
-    const result = await requestPasswordReset('buyer@example.test');
+    const result = await requestPasswordReset('buyer@example.test', 'en');
     expect(result.ok).toBe(false);
     expect(result.throttled).toBe(true);
   });
@@ -68,7 +68,7 @@ describe('a 429 from commerce is its own reason, never a neighbouring one', () =
 describe('the ordinary answers still map as they did', () => {
   it('202 is still an accepted reset request, with no throttle flag', async () => {
     respondWith(202);
-    expect(await requestPasswordReset('buyer@example.test')).toEqual({ ok: true });
+    expect(await requestPasswordReset('buyer@example.test', 'en')).toEqual({ ok: true });
   });
 
   it('409 is still taken, not throttled', async () => {
