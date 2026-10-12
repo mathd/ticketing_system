@@ -369,15 +369,14 @@ reads the rule and the alert state that Grafana serves, not the rule file. It:
   not evidence. A state with a reason, such as `Normal (NoData)`, is not Normal. The `value`
   field cannot replace this check: Grafana sends an empty value for every Normal instance;
 - sends two `fake-auth-hold` checkouts. It sends the second one only after the payments counter
-  under the rule's own 5xx selector has grown by 1 in Prometheus, and at least 12 seconds after
-  the first. A
-  sleep alone does not make two samples: if the payments export stalls across the gap,
+  under the rule's own 5xx selector has grown by exactly 1 in Prometheus, and at least 12 seconds
+  after the first. A sleep alone does not make two samples: if the payments export stalls across the gap,
   Prometheus first sees a new 500 series at 2, and `rate()` stays at 0. The test arms the
   recovery cleanup before it submits each order, as the dashboard test does;
 - requires, within 60 s, payments Alerting and the other three Normal. It reads the alert state
   before it checks the counters, so a slow counter check cannot make it miss the Alerting
   interval. If payments does not fire, the failure message includes the counter check;
-- requires that, under the rule's own 5xx selector, the payments counter grew by at least 2 and
+- requires that, under the rule's own 5xx selector, the payments counter grew by exactly 2 and
   the counters of the other three services did not grow;
 - requires, within 120 s, payments Normal again, after an evaluation later than the one that made
   it fire. It requires all four instances, so an instance that disappears is not a resolution, and
@@ -391,7 +390,7 @@ Each mutation below made the test fail:
 | Mutation | Failure |
 |---|---|
 | Rule mount removed from `lgtm` (container recreated) | `GET alert rule ticketing-checkout-5xx: 404` for 60 s |
-| 5xx selector `"5.."` changed to `"6.."` | Before the second failure: `rule 5xx selector …: payments grew by 0 since …, want at least 1` |
+| 5xx selector `"5.."` changed to `"6.."` | Before the second failure: `rule 5xx selector …: payments grew by 0 since …, want exactly 1` (an earlier version said `at least 1`) |
 | Threshold `> 0` changed to `> 1` | `payments did not fire within 60 s of the second failure: instance payments is "Normal", want "Alerting" …; counters: the counters moved as expected` |
 | Grouping removed (`sum (` instead of `sum by (service_name) (` in the 5xx part) | `rule ticketing-checkout-5xx has 1 instance(s) with no service_name` |
 | Zero fallback removed | `rule ticketing-checkout-5xx has instances for [payments], want exactly [gateway inventory commerce payments]` |
@@ -411,18 +410,19 @@ A cross-model review of that version raised three points. (1) A `Normal (NoData)
 not count as Normal. The earlier exact comparison with `Normal` already refused it, because
 Grafana puts the reason in the state string. The test now names the reason in its message, and
 the no-data row above is the mutation evidence. (2) The second failure now waits until the
-payments 5xx counter under the rule's selector has grown by 1. (3) The test now reads the Firing
+payments 5xx counter under the rule's selector has grown by exactly 1. (3) The test now reads the Firing
 state before it checks the counters. Write each mutation into the rule file in place (see
 [Change the rule](#change-the-rule)).
 
-The counters have no label for each request, so the test cannot prove that the 5xx increments
-come from its own two checkouts. It relies on exclusive traffic: the test does not call
-`t.Parallel()`, so Go runs no other test of the smoke package at the same time. The module's
-other package, `smoke/internal/loadtest`, uses only local `httptest` servers, and `make check`
-runs its stages one at a time (`make -j1`). A background worker of the stack, such as commerce's
-recovery runner, can still call payments during the test. The check that gateway, inventory and
-commerce did not grow detects some interference, but not another payments 5xx. The two gate runs
-on record show no such 5xx.
+The counters have no label for each request. The test therefore requires EXACT growth: payments
+by exactly 1 after the first failure and exactly 2 at the end, the other three by 0. A 5xx from
+another source during the test makes the growth too large and fails the test; it cannot stand in
+for one of the test's own failures. The test does not call `t.Parallel()`, so Go runs no other
+test of the smoke package at the same time. The module's other package,
+`smoke/internal/loadtest`, uses only local `httptest` servers, and `make check` runs its stages
+one at a time (`make -j1`). A background worker of the stack, such as commerce's recovery runner,
+can still call payments during the test; if it causes a payments 5xx, the test fails with
+`want exactly`.
 
 Determinism: 8 consecutive passes (`-count=8`, 88–95 s each) against one kept-up smoke stack, after
 the last change to the test. On that stack the payments 500 series already existed, so the first

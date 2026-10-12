@@ -32,7 +32,7 @@ package smoke_test
 //     reads the state before it checks the counters, so a slow counter check cannot make
 //     it miss the Alerting interval. If payments does not fire, the message includes the
 //     counter check.
-//  6. The counters under the rule's 5xx selector: payments grew by at least 2, and the
+//  6. The counters under the rule's 5xx selector: payments grew by exactly 2, and the
 //     other three services did not grow.
 //  7. Resolution: payments is Normal again after an evaluation later than the one that
 //     made it fire, the rule is still present and not paused, within 120 s. An instance
@@ -131,8 +131,8 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 	})
 
 	// Step 4: the induced failures. The second failure is sent only after the payments
-	// counter under the rule's own 5xx selector has grown by 1. The counter has no label for
-	// each request, so this relies on exclusive traffic (see the README). A sleep alone does
+	// counter under the rule's own 5xx selector has grown by exactly 1 (see
+	// assertCheckoutAlertCounters for why exactly). A sleep alone does
 	// not make two samples: if the payments export stalls across the gap, Prometheus first
 	// sees a new 500 series at 2, and rate() never goes above 0.
 	trafficStart := time.Now()
@@ -297,10 +297,13 @@ func checkoutAlertErrorSelector(t *testing.T, rule checkoutAlertProvisionedRule)
 }
 
 // assertCheckoutAlertCounters compares the counters under the rule's 5xx selector at
-// trafficStart and now: payments must have grown by at least minPayments (this test's
-// failed payments), and the other three services must not have grown. The raw counter sees
-// the first increment that rate() cannot see.
-func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart time.Time, minPayments float64) error {
+// trafficStart and now: payments must have grown by exactly wantPayments (this test's
+// failed payments so far), and the other three services must not have grown. The raw
+// counter sees the first increment that rate() cannot see. The counter has no label for each
+// request, so "exactly" is what ties the growth to this test: a payments 5xx from another
+// source, such as a background worker, makes the growth too large and fails the test instead
+// of standing in for one of this test's failures.
+func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart time.Time, wantPayments float64) error {
 	t.Helper()
 	total := "sum by (service_name) (" + selector + ")"
 	before, err := prometheusInstantByService(t, total, trafficStart)
@@ -311,8 +314,8 @@ func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart tim
 	if err != nil {
 		return err
 	}
-	if d := after["payments"] - before["payments"]; d < minPayments {
-		return fmt.Errorf("rule 5xx selector %s: payments grew by %v since %s, want at least %v (this test's failed payments)", selector, d, trafficStart.UTC().Format(time.RFC3339), minPayments)
+	if d := after["payments"] - before["payments"]; d != wantPayments {
+		return fmt.Errorf("rule 5xx selector %s: payments grew by %v since %s, want exactly %v (this test's failed payments)", selector, d, trafficStart.UTC().Format(time.RFC3339), wantPayments)
 	}
 	for _, svc := range checkoutPathServices {
 		if svc != "payments" && after[svc] != before[svc] {
