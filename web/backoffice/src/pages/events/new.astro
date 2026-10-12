@@ -283,12 +283,14 @@ const [reportedBefore, reportedAfter] = splitAt(t.publicationReported, 'status')
            re-rendered, so the corrected resubmit is still that request. -->
       <input type="hidden" name="idempotency_key" value={eventKey} />
       <h2>{t.eventStep}</h2>
-      {/* The labels follow the UI language; the field NAMES never do. */}
+      {/* The labels follow the UI language; the field NAMES never do, and
+          neither does each field's `lang`: it is the language of the CONTENT
+          typed into it, so it never inherits the document's UI language. */}
       <label for="name_en">{t.eventNameEnglish}</label>
-      <input id="name_en" name="name_en" required value={val('name_en')}
+      <input id="name_en" name="name_en" lang="en" required value={val('name_en')}
              aria-invalid={errorField === 'name_en' ? 'true' : undefined} />
       <label for="name_fr">{t.eventNameFrench}</label>
-      <input id="name_fr" name="name_fr" required value={val('name_fr')}
+      <input id="name_fr" name="name_fr" lang="fr" required value={val('name_fr')}
              aria-invalid={errorField === 'name_fr' ? 'true' : undefined} />
       <button type="submit">{t.createEventAction}</button>
     </form>
@@ -341,10 +343,10 @@ const [reportedBefore, reportedAfter] = splitAt(t.publicationReported, 'status')
       <input type="hidden" name="idempotency_key" value={ticketTypeKey} />
       <h2>{t.priceStep}</h2>
       <label for="tt_name_en">{t.ticketNameEnglish}</label>
-      <input id="tt_name_en" name="tt_name_en" required value={val('tt_name_en')}
+      <input id="tt_name_en" name="tt_name_en" lang="en" required value={val('tt_name_en')}
              aria-invalid={errorField === 'tt_name_en' ? 'true' : undefined} />
       <label for="tt_name_fr">{t.ticketNameFrench}</label>
-      <input id="tt_name_fr" name="tt_name_fr" required value={val('tt_name_fr')}
+      <input id="tt_name_fr" name="tt_name_fr" lang="fr" required value={val('tt_name_fr')}
              aria-invalid={errorField === 'tt_name_fr' ? 'true' : undefined} />
       <label for="amount">{t.amountMinorUnits}</label>
       {/* Minor units, not a decimal: €45.50 is 4550. The alternative is

@@ -406,36 +406,91 @@ describe('content locale keys do not depend on the UI language', () => {
     }
   }, 30_000);
 
-  it('sends catalog exactly both content locales from a form rendered in French', async () => {
+  // Codex review finding 1. Each content field is marked with the language of
+  // the CONTENT it holds, so it never inherits the document's UI language: a
+  // screen reader and the browser's spell-check read "Balcony" as English even
+  // when the page around it is French.
+  it.each(steps)('marks each content field with its content language in both UIs on %s', async (_label, path) => {
+    const prefix = path.includes('performance') ? 'tt_name' : 'name';
+    for (const ui of ['en', 'fr'] as const) {
+      stubCatalog();
+      const { html } = await render('../src/pages/events/new.astro', request(path, ui));
+      for (const content of ['en', 'fr'] as const) {
+        const input = html.match(new RegExp(`<input[^>]*\\sid="${prefix}_${content}"[^>]*>`))?.[0] ?? '';
+        expect(input, `${ui} UI, ${prefix}_${content}`).toMatch(new RegExp(`\\slang="${content}"`));
+      }
+    }
+  }, 30_000);
+
+  /**
+   * The `name` the browser submits for the input a label points at — which is
+   * how an operator fills the form: by reading the label. Driving the request
+   * from the LABEL rather than from a hard-coded field name is what lets these
+   * tests see a render that swaps the two names behind correct labels (codex
+   * review finding 2): the name/id SET is unchanged by such a swap.
+   */
+  function nameForLabel(html: string, label: string): string {
+    const id = html.match(new RegExp(`<label for="([^"]+)">${label.replace(/[()]/g, '\\$&')}</label>`))?.[1];
+    if (!id) throw new Error(`no label "${label}" on the page`);
+    const input = html.match(new RegExp(`<input[^>]*\\sid="${id}"[^>]*>`))?.[0];
+    const name = input?.match(/\sname="([^"]*)"/)?.[1];
+    if (!name) throw new Error(`label "${label}" points at no named input`);
+    return name;
+  }
+
+  it('sends catalog the event name exactly as typed into the French page’s labelled fields', async () => {
     const writes = stubCatalog(() => json({
       id: EVENT,
       organizer_id: ORGANIZER,
       name: { en: 'Night', fr: 'Nuit' },
       created_at: '2026-09-01T10:00:00Z',
     }, 201));
-    // The fields the French page rendered, submitted as the browser would.
     const page = (await render('../src/pages/events/new.astro', request('/admin/events/new', 'fr'))).html;
     const key = page.match(/name="idempotency_key" value="([^"]+)"/)?.[1] ?? '';
-    const [en, fr] = ['name_en', 'name_fr'].map((n) => {
-      expect(attr(page, 'name'), n).toContain(n);
-      return n;
-    });
     const { status } = await render(
       '../src/pages/events/new.astro',
       request('/admin/events/new', 'fr', {
         _action: 'create-event',
         idempotency_key: key,
-        [en!]: 'Night',
-        [fr!]: 'Nuit',
+        [nameForLabel(page, 'Nom (anglais)')]: 'Night',
+        [nameForLabel(page, 'Nom (français)')]: 'Nuit',
       }),
     );
 
     expect(status).toBe(303);
     expect(writes).toHaveLength(1);
-    const [write] = writes;
-    expect(write?.url).toContain('/events');
-    expect(write?.body).toMatchObject({ name: { en: 'Night', fr: 'Nuit' } });
-    expect(Object.keys((write?.body ?? {}) as object)).toContain('name');
-    expect(Object.keys(((write?.body as { name?: object } | undefined)?.name ?? {}) as object).sort()).toEqual(['en', 'fr']);
+    expect(writes[0]?.url).toContain('/events');
+    expect((writes[0]?.body as { name?: unknown } | undefined)?.name).toEqual({ en: 'Night', fr: 'Nuit' });
+  }, 30_000);
+
+  it('sends catalog the ticket-type name exactly as typed into the French page’s labelled fields', async () => {
+    const path = `/admin/events/new?event=${EVENT}&performance=${PERFORMANCE}`;
+    const writes = stubCatalog(() => json({
+      id: TICKET_TYPE,
+      organizer_id: ORGANIZER,
+      performance_id: PERFORMANCE,
+      name: { en: 'Balcony', fr: 'Balcon' },
+      price: { amount: 4250, currency: 'EUR' },
+      created_at: '2026-09-01T10:00:00Z',
+    }, 201));
+    const page = (await render('../src/pages/events/new.astro', request(path, 'fr'))).html;
+    const key = page.match(/name="idempotency_key" value="([^"]+)"/)?.[1] ?? '';
+    const { status } = await render(
+      '../src/pages/events/new.astro',
+      request(path, 'fr', {
+        _action: 'create-ticket-type',
+        idempotency_key: key,
+        // Distinct values per locale: equal ones would hide a swap.
+        [nameForLabel(page, 'Nom du billet (anglais)')]: 'Balcony',
+        [nameForLabel(page, 'Nom du billet (français)')]: 'Balcon',
+        amount: '4250',
+        currency: 'EUR',
+      }),
+    );
+
+    expect(status).toBe(303);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.url).toContain('/ticket-types');
+    expect((writes[0]?.body as { name?: unknown } | undefined)?.name).toEqual({ en: 'Balcony', fr: 'Balcon' });
   }, 30_000);
 });

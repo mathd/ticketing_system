@@ -102,17 +102,29 @@ describe('uiLanguageCookieOptions', () => {
 describe('publicSchemeIsHttps', () => {
   const headers = (proto?: string) => new Headers(proto === undefined ? {} : { 'x-forwarded-proto': proto });
 
-  it('reads the first hop the gateway reports', () => {
+  // The gateway sends exactly "http" or "https" (SetXForwarded overwrites the
+  // header from its own connection), so those two values are the contract.
+  it('is true for the https the gateway reports', () => {
     expect(publicSchemeIsHttps(headers('https'))).toBe(true);
-    expect(publicSchemeIsHttps(headers('https, http'))).toBe(true);
-    expect(publicSchemeIsHttps(headers(' https '))).toBe(true);
   });
 
-  it('is false for plain http, an absent header, or a later https hop', () => {
+  it('is false for http or an absent header', () => {
     expect(publicSchemeIsHttps(headers('http'))).toBe(false);
     expect(publicSchemeIsHttps(headers())).toBe(false);
-    expect(publicSchemeIsHttps(headers('http, https'))).toBe(false);
     expect(publicSchemeIsHttps(headers(''))).toBe(false);
+  });
+
+  // NOT a proxy chain: the gateway cannot produce these values. They pin the
+  // parsing login.astro already used for the session cookie (first
+  // comma-separated item, trimmed, exact "https"), so extracting it into this
+  // helper changed nothing.
+  it('keeps login’s pre-existing parsing of values the gateway never sends', () => {
+    // Headers already strips the ends of a value, so only a space BEFORE a comma
+    // reaches the trim.
+    expect(publicSchemeIsHttps(headers('https , http'))).toBe(true);
+    expect(publicSchemeIsHttps(headers('https, http'))).toBe(true);
+    expect(publicSchemeIsHttps(headers('http, https'))).toBe(false);
+    expect(publicSchemeIsHttps(headers('HTTPS'))).toBe(false);
   });
 });
 

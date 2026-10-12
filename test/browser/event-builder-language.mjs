@@ -33,6 +33,11 @@ const identifier = `event-builder-language-${stamp}@example.test`;
 const password = 'correct horse battery staple';
 const nameEn = `Language Night ${stamp}`;
 const nameFr = `Soirée langue ${stamp}`;
+// Distinct per locale on purpose: equal values would hide a swapped pair.
+const ticketEn = `Balcony ${stamp}`;
+const ticketFr = `Balcon ${stamp}`;
+const VENUE = '00000000-0000-0000-0000-0000000000a1';
+const startsAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
 
 provisionAdmin(CATALOG, identifier, password);
 
@@ -84,6 +89,11 @@ try {
   check('the French content-field label renders', (await page.textContent('label[for="name_fr"]')) === 'Nom (français)');
   check('the English content-field label renders in French', (await page.textContent('label[for="name_en"]')) === 'Nom (anglais)');
   check('the switch now offers English', (await page.getByRole('button', { name: 'English', exact: true }).count()) === 1);
+  // Each content field carries the language of its CONTENT, not the UI's.
+  check(
+    'the event content fields keep their content language under a French UI',
+    (await page.getAttribute('#name_en', 'lang')) === 'en' && (await page.getAttribute('#name_fr', 'lang')) === 'fr',
+  );
 
   // --- The French validation state --------------------------------------------
   // A whitespace-only name satisfies the browser's `required` (it is not empty)
@@ -134,6 +144,46 @@ try {
     (await page.locator('form:has(input[name="_action"][value="create-performance"])').getAttribute('action')) === '',
   );
 
+  // --- Steps 2 and 3 in French, filled by LABEL as an operator does -----------
+  // Filling by label is what sees a render that swaps the two content names
+  // behind correct labels (codex review finding 2).
+  await page.getByLabel('Salle', { exact: true }).selectOption(VENUE);
+  await page.getByLabel('Début', { exact: true }).fill(startsAt);
+  await page.getByLabel('Fuseau horaire (IANA)', { exact: true }).fill('UTC');
+  request = await submitForm(page, page.getByRole('button', { name: 'Ajouter la date', exact: true }));
+  check('the French date form posted to the builder', new URL(request.url()).pathname === PATH, request.url());
+  const performanceId = new URL(page.url()).searchParams.get('performance');
+  check('the date step redirects with its id', Boolean(performanceId), page.url());
+  check('step 3 renders in French', (await page.textContent('h2')) === '3. Le prix');
+  check(
+    'the ticket content fields keep their content language under a French UI',
+    (await page.getAttribute('#tt_name_en', 'lang')) === 'en' && (await page.getAttribute('#tt_name_fr', 'lang')) === 'fr',
+  );
+  const priceForm = page.locator('form:has(input[name="_action"][value="create-ticket-type"])');
+  check('the price form action is literally relative', (await priceForm.getAttribute('action')) === '');
+  await page.getByLabel('Nom du billet (anglais)', { exact: true }).fill(ticketEn);
+  await page.getByLabel('Nom du billet (français)', { exact: true }).fill(ticketFr);
+  await page.getByLabel('Montant en unités mineures', { exact: true }).fill('4550');
+  await page.getByLabel('Devise', { exact: true }).fill('EUR');
+  request = await submitForm(page, page.getByRole('button', { name: 'Définir le prix', exact: true }));
+  check('the French price form posted to the builder', new URL(request.url()).pathname === PATH, request.url());
+  const ticketTypeId = new URL(page.url()).searchParams.get('ticket_type');
+  check('the price step redirects with its id', Boolean(ticketTypeId), page.url());
+  check(
+    'the saved ticket name carries exactly the two content locales',
+    sql(PG, 'catalog', `SELECT string_agg(k, ',' ORDER BY k) FROM ticket_types, jsonb_object_keys(name) k WHERE id='${ticketTypeId}'`) === 'en,fr',
+  );
+  check(
+    'the saved ticket names and price are exactly what the French page submitted',
+    sql(
+      PG,
+      'catalog',
+      `SELECT (name->>'en') || '|' || (name->>'fr') || '|' || performance_id::text || '|' || price_amount::text || '|' || currency
+       FROM ticket_types WHERE id='${ticketTypeId}'`,
+    ) === `${ticketEn}|${ticketFr}|${performanceId}|4550|EUR`,
+  );
+  check('step 4 renders in French', (await page.textContent('h2')) === '4. Publication');
+
   // --- The shell in French ------------------------------------------------------
   await page.goto('/admin/', { waitUntil: 'domcontentloaded' });
   check('the venue list is French', (await page.getAttribute('html', 'lang')) === 'fr');
@@ -147,17 +197,14 @@ try {
   check('an English page keeps lang="en"', (await page.getAttribute('html', 'lang')) === 'en');
   check('its header follows the UI language', (await page.getAttribute('header', 'lang')) === 'fr');
 
-  // --- Switch back to English on step 2: the progress survives -----------------
-  await page.goto(`${PATH}?event=${eventId}`, { waitUntil: 'domcontentloaded' });
+  // --- Switch back to English on step 4: the progress survives -----------------
+  const progress = `${PATH}?event=${eventId}&performance=${performanceId}&ticket_type=${ticketTypeId}`;
+  await page.goto(progress, { waitUntil: 'domcontentloaded' });
   request = await submitForm(page, page.getByRole('button', { name: 'English', exact: true }));
   check('the second switch POST went to /admin/ui-language', new URL(request.url()).pathname === '/admin/ui-language');
-  check(
-    'the switch keeps the page and its progress',
-    page.url() === `${BASE}${PATH}?event=${eventId}`,
-    page.url(),
-  );
+  check('the switch keeps the page and its progress', page.url() === `${BASE}${progress}`, page.url());
   check('English remains available', (await page.getAttribute('html', 'lang')) === 'en');
-  check('step 2 renders in English again', (await page.textContent('h2')) === '2. When and where');
+  check('step 4 renders in English again', (await page.textContent('h2')) === '4. Publish');
   check('the cookie now says English', (await cookieNamed(context, 'bo_ui_language'))?.value === 'en');
   check('the session survived both switches', (await cookieNamed(context, 'bo_sid'))?.value === sessionBefore);
 } catch (error) {
