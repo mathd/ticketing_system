@@ -179,32 +179,49 @@ run. It:
 
 - reads the dashboard Grafana serves and requires `meta.provisioned`, the UID, the five panels, and
   datasource uids that Grafana has, with the correct type;
-- runs every panel target through Grafana's `/api/ds/query`. Grafana expands `$__rate_interval`;
-  the test replaces only `${service:regex}` and `${method:regex}`, which only the browser expands;
+- reads the dashboard's template variables and requires their defaults: `service` has exactly the
+  four checkout-path services as options and defaults to All, and `method` defaults to `POST`;
+- runs every panel target through Grafana's `/api/ds/query`. Grafana expands `$__rate_interval`.
+  The test replaces only `${service:regex}` and `${method:regex}`, which only the browser expands,
+  and it uses the values of the dashboard's own defaults;
 - sends two `fake-auth-hold` checkouts 12 seconds apart and one paid checkout, each with its own
   sampled `traceparent`;
-- requires a value above 0 for each service on the rate and latency panels, a payments 5xx value
-  above 0, and commerce and gateway 5xx values of 0;
+- proves that this traffic reached Prometheus: for each counter selector in the panel queries, it
+  compares the counter at the moment before the first checkout with the counter now. On the 5xx
+  selector, payments must grow by at least 2, and commerce and gateway must not grow. On each other
+  selector, all four services must grow. A panel value alone cannot prove this, because the rate window
+  keeps old values visible for 4 minutes;
+- reads each panel at its newest point, which must be at most 45 seconds old, and requires a value
+  above 0 for each service on the rate and latency panels, a payments 5xx value above 0, and
+  commerce and gateway 5xx values of 0;
 - requires the checkout-traces query to return the paid checkout's trace ID, the payment-failures
   query to return a failed checkout's trace ID, and Tempo to return the paid checkout's trace with
   the commerce `POST /orders` and payments `POST /internal/charges` server spans;
-- in a cleanup, makes the recovery runner resolve both `payment_unknown` orders and waits for
-  status `timeout`. Without it, the runner releases their seats after its 2-minute grace period,
-  and that release can write `claim_history` rows inside the full on-sale profile's measured window,
-  which counts every such row.
+- arms a cleanup for each checkout before it submits the order. The cleanup makes the recovery
+  runner resolve any order of that reservation that is still in a recoverable status, and waits
+  until recovery is done. This also occurs when the test fails after commerce stored the order.
+  Without the cleanup, the runner releases the seats of a `payment_unknown` order after its
+  2-minute grace period, and that release can write `claim_history` rows inside the full on-sale
+  profile's measured window, which counts every such row.
 
-Each mutation below made the test fail, and no other smoke test reads Grafana:
+Each mutation below made the test fail, and no other smoke test reads Grafana. The last four rows
+were added after a cross-model review of the first version of this test:
 
 | Mutation | Failure |
 |---|---|
 | Provider mount removed from `lgtm` | `GET dashboard ticketing-checkout-path: 404` for 60 s |
-| `http_response_status_code` misspelt in the 5xx query | `payments = 0, want above 0 after two failed payments` (the zero fallback hid the broken numerator; only the positive check sees it) |
+| `http_response_status_code` misspelt in the 5xx query | `payments grew by 0 since …, want at least 2` (the zero fallback hides the broken numerator on the panel) |
 | Latency target datasource uid `prometheus-typo` | `target B uses datasource {prometheus prometheus-typo}; … want a prometheus datasource` |
 | TraceQL path `/order` instead of `/orders` | `"Checkout traces: commerce POST /orders" returned 0 trace(s), not the paid checkout's trace` |
+| `method` default changed to `GET` | `variable method default = [GET], want [POST]` |
+| `service` option `payments` misspelt `paymnts` | `variable service options = [… paymnts], want exactly [gateway inventory commerce payments]` |
+| Payments metric export stopped (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` set to a dead address), right after a passing run | `payments did not grow since … (55 -> 55): this test's traffic has not reached Prometheus`. The first version of this test PASSED in this state, because the panels still showed the earlier run's values. |
+| The first checkout fails after commerce stored its `payment_unknown` order (expected status changed) | The test fails, and the cleanup still resolves the order: no `payment_unknown` order is left. With the first version of this test, the same mutation left one `payment_unknown` order. |
 
-Determinism: 8 consecutive passes (`-count=8`, 30–34 s each) against one kept-up stack, then 8 more
-(36–38 s each) after the cleanup was added. The test also passed in each full `./scripts/smoke.sh`
-run of this ticket: one default-profile run (all green) and three full-profile runs.
+Determinism: 8 consecutive passes (`-count=8`, 34–40 s each) of the current version against one
+kept-up stack. Earlier versions also passed 8 of 8, twice. The test passed in each full
+`./scripts/smoke.sh` run of this ticket: two default-profile runs (all green) and three
+full-profile runs.
 
 ## Limits
 

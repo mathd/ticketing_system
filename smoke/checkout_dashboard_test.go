@@ -9,7 +9,16 @@ package smoke_test
 // $__rate_interval and resolves each datasource uid. Those two decisions belong to
 // Grafana, and a test that expanded them itself would prove only its own expansion. The
 // test replaces only the two template variables, which Grafana expands in the browser
-// and never on the server.
+// and never on the server, and it takes their values from the dashboard's OWN defaults
+// (templating.list), after it asserts those defaults: service is All of exactly the
+// four checkout-path services, method is POST. A broken default therefore fails here
+// instead of being hidden by a selection the test made up.
+//
+// Every panel value must come from THIS test's traffic, not from history: the rate
+// window is at least 4 minutes, so a panel keeps showing values for minutes after export
+// stops. For each counter selector in the panel queries, the test compares the counter
+// at the moment before its first checkout with the counter now (assertCountersMoved), and
+// it reads each panel only at its newest point, which must be recent.
 //
 // It generates its own traffic, and it asks of each piece what would notice its absence:
 //
@@ -27,9 +36,10 @@ package smoke_test
 //     panel query must return at least one of them.
 //
 // No t.Parallel(): TestOnsaleLoadProof resets pg_stat_statements and measures a window,
-// and this test must not put traffic into it. For the same reason a cleanup makes the
-// recovery runner resolve both payment_unknown orders before the test ends
-// (drainPaymentUnknownOnCleanup).
+// and this test must not put traffic into it. For the same reason, each checkout arms a
+// cleanup BEFORE it submits the order, and the cleanup makes the recovery runner resolve
+// any recoverable order of that reservation before the test ends
+// (drainReservationOrderOnCleanup).
 
 import (
 	"bytes"
@@ -67,6 +77,10 @@ const (
 	// checkoutDashboardFailureGap is more than two 5 s metric export intervals, so the
 	// second failed payment lands in a later export than the first.
 	checkoutDashboardFailureGap = 12 * time.Second
+
+	// panelPointMaxAge bounds the age of a panel's newest point. The test asks Grafana
+	// for a 15 s step up to now, so a current series has a point well inside it.
+	panelPointMaxAge = 45 * time.Second
 )
 
 // checkoutPathServices are the four services the dashboard compares, in the order the
@@ -94,16 +108,47 @@ type checkoutDashboard struct {
 		ProvisionedExternalID string `json:"provisionedExternalId"`
 	} `json:"meta"`
 	Dashboard struct {
-		UID    string           `json:"uid"`
-		Title  string           `json:"title"`
-		Panels []dashboardPanel `json:"panels"`
+		UID        string           `json:"uid"`
+		Title      string           `json:"title"`
+		Panels     []dashboardPanel `json:"panels"`
+		Templating struct {
+			List []dashboardVariable `json:"list"`
+		} `json:"templating"`
 	} `json:"dashboard"`
 }
 
-func TestCheckoutDashboardProvisionedAndLive(t *testing.T) {
+// dashboardVariable is the part of a Grafana template variable this test reads.
+type dashboardVariable struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Query      string `json:"query"`
+	IncludeAll bool   `json:"includeAll"`
+	AllValue   string `json:"allValue"`
+	Current    struct {
+		Value any `json:"value"`
+	} `json:"current"`
+}
+
+// checkoutDashboardView is the served dashboard as the test uses it: its panels by
+// title, and its template variables expanded from the dashboard's own defaults.
+type checkoutDashboardView struct {
+	panels map[string]dashboardPanel
+	vars   map[string]string // "${name:regex}" -> expansion
+}
+
+// loadCheckoutDashboard fetches the provisioned dashboard and checks its panels, its
+// datasources and its variable defaults.
+func loadCheckoutDashboard(t *testing.T) checkoutDashboardView {
+	t.Helper()
 	dash := fetchCheckoutDashboard(t)
-	panels := checkoutDashboardPanels(t, dash)
-	assertDashboardDatasources(t, panels)
+	view := checkoutDashboardView{panels: checkoutDashboardPanels(t, dash), vars: dashboardDefaultSelections(t, dash)}
+	assertDashboardDatasources(t, view.panels)
+	return view
+}
+
+func TestCheckoutDashboardProvisionedAndLive(t *testing.T) {
+	view := loadCheckoutDashboard(t)
+	panels := view.panels
 
 	// Traffic. Three fresh offers: each checkout reserves 2 of a venue's 5 seats, and a
 	// payment_unknown order keeps its seats until recovery runs.
@@ -111,35 +156,40 @@ func TestCheckoutDashboardProvisionedAndLive(t *testing.T) {
 	_, paidOffer := setupCheckoutOffer(t, "dash-paid-"+uuid.NewString()[:8])
 	_, holdOffer2 := setupCheckoutOffer(t, "dash-hold-2-"+uuid.NewString()[:8])
 
-	windowStart := time.Now().Add(-30 * time.Second)
-	holdTrace1, holdOrder1 := tracedCheckout(t, holdOffer1, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
-	drainPaymentUnknownOnCleanup(t, holdOrder1)
+	// trafficStart is the counter baseline. A counter that grows after it shows that
+	// export is live now, and the checkouts below make every counter the panels read grow.
+	trafficStart := time.Now()
+	windowStart := trafficStart.Add(-30 * time.Second)
+	holdTrace1 := tracedCheckout(t, holdOffer1, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 	firstFailure := time.Now()
-	paidTrace, _ := tracedCheckout(t, paidOffer, "fake-ok", http.StatusOK, "completed")
+	paidTrace := tracedCheckout(t, paidOffer, "fake-ok", http.StatusOK, "completed")
 	if wait := checkoutDashboardFailureGap - time.Since(firstFailure); wait > 0 {
 		time.Sleep(wait)
 	}
-	holdTrace2, holdOrder2 := tracedCheckout(t, holdOffer2, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
-	drainPaymentUnknownOnCleanup(t, holdOrder2)
+	holdTrace2 := tracedCheckout(t, holdOffer2, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 
-	// Metrics: every Prometheus target, through Grafana, until the signature appears.
-	// 120 s covers several 5 s exports of every service, the gateway included.
+	// Metrics: every Prometheus target, through Grafana, until this test's traffic has
+	// moved every counter the panels read and the newest panel points show it. 120 s
+	// covers several 5 s exports of every service, the gateway included.
 	retry(t, 120*time.Second, func() error {
-		return checkPrometheusPanels(t, panels)
+		if err := assertCountersMoved(t, view, trafficStart); err != nil {
+			return err
+		}
+		return checkPrometheusPanels(t, view)
 	})
 
 	// Traces: every Tempo target, through Grafana, over a window that holds this test's
 	// checkouts and little else.
 	retry(t, 90*time.Second, func() error {
 		from, to := windowStart, time.Now().Add(30*time.Second)
-		ids, err := tempoPanelTraceIDs(t, panels[panelCheckoutTraces], from, to)
+		ids, err := tempoPanelTraceIDs(t, view, panels[panelCheckoutTraces], from, to)
 		if err != nil {
 			return err
 		}
 		if !slices.Contains(ids, paidTrace) {
 			return fmt.Errorf("%q returned %d trace(s), not the paid checkout's trace %s: %v", panelCheckoutTraces, len(ids), paidTrace, ids)
 		}
-		ids, err = tempoPanelTraceIDs(t, panels[panelPaymentErrors], from, to)
+		ids, err = tempoPanelTraceIDs(t, view, panels[panelPaymentErrors], from, to)
 		if err != nil {
 			return err
 		}
@@ -255,14 +305,15 @@ func targetDatasource(p dashboardPanel, target map[string]any) datasourceRef {
 }
 
 // checkPrometheusPanels runs each Prometheus target through Grafana and checks the
-// values a reader of the panel would see at the newest point.
-func checkPrometheusPanels(t *testing.T, panels map[string]dashboardPanel) error {
+// values a reader of the panel would see at the newest point. That point must be
+// recent: an older point is history, whatever its value.
+func checkPrometheusPanels(t *testing.T, view checkoutDashboardView) error {
 	t.Helper()
 	to := time.Now()
 	from := to.Add(-10 * time.Minute)
 	for _, title := range []string{panelRequestRate, panelErrorRate, panelLatency} {
-		for _, target := range panels[title].Targets {
-			last, err := prometheusPanelLastValues(t, panels[title], target, from, to)
+		for _, target := range view.panels[title].Targets {
+			last, err := prometheusPanelNewestValues(t, view, view.panels[title], target, from, to, to.Add(-panelPointMaxAge))
 			if err != nil {
 				return fmt.Errorf("%q %v: %w", title, target["refId"], err)
 			}
@@ -300,11 +351,114 @@ func checkPrometheusPanels(t *testing.T, panels map[string]dashboardPanel) error
 // built-in $__ ones, which the server expands.
 var templateVariable = regexp.MustCompile(`\$(\{[^}_][^}]*\}|[A-Za-z][A-Za-z0-9_]*)`)
 
-// expandDashboardVariables does what the browser does for the dashboard's default
-// selection: every service, method POST.
-func expandDashboardVariables(s string) (string, error) {
-	s = strings.ReplaceAll(s, "${service:regex}", "("+strings.Join(checkoutPathServices, "|")+")")
-	s = strings.ReplaceAll(s, "${method:regex}", "POST")
+// dashboardDefaultSelections reads the dashboard's template variables, asserts their
+// defaults, and returns the regex-format expansion of each default, as the browser
+// makes it when the dashboard opens.
+func dashboardDefaultSelections(t *testing.T, dash checkoutDashboard) map[string]string {
+	t.Helper()
+	vars := map[string]string{}
+	seen := map[string]dashboardVariable{}
+	for _, v := range dash.Dashboard.Templating.List {
+		if v.Type != "custom" {
+			t.Fatalf("variable %q has type %q; this test expands only custom variables", v.Name, v.Type)
+		}
+		options := customVariableOptions(v.Query)
+		selected := currentValues(v.Current.Value)
+		if len(selected) == 0 {
+			t.Fatalf("variable %q has no default value", v.Name)
+		}
+		all := slices.Contains(selected, "$__all")
+		if all && (len(selected) != 1 || !v.IncludeAll) {
+			t.Fatalf("variable %q default %v: All must be the only value, and the variable must include All", v.Name, selected)
+		}
+		if !all {
+			for _, s := range selected {
+				if !slices.Contains(options, s) {
+					t.Fatalf("variable %q default %q is not one of its options %v", v.Name, s, options)
+				}
+			}
+		}
+		var expansion string
+		switch {
+		case all && v.AllValue != "":
+			expansion = v.AllValue
+		case all:
+			expansion = regexAlternation(options)
+		default:
+			expansion = regexAlternation(selected)
+		}
+		vars["${"+v.Name+":regex}"] = expansion
+		seen[v.Name] = v
+	}
+	// The defaults this dashboard promises: a reader who opens it sees every
+	// checkout-path service for POST requests, which keeps the 5 s health probes out.
+	service, ok := seen["service"]
+	if !ok {
+		t.Fatalf("dashboard has no `service` variable")
+	}
+	if got := slices.Sorted(slices.Values(customVariableOptions(service.Query))); !slices.Equal(got, slices.Sorted(slices.Values(checkoutPathServices))) {
+		t.Fatalf("variable service options = %v, want exactly %v", got, checkoutPathServices)
+	}
+	if got := currentValues(service.Current.Value); !slices.Equal(got, []string{"$__all"}) {
+		t.Fatalf("variable service default = %v, want All", got)
+	}
+	method, ok := seen["method"]
+	if !ok {
+		t.Fatalf("dashboard has no `method` variable")
+	}
+	if got := currentValues(method.Current.Value); !slices.Equal(got, []string{"POST"}) {
+		t.Fatalf("variable method default = %v, want [POST]", got)
+	}
+	return vars
+}
+
+// customVariableOptions splits a custom variable's query. A "text : value" item gives its value.
+func customVariableOptions(query string) []string {
+	var out []string
+	for _, item := range strings.Split(query, ",") {
+		item = strings.TrimSpace(item)
+		if _, value, ok := strings.Cut(item, " : "); ok {
+			item = strings.TrimSpace(value)
+		}
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// currentValues reads a variable's current value, which Grafana stores as a string or a list.
+func currentValues(v any) []string {
+	switch x := v.(type) {
+	case string:
+		return []string{x}
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, e := range x {
+			out = append(out, fmt.Sprint(e))
+		}
+		return out
+	}
+	return nil
+}
+
+// regexAlternation is Grafana's regex format: one escaped value alone, several in a group.
+func regexAlternation(values []string) string {
+	escaped := make([]string, len(values))
+	for i, v := range values {
+		escaped[i] = regexp.QuoteMeta(v)
+	}
+	if len(escaped) == 1 {
+		return escaped[0]
+	}
+	return "(" + strings.Join(escaped, "|") + ")"
+}
+
+// expandDashboardVariables replaces each variable with the dashboard's default expansion.
+func expandDashboardVariables(s string, vars map[string]string) (string, error) {
+	for ref, expansion := range vars {
+		s = strings.ReplaceAll(s, ref, expansion)
+	}
 	if left := templateVariable.FindString(s); left != "" {
 		return "", fmt.Errorf("unexpanded template variable %s in %q", left, s)
 	}
@@ -312,7 +466,7 @@ func expandDashboardVariables(s string) (string, error) {
 }
 
 // grafanaQuery posts one target, with its variables expanded, to /api/ds/query.
-func grafanaQuery(t *testing.T, p dashboardPanel, target map[string]any, from, to time.Time) (map[string]any, error) {
+func grafanaQuery(t *testing.T, view checkoutDashboardView, p dashboardPanel, target map[string]any, from, to time.Time) (map[string]any, error) {
 	t.Helper()
 	q := map[string]any{}
 	for k, v := range target {
@@ -320,7 +474,7 @@ func grafanaQuery(t *testing.T, p dashboardPanel, target map[string]any, from, t
 	}
 	for _, key := range []string{"expr", "query"} {
 		if s, ok := q[key].(string); ok {
-			expanded, err := expandDashboardVariables(s)
+			expanded, err := expandDashboardVariables(s, view.vars)
 			if err != nil {
 				return nil, err
 			}
@@ -377,10 +531,11 @@ func resultFrames(res map[string]any) ([]grafanaFrame, error) {
 	return frames, json.Unmarshal(raw, &frames)
 }
 
-// prometheusPanelLastValues returns, per service_name, the newest non-null value.
-func prometheusPanelLastValues(t *testing.T, p dashboardPanel, target map[string]any, from, to time.Time) (map[string]float64, error) {
+// prometheusPanelNewestValues returns, per service_name, the newest non-null value. It
+// leaves a service out when that value is older than notBefore.
+func prometheusPanelNewestValues(t *testing.T, view checkoutDashboardView, p dashboardPanel, target map[string]any, from, to, notBefore time.Time) (map[string]float64, error) {
 	t.Helper()
-	res, err := grafanaQuery(t, p, target, from, to)
+	res, err := grafanaQuery(t, view, p, target, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -394,15 +549,123 @@ func prometheusPanelLastValues(t *testing.T, p dashboardPanel, target map[string
 			continue
 		}
 		service := f.Schema.Fields[1].Labels["service_name"]
-		vals := f.Data.Values[1]
+		times, vals := f.Data.Values[0], f.Data.Values[1]
 		for i := len(vals) - 1; i >= 0; i-- {
 			if v, ok := numeric(vals[i]); ok {
-				last[service] = v
+				if ms, ok := times[i].(float64); ok && !time.UnixMilli(int64(ms)).Before(notBefore) {
+					last[service] = v
+				}
 				break
 			}
 		}
 	}
 	return last, nil
+}
+
+// promSelector finds a metric selector, `name{matchers}`, in a PromQL expression.
+var promSelector = regexp.MustCompile(`[a-zA-Z_:][a-zA-Z0-9_:]*\{[^{}]*\}`)
+
+// assertCountersMoved proves that this test's traffic reached Prometheus under the exact
+// selectors the panels use. A rate panel cannot prove it: its window is at least 4
+// minutes, so it keeps showing a value for minutes after export stops. A counter that
+// grew after trafficStart can only have grown from samples exported after it.
+//
+// For every selector in the Prometheus targets, with the dashboard's default variables:
+//   - a selector with a 5xx status matcher: payments grew by at least 2 (the two failed
+//     payments; the raw counter sees the first increment that rate() cannot see), and
+//     commerce and gateway did not grow;
+//   - every other selector: all four services grew.
+func assertCountersMoved(t *testing.T, view checkoutDashboardView, trafficStart time.Time) error {
+	t.Helper()
+	type selector struct{ expr, panel string }
+	var selectors []selector
+	seen := map[string]bool{}
+	for _, title := range []string{panelRequestRate, panelErrorRate, panelLatency} {
+		for _, target := range view.panels[title].Targets {
+			expr, err := expandDashboardVariables(fmt.Sprint(target["expr"]), view.vars)
+			if err != nil {
+				return err
+			}
+			for _, s := range promSelector.FindAllString(expr, -1) {
+				if !seen[s] {
+					seen[s] = true
+					selectors = append(selectors, selector{s, title})
+				}
+			}
+		}
+	}
+	if len(selectors) == 0 {
+		return fmt.Errorf("no metric selector found in the Prometheus panels")
+	}
+	now := time.Now()
+	for _, s := range selectors {
+		total := "sum by (service_name) (" + s.expr + ")"
+		before, err := prometheusInstantByService(t, total, trafficStart)
+		if err != nil {
+			return err
+		}
+		after, err := prometheusInstantByService(t, total, now)
+		if err != nil {
+			return err
+		}
+		if s.panel == panelErrorRate && strings.Contains(s.expr, `"5.."`) {
+			if d := after["payments"] - before["payments"]; d < 2 {
+				return fmt.Errorf("%s: payments grew by %v since %s, want at least 2 (this test's failed payments)", s.expr, d, trafficStart.UTC().Format(time.RFC3339))
+			}
+			for _, svc := range []string{"commerce", "gateway"} {
+				if after[svc] != before[svc] {
+					return fmt.Errorf("%s: %s grew from %v to %v, want no 5xx", s.expr, svc, before[svc], after[svc])
+				}
+			}
+			continue
+		}
+		for _, svc := range checkoutPathServices {
+			if !(after[svc] > before[svc]) {
+				return fmt.Errorf("%s: %s did not grow since %s (%v -> %v): this test's traffic has not reached Prometheus", s.expr, svc, trafficStart.UTC().Format(time.RFC3339), before[svc], after[svc])
+			}
+		}
+	}
+	return nil
+}
+
+// prometheusInstantByService evaluates expr at one instant through Grafana's Prometheus
+// datasource and returns the value per service_name. A missing service reads as 0.
+func prometheusInstantByService(t *testing.T, expr string, at time.Time) (map[string]float64, error) {
+	t.Helper()
+	ms := strconv.FormatInt(at.UnixMilli(), 10)
+	payload := map[string]any{
+		"queries": []any{map[string]any{"refId": "A", "datasource": map[string]string{"type": "prometheus", "uid": "prometheus"},
+			"expr": expr, "instant": true, "range": false}},
+		"from": ms, "to": ms,
+	}
+	code, body := grafanaRequest(t, http.MethodPost, "/api/ds/query", payload)
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("instant %s: %d %.300s", expr, code, body)
+	}
+	var out struct {
+		Results map[string]map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	res := out.Results["A"]
+	if e, ok := res["error"]; ok && e != nil && e != "" {
+		return nil, fmt.Errorf("instant %s: %v", expr, e)
+	}
+	frames, err := resultFrames(res)
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]float64{}
+	for _, f := range frames {
+		if len(f.Schema.Fields) < 2 || len(f.Data.Values) < 2 || len(f.Data.Values[1]) == 0 {
+			continue
+		}
+		if v, ok := numeric(f.Data.Values[1][len(f.Data.Values[1])-1]); ok {
+			values[f.Schema.Fields[1].Labels["service_name"]] = v
+		}
+	}
+	return values, nil
 }
 
 func numeric(v any) (float64, bool) {
@@ -417,11 +680,11 @@ func numeric(v any) (float64, bool) {
 }
 
 // tempoPanelTraceIDs runs a panel's TraceQL through Grafana and returns the trace ids.
-func tempoPanelTraceIDs(t *testing.T, p dashboardPanel, from, to time.Time) ([]string, error) {
+func tempoPanelTraceIDs(t *testing.T, view checkoutDashboardView, p dashboardPanel, from, to time.Time) ([]string, error) {
 	t.Helper()
 	var ids []string
 	for _, target := range p.Targets {
-		res, err := grafanaQuery(t, p, target, from, to)
+		res, err := grafanaQuery(t, view, p, target, from, to)
 		if err != nil {
 			return nil, fmt.Errorf("%q: %w", p.Title, err)
 		}
@@ -516,11 +779,15 @@ func newTraceparent() (header, traceID string) {
 }
 
 // tracedCheckout reserves and checks out one offer through the gateway, with the
-// checkout request carrying a fresh sampled traceparent. It returns the trace id and
-// the order id.
-func tracedCheckout(t *testing.T, ticketType, paymentToken string, wantCode int, wantStatus string) (string, string) {
+// checkout request carrying a fresh sampled traceparent. It returns the trace id.
+//
+// It arms the recovery cleanup BEFORE it submits the order, keyed by the reservation:
+// a failure after commerce stored the order (a t.Fatal on an unexpected status or body)
+// must still leave no recoverable order behind.
+func tracedCheckout(t *testing.T, ticketType, paymentToken string, wantCode int, wantStatus string) string {
 	t.Helper()
 	reservation := reserveCheckout(t, ticketType, "dash-reserve-"+uuid.NewString())
+	drainReservationOrderOnCleanup(t, fmt.Sprint(reservation["reservation_id"]))
 	traceparent, traceID := newTraceparent()
 	code, body := postWithKeyAndHeaders(t, gatewayURL+"/api/commerce/orders", "dash-order-"+uuid.NewString(),
 		map[string]string{"traceparent": traceparent},
@@ -530,8 +797,7 @@ func tracedCheckout(t *testing.T, ticketType, paymentToken string, wantCode int,
 		t.Fatalf("checkout with %s = %d %s, want %d", paymentToken, code, body, wantCode)
 	}
 	var out struct {
-		OrderID string `json:"order_id"`
-		Status  string `json:"status"`
+		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
@@ -539,43 +805,45 @@ func tracedCheckout(t *testing.T, ticketType, paymentToken string, wantCode int,
 	if out.Status != wantStatus {
 		t.Fatalf("checkout with %s: status %q, want %q", paymentToken, out.Status, wantStatus)
 	}
-	return traceID, out.OrderID
+	return traceID
 }
 
-// drainPaymentUnknownOnCleanup makes the recovery runner resolve a payment_unknown order
-// before the test ends, and waits for it. Left alone, the runner resolves the order
-// after its 2-minute grace period, releases the seats, and so writes claim_history rows
-// at a time no test controls. TestOnsaleLoadProof's full profile counts EVERY
-// claim_history INSERT in its 3-minute window, so a late release can read as a defect
-// in the load proof. A full-profile run of this test without the cleanup counted 27001
-// INSERTs, want 27000; that release is the probable cause, not a proven one. The ageing
-// UPDATE is the one TestRecoveryDrainsPaymentUnknownViaStatusAndVoid uses; the runner's
-// own predicates stay untouched.
-func drainPaymentUnknownOnCleanup(t *testing.T, orderID string) {
+// recoverableOrderStatuses are the statuses commerce's recovery runner claims
+// (services/commerce/internal/store/recovery.go).
+const recoverableOrderStatuses = `('created','payment_unknown','confirmation_pending','release_pending','reconciliation_required')`
+
+// drainReservationOrderOnCleanup makes the recovery runner resolve the reservation's
+// order, if that order has a recoverable status, before the test ends, and waits for
+// it. Left alone, the runner resolves a payment_unknown order after its 2-minute grace
+// period, releases the seats, and so writes claim_history rows at a time no test
+// controls. TestOnsaleLoadProof's full profile counts EVERY claim_history INSERT in its
+// 3-minute window, so a late release can read as a defect in the load proof. A
+// full-profile run of this test without a cleanup counted 27001 INSERTs, want 27000;
+// that release is the probable cause, not a proven one. The ageing UPDATE is the one
+// TestRecoveryDrainsPaymentUnknownViaStatusAndVoid uses; the runner's own predicates
+// stay untouched. No order, or an order in a final status, needs nothing.
+func drainReservationOrderOnCleanup(t *testing.T, reservationID string) {
 	t.Helper()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		db := commerceDB(t, ctx)
 		tag, err := db.Exec(ctx, `UPDATE orders SET updated_at=now()-interval '10 minutes',
-			recovery_next_attempt_at=now() WHERE id=$1`, orderID)
-		if err != nil || tag.RowsAffected() != 1 {
-			t.Errorf("age payment_unknown order %s for recovery: %v (rows=%d)", orderID, err, tag.RowsAffected())
+			recovery_next_attempt_at=now() WHERE reservation_id=$1 AND status IN `+recoverableOrderStatuses, reservationID)
+		if err != nil {
+			t.Errorf("age the order of reservation %s for recovery: %v", reservationID, err)
+			return
+		}
+		if tag.RowsAffected() == 0 {
 			return
 		}
 		retry(t, 60*time.Second, func() error {
-			code, body, _ := getWithHeaders(t, gatewayURL+"/api/commerce/orders/"+orderID)
-			if code != http.StatusOK {
-				return fmt.Errorf("order %s = %d %.200s", orderID, code, body)
-			}
-			var state struct {
-				Status string `json:"status"`
-			}
-			if err := json.Unmarshal(body, &state); err != nil {
+			var status string
+			if err := db.QueryRow(ctx, `SELECT status FROM orders WHERE reservation_id=$1`, reservationID).Scan(&status); err != nil {
 				return err
 			}
-			if state.Status != "timeout" {
-				return fmt.Errorf("order %s status %q, want timeout (recovery not done)", orderID, state.Status)
+			if strings.Contains(recoverableOrderStatuses, "'"+status+"'") {
+				return fmt.Errorf("order of reservation %s is still %q (recovery not done)", reservationID, status)
 			}
 			return nil
 		})

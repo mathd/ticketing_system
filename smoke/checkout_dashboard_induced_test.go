@@ -87,7 +87,8 @@ func TestCheckoutDashboardInducedSignatures(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	panels := checkoutDashboardPanels(t, fetchCheckoutDashboard(t))
+	view := loadCheckoutDashboard(t)
+	panels := view.panels
 	runStart := time.Now().UTC()
 
 	// Phase 1: slow inventory.
@@ -117,8 +118,7 @@ func TestCheckoutDashboardInducedSignatures(t *testing.T) {
 	for i := 0; i < checkoutInducedFailures; i++ {
 		next := time.Now().Add(checkoutInducedFailureEvery)
 		_, offer := setupCheckoutOffer(t, fmt.Sprintf("induced-pay-%d-%s", i, uuid.NewString()[:8]))
-		trace, order := tracedCheckout(t, offer, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
-		drainPaymentUnknownOnCleanup(t, order)
+		trace := tracedCheckout(t, offer, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 		if payTrace == "" {
 			payTrace = trace
 		}
@@ -137,7 +137,7 @@ func TestCheckoutDashboardInducedSignatures(t *testing.T) {
 	series := map[string]map[string][]inducedPoint{} // "<panel> <refId>" -> service -> points
 	for _, title := range []string{panelRequestRate, panelErrorRate, panelLatency} {
 		for _, target := range panels[title].Targets {
-			res, err := grafanaQuery(t, panels[title], target, from, runEnd)
+			res, err := grafanaQuery(t, view, panels[title], target, from, runEnd)
 			if err != nil {
 				t.Fatalf("%q %v: %v", title, target["refId"], err)
 			}
@@ -146,7 +146,7 @@ func TestCheckoutDashboardInducedSignatures(t *testing.T) {
 				"panel":          title,
 				"refId":          target["refId"],
 				"expr":           target["expr"],
-				"variables":      map[string]string{"service": "All", "method": "POST"},
+				"variables":      view.vars,
 				"from":           from,
 				"to":             runEnd,
 				"intervalMs":     15000,
@@ -157,7 +157,7 @@ func TestCheckoutDashboardInducedSignatures(t *testing.T) {
 	}
 	for _, title := range []string{panelCheckoutTraces, panelPaymentErrors} {
 		for _, target := range panels[title].Targets {
-			res, err := grafanaQuery(t, panels[title], target, runStart.Add(-time.Minute), runEnd)
+			res, err := grafanaQuery(t, view, panels[title], target, runStart.Add(-time.Minute), runEnd)
 			if err != nil {
 				t.Fatalf("%q: %v", title, err)
 			}
