@@ -75,7 +75,67 @@ QR image link's `sig`/`exp` were checked and are unaffected. The `{ticket}` segm
 preserved on purpose: it is not redeemable alone (ADR-050's signed-link check gates the image), and
 keeping it is what lets an operator correlate a specific fetch with a report.
 
+---
+
+## TKT-355 amendment: one ticket-validity verdict in the bundle (2026-10-12)
+
+The decision above is unchanged. This amendment adds one field to the guest bundle and records the
+rule that sets it.
+
+**The field.** Each `Ticket` in the bundle has a required `validity`. It is `{status: valid}` or
+`{status: voided, reason: refunded | exchanged}`. The contract is a `oneOf` with the discriminator
+`status`, so a reason exists only on a voided verdict. The spec comment on `TicketValidity` says why
+`oneOf` is correct here, although Commerce and Catalog schemas avoid it.
+
+**The rule.** Access derives the verdict each time it serves the bundle, from the same history slice
+that the response carries. It does not store the verdict, and there is no migration.
+
+1. If the history has a `refunded` event, the verdict is voided with reason `refunded`.
+2. If not, and the history has an `exchanged` event, the verdict is voided with reason `exchanged`.
+3. If not, the verdict is valid.
+
+The order of the events has no effect. A later event does not restore validity. Access can record
+`delivered`, `redelivered` and admission events after a void, and each of them is a fact about a dead
+ticket.
+
+**Refund precedence.** Rule 1 comes before rule 2 because the gate checks in the same order. The
+single-entry scan, the pass scan and offline reconciliation all check for a refund first and for an
+exchange second (`postgres.go`, `scan.go` and `reconcile.go` in the Access store).
+[ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) records the refund decision. Thus the page and
+the gate give the same reason. Today Commerce refuses to refund an exchanged order and to exchange a refunded order, so a
+history with both events comes only from the Access writers. This changes the page for that one
+case. Before, the page showed the first void event in the history, so exchange then refund showed
+"exchanged". Now it shows "refunded".
+
+**Every type is classified.** A table in the Access store gives the effect of each of the nine
+lifecycle types. A store smoke test (`TestEveryLifecycleTypeHasAValidityEffect`) reads the
+`event_type` CHECK from a migrated database. It fails when the table and the CHECK differ in either
+direction. Thus a migration that adds a type cannot pass the gate until the type has an effect in the
+table. Because of this test, the derivation keeps the verdict for an unknown type, as the gate does.
+It does not refuse the bundle. A refusal would return 500 for the whole page, valid tickets included,
+and it would be stricter than the gate.
+
+**Presentation only.** The verdict controls what a ticket view shows. The storefront shows a QR only
+for a valid ticket and shows the reason for a voided ticket. It does not read event types to decide.
+The verdict is not admission: the gate decides admission from Access state on its own path. The
+verdict is not revocation: the bundle still carries the voided ticket's credential, and the QR image
+endpoint still serves it to a holder of a live link. Later PDF and email views must use this verdict
+and must not make their own rule.
+
+**No integrity claim.** The verdict reads the history rows as they are. It adds no guarantee to the
+lifecycle trail. [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) says what the trail proves
+and what it does not.
+
+**Deploy order.** Deploy Access before the storefront. The storefront refuses a bundle without a
+verdict and shows "Service unavailable" (503). It does not fall back to history. An old storefront
+ignores the new field and continues to work.
+
+**Follow-ups, not fixed here.** A staff resend selects every ticket of the order, voided tickets
+included, and records `redelivered` on them. The refund writer counts an exchanged ticket as
+refundable. Commerce blocks this path today.
+
 ## References
 
 - [ADR-003](./ADR-003-append-only-audit-trail.md) · [ADR-009](./ADR-009-contract-first-apis.md) · TKT-29 · TKT-43
 - TKT-202 · [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) · [ADR-049](./ADR-049-customer-identity-and-storefront-sessions.md)
+- TKT-355 · [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md)
