@@ -46,6 +46,7 @@ func (s *Server) ResolvePerformanceDisplayNames(w http.ResponseWriter, r *http.R
 			PerformanceId: p.PerformanceID,
 			EventName:     resolve(p.EventName, params.Locale),
 			StartsAt:      p.StartsAt,
+			Timezone:      p.Timezone,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

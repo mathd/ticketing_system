@@ -7,14 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  ORGANIZER,
-  enrolScanner,
-  provisionAdmin,
-  resultRecorder,
-  signIn,
-  submitForm,
-} from './lib/support.mjs';
+import { enrolScanner, provisionAdmin, resultRecorder } from './lib/support.mjs';
+import { publishOffer, waitForAvailability, waitForOffer } from './lib/checkout-offer.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const ACCESS = process.env.ACCESS_CONTAINER;
@@ -22,8 +16,6 @@ const CATALOG = process.env.CATALOG_CONTAINER;
 if (!ACCESS) throw new Error('ACCESS_CONTAINER is unset. Run this spec through ./scripts/browser.sh');
 if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset. Run this spec through ./scripts/browser.sh');
 
-const ADMIN_PATH = '/admin/events/new';
-const VENUE = '00000000-0000-0000-0000-0000000000a1';
 const FIXTURE_CAPACITY = 2;
 const stamp = Date.now();
 const identifier = `checkout-${stamp}@example.test`;
@@ -36,138 +28,6 @@ const { check } = recorder;
 
 provisionAdmin(CATALOG, identifier, password);
 const scannerToken = enrolScanner(ACCESS, `checkout browser ${stamp}`);
-
-async function saveVenueCapacity(page, capacity, assertion) {
-  const venuePath = `/admin/venues/${VENUE}`;
-  await page.goto(venuePath, { waitUntil: 'domcontentloaded' });
-  const gaForm = page.locator('form:has(input[value="set-ga"])');
-  await gaForm.locator('input[name="ga_capacity"]').fill(String(capacity));
-  const capacityRequest = await submitForm(
-    page,
-    gaForm.getByRole('button', { name: 'Save GA capacity' }),
-  );
-  const storedCapacity = await gaForm.locator('input[name="ga_capacity"]').inputValue();
-  const saved = new URL(capacityRequest.url()).pathname === venuePath && storedCapacity === String(capacity);
-  check(assertion, saved, `${capacity}`);
-  if (!saved) {
-    throw new Error(
-      `venue capacity save did not persist ${capacity}: POST ${capacityRequest.url()}, rendered ${storedCapacity}`,
-    );
-  }
-}
-
-async function publishOffer(page) {
-  await signIn(page, identifier, password);
-
-  const venuePath = `/admin/venues/${VENUE}`;
-  await page.goto(venuePath, { waitUntil: 'domcontentloaded' });
-  const originalCapacity = Number(
-    await page.locator('form:has(input[value="set-ga"]) input[name="ga_capacity"]').inputValue(),
-  );
-  if (!Number.isSafeInteger(originalCapacity) || originalCapacity < 1) {
-    throw new Error(`the shared browser venue has invalid GA capacity ${originalCapacity}`);
-  }
-
-  try {
-    await saveVenueCapacity(
-      page,
-      FIXTURE_CAPACITY,
-      'the checkout fixture sets its own venue capacity through the browser',
-    );
-
-    await page.goto(ADMIN_PATH, { waitUntil: 'domcontentloaded' });
-
-    await page.fill('#name_en', eventName);
-    await page.fill('#name_fr', `Paiement navigateur ${stamp}`);
-    await submitForm(page, page.getByRole('button', { name: 'Create event' }));
-    const eventId = new URL(page.url()).searchParams.get('event');
-    if (!eventId) throw new Error(`event creation did not return an event id: ${page.url()}`);
-
-    await page.selectOption('#venue_id', VENUE);
-    await page.fill('#starts_at', startsAt);
-    await page.fill('#timezone', 'UTC');
-    await submitForm(page, page.getByRole('button', { name: 'Add the date' }));
-    const performanceId = new URL(page.url()).searchParams.get('performance');
-    if (!performanceId) throw new Error(`performance creation did not return an id: ${page.url()}`);
-
-    await page.fill('#tt_name_en', 'General admission');
-    await page.fill('#tt_name_fr', 'Admission générale');
-    await page.fill('#amount', '1250');
-    await page.fill('#currency', 'EUR');
-    await submitForm(page, page.getByRole('button', { name: 'Set the price' }));
-
-    await submitForm(page, page.getByRole('button', { name: 'Publish' }));
-    await page.getByRole('heading', { name: 'Publication accepted' }).waitFor();
-    return { eventId, performanceId };
-  } finally {
-    await saveVenueCapacity(
-      page,
-      originalCapacity,
-      'the checkout fixture restores the shared venue capacity',
-    );
-  }
-}
-
-async function readAvailability(page, performanceId) {
-  const path = `/api/inventory/slots/${performanceId}/availability?organizer_id=${ORGANIZER}`;
-  const response = await page.request.get(path);
-  if (!response.ok()) {
-    throw new Error(`inventory availability returned ${response.status()}: ${await response.text()}`);
-  }
-  const body = await response.json();
-  for (const field of ['capacity', 'held', 'confirmed', 'available']) {
-    if (!Number.isSafeInteger(body[field])) {
-      throw new Error(`inventory availability has invalid ${field}: ${JSON.stringify(body)}`);
-    }
-  }
-  return body;
-}
-
-async function waitForAvailability(page, performanceId, expected) {
-  const deadline = Date.now() + 20_000;
-  let observed;
-  while (Date.now() < deadline) {
-    try {
-      observed = await readAvailability(page, performanceId);
-      if (Object.entries(expected).every(([field, value]) => observed[field] === value)) return observed;
-    } catch (error) {
-      observed = error instanceof Error ? error.message : String(error);
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(
-    `inventory did not reach ${JSON.stringify(expected)} within 20 seconds; last observed ${JSON.stringify(observed)}`,
-  );
-}
-
-async function waitForOffer(page, eventId, performanceId) {
-  const deadline = Date.now() + 20_000;
-  let observed;
-  while (Date.now() < deadline) {
-    try {
-      observed = await readAvailability(page, performanceId);
-    } catch (error) {
-      observed = error instanceof Error ? error.message : String(error);
-    }
-    const event = await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });
-    if (
-      event?.ok() &&
-      observed?.capacity === FIXTURE_CAPACITY &&
-      observed?.held === 0 &&
-      observed?.confirmed === 0 &&
-      observed?.available === FIXTURE_CAPACITY &&
-      observed?.offering_status === 'open' &&
-      await page.getByRole('button', { name: 'Reserve', exact: true }).count()
-    ) {
-      return;
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(
-    `published offer ${eventId} did not become available with capacity ${FIXTURE_CAPACITY} within 20 seconds; ` +
-    `last observed ${JSON.stringify(observed)}`,
-  );
-}
 
 async function reserve(page, scenario) {
   // The button is server-rendered before React attaches its click handler. Waiting
@@ -230,8 +90,16 @@ const browser = await chromium.launch({ channel: 'chrome' });
 try {
   const context = await browser.newContext({ baseURL: BASE });
   const page = await context.newPage();
-  const { eventId, performanceId } = await publishOffer(page);
-  await waitForOffer(page, eventId, performanceId);
+  const { eventId, performanceId } = await publishOffer(page, check, {
+    identifier,
+    password,
+    capacity: FIXTURE_CAPACITY,
+    nameEn: eventName,
+    nameFr: `Paiement navigateur ${stamp}`,
+    startsAt,
+    timezone: 'UTC',
+  });
+  await waitForOffer(page, { eventId, performanceId, capacity: FIXTURE_CAPACITY, locale: 'en', reserveLabel: 'Reserve' });
 
   await reserve(page, 'successful purchase');
   await waitForAvailability(page, performanceId, {

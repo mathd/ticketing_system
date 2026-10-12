@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { UI_STRINGS } from '../src/lib/locales';
 import { getTicketBundle, ticketsForDisplay } from '../src/lib/ticket-api';
 
 const ORDER_REF = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
@@ -23,6 +24,7 @@ const bundle = {
       occurred_at: '2026-08-03T12:00:00Z',
     }],
     validity: { status: 'valid' },
+    performance_timezone: 'Asia/Kolkata',
   }],
 };
 
@@ -37,6 +39,15 @@ const mixed = {
     { ...bundle.tickets[0], ticket_id: THIRD_TICKET, validity: { status: 'voided', reason: 'exchanged' } },
   ],
 };
+
+function withZone(zone: unknown) {
+  return { ...bundle, tickets: [{ ...bundle.tickets[0], performance_timezone: zone }] };
+}
+
+function withoutZone() {
+  const { performance_timezone: _zone, ...ticket } = bundle.tickets[0];
+  return { ...bundle, tickets: [ticket] };
+}
 
 function withValidity(validity: unknown) {
   return { ...bundle, tickets: [{ ...bundle.tickets[0], validity }] };
@@ -67,11 +78,45 @@ describe('ticket bundle response decoding', () => {
     respond(mixed);
     const read = await getTicketBundle(ORDER_REF);
     if (!read.ok) throw new Error('bundle did not decode');
-    expect(ticketsForDisplay(read.value).map((ticket) => ticket.validity)).toEqual([
+    expect(ticketsForDisplay(read.value, 'en').map((ticket) => ticket.validity)).toEqual([
       { kind: 'voided', reason: 'refunded' },
       { kind: 'valid' },
       { kind: 'voided', reason: 'exchanged' },
     ]);
+  });
+
+  // TKT-365 (ADR-083): null is Access saying "Catalog did not answer". It is a valid
+  // bundle; the page then shows labelled UTC.
+  it('accepts a null performance zone', async () => {
+    respond(withZone(null));
+    await expect(getTicketBundle(ORDER_REF)).resolves.toEqual({ ok: true, value: withZone(null) });
+  });
+
+  it('projects each ticket\'s history with its own zone and a localized label', async () => {
+    const twoZones = {
+      ...bundle,
+      tickets: [
+        { ...bundle.tickets[0], history: [{ ...bundle.tickets[0].history[0], occurred_at: '2026-07-14T22:30:05Z' }] },
+        {
+          ...bundle.tickets[0],
+          ticket_id: OTHER_TICKET,
+          performance_timezone: null,
+          history: [{ ...bundle.tickets[0].history[0], type: 'future_kind', occurred_at: '2026-07-14T22:30:05Z' }],
+        },
+      ],
+    };
+    respond(twoZones);
+    const read = await getTicketBundle(ORDER_REF);
+    if (!read.ok) throw new Error('bundle did not decode');
+    const [kolkata, unknownZone] = ticketsForDisplay(read.value, 'fr');
+    expect(kolkata.history).toHaveLength(1);
+    expect(kolkata.history[0].label).toBe(UI_STRINGS.fr.historyIssued);
+    expect(kolkata.history[0].occurredAt).toBe('2026-07-14T22:30:05Z');
+    expect(kolkata.history[0].time).toContain('04:00:05');
+    expect(kolkata.history[0].time).toContain('UTC+5:30');
+    expect(unknownZone.history[0].label).toBe(UI_STRINGS.fr.historyOther);
+    expect(unknownZone.history[0].time).toContain('22:30:05');
+    expect(unknownZone.history[0].time).toContain('UTC');
   });
 
   it('accepts and canonicalises an order identity that differs from the request only by case', async () => {
@@ -115,6 +160,7 @@ describe('ticket bundle response decoding', () => {
         issued_at: '2026-08-03T12:00:00Z',
         qr_url: '/api/access/tickets/qr/signed-ticket-payload',
         validity: { status: 'valid' },
+        performance_timezone: 'Asia/Kolkata',
       }],
     }],
     // TKT-355: one row per malformation CLASS of the verdict. A missing verdict must
@@ -128,8 +174,14 @@ describe('ticket bundle response decoding', () => {
         issued_at: '2026-08-03T12:00:00Z',
         qr_url: '/api/access/tickets/qr/signed-ticket-payload',
         history: [],
+        performance_timezone: 'Asia/Kolkata',
       }],
     }],
+    // TKT-365: the zone is required and nullable. Absent is a contract break, not null.
+    ['an absent performance zone', withoutZone()],
+    ['an empty performance zone', withZone('')],
+    ['a non-string performance zone', withZone(5)],
+    ['an object performance zone', withZone({ name: 'Asia/Kolkata' })],
     ['a null validity', withValidity(null)],
     ['a string validity', withValidity('valid')],
     ['an array validity', withValidity([{ status: 'valid' }])],

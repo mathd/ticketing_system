@@ -25,6 +25,7 @@ import (
 
 	apispec "ticketing/services/access/api"
 	accessapi "ticketing/services/access/internal/api"
+	"ticketing/services/access/internal/catalog"
 	"ticketing/services/access/internal/consumer"
 	"ticketing/services/access/internal/delivery"
 	"ticketing/services/access/internal/lifecyclejob"
@@ -222,6 +223,12 @@ func run() error {
 	commerceURL := os.Getenv("COMMERCE_URL")
 	if commerceURL == "" {
 		return errors.New("COMMERCE_URL required")
+	}
+	// The ticket bundle's performance time zones (TKT-365, ADR-083). Required, so a
+	// deployment that forgot it fails at start rather than serving every ticket in UTC.
+	catalogURL := os.Getenv("CATALOG_URL")
+	if catalogURL == "" {
+		return errors.New("CATALOG_URL required")
 	}
 	// Required, with the checked-in dev seed refused forever (ai-review S5). It
 	// shipped as an ACTIVE compose default — an all-zero Ed25519 seed, in the
@@ -439,6 +446,7 @@ func run() error {
 		RedeliveryAddress: delivery.CommerceAddressBook{Client: obs.Client(), BaseURL: commerceURL, Token: token},
 		RedeliveryMailer:  mailer,
 		PublicURL:         publicURL,
+		PerformanceZones:  catalog.Client{HTTP: obs.Client(), BaseURL: catalogURL, Token: token, Log: log},
 	}).Router(log, validateResponses))
 
 	srv := &http.Server{

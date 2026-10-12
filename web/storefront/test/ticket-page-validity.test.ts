@@ -31,7 +31,13 @@ const ticket = (n: number, validity: unknown, history: unknown[]) => ({
   qr_url: `/qr-${n}.png`,
   history,
   validity,
+  performance_timezone: 'Europe/Paris',
 });
+
+// 30 s per case, as in page-call-budget.test.ts: the first render transforms the page
+// through Astro's vite plugin, and under load that alone passes the 5 s default (it did,
+// twice in a row, during the TKT-365 plan review).
+const RENDER_TIMEOUT = 30_000;
 const bundle = {
   order_ref: REF,
   tickets: [
@@ -105,7 +111,7 @@ describe('ticket page renders the Access verdict (TKT-355)', () => {
     expect(voidNotice(rendered[3])).toBe(`${t.ticketVoided} ${t.ticketVoidedExchanged}`);
 
     expect((html.match(/<img/g) ?? []).length).toBe(2);
-  });
+  }, RENDER_TIMEOUT);
 
   it('answers 503, not a page of valid QRs, when the verdict is missing', async () => {
     const withoutVerdict = {
@@ -115,5 +121,5 @@ describe('ticket page renders the Access verdict (TKT-355)', () => {
     const response = await renderTicketPage('en', withoutVerdict);
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('<img');
-  });
+  }, RENDER_TIMEOUT);
 });

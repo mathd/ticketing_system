@@ -428,6 +428,9 @@ services:
       # access alone — deliberately NOT in the shared &go-env anchor.
       NATS_URL: nats://access:${NATS_ACCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
       COMMERCE_URL: http://commerce:8080
+      # The ticket bundle's performance time zones (TKT-365, ADR-083). Access refuses
+      # to start without it.
+      CATALOG_URL: http://catalog:8080
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       # No default: `make up` mints this pair per clone (ai-review S5). Until
       # then an all-zero Ed25519 seed shipped as an ACTIVE default, so anyone

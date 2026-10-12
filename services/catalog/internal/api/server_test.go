@@ -919,6 +919,7 @@ func (f *fakeStore) PerformanceDisplayNames(_ context.Context, ids []uuid.UUID) 
 			PerformanceID: id,
 			EventName:     f.events[p.EventID].Name,
 			StartsAt:      p.StartsAt,
+			Timezone:      p.Timezone,
 		})
 	}
 	return out, nil

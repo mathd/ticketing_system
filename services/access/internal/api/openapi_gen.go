@@ -218,11 +218,14 @@ type ScanRequestDirection string
 
 // Ticket defines model for Ticket.
 type Ticket struct {
-	History   []LifecycleEvent   `json:"history"`
-	IssuedAt  time.Time          `json:"issued_at"`
-	QrPayload string             `json:"qr_payload"`
-	QrUrl     string             `json:"qr_url"`
-	TicketId  openapi_types.UUID `json:"ticket_id"`
+	History  []LifecycleEvent `json:"history"`
+	IssuedAt time.Time        `json:"issued_at"`
+
+	// PerformanceTimezone The IANA time zone of this ticket's performance (TKT-365, ADR-083). A ticket view shows history times in this zone. Access reads it from Catalog each time it serves the bundle. It is null when Catalog cannot answer in time or does not know the performance; a client then shows times in labelled UTC. Per ticket, because an exchange can put tickets for different performances under one reference. Required and nullable: "the zone is unknown" is a different fact from "the field is absent".
+	PerformanceTimezone *string            `json:"performance_timezone"`
+	QrPayload           string             `json:"qr_payload"`
+	QrUrl               string             `json:"qr_url"`
+	TicketId            openapi_types.UUID `json:"ticket_id"`
 
 	// Validity The presentation verdict for one ticket (TKT-355, ADR-012 § TKT-355 amendment). Access derives it from the ticket's lifecycle history each time it serves the bundle; it is not stored. A refund makes the ticket voided with reason refunded; otherwise an exchange makes it voided with reason exchanged; otherwise it is valid. "valid" means "no recorded refund or exchange". It does not promise admission: the gate decides admission from Access state, and this verdict controls only what a ticket view shows.
 	Validity TicketValidity `json:"validity"`

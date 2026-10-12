@@ -1055,6 +1055,8 @@ paths:
         Answers "what are these performances called, in this locale" for a bounded
         set of ids at once. It exists for commerce's wallet read (TKT-222): a
         purchase carries a slot id, and the name a buyer would recognise lives here.
+        Access's ticket bundle uses the same read for each ticket's performance
+        time zone (TKT-365, ADR-083).
 
         A GET with the ids in the query string, NOT a POST with a body — and the
         difference is not stylistic. Catalog's contract invariant
@@ -2193,10 +2195,18 @@ components:
     PerformanceDisplayName:
       type: object
       additionalProperties: false
-      required: [performance_id, event_name, starts_at]
+      required: [performance_id, event_name, starts_at, timezone]
       properties:
         performance_id: {type: string, format: uuid}
         event_name: {type: string}
+        timezone:
+          type: string
+          minLength: 1
+          description: >
+            The performance's IANA time zone (TKT-365, ADR-083). Access reads it to
+            show ticket history times in the zone of the performance. Every
+            performance has one, festival days included, and no write path changes
+            it after create.
         starts_at:
           type: string
           format: date-time

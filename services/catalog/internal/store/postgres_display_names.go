@@ -29,7 +29,7 @@ import (
 // guardInternalSurface and the gateway's edge-deny rather than in the public
 // contract.
 const performanceDisplayNamesQuery = `
-	SELECT p.id, e.name, p.starts_at
+	SELECT p.id, e.name, p.starts_at, p.timezone
 	  FROM performances p
 	  JOIN events e ON e.id = p.event_id
 	 WHERE p.id = ANY($1::uuid[])`
@@ -52,7 +52,7 @@ func (p *Postgres) PerformanceDisplayNames(ctx context.Context, ids []uuid.UUID)
 		// .Value type []uint8", which no fake-store test can reach.
 		var name []byte
 		var startsAt sql.NullTime
-		if err := rows.Scan(&d.PerformanceID, &name, &startsAt); err != nil {
+		if err := rows.Scan(&d.PerformanceID, &name, &startsAt, &d.Timezone); err != nil {
 			return nil, fmt.Errorf("scan performance display name: %w", err)
 		}
 		if err := json.Unmarshal(name, &d.EventName); err != nil {

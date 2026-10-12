@@ -20,7 +20,7 @@ try {
   if (err instanceof UpstreamError && (err.status === 404 || err.status === 400)) {
     return new Response(null, { status: 404 });
   }
-  return new Response('Service unavailable', { status: 503 });
+  return new Response(t.serviceUnavailable, { status: 503 });
 }
 const byId = new Map(event.performances.map((performance) => [performance.id, performance]));
 const grouped = new Set(event.series.flatMap((series) => series.performance_ids));
@@ -34,11 +34,11 @@ const grouped = new Set(event.series.flatMap((series) => series.performance_ids)
     event.series.map((series) => (
       <section class="series">
         <h2>{series.name}</h2>
-        {series.performance_ids.map((id) => byId.get(id)).filter((perf) => perf !== undefined).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLabel={t.venue} ticketsLabel={t.tickets} />)}
+        {series.performance_ids.map((id) => byId.get(id)).filter((perf) => perf !== undefined).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLine={t.venueLine} ticketsLabel={t.tickets} />)}
       </section>
     ))
   }
-  {event.performances.filter((perf) => !grouped.has(perf.id)).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLabel={t.venue} ticketsLabel={t.tickets} />)}
+  {event.performances.filter((perf) => !grouped.has(perf.id)).map((perf) => <PerformanceCard performance={perf} organizerId={event.organizer_id} locale={locale} venueLine={t.venueLine} ticketsLabel={t.tickets} />)}
 </Layout>
 
 <style>
