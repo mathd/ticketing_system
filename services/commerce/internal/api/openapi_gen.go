@@ -169,6 +169,24 @@ func (e OrderResultStatus) Valid() bool {
 	}
 }
 
+// Defines values for PasswordResetRequestLocale.
+const (
+	PasswordResetLocaleEn PasswordResetRequestLocale = "en"
+	PasswordResetLocaleFr PasswordResetRequestLocale = "fr"
+)
+
+// Valid indicates whether the value is a known member of the PasswordResetRequestLocale enum.
+func (e PasswordResetRequestLocale) Valid() bool {
+	switch e {
+	case PasswordResetLocaleEn:
+		return true
+	case PasswordResetLocaleFr:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProviderRefundFailedCode.
 const (
 	ProviderRefundFailedCodeProviderRefundFailed ProviderRefundFailedCode = "provider_refund_failed"
@@ -624,7 +642,15 @@ type PasswordResetCompletion struct {
 // PasswordResetRequest An address to send a reset link to (TKT-226). minLength 1, deliberately — not 3 as on registration. A floor that refuses a short address BEFORE the lookup would answer differently from one that reaches it, which is the same oracle CustomerCredentials avoids by using 1 instead of 8 on the password.
 type PasswordResetRequest struct {
 	Email string `json:"email"`
+
+	// Locale The language of the message and of the link's page (TKT-366). The storefront sends the locale of the route the form was submitted on. It selects fixed copy and the fixed path /{locale}/account/reset-password and nothing else: the link's origin stays server-configured and the recipient stays the registered address.
+	// OPTIONAL, and absent means en. A caller built before this field (the storefront still on its old build during a rolling deploy) must keep getting its English message, not a refusal. A present value outside the set is refused with 400 before the address is looked up, so the refusal is the same for every address. Deploy commerce before the storefront: an older commerce refuses this field (ADR-050 § TKT-366 amendment).
+	Locale *PasswordResetRequestLocale `json:"locale,omitempty"`
 }
+
+// PasswordResetRequestLocale The language of the message and of the link's page (TKT-366). The storefront sends the locale of the route the form was submitted on. It selects fixed copy and the fixed path /{locale}/account/reset-password and nothing else: the link's origin stays server-configured and the recipient stays the registered address.
+// OPTIONAL, and absent means en. A caller built before this field (the storefront still on its old build during a rolling deploy) must keep getting its English message, not a refusal. A present value outside the set is refused with 400 before the address is looked up, so the refusal is the same for every address. Deploy commerce before the storefront: an older commerce refuses this field (ADR-050 § TKT-366 amendment).
+type PasswordResetRequestLocale string
 
 // PasswordResetResult The customer whose password was replaced. Returned so the caller can destroy that customer's storefront sessions; it is not a principal and carries no assertion — completing a reset is not signing in.
 type PasswordResetResult struct {
