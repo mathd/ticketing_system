@@ -75,8 +75,10 @@ We adopt Option 1.
    timeout, a non-200 answer, a body that does not decode, and an id that Catalog does not know.
    A zone is presentation. It must not stop a buyer from getting their QR code.
 5. Deadline: all the requests of one bundle share one deadline of 1.5 s. This is less than the
-   storefront's 5 s upstream deadline, so a slow Catalog makes the bundle slower but does not make
-   the storefront abandon it.
+   storefront's 5 s deadline for one upstream read, so a slow Catalog alone does not make that read
+   time out. It adds up to 1.5 s to every bundle read, and so uses part of the storefront's total
+   ticket-read budget (`ISSUANCE_TOTAL_BUDGET_MS`, which also covers the issuance retries). It does
+   not guarantee that the whole read finishes within that budget.
 6. Access refuses to start without `CATALOG_URL`.
 7. The storefront shows each time with its zone name. When the zone is `null`, or when its ICU
    data does not know the zone, it shows the time in UTC with the label "UTC". It never uses the

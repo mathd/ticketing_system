@@ -26,8 +26,8 @@ import (
 const MaxIDsPerRequest = 20
 
 // DefaultTimeout bounds ALL the requests of one PerformanceZones call. It stays well
-// under the storefront's 5 s upstream deadline, so a slow Catalog delays the bundle but
-// never makes the storefront give up on it (ADR-083).
+// under the storefront's 5 s deadline for one upstream read, but it adds up to 1.5 s to
+// each bundle read and uses part of the storefront's total ticket-read budget (ADR-083).
 const DefaultTimeout = 1500 * time.Millisecond
 
 // resolverLocale is a fixed supported locale. The resolver requires one because it also

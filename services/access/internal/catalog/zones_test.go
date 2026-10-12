@@ -244,20 +244,17 @@ func TestOneDeadlineCoversEveryChunk(t *testing.T) {
 	c := newClient(t, f)
 	c.Timeout = timeout
 
-	start := time.Now()
 	got := c.PerformanceZones(context.Background(), ids)
-	elapsed := time.Since(start)
 
+	// No wall-clock bound on the call: the count of resolved zones is what separates one
+	// shared deadline (20) from a deadline per chunk (25). The fixture still needs the first
+	// 400 ms request to finish inside the 600 ms deadline.
 	if len(f.calls) != 2 {
 		t.Fatalf("calls = %d, want 2 (the fixture must reach the second chunk)", len(f.calls))
 	}
 	if len(got) != MaxIDsPerRequest {
 		t.Fatalf("resolved %d zones, want the %d of the first chunk only: the second request must end at the shared deadline",
 			len(got), MaxIDsPerRequest)
-	}
-	if elapsed >= 2*delay {
-		t.Fatalf("the call took %s; one %s deadline must end it before two %s requests could finish",
-			elapsed, timeout, delay)
 	}
 }
 

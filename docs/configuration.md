@@ -123,9 +123,11 @@ order reference can replace an expired image URL by reloading the bundle.
 `CATALOG_URL` is the Catalog base URL that Access reads each ticket's performance time zone
 from when it serves the ticket bundle (TKT-365,
 [ADR-083](adr/ADR-083-access-reads-performance-time-zones-from-catalog.md)). Access refuses to
-start without it. Access sends the shared `INTERNAL_SERVICE_TOKEN` and waits at most 1.5 s. If
-Catalog does not answer in time, the bundle still loads and each zone is `null`; the storefront
-then shows history times in labelled UTC.
+start without it. Access sends the shared `INTERNAL_SERVICE_TOKEN` and asks for at most 20
+performances per request, all requests within one 1.5 s deadline. A request that fails or does
+not finish in time leaves the zones it asked for `null`; zones from requests that succeeded are
+kept. The bundle still loads, and the storefront shows a `null` zone's history times in labelled
+UTC.
 
 ## Scanner devices
 
