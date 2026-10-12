@@ -111,7 +111,7 @@ case. Before, the page showed the first void event in the history, so exchange t
 **Every type is classified.** A table in the Access store gives the effect of each of the nine
 lifecycle types. A store smoke test (`TestEveryLifecycleTypeHasAValidityEffect`) reads the
 `event_type` CHECK from a migrated database. It fails when the CHECK is not a plain `IN` list of text
-literals (the only shape for which the literals are the admitted set), and when the table and the
+literals (the shape this test supports, for which the literals are the admitted set), and when the table and the
 CHECK differ in either direction. Thus a migration that adds a type, or rewrites the CHECK in another
 shape, cannot pass the gate until the test and the table are updated. Because of this test, the derivation keeps the verdict for an unknown type, as the gate does.
 It does not refuse the bundle. A refusal would return 500 for the whole page, valid tickets included,

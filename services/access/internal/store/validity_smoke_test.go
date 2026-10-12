@@ -51,7 +51,8 @@ func TestEveryLifecycleTypeHasAValidityEffect(t *testing.T) {
 
 	// The CHECK must have exactly the shape PostgreSQL deparses for
 	// `event_type IN ('a', 'b', ...)`: one ANY over an ARRAY of text literals and nothing
-	// else. Only for that shape is "the literals" the same set as "the admitted values". Any
+	// else. That is the shape this test supports, and for it "the literals" is the same set
+	// as "the admitted values". Any
 	// other shape (a concatenation, a second branch, another cast) fails here, so the test
 	// is updated with the CHECK instead of passing on a set it did not read. A literal is any
 	// SQL string, not only [a-z_] ('revoked_v2', 'revoked-v2'); '' is an escaped quote.
