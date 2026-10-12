@@ -18,19 +18,26 @@ package smoke_test
 //     here so that `-run TestCheckoutAlertFiresAndResolves` also works alone on a new stack.
 //  3. Baseline: an evaluation later than the start of this test finds the rule healthy,
 //     evaluated every 10 s, with exactly four alert instances, one for each checkout-path
-//     service, all Normal. On a stack that an earlier run used, this waits until the
-//     earlier failures leave the 1-minute window.
-//  4. Two fake-auth-hold checkouts, at least checkoutDashboardFailureGap apart. Payments
-//     answers each one 500, and commerce answers 202 payment_unknown. A new status="500"
-//     series starts at 1, and rate() cannot see that first increment, so the second
-//     failure, in a later export, is what makes the payments rate positive.
-//  5. The counters under the rule's OWN 5xx selector: payments grew by at least 2, and
-//     the other three services did not grow. The selector comes from the served rule, so a
-//     broken status selector fails here with a clear message.
-//  6. Firing: payments is Alerting and the other three are Normal, within 60 s.
+//     service, all Normal. A state with a reason, such as "Normal (NoData)", is not Normal.
+//     On a stack that an earlier run used, this waits until the earlier failures leave the
+//     1-minute window.
+//  4. Two fake-auth-hold checkouts. Payments answers each one 500, and commerce answers
+//     202 payment_unknown. A new status="500" series starts at 1, and rate() cannot see
+//     that first increment, so the second failure, in a later sample, is what makes the
+//     payments rate positive. The test sends the second failure only after Prometheus has
+//     the first one under the rule's OWN 5xx selector, and at least
+//     checkoutDashboardFailureGap after it. A broken status selector fails here with a
+//     clear message.
+//  5. Firing: payments is Alerting and the other three are Normal, within 60 s. The test
+//     reads the state before it checks the counters, so a slow counter check cannot make
+//     it miss the Alerting interval. If payments does not fire, the message includes the
+//     counter check.
+//  6. The counters under the rule's 5xx selector: payments grew by at least 2, and the
+//     other three services did not grow.
 //  7. Resolution: payments is Normal again after an evaluation later than the one that
 //     made it fire, the rule is still present and not paused, within 120 s. An instance
-//     that disappears is not a resolution: the test requires all four instances.
+//     that disappears is not a resolution: the test requires all four instances. An
+//     instance that is "Normal (NoData)" is not a resolution either.
 //
 // Grafana sends no notification for this rule: the image's only contact point is the
 // receiver "empty", which has no integration. The alert shows only in Grafana's alerting
@@ -123,24 +130,26 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 		return s.require(alertStateNormal, "")
 	})
 
-	// Step 4: the induced failures.
+	// Step 4: the induced failures. The second failure is sent only after Prometheus has
+	// the first one under the rule's own 5xx selector. A sleep alone does not make two
+	// samples: if the payments export stalls across the gap, Prometheus first sees a new
+	// 500 series at 2, and rate() never goes above 0.
 	trafficStart := time.Now()
 	tracedCheckout(t, holdOffer1, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 	firstFailure := time.Now()
+	retry(t, 60*time.Second, func() error {
+		return assertCheckoutAlertCounters(t, errorSelector, trafficStart, 1)
+	})
 	if wait := checkoutDashboardFailureGap - time.Since(firstFailure); wait > 0 {
 		time.Sleep(wait)
 	}
 	tracedCheckout(t, holdOffer2, "fake-auth-hold", http.StatusAccepted, "payment_unknown")
 	secondFailure := time.Now()
 
-	// Step 5: the failures reached Prometheus under the rule's own 5xx selector.
-	retry(t, 60*time.Second, func() error {
-		return assertCheckoutAlertCounters(t, errorSelector, trafficStart)
-	})
-
-	// Step 6: Firing.
+	// Step 5: Firing. The test reads the state first and checks the counters only after,
+	// so slow requests cannot make the test start to look after the alert has resolved.
 	var fired checkoutAlertState
-	retry(t, 60*time.Second, func() error {
+	if err := poll(60*time.Second, 2*time.Second, func() error {
 		s, err := readCheckoutAlertState(t)
 		if err != nil {
 			return err
@@ -150,10 +159,23 @@ func TestCheckoutAlertFiresAndResolves(t *testing.T) {
 		}
 		fired = s
 		return nil
-	})
+	}); err != nil {
+		counters := "the counters moved as expected"
+		if cerr := assertCheckoutAlertCounters(t, errorSelector, trafficStart, 2); cerr != nil {
+			counters = cerr.Error()
+		}
+		t.Fatalf("payments did not fire within 60 s of the second failure: %v; counters: %s", err, counters)
+	}
 	firedAt := time.Now()
 	t.Logf("payments Alerting %.0f s after the first failure, %.0f s after the second (evaluation %s)",
 		firedAt.Sub(firstFailure).Seconds(), firedAt.Sub(secondFailure).Seconds(), fired.LastEvaluation.UTC().Format(time.RFC3339))
+
+	// Step 6: both failures reached Prometheus under the rule's 5xx selector, and the other
+	// three services had no 5xx. The alert can fire on the first failure when the payments
+	// 500 series already exists, so the second increment can arrive after the Firing state.
+	retry(t, 30*time.Second, func() error {
+		return assertCheckoutAlertCounters(t, errorSelector, trafficStart, 2)
+	})
 
 	// Step 7: resolution, after a later evaluation.
 	retry(t, 120*time.Second, func() error {
@@ -192,6 +214,15 @@ func (s checkoutAlertState) require(want, alerting string) error {
 		return fmt.Errorf("rule %s has instances for %v, want exactly %v (states %v)", checkoutAlertRuleUID, got, checkoutPathServices, s.Instances)
 	}
 	for service, state := range s.Instances {
+		// Grafana adds a reason to the state when it did not evaluate a value: with
+		// noDataState OK, an instance whose query returns nothing keeps its labels and
+		// becomes "Normal (NoData)", and lastEvaluation still advances. Such a state is not
+		// a resolution or a baseline. The value field cannot tell the two apart: Grafana
+		// sends an empty value for every Normal instance. The exact comparison below also
+		// refuses such a state; this check gives the reason in the message.
+		if strings.Contains(state, "(") {
+			return fmt.Errorf("instance %s is %q: a state with a reason (NoData, Error) is not an evaluated result (states %v)", service, state, s.Instances)
+		}
 		expected := want
 		if service == alerting {
 			expected = alertStateAlerting
@@ -264,8 +295,10 @@ func checkoutAlertErrorSelector(t *testing.T, rule checkoutAlertProvisionedRule)
 }
 
 // assertCheckoutAlertCounters compares the counters under the rule's 5xx selector at
-// trafficStart and now. The raw counter sees the first increment that rate() cannot see.
-func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart time.Time) error {
+// trafficStart and now: payments must have grown by at least minPayments (this test's
+// failed payments), and the other three services must not have grown. The raw counter sees
+// the first increment that rate() cannot see.
+func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart time.Time, minPayments float64) error {
 	t.Helper()
 	total := "sum by (service_name) (" + selector + ")"
 	before, err := prometheusInstantByService(t, total, trafficStart)
@@ -276,8 +309,8 @@ func assertCheckoutAlertCounters(t *testing.T, selector string, trafficStart tim
 	if err != nil {
 		return err
 	}
-	if d := after["payments"] - before["payments"]; d < 2 {
-		return fmt.Errorf("rule 5xx selector %s: payments grew by %v since %s, want at least 2 (this test's failed payments)", selector, d, trafficStart.UTC().Format(time.RFC3339))
+	if d := after["payments"] - before["payments"]; d < minPayments {
+		return fmt.Errorf("rule 5xx selector %s: payments grew by %v since %s, want at least %v (this test's failed payments)", selector, d, trafficStart.UTC().Format(time.RFC3339), minPayments)
 	}
 	for _, svc := range checkoutPathServices {
 		if svc != "payments" && after[svc] != before[svc] {

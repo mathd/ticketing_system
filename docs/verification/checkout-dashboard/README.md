@@ -285,7 +285,10 @@ or on (service_name)
   `0s`, so an instance goes from Normal to Alerting directly.
 - **No data** (`noDataState: OK`): before any POST traffic, for example just after lgtm starts,
   the query returns nothing. Grafana then shows one instance `Normal (NoData)` with no
-  `service_name`.
+  `service_name`. When the query stops returning data after the instances exist, Grafana keeps
+  the four instances with their labels and shows each one as `Normal (NoData)`. The rule health
+  stays `ok`, and the last evaluation time still advances. So `Normal (NoData)` looks healthy, but
+  it is not an evaluated result.
 - **Errors** (`execErrState: Error`): a query or expression error shows as an instance `Error`,
   and the rule health is `error`.
 
@@ -338,7 +341,9 @@ annotations instead.
 - **First increment.** A new 5xx series starts at 1, and `rate()` cannot see that first increment.
   One isolated 5xx on a service with no earlier 5xx does not fire.
 - **A service that stops does not alert.** When a service stops its export, its instance stops
-  getting new values. The rule does not fire for it. Use the health checks for a stopped service.
+  getting new values. The rule does not fire for it. When all exports stopped, the four instances
+  became `Normal (NoData)` about 5 minutes later and did not fire. Use the health checks for a
+  stopped service.
 - **POST only, and the dashboard's routes only.** A 5xx on a GET request, for example a failing
   `/healthz` probe, does not fire. A gateway 5xx on a route outside `/api/inventory/`,
   `/api/commerce/` and `/api/payments/` does not fire.
@@ -356,14 +361,21 @@ reads the rule and the alert state that Grafana serves, not the rule file. It:
 - waits for a baseline from an evaluation later than the start of the test: health `ok`, an
   interval of 10 s, and exactly four instances, one for each service, all Normal. After a restart,
   Grafana shows the stored states until it evaluates the rule again, so an earlier evaluation is
-  not evidence;
-- sends two `fake-auth-hold` checkouts 12 seconds apart. It arms the recovery cleanup before it
-  submits each order, as the dashboard test does;
+  not evidence. A state with a reason, such as `Normal (NoData)`, is not Normal. The `value`
+  field cannot replace this check: Grafana sends an empty value for every Normal instance;
+- sends two `fake-auth-hold` checkouts. It sends the second one only after Prometheus has the
+  first failure under the rule's own 5xx selector, and at least 12 seconds after the first. A
+  sleep alone does not make two samples: if the payments export stalls across the gap,
+  Prometheus first sees a new 500 series at 2, and `rate()` stays at 0. The test arms the
+  recovery cleanup before it submits each order, as the dashboard test does;
+- requires, within 60 s, payments Alerting and the other three Normal. It reads the alert state
+  before it checks the counters, so a slow counter check cannot make it miss the Alerting
+  interval. If payments does not fire, the failure message includes the counter check;
 - requires that, under the rule's own 5xx selector, the payments counter grew by at least 2 and
   the counters of the other three services did not grow;
-- requires, within 60 s, payments Alerting and the other three Normal;
 - requires, within 120 s, payments Normal again, after an evaluation later than the one that made
-  it fire. It requires all four instances, so an instance that disappears is not a resolution.
+  it fire. It requires all four instances, so an instance that disappears is not a resolution, and
+  an instance that is `Normal (NoData)` is not a resolution either.
 
 The file sorts before `checkout_dashboard_test.go`, so the test runs before the dashboard test and
 before `TestOnsaleLoadProof`. It ends only after payments is Normal again. It takes about 100 s.
@@ -373,12 +385,13 @@ Each mutation below made the test fail:
 | Mutation | Failure |
 |---|---|
 | Rule mount removed from `lgtm` (container recreated) | `GET alert rule ticketing-checkout-5xx: 404` for 60 s |
-| 5xx selector `"5.."` changed to `"6.."` | `rule 5xx selector …: payments grew by 0 since …, want at least 2` |
-| Threshold `> 0` changed to `> 1` | `instance payments is "Normal", want "Alerting"` |
+| 5xx selector `"5.."` changed to `"6.."` | Before the second failure: `rule 5xx selector …: payments grew by 0 since …, want at least 1` |
+| Threshold `> 0` changed to `> 1` | `payments did not fire within 60 s of the second failure: instance payments is "Normal", want "Alerting" …; counters: the counters moved as expected` |
 | Grouping removed (`sum (` instead of `sum by (service_name) (` in the 5xx part) | `rule ticketing-checkout-5xx has 1 instance(s) with no service_name` |
 | Zero fallback removed | `rule ticketing-checkout-5xx has instances for [payments], want exactly [gateway inventory commerce payments]` |
 | `settings: {mode: strict}` added to the Reduce step | `health "error", last error "[sse.parseError] failed to parse expression [B]: reducer mode 'strict' is not supported…"` |
 | `isPaused: true` | `alert rule ticketing-checkout-5xx is paused` |
+| No data: both selectors name a metric that does not exist, after the four instances exist | `instance commerce is "Normal (NoData)": a state with a reason (NoData, Error) is not an evaluated result`. Grafana showed health `ok` and a new evaluation time. |
 
 For the rule-file mutations, lgtm was restarted after each change. The first version of the test
 passed the baseline for the `mode: strict` mutation and failed only at the Firing step: after the
@@ -388,12 +401,21 @@ fails at the baseline. An earlier version also required the zero-fallback select
 text. That killed the zero-fallback mutation without any alert state, so the test now requires
 only the 5xx selector, and the instance check catches the mutation.
 
-Determinism: 8 consecutive passes (`-count=8`, 78–95 s each) against one kept-up smoke stack, after
-the last change to the test. In those runs the test saw payments Alerting 2–6 s after the second
-failure, and Normal again 56–64 s after it saw Alerting (58–68 s after the second failure). The
-test starts to look for Alerting only after the counter check, so these times are upper bounds.
-The test also passed in one full `./scripts/smoke.sh` run (78 s; Normal again 58 s after the
-second failure), and the smoke package then took 388 s of its 10-minute timeout.
+A cross-model review of that version found three gaps, and the test now closes each one: a
+`Normal (NoData)` instance must not count as Normal (the last row above shows it refused); the
+second failure waits until Prometheus has the first one; and the test reads the Firing state
+before it checks the counters. Write a mutation into the rule file in place. An editor or tool
+that replaces the file (for example `sed -i`) gives it a new inode. Docker Desktop then keeps the
+old file in the single-file mount, and `docker compose restart lgtm` fails with `no such file or
+directory`. `docker compose up -d --force-recreate lgtm` repairs the mount and deletes the data.
+
+Determinism: 8 consecutive passes (`-count=8`, 88–95 s each) against one kept-up smoke stack, after
+the last change to the test. On that stack the payments 500 series already existed, so the first
+failure was enough to fire: the test saw payments Alerting on its first read after the second
+failure, and Normal again 66–68 s after the second failure. The test also passed in one full
+`./scripts/smoke.sh` run (88 s), where the payments 500 series was new: payments was Alerting 8 s
+after the second failure and Normal again 68 s after it. The smoke package then took 377 s of its
+10-minute timeout.
 
 ## Limits
 
