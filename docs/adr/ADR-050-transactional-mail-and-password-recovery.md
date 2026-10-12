@@ -251,8 +251,10 @@ That clause was true until TKT-366 and is no longer exactly true.
   `locale` field. A new storefront in front of an old commerce therefore gets a 400 on every
   reset request. The other order is safe because the field is optional.
 - **The copy states the lifetime in words** ("one hour", "une heure"), not as a Go duration
-  (`1h0m0s`). A test makes sure that the lifetime that the copy states is equal to
-  `ResetTokenTTL`. The storefront's acknowledgement strings state the same lifetime.
+  (`1h0m0s`). The message selects its phrase by `ResetTokenTTL`, and a test requires a phrase
+  for `ResetTokenTTL` in every locale, so a TTL change fails the test until the words are
+  written. The storefront's acknowledgement strings state the same lifetime; the test's failure
+  message names them, but no test reads them.
 - **The French subject is not ASCII.** The fake accepts it, and the outbox and the drainer keep
   it byte for byte (a smoke test proves this). The first real provider must encode a non-ASCII
   subject header (RFC 2047). No real sender exists yet, so nothing does this today.

@@ -189,6 +189,12 @@ try {
   });
   // The EXACT stored link, origin included — browser.sh points the stack's
   // PUBLIC_BASE_URL at this gateway, so the link the buyer would click is this one.
+  // Never navigate to a link on another origin: a stack started before that export
+  // (browser.sh run on an old stack) mails links to :8080, which is the owner's dev
+  // stack. check() only records a failure, so stop here instead.
+  if (!link.startsWith(`${BASE}/`)) {
+    throw new Error(`the stored reset link is not on this stack's gateway (${BASE}); refusing to open it: ${link.replace(/token=.*/, 'token=…')}`);
+  }
   const opened = await resetPage.goto(link, { waitUntil: 'domcontentloaded' });
   check(
     'the mailed link opens the French reset form',

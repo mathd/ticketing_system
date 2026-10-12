@@ -322,14 +322,16 @@ func TestALocaleAnswersTheSameWhetherOrNotTheAddressHasAnAccount(t *testing.T) {
 
 // The copy states the lifetime in words ("one hour", "une heure"), because a Go duration
 // string such as 1h0m0s is not something a buyer should read. Words do not follow the
-// constant, so this test ties them: change ResetTokenTTL and this fails until the copy is
-// changed too.
+// constant, so the message selects its phrase BY ResetTokenTTL, and this test requires
+// every locale to have one: change ResetTokenTTL and this fails until a phrase for the
+// new value is written.
 func TestTheResetCopyStatesTheTokenLifetime(t *testing.T) {
-	if resetCopyLifetime != commercestore.ResetTokenTTL {
-		t.Fatalf("ResetTokenTTL is %s but the reset copy says %s.\n"+
-			"Update the lifetime phrase of every locale in password_reset.go (resetCopies), AND the\n"+
-			"storefront's resetRequested strings in web/storefront/src/lib/locales.ts (en: \"expires in an\n"+
-			"hour\", fr: \"expire dans une heure\"), then set resetCopyLifetime to match.",
-			commercestore.ResetTokenTTL, resetCopyLifetime)
+	for locale, c := range resetCopies {
+		if c.lifetime[commercestore.ResetTokenTTL] == "" {
+			t.Errorf("locale %s has no lifetime phrase for ResetTokenTTL %s.\n"+
+				"Add one to its resetCopies entry in password_reset.go, AND update the storefront's\n"+
+				"resetRequested strings in web/storefront/src/lib/locales.ts (en: \"expires in an hour\",\n"+
+				"fr: \"expire dans une heure\").", locale, commercestore.ResetTokenTTL)
+		}
 	}
 }

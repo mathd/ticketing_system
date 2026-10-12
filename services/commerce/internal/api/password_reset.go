@@ -52,20 +52,21 @@ const resetLocaleUnsupported = "unsupported locale"
 // storefront during a rolling deploy) must keep getting it.
 const defaultResetLocale = "en"
 
-// resetCopyLifetime is the link lifetime that the copy below states IN WORDS. A test ties
-// it to commercestore.ResetTokenTTL: words do not follow a constant, so a TTL change must
-// fail a test until every lifetime phrase here (and the storefront's resetRequested
-// strings) says the new value.
-const resetCopyLifetime = time.Hour
-
 // resetCopy is the fixed text of one locale's reset message.
 //
 // body is a format with two verbs, in this order: the link, then the lifetime phrase.
+//
+// lifetime holds the phrase for each token lifetime the copy can state IN WORDS. The
+// message selects the phrase for commercestore.ResetTokenTTL itself, so the words are
+// chosen by the constant, not beside it. A test requires a phrase for ResetTokenTTL in
+// every locale: words do not follow a constant, so a TTL change fails that test until a
+// phrase for the new value is written here (and the storefront's resetRequested strings
+// say it too).
 type resetCopy struct {
 	path     string
 	subject  string
 	body     string
-	lifetime string
+	lifetime map[time.Duration]string
 }
 
 // resetCopies is the closed set of locales a reset message can be written in. A locale
@@ -87,7 +88,7 @@ Open this link to choose a new one:
 The link works once and expires in %s. If you did not ask for this, nothing has
 changed and you can ignore this message.
 `,
-		lifetime: "one hour",
+		lifetime: map[time.Duration]string{time.Hour: "one hour"},
 	},
 	// Vouvoiement and typographic apostrophes, as in the storefront's French strings
 	// (web/storefront/src/lib/locales.ts).
@@ -103,7 +104,7 @@ Ouvrez ce lien pour en choisir un nouveau :
 Ce lien ne fonctionne qu’une fois et expire dans %s. Si vous n’êtes pas
 à l’origine de cette demande, rien n’a changé et vous pouvez ignorer ce message.
 `,
-		lifetime: "une heure",
+		lifetime: map[time.Duration]string{time.Hour: "une heure"},
 	},
 }
 
@@ -211,7 +212,7 @@ func (s *Server) completePasswordReset(w http.ResponseWriter, r *http.Request) {
 // the caller chooses an entry, not a string (ADR-050 § TKT-366 amendment).
 func (s *Server) composeResetMail(c resetCopy, tok commercestore.IssuedResetToken) (recipient, subject, body string) {
 	link := s.publicURL + c.path + "?token=" + url.QueryEscape(tok.Raw)
-	return tok.Email, c.subject, fmt.Sprintf(c.body, link, c.lifetime)
+	return tok.Email, c.subject, fmt.Sprintf(c.body, link, c.lifetime[commercestore.ResetTokenTTL])
 }
 
 // WarnIfResetMailUnconfigured is logged once at startup rather than per request. A
