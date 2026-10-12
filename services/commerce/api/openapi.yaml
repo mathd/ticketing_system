@@ -4,6 +4,11 @@ paths:
   /reservations:
     post:
       operationId: createReservation
+      description: >
+        A 409 with `code: sold_out` means that inventory found zero public headroom for
+        this GA request at its locked decision (TKT-341, ADR-082). It is point-in-time
+        and retryable. A partial shortage, a closed slot and every other inventory
+        refusal keep the code-less 409. A seated request keeps its own codes.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReservationCreate'}}}}
       responses:
@@ -339,6 +344,8 @@ paths:
         "not your allocation" and "no allocation configured". A distinguishing code
         would tell a caller which channels exist and who owns them — the enumeration
         oracle `presale_code_invalid` was made uniform to prevent.
+        This route therefore never sends `sold_out` (TKT-341, ADR-082), although the
+        shared Error schema lists it.
       security: [{PartnerCredential: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -748,7 +755,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted, sold_out], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory''s locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.'}
         seat_identities:
           type: array
           description: >

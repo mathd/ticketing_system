@@ -169,6 +169,13 @@ function decodeReservationRefusal(
   };
 }
 
+// isSoldOutRefusal reads commerce's GA sellout (TKT-341, ADR-082): a 409 body with a
+// string `error` and EXACTLY `code: "sold_out"`. Anything else, including a body that
+// does not parse, is not a sellout and keeps the neutral refusal.
+function isSoldOutRefusal(value: unknown): boolean {
+  return isObject(value) && typeof value.error === 'string' && value.code === 'sold_out';
+}
+
 function decodeOrderResult(value: unknown): OrderResult {
   const body = objectBody(value, 'order result');
   if (body.status !== 'completed') throw new TypeError('order result status must be completed');
@@ -279,15 +286,18 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         body: JSON.stringify(claim),
       });
       if (!response.ok) {
+        // A 409 body is read ONCE, here, and both branches below decide on that one
+        // value. A body that does not parse reads as null: it is neither a seat
+        // refusal nor a sellout.
+        const refusalBody: unknown = response.status === 409
+          ? await response.json().catch(() => null)
+          : null;
         // TKT-173 answers a contended selection by NAME. Handing those identities to
         // the map is the whole point of it going to that trouble: the buyer sees
         // exactly which seats they lost, keeps the ones they did not, and the map
         // re-renders rather than going stale under a generic error.
         if (seated && response.status === 409) {
-          const refusal = decodeReservationRefusal(
-            await response.json().catch(() => null),
-            requestedSeats ?? [],
-          );
+          const refusal = decodeReservationRefusal(refusalBody, requestedSeats ?? []);
           if (refusal?.code === 'seat_taken') {
             map.current?.applyConflict(refusal.seat_identities);
             setStatus(t.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
@@ -300,6 +310,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
             setStatus(t.seatsWouldStrand.replace('{seats}', refusal.seat_identities.join(', ')));
             return;
           }
+        }
+        // GA only, like commerce: a seated refusal keeps the mapping above. No
+        // waitlist action yet; a later story adds it behind an account check.
+        if (!seated && isSoldOutRefusal(refusalBody)) {
+          setStatus(t.soldOut); return;
         }
         setStatus(t.quantityUnavailable); return;
       }
