@@ -63,10 +63,11 @@ publication, because it serves past purchases.
 We adopt Option 1.
 
 1. Catalog's internal display resolver returns `timezone` for each performance it knows.
-2. Access calls the resolver once for each bundle it serves, for all the slot ids in it. It sends
-   the shared internal service token and a fixed supported locale, because the resolver also
-   resolves the event name, which Access does not read. It sends at most 20 ids in one request,
-   and it maps each zone to its ticket by performance id.
+2. For each bundle it serves, Access asks the resolver for the distinct slot ids in that bundle.
+   It sends at most 20 ids in one request, so it makes one request for each 20 distinct
+   performances, in sequence, and all of them share one deadline (item 5). It sends the shared
+   internal service token and a fixed supported locale, because the resolver also resolves the
+   event name, which Access does not read. It maps each zone to its ticket by performance id.
 3. The ticket contract has a required, nullable `performance_timezone` on each ticket. The value
    is per ticket because an exchange can put tickets for different performances under one order
    reference.
@@ -95,8 +96,9 @@ or the zone at purchase.
       shows the event name or date on the ticket page can use the same read.
     - A Catalog outage cannot stop the ticket page. The page shows labelled UTC times.
 - **Negative:**
-    - Each bundle read makes one more request, to Catalog. Most of these occur when doors open.
-      The deadline limits the extra time. There is no cache, because the zone is immutable only by
+    - Each bundle read makes more requests, to Catalog: one for each 20 distinct performances in
+      the bundle. Most of these occur when doors open. One shared deadline limits the extra time
+      for all of them together. There is no cache, because the zone is immutable only by
       the premise above.
     - Access's handler tests use a fake zone reader. Only the smoke suite
       (`smoke/ticket_timezone_test.go`) proves that the real binary is wired to Catalog.

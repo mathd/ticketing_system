@@ -89,8 +89,8 @@ afterEach(() => {
 
 describe('the checkout form in each locale', () => {
   it.each([
-    ['fr', 'Paiement simulé', ['Accepté', 'Refusé', 'Délai dépassé'], 'Acheteur test', '600 s'],
-    ['en', 'Fake payment', ['Success', 'Decline', 'Timeout'], 'Test Buyer', '600s'],
+    ['fr', 'Paiement simulé', ['Accepté', 'Refusé', 'Délai dépassé'], 'Acheteur test', /^\d+\u00a0s$/],
+    ['en', 'Fake payment', ['Success', 'Decline', 'Timeout'], 'Test Buyer', /^\d+s$/],
   ] as const)('labels the simulated payment, its choices and the defaults (%s)', async (locale, label, choices, buyer, countdown) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(heldReservation()), { status: 201 })));
     render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale={locale} />);
@@ -102,9 +102,12 @@ describe('the checkout form in each locale', () => {
     // The values are payment tokens, not copy: they stay the same in every locale.
     expect(options.map((option) => option.value)).toEqual(['fake-ok', 'fake-decline', 'fake-timeout']);
     expect((screen.getByRole('textbox', { name: UI_STRINGS[locale].nameLabel }) as HTMLInputElement).value).toBe(buyer);
-    expect(screen.getByText((_, element) =>
-      element?.getAttribute('aria-live') === 'polite' && element.textContent === `${UI_STRINGS[locale].heldFor} ${countdown}`,
-    )).toBeTruthy();
+    // The hold counts down on the real clock, so the number may already be 599. What the
+    // locale decides is the FORMAT: French puts a no-break space before the unit, English none.
+    const live = screen.getByText((_, element) => element?.getAttribute('aria-live') === 'polite');
+    const prefix = `${UI_STRINGS[locale].heldFor} `;
+    expect(live.textContent?.startsWith(prefix)).toBe(true);
+    expect(live.textContent?.slice(prefix.length)).toMatch(countdown);
   });
 
   it('keeps a name the buyer typed when the language does not change', async () => {

@@ -227,6 +227,40 @@ func TestZonesGiveUpAtTheDeadline(t *testing.T) {
 	}
 }
 
+// One deadline for the WHOLE call, not one per request (ADR-083). 25 ids are two requests
+// in sequence, each answering after 400 ms, under a 600 ms deadline: the first request
+// fits, and the second is cut off at the shared deadline. A per-request deadline would let
+// both finish (each is under 600 ms), resolve all 25, and take 800 ms or more.
+func TestOneDeadlineCoversEveryChunk(t *testing.T) {
+	const timeout, delay = 600 * time.Millisecond, 400 * time.Millisecond
+	zones := map[string]string{}
+	ids := make([]uuid.UUID, 0, 25)
+	for range 25 {
+		id := uuid.New()
+		zones[id.String()] = "Asia/Kolkata"
+		ids = append(ids, id)
+	}
+	f := &fakeResolver{zones: zones, delay: delay}
+	c := newClient(t, f)
+	c.Timeout = timeout
+
+	start := time.Now()
+	got := c.PerformanceZones(context.Background(), ids)
+	elapsed := time.Since(start)
+
+	if len(f.calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (the fixture must reach the second chunk)", len(f.calls))
+	}
+	if len(got) != MaxIDsPerRequest {
+		t.Fatalf("resolved %d zones, want the %d of the first chunk only: the second request must end at the shared deadline",
+			len(got), MaxIDsPerRequest)
+	}
+	if elapsed >= 2*delay {
+		t.Fatalf("the call took %s; one %s deadline must end it before two %s requests could finish",
+			elapsed, timeout, delay)
+	}
+}
+
 func TestNoIDsMakeNoRequest(t *testing.T) {
 	f := &fakeResolver{}
 	if got := newClient(t, f).PerformanceZones(context.Background(), nil); len(got) != 0 {

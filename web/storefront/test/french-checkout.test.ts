@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { formatHistoryTime, historyLabel } from '../src/lib/format';
 import { LOCALES, UI_STRINGS, fill, plural, type MessageKey } from '../src/lib/locales';
@@ -145,15 +145,39 @@ describe('formatHistoryTime', () => {
     expect(formatHistoryTime(instant, 'Asia/Kolkata', 'fr')).toContain('15 juil.');
   });
 
-  it.each([
-    ['a missing zone', null],
-    ['a zone the runtime does not know', 'Mars/Olympus_Mons'],
-    ['an empty zone', ''],
-  ])('formats %s in labelled UTC', (_name, zone) => {
-    const fr = formatHistoryTime(instant, zone, 'fr');
-    expect(fr).toContain('22:30:05');
-    expect(fr).toContain('UTC');
-    expect(fr).toContain('14 juil.');
-    expect(formatHistoryTime(instant, zone, 'en')).toContain('UTC');
+  // The fallback must name UTC itself, not inherit the process zone. CI and the storefront
+  // container run in UTC, where a fallback that forgot `timeZone: 'UTC'` would still pass,
+  // so this block moves the PROCESS to Kathmandu (UTC+05:45) for its duration. Node reads
+  // TZ again when it changes; the guard below fails the block if it did not.
+  describe('when Access sent no usable zone', () => {
+    let previousTZ: string | undefined;
+    beforeAll(() => {
+      previousTZ = process.env.TZ;
+      process.env.TZ = 'Asia/Kathmandu';
+    });
+    afterAll(() => {
+      if (previousTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTZ;
+    });
+
+    it('runs in a process zone that is not UTC', () => {
+      expect(new Date(instant).getMinutes()).toBe(15);
+    });
+
+    it.each([
+      ['a missing zone', null],
+      ['a zone the runtime does not know', 'Mars/Olympus_Mons'],
+      ['an empty zone', ''],
+    ])('formats %s in labelled UTC', (_name, zone) => {
+      const fr = formatHistoryTime(instant, zone, 'fr');
+      expect(fr).toContain('22:30:05');
+      expect(fr).toContain('14 juil.');
+      expect(fr).toContain('UTC');
+      expect(fr).not.toContain('UTC+');
+      const en = formatHistoryTime(instant, zone, 'en');
+      expect(en).toContain('10:30:05');
+      expect(en).toContain('UTC');
+      expect(en).not.toContain('GMT+');
+    });
   });
 });
