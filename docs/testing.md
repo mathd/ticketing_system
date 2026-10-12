@@ -66,6 +66,10 @@ the gateway, plus named infra assertions:
   induced slow-inventory example in `smoke/checkout_dashboard_induced_test.go` is opt-in
   (`SMOKE_CHECKOUT_DASHBOARD_INDUCE=1`) and is not part of the gate:
   [procedure and evidence](./verification/checkout-dashboard/README.md)
+- checkout-path 5xx alert (TKT-338, `smoke/checkout_alert_test.go`) — Grafana serves the
+  provisioned rule, and its four per-service instances are Normal. After two `fake-auth-hold`
+  checkouts, the payments instance is Alerting and the other three stay Normal. It is Normal
+  again after the 1-minute window: [rule and limits](./verification/checkout-dashboard/README.md#checkout-path-5xx-alert-tkt-338)
 - US-004/006 checkout and gate scan — authoritative EUR price, capture+confirm,
   issuance/delivery, accepted scan, trace-derived duplicate rejection, and a concurrent
   real-PostgreSQL redemption race
