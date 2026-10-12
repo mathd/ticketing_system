@@ -21,11 +21,12 @@ import (
 // The French reset message, from the request to the sender, through real Postgres
 // (TKT-366).
 //
-// The handler tests prove which copy is chosen; the drainer smoke tests prove a row
-// reaches the sender unchanged, with ASCII text. Neither reads a message that PRODUCTION
-// code composed at the point where it is handed to a sender, and none carries non-ASCII
-// text through mail_outbox. This one does both: the real router (contract in front), the
-// real store writing the outbox row, the real drainer, and the offline Fake.
+// The handler tests prove which copy is chosen: they run production composition through
+// the store seam and hand the result straight to the Fake. The drainer smoke tests prove a
+// row reaches the sender unchanged, with ASCII text. None of them carries a composed,
+// non-ASCII message through the real store, mail_outbox and the drainer. This one does:
+// the real router (contract in front), the real store writing the outbox row, the real
+// drainer, and the offline Fake.
 //
 // The drainer claims every claimable row in the database, not only this test's, so the
 // assertion filters the Fake by recipient.

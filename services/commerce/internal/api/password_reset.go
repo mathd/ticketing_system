@@ -60,8 +60,8 @@ const defaultResetLocale = "en"
 // message selects the phrase for commercestore.ResetTokenTTL itself, so the words are
 // chosen by the constant, not beside it. A test requires a phrase for ResetTokenTTL in
 // every locale: words do not follow a constant, so a TTL change fails that test until a
-// phrase for the new value is written here (and the storefront's resetRequested strings
-// say it too).
+// phrase for the new value is written here. The storefront's resetRequested strings state
+// the same lifetime; the test's failure message names them, but no test reads them.
 type resetCopy struct {
 	path     string
 	subject  string
