@@ -6,6 +6,8 @@ Date: 2026-09-27
 
 Proposed. No policy in this ADR is active. ADR-023 remains accepted and unchanged.
 
+Product choices for future waitlist tickets are recorded in [the 2026-10-10 decision pass](../product/backlog-decisions-2026-10-10.md#waitlist-policy). That record does not accept this Inventory proposal or amend ADR-023, ADR-024 or ADR-027. The proposed accounting and recovery contracts still need design validation.
+
 ## Context
 
 Inventory owns admission under the per-pool PostgreSQL row lock (ADR-010). The public GA `CreateHold` path admits against confirmed quantity, live claims, the target capacity, and capacity reserved by active channel allocations. A release can commit before Commerce observes it, so a public request can take newly available capacity first. TKT-348's probe forced that ordering six times. It did not test waitlist capture.

@@ -141,3 +141,8 @@ refundable. Commerce blocks this path today.
 - [ADR-003](./ADR-003-append-only-audit-trail.md) · [ADR-009](./ADR-009-contract-first-apis.md) · TKT-29 · TKT-43
 - TKT-202 · [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md) · [ADR-049](./ADR-049-customer-identity-and-storefront-sessions.md)
 - TKT-355 · [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md)
+
+
+## TKT-360 delivery-retry digest allowance, 2026-10-10
+
+[ADR-078](ADR-078-optional-resend-and-bounded-delivery-retries.md) accepts a future keyed content digest in Access for bounded real-mail retries. It is pseudonymous personal data, not anonymous data, and TKT-465 must include it in the data map. Access still resolves raw recipient email from Commerce at each attempt and must not persist or log that email or the message body. The adapter and digest storage are not implemented by this decision pass.

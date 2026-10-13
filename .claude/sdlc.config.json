@@ -9,10 +9,10 @@
     "gateVerdict": ".gate.verdict"
   },
   "models": {
-    "plan": "gpt-6-astra",
-    "planReview": "gpt-6-sol",
-    "implement": "gpt-6-luna",
-    "aiReview": "gpt-6-sol"
+    "plan": "gpt-6.1-sol",
+    "planReview": "opus-5.5",
+    "implement": "opus-5.5",
+    "aiReview": "gpt-6.1-sol"
   },
   "registry": {
     "bindingPath": "docs/adr/",

@@ -14,6 +14,8 @@
 
 Evidence and records:
 
+- [Backlog decisions, 2026-10-10](./product/backlog-decisions-2026-10-10.md) — selected product rules and remaining engineering prerequisites
+
 - [Verification](./verification/) — per-feature proof runs: [catalog publication](./verification/catalog-publication/),
   [checkout](./verification/checkout/), [checkout-path dashboard](./verification/checkout-dashboard/README.md)
   (TKT-337, and its local 5xx alert, TKT-338), [inventory holds](./verification/inventory-holds/),
