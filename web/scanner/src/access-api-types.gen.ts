@@ -233,11 +233,32 @@ export interface components {
         Ticket: {
             /** Format: uuid */
             ticket_id: string;
+            /** @description The IANA time zone of this ticket's performance (TKT-365, ADR-083). A ticket view shows history times in this zone. Access reads it from Catalog each time it serves the bundle. It is null when Catalog cannot answer in time or does not know the performance; a client then shows times in labelled UTC. Per ticket, because an exchange can put tickets for different performances under one reference. Required and nullable: "the zone is unknown" is a different fact from "the field is absent". */
+            performance_timezone: string | null;
             qr_payload: string;
             /** Format: date-time */
             issued_at: string;
             history: components["schemas"]["LifecycleEvent"][];
             qr_url: string;
+            validity: components["schemas"]["TicketValidity"];
+        };
+        /** @description The presentation verdict for one ticket (TKT-355, ADR-012 § TKT-355 amendment). Access derives it from the ticket's lifecycle history each time it serves the bundle; it is not stored. A refund makes the ticket voided with reason refunded; otherwise an exchange makes it voided with reason exchanged; otherwise it is valid. "valid" means "no recorded refund or exchange". It does not promise admission: the gate decides admission from Access state, and this verdict controls only what a ticket view shows. */
+        TicketValidity: components["schemas"]["TicketValid"] | components["schemas"]["TicketVoided"];
+        TicketValid: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "valid";
+        };
+        TicketVoided: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "voided";
+            /** @enum {string} */
+            reason: "refunded" | "exchanged";
         };
         TicketBundle: {
             /** Format: uuid */

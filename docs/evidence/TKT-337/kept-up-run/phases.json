@@ -1,0 +1,28 @@
+{
+  "phases": [
+    {
+      "name": "slow-inventory",
+      "start": "2026-10-12T00:58:52.996581013Z",
+      "end": "2026-10-12T01:02:53.287552829Z",
+      "note": "rounds of 4 reservations queued on a held inventory_pools row lock, released after 3s; 72 rounds, 289 slow reservations"
+    },
+    {
+      "name": "payment-failure",
+      "start": "2026-10-12T01:07:54.215087595Z",
+      "end": "2026-10-12T01:09:39.647685232Z",
+      "note": "8 fake-auth-hold checkouts, 15s apart: payments 500, commerce 202 payment_unknown"
+    }
+  ],
+  "rate_window": "Grafana $__rate_interval (4m0s with the lgtm datasource's 60 s scrape interval)",
+  "run_end": "2026-10-12T01:14:40.457582224Z",
+  "run_start": "2026-10-12T00:58:52.996580907Z",
+  "slow_reservation_client_seconds": {
+    "max": 3.103740272,
+    "median": 3.029045065,
+    "min": 3.017924559
+  },
+  "traces": {
+    "payment-failure": "1c38cb1f011c6da05c4d67b25eba1afa",
+    "slow-inventory": "e9c2655513921c2bbab2ae5f0eca0592"
+  }
+}

@@ -13,12 +13,14 @@
 // `make generate`. The generated file is in check-generate's diff list, so a
 // contract change that is not regenerated fails the gate.
 import type { components } from './commerce-api-types.gen';
+import type { Locale } from './locales';
 import { withUpstreamDeadline } from './upstream';
 import { dateTimeField, sameUuid, uuidField } from './wire-primitives';
 
 export type CustomerPrincipalResponse = components['schemas']['CustomerPrincipal'];
 type OrderClaimResponse = components['schemas']['OrderClaimResult'];
 type PasswordResetResponse = components['schemas']['PasswordResetResult'];
+type PasswordResetRequestBody = components['schemas']['PasswordResetRequest'];
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
@@ -335,13 +337,21 @@ export async function claimGuestOrder(
  * the page could render — the enumeration oracle the endpoint is shaped to avoid.
  *
  * `ok: false` is a genuine outage and is the only thing a caller may branch on.
+ *
+ * `locale` is the language of the page the buyer asked on (TKT-366); commerce writes the
+ * message and the link's page in it. It is REQUIRED here even though commerce treats an
+ * absent locale as English: commerce keeps that default only for callers built before
+ * the field, and this caller always knows its page. The body is typed from the contract,
+ * so a storefront locale the contract does not list fails to compile.
  */
 export async function requestPasswordReset(
   email: string,
+  locale: Locale,
 ): Promise<{ ok: boolean; throttled?: boolean }> {
   try {
     return await withUpstreamDeadline(async (signal) => {
-      const response = await post('/customers/password-reset', { email }, signal);
+      const body: PasswordResetRequestBody = { email, locale };
+      const response = await post('/customers/password-reset', body, signal);
       // This branch is safe because commerce decides it before looking up the
       // address, so it says nothing about whether an account exists.
       if (response.status === THROTTLED) return { ok: false, throttled: true };

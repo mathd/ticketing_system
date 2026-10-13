@@ -37,6 +37,44 @@ export type ChannelField = 'code' | 'display_name' | 'kind';
 export interface ChannelFormErrors {
   fields: Partial<Record<ChannelField, string>>;
   form?: string;
+  /**
+   * The refusal is about the row's revision, not a field (TKT-325): the page
+   * offers "Review current channel" beside it.
+   */
+  review?: true;
+}
+
+/**
+ * The stale-revision refusal (TKT-325, A6). Neutral on purpose: it does not say
+ * another operator made the change. After a response that could not be
+ * verified, the change may be this operator's own earlier save.
+ */
+export const STALE_CHANNEL_MESSAGE = 'This channel changed since this page was loaded, so nothing was saved.';
+
+/** The page's own token was absent or malformed, so no request was sent. */
+export const INVALID_CHANNEL_REVISION_MESSAGE =
+  'This form did not carry a usable channel revision, so nothing was saved. Review the current channel and try again.';
+
+/** Catalog's machine code for a stale `expected_revision` (ChannelUpdateConflict). */
+export const CHANNEL_REVISION_MISMATCH = 'channel_revision_mismatch';
+
+/**
+ * Parse the hidden `expected_revision` a channel form submitted (TKT-325, A2).
+ *
+ * Digits only, and a safe integer. Anything else is `undefined`, and the caller
+ * refuses locally with no request. Two traps this shape avoids:
+ *   - `Number('')` and `Number(' ')` are 0. A blank token read that way would
+ *     match every channel that was never edited, so the protection would be off
+ *     for exactly those rows.
+ *   - `Number('9007199254740993')` silently rounds. A rounded token is a
+ *     different token, and it could match a revision the page never rendered.
+ * No trimming: the page renders the value itself, so whitespace means the value
+ * did not come from the page.
+ */
+export function parseChannelRevision(raw: FormDataEntryValue | null): number | undefined {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : undefined;
 }
 
 export interface ChannelSubmission {
@@ -84,7 +122,8 @@ export function validateSubmission(input: ChannelSubmission): ChannelFormErrors 
  * Map a catalog refusal onto a field, using the submitted values to disambiguate.
  *
  * The status carries most of the signal:
- *   409 → a duplicate code, or an attempted rename. Both are about `code`.
+ *   409 with `code: channel_revision_mismatch` → a stale revision (TKT-325).
+ *   Any other 409 → a duplicate code, or an attempted rename. Both are about `code`.
  *   400 → a bound or the kind enum; which one is re-derived from the input.
  * Anything else is not attributable to a field and stays form-level, because
  * guessing would put a message beside a field that is fine.
@@ -93,7 +132,15 @@ export function classifyCatalogError(
   status: number,
   message: string,
   input: ChannelSubmission,
+  code?: string,
 ): ChannelFormErrors {
+  // TKT-325: checked BEFORE the "every 409 is about `code`" branch below. The
+  // PUT's 409 has two causes, and only the stale-revision one carries `code`.
+  // Classified by status alone, a stale refusal would land on the code field
+  // and send the operator to fix a field that is correct.
+  if (status === 409 && code === CHANNEL_REVISION_MISMATCH) {
+    return { fields: {}, form: STALE_CHANNEL_MESSAGE, review: true };
+  }
   if (status === 409) {
     // Catalog answers 409 for both "this organizer already has that code" and
     // "the code is immutable". Its message distinguishes them and is written for

@@ -35,6 +35,7 @@ import (
 	"ticketing/shared/httpx"
 	"ticketing/shared/mail"
 	"ticketing/shared/obs"
+	"ticketing/shared/organizerassertion"
 	"ticketing/shared/runtimecfg"
 )
 
@@ -139,10 +140,32 @@ func port() string {
 
 // staffWriteTokenEnv names the back office's commerce credential (TKT-194).
 // It opens three operations — the staff refund, the comped-order void (TKT-171)
-// and the staff order read (TKT-201) — where INTERNAL_SERVICE_TOKEN opens every
+// and the staff order read (TKT-201), each only with a verified organizer
+// assertion since TKT-287 — where INTERNAL_SERVICE_TOKEN opens every
 // service's internal surface. The narrow set is the point, and
 // api/staff_credential_test.go is what keeps it narrow.
 const staffWriteTokenEnv = "COMMERCE_STAFF_WRITE_TOKEN"
+
+// organizerAssertionKeysEnv names catalog's PUBLIC organizer-assertion keyring
+// (TKT-287, ADR-058): `kid=<raw-standard-base64 Ed25519 public key>,…`. With it,
+// commerce verifies which organizer a staff refund, void or order read is for.
+// Public keys mint nothing, so commerce holds no organizer-assertion secret.
+const organizerAssertionKeysEnv = "COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS"
+
+// organizerAssertionsFromEnv loads the keyring. Required: without it every staff
+// operation answers 404, which is indistinguishable from "no such order" and
+// would arrive as a support ticket rather than a deployment failure.
+func organizerAssertionsFromEnv() (*organizerassertion.Verifier, error) {
+	raw := os.Getenv(organizerAssertionKeysEnv)
+	if raw == "" {
+		return nil, fmt.Errorf("%s required", organizerAssertionKeysEnv)
+	}
+	verifier, err := organizerassertion.ParseKeyring(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", organizerAssertionKeysEnv, err)
+	}
+	return verifier, nil
+}
 
 // assertionKeyEnv names the HMAC key for customer checkout assertions (TKT-221).
 // It lets a holder attribute a checkout to any customer, and nothing else.
@@ -339,6 +362,10 @@ func run() error {
 	if err := credentialsAreDistinct(token, staffWriteToken, assertionKey, paymentsToken); err != nil {
 		return err
 	}
+	organizerAssertions, err := organizerAssertionsFromEnv()
+	if err != nil {
+		return err
+	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
@@ -455,6 +482,7 @@ func run() error {
 		PaymentsToken:        paymentsToken,
 		MoneyEvidence:        commerceapi.NewMoneyEvidence(exchangeunwind.NewHTTPPayments(paymentsURL, paymentsToken, paymentsEvidenceTimeout)),
 		StaffWriteToken:      staffWriteToken,
+		OrganizerAssertions:  organizerAssertions,
 		CustomerAssertionKey: assertionKey,
 		Publisher:            publisher,
 	})

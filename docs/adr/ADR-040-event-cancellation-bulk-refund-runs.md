@@ -288,3 +288,159 @@ held the correct id for its outstanding capacity leg.
 A void is **honest-writer consistency**, exactly like the refund path it sits beside. The `order_voids`
 row, its markers and its reported outcome are all commerce database state, and anyone with write access
 to that database can alter them. Nothing here is tamper-evidence.
+
+## Amendment (2026-10-11, TKT-331) — one drive per pass, and a bounded pass
+
+§5 makes the retained lease the backoff of an ambiguous failure. That is true **between** passes and
+was not true **inside** one. The lease is sized for one batch (`bulkrefund.LeaseFor`) and expires at a
+fixed time, while `RunOnce` kept claiming until the book was empty. When later batches took longer than
+that lease, an earlier failed row became claimable again in the same pass and was driven again before
+its backoff elapsed. A row could spend much of its `maxAttempts = 5` budget in one pass, and those are
+the failures where the money may already have moved. The pass was also unbounded: a book that refilled
+at or above the processing rate kept one `RunOnce` running and the ticker never fired again.
+
+**The rule.**
+
+- **One drive per ledger row per pass, per runner process.** `RunOnce` records each row it submits to
+  the refund unit, by the ledger primary key `(organizer, run, order)`. Not the claim id, which changes
+  on every reclaim; not the order alone, because two runs over one slot each own a row for the same
+  order and each needs its own verdict. A row that comes back in a later batch of the same pass is
+  skipped.
+- **A skipped duplicate gets no store call.** It is not abandoned and not charged. Its claim has already
+  renewed its lease, so it keeps a full lease of backoff from that claim. The check runs before the
+  shutdown branch, so a duplicate is not handed back at shutdown either: a hand-back would clear the
+  lease and a successor would re-drive the row at once. At shutdown the claim loop hands back only the
+  rows of the batch it has not yet driven. A row whose drive or classification is in flight when the
+  shutdown lands is a different case: `record` releases it with `abandon(w, drove)`, as before.
+- **A pass makes at most 64 claims** (`bulkrefund.MaxBatchesPerPass`, the same number the reversal and
+  exchange-sweep runners use). At the bound it logs and stops; it does not make a 65th claim to find out
+  whether work remains. The bound covers the claim loop only, not the enumeration prelude. The
+  `CompleteRuns` postlude and the return value are unchanged.
+- **There is no "no fresh row in this batch" exit**, unlike `worklease.Drain`. The 64-batch bound
+  already guarantees that a pass ends, so the exit would be a second stopping rule that is not
+  necessary. Without it, a pass whose leases expire between claims can claim only duplicates until the
+  bound; the bound makes that safe, and each skipped duplicate costs no drive and no attempt. The exit
+  does not change retry cadence either way: the claim renews a reclaimed duplicate's lease whether the
+  pass then stops or continues, so the next drive becomes possible at the same time in both variants.
+
+**Retry behaviour changes, on purpose.** A second drive inside one pass is suppressed. Across passes
+the retry is still lease-based, with the same lease, ticker and `maxAttempts`, with one difference: a
+skipped duplicate keeps the lease its reclaim renewed, so the next cross-pass drive comes **later,
+never sooner**, than the first lease alone would allow. So a runner process never drives a row more
+often than before this change. The set is per process and per pass; behaviour across replicas is
+unchanged, and each replica is still fenced by the lease and the claim token (see "A claimant whose
+lease lapsed" above).
+
+**The cost is throughput under a large book.** Before, a fast pass drained the whole book. Now a pass
+stops after 64 batches (512 rows at the default batch of 8), and the next pass starts at the next tick,
+up to the runner interval (10 s by default) later. That is when the next pass starts, not when a given
+row is reached: each pass takes at most 512 rows, so a row late in claim order can wait several ticks.
+For example, a book of 1,025 rows at batch 8 needs three passes, and its last row waits two ticks.
+
+**Why a local loop and not `worklease.Drain`.** `Drain` abandons a duplicate, which would clear the
+backoff lease, and hands back the rest of a batch at shutdown before it checks identity. Making it serve
+both would change a helper the two draining runners share. The bulk-refund loop stays local; the
+detached hand-back (`worklease.HandBackUndriven`) is still shared.
+
+**Correction to §5.** §5 says attempts are charged at **claim** time and refunded when a claim is
+released undriven. That has been false since TKT-300: the charge follows a **drive**, and an undriven
+claim is released without a charge. [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
+amendment and `bulkrefund/runner.go` (`record`, `chargeDriven`, `finalize`) describe the current rule.
+
+**Evidence.** `bulkrefund/runner_test.go` lapses one row's lease in the middle of a pass (the fake's
+`beforeClaim` hook), which the old between-passes `expireLeases` could not express. The tests pin: one
+drive of the reclaimed row in the pass, its lease kept and never abandoned; exactly 64 claims against a
+book that never empties, with a claim-65 tripwire; the budget of 5 spent over exactly 5 passes; a
+duplicate kept leased at shutdown while fresh work is handed back at zero cost; and two runs' rows for
+one order each driven. Each was mutation-checked against the change it guards.
+
+### Integrity language, unchanged (ADR-021)
+
+The per-pass set is process memory and the lease is database state. This is honest-writer
+consistency, not a guarantee against a writer with access to the commerce database.
+
+## Amendment (2026-10-11, TKT-332) — the detached charge's bound is recorded, not tightened
+
+A retryable outcome below the budget is charged by `bulkrefund/runner.go` `chargeDriven`, without
+releasing the lease (TKT-300; [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
+amendment has the accounting, and the TKT-331 "Correction to §5" above has why §5's claim-time rule no
+longer holds). The charge runs on `context.WithoutCancel` of the caller's context, with two tries of
+5 s each. `record`'s cancellation check and this call are not atomic, so a cancellation that lands
+between them reaches the charge and not the abandon path, and the detached context is the only reason
+that charge lands. TKT-300 recorded the cost of that context and did not act on it. This amendment
+decides it.
+
+**Decision (D1): record the bound; keep two tries of 5 s.** The detached context is what makes an
+attempt land after a cancellation, and the retry recovers a transient write failure. A lost charge is
+not self-correcting: nothing else bounds re-drives of an ambiguous failure. No measured database
+latency and no shutdown requirement supports a shorter timeout, so a shorter one would be a guess.
+
+**The numbers.**
+
+- **Charge time per row:** up to 10 s (2 × 5 s). It is reachable only while the database refuses this
+  write. `record`'s retryable branch charges **any** retryable outcome below the budget, whether or not
+  the refund unit was called: a `LookupRefund`, `OrderState` or `FixQuantity` error before the drive
+  gives a retryable `internal` outcome through `record(..., false)`, and that attempt is charged too.
+  Whether a failure before the drive SHOULD consume the budget is an open question, tracked by
+  TKT-521; this amendment does not change the behaviour.
+- **Charge time per batch:** up to 80 s at the default batch of 8. That is the charge cost of a full
+  batch in which every row ends with a retryable outcome and every charge write times out twice. It is **not** the
+  delay after a cancellation (see the corrections below).
+- **Lease:** `LeaseFor` sizes the lease from the calls, not the charge: `batch × 4 calls × 30 s + 60 s`,
+  which is 1,020 s at the default batch of 8. The 80 s charge cost is counted only by the 60 s margin,
+  so a batch whose calls also run to their timeouts can outlive its lease.
+- **Per pass:** at most 64 batches (TKT-331), so at most 512 drives at the default batch. The charge
+  component alone can then reach 5,120 s. That is a bound on one component, not on the elapsed time
+  of a pass; the enumeration prelude is outside it.
+
+**Corrections (D1, D2).** TKT-300, the ticket text and the `chargeDriven` comment stated two things
+that are false:
+
+1. *"Up to 80 s of shutdown delay at the default batch of 8."* False. `RunOnce` checks the context
+   before each new drive, so after a cancellation only the row in flight keeps charging. Of the other
+   rows remaining in the batch, only those NOT already driven in this pass are handed back undriven
+   with `abandon(w, false)`. A row already driven in this pass is skipped as a duplicate BEFORE the
+   cancellation check (TKT-331), gets no store call, and keeps the lease its claim renewed. Each
+   hand-back is a separate `worklease.HandBackUndriven` call with its own 5 s context, and they run one
+   after the other. The
+   **charge and hand-back component** of the post-cancel tail is therefore up to
+   **10 s + (batch − 1) × 5 s**: 45 s at the default batch of 8. That formula is not the whole tail.
+   When `Refund` returns `ErrRefundExceedsOrder`, `process` calls
+   `ClearQuantity(context.WithoutCancel(ctx), w)` with **no deadline**, so a cancellation that lands
+   while that write waits for a lock cannot interrupt it. That write is **unbounded**, and it comes
+   before the row's charge or hand-back.
+2. *"A pass that outlives its lease writes nothing."* False as stated. Every write is fenced on the
+   **claim id** (`ChargeCancellationAttempt` in `store/cancellation_refunds.go`), not on lease expiry.
+   An expired lease alone blocks nothing: the old claimant can still charge, finalize or abandon until
+   a successor **reclaims** the row and replaces the claim id. After that, the stale writer matches
+   nothing. The fence protects the successor's claim. It does not make a shutdown prompt.
+
+**What a shutdown actually does (D2).** The 5 s stop grace in `cmd/commerce` `start` is a **wait
+limit, not a cutoff**. When it lapses, the stop function logs a warning and stops waiting. It does not
+terminate the runner, whose goroutine keeps running. Shutdown stops the cancellation runner first, then
+the other workers one after another, each with its own 5 s wait. The cutoff is the **process exit**,
+when shutdown returns. So a charge can finish at 7 s and still land while shutdown waits for another
+worker. Work that is still running at the exit is cut off. Cut-off work behaves like a crash, which the
+lease already exists to survive:
+
+- a lost charge means the row comes back after its lease with its old count, so it gets **one extra
+  attempt** beyond its budget;
+- a hand-back that does not happen means the row **waits out its lease** instead of being claimable at
+  once.
+
+Neither commits a wrong verdict, and neither is new: both are what a crash at the same instant does.
+
+**Evidence.** `bulkrefund/runner_test.go`
+`TestChargeAttemptSurvivesCallerCancellationAfterRecordCheck` puts a cancellation between `record`'s
+check and the charge write. A store wrapper cancels the caller as the first statement of
+`ChargeAttempt` and then delegates to the fake, which refuses a Done context as a driver does. The test
+asserts that the attempt lands, the row stays leased and nothing is abandoned. Replacing
+`context.WithoutCancel(ctx)` with `ctx` in `chargeDriven` turns it red. The abandon-path case
+(cancellation before `record` starts) stays with
+`TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller`, which that mutation does not reach.
+No database cancellation latency or deployment termination behaviour was measured for this decision.
+
+### Integrity language, unchanged (ADR-021)
+
+The attempt count, the lease and the claim id are commerce database state. This is honest-writer
+consistency, not a guarantee against a writer with access to the commerce database.

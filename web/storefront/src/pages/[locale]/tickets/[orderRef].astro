@@ -6,8 +6,11 @@ import { getTicketBundle, ticketsForDisplay } from '../../../lib/ticket-api';
 
 const locale = Astro.params.locale;
 if (!locale || !isLocale(locale)) return new Response('Not found', { status: 404 });
+// Resolved before the error branches so a French buyer reads them in French (TKT-365).
+// An unsupported locale above has no table to read from and stays English.
+const t = UI_STRINGS[locale];
 const orderRef = Astro.params.orderRef;
-if (!orderRef) return new Response('Not found', { status: 404 });
+if (!orderRef) return new Response(t.notFound, { status: 404 });
 const read = await getTicketBundle(orderRef);
 if (!read.ok) {
   // Absent versus broken (TKT-305). `read.status` was already correct — getTicketBundle
@@ -15,30 +18,23 @@ if (!read.ok) {
   // 'Not found' literal on every branch, so a buyer mid-outage read that their tickets
   // do not exist. They do; access could not be reached. Same split, same wording as the
   // festival page, which is where this convention already lives.
-  if (read.status === 404) return new Response('Not found', { status: 404 });
-  return new Response('Service unavailable', { status: read.status });
+  if (read.status === 404) return new Response(t.notFound, { status: 404 });
+  return new Response(t.serviceUnavailable, { status: read.status });
 }
 const bundle = read.value;
-const t = UI_STRINGS[locale];
 
 // A ticket the buyer no longer holds must not be handed to them as a scannable code
 // (TKT-166 ai-review F2). It was already wrong for a refund; an EXCHANGE makes it acute,
 // because the replacement tickets deliberately share the source order's link, so the dead
-// and the live credentials sit side by side under one reference. Rendering four identical
-// numbered QRs and letting the buyer discover at the gate which two work is not a
-// presentation detail.
+// and the live credentials sit side by side under one reference.
 //
-// The verdict comes from the history the bundle already carries — no contract change, and
-// no second source of truth about what is valid. The gate remains the authority; this only
-// stops the page contradicting it.
-const VOIDING = { exchanged: t.ticketVoidedExchanged, refunded: t.ticketVoidedRefunded } as const;
-const voidedReason = (history: Array<{ type: string }>) => {
-  for (const event of history) {
-    const reason = VOIDING[event.type as keyof typeof VOIDING];
-    if (reason) return reason;
-  }
-  return undefined;
-};
+// The verdict is Access's (TKT-355): `ticket.validity`, projected in checked TypeScript by
+// ticketsForDisplay. This page decides nothing from an event type; it only lists the
+// history as the projection's localized labels and zoned times (TKT-365). It once scanned
+// the history for the first `exchanged` or `refunded` event itself, which was a second rule beside Access's, and that rule disagreed with the
+// gate when a ticket had both. The gate remains the authority for
+// admission; the verdict only stops the page contradicting it.
+const VOID_REASON = { exchanged: t.ticketVoidedExchanged, refunded: t.ticketVoidedRefunded } as const;
 // TKT-223: the claim form, shown only when this browser has a live session.
 //
 // The page stays PUBLIC — `requiresSession` is unchanged and guest retrieval must
@@ -91,18 +87,18 @@ Astro.response.headers.set('Cache-Control', 'no-store');
     field in checked TypeScript, where the rename breaks the build (TKT-303
     ai-review [medium]).
   */}
-  {ticketsForDisplay(bundle).map((ticket, index) => {
-    const voided = voidedReason(ticket.history);
+  {ticketsForDisplay(bundle, locale).map((ticket, index) => {
+    const validity = ticket.validity;
     return (
-      <article class={voided ? 'ticket ticket--voided' : 'ticket'}>
+      <article class={validity.kind === 'valid' ? 'ticket' : 'ticket ticket--voided'}>
         <h2>{t.ticket} {index + 1}</h2>
-        {voided ? (
-          <p class="voided" role="status"><strong>{t.ticketVoided}</strong><br />{voided}</p>
-        ) : (
+        {validity.kind === 'valid' ? (
           <img src={ticket.qrUrl} width="256" height="256" alt={t.ticketQrAlt} />
+        ) : (
+          <p class="voided" role="status"><strong>{t.ticketVoided}</strong><br />{VOID_REASON[validity.reason]}</p>
         )}
         <ul aria-label={t.ticketHistory}>
-          {ticket.history.map((event) => <li>{event.type} — {new Date(event.occurredAt).toLocaleString(locale)}</li>)}
+          {ticket.history.map((event) => <li>{event.label} — <time datetime={event.occurredAt}>{event.time}</time></li>)}
         </ul>
       </article>
     );

@@ -68,6 +68,11 @@ export const ROUTE_MATRIX: readonly RouteRule[] = [
   // Never role-gated: a staff member who cannot reach a page must still be able
   // to end their session.
   { template: '/admin/logout', source: 'page', roles: STAFF_ROLES },
+  // The UI-language switch (TKT-368). A display preference with no security
+  // weight, so every role may set it — but not anonymously: the login page stays
+  // English and offers no switch, so an anonymous row would widen the
+  // unauthenticated surface above for nothing.
+  { template: '/admin/ui-language', source: 'page', roles: STAFF_ROLES },
 
   // The catalog authoring surface — admin only.
   //
@@ -162,8 +167,9 @@ function segmentKind(segment: string): SegmentKind {
 /**
  * Astro's own route precedence, mirrored (ai-review pass 2, F1).
  *
- * Read from `astro/dist/core/routing/priority.js` (`routeComparator`) at the
- * installed 7.0.9 rather than described from memory, because the property that
+ * Read from the astro package's `dist/core/routing/priority.js`
+ * (`routeComparator`) at the installed 7.0.9 rather than described from memory,
+ * because the property that
  * matters is agreement with the router: a matcher that disagrees about which
  * route a URL IS cannot be trusted to say who may reach it.
  *

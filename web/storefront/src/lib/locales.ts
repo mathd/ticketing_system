@@ -13,6 +13,19 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   fr: 'Français',
 };
 
+/**
+ * A message whose wording depends on a count (TKT-365). `one` and `other` are required,
+ * because every supported locale uses both; the other CLDR categories are optional and
+ * fall back to `other`. Select a form with `plural`, never by hand: French treats 0 as
+ * singular and English does not.
+ */
+export type PluralMessage = { one: string; other: string } & Partial<
+  Record<Exclude<Intl.LDMLPluralRule, 'one' | 'other'>, string>
+>;
+
+/** The keys whose message is a PluralMessage. Every other key is a plain string. */
+export type PluralKey = 'seatsSelected' | 'seatLimitReached' | 'seatsNoLongerAvailable' | 'seatsWouldStrand';
+
 const ENGLISH_UI_STRINGS = {
     events: 'Events',
     from: 'From',
@@ -35,13 +48,17 @@ const ENGLISH_UI_STRINGS = {
     seatTaken: 'Unavailable',
     seatRow: 'row',
     seat: 'seat',
-    seatsSelected: '{n} of {max} seats selected',
-    seatLimitReached: 'You can select at most {n} seats.',
+    // Plural messages (TKT-365): the count `n` selects the form, through `plural`.
+    seatsSelected: { one: '{n} seat selected out of {max}', other: '{n} seats selected out of {max}' },
+    seatLimitReached: { one: 'You can select at most {n} seat.', other: 'You can select at most {n} seats.' },
     seatsNotOnSale: 'These seats are not on sale right now.',
     seatMapLoading: 'Loading the seat map…',
     seatSelectionUnavailable: 'Seat selection is temporarily unavailable. Please try again shortly.',
-    seatsNoLongerAvailable: 'No longer available: {seats}',
-    seatsWouldStrand: 'This would leave {seats} on its own. Add it, or pick a different seat.',
+    seatsNoLongerAvailable: { one: 'No longer available: {seats}', other: 'No longer available: {seats}' },
+    seatsWouldStrand: {
+      one: 'This would leave {seats} on its own. Add it, or pick a different seat.',
+      other: 'This would leave {seats} on their own. Add them, or pick different seats.',
+    },
     seatMapStale: 'Showing the last known seat availability — reconnecting.',
     reserveSeats: 'Reserve seats',
     signInAgain: 'Your sign-in has expired. Sign in again, then try once more — and check your tickets first in case this purchase already went through.',
@@ -123,6 +140,11 @@ const ENGLISH_UI_STRINGS = {
     heldFor: 'Held for',
     holdExpired: 'Hold expired',
     quantityUnavailable: 'Quantity unavailable',
+    // Only for commerce's exact 409 `sold_out` on a GA reserve (TKT-341, ADR-082): zero
+    // public headroom at the locked decision. Point-in-time, so the copy does not say
+    // "permanently". Every other GA refusal keeps quantityUnavailable; seated
+    // refusals keep their own messages.
+    soldOut: 'Sold out',
     orderConfirmed: 'Order confirmed',
     viewMyTickets: 'View my tickets',
     paymentDeclined: 'Payment declined — try again',
@@ -131,9 +153,43 @@ const ENGLISH_UI_STRINGS = {
     checkoutRetryShortly: 'This order is being finalised — try again in a moment.',
     nameLabel: 'Name',
     emailLabel: 'Email',
+    // The French purchase path (TKT-365).
+    languageLabel: 'Language',
+    // The simulated payment control of this testbed. The option VALUES (fake-ok,
+    // fake-decline, fake-timeout) are payment tokens and stay untranslated.
+    fakePaymentLabel: 'Fake payment',
+    fakePaymentSuccess: 'Success',
+    fakePaymentDecline: 'Decline',
+    fakePaymentTimeout: 'Timeout',
+    // Only the INITIAL value of the name field. A name the buyer types is data.
+    testBuyerName: 'Test Buyer',
+    holdCountdown: '{n}s',
+    venueLine: 'Venue: {name}',
+    notFound: 'Not found',
+    // Ticket history (TKT-365): one label per Access lifecycle type, and historyOther
+    // for a type this storefront does not know yet. The raw type is service vocabulary
+    // and is never shown.
+    historyIssued: 'Issued',
+    historyDelivered: 'Delivered',
+    historyRedelivered: 'Delivered again',
+    historyRedeemed: 'Redeemed',
+    historyEntry: 'Entry',
+    historyExit: 'Exit',
+    historyDuplicateAdmit: 'Duplicate admission',
+    historyRefunded: 'Refunded',
+    historyExchanged: 'Exchanged',
+    historyOther: 'Ticket activity',
 } as const;
 
 export type MessageKey = keyof typeof ENGLISH_UI_STRINGS;
+
+/**
+ * The shape every locale's table must have: a PluralMessage for each PluralKey and a
+ * string for every other key. The English table cannot declare `satisfies Messages`
+ * itself, because MessageKey is derived from it (a circular type); UI_STRINGS below
+ * checks it instead.
+ */
+type Messages = { [K in MessageKey]: K extends PluralKey ? PluralMessage : string };
 
 const FRENCH_UI_STRINGS = {
     events: 'Événements',
@@ -157,13 +213,22 @@ const FRENCH_UI_STRINGS = {
     seatTaken: 'Indisponible',
     seatRow: 'rangée',
     seat: 'place',
-    seatsSelected: '{n} place(s) sur {max} sélectionnée(s)',
-    seatLimitReached: 'Vous pouvez sélectionner au plus {n} place(s).',
+    seatsSelected: { one: '{n} place sélectionnée sur {max}', other: '{n} places sélectionnées sur {max}' },
+    seatLimitReached: {
+      one: 'Vous pouvez sélectionner au plus {n} place.',
+      other: 'Vous pouvez sélectionner au plus {n} places.',
+    },
     seatsNotOnSale: 'Ces places ne sont pas en vente pour le moment.',
     seatMapLoading: 'Chargement du plan de salle…',
     seatSelectionUnavailable: 'La sélection des places est momentanément indisponible. Merci de réessayer sous peu.',
-    seatsNoLongerAvailable: 'Plus disponible(s) : {seats}',
-    seatsWouldStrand: 'Cela isolerait {seats}. Ajoutez cette place, ou choisissez-en une autre.',
+    seatsNoLongerAvailable: {
+      one: 'Cette place n’est plus disponible\u00a0: {seats}',
+      other: 'Ces places ne sont plus disponibles\u00a0: {seats}',
+    },
+    seatsWouldStrand: {
+      one: 'Cela isolerait la place {seats}. Ajoutez-la, ou choisissez-en une autre.',
+      other: 'Cela isolerait les places {seats}. Ajoutez-les, ou choisissez-en d’autres.',
+    },
     seatMapStale: 'Affichage de la dernière disponibilité connue — reconnexion en cours.',
     reserveSeats: 'Réserver les places',
     signInAgain: 'Votre connexion a expiré. Reconnectez-vous, puis réessayez — et vérifiez d’abord vos billets au cas où cet achat serait déjà passé.',
@@ -219,6 +284,7 @@ const FRENCH_UI_STRINGS = {
     heldFor: 'Réservé pendant',
     holdExpired: 'Réservation expirée',
     quantityUnavailable: 'Quantité indisponible',
+    soldOut: 'Complet',
     orderConfirmed: 'Commande confirmée',
     viewMyTickets: 'Voir mes billets',
     paymentDeclined: 'Paiement refusé — réessayez',
@@ -227,9 +293,49 @@ const FRENCH_UI_STRINGS = {
     checkoutRetryShortly: 'Cette commande est en cours de finalisation — réessayez dans un instant.',
     nameLabel: 'Nom',
     emailLabel: 'Courriel',
-} satisfies Record<MessageKey, string>;
+    // TKT-365. A space before « : » is written \u00a0 so the colon never starts a line.
+    languageLabel: 'Langue',
+    fakePaymentLabel: 'Paiement simulé',
+    fakePaymentSuccess: 'Accepté',
+    fakePaymentDecline: 'Refusé',
+    fakePaymentTimeout: 'Délai dépassé',
+    testBuyerName: 'Acheteur test',
+    holdCountdown: '{n}\u00a0s',
+    venueLine: 'Salle\u00a0: {name}',
+    notFound: 'Introuvable',
+    historyIssued: 'Émis',
+    historyDelivered: 'Envoyé',
+    historyRedelivered: 'Envoyé de nouveau',
+    historyRedeemed: 'Validé à l’entrée',
+    historyEntry: 'Entrée',
+    historyExit: 'Sortie',
+    historyDuplicateAdmit: 'Entrée en double',
+    historyRefunded: 'Remboursé',
+    historyExchanged: 'Échangé',
+    historyOther: 'Activité du billet',
+} satisfies Messages;
 
 export const UI_STRINGS = {
   en: ENGLISH_UI_STRINGS,
   fr: FRENCH_UI_STRINGS,
-} satisfies Record<Locale, Record<MessageKey, string>>;
+} satisfies Record<Locale, Messages>;
+
+/** Replaces each `{name}` in a message; an unknown placeholder stays visible. */
+export function fill(template: string, params: Readonly<Record<string, string | number>> = {}): string {
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    Object.hasOwn(params, name) ? String(params[name]) : whole);
+}
+
+/**
+ * Selects the form of a plural message for `count` by the locale's CLDR rule, then fills
+ * it. `{n}` is the count unless params name it.
+ */
+export function plural(
+  locale: Locale,
+  message: PluralMessage,
+  count: number,
+  params: Readonly<Record<string, string | number>> = {},
+): string {
+  const form = message[new Intl.PluralRules(locale).select(count)] ?? message.other;
+  return fill(form, { n: count, ...params });
+}

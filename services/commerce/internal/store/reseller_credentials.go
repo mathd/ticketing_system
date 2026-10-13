@@ -79,15 +79,57 @@ func EnrolResellerCredential(ctx context.Context, db *sql.DB, organizer, reselle
 	token := hex.EncodeToString(raw)
 
 	cred := ResellerCredential{ID: uuid.New(), ResellerID: reseller, OrganizerID: organizer, ChannelCode: channel, Label: label}
-	err := db.QueryRowContext(ctx,
-		`INSERT INTO reseller_credentials(id, reseller_id, organizer_id, channel_code, token_hash, label)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING created_at`,
-		cred.ID, reseller, organizer, channel, hashResellerToken(token), label).Scan(&cred.CreatedAt)
+
+	// The cap (TKT-290, owner decision D1): at most MaxLiveResellerCredentials live
+	// credentials per (organizer, reseller), across channels. Two is what zero-downtime
+	// rotation needs — enrol the replacement, move the partner, revoke the predecessor —
+	// and is why ADR-056 removed a partial UNIQUE index rather than bounding at one.
+	//
+	// Count-then-insert races (two enrolments both count one), so the identity is
+	// LOCKED first and the count decided under it (ADR-029's lock-the-identity shape).
+	// The lock and the insert are SEPARATE statements on purpose: at READ COMMITTED each
+	// statement takes a fresh snapshot, so the insert's count sees a row the lock holder
+	// committed while this one waited. One statement would count on a pre-wait snapshot.
+	//
+	// Name the adversary (ADR-021): this binds every caller of this function, the CLI
+	// included. A writer with commerce database access inserts directly and is not bound.
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
+		return ResellerCredential{}, "", fmt.Errorf("enrol reseller credential: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// hashtextextended over a prefixed, unambiguous text key: catalog's convention
+	// (postgres_seat_maps.go). Channel and label are not part of the identity.
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+		"reseller-credentials:"+organizer.String()+":"+reseller.String()); err != nil {
+		return ResellerCredential{}, "", fmt.Errorf("enrol reseller credential: %w", err)
+	}
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO reseller_credentials(id, reseller_id, organizer_id, channel_code, token_hash, label)
+		 SELECT $1, $2, $3, $4, $5, $6
+		 WHERE (SELECT count(*) FROM reseller_credentials
+		        WHERE organizer_id = $3 AND reseller_id = $2 AND revoked_at IS NULL) < $7
+		 RETURNING created_at`,
+		cred.ID, reseller, organizer, channel, hashResellerToken(token), label, MaxLiveResellerCredentials).Scan(&cred.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResellerCredential{}, "", ErrResellerCredentialCap
+	}
+	if err != nil {
+		return ResellerCredential{}, "", fmt.Errorf("enrol reseller credential: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
 		return ResellerCredential{}, "", fmt.Errorf("enrol reseller credential: %w", err)
 	}
 	return cred, token, nil
 }
+
+// MaxLiveResellerCredentials bounds the live credentials per (organizer, reseller)
+// (TKT-290 D1). No override: an operator at the cap revokes one first.
+const MaxLiveResellerCredentials = 2
+
+// ErrResellerCredentialCap refuses an enrolment that would exceed
+// MaxLiveResellerCredentials. Nothing was written and nothing was revoked.
+var ErrResellerCredentialCap = errors.New("reseller credential cap reached")
 
 // AuthenticateResellerCredential resolves a presented token to a live credential
 // AND THE SCOPE IT WAS ISSUED FOR.

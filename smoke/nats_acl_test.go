@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -230,8 +230,9 @@ func TestNATSCommerceCannotPublishAccessSubject(t *testing.T) {
 		"stream contains event %s published by unauthorized commerce principal")
 }
 
-// TestNATSInventoryServerCannotPublishCatalogSubject asserts that the long-running inventory
-// credential cannot publish to catalog subjects, demonstrating separation from inventory-reprocess.
+// TestNATSInventoryServerCannotPublishCatalogSubject asserts that the inventory credential
+// cannot publish to catalog subjects. Since TKT-326 no inventory principal can: reprocess-quarantine
+// applies quarantined events in-process, so catalog is the only service that publishes on its prefix.
 func TestNATSInventoryServerCannotPublishCatalogSubject(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -342,9 +343,10 @@ func TestNATSPaymentsConnectsWithZeroSubjectRights(t *testing.T) {
 }
 
 // TestNATSResidualCredentialedForgeryStillMintsTickets pins the unknown-order refusal and one
-// still-open case from ADR-072 §6(b). A compromised principal can read order.completed payloads
-// from JetStream under §6(a) (TKT-327); this test reads the line from the database for
-// convenience and pins only the completed-order case. The read does not check status, buyer ID,
+// still-open case from ADR-072 §6(b). TKT-327 closed the JetStream read of order.completed through
+// a widened access or inventory durable (TestNATSServiceCannotWidenItsOwnPluralDurable); the
+// forgery does not need that read, because the publisher holds the real line in its own database.
+// This test reads the line from the database and pins only the completed-order case. The read does not check status, buyer ID,
 // or guest order reference. It is not a security control; signed envelopes (TKT-296) are the fix.
 func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -567,103 +569,310 @@ func TestNATSResidualCredentialedForgeryStillMintsTickets(t *testing.T) {
 	}
 }
 
-// TestNATSOperatorCredentialIsConfinedToTheBroker asserts the ticket's CENTRAL claim: the
-// inventory-reprocess operator password reaches the nats container and NOTHING else. In
-// particular it must never enter the long-running inventory server's environment.
-//
-// Why this test exists (ai-review F3). Every other test here is a NEGATIVE about the
-// `inventory` principal: they prove that credential cannot publish on catalog's prefix. None of
-// them observes the operator credential at all, so adding NATS_INVENTORY_REPROCESS_PASSWORD to
-// compose's shared &go-env anchor would leave this entire file green while voiding the
-// separation the ADR claims. A mitigation whose failure no test can see is a claim, not a
-// control.
-//
-// It asserts on the ENVIRONMENT rather than on a refusal because that is where the property
-// lives. The broker cannot tell us who else holds a password; only the container's environment
-// can. Per ADR-021: state inside a system cannot constrain what is handed to it from outside.
-func TestNATSOperatorCredentialIsConfinedToTheBroker(t *testing.T) {
+// TestNATSInventoryContainerConnectsAsTheInventoryPrincipal asserts that the RUNNING inventory
+// container connects to NATS as the `inventory` principal. TestNATSInventoryServerCannotPublishCatalogSubject
+// builds its own connection with the inventory credential, so it proves what that principal can
+// do, not that the container uses it: a Compose change that pointed inventory at platform-admin
+// would leave it green. This reads the container's environment, where the property lives.
+// (Kept from TestNATSOperatorCredentialIsConfinedToTheBroker, which TKT-326 deleted with the
+// operator identity; this assertion was still valid.)
+func TestNATSInventoryContainerConnectsAsTheInventoryPrincipal(t *testing.T) {
 	ctx := context.Background()
-	const operatorVar = "NATS_INVENTORY_REPROCESS_PASSWORD"
-
-	envOf := func(service string) string {
-		t.Helper()
-		container := fmt.Sprintf("%s-%s-1", project, service)
-		out, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
-		if err != nil {
-			t.Fatalf("docker inspect %s: %v: %s", container, err, out)
-		}
-		return out
-	}
-
-	// The operator password must be absent from every long-running service, by NAME and by
-	// VALUE. The name check catches the obvious regression (someone adds the variable to the
-	// shared anchor); the value check catches it arriving under a different name, e.g. folded
-	// into a NATS_URL.
-	// FAIL rather than skip when the value is unavailable. A `!= ""` guard here would let the
-	// value check silently become a no-op in any environment that does not export the password,
-	// leaving a test that still passes while performing half the job it documents — the
-	// green-test-that-cannot-reach-the-failing-state shape. If this fires, the harness is
-	// misconfigured (scripts/smoke.sh exports it), not the code under test.
-	operatorPassword := strings.TrimSpace(os.Getenv(operatorVar))
-	if operatorPassword == "" {
-		t.Fatalf("%s is not set in the test environment, so the value check cannot run; "+
-			"scripts/smoke.sh must export it (a name-only check would pass while a renamed "+
-			"copy of the credential sat in a service's environment)", operatorVar)
-	}
-	// Sweep every container the project has INSTANTIATED, not a hand-listed subset. A fixed list
-	// of the five Go services would pass while the credential sat in the gateway, a web app, or a
-	// one-shot job (ai-review pass 2), and the property is "nothing but the broker holds it", so
-	// the target set is discovered rather than enumerated.
-	//
-	// The bound is honest: `compose ps --all` reports containers that EXIST, so a service behind
-	// an inactive profile, or one never started, is not covered (ai-review pass 3). Within the
-	// gate that is the whole stack, and an inspect failure now fails the test rather than
-	// silently reducing the sweep.
-	listed, err := dockerRun(ctx, "compose", "-p", project, "ps", "--all", "--format", "{{.Name}}")
+	container := fmt.Sprintf("%s-inventory-1", project)
+	env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
 	if err != nil {
-		t.Fatalf("docker compose ps: %v: %s", err, listed)
+		t.Fatalf("docker inspect %s: %v: %s", container, err, env)
 	}
-	containers := strings.Fields(listed)
-	if len(containers) < 5 {
-		t.Fatalf("found only %d containers in project %s; the sweep below would prove almost nothing", len(containers), project)
-	}
-	broker := fmt.Sprintf("%s-nats-1", project)
-	swept := 0
-	for _, container := range containers {
-		if container == broker {
-			continue // the broker is the one component that MUST hold it
-		}
-		env, err := dockerRun(ctx, "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
-		if err != nil {
-			// FAIL rather than skip. A one-shot job is exactly the kind of container that could
-			// receive the credential and then exit, and a `continue` here would let the sweep
-			// report success having never looked at it (ai-review pass 3).
-			t.Errorf("cannot inspect %s, so its environment is unchecked: %v: %s", container, err, env)
-			continue
-		}
-		swept++
-		if strings.Contains(env, operatorVar+"=") {
-			t.Errorf("%s holds %s; the operator credential must reach only %s", container, operatorVar, broker)
-		}
-		if strings.Contains(env, operatorPassword) {
-			t.Errorf("%s holds the operator password VALUE; it must reach only %s", container, broker)
+	var natsURLs []string
+	for _, line := range strings.Split(env, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "NATS_URL="); ok {
+			natsURLs = append(natsURLs, v)
 		}
 	}
-	if swept == 0 {
-		t.Fatalf("swept no containers; the assertions above proved nothing")
+	if len(natsURLs) != 1 {
+		t.Fatalf("%s has %d NATS_URL entries, want exactly one", container, len(natsURLs))
 	}
-	t.Logf("swept %d containers (excluding %s)", swept, broker)
+	u, err := url.Parse(natsURLs[0])
+	if err != nil {
+		// Do not echo the value or the parse error: both can carry the password.
+		t.Fatalf("%s NATS_URL does not parse as a URL", container)
+	}
+	if u.User == nil || u.User.Username() != "inventory" {
+		got := "<none>"
+		if u.User != nil {
+			got = u.User.Username()
+		}
+		t.Fatalf("%s connects to NATS as %q, want exactly %q", container, got, "inventory")
+	}
+	if _, hasPassword := u.User.Password(); !hasPassword {
+		t.Fatalf("%s NATS_URL names the inventory principal with no password", container)
+	}
+}
 
-	// And the inventory server must hold its OWN credential, so the check above is not passing
-	// merely because the service has no NATS credential at all.
-	inventoryEnv := envOf("inventory")
-	if !strings.Contains(inventoryEnv, "nats://inventory:") {
-		t.Errorf("inventory does not carry its own `inventory` principal; the absence assertions above prove nothing")
+// TestNATSServiceCannotWidenItsOwnPluralDurable is the executed attack from TKT-170, asserted as
+// refused (TKT-327, ADR-072 §5). The adversary is a holder of the access or inventory NATS
+// credential (ADR-021: name the adversary). Before TKT-327 each service held CREATE on its own
+// plural-filter durable, and a plural-filter create request carries its filters in the BODY, where
+// no subject permission can constrain them: inventory's credential re-created
+// inventory-catalog-offering filtered on platform.commerce.order.completed and read commerce's
+// payload back, which carries guest_order_ref.
+//
+// Each case sends a raw request, the way an attacker would, not through a client helper that
+// might refuse first. A case passes only on all three: the broker reports a publish Permissions
+// Violation for THAT exact subject, no reply arrives, and an admin INFO shows the filters
+// unchanged. With a CREATE grant restored, the broker answers the request, so the case goes red
+// on any reply, whether or not a pull later wins a race for the message.
+//
+// The body keeps every other field of the current config, so a refusal cannot come from an
+// invalid config. The legacy DURABLE.CREATE subject was never granted to either service, so its
+// case is a pin, not a mutation-checked guard.
+func TestNATSServiceCannotWidenItsOwnPluralDurable(t *testing.T) {
+	u, err := url.Parse(natsURL)
+	if err != nil {
+		t.Fatalf("parse natsURL: %v", err)
+	}
+	for _, target := range []struct {
+		principal string
+		durable   string
+		foreign   string // a subject this principal must not read
+	}{
+		{principal: "inventory", durable: "inventory-catalog-offering", foreign: "platform.commerce.order.completed"},
+		{principal: "access", durable: "access-ticket-issuer", foreign: "platform.catalog.performance.archived"},
+	} {
+		t.Run(target.principal, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			adminConn, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+			if err != nil {
+				t.Fatalf("admin connect: %v", err)
+			}
+			t.Cleanup(adminConn.Close)
+			adminJS, err := jetstream.New(adminConn)
+			if err != nil {
+				t.Fatalf("admin jetstream: %v", err)
+			}
+			stream, err := adminJS.Stream(ctx, "PLATFORM")
+			if err != nil {
+				t.Fatalf("admin get PLATFORM stream: %v", err)
+			}
+			currentConfig := func() jetstream.ConsumerConfig {
+				t.Helper()
+				cons, err := stream.Consumer(ctx, target.durable)
+				if err != nil {
+					t.Fatalf("admin INFO %s: %v", target.durable, err)
+				}
+				return cons.CachedInfo().Config
+			}
+			original := currentConfig()
+			if len(original.FilterSubjects) < 2 || original.FilterSubject != "" {
+				t.Fatalf("%s filters = %v / %q, want the plural form this attack targets", target.durable, original.FilterSubjects, original.FilterSubject)
+			}
+			// If an attempt got through (a restored grant), put the durable back as admin. It runs
+			// after EACH attempt, not once at the end: a widened durable left in place would make
+			// the next attempt fail on "filters changed" for a request that was in fact refused,
+			// and it would leave the running service consuming the foreign subject.
+			restore := func(t *testing.T) {
+				restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer restoreCancel()
+				cons, err := stream.Consumer(restoreCtx, target.durable)
+				if err != nil {
+					t.Errorf("cleanup: admin INFO %s: %v", target.durable, err)
+					return
+				}
+				got := cons.CachedInfo().Config
+				if slices.Equal(got.FilterSubjects, original.FilterSubjects) && got.FilterSubject == original.FilterSubject {
+					return
+				}
+				if _, err := stream.CreateOrUpdateConsumer(restoreCtx, original); err != nil {
+					t.Errorf("cleanup: restore %s filters as admin: %v", target.durable, err)
+				}
+			}
+
+			widened := original
+			widened.FilterSubjects = append(slices.Clone(original.FilterSubjects), target.foreign)
+			single := original
+			single.FilterSubjects = nil
+			single.FilterSubject = target.foreign
+
+			for _, attempt := range []struct {
+				name    string
+				subject string
+				config  jetstream.ConsumerConfig
+			}{
+				// The TKT-170 attack: the plural filter rides in the body of the unsuffixed subject.
+				{name: "plural body on the unsuffixed create subject",
+					subject: "$JS.API.CONSUMER.CREATE.PLATFORM." + target.durable, config: widened},
+				// The filter as a subject token: the second removed grant (CREATE.<durable>.>).
+				{name: "single filter on the suffixed create subject",
+					subject: "$JS.API.CONSUMER.CREATE.PLATFORM." + target.durable + "." + target.foreign, config: single},
+				// Pin: the pre-2.9 durable create API, never granted to either service.
+				{name: "legacy durable create subject",
+					subject: "$JS.API.CONSUMER.DURABLE.CREATE.PLATFORM." + target.durable, config: widened},
+			} {
+				t.Run(attempt.name, func(t *testing.T) {
+					t.Cleanup(func() { restore(t) })
+					body, err := json.Marshal(struct {
+						Stream string                   `json:"stream_name"`
+						Config jetstream.ConsumerConfig `json:"config"`
+					}{Stream: "PLATFORM", Config: attempt.config})
+					if err != nil {
+						t.Fatal(err)
+					}
+					asyncErrs := make(chan error, 8)
+					serviceURL := fmt.Sprintf("nats://%s:%s@%s", target.principal, natsPassword(target.principal), u.Host)
+					nc, err := nats.Connect(serviceURL,
+						nats.Timeout(3*time.Second),
+						nats.RetryOnFailedConnect(false),
+						nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+							select {
+							case asyncErrs <- err:
+							default:
+							}
+						}),
+					)
+					if err != nil {
+						t.Fatalf("%s connect: %v", target.principal, err)
+					}
+					defer nc.Close()
+
+					reply, reqErr := nc.Request(attempt.subject, body, 2*time.Second)
+					if reqErr == nil {
+						t.Fatalf("%s got a reply on %s, want a refused publish: %s", target.principal, attempt.subject, reply.Data)
+					}
+					want := fmt.Sprintf("Permissions Violation for Publish to %q", attempt.subject)
+					deadline := time.After(2 * time.Second)
+				wait:
+					for {
+						select {
+						case e := <-asyncErrs:
+							if strings.Contains(e.Error(), want) {
+								break wait
+							}
+						case <-deadline:
+							t.Fatalf("%s request on %s failed (%v) with no %s; the refusal is not proven to be the ACL", target.principal, attempt.subject, reqErr, want)
+						}
+					}
+
+					got := currentConfig()
+					if !slices.Equal(got.FilterSubjects, original.FilterSubjects) || got.FilterSubject != original.FilterSubject {
+						t.Fatalf("%s filters changed to %v / %q after a refused request, want %v", target.durable, got.FilterSubjects, got.FilterSubject, original.FilterSubjects)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries PINS A GAP; it asserts the gap is
+// PRESENT (ADR-072 §6(c)). It is not a security control, and it must not be read as one.
+//
+// Four service principals hold subscribe _INBOX.>: catalog, commerce, access and inventory
+// (payments holds no subscribe grant; platform-admin holds `>`). No service sets a custom inbox
+// prefix, so every service connection uses nats.go's default `_INBOX.` namespace. A JetStream pull
+// delivers each message to the puller's reply inbox. So a holder of any of those four credentials
+// can subscribe to _INBOX.> and receive copies of every pull delivery made to a connection that
+// uses the default prefix: today, access's and inventory's durables. TKT-327 closed the body-controlled filter path
+// (TestNATSServiceCannotWidenItsOwnPluralDurable); it did not close this one. Executed during
+// TKT-327 on an isolated broker with the production ACL: the inventory, catalog and commerce
+// credentials, each watching _INBOX.>, read access-ticket-issuer's delivery of an order.completed
+// carrying guest_order_ref; payments saw nothing.
+//
+// TKT-519 tracks the fix (a per-principal inbox prefix in every service's connection, with each
+// principal's subscribe grant narrowed to it). When TKT-519 lands, this test goes red because
+// inventory sees nothing; TKT-519 then flips it to assert a REFUSAL (inventory's subscribe on
+// another principal's inbox namespace is a Permissions Violation and no delivery arrives) and
+// updates ADR-072 §6(c). Until then, do not weaken or delete it.
+//
+// This test shows the mechanism without touching a service durable: the admin pulls from a
+// throwaway durable on a subject no service consumes, and the inventory credential reads the
+// delivery from the shared inbox namespace.
+func TestNATSInboxWildcardStillExposesOtherPrincipalsDeliveries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	u, err := url.Parse(natsURL)
+	if err != nil {
+		t.Fatalf("parse natsURL: %v", err)
+	}
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	subject := "platform.smoke.inbox-pin." + suffix
+	marker := "inbox-pin-marker-" + suffix
+
+	invConn, err := nats.Connect(fmt.Sprintf("nats://inventory:%s@%s", natsPassword("inventory"), u.Host),
+		nats.Timeout(3*time.Second), nats.RetryOnFailedConnect(false))
+	if err != nil {
+		t.Fatalf("inventory connect: %v", err)
+	}
+	defer invConn.Close()
+	seen := make(chan string, 4)
+	sub, err := invConn.Subscribe("_INBOX.>", func(m *nats.Msg) {
+		if strings.Contains(string(m.Data), marker) {
+			select {
+			case seen <- m.Subject:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("inventory subscribe _INBOX.>: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	if err := invConn.Flush(); err != nil {
+		t.Fatalf("inventory flush: %v", err)
 	}
 
-	// The broker DOES need it: it is the component that enforces the identity. If this fails,
-	// the operator credential is not configured anywhere and the recovery path is dead.
-	if natsEnv := envOf("nats"); !strings.Contains(natsEnv, operatorVar+"=") {
-		t.Errorf("the nats container lacks %s; the operator identity cannot be enforced", operatorVar)
+	adminConn, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+	if err != nil {
+		t.Fatalf("admin connect: %v", err)
+	}
+	// A t.Cleanup, not a defer: a deferred Close runs when the test function returns, BEFORE any
+	// t.Cleanup, so the durable's delete below went through a closed connection, its error was
+	// discarded, and every run leaked an inbox-pin-* durable. Cleanups run last-registered-first,
+	// so registering the Close here, before the delete, keeps the connection open for it.
+	t.Cleanup(adminConn.Close)
+	adminJS, err := jetstream.New(adminConn)
+	if err != nil {
+		t.Fatalf("admin jetstream: %v", err)
+	}
+	stream, err := adminJS.Stream(ctx, "PLATFORM")
+	if err != nil {
+		t.Fatalf("admin get PLATFORM stream: %v", err)
+	}
+	durable := "inbox-pin-" + suffix
+	cons, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable: durable, FilterSubject: subject,
+		DeliverPolicy: jetstream.DeliverAllPolicy, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("create throwaway durable: %v", err)
+	}
+	t.Cleanup(func() {
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer deleteCancel()
+		if err := stream.DeleteConsumer(deleteCtx, durable); err != nil {
+			t.Errorf("cleanup: delete throwaway durable %s: %v", durable, err)
+		}
+	})
+	if _, err := adminJS.Publish(ctx, subject, []byte(`{"marker":"`+marker+`"}`)); err != nil {
+		t.Fatalf("publish marker: %v", err)
+	}
+	batch, err := cons.Fetch(1, jetstream.FetchMaxWait(3*time.Second))
+	if err != nil {
+		t.Fatalf("admin fetch: %v", err)
+	}
+	pulled := false
+	for m := range batch.Messages() {
+		pulled = strings.Contains(string(m.Data()), marker)
+		_ = m.Ack()
+	}
+	if !pulled {
+		t.Fatal("the admin pull did not receive the marker; the fixture did not create a delivery to observe")
+	}
+	select {
+	case <-seen:
+		// The gap is present, as ADR-072 §6(c) records.
+	case <-time.After(3 * time.Second):
+		t.Fatal("the inventory credential did not see another connection's JetStream delivery on _INBOX.>; " +
+			"if TKT-519 has landed, flip this test to assert a refusal and update ADR-072 §6(c)")
 	}
 }

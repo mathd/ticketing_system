@@ -13,7 +13,8 @@ import (
 const quarantineSubject = "platform.catalog.performance.published"
 
 // The envelope column must hold the exact received bytes — whitespace, unknown fields,
-// incompatible future data and all — because reprocess-quarantine republishes them verbatim.
+// incompatible future data and all — because reprocess-quarantine hands them verbatim to the
+// consumer's handler (TKT-326; it republished them before).
 func TestQuarantinePreservesExactEnvelopeBytes(t *testing.T) {
 	ctx, st, _ := storeForTest(t, 10*time.Minute)
 	id := uuid.New()

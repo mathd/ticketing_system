@@ -371,8 +371,9 @@ func NewClient() *http.Client {
 
 // ClassifyHold409 discriminates a hold 409 body (TKT-93): only the bare
 // {"error":…} shape — what problem() in services/inventory/internal/api/server.go
-// emits for capacity sellout (ErrUnavailable), ErrConflict and ErrIdempotency —
-// counts as an expected capacity rejection. A body carrying any machine-readable
+// emits for a capacity refusal (ErrUnavailable), ErrConflict and ErrIdempotency —
+// and the `sold_out` shape it emits for a public GA sellout (ErrSoldOut, TKT-341)
+// count as an expected capacity rejection. A body carrying any machine-readable
 // code (today slot_archived / slot_closed / channel_window_closed /
 // presale_code_invalid) is not sellout, and anything
 // unrecognized — a code, no error field, unparseable — fails closed as
@@ -398,7 +399,13 @@ func ClassifyHold409(body []byte) string {
 		Error *string `json:"error"`
 		Code  string  `json:"code"`
 	}
-	if json.Unmarshal(body, &b) != nil || b.Error == nil || b.Code != "" {
+	if json.Unmarshal(body, &b) != nil || b.Error == nil {
+		return KindServerError
+	}
+	// TKT-341 / ADR-082: `sold_out` is the one coded 409 that is capacity evidence.
+	// A public GA hold on a pool with zero public headroom carries it, so the gate's
+	// rejection tail answers with it. Every other code still fails closed.
+	if b.Code != "" && b.Code != "sold_out" {
 		return KindServerError
 	}
 	return KindRejected

@@ -15,7 +15,8 @@ no config files in the services.
 | `DB_CONN_MAX_LIFETIME` | maximum lifetime of a pooled connection | `30m` |
 | `DB_CONN_MAX_IDLE_TIME` | maximum time a pooled connection remains idle | `5m` |
 | `OPENAPI_RESPONSE_VALIDATION_ENABLED` | enforce ADR-028 response-drift fail-closed at runtime; off skips the response buffer and schema walk, and drifted payloads reach the client unchecked (TKT-125) | `true` |
-| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals | `1s,5s,30s,2m,5m,10m` |
+| `ACCESS_EVENT_RETRY_BACKOFF` | Access-only comma-separated event retry intervals. Must agree with the `backoff` of the file `NATS_ACCESS_TICKET_ISSUER_CONFIG` selects, or access refuses its durable at startup (TKT-327) | `1s,5s,30s,2m,5m,10m` |
+| `NATS_ACCESS_TICKET_ISSUER_CONFIG` | `nats-init` only: the file in `deploy/nats/consumers/` it provisions `access-ticket-issuer` from. `scripts/stack-env.sh` sets `access-ticket-issuer.smoke.json` beside its short `ACCESS_EVENT_RETRY_BACKOFF` | `access-ticket-issuer.json` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | collector (lgtm container) | SDK default |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` | export cadence (tightened locally) | SDK defaults |
 
@@ -74,8 +75,11 @@ commit real credentials or reuse local values outside development. See
 No environment variable configures it, and that is the point: the back office reaches catalog's
 public `POST /staff/authenticate` **through the gateway** (`GATEWAY_URL`, already set), exactly
 like every other call it makes. It deliberately does **not** hold `INTERNAL_SERVICE_TOKEN` — that
-one shared value also opens commerce's refunds and inventory's operational holds, and a
-public-facing SSR process is the wrong place for it (ADR-042).
+one shared value opens most services' internal surfaces, including inventory's operational holds,
+and a public-facing SSR process is the wrong place for it (ADR-042). Commerce's staff refund, void
+and order read take neither that token nor a tenant from the request: they require
+`COMMERCE_STAFF_WRITE_TOKEN` and the staff session's organizer assertion, which commerce verifies
+with `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (TKT-287).
 
 `scripts/smoke.sh` provisions a throwaway account per run and passes it to the test process as
 `SMOKE_STAFF_IDENTIFIER` / `SMOKE_STAFF_PASSWORD`. The password is generated per run and never
@@ -113,6 +117,17 @@ The order ref remains the bundle's bearer credential: forwarding "here are your 
 feature. What expires is the image URL, which is what ends up in a screenshot, a referrer header,
 or a proxy log. The bundle page mints fresh links on every successful load, so a buyer with a valid
 order reference can replace an expired image URL by reloading the bundle.
+
+## Access: CATALOG_URL and ticket time zones
+
+`CATALOG_URL` is the Catalog base URL that Access reads each ticket's performance time zone
+from when it serves the ticket bundle (TKT-365,
+[ADR-083](adr/ADR-083-access-reads-performance-time-zones-from-catalog.md)). Access refuses to
+start without it. Access sends the shared `INTERNAL_SERVICE_TOKEN` and asks for at most 20
+performances per request, all requests within one 1.5 s deadline. A request that fails or does
+not finish in time leaves the zones it asked for `null`; zones from requests that succeeded are
+kept. The bundle still loads, and the storefront shows a `null` zone's history times in labelled
+UTC.
 
 ## Scanner devices
 

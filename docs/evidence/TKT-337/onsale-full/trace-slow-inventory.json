@@ -1,0 +1,764 @@
+{
+  "spans": [
+    "catalog SERVER \"GET\" /internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/fee-resolution status=200 duration=0.001s",
+    "catalog SERVER \"GET\" /internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/price-resolution status=200 duration=0.002s",
+    "commerce CLIENT \"HTTP GET\" http://catalog:8080/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/fee-resolution status=200 duration=0.002s",
+    "commerce CLIENT \"HTTP GET\" http://catalog:8080/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/price-resolution status=200 duration=0.002s",
+    "commerce CLIENT \"HTTP POST\" http://inventory:8080/holds status=201 duration=3.036s",
+    "commerce SERVER \"POST\" /reservations status=201 duration=3.044s",
+    "gateway SERVER \"POST /api/commerce/\" /api/commerce/reservations status=201 duration=3.045s",
+    "inventory SERVER \"POST\" /holds status=201 duration=3.035s"
+  ],
+  "tempo": {
+    "metrics": {
+      "inspectedBytes": "1122815"
+    },
+    "trace": {
+      "resourceSpans": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "gateway"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "18111"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "45098"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "124"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "330"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "201"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/api/commerce/reservations"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "localhost"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768774272111711",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST /api/commerce/",
+                  "parentSpanId": "XgGg32tmoZg=",
+                  "spanId": "JCERKFE8Hh8=",
+                  "startTimeUnixNano": "1791768771227288859",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "commerce"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.13"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "40532"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "124"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "330"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "201"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/reservations"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "commerce"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768774271770052",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "XgGg32tmoZg=",
+                  "spanId": "yRNwCWIef+M=",
+                  "startTimeUnixNano": "1791768771227698970",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://catalog:8080/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/price-resolution"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "GET"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "catalog"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768771230640684",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP GET",
+                  "parentSpanId": "yRNwCWIef+M=",
+                  "spanId": "Y1DOEvMfOTY=",
+                  "startTimeUnixNano": "1791768771228424569",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://catalog:8080/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/fee-resolution"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "GET"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "catalog"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768771232716667",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP GET",
+                  "parentSpanId": "yRNwCWIef+M=",
+                  "spanId": "LSiCRQOwZIc=",
+                  "startTimeUnixNano": "1791768771230771728",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://inventory:8080/holds"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "201"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "inventory"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768774268593981",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP POST",
+                  "parentSpanId": "yRNwCWIef+M=",
+                  "spanId": "f4Qk67zKtlw=",
+                  "startTimeUnixNano": "1791768771232857430",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "catalog"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "49574"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "364"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "GET"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/price-resolution"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "catalog"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768771230334407",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "GET",
+                  "parentSpanId": "Y1DOEvMfOTY=",
+                  "spanId": "r8OIKTh7Ego=",
+                  "startTimeUnixNano": "1791768771228689714",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "49574"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "228"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "GET"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/internal/ticket-types/07ce02e8-da9d-42f6-8e69-deb04cd53171/fee-resolution"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "catalog"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768771232382734",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "GET",
+                  "parentSpanId": "LSiCRQOwZIc=",
+                  "spanId": "+zkCVhPyvDA=",
+                  "startTimeUnixNano": "1791768771231003117",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "inventory"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "36172"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "209"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "361"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "201"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/holds"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "inventory"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791768774268333090",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "f4Qk67zKtlw=",
+                  "spanId": "amyfvT3YnJw=",
+                  "startTimeUnixNano": "1791768771233206230",
+                  "status": {},
+                  "traceId": "8D/2285DtTVaq5IBL11Vzw=="
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "trace_id": "f03ff6dbce43b5355aab92012f5d55cf"
+}

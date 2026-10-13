@@ -4,25 +4,17 @@
 # (scheduled + triggered on PRs touching the build files).
 # Triggers are scoped to main + PRs; sdlc-state commits never reach CI.
 #
-# Docs-only changes skip the whole workflow: `make check` builds and tests Go +
-# TS, none of which a prose diff can break, and this repo ships ADR-only tickets
-# often enough (TKT-62, TKT-64) for ~5min a PR to be worth skipping. paths-ignore
-# fires only when *every* changed file matches, so a docs + code PR still runs.
-#
-# ⚠ This is safe only while no required status check names `check`. A skipped
-# workflow reports nothing, and a *required* check that never reports blocks the
-# PR forever. GitHub branch protection is unavailable on this repo's plan today
-# (the API 403s), so nothing is enforced. If that ever changes, replace
-# paths-ignore with a step-level `if:` guard so the job still reports success.
-# See TKT-62 retro.
+# Every PR and every push to main runs this workflow, with no path filter. The
+# main ruleset requires the `check` job (`.github/rulesets/main.json`), and a
+# skipped workflow leaves a required check pending forever. Docs-only diffs can
+# also fail `make check` (`check-markdown-links`, `check-adr-numbers`).
+# `make check-check-workflow-trigger` refuses a path filter here.
 name: check
 
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
-    paths-ignore: ["docs/**", "**/*.md"]
 
 # Cancel a still-running check when a newer commit lands on the same PR or
 # branch — superseded runs are pure wasted Actions minutes.
@@ -37,7 +29,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache-dependency-path: "**/go.sum"
       # pnpm via corepack (version from packageManager, like the scanner
       # Dockerfile) — pnpm/action-setup v6 is broken both in default and
@@ -63,7 +55,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache-dependency-path: "**/go.sum"
       # pnpm via corepack (version from packageManager, like the scanner
       # Dockerfile) — pnpm/action-setup v6 is broken both in default and

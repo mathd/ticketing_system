@@ -22,7 +22,7 @@ try {
   if (err instanceof UpstreamError && (err.status === 404 || err.status === 400)) {
     return new Response(null, { status: 404 });
   }
-  return new Response('Service unavailable', { status: 503 });
+  return new Response(t.serviceUnavailable, { status: 503 });
 }
 ---
 
@@ -37,7 +37,7 @@ try {
           performance={day}
           organizerId={festival.organizer_id}
           locale={locale}
-          venueLabel={t.venue}
+          venueLine={t.venueLine}
           ticketsLabel={t.tickets}
           purchasable={false}
           soldSeparatelyLabel={t.festivalPassesComingSoon}

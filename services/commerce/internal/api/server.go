@@ -29,6 +29,7 @@ import (
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
+	"ticketing/shared/organizerassertion"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -44,6 +45,10 @@ type Server struct {
 	catalogURL, inventoryURL, paymentsURL, token string
 	// The back office's commerce credential (TKT-194); see staff_credential.go.
 	staffWriteToken string
+	// organizerAssertions verifies catalog's organizer assertion with catalog's
+	// PUBLIC keys (TKT-287). It can check an assertion and cannot mint one. Nil
+	// refuses every staff operation.
+	organizerAssertions *organizerassertion.Verifier
 	// paymentsToken opens payments' internal surface, and ONLY payments'
 	// (ai-review S8). `token` above still opens catalog's and inventory's; the
 	// money surface was split off it because one value shared by five services
@@ -85,6 +90,9 @@ type Server struct {
 	// thing instead, so the default is enforcement.
 	limiters *customerLimiters
 	limOnce  sync.Once
+	// afterCheckoutClaim is a TKT-319 test seam. It runs once claimOrder has committed,
+	// before the park-marker guard in executeCheckout. Nil in production.
+	afterCheckoutClaim func()
 }
 
 // ServerConfig contains every dependency and setting fixed for a server's lifetime.
@@ -99,6 +107,7 @@ type ServerConfig struct {
 	InternalToken        string
 	PaymentsToken        string
 	StaffWriteToken      string
+	OrganizerAssertions  *organizerassertion.Verifier
 	CustomerAssertionKey string
 	Publisher            commerceevents.Publisher
 	MoneyEvidence        MoneyEvidence
@@ -141,6 +150,7 @@ func New(config ServerConfig) *Server {
 		publisher:       config.Publisher,
 		moneyEvidence:   config.MoneyEvidence,
 	}
+	s.organizerAssertions = config.OrganizerAssertions
 	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
@@ -637,6 +647,40 @@ func holdEndpoint(base string, body map[string]any) (string, bool) {
 	return base + "/holds", false
 }
 
+// publicGASoldOut reports whether inventory refused a PUBLIC GA hold as a sellout
+// (TKT-341, ADR-082). Every predicate must hold, and each one has its own test:
+//
+//   - scope == nil: a partner reserve keeps the uniform 409 its contract promises
+//     (/partners/reservations). Inventory never sends `sold_out` for a channelled
+//     hold, so this is commerce's own guard, not a duplicate of inventory's.
+//   - err == nil: redundant today, and kept as a defence. call() returns a nil body
+//     with any error (httpx.ReadResponseBody) and status 0 on a transport error, so
+//     the two predicates below already refuse every errored call.
+//   - status 409: the code counts only on inventory's capacity refusal.
+//   - the whole body decodes, `error` is a string and `code` is exactly "sold_out".
+//     A malformed body, or a body of another shape, is not evidence of a sellout.
+//
+// The caller calls this only on the GA path; a seated refusal keeps its own mapping.
+func publicGASoldOut(scope *partnerScope, err error, status int, body []byte) bool {
+	if scope != nil || err != nil || status != http.StatusConflict {
+		return false
+	}
+	var refusal struct {
+		Error *string `json:"error"`
+		Code  *string `json:"code"`
+	}
+	if json.Unmarshal(body, &refusal) != nil || refusal.Error == nil || refusal.Code == nil {
+		return false
+	}
+	return *refusal.Code == "sold_out"
+}
+
+// writeSoldOut answers a public GA sellout. The body is static: inventory's message
+// and any extra field never reach a public caller.
+func writeSoldOut(w http.ResponseWriter) {
+	write(w, http.StatusConflict, map[string]string{"error": "sold out", "code": "sold_out"})
+}
+
 // reservationID derives the reservation a given idempotency key names.
 //
 // organizer + key for a public sale, and organizer + RESELLER + key for a partner one
@@ -826,6 +870,14 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 					seatedInventoryRefusal(w, code, body, pinnedSeats)
 					return
 				}
+				// Inventory replays an existing claim before any capacity arithmetic
+				// and never deletes a claim, so real inventory cannot answer `sold_out`
+				// here today. That depends on there being no claim purge, so the case
+				// stays, and only a commerce-tier test with a fake inventory reaches it.
+				if publicGASoldOut(scope, err, code, body) {
+					writeSoldOut(w)
+					return
+				}
 				write(w, 409, map[string]string{"error": "inventory unavailable"})
 				return
 			}
@@ -955,6 +1007,12 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 	if err != nil || (code != 200 && code != 201) {
 		if in.seated() {
 			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
+			return
+		}
+		// A public GA sellout keeps its code (TKT-341, ADR-082). Everything else
+		// below keeps the answer it had.
+		if publicGASoldOut(scope, err, code, body) {
+			writeSoldOut(w)
 			return
 		}
 		// A GA quantity claim against a SEATED pool is refused by inventory under
@@ -1382,6 +1440,17 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
 			return uuid.Nil, "", false, false, errRecoveryInProgress
 		}
+		// The live case returned above, so a claim left here has an expired or NULL lease. Clear
+		// it under the row lock this transaction holds, before commit, so after this the stale
+		// worker's claim-fenced writes match no row and cannot park, release or abandon the order
+		// through the store; external calls, such as the inventory release, are not covered whether
+		// they come before or after the steal (ADR-016, TKT-319). Attempts, schedule, last error and
+		// the park marker are left alone.
+		if recoveryClaim.Valid {
+			if _, err = tx.ExecContext(ctx, `UPDATE orders SET recovery_claim_id=NULL, recovery_lease_until=NULL WHERE id=$1`, id); err != nil {
+				return uuid.Nil, "", false, false, err
+			}
+		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
 		// and recovery can claim it while this request is live — the grace period only
@@ -1673,6 +1742,11 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		}
 		write(w, code, map[string]string{"error": message})
 		return
+	}
+	if s.afterCheckoutClaim != nil {
+		// TKT-319 test seam: a test parks checkout here so a recovery write can land between
+		// claimOrder's commit and the guard below. Nil in production.
+		s.afterCheckoutClaim()
 	}
 	if orderStatus == "completed" {
 		ref, e := s.guestReference(r.Context(), order)

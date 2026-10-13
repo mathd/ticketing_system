@@ -1,0 +1,24 @@
+# TKT-337: file provider for the versioned checkout-path dashboard.
+#
+# compose.yaml mounts this ONE file into the lgtm image's dashboard provisioning
+# directory, beside the image's own provider files, which stay active. It also
+# mounts deploy/grafana/dashboards at /ticketing-dashboards.
+#
+# The committed JSON is the only definition: Grafana refuses to save an edit
+# made in the UI (allowUiUpdates: false). Grafana also refuses to delete a
+# provisioned dashboard through the UI or the API, whatever disableDeletion says.
+# disableDeletion controls what occurs when the JSON file is removed from
+# /ticketing-dashboards: with false, Grafana removes the dashboard too, so a
+# running Grafana never shows a dashboard that the repository no longer has
+# (with true, it keeps it until the lgtm container is recreated). Both
+# behaviours were observed on the pinned image (Grafana 13.1.1) for TKT-337.
+apiVersion: 1
+providers:
+  - name: ticketing-checkout-path
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /ticketing-dashboards
+      foldersFromFilesStructure: false

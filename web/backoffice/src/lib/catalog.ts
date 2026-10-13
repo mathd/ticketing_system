@@ -39,10 +39,15 @@ export type SeatMapVersionHistory = components['schemas']['SeatMapVersionHistory
 // (emulating the storefront's UpstreamError) so the UI can show an actionable
 // message — e.g. the TKT-104 pinning-contract rejection — instead of a bare
 // status code.
+//
+// `code` is catalog's optional machine-readable reason (TKT-325). The channel
+// PUT's 409 has two causes and only `code` tells them apart, so it is kept
+// rather than folded into the message.
 export class CatalogApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
   ) {
     super(message);
     this.name = 'CatalogApiError';
@@ -430,15 +435,19 @@ function decodeTicketType(
 // Error shape. Never throws while reading the body.
 async function parseError(res: Response): Promise<CatalogApiError> {
   let message = `catalog request failed: ${res.status}`;
+  let code: string | undefined;
   try {
     const body = responseObject(await res.json(), 'catalog error');
     if (typeof body.error === 'string' && body.error) {
       message = body.error;
     }
+    if (typeof body.code === 'string' && body.code) {
+      code = body.code;
+    }
   } catch {
     // non-JSON body — keep the generic message
   }
-  return new CatalogApiError(res.status, message);
+  return new CatalogApiError(res.status, message, code);
 }
 
 async function postCatalog<T>(
@@ -719,7 +728,11 @@ export async function authenticateStaff(
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 const MAX_INT64 = 9_223_372_036_854_775_807n;
 
-/** Validate the readable fields in catalog's signed v1 assertion. */
+/**
+ * Validate the readable fields in catalog's signed v2 assertion (TKT-287):
+ * `v2.<kid>.<staff>.<organizer>.<unix expiry>.<Ed25519 signature>`. This is a
+ * structural check, not verification: catalog verifies the signature.
+ */
 function decodeOrganizerAssertion(
   value: unknown,
   expectedStaffId: string,
@@ -727,22 +740,25 @@ function decodeOrganizerAssertion(
 ): string {
   const assertion = required(value, 'organizer assertion');
   const parts = assertion.split('.');
-  if (parts.length !== 5 || parts[0] !== 'v1') {
+  if (parts.length !== 6 || parts[0] !== 'v2') {
     throw new Error('response organizer assertion is malformed');
   }
+  if (!/^catalog-org\/[A-Za-z0-9_-]{1,64}$/.test(parts[1])) {
+    throw new Error('response organizer assertion key id is malformed');
+  }
 
-  const staffId = uuid(parts[1], 'organizer assertion staff id');
-  const organizerId = uuid(parts[2], 'organizer assertion organizer id');
+  const staffId = uuid(parts[2], 'organizer assertion staff id');
+  const organizerId = uuid(parts[3], 'organizer assertion organizer id');
   if (staffId.toLowerCase() === NIL_UUID || organizerId.toLowerCase() === NIL_UUID) {
     throw new Error('response organizer assertion contains a nil identity');
   }
   sameIdentity(staffId, expectedStaffId, 'organizer assertion staff id');
   sameIdentity(organizerId, expectedOrganizerId, 'organizer assertion organizer id');
 
-  if (!/^\d{1,19}$/.test(parts[3]) || BigInt(parts[3]) > MAX_INT64) {
+  if (!/^\d{1,19}$/.test(parts[4]) || BigInt(parts[4]) > MAX_INT64) {
     throw new Error('response organizer assertion expiry is malformed');
   }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(parts[4])) {
+  if (!/^[A-Za-z0-9_-]{86}$/.test(parts[5])) {
     throw new Error('response organizer assertion signature is malformed');
   }
   return assertion;
@@ -892,6 +908,11 @@ function decodeChannel(
     display_name: required(body.display_name, 'channel display_name'),
     kind: channelKind(body.kind),
     enabled: boolean(body.enabled, 'channel enabled'),
+    // TKT-325: the token both channel forms send back. Required, a safe
+    // integer, never negative. A missing or malformed value makes the read
+    // fail, never 0: a synthesized 0 would match every never-edited channel
+    // and the page would offer an unprotected write.
+    revision: nonNegativeWholeNumber(body.revision, 'channel revision'),
     created_at: dateTime(body.created_at, 'channel created_at'),
     updated_at: dateTime(body.updated_at, 'channel updated_at'),
   };
@@ -976,13 +997,23 @@ export function createChannel(
  * mismatch, so the caller states which channel it believes it is updating
  * (TKT-235). Every field must be sent — omitting `enabled` would not "leave it
  * alone", it would send `false`.
+ *
+ * `expectedRevision` is the revision of the row the operator's page RENDERED
+ * (TKT-325, ADR-080), forwarded unchanged. It must never come from a read taken
+ * while handling the same request: compared with itself, it matches every time
+ * and the check is inert. Catalog refuses a stale value with a coded 409.
  */
 export async function updateChannel(
   assertion: string,
   organizerId: string,
   channelId: string,
-  input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean },
+  input: { code: string; displayName: string; kind: ChannelKind; enabled: boolean; expectedRevision: number },
 ): Promise<Channel> {
+  // Refused before any request: catalog would refuse it too, but a value that is
+  // not a safe non-negative integer cannot be a token a page rendered.
+  if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+    throw new Error('channel expected revision is not a non-negative safe integer');
+  }
   return withUpstreamDeadline(async (signal) => {
     const res = await fetchMutation('Catalog', catalog(`/channels/${encodeURIComponent(channelId)}`), {
       method: 'PUT',
@@ -995,6 +1026,7 @@ export async function updateChannel(
         display_name: input.displayName,
         kind: input.kind,
         enabled: input.enabled,
+        expected_revision: input.expectedRevision,
       }),
       signal,
     });

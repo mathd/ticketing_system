@@ -17,7 +17,7 @@ let events: PublicEventList['events'];
 try {
   ({ events } = await getPublicEvents(Astro, locale));
 } catch {
-  return new Response('Service unavailable', { status: 503 });
+  return new Response(t.serviceUnavailable, { status: 503 });
 }
 ---
 

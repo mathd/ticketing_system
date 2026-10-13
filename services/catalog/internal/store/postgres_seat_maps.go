@@ -53,9 +53,12 @@ func (p *Postgres) CreateSeatMap(ctx context.Context, in SeatMapInput) (SeatMap,
 // conditional UPDATE and on the canonical re-read below, and nothing else.
 // Adding the family lock here would change which row gets published.
 func (p *Postgres) PublishSeatMap(ctx context.Context, organizerID, id uuid.UUID) (SeatMap, bool, error) {
+	// The seat check is part of the same conditional UPDATE, so the flip and the check
+	// cannot disagree. A draft with no seats does not flip (TKT-318, ADR-029 amendment).
 	if _, err := p.db.ExecContext(ctx,
 		`UPDATE seat_maps SET status = 'published', published_at = now()
-		 WHERE id = $1 AND organizer_id = $2 AND status = 'draft'`, id, organizerID); err != nil {
+		 WHERE id = $1 AND organizer_id = $2 AND status = 'draft'
+		   AND EXISTS (SELECT 1 FROM seat_map_seats s WHERE s.seat_map_id = seat_maps.id)`, id, organizerID); err != nil {
 		return SeatMap{}, false, fmt.Errorf("publish seat map: %w", err)
 	}
 	var m SeatMap
@@ -75,9 +78,12 @@ func (p *Postgres) PublishSeatMap(ctx context.Context, organizerID, id uuid.UUID
 		m.PublishedAt = &publishedAt.Time
 	}
 	if m.Status != "published" {
-		// A map that could not flip and is not already published cannot be a
-		// draft that just published, so it is an illegal transition target
-		// (e.g. archived). Draft that already flipped falls through as published.
+		// A draft that did not flip was refused for having no seats (TKT-318). Any
+		// other state that did not flip is an illegal transition target (e.g.
+		// archived). Draft that already flipped falls through as published.
+		if m.Status == "draft" {
+			return SeatMap{}, false, ErrSeatMapSeatless
+		}
 		return SeatMap{}, false, ErrIllegalTransition
 	}
 	return m, !emittedAt.Valid, nil
@@ -176,6 +182,14 @@ func (p *Postgres) EditSeatMap(ctx context.Context, in EditSeatMapInput) (SeatMa
 				submitted[identity] = struct{}{}
 			}
 		}
+	}
+
+	// A version with no seats sells nothing (TKT-318, ADR-029 amendment). This is
+	// refused before the family is resolved, so an empty edit gets this answer for
+	// any map, pinned or not. Each seat in the tree adds one identity, so no
+	// identities means no seats anywhere in the tree.
+	if len(submitted) == 0 {
+		return SeatMap{}, false, ErrSeatMapSeatless
 	}
 
 	tx, err := p.db.BeginTx(ctx, nil)

@@ -1,25 +1,61 @@
 ---
-// Back-office shell layout (US-018). Single-locale staff tool — no locale
-// switcher (unlike the storefront). base:'/admin' means brand links resolve
-// under the proxy prefix via Astro's import.meta.env.BASE_URL.
+// Back-office shell layout (US-018, TKT-368).
+//
+// Two languages live on this page, and they are not the same thing:
+//  - the CONTENT language — what the page body is written in. A page passes it
+//    as `lang`; it defaults to English, because the pages outside TKT-368's scope
+//    (venue detail, orders, channels, slots, login) are still English, and
+//    `<html lang="fr">` over English text is an accessibility defect (D1(c)).
+//  - the UI language of the header — the operator's choice, read from the
+//    `bo_ui_language` cookie. The header says it in its own `lang`.
+//
+// The switch is offered only to signed-in staff (D1(b)). On the login page it
+// would be a second submit button in front of the credential form, and the
+// endpoint is not anonymous anyway. It is its OWN form, never nested in a
+// business form, and it posts to /admin/ui-language with the current path and
+// query so the operator lands back where they were. Root-relative action: the
+// TKT-105 "absolute action" trap was Astro's checkOrigin, which is off; the gate
+// compares Origin with the forwarded public origin and ignores the action.
+import { UI_LANGUAGE_PATH, uiLanguageFrom } from '../lib/ui-language';
+import { LANGUAGE_NAMES, UI_STRINGS, otherLanguage, type UiLanguage } from '../lib/ui-strings';
+
 interface Props {
   title: string;
+  /** The language the page body is written in. English unless the page is localized. */
+  lang?: UiLanguage;
 }
 
-const { title } = Astro.props;
+const { title, lang = 'en' } = Astro.props;
 const base = import.meta.env.BASE_URL;
+// Built from the gate's BASE, not from import.meta.env.BASE_URL (which is "/"
+// under the test container). ROUTE_MATRIX writes its row as a literal; a unit
+// test asserts that this path is a page row of the matrix.
+const switchAction = UI_LANGUAGE_PATH;
+const signedIn = Boolean(Astro.locals.staff);
+const ui = uiLanguageFrom(Astro.cookies);
+// Without a switch the header holds only the brand, so it follows the body.
+const headerLang = signedIn ? ui : lang;
+const t = UI_STRINGS[headerLang];
+const offered = otherLanguage(ui);
+const returnTo = Astro.url.pathname + Astro.url.search;
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang={lang}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
   </head>
   <body>
-    <header>
-      <a class="brand" href={base}>Back-office</a>
+    <header lang={headerLang}>
+      <a class="brand" href={base}>{t.backOffice}</a>
+      {signedIn && (
+        <form method="post" action={switchAction} class="ui-language" aria-label={t.languageSwitch}>
+          <input type="hidden" name="return_to" value={returnTo} />
+          <button type="submit" name="ui_language" value={offered} lang={offered}>{LANGUAGE_NAMES[offered]}</button>
+        </form>
+      )}
     </header>
     <main>
       <slot />
@@ -52,6 +88,10 @@ const base = import.meta.env.BASE_URL;
     line-height: 1.55;
   }
   header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
     padding: 1.1rem 1.5rem;
     border-bottom: 1px solid var(--line);
     background: var(--card);

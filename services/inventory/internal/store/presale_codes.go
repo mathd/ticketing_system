@@ -147,6 +147,10 @@ func (p *Postgres) IssuePresaleCode(ctx context.Context, in PresaleCode) (Presal
 // (ADR-024): trimming or case-folding here would disagree with the exact-match
 // lookup in redeemPresaleCode, and a code that can be issued but never redeemed
 // is worse than one that is rejected outright.
+//
+// No HTTP route calls issuance today. The 400 that problem() maps for
+// ErrPresaleCodeInvalidInput is not reachable over HTTP until one does. TKT-309
+// owns that decision.
 func validatePresaleCode(in PresaleCode) error {
 	if in.OrganizerID == uuid.Nil {
 		return ErrPresaleCodeInvalidInput

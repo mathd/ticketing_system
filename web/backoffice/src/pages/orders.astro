@@ -112,9 +112,10 @@ if (Astro.request.method === 'POST') {
           quantity: request.quantity,
           reason: request.reason,
           idempotencyKey: request.idempotencyKey,
-          // From the session, never the form (COS-5).
+          // From the session, never the form (COS-5). The assertion names the
+          // organizer to commerce (TKT-287); the body no longer carries one.
           actor: staff.staffId,
-          organizerId: staff.organizerId,
+          assertion: staff.organizerAssertion,
         });
         // Provenance comes from the SERVER, never the browser. An earlier version
         // read a hidden `retry_of` field, which is not evidence of anything: a

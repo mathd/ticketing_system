@@ -39,6 +39,13 @@ type scannerDeviceStore interface {
 	TouchScannerDevice(ctx context.Context, id uuid.UUID)
 }
 
+// performanceZones reads each slot's performance time zone from Catalog (TKT-365,
+// ADR-083). It answers a map and no error: an id it cannot resolve is simply absent, and
+// the bundle then carries a null zone. Production passes catalog.Client.
+type performanceZones interface {
+	PerformanceZones(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]string
+}
+
 type Server struct {
 	st *store.Postgres
 	// devices resolves scanner enrolment (ai-review S1). Nil means "cannot
@@ -79,6 +86,9 @@ type Server struct {
 	// redeliveries is the resend's store port (see redeliveries.go). Nil means the
 	// route refuses, like every other unwired dependency here.
 	redeliveries redeliveryStore
+	// zones supplies each ticket's performance time zone. Nil means "cannot ask", and
+	// every ticket then carries a null zone: presentation must never refuse a bundle.
+	zones performanceZones
 }
 
 // WithClock replaces the link signer's time source. Tests only.
@@ -106,6 +116,7 @@ type ServerConfig struct {
 	RedeliveryAddress delivery.AddressBook
 	RedeliveryMailer  delivery.Mailer
 	PublicURL         string
+	PerformanceZones  performanceZones
 }
 
 func New(config ServerConfig) *Server {
@@ -120,6 +131,7 @@ func New(config ServerConfig) *Server {
 		addresses:       config.RedeliveryAddress,
 		mailer:          config.RedeliveryMailer,
 		publicURL:       config.PublicURL,
+		zones:           config.PerformanceZones,
 	}
 	// A typed nil in an interface is not nil, so the assignment is guarded rather
 	// than unconditional: `Server{devices: (*store.Postgres)(nil)}` would pass a
@@ -249,6 +261,17 @@ func (s *Server) tickets(w http.ResponseWriter, r *http.Request) {
 		write(w, 404, map[string]string{"error": "not found"})
 		return
 	}
+	// One question to Catalog per bundle, for every slot in it (TKT-365, ADR-083). An
+	// exchange can put tickets for different performances under one reference, so the
+	// zone is looked up per ticket, by its own slot id.
+	zones := map[uuid.UUID]string{}
+	if s.zones != nil {
+		slots := make([]uuid.UUID, 0, len(ts))
+		for _, t := range ts {
+			slots = append(slots, t.SlotID)
+		}
+		zones = s.zones.PerformanceZones(r.Context(), slots)
+	}
 	out := make([]map[string]any, 0, len(ts))
 	for _, t := range ts {
 		history, err := s.st.History(r.Context(), t.ID)
@@ -261,7 +284,17 @@ func (s *Server) tickets(w http.ResponseWriter, r *http.Request) {
 		// link that outlived its page does, which is the link that leaked.
 		qrURL := "/api/access/orders/" + ref.String() + "/tickets/" + t.ID.String() + "/qr.png" +
 			s.qrLinks.mint(ref, t.ID, s.clock())
-		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": qrURL})
+		// The verdict comes from the SAME history slice this response carries (TKT-355),
+		// so a client never sees a verdict that its own history contradicts. It is a
+		// presentation verdict: the gate decides admission on its own path.
+		validity := store.DeriveTicketValidity(history)
+		// Null, not absent, when Catalog did not answer for this slot: the client then
+		// shows labelled UTC rather than guessing a zone.
+		var zone any
+		if z, ok := zones[t.SlotID]; ok {
+			zone = z
+		}
+		out = append(out, map[string]any{"ticket_id": t.ID, "qr_payload": t.Payload, "issued_at": t.IssuedAt, "history": history, "qr_url": qrURL, "validity": validity, "performance_timezone": zone})
 	}
 	write(w, 200, map[string]any{"order_ref": ref, "tickets": out})
 }

@@ -212,6 +212,45 @@ below. Unknown is therefore classified as misattributed, not absent.
 The ledger enforces honest-writer consistency through database triggers; it is not tamper-evident,
 and records an obligation rather than a payout.
 
+**Merchant-of-record is the only reseller model (TKT-294, owner decision 2026-09-25).** Agency
+terms (the partner collects from the buyer and remits face value less commission) and net-rate terms
+(the partner collects at a wholesale price and keeps the margin) are **not supported**. Under both,
+the platform never captures, and settlement is bound to a capture in the database: the balance
+trigger refuses any settlement whose fact is not `payment.captured`
+(`0004_settlement_ledger.sql:132`, "attaches to a % fact, which moved no money"), and
+`capture_must_settle()` (:162-177) refuses a capture with no settlement. So the ledger has no way to
+record that a partner owes the platform money for a sale the platform did not capture, and that is
+deliberate.
+
+The distinction that must survive any future design: a `payment.captured` fact records money the
+platform's own PSP charged. On the current charge path payments appends it only after the provider
+confirms the charge; captures written before migration `0006_provider_confirmed_amounts.sql` carry
+no recorded confirmation, and that migration deliberately leaves them so.
+A receivable would record an **obligation** a partner has not yet paid. What evidence would back it,
+and who is authoritative when it disagrees with the partner's remittance, are for the PRD below; this
+ADR does not presume them. The risk to name (ADR-021) is not a forger but **category confusion**: an
+operator, a report or a later writer reading an outstanding obligation as money received. Today
+nothing in the ledger can produce that confusion, because nothing but a capture can carry
+settlement.
+
+**The rejected shape, recorded so it is not proposed again:** relaxing the trigger to
+`f_type IN ('payment.captured', …)`. It is a one-line change and it is wrong, though not because of
+the sums: `settlement_must_balance()` would still compare each set's total with its fact's amount.
+It is wrong because it would let a fact that moved no money carry settlement entries **in the same
+vocabulary** as one that did. `capture_must_settle()` requires completeness for captures only, and
+the existing settlement read (`ReadOrderSettlement`, `services/payments/internal/store/settlement.go`,
+and the API response built on it) does not report which fact type a set hangs off, so through that
+path a receivable would read as settled money. The database itself keeps the provenance
+(`settlement_entries.capture_fact_id` joins to the journal's `fact_type`), so a purpose-built report
+could tell them apart; the one-line change ships without one. Completeness and the read would both
+need changing as well, which is why the shape below keeps the two apart instead.
+
+**What reopening this would need:** a PRD section on partner receivables (who reports a sale, when,
+on what evidence, and which side is authoritative when the partner's remittance disagrees with the
+receivable), and a **parallel** fact type (for example `partner.sold`) with its own balance rule, so
+that a receivable and a capture stay distinguishable in the ledger instead of sharing one
+vocabulary.
+
 ## Consequences
 
 - **Positive:** a capture and its attribution commit together, so "captured but unattributed" is not

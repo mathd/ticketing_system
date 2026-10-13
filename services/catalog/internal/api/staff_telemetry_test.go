@@ -71,7 +71,7 @@ func newStaffTelemetryHarnessWithEmitter(t *testing.T, withEmitter bool) *staffT
 
 	st := newFakeStore()
 	srv := NewServer(st, &fakePublisher{}, obs.NewLogger("catalog", io.Discard), "test-internal-token", testStaffWriteToken).
-		WithOrganizerAssertionKey(testOrganizerAssertionKey)
+		WithOrganizerAssertionSigner(testOrganizerAssertionSigner(t))
 	if withEmitter {
 		srv = srv.WithStaffLoginTelemetry(telemetry)
 	}
@@ -385,7 +385,7 @@ func TestASubjectLockoutRecoversAfterOneTokenRefills(t *testing.T) {
 	st := newFakeStore()
 	srv := NewServer(st, &fakePublisher{}, obs.NewLogger("catalog", io.Discard),
 		"test-internal-token", testStaffWriteToken).
-		WithOrganizerAssertionKey(testOrganizerAssertionKey).
+		WithOrganizerAssertionSigner(testOrganizerAssertionSigner(t)).
 		WithClock(clock)
 	handler, err := NewRouter(srv, true)
 	if err != nil {

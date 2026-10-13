@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -28,10 +29,11 @@ import (
 // voidRequest carries only attribution. The quantity is whole-order and comes
 // from the reservation under the order row lock in BindOrderVoid — a client that
 // cannot state one cannot forge one.
+//
+// No organizer either (TKT-287): it is the verified assertion's.
 type voidRequest struct {
-	OrganizerID uuid.UUID `json:"organizer_id"`
-	Actor       string    `json:"actor"`
-	Reason      string    `json:"reason"`
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
 }
 
 // voidProblem maps a store error onto the status the contract declares. Kept
@@ -49,13 +51,20 @@ func voidProblem(err error) (int, string) {
 		return http.StatusConflict, "only a completed, unexchanged order can be voided"
 	case errors.Is(err, commercestore.ErrRefundConflict):
 		return http.StatusConflict, "void conflicts with an existing request"
+	case errors.Is(err, sql.ErrNoRows):
+		// No order under THIS organizer: absent, or another tenant's. One answer,
+		// the refund's, so a cross-tenant void cannot confirm the order exists
+		// (TKT-287). It used to fall through to 500.
+		return http.StatusNotFound, "not found"
 	default:
 		return http.StatusInternalServerError, "persist void"
 	}
 }
 
 func (s *Server) voidOrder(w http.ResponseWriter, r *http.Request) {
-	if !s.staffOrInternal(r) {
+	// Staff credential AND verified organizer assertion (TKT-287), as on the refund.
+	organizer, ok := s.staffOrganizer(r)
+	if !ok {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -84,13 +93,13 @@ func (s *Server) voidOrder(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.OrganizerID == uuid.Nil || strings.TrimSpace(in.Actor) == "" || strings.TrimSpace(in.Reason) == "" {
+	if strings.TrimSpace(in.Actor) == "" || strings.TrimSpace(in.Reason) == "" {
 		write(w, 400, map[string]string{"error": "invalid void"})
 		return
 	}
 
 	result, err := s.refunds.Void(r.Context(), commercestore.VoidRequest{
-		OrderID: order, OrganizerID: in.OrganizerID,
+		OrderID: order, OrganizerID: organizer,
 		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
 	})
 	if err != nil {

@@ -3,6 +3,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -237,8 +238,12 @@ func TestBindOrderVoidGuards(t *testing.T) {
 		c, _ := seedCompleted(t, db, ctx, "void-org", 1, 0)
 		in := voidRequest(c, "void-org-1")
 		in.OrganizerID = uuid.New()
-		if _, err := BindOrderVoid(ctx, db, in); err == nil {
-			t.Fatal("a void bound across organizers")
+		// sql.ErrNoRows precisely, not "any error" (TKT-287): the fixture is a
+		// completed comped order, so every eligibility check would pass for its
+		// owner, and the only thing left to refuse is the organizer predicate. The
+		// API maps exactly this error to the 404 a cross-tenant void answers.
+		if _, err := BindOrderVoid(ctx, db, in); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("err = %v, want sql.ErrNoRows for an order under another organizer", err)
 		}
 		var rows int
 		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE order_id=$1`, c.OrderID).Scan(&rows); err != nil {
@@ -246,6 +251,11 @@ func TestBindOrderVoidGuards(t *testing.T) {
 		}
 		if rows != 0 {
 			t.Fatalf("a cross-organizer attempt wrote %d rows", rows)
+		}
+		// Positive control: the owner CAN void it, so the refusal above is the
+		// predicate's and not a fixture that nothing could void.
+		if _, err := BindOrderVoid(ctx, db, voidRequest(c, "void-org-owner")); err != nil {
+			t.Fatalf("the owner could not void the same order: %v", err)
 		}
 	})
 

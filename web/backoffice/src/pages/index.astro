@@ -5,6 +5,8 @@
 import Layout from '../layouts/Layout.astro';
 import { getVenues } from '../lib/catalog';
 import { canAccessRoute } from '../lib/authorization';
+import { uiLanguageFrom } from '../lib/ui-language';
+import { UI_STRINGS } from '../lib/ui-strings';
 
 // The organizer comes from the session now (TKT-190), not from a constant. The
 // middleware guarantees a principal on every gated path, so an absent one here
@@ -15,6 +17,11 @@ if (!staff) throw new Error('unauthenticated request reached the venue list');
 
 const venues = await getVenues(staff.organizerId);
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+// The operator's UI language (TKT-368). Display only: the organizer and the role
+// above still come from the session, and nothing below reads the language to
+// decide what to show — only how to say it.
+const lang = uiLanguageFrom(Astro.cookies);
+const t = UI_STRINGS[lang];
 
 // Hide what this role cannot reach — from the SAME matrix the gate enforces, so
 // the two cannot disagree. This is presentation only: the gate refuses the URL
@@ -26,14 +33,14 @@ const canLookUpOrders = canAccessRoute(`${base}/orders`, staff.role);
 const canManageChannels = canAccessRoute(`${base}/channels`, staff.role);
 ---
 
-<Layout title="Venues — Back-office">
+<Layout title={t.venuesTitle} lang={lang}>
   <table>
-    <caption>Venues</caption>
+    <caption>{t.venues}</caption>
     <thead>
       <tr>
-        <th scope="col">Name</th>
-        <th scope="col">GA capacity</th>
-        <th scope="col">Seat maps</th>
+        <th scope="col">{t.venueName}</th>
+        <th scope="col">{t.gaCapacity}</th>
+        <th scope="col">{t.seatMaps}</th>
       </tr>
     </thead>
     <tbody>
@@ -41,10 +48,10 @@ const canManageChannels = canAccessRoute(`${base}/channels`, staff.role);
         venues.map((v) => (
           <tr>
             <td>{v.name}</td>
-            <td class="num">{v.ga_capacity.toLocaleString('en')}</td>
+            <td class="num">{v.ga_capacity.toLocaleString(lang)}</td>
             <td>
               {canAuthorSeatMaps ? (
-                <a href={`${base}/venues/${v.id}`}>Author seat maps</a>
+                <a href={`${base}/venues/${v.id}`}>{t.authorSeatMaps}</a>
               ) : (
                 <span class="muted">—</span>
               )}
@@ -56,7 +63,7 @@ const canManageChannels = canAccessRoute(`${base}/channels`, staff.role);
         venues.length === 0 && (
           <tr>
             <td class="empty" colspan="3">
-              No venues yet.
+              {t.noVenues}
             </td>
           </tr>
         )
@@ -65,21 +72,21 @@ const canManageChannels = canAccessRoute(`${base}/channels`, staff.role);
   </table>
 
   {canCreateEvents && (
-    <p><a href={`${base}/events/new`}>Create an event</a></p>
+    <p><a href={`${base}/events/new`}>{t.createEvent}</a></p>
   )}
 
   {canLookUpOrders && (
-    <p><a href={`${base}/orders`}>Look up an order</a></p>
+    <p><a href={`${base}/orders`}>{t.lookUpOrder}</a></p>
   )}
 
   {canManageChannels && (
-    <p><a href={`${base}/channels`}>Sales channels</a></p>
+    <p><a href={`${base}/channels`}>{t.salesChannels}</a></p>
   )}
 
   <!-- A form, not a link: sign-out changes state, so it is a POST — and the
        middleware's origin check only guards unsafe methods. Relative action
        (TKT-105: an absolute one trips the origin handling even same-origin). -->
   <form method="post" action="logout" class="signout">
-    <button type="submit">Sign out</button>
+    <button type="submit">{t.signOut}</button>
   </form>
 </Layout>

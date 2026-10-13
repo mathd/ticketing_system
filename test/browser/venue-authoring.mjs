@@ -22,6 +22,8 @@ const identifier = `venue-authoring-${stamp}@example.test`;
 const password = 'correct horse battery staple';
 const mapName = `Browser map ${stamp}`;
 const capacity = 2600 + (stamp % 100);
+// The catalog's refusal for a version with no seats (TKT-318), as the page shows it.
+const SEAT_REFUSAL = 'a seat map needs at least one seat before it can be published, saved, or seated against';
 
 provisionAdmin(CATALOG, identifier, password);
 
@@ -63,13 +65,31 @@ try {
   request = await submitForm(page, rowForm.getByRole('button', { name: 'Add row' }));
   check('the row form posts to the venue page', new URL(request.url()).pathname === PATH, request.url());
 
+  // TKT-318: a map with a section and a row but no seat cannot publish. The publish form
+  // is rendered once a section exists. The refusal must reach the operator and change nothing.
+  const publishForm = page.locator('form:has(input[value="publish-map"])');
+  request = await submitForm(page, publishForm.getByRole('button', { name: 'Publish this map' }));
+  check('the seatless publish posts to the venue page', new URL(request.url()).pathname === PATH, request.url());
+  const publishAction = new URLSearchParams(request.postData() ?? '').get('_action');
+  check('the seatless publish submits the publish action', publishAction === 'publish-map', String(publishAction));
+  const publishRefusal = (await page.getByRole('alert').allTextContents()).map((s) => s.trim()).join(' | ');
+  check(
+    'the seatless publish shows the seat refusal',
+    publishRefusal === `Could not save: ${SEAT_REFUSAL}`,
+    publishRefusal,
+  );
+  check(
+    'the refused publish left the draft unpublished',
+    sql(PG, 'catalog', `SELECT status || '|' || (published_at IS NULL)::text FROM seat_maps WHERE id='${mapId}'`) ===
+      'draft|true',
+  );
+
   const seatForm = page.locator('form:has(input[value="add-seat"])');
   await seatForm.locator('input[name="label"]').fill('1');
   await seatForm.locator('input[name="position"]').fill('1');
   request = await submitForm(page, seatForm.getByRole('button', { name: 'Add seat' }));
   check('the seat form posts to the venue page', new URL(request.url()).pathname === PATH, request.url());
 
-  const publishForm = page.locator('form:has(input[value="publish-map"])');
   request = await submitForm(page, publishForm.getByRole('button', { name: 'Publish this map' }));
   check('the publish form posts to the venue page', new URL(request.url()).pathname === PATH, request.url());
   check(
@@ -80,6 +100,25 @@ try {
 
   // The editor is a React island. Wait for hydration before reading or changing it.
   await page.waitForLoadState('networkidle');
+  // TKT-318: the editor cannot save a version with no seats either. Remove the only seat
+  // and submit. The refusal must reach the operator, and the lineage must not change.
+  const lineageOf = () =>
+    sql(
+      PG,
+      'catalog',
+      `SELECT string_agg(version::text || ':' || status || ':' || id::text, ',' ORDER BY version)
+       FROM seat_maps
+       WHERE map_family_id=(SELECT map_family_id FROM seat_maps WHERE id='${mapId}')`,
+    );
+  await page.getByRole('button', { name: 'Remove seat Main/A/1' }).click();
+  request = await submitForm(page, page.getByRole('button', { name: 'Save as new version' }));
+  check('the seatless edit posts to the venue page', new URL(request.url()).pathname === PATH, request.url());
+  const editAction = new URLSearchParams(request.postData() ?? '').get('_action');
+  check('the seatless edit submits the edit action', editAction === 'edit-map', String(editAction));
+  const editRefusal = (await page.getByRole('alert').allTextContents()).map((s) => s.trim()).join(' | ');
+  check('the seatless edit shows the seat refusal', editRefusal === `Could not save: ${SEAT_REFUSAL}`, editRefusal);
+  check('the refused edit created no version', lineageOf() === `1:published:${mapId}`, lineageOf());
+  await page.waitForLoadState('networkidle');
   const seatLabel = page.getByLabel('Seat Main/A label');
   await seatLabel.fill('101');
   request = await submitForm(page, page.getByRole('button', { name: 'Save as new version' }));
@@ -87,13 +126,7 @@ try {
   const editedMapId = new URL(page.url()).searchParams.get('map');
   check('editing selects a different map version', Boolean(editedMapId) && editedMapId !== mapId, page.url());
 
-  const lineage = sql(
-    PG,
-    'catalog',
-    `SELECT string_agg(version::text || ':' || status || ':' || id::text, ',' ORDER BY version)
-     FROM seat_maps
-     WHERE map_family_id=(SELECT map_family_id FROM seat_maps WHERE id='${mapId}')`,
-  );
+  const lineage = lineageOf();
   check(
     'the edit kept version one and created published version two',
     lineage === `1:published:${mapId},2:published:${editedMapId}`,

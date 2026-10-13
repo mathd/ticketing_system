@@ -150,13 +150,14 @@ type Server struct {
 	// (TKT-191). Deliberately a different, catalog-only value — see the
 	// CatalogStaffWriteCredential security scheme and ADR-042.
 	staffWriteCredential string
-	// organizerAssertionKey signs the organizer assertion (TKT-245, ADR-058). It
-	// answers a different question from staffWriteCredential, which is why it is a
-	// second value rather than a reuse: that credential says "the back office is
-	// calling", this key says "for organizer O". Set through
-	// WithOrganizerAssertionKey; a server without it verifies nothing rather than
-	// verifying everything (see assertion.go's empty-key check).
-	organizerAssertionKey organizerAssertionKey
+	// organizerAssertions signs and verifies the organizer assertion (TKT-245,
+	// ADR-058; Ed25519 since TKT-287). It answers a different question from
+	// staffWriteCredential, which is why it is a second value rather than a reuse:
+	// that credential says "the back office is calling", this key says "for
+	// organizer O". Set through WithOrganizerAssertionSigner; a server without it
+	// verifies nothing rather than verifying everything (see assertion.go's nil
+	// check).
+	organizerAssertions *OrganizerAssertionSigner
 	// limiters bound the public staff-login surface (TKT-195). Reached through
 	// lim(), never directly: a nil here must mean "build the real ones", not
 	// "allow everything". See ratelimit.go.
@@ -210,12 +211,13 @@ func newServer(st handlerStore, pub events.Publisher, log *slog.Logger, internal
 	}
 }
 
-// WithOrganizerAssertionKey supplies the signing key (TKT-245). A setter rather
-// than another positional argument to NewServer, for the same reason commerce's
-// WithCustomerAssertionKey is one: every existing caller keeps compiling, and a
-// server constructed without it verifies nothing rather than verifying everything.
-func (s *Server) WithOrganizerAssertionKey(key string) *Server {
-	s.organizerAssertionKey = organizerAssertionKey(key)
+// WithOrganizerAssertionSigner supplies the signing key (TKT-245, TKT-287). A
+// setter rather than another positional argument to NewServer, for the same
+// reason commerce's WithCustomerAssertionKey is one: every existing caller keeps
+// compiling, and a server constructed without it verifies nothing rather than
+// verifying everything.
+func (s *Server) WithOrganizerAssertionSigner(signer *OrganizerAssertionSigner) *Server {
+	s.organizerAssertions = signer
 	return s
 }
 
@@ -666,6 +668,11 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		writeJSON(w, http.StatusBadRequest, Error{Error: "seat identity must be at most 200 characters"})
 	case errors.Is(err, store.ErrSeatMapNotPublished):
 		writeJSON(w, http.StatusConflict, Error{Error: "seat map must be published before a slot can be seated against it"})
+	case errors.Is(err, store.ErrSeatMapSeatless):
+		// TKT-318: publish, edit and create-performance all answer 409 with this
+		// message. A version with no seats cannot be published, saved as a new
+		// version, or seated against. Legacy seatless versions stay readable.
+		writeJSON(w, http.StatusConflict, Error{Error: "a seat map needs at least one seat before it can be published, saved, or seated against"})
 	case errors.Is(err, store.ErrSeatMapEditOrphansPinned):
 		// TKT-105/ADR-029: an edit that drops a seat identity pinned by a sale or
 		// hold is a conflict, not a 500. The message is actionable for the UI.
@@ -678,6 +685,26 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 		// which reference the registry (ADR-024), so nothing would cascade and
 		// nothing would complain. The message says what to do instead.
 		writeJSON(w, http.StatusConflict, Error{Error: "channel code is immutable; create a new channel and disable this one instead of renaming"})
+	case errors.Is(err, store.ErrChannelRevisionMismatch):
+		// TKT-325 (ADR-080): the PUT's expected_revision is stale, so nothing
+		// was written. Built from the generated ChannelUpdateConflict type.
+		// Two protections, and they cover different edits. The BUILD protects
+		// the type: delete the ChannelUpdateConflict component and this does not
+		// compile. It does NOT protect the declaration: delete only the
+		// operation's '409' response and the type is still generated
+		// (codegen.yaml sets skip-prune: true), this compiles, and ADR-028's
+		// response validator turns every stale refusal into a 500. The router
+		// test TestStaleChannelPutIsTheCodedConflictAndWritesNothing
+		// (channels_test.go) protects the declaration: it asserts this exact
+		// 409 through env.validateResponse, which fails on a masked response.
+		// The `code` is what tells this 409 apart from the code-immutability
+		// one beside it; the message does not blame another operator, because
+		// after a lost response the change may be the caller's own.
+		code := ChannelRevisionMismatch
+		writeJSON(w, http.StatusConflict, ChannelUpdateConflict{
+			Error: "channel changed since it was read; nothing was saved",
+			Code:  &code,
+		})
 	case errors.Is(err, store.ErrChannelInvalidInput):
 		writeJSON(w, http.StatusBadRequest, Error{Error: "invalid channel: code 1..100 bytes, display_name 1..200, kind one of web/pos/presale/reseller"})
 	case errors.Is(err, store.ErrIdempotencyConflict):

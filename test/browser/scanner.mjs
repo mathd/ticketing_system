@@ -113,11 +113,52 @@ try {
   await page.waitForFunction(() => document.querySelector('.queue-note')?.textContent?.includes('1 queued offline scan'));
   check('the offline refusal attempted best-effort reconciliation', reconcileRequests.length === 1, `observed ${reconcileRequests.length}`);
 
-  const syncResponse = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === '/api/access/scans/reconciliations' && response.status() === 200);
+  // TKT-315: a failed sync SAYS so, and leaves the queue exactly as it was. The offline
+  // best-effort attempt above could not reach anything: that is the "No connection" note.
+  await page.getByText(/^Sync failed: No connection\. 1 scan is saved on this device/).waitFor();
+  check('an offline sync attempt tells the operator it failed', true);
+  const queuedRows = () => page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const request = open.result.transaction('occurrences', 'readonly').objectStore('occurrences').getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        open.result.close();
+        resolve(request.result.filter((row) => row.state === 'QUEUED'));
+      };
+    };
+  }));
+  const rowsBefore = await queuedRows();
+  check('one queued occurrence is stored before the failing sync', rowsBefore.length === 1, `observed ${rowsBefore.length}`);
+
+  // Back online, the gateway answers the reconcile POST with a 502 that is not JSON. The online
+  // edge syncs by itself, so the response wait is registered BEFORE going online.
+  const isReconcile = (url) => new URL(url).pathname === '/api/access/scans/reconciliations';
+  const reconcileRoute = (url) => isReconcile(url.href);
+  await page.route(reconcileRoute, (route) =>
+    route.request().method() === 'POST'
+      ? route.fulfill({ status: 502, contentType: 'text/html', body: '<html><body>Bad Gateway</body></html>' })
+      : route.continue());
+  const failedSync = page.waitForResponse((response) => isReconcile(response.url()) && response.status() === 502);
   await context.setOffline(false);
+  await failedSync;
+  await page.getByText(/^Sync failed: The server answered but the reply could not be read\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./).waitFor();
+  check('a 502 on sync renders the unreadable note', true);
+  check(
+    'the queue count still reads one after the failed sync',
+    (await page.locator('.queue-note').innerText()).includes('1 queued offline scan'),
+  );
+  const rowsAfter = await queuedRows();
+  check('the failed sync left the stored queue exactly as it was', JSON.stringify(rowsAfter) === JSON.stringify(rowsBefore),
+    `before ${JSON.stringify(rowsBefore)} after ${JSON.stringify(rowsAfter)}`);
+  await page.unroute(reconcileRoute);
+
+  const syncResponse = page.waitForResponse((response) => isReconcile(response.url()) && response.status() === 200);
+  await page.getByRole('button', { name: 'Sync queued scans' }).click();
   await syncResponse;
   await page.getByText(/Synced 1 offline scan/).waitFor();
+  check('a successful sync replaces the failure note', (await page.getByText(/^Sync failed:/).count()) === 0);
   const refusal = offlineRequest.postDataJSON().occurrences?.[0];
   if (!refusal) throw new Error('reconciliation did not carry the queued refusal');
   check('reconciliation carries the refusal decision', refusal.local_decision === 'revocation_refused');

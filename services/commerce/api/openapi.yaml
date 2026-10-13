@@ -4,6 +4,12 @@ paths:
   /reservations:
     post:
       operationId: createReservation
+      description: >
+        A 409 with `code: sold_out` means that inventory found zero public headroom for
+        this GA request at its locked decision (TKT-341, ADR-082). It is point-in-time
+        and retryable. A partial shortage, a closed slot and every other inventory
+        refusal keep the code-less 409, except `seated_pool_unsupported` for a
+        quantity request on a seated pool. A seated request keeps its own codes.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReservationCreate'}}}}
       responses:
@@ -339,6 +345,8 @@ paths:
         "not your allocation" and "no allocation configured". A distinguishing code
         would tell a caller which channels exist and who owns them — the enumeration
         oracle `presale_code_invalid` was made uniform to prevent.
+        This route therefore never sends `sold_out` (TKT-341, ADR-082), although the
+        shared Error schema lists it.
       security: [{PartnerCredential: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -639,16 +647,14 @@ paths:
       # question a staff member asks before deciding what to do next. It also carries
       # money and refund idempotency keys, which must not sit in a shared cache.
       #
-      # organizer_id is a required query parameter and is the SCOPE, not the authority:
-      # the credential proves the caller is the back office, and the organizer narrows
-      # what it may see. The back office supplies it from its authenticated session, never
-      # from browser input. Commerce cannot verify the organizer itself — the signed
-      # organizer assertion (ADR-058) is minted with a catalog-only key — so a holder of
-      # COMMERCE_STAFF_WRITE_TOKEN could name another organizer. That residual is real,
-      # is unchanged by this operation, and is recorded on ADR-042.
+      # The organizer is the SCOPE, and since TKT-287 it is VERIFIED: it is read from the
+      # X-Catalog-Organizer-Assertion catalog minted at staff sign-in (ADR-058, Ed25519),
+      # which commerce checks with catalog's public key. The request carries no
+      # organizer_id. The guard is the staff credential AND that assertion, inline (ADR-043):
+      # every refusal, including a valid assertion for another organizer's order, is the
+      # same 404.
       parameters:
         - {$ref: '#/components/parameters/Id'}
-        - {$ref: '#/components/parameters/OrganizerIdQuery'}
       responses:
         '200': {description: Staff order detail, content: {application/json: {schema: {$ref: '#/components/schemas/StaffOrderDetail'}}}}
         '400': {$ref: '#/components/responses/Error'}
@@ -750,7 +756,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted, sold_out], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory''s locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.'}
         seat_identities:
           type: array
           description: >
@@ -1023,6 +1029,24 @@ components:
       additionalProperties: false
       properties:
         email: {type: string, minLength: 1, maxLength: 320}
+        locale:
+          description: >
+            The language of the message and of the link's page (TKT-366). The
+            storefront sends the locale of the route the form was submitted on.
+            It selects fixed copy and the fixed path /{locale}/account/reset-password
+            and nothing else: the link's origin stays server-configured and the
+            recipient stays the registered address.
+
+            OPTIONAL, and absent means en. A caller built before this field (the
+            storefront still on its old build during a rolling deploy) must keep
+            getting its English message, not a refusal. A present value outside
+            the set is refused with 400 before the address is looked up, so the
+            refusal is the same for every address. Deploy commerce before the
+            storefront: an older commerce refuses this field (ADR-050 § TKT-366
+            amendment).
+          type: string
+          enum: [en, fr]
+          x-enum-varnames: [PasswordResetLocaleEn, PasswordResetLocaleFr]
     PasswordResetCompletion:
       description: >
         A redemption (TKT-226). The token is 32 random bytes in base64url, so 43
@@ -1341,9 +1365,12 @@ components:
       # (TKT-171). The quantity is whole-order and comes from the reservation under
       # the order row lock; a client that cannot state one cannot forge one.
       additionalProperties: false
-      required: [organizer_id, actor, reason]
+      # No organizer_id (TKT-287). The organizer is read from the verified
+      # X-Catalog-Organizer-Assertion and nowhere else, so with
+      # additionalProperties: false a body that names one is a 400. It is
+      # unsubmittable, not validated against the assertion.
+      required: [actor, reason]
       properties:
-        organizer_id: {type: string, format: uuid}
         # Staff attribution, as on RefundCreate: an operation that stops a ticket
         # admitting cannot be less attributable than one that moves money.
         actor: {type: string, minLength: 1, maxLength: 200}
@@ -1367,9 +1394,10 @@ components:
     RefundCreate:
       type: object
       additionalProperties: false
-      required: [organizer_id, quantity, actor, reason]
+      # No organizer_id (TKT-287): see VoidCreate. The tenant comes from the
+      # verified organizer assertion, never from the body.
+      required: [quantity, actor, reason]
       properties:
-        organizer_id: {type: string, format: uuid}
         quantity: {type: integer, minimum: 1, maximum: 50}
         # Staff attribution, mirroring OperationalConversionCreate: an operation that
         # moves money cannot be less attributable than one that moves a seat.

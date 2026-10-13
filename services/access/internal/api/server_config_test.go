@@ -17,6 +17,12 @@ func (constructorAddressBook) DeliveryEmail(context.Context, uuid.UUID) (string,
 	return "buyer@example.test", nil
 }
 
+type constructorZones struct{ name string }
+
+func (constructorZones) PerformanceZones(context.Context, []uuid.UUID) map[uuid.UUID]string {
+	return nil
+}
+
 type constructorMailer struct{}
 
 func (constructorMailer) Send(context.Context, uuid.UUID, string, string) error { return nil }
@@ -59,6 +65,7 @@ func TestNewWiresServerConfig(t *testing.T) {
 	telemetry := &scannerTelemetry{}
 	addresses := constructorAddressBook{}
 	mailer := constructorMailer{}
+	zones := constructorZones{name: "catalog"}
 	server := New(ServerConfig{
 		Store:             st,
 		InternalToken:     "internal",
@@ -69,6 +76,7 @@ func TestNewWiresServerConfig(t *testing.T) {
 		RedeliveryAddress: addresses,
 		RedeliveryMailer:  mailer,
 		PublicURL:         "https://tickets.example.test",
+		PerformanceZones:  zones,
 	})
 
 	if server.st != st || server.devices != st || server.redeliveries != st {
@@ -82,6 +90,9 @@ func TestNewWiresServerConfig(t *testing.T) {
 	}
 	if server.telemetry != telemetry || server.addresses != addresses || server.mailer != mailer {
 		t.Fatal("runtime dependencies were not wired from ServerConfig")
+	}
+	if server.zones != zones {
+		t.Fatal("the performance zone reader was not wired from ServerConfig")
 	}
 	if server.publicURL != "https://tickets.example.test" {
 		t.Fatalf("publicURL = %q", server.publicURL)

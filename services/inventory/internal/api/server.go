@@ -213,6 +213,22 @@ func problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrPresaleCodeInvalid):
 		write(w, 409, map[string]string{"error": err.Error(), "code": "presale_code_invalid"})
 		return
+	// Operator-facing 400 (ADR-064), distinct from the buyer 409 above. The sentinel is
+	// a bare errors.New with no Channel method, so belowConsumption cannot claim it.
+	// This case must stay above that structural match.
+	case errors.Is(err, store.ErrPresaleCodeInvalidInput):
+		code = 400
+	// A sellout: an unchannelled GA hold found zero public headroom at the locked
+	// decision (TKT-341, ADR-082). Point-in-time and retryable, not permanent.
+	//
+	// It WRAPS ErrUnavailable, so it MUST stay above the generic branch below, which
+	// would otherwise claim it and answer the code-less 409. It has no Channel()
+	// method, so belowConsumption cannot claim it, but it stays above that structural
+	// match as well (TKT-307): a later wrapper that names a channel must not turn a
+	// sellout into `allocation_cap_below_consumption`.
+	case errors.Is(err, store.ErrSoldOut):
+		write(w, 409, map[string]string{"error": err.Error(), "code": "sold_out"})
+		return
 	// The two allocation-editor refusals (TKT-244). Both WRAP the sentinels handled
 	// below, so they MUST be matched first — the generic case would otherwise swallow
 	// them and answer the code-less 409 this ticket exists to replace.

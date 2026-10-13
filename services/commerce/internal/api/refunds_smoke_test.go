@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	commercestore "ticketing/services/commerce/internal/store"
 )
@@ -26,12 +27,15 @@ func TestRefundOrderProviderTerminalFailureAnswers422AndStaysPending(t *testing.
 	}))
 	defer payments.Close()
 
-	const token, key = "staff-terminal-token", "staff-terminal-refund-1"
-	s := newTestServer(db, payments.Client(), "", "", payments.URL, token)
+	const key = "staff-terminal-refund-1"
+	// The staff credential and an assertion for the fixture's organizer (TKT-287).
+	s := newTestServer(db, payments.Client(), "", "", payments.URL, internalTok).
+		WithStaffWriteCredential(staffTok).WithOrganizerAssertionVerifier(testOrgVerifier(t))
 	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+f.order.String()+"/refunds", bytes.NewBufferString(
-		`{"organizer_id":"`+f.organizer.String()+`","quantity":1,"actor":"support","reason":"terminal provider refusal"}`))
+		`{"quantity":1,"actor":"support","reason":"terminal provider refusal"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", token)
+	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
+	req.Header.Set(organizerAssertionHeader, mintTestAssertion(t, testOrgKey(), f.organizer.String(), time.Now().Add(time.Hour)))
 	req.Header.Set("Idempotency-Key", key)
 	rec := httptest.NewRecorder()
 	s.Router(nil, true).ServeHTTP(rec, req)

@@ -1,0 +1,2689 @@
+{
+  "from": "2026-10-12T01:31:51.194252011Z",
+  "grafana_result": {
+    "frames": [
+      {
+        "data": {
+          "nanos": [
+            null,
+            [
+              726069,
+              8473,
+              290363,
+              812038,
+              301283,
+              364236,
+              61010,
+              21761,
+              612825,
+              71795,
+              350484,
+              18102,
+              779304,
+              469547
+            ],
+            null,
+            null,
+            null,
+            null
+          ],
+          "values": [
+            [
+              "dbdc2431e3f6c16eb7e688925f0acaf6",
+              "a4d7c488be620450d9cbda00a451a77d",
+              "893f2c72f8d5032674cce1d3ca993756",
+              "6779f2f1bd779a4e09c27e9f2f14714f",
+              "c1116d45e9b9d2ec5ad43440690f64e5",
+              "3816cd5c4214dbc353697abf1e1c1700",
+              "d577cc7b880a27637922a1cf8562255d",
+              "352750871b126fd2682d3275d3e9eda8",
+              "9af8624556af02d076186a0c4890383c",
+              "55fa127cabb6d567f069ccb5e7bc2818",
+              "6bd7b217e601116e44e7fdd18552582d",
+              "cfca3f6884c1848ee39cbf31c0128602",
+              "2d3216153b7a57e9104c2590c82362bc",
+              "8ab2d745053e233c5f9305b9a6703d15"
+            ],
+            [
+              1791769421875,
+              1791769406797,
+              1791769391792,
+              1791769376728,
+              1791769363722,
+              1791769346646,
+              1791769331633,
+              1791769316601,
+              1791768728683,
+              1791768726618,
+              1791768719910,
+              1791768715572,
+              1791768713333,
+              1791768711021
+            ],
+            [
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "\u003croot span not yet received\u003e",
+              "commerce",
+              "commerce",
+              "commerce",
+              "commerce",
+              "commerce",
+              "commerce"
+            ],
+            [
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "POST",
+              "POST",
+              "POST",
+              "POST",
+              "POST",
+              "POST"
+            ],
+            [
+              38,
+              29,
+              29,
+              28,
+              45,
+              30,
+              26,
+              32,
+              42,
+              47,
+              58,
+              47,
+              55,
+              49
+            ],
+            [
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        964672
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "dbdc2431e3f6c16eb7e688925f0acaf6"
+                      ],
+                      [
+                        "338fd2068ebe4e6f"
+                      ],
+                      [
+                        1791769421875
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        37898087
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        352728
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "a4d7c488be620450d9cbda00a451a77d"
+                      ],
+                      [
+                        "e0cc4c8800f144b7"
+                      ],
+                      [
+                        1791769406797
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        29312354
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        675819
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "893f2c72f8d5032674cce1d3ca993756"
+                      ],
+                      [
+                        "769516ae94ac8105"
+                      ],
+                      [
+                        1791769391792
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        28651031
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        32754
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "6779f2f1bd779a4e09c27e9f2f14714f"
+                      ],
+                      [
+                        "223137d598786035"
+                      ],
+                      [
+                        1791769376729
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        27836859
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        634120
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "c1116d45e9b9d2ec5ad43440690f64e5"
+                      ],
+                      [
+                        "8b2f683ad97472c9"
+                      ],
+                      [
+                        1791769363722
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        44549562
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        641261
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "3816cd5c4214dbc353697abf1e1c1700"
+                      ],
+                      [
+                        "57aa2545333fa188"
+                      ],
+                      [
+                        1791769346646
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        30267311
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        243250
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "d577cc7b880a27637922a1cf8562255d"
+                      ],
+                      [
+                        "0c464754d5557401"
+                      ],
+                      [
+                        1791769331633
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        25515462
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        221082
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "352750871b126fd2682d3275d3e9eda8"
+                      ],
+                      [
+                        "a1d98211de19b604"
+                      ],
+                      [
+                        1791769316601
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        32190767
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        612825
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "9af8624556af02d076186a0c4890383c"
+                      ],
+                      [
+                        "f42ffdc34fd519da"
+                      ],
+                      [
+                        1791768728683
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        42614219
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        71795
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "55fa127cabb6d567f069ccb5e7bc2818"
+                      ],
+                      [
+                        "38e0565a66ac0369"
+                      ],
+                      [
+                        1791768726618
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        47539975
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        350484
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "6bd7b217e601116e44e7fdd18552582d"
+                      ],
+                      [
+                        "bf83e4e69926c118"
+                      ],
+                      [
+                        1791768719910
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        58594362
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        18102
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "cfca3f6884c1848ee39cbf31c0128602"
+                      ],
+                      [
+                        "1a5b6f4e46cee0c9"
+                      ],
+                      [
+                        1791768715572
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        47528800
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        779304
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "2d3216153b7a57e9104c2590c82362bc"
+                      ],
+                      [
+                        "a4d3fea8f655d9c5"
+                      ],
+                      [
+                        1791768713333
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        55234677
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ],
+              [
+                {
+                  "data": {
+                    "nanos": [
+                      null,
+                      null,
+                      [
+                        469547
+                      ],
+                      null,
+                      null,
+                      null,
+                      null,
+                      null
+                    ],
+                    "values": [
+                      [
+                        "8ab2d745053e233c5f9305b9a6703d15"
+                      ],
+                      [
+                        "1005ef22e212a054"
+                      ],
+                      [
+                        1791768711021
+                      ],
+                      [
+                        ""
+                      ],
+                      [
+                        "POST"
+                      ],
+                      [
+                        "commerce"
+                      ],
+                      [
+                        "/orders"
+                      ],
+                      [
+                        49170321
+                      ]
+                    ]
+                  },
+                  "schema": {
+                    "fields": [
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          }
+                        },
+                        "name": "traceIdHidden",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Span ID",
+                          "links": [
+                            {
+                              "internal": {
+                                "datasourceName": "Tempo",
+                                "datasourceUid": "tempo",
+                                "panelsState": {
+                                  "trace": {
+                                    "spanId": "${__value.raw}"
+                                  }
+                                },
+                                "query": {
+                                  "query": "${__data.fields.traceIdHidden}",
+                                  "queryType": "traceql"
+                                }
+                              },
+                              "title": "Span: ${__value.raw}"
+                            }
+                          ],
+                          "unit": "string"
+                        },
+                        "name": "spanID",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 200
+                          },
+                          "displayNameFromDS": "Start time"
+                        },
+                        "name": "time",
+                        "type": "time",
+                        "typeInfo": {
+                          "frame": "time.Time"
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "hideFrom": {
+                              "viz": true
+                            }
+                          },
+                          "displayNameFromDS": "Name"
+                        },
+                        "name": "name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string"
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "http.request.method"
+                        },
+                        "name": "http.request.method",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "service.name"
+                        },
+                        "name": "service.name",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "displayNameFromDS": "url.path"
+                        },
+                        "name": "url.path",
+                        "type": "string",
+                        "typeInfo": {
+                          "frame": "string",
+                          "nullable": true
+                        }
+                      },
+                      {
+                        "config": {
+                          "custom": {
+                            "width": 120
+                          },
+                          "displayNameFromDS": "Duration",
+                          "unit": "ns"
+                        },
+                        "name": "duration",
+                        "type": "number",
+                        "typeInfo": {
+                          "frame": "float64"
+                        }
+                      }
+                    ],
+                    "meta": {
+                      "preferredVisualisationType": "table",
+                      "typeVersion": [
+                        0,
+                        0
+                      ]
+                    },
+                    "name": "Spans"
+                  }
+                }
+              ]
+            ]
+          ]
+        },
+        "schema": {
+          "fields": [
+            {
+              "config": {
+                "displayNameFromDS": "Trace ID",
+                "links": [
+                  {
+                    "internal": {
+                      "datasourceName": "Tempo",
+                      "datasourceUid": "tempo",
+                      "query": {
+                        "query": "${__value.raw}",
+                        "queryType": "traceql"
+                      }
+                    },
+                    "title": "Trace: ${__value.raw}"
+                  }
+                ]
+              },
+              "name": "traceID",
+              "type": "string",
+              "typeInfo": {
+                "frame": "string"
+              }
+            },
+            {
+              "config": {
+                "displayNameFromDS": "Start time"
+              },
+              "name": "startTime",
+              "type": "time",
+              "typeInfo": {
+                "frame": "time.Time"
+              }
+            },
+            {
+              "config": {
+                "displayNameFromDS": "Service"
+              },
+              "name": "traceService",
+              "type": "string",
+              "typeInfo": {
+                "frame": "string"
+              }
+            },
+            {
+              "config": {
+                "displayNameFromDS": "Name"
+              },
+              "name": "traceName",
+              "type": "string",
+              "typeInfo": {
+                "frame": "string"
+              }
+            },
+            {
+              "config": {
+                "displayNameFromDS": "Duration",
+                "noValue": "\u003c1 ms",
+                "unit": "ms"
+              },
+              "name": "traceDuration",
+              "type": "number",
+              "typeInfo": {
+                "frame": "float64",
+                "nullable": true
+              }
+            },
+            {
+              "name": "nested",
+              "type": "other",
+              "typeInfo": {
+                "frame": "json.RawMessage"
+              }
+            }
+          ],
+          "meta": {
+            "preferredVisualisationType": "table",
+            "typeVersion": [
+              0,
+              0
+            ],
+            "uniqueRowIdFields": [
+              0
+            ]
+          },
+          "name": "Traces",
+          "refId": "A"
+        }
+      }
+    ],
+    "status": 200
+  },
+  "panel": "Checkout traces: commerce POST /orders",
+  "query": "{resource.service.name=\"commerce\" \u0026\u0026 span.http.request.method=\"POST\" \u0026\u0026 span.url.path=\"/orders\"}",
+  "to": "2026-10-12T01:48:42.482739581Z"
+}

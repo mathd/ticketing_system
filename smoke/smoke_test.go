@@ -789,11 +789,12 @@ func TestServerModeDoesNotMigrate(t *testing.T) {
 		// Supplied here so this probe still tests what it is about (that the
 		// server path does not migrate) rather than failing at configuration.
 		"-e", "CATALOG_STAFF_WRITE_TOKEN="+os.Getenv("SMOKE_CATALOG_STAFF_WRITE_TOKEN"),
-		// TKT-245: and its organizer-assertion signing key, for the same reason.
-		// The startup guard is tested by TestServerRefusesToStartWithoutAReal‑
-		// Credential; here it would only stop this probe from reaching the thing
-		// it exists to observe.
-		"-e", "CATALOG_ORGANIZER_ASSERTION_KEY="+os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"),
+		// TKT-245, TKT-287: and its organizer-assertion signing seed and key id,
+		// for the same reason. The startup guard is tested by catalog's
+		// credentials_test.go; here it would only stop this probe from reaching
+		// the thing it exists to observe.
+		"-e", "CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY="+os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED"),
+		"-e", "CATALOG_ORGANIZER_ASSERTION_KID="+os.Getenv("SMOKE_CATALOG_ORGANIZER_ASSERTION_KID"),
 		project+"-catalog").CombinedOutput()
 	if err != nil {
 		t.Fatalf("start probe: %v: %s", err, out)
@@ -874,6 +875,9 @@ func TestCommerceStartsWithoutRunningBackfill(t *testing.T) {
 		// TKT-221: commerce refuses to start without it, and refuses again if it
 		// equals either other credential — smoke.sh generates all three separately.
 		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
+		// TKT-287: catalog's public organizer-assertion keyring. Commerce refuses to
+		// start without it; here it would only stop the probe reaching what it observes.
+		"-e", "COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="+os.Getenv("SMOKE_COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
@@ -983,6 +987,9 @@ func TestCommerceBackfillRepairsSeededOrder(t *testing.T) {
 		// TKT-221: commerce refuses to start without it, and refuses again if it
 		// equals either other credential — smoke.sh generates all three separately.
 		"-e", "COMMERCE_CUSTOMER_ASSERTION_KEY="+os.Getenv("SMOKE_COMMERCE_CUSTOMER_ASSERTION_KEY"),
+		// TKT-287: catalog's public organizer-assertion keyring. Commerce refuses to
+		// start without it; here it would only stop the probe reaching what it observes.
+		"-e", "COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="+os.Getenv("SMOKE_COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS"),
 		"-e", "CATALOG_URL=http://catalog:8080",
 		"-e", "INVENTORY_URL=http://inventory:8080",
 		"-e", "PAYMENTS_URL=http://payments:8080",
@@ -1064,13 +1071,14 @@ func TestMetricsIngested(t *testing.T) {
 // way out (here, the Prometheus the real binary exports to) closes it. Delete the
 // ObserveMetrics call and TestMetricsIngested stays green while this fails.
 //
-// All FOUR series are required by exact name, not a name-family regex. A family match is
+// All SIX series are required by exact name, not a name-family regex. A family match is
 // satisfied by any one member, so a registration that dropped three instruments would
 // still pass (ai-review F2). The OTLP-to-Prometheus translation is the exporter's rule
 // rather than this repo's — dots become underscores, and counters gain a `_total` suffix
 // that gauges do not (`access.event.failures` arrives as `access_event_failures_total`,
-// access_consumer_test.go) — so these four names were confirmed against a real run, not
-// derived on paper.
+// access_consumer_test.go) — so the four parked names were confirmed against a real run, not
+// derived on paper. The two eligible_unparked names (TKT-321) follow the same rule but have
+// not been observed in a run yet; they are unverified until the compose gate runs.
 //
 // Staleness is not a concern here and the reason is worth stating, because the assertion
 // would be worthless if it were: scripts/smoke.sh runs `compose down -v` from an EXIT trap
@@ -1082,6 +1090,8 @@ func TestRecoveryParkedGaugesIngested(t *testing.T) {
 		"commerce_recovery_parked_reconciliation_required",
 		"commerce_recovery_parked_total",
 		"commerce_recovery_parked_oldest_age_seconds",
+		"commerce_recovery_eligible_unparked",
+		"commerce_recovery_eligible_unparked_oldest_age_seconds",
 	} {
 		retry(t, 60*time.Second, func() error {
 			query := url.QueryEscape(name + `{service_name="commerce"}`)

@@ -76,11 +76,17 @@ type accessFailureEvent struct {
 // durableconsumer tests own that state transition; the service Run tests own
 // the call-site wiring; this smoke test owns broker behavior and classification.
 //
-// access-slot-policy rather than access-ticket-issuer, deliberately: identical
-// CreateOrUpdateConsumer → Consume → cc.Closed() → WaitWithCause path, so nothing
-// about the library mechanism is lost, but the DeliverAll replay on recreation
-// is an idempotent projection upsert (store.UpsertSlotPolicy, keyed by envelope
-// id) instead of re-running signed lifecycle issuance.
+// access-slot-policy rather than access-ticket-issuer, deliberately, and since
+// TKT-327 for two reasons. One: access-slot-policy is the only access durable
+// access still CREATES (single FilterSubject, ADR-072 §5). access-ticket-issuer is
+// pre-provisioned by nats-init and access only binds to it, so after its deletion
+// access does NOT recreate it: the restarted container fails its bind and
+// restart-loops until nats-init runs again (ADR-034 amendment). Recovery inside
+// this test would need an admin re-provision, which tests nats-init, not access.
+// Two: the Consume → cc.Closed() → WaitWithCause path is identical, so nothing
+// about the library mechanism is lost, and the DeliverAll replay on recreation is
+// an idempotent projection upsert (store.UpsertSlotPolicy, keyed by envelope id)
+// instead of re-running signed lifecycle issuance.
 //
 // Source position is LOAD-BEARING, not a cost optimisation — an earlier draft
 // of this comment claimed the latter and was wrong (ai-review R3). This file

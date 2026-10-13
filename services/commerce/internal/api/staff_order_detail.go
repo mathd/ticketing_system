@@ -26,20 +26,14 @@ import (
 // removed customer_id from OrderState made exactly that argument; putting money there
 // would be the same mistake with worse consequences.
 func (s *Server) staffOrderDetail(w http.ResponseWriter, r *http.Request) {
-	// Either the shared internal token or the back office's commerce credential. The
-	// THIRD operation to accept the second (refund, void, and now this read) — and
-	// staff_credential_test.go enumerates every internal route so that the set stays
-	// deliberate rather than accumulating.
+	// The staff credential AND a verified organizer assertion (TKT-287), the third
+	// operation after the refund and the void; staff_credential_test.go enumerates every
+	// internal route so that the set stays deliberate rather than accumulating.
 	//
 	// Same 404 as everywhere else in this service, not a 401: it does not confirm the
 	// route exists (ADR-043).
-	//
-	// FIRST, and note what that does NOT buy on this route: organizer_id is a required
-	// query parameter in the contract, so the request validator answers 400 for a request
-	// that omits it before this handler runs at all. A refusal test that leaves it out is
-	// therefore testing the validator, not the credential — it must send a well-formed
-	// request and be refused anyway.
-	if !s.staffOrInternal(r) {
+	org, ok := s.staffOrganizer(r)
+	if !ok {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -48,19 +42,9 @@ func (s *Server) staffOrderDetail(w http.ResponseWriter, r *http.Request) {
 		write(w, 400, map[string]string{"error": "invalid order"})
 		return
 	}
-	// The SCOPE, not the authority. The credential proves the caller is the back office;
-	// this narrows what it may see. The back office supplies it from its authenticated
-	// server-side session, never from browser input.
-	//
-	// Commerce cannot verify it: the signed organizer assertion (ADR-058) is minted with a
-	// catalog-only key, so a holder of COMMERCE_STAFF_WRITE_TOKEN could name another
-	// organizer. That residual predates this read — the refund takes organizer_id from a
-	// request body the same way — and is recorded on ADR-042 rather than pretended away.
-	org, err := uuid.Parse(r.URL.Query().Get("organizer_id"))
-	if err != nil || org == uuid.Nil {
-		write(w, 400, map[string]string{"error": "organizer_id required"})
-		return
-	}
+	// The SCOPE is the verified assertion's organizer (above). No organizer_id is read
+	// from the query: before TKT-287 it was, and any holder of the staff credential could
+	// name another tenant.
 	detail, err := commercestore.ReadStaffOrderDetail(r.Context(), s.db, org, order)
 	if err != nil {
 		// An order under the wrong organizer is a 404, not an empty detail — the same

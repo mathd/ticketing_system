@@ -270,11 +270,18 @@ func TestClassifyHold409(t *testing.T) {
 		// blessing it would let a misconfigured on-sale proof report a clean sellout
 		// curve while selling nothing.
 		"presale code invalid": {`{"error":"invalid presale code","code":"presale_code_invalid"}`, KindServerError},
-		"unknown code":          {`{"error":"x","code":"something_new"}`, KindServerError},
-		"not json":              {`not json`, KindServerError},
-		"empty object":          {`{}`, KindServerError},
-		"empty body":            {``, KindServerError},
-		"missing error field":   {`{"code":""}`, KindServerError},
+		// TKT-341 / ADR-082: a public GA hold on a pool with zero public headroom
+		// carries `sold_out`. That IS capacity evidence, the only coded 409 that is.
+		// The exemption is the exact code on a body with an `error` string, nothing
+		// wider.
+		"sold out":                 {`{"error":"insufficient capacity: sold out","code":"sold_out"}`, KindRejected},
+		"sold out without error":   {`{"code":"sold_out"}`, KindServerError},
+		"sold out in another case": {`{"error":"insufficient capacity: sold out","code":"SOLD_OUT"}`, KindServerError},
+		"unknown code":             {`{"error":"x","code":"something_new"}`, KindServerError},
+		"not json":                 {`not json`, KindServerError},
+		"empty object":             {`{}`, KindServerError},
+		"empty body":               {``, KindServerError},
+		"missing error field":      {`{"code":""}`, KindServerError},
 	} {
 		if got := ClassifyHold409([]byte(tc.body)); got != tc.want {
 			t.Errorf("%s: ClassifyHold409(%q) = %q, want %q", name, tc.body, got, tc.want)

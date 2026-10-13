@@ -124,9 +124,15 @@ func port() string {
 // staffWriteTokenEnv names the catalog-only staff-write credential (TKT-191).
 const staffWriteTokenEnv = "CATALOG_STAFF_WRITE_TOKEN"
 
-// organizerAssertionKeyEnv names the HMAC key catalog signs organizer assertions
-// with (TKT-245, ADR-058). A signing key, not a credential anyone presents.
-const organizerAssertionKeyEnv = "CATALOG_ORGANIZER_ASSERTION_KEY"
+// organizerAssertionSigningKeyEnv names the Ed25519 seed catalog signs organizer
+// assertions with (TKT-245, ADR-058; asymmetric since TKT-287). A signing key,
+// not a credential anyone presents, and the ONLY private organizer-assertion
+// material in the system: other services get the public key.
+const organizerAssertionSigningKeyEnv = "CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY"
+
+// organizerAssertionKIDEnv names the key id stamped into every assertion, so a
+// verifier can select the public key (`catalog-org/<id>`).
+const organizerAssertionKIDEnv = "CATALOG_ORGANIZER_ASSERTION_KID"
 
 func run() error {
 	internalToken, err := runtimecfg.InternalTokenFromEnv()
@@ -170,7 +176,7 @@ func run() error {
 	// same reason as the credential above: a catalog running without it mints
 	// nothing and verifies nothing, so every back-office write would 401 while the
 	// service looked healthy.
-	assertionKey, err := runtimecfg.RequiredCredential(organizerAssertionKeyEnv, "", runtimecfg.CredentialMinBytes)
+	assertionSeed, err := runtimecfg.RequiredCredential(organizerAssertionSigningKeyEnv, "", runtimecfg.CredentialMinBytes)
 	if err != nil {
 		return err
 	}
@@ -180,16 +186,28 @@ func run() error {
 	// opening every service's internal surface must not also be the thing catalog
 	// trusts to name a tenant.
 	//
-	// Against CATALOG_STAFF_WRITE_TOKEN the argument is sharper, and it is the
-	// whole point of this ticket. The assertion exists so that holding the write
-	// credential does NOT let a caller choose an organizer. If the signing key
-	// were that same value, any holder could mint their own assertion for any
-	// tenant, and the boundary would be exactly as absent as before — while every
-	// test, header and log line said it was there.
-	if assertionKey == internalToken || assertionKey == staffWriteToken {
+	// Against CATALOG_STAFF_WRITE_TOKEN the argument is sharper. The assertion
+	// exists so that holding the write credential does NOT let a caller choose an
+	// organizer. If the signing seed were that same value, any holder could mint
+	// their own assertion for any tenant, and the boundary would be exactly as
+	// absent as before — while every test, header and log line said it was there.
+	//
+	// Compared as KEY MATERIAL, not as strings: a credential that differs from the
+	// seed's string but decodes to the same 32 bytes (another base64 variant,
+	// non-canonical trailing bits, or hex) gives its holder the seed all the same.
+	seed, err := api.DecodeOrganizerAssertionSeed(assertionSeed)
+	if err != nil {
+		return fmt.Errorf("%s: %w", organizerAssertionSigningKeyEnv, err)
+	}
+	if api.EncodesOrganizerAssertionSeed(internalToken, seed) || api.EncodesOrganizerAssertionSeed(staffWriteToken, seed) {
 		return fmt.Errorf("%s must differ from INTERNAL_SERVICE_TOKEN and %s: a signing key equal to "+
 			"the write credential lets anyone who can write mint their own tenancy, which is the "+
-			"boundary this key exists to create", organizerAssertionKeyEnv, staffWriteTokenEnv)
+			"boundary this key exists to create", organizerAssertionSigningKeyEnv, staffWriteTokenEnv)
+	}
+	assertionSigner, err := api.NewOrganizerAssertionSigner(assertionSeed, os.Getenv(organizerAssertionKIDEnv))
+	if err != nil {
+		// The constructor's errors name the variable's problem and never echo it.
+		return fmt.Errorf("%s / %s: %w", organizerAssertionSigningKeyEnv, organizerAssertionKIDEnv, err)
 	}
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
@@ -253,7 +271,7 @@ func run() error {
 
 	apiHandler, err := api.NewRouter(
 		api.NewServer(store.NewPostgres(db), publisher, log, internalToken, staffWriteToken).
-			WithOrganizerAssertionKey(assertionKey).
+			WithOrganizerAssertionSigner(assertionSigner).
 			WithStaffLoginTelemetry(staffLoginTelemetry),
 		validateResponses)
 	if err != nil {

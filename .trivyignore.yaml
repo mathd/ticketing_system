@@ -1,0 +1,19 @@
+# Reviewed, expiring vulnerability scan exceptions (ADR-081, TKT-335).
+#
+# repository-scan (Trivy) reads this file through the `trivyignores` input. The
+# pnpm-audit job reads the same list through auditConfig.ignoreGhsas in
+# pnpm-workspace.yaml, which `node scripts/scan-allowlist.mjs sync` writes.
+# The normal answer to an advisory is a bump. Add an entry only when a bump is
+# not possible yet, and only with the owner's approval.
+#
+# Entry shape (every field except pnpm_ids is required; dates are UNQUOTED):
+#
+#   - id: CVE-YYYY-NNNNN            # the VulnerabilityID that Trivy reports
+#     statement: "Why a bump is not possible yet; remediation TKT-NNN."
+#     owner: mathd
+#     approved_at: YYYY-MM-DD       # not in the future
+#     expired_at: YYYY-MM-DD        # 1 to 30 days after approved_at; Trivy drops it at 00:00 UTC,
+#                                   # and the pnpm-audit job refuses it from 23:00 UTC the day before
+#     pnpm_ids:                     # copied from the finding's VendorIDs in Trivy JSON output;
+#       - GHSA-xxxx-xxxx-xxxx       # paste that output in the PR (nothing checks this mapping)
+vulnerabilities: []

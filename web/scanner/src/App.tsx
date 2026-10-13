@@ -44,6 +44,7 @@ declare global {
 
 const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
+export const reconcileTimeoutMs = 15_000
 const revocationsURL = '/api/access/scans/voided-tickets'
 const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
@@ -85,8 +86,26 @@ async function tokenFingerprint(token: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+// The sync line (TKT-315). Tagged so a failure note can outlive a pairing change and so a
+// network failure never replaces the instruction to pair: matching on the text would
+// decide that by accident. A failure that arrives while the pairing instruction stands is
+// carried under it, so pairing shows it instead of a blank line.
+type SyncNote =
+  | { kind: 'failure'; id: string; text: string }
+  | { kind: 'success'; text: string }
+  | { kind: 'pairing'; text: string; failure?: { id: string; text: string } }
+  | null
+
 function readableTime(value?: string) {
   return value ? new Date(value).toLocaleString() : undefined
+}
+
+// What the sync line keeps once nothing awaits sync. A failure is false then, so it goes. A
+// pairing line keeps its text but loses the failure it carried. A success line stays.
+function withoutStaleFailure(previous: SyncNote): SyncNote {
+  if (previous?.kind === 'failure') return null
+  if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: previous.text }
+  return previous
 }
 
 function App() {
@@ -94,7 +113,7 @@ function App() {
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [queuedCount, setQueuedCount] = useState(0)
-  const [syncNote, setSyncNote] = useState('')
+  const [syncNote, setSyncNote] = useState<SyncNote>(null)
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
@@ -105,6 +124,12 @@ function App() {
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
+  // The time of the last sync that completed in this page session. A ref, not state: the
+  // online listener is registered by the first render and must read the current value.
+  const lastSuccessfulSyncAt = useRef<string | null>(null)
+  const syncFailureId = useRef(0)
+  const syncInFlight = useRef(false)
+  const syncRequested = useRef(false)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
@@ -346,7 +371,55 @@ function App() {
     }
   }
 
+  // Attempts are serialised, so one note never has to describe two batches.
+  // The deadline keeps a stalled request from blocking the line.
+  // Show the failure first. A queue read can wait behind another tab's transaction.
+  // A standing pairing instruction carries the failure until the device is paired.
+  const reportSyncFailure = async (cause: 'offline' | 'unreadable') => {
+    const id = String(++syncFailureId.current)
+    if (!mounted.current) return
+    const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
+    const failureText = (count: number) => `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
+    const failure = { id, text: `Sync failed: ${QUEUED_CAUSE[cause]}. Checking the scans saved on this device…` }
+    setSyncNote((previous) => previous?.kind === 'pairing' ? { ...previous, failure } : { kind: 'failure', ...failure })
+    const correctFailure = (previous: SyncNote, text?: string): SyncNote => {
+      const current = previous?.kind === 'pairing' ? previous.failure : previous?.kind === 'failure' ? previous : null
+      if (current?.id !== id) return previous
+      if (!text) return withoutStaleFailure(previous)
+      const corrected = { id, text }
+      return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', ...corrected }
+    }
+    try {
+      const queue = await (await getStore()).queued()
+      if (!mounted.current) return
+      setQueuedCount(queue.length)
+      setSyncNote((previous) => correctFailure(previous, queue.length ? failureText(queue.length) : undefined))
+    } catch {
+      // Leave the storage alert alone.
+      if (!mounted.current) return
+      const text = `Sync failed: ${QUEUED_CAUSE[cause]}. Any scans saved on this device will be sent on the next sync. Last successful sync this session: ${last}.`
+      setSyncNote((previous) => correctFailure(previous, text))
+    }
+  }
+
   const syncQueued = async () => {
+    if (!mounted.current) return
+    if (syncInFlight.current) {
+      syncRequested.current = true
+      return
+    }
+    syncInFlight.current = true
+    try {
+      do {
+        syncRequested.current = false
+        await syncBatch()
+      } while (syncRequested.current && mounted.current)
+    } finally {
+      syncInFlight.current = false
+    }
+  }
+
+  const syncBatch = async () => {
     let store: OccurrenceStore
     let queue: OccurrenceRecord[]
     try {
@@ -357,37 +430,70 @@ function App() {
       reportStorageFailure()
       return
     }
-    if (!queue.length) return
+    if (!queue.length) {
+      // Nothing on this device awaits sync, so a failure note that says scans are saved here
+      // is no longer true: another tab, or an earlier attempt, has sent them. Clear it and
+      // the count. A pairing line keeps its text but loses any failure it carried. A success
+      // line stays.
+      if (mounted.current) {
+        setQueuedCount(0)
+        setSyncNote(withoutStaleFailure)
+      }
+      return
+    }
+    // Every failure below leaves the queue untouched (ADR-066) and SAYS so (TKT-315): it used
+    // to return silently, so a venue could not tell "all reconciled" from "failing for hours".
+    // The causes are the scan path's (TKT-305), told apart the same way: no answer at all is
+    // "offline"; an answer that is not a 2xx, or a 2xx that cannot be decoded, is "unreadable".
+    const request: ReconcileRequest = {
+      occurrences: queue.map((record) => ({
+        qr_payload: record.qrPayload,
+        occurrence_id: record.occurrenceId,
+        occurred_at: record.occurredAt,
+        ...(record.localDecision ? { local_decision: record.localDecision } : {}),
+      })),
+    }
+    const token = deviceTokenRef.current
+    const headers = scanHeaders(token)
+    const body = JSON.stringify(request)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
     let data: ReconcileResponse
     try {
-      const request: ReconcileRequest = {
-        occurrences: queue.map((record) => ({
-          qr_payload: record.qrPayload,
-          occurrence_id: record.occurrenceId,
-          occurred_at: record.occurredAt,
-          ...(record.localDecision ? { local_decision: record.localDecision } : {}),
-        })),
+      let response: Response
+      try {
+        response = await fetch(reconcileURL, {
+          method: 'POST',
+          headers,
+          body,
+          signal: controller.signal,
+        })
+      } catch {
+        void reportSyncFailure('offline')
+        return
       }
-      const token = deviceTokenRef.current
-      const response = await fetch(reconcileURL, {
-        method: 'POST',
-        headers: scanHeaders(token),
-        body: JSON.stringify(request),
-      })
       if (response.status === 401) {
         // The queue is untouched: an unpaired device must not discard a night of
         // offline scans. Pair and sync again.
         clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
         return
       }
-      if (!response.ok) return
-      data = decodeReconcileResponse(
-        await response.json(),
-        new Set(queue.map((record) => record.occurrenceId)),
-      )
-    } catch {
-      // The queue is durable. A later reconnect or manual retry sends it again.
-      return
+      if (!response.ok) {
+        void reportSyncFailure('unreadable')
+        return
+      }
+      try {
+        data = decodeReconcileResponse(
+          await response.json(),
+          new Set(queue.map((record) => record.occurrenceId)),
+        )
+      } catch {
+        // A deadline during the body is unreadable. An answer already arrived.
+        void reportSyncFailure('unreadable')
+        return
+      }
+    } finally {
+      window.clearTimeout(timer)
     }
 
     let conflicts = 0
@@ -401,11 +507,13 @@ function App() {
       return
     }
     if (mounted.current) {
-      setSyncNote(
-        conflicts > 0
+      lastSuccessfulSyncAt.current = new Date().toISOString()
+      setSyncNote({
+        kind: 'success',
+        text: conflicts > 0
           ? `Synced ${data.results.length} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
           : `Synced ${data.results.length} offline scan(s).`,
-      )
+      })
     }
     await refreshQueued()
   }
@@ -514,7 +622,12 @@ function App() {
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
-    setSyncNote(reason)
+    // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
+    setSyncNote((previous) => {
+      if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
+      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
+      return { kind: 'pairing', text: reason }
+    })
   }
 
   const pairDevice = async (event: React.FormEvent) => {
@@ -540,7 +653,13 @@ function App() {
     deviceTokenRef.current = token
     setDeviceToken(token)
     setPairingInput('')
-    setSyncNote('')
+    // Pairing reconciles nothing: a failure note, or one carried under the pairing
+    // instruction, stays until a sync succeeds.
+    setSyncNote((previous) => {
+      if (previous?.kind === 'failure') return previous
+      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
+      return null
+    })
   }
 
   if (!deviceToken) {
@@ -572,7 +691,7 @@ function App() {
               {`${queuedCount} offline scan${queuedCount > 1 ? 's' : ''} are still saved on this device and will sync once it is paired.`}
             </p>
           )}
-          {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+          {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
           {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
         </section>
       </main>
@@ -600,7 +719,7 @@ function App() {
             <button type="button" onClick={() => void syncQueued()}>Sync queued scans</button>
           </p>
         )}
-        {syncNote && <p className="sync-note" role="status">{syncNote}</p>}
+        {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
         {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
       </section>
       {!hasRevocationPull && <p className="queue-note" role="status">This device holds no revocation list yet.</p>}
