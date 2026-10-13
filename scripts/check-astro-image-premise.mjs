@@ -13,20 +13,27 @@
 //
 // For web/backoffice and web/storefront it:
 //   1. evaluates astro.config.mjs (the evaluated config, not its text) twice:
-//      with NODE_ENV unset, and with NODE_ENV=production, which astro build
-//      sets before it loads the config. Each evaluation runs in a new node
-//      process (no shared module cache) with the app directory as the working
-//      directory. It fails if image.domains or image.remotePatterns is not
+//      with NODE_ENV unset, and with NODE_ENV=production. astro build sets
+//      NODE_ENV=production before it loads the config when NODE_ENV is unset
+//      or empty (astro/dist/core/util.js ensureProcessNodeEnv). Each
+//      evaluation runs in a new node process (no shared module cache) with the
+//      app directory as the working directory. A process that does not end
+//      within the timeout is killed with SIGKILL. It fails if image.domains or image.remotePatterns is not
 //      empty, image.service is set, an integration name is not in
 //      ALLOWED_INTEGRATIONS, or the adapter name is not in ALLOWED_ADAPTERS;
 //   2. reads every source file (SOURCE_EXTENSIONS) under the app, except in
 //      SKIPPED_DIRS, and fails on each IMPORT_MARKERS match, comments included.
 // It fails closed: a missing app directory, a missing or unreadable config, a
-// config that does not evaluate, or a symlink in the source tree is a failure.
+// config that does not evaluate or does not end, a result that is not exactly
+// one well-formed record, or a symlink in the source tree is a failure.
 //
 // Exit status: 0 the premise holds, 1 a rule fired, 2 a usage error.
 //
 // LIMITS. This guard does not prove that the vulnerable code is unreachable.
+// - It detects honest drift: a change that starts to use Astro image
+//   optimization without knowledge of this risk. It does not stop a writer who
+//   changes the config or the imports to evade it. That writer can also
+//   remove the guard.
 // - It does not read dependency code, and it does not run the hooks of the
 //   allowed integration or adapter. A new Astro release or a hook can change
 //   the image path. Read the call path again at each Astro bump.
@@ -70,7 +77,9 @@ export const ENVIRONMENTS = [
   { label: 'NODE_ENV unset', value: undefined },
   { label: 'NODE_ENV=production', value: 'production' },
 ];
-const EVALUATE_TIMEOUT_MS = 60_000;
+// Tests set CHECK_ASTRO_IMAGE_PREMISE_TIMEOUT_MS to keep the hang case short.
+const TIMEOUT_OVERRIDE = Number(process.env.CHECK_ASTRO_IMAGE_PREMISE_TIMEOUT_MS);
+export const EVALUATE_TIMEOUT_MS = Number.isInteger(TIMEOUT_OVERRIDE) && TIMEOUT_OVERRIDE > 0 ? TIMEOUT_OVERRIDE : 60_000;
 const RESULT_PREFIX = '@@check-astro-image-premise@@';
 
 // Runs in the child process. It prints only what the rules read, on one line
@@ -105,17 +114,54 @@ export function evaluateConfig(appDir, environment) {
     env,
     encoding: 'utf8',
     timeout: EVALUATE_TIMEOUT_MS,
+    // A config can trap SIGTERM; SIGKILL cannot be trapped.
+    killSignal: 'SIGKILL',
   });
+  if (result.error?.code === 'ETIMEDOUT') {
+    return { error: `cannot evaluate the config: no result within ${EVALUATE_TIMEOUT_MS} ms` };
+  }
   if (result.error) return { error: `cannot evaluate the config: ${result.error.message}` };
   if (result.status !== 0) {
     const reason = (result.stderr ?? '').split('\n').find((line) => /Error\b/.test(line)) ?? `exit status ${result.status}`;
     return { error: `cannot evaluate the config: ${reason.trim()}` };
   }
-  const line = (result.stdout ?? '').split('\n').findLast((l) => l.startsWith(RESULT_PREFIX));
-  if (line === undefined) return { error: 'cannot evaluate the config: no result' };
-  const summary = JSON.parse(line.slice(RESULT_PREFIX.length));
-  if (summary.error !== undefined) return { error: summary.error };
-  return { summary };
+  // A config that prints can collide with the result protocol. Accept exactly
+  // one record, valid JSON, in the expected shape; refuse anything else.
+  const records = (result.stdout ?? '').split('\n').filter((l) => l.startsWith(RESULT_PREFIX));
+  if (records.length !== 1) {
+    return { error: `cannot evaluate the config: found ${records.length} result records, expected 1` };
+  }
+  let record;
+  try {
+    record = JSON.parse(records[0].slice(RESULT_PREFIX.length));
+  } catch {
+    return { error: 'cannot evaluate the config: the result record is not valid JSON' };
+  }
+  if (isErrorRecord(record)) return { error: record.error };
+  if (!isSummary(record)) return { error: 'cannot evaluate the config: the result record has an unexpected shape' };
+  return { summary: record };
+}
+
+const LIST_STATES = ['absent', 'empty', 'not-empty', 'not-an-array'];
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isErrorRecord(record) {
+  return isObject(record) && Object.keys(record).length === 1 && typeof record.error === 'string';
+}
+
+// The shape that EVALUATE prints for a config with a default export object.
+function isSummary(record) {
+  if (!isObject(record)) return false;
+  const { image, integrations, adapter } = record;
+  const imageOk = image === null
+    || (isObject(image) && LIST_STATES.includes(image.domains) && LIST_STATES.includes(image.remotePatterns) && typeof image.service === 'boolean');
+  const integrationsOk = integrations === null
+    || (Array.isArray(integrations) && integrations.every((name) => name === null || typeof name === 'string'));
+  const adapterOk = adapter === null || (isObject(adapter) && (adapter.name === null || typeof adapter.name === 'string'));
+  return imageOk && integrationsOk && adapterOk;
 }
 
 const ACCEPTED_LIST = ['absent', 'empty'];

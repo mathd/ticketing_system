@@ -106,15 +106,22 @@ suppress. An entry with no finding would also hide a later change to the advisor
   the package. The runtime images ship `dist` only.
 - **The guard.** `make check-astro-image-premise` runs `scripts/check-astro-image-premise.mjs` in
   `make check`. The guard evaluates each app config two times: with `NODE_ENV` unset, and with
-  `NODE_ENV=production`, which `astro build` sets before it loads the config. The guard fails if an
+  `NODE_ENV=production`. `astro build` sets `NODE_ENV=production` before it loads the config, but
+  only when `NODE_ENV` is unset or empty. It keeps a value that is not empty (Astro 7.3.8
+  `dist/core/util.js:103-107`, called at `dist/core/build/index.js:30`). The production Dockerfiles
+  set `NODE_ENV=production` only in the runtime stage (`web/backoffice/Dockerfile:16`,
+  `web/storefront/Dockerfile:17`). The build stage does not set it. The pinned `node` base images
+  do not set it (we ran them). Thus `astro build` in the image loads the config with
+  `NODE_ENV=production` (inferred from the code, not executed). The guard fails if an
   app allows remote images, sets an image service, adds an integration other than `@astrojs/react`,
   or uses an adapter other than `@astrojs/node`. It also fails if app source imports the Astro image
   pipeline, imports `http-cache-semantics`, or imports a module under `astro/dist/`. The last rule
   exists because the loader does not check the initial URL. The guard does not run the hooks of the
-  allowed integration and adapter. We read the `updateConfig` calls in `@astrojs/react` 6.0.6 and
-  `@astrojs/node` 11.1.7. They change only the Vite config and the image endpoint. They add no
-  remote image domains or patterns. We did not execute them. The guard does not read dependency
-  code. The script lists its other limits.
+  allowed integration and adapter. We read the hooks of `@astrojs/react` 6.0.6 and `@astrojs/node`
+  11.1.7. They add no remote image domains or patterns. We did not execute them. The guard does not
+  read dependency code. The guard detects honest drift: a change that starts to use Astro image
+  optimization without knowledge of this risk. It does not stop a writer who changes the config or
+  the imports to evade it. That writer can also remove the guard. The script lists its other limits.
 - **Removal.** Remove this paragraph when a fixed release of `http-cache-semantics` is available
   and installed. Review the risk again when the guard fails, and at each Astro upgrade.
 

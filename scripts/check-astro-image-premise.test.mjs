@@ -335,6 +335,42 @@ describe('the guard fails closed', () => {
     refusesOnly({}, 'web/storefront/src/linked', 'symlink', root);
   });
 
+  it('a config that traps SIGTERM and never exits fails closed within the timeout', () => {
+    const hang = `process.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n${config()}`;
+    const started = Date.now();
+    const line = refusesOnly(
+      { 'web/backoffice/astro.config.mjs': hang },
+      'web/backoffice/astro.config.mjs',
+      'config-unreadable',
+      undefined,
+      { env: { ...process.env, CHECK_ASTRO_IMAGE_PREMISE_TIMEOUT_MS: '1000' }, timeout: 15_000, killSignal: 'SIGKILL' },
+    );
+    assert.ok(line.includes('no result within 1000 ms'), `want the timeout reason, got:\n  ${line}`);
+    assert.ok(Date.now() - started < 15_000, 'the guard must not wait for the config');
+  });
+
+  // The result protocol: the child prints one line that starts with this
+  // prefix. A config that prints such a line itself, or exits before the
+  // child prints, must fail closed, not crash and not pass.
+  const RESULT_PREFIX = '@@check-astro-image-premise@@';
+  const VALID_RECORD = '{"image":{"domains":"absent","remotePatterns":"absent","service":false},"integrations":[],"adapter":null}';
+
+  for (const [name, code, reason] of [
+    ['a malformed result record', `process.stdout.write('\\n${RESULT_PREFIX}{not json\\n');\nprocess.exit(0);\n`, 'the result record is not valid JSON'],
+    ['a result record with an unexpected shape', `process.stdout.write('\\n${RESULT_PREFIX}{"foo":1}\\n');\nprocess.exit(0);\n`, 'the result record has an unexpected shape'],
+    ['two result records', `process.stdout.write('\\n${RESULT_PREFIX}${VALID_RECORD}\\n');\n${config()}`, 'found 2 result records, expected 1'],
+    ['no result record', 'process.exit(0);\n', 'found 0 result records, expected 1'],
+  ]) {
+    it(`${name} fails closed`, () => {
+      const line = refusesOnly(
+        { 'web/storefront/astro.config.mjs': code },
+        'web/storefront/astro.config.mjs',
+        'config-unreadable',
+      );
+      assert.ok(line.includes(reason), `want "${reason}", got:\n  ${line}`);
+    });
+  }
+
   it('a config that throws on import refuses', () => {
     const result = run(['--root', fixture({ 'web/storefront/astro.config.mjs': "throw new Error('boom');\n" })]);
     assert.equal(result.status, 1);
