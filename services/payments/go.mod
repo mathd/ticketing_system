@@ -1,6 +1,6 @@
 module ticketing/services/payments
 
-go 1.27.0
+go 1.27.2
 
 replace ticketing/shared => ../../shared/go
 

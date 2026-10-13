@@ -1,6 +1,6 @@
 module ticketing/shared
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/getkin/kin-openapi v0.146.0

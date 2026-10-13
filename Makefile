@@ -6,9 +6,12 @@ GO_MODULES := shared/go services/catalog services/inventory services/commerce se
 GO_TEST_MODULES := $(filter-out smoke,$(GO_MODULES))
 BIN := $(CURDIR)/bin
 # pinned so local and CI runs use the same linter (latest at time of pinning).
-# v2.13.2 is built with go1.27 — check-go-toolchain asserts that against the
+# v2.14.0 is built with go1.27 — check-go-toolchain asserts that against the
 # active Go, so this pin and the CI go-version move together, never apart.
-GOLANGCI_VERSION := v2.13.2
+# That check compares the minor version only. A Go patch release can still
+# break the linter: v2.13.2 cannot read the go1.27.2 export data (TKT-523).
+# After a Go patch bump, run lint-go, not only check-go-toolchain.
+GOLANGCI_VERSION := v2.14.0
 # Named after the pin: a version bump names a path that does not exist yet, so
 # make installs it instead of reusing the binary already sitting in ./bin.
 GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
