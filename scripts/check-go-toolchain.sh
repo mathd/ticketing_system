@@ -17,14 +17,18 @@
 # message claimed all of them agreed — a check whose diagnostic is wider than its
 # evidence is worse than none, because it is quoted as proof.
 #
-# Patch differences are fine — Go's type checker changes on minor bumps, and
-# Go 1.26.6 against a linter built with Go 1.26.2 is a supported pairing.
+# This check compares minor versions only. A patch difference usually works:
+# Go 1.26.6 against a linter built with Go 1.26.2 is a supported pairing. It is
+# not guaranteed. golangci-lint v2.13.2 cannot read the export data of go1.27.2
+# ("export data version 5 is greater than maximum supported version 4"), and
+# this check stays green for that pair (TKT-523). lint-go is the proof that a
+# linter and a toolchain work together; this check only catches a minor skew.
 set -euo pipefail
 
 minor() { cut -d. -f1,2 <<<"$1"; }
 
 # Each source is parsed by its own shape; a generic "first version-looking token"
-# would read golangci-lint's OWN version (2.13.2) as a Go version.
+# would read golangci-lint's OWN version (2.14.0) as a Go version.
 anchors() { # emits "<label>\t<version>" per declared pin
   local root="$1" f v setup_count version_count versions
   v="$(awk '$1=="go"{print $2; exit}' "$root/go.work" 2>/dev/null || true)"
