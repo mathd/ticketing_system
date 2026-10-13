@@ -1,0 +1,4 @@
+--- prototype.go
++++ prototype.go.mutation-lock
+@@ -77 +76,0 @@
+-			err = tkt380LockCode(ctx, tx, org, c.Channel, code.String) // MUTATION-POINT:lock

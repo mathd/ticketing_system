@@ -1,0 +1,28 @@
+postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
+[run 1 prototype-S1] H created on P2: expires_at=2026-10-13T18:42:21.950545Z
+[run 1 prototype-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:42:19.961958Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 prototype-S1] DB clock now 2026-10-13T18:42:22.154271Z, past H expiry
+[run 1 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 1 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 1 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:21.950545Z | true
+[run 1 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:24.169763Z | false
+[run 1 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:21.950545Z | true
+[run 1 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:42:24.169763Z | false
+SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 1 prototype-S2] H created on P2: expires_at=2026-10-13T18:42:24.363229Z
+[run 1 prototype-S2] finalize F decided at 2026-10-13T18:42:22.372267Z (before expiry: true), status=finalizing err=nil
+[run 1 prototype-S2] admission A on P1: finished while F was open=true, err=nil
+[run 1 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:42:24.363229Z | true
+[run 1 prototype-S2]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:26.590707Z | false
+SUMMARY prototype-S2 a_blocked_on_f=false a_err=nil f_status=finalizing redeemed=2 cap=1 verdict=BROKEN
+[run 1 prototype-S3] H created on P2 under an UNCAPPED code: expires_at=2026-10-13T18:42:26.79145Z
+[run 1 prototype-S3] finalize F decided at 2026-10-13T18:42:24.803031Z (before expiry: true), status=finalizing
+[run 1 prototype-S3] cap edit (cap 1) finished while F was open=true; admission A on P1 err=nil
+[run 1 prototype-S3] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S3]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:42:26.79145Z | true
+[run 1 prototype-S3]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:29.028909Z | false
+SUMMARY prototype-S3 edit_blocked_on_f=false a_err=nil f_status=finalizing redeemed=2 cap=1 verdict=BROKEN
+RESULT mode=prototype runs=1 exit=1 (0 all HELD, 1 BROKEN observed, 2 UNEXPECTED)

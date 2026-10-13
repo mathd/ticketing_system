@@ -1,0 +1,5 @@
+--- prototype.go
++++ prototype.go.mutation-time
+@@ -82 +82 @@
+-		timeSQL := `SELECT clock_timestamp()` // MUTATION-POINT:time
++		timeSQL := `SELECT now()` // MUTATION-POINT:time
