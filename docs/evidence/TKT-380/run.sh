@@ -79,6 +79,15 @@ diff -U0 --label presale_codes.go --label presale_codes.go.window-fix "$tmp_root
 build probe-window-fix
 cp "$tmp_root/presale_codes.go.orig" "$presale_src"
 
+# Reading R2 prototype (owner decision, 2026-10-13): the code's usage count
+# keeps every held claim until a terminal write. Applied to the temporary copy only.
+alloc_src="$mod/internal/store/channel_allocations.go"
+cp "$alloc_src" "$tmp_root/channel_allocations.go.orig"
+python3 -I "$script_dir/r2-predicate.py" "$alloc_src" >/dev/null
+diff -U0 --label channel_allocations.go --label channel_allocations.go.r2 "$tmp_root/channel_allocations.go.orig" "$alloc_src" >"$out/r2-predicate.diff" || true
+build probe-r2
+cp "$tmp_root/channel_allocations.go.orig" "$alloc_src"
+
 docker run --detach --rm --name "$container_name" \
   --publish '127.0.0.1::5432' \
   --env POSTGRES_PASSWORD="$db_password" \
@@ -159,9 +168,24 @@ expect probe2-mutation-uncapped prototype-S3 BROKEN 1
 run probe2-repeats 0 probe-pristine prototype 7
 for s in prototype-S1 prototype-S2 prototype-S3; do expect probe2-repeats "$s" HELD 7; done
 
+# Probe 3: reading R2. The R2 build, then the same schedules on today's code
+# (the mutation: the R2 predicate removed), then 7 repeats.
+run probe3-r2 0 probe-r2 r2 6
+expect probe3-r2 presale-control HELD 6
+expect probe3-r2 r2-S1 HELD 6
+expect probe3-r2 r2-liveness HELD 6
+
+run probe3-r2-mutation 1 probe-pristine r2 1
+expect probe3-r2-mutation presale-control HELD 1
+expect probe3-r2-mutation r2-S1 BROKEN 1
+expect probe3-r2-mutation r2-liveness BROKEN 1
+
+run probe3-r2-repeats 0 probe-r2 r2 7
+for s in presale-control r2-S1 r2-liveness; do expect probe3-r2-repeats "$s" HELD 7; done
+
 # Distinct outcome lines per file. One line per schedule means every repeat
 # produced the identical outcome.
-for f in probe1-presale probe1-window-fix probe2-baseline probe2-mutation-time probe2-mutation-lock probe2-mutation-uncapped probe2-repeats; do
+for f in probe1-presale probe1-window-fix probe2-baseline probe2-mutation-time probe2-mutation-lock probe2-mutation-uncapped probe2-repeats probe3-r2 probe3-r2-mutation probe3-r2-repeats; do
   echo "== $f"
   grep '^SUMMARY' "$out/$f.txt" | sort | uniq -c
 done >"$out/summary-distinct.txt"
