@@ -1,7 +1,15 @@
-# Finding: a presale code cap can overshoot when a queued finalize crosses hold expiry
+# Findings: two presale code races on today's code
 
-Found by TKT-380 probe 1 on 2026-10-13, at repository head `601d50be`. Status: confirmed at the
-store level; not fixed. Fixing it is not in TKT-380's scope.
+TKT-380 probe 1 found two defects in the presale code path on 2026-10-13. Both are confirmed at the
+store level and not fixed. Fixing them is not in TKT-380's scope.
+
+1. **The cap can overshoot** when a queued finalize crosses hold expiry (found at `601d50be`;
+   re-confirmed on the fix-round run).
+2. **An admission can pass after the code's window closed** when it waited on the code lock across
+   `closes_at` (found on the fix-round run, worktree HEAD `275355d6`; no Inventory code changed
+   between the two heads).
+
+# Finding 1: a presale code cap can overshoot when a queued finalize crosses hold expiry
 
 ## Summary
 
@@ -74,3 +82,52 @@ after its pool and claim locks, then judges expiry on `clock_timestamp()`. Probe
 purpose for code-less claims (`services/inventory/internal/store/buyer_ttl_clock_smoke_test.go:452`,
 `:541`); a fix scoped to code-citing claims leaves those tests valid. The trade-off: a code-citing
 finalize that waited past its hold's expiry is refused.
+
+# Finding 2: a presale code can be redeemed after its window closed
+
+## Summary
+
+An admission that starts before a code's `closes_at`, and waits on the code row lock past it, is
+admitted after the window closed.
+
+## Mechanism
+
+- Read from code: `redeemPresaleCode` computes the window in the target list of its
+  `SELECT max_redemptions, (codeWindowOpen) … FOR UPDATE`
+  (`services/inventory/internal/store/presale_codes.go:87`–`:90`). `codeWindowOpen` uses
+  `clock_timestamp()` (`services/inventory/internal/store/channel_allocations.go:54`), so the time
+  base is not the problem. The time of evaluation is.
+- Inference that matches the observation: PostgreSQL computes the target list before it waits for
+  the row lock. When the lock holder commits or rolls back without updating the row, the value is
+  not computed again. So "open" is judged before the wait and used after it.
+
+## Reproduction (observed)
+
+`bash docs/evidence/TKT-380/run.sh <new output dir>`, then read schedule W in `probe1-presale.txt`.
+
+1. Code `PROMO-CAP-1`, no cap, `closes_at` = database time + 2 s, on channel `presale` of P1.
+2. A blocker transaction runs `SELECT 1 FROM presale_codes … FOR UPDATE` on the code row. It does
+   not update the row.
+3. `CreateHold` on P1 with the code starts. It is observed waiting on the code row, with
+   `query_start` before `closes_at`.
+4. The database clock passes `closes_at`.
+5. The blocker rolls back.
+6. The admission returns `err=nil`; the claim is `held` and cites the code.
+
+Observed in 6 of 6 runs. A control admission that starts after `closes_at` is refused in 6 of 6
+runs. With the window read moved to a separate statement after the lock ([`window-fix.py`](window-fix.py)),
+the same schedule is refused in 6 of 6 runs ([`output/probe1-window-fix.txt`](output/probe1-window-fix.txt)).
+
+## Reachability and impact (inference, not run)
+
+- In a real system the lock holder is another admission of the same code. It holds the code row
+  until its claim transaction commits, so the overrun after `closes_at` is bounded by that hold time
+  plus queueing behind other admissions of the code.
+- Impact: a presale sells for a short time after its code window closed. Access only; no money
+  moves through a presale code. Under a promotion the same shape would grant a discount after the
+  promotion ended.
+
+## Candidate fix
+
+Read the cap and the window in a separate statement after the `FOR UPDATE` returns, as
+`window-fix.py` does. ADR-084 §4 makes this a rule for promotion codes.

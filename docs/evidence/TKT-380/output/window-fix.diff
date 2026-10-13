@@ -1,0 +1,14 @@
+--- presale_codes.go
++++ presale_codes.go.window-fix
+@@ -88 +88 @@
+-		`SELECT max_redemptions, (`+codeWindowOpen+`) FROM presale_codes
++		`SELECT max_redemptions FROM presale_codes
+@@ -90 +90,7 @@
+-		org, channel, code).Scan(&maxRedemptions, &windowOpen)
++		org, channel, code).Scan(&maxRedemptions)
++	if err == nil {
++		err = tx.QueryRowContext(ctx,
++			`SELECT (`+codeWindowOpen+`) FROM presale_codes
++			 WHERE organizer_id=$1 AND channel_code=$2 AND code=$3`,
++			org, channel, code).Scan(&windowOpen)
++	}

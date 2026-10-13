@@ -1,97 +1,134 @@
 postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
 [run 1 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:12:57.381874Z | true
-[run 1 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 1 presale-S1] H created on P2: expires_at=2026-10-13T18:12:59.775562Z
-[run 1 presale-S1] finalize F observed blocked on P2: pid=96 wait=Lock xact_start=2026-10-13T18:12:57.788488Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 1 presale-S1] DB clock now 2026-10-13T18:12:59.994284Z, past H expiry
+[run 1 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:40:44.379431Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 1 presale-S1] H created on P2: expires_at=2026-10-13T18:40:46.897297Z
+[run 1 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:40:44.91361Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 presale-S1] DB clock now 2026-10-13T18:40:47.104578Z, past H expiry
 [run 1 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 1 presale-S1] finalize F returned: status=finalizing err=nil
 [run 1 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:12:59.775562Z | true
-[run 1 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:02.012479Z | false
+[run 1 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:40:46.897297Z | true
+[run 1 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:40:49.118216Z | false
 [run 1 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:12:59.775562Z | true
-[run 1 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:02.012479Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 1 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:40:46.897297Z | true
+[run 1 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:40:49.118216Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 1 W] code window closes_at=2026-10-13T18:40:51.391181Z
+[run 1 W] admission A observed blocked on the code row: query_start=2026-10-13T18:40:49.562085Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 1 W] DB clock now 2026-10-13T18:40:51.608281Z, past closes_at; releasing the lock without an update
+[run 1 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:40:53.611301Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
 [run 2 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 2 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:02.219335Z | true
-[run 2 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 2 presale-S1] H created on P2: expires_at=2026-10-13T18:13:04.626214Z
-[run 2 presale-S1] finalize F observed blocked on P2: pid=100 wait=Lock xact_start=2026-10-13T18:13:02.640565Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 2 presale-S1] DB clock now 2026-10-13T18:13:04.829172Z, past H expiry
+[run 2 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:40:53.787094Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 2 presale-S1] H created on P2: expires_at=2026-10-13T18:40:56.189051Z
+[run 2 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:40:54.202019Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 2 presale-S1] DB clock now 2026-10-13T18:40:56.391707Z, past H expiry
 [run 2 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 2 presale-S1] finalize F returned: status=finalizing err=nil
 [run 2 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 2 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:04.626214Z | true
-[run 2 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:06.843713Z | false
+[run 2 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:40:56.189051Z | true
+[run 2 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:40:58.407258Z | false
 [run 2 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 2 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:04.626214Z | true
-[run 2 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:06.843713Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 2 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:40:56.189051Z | true
+[run 2 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:40:58.407258Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 2 W] code window closes_at=2026-10-13T18:41:00.69151Z
+[run 2 W] admission A observed blocked on the code row: query_start=2026-10-13T18:40:58.8498Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 2 W] DB clock now 2026-10-13T18:41:00.908841Z, past closes_at; releasing the lock without an update
+[run 2 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:02.911905Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
 [run 3 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 3 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:07.083384Z | true
-[run 3 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 3 presale-S1] H created on P2: expires_at=2026-10-13T18:13:09.478427Z
-[run 3 presale-S1] finalize F observed blocked on P2: pid=104 wait=Lock xact_start=2026-10-13T18:13:07.490634Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 3 presale-S1] DB clock now 2026-10-13T18:13:09.690372Z, past H expiry
+[run 3 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:03.119584Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 3 presale-S1] H created on P2: expires_at=2026-10-13T18:41:05.501133Z
+[run 3 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:41:03.512221Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 3 presale-S1] DB clock now 2026-10-13T18:41:05.705974Z, past H expiry
 [run 3 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 3 presale-S1] finalize F returned: status=finalizing err=nil
 [run 3 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 3 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:09.478427Z | true
-[run 3 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:11.708546Z | false
+[run 3 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:05.501133Z | true
+[run 3 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:07.72122Z | false
 [run 3 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 3 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:09.478427Z | true
-[run 3 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:11.708546Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 3 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:05.501133Z | true
+[run 3 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:07.72122Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 3 W] code window closes_at=2026-10-13T18:41:10.009449Z
+[run 3 W] admission A observed blocked on the code row: query_start=2026-10-13T18:41:08.192549Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 3 W] DB clock now 2026-10-13T18:41:10.218361Z, past closes_at; releasing the lock without an update
+[run 3 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:12.221896Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
 [run 4 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 4 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:11.959842Z | true
-[run 4 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 4 presale-S1] H created on P2: expires_at=2026-10-13T18:13:14.354102Z
-[run 4 presale-S1] finalize F observed blocked on P2: pid=108 wait=Lock xact_start=2026-10-13T18:13:12.366388Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 4 presale-S1] DB clock now 2026-10-13T18:13:14.55901Z, past H expiry
+[run 4 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:12.438256Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 4 presale-S1] H created on P2: expires_at=2026-10-13T18:41:14.859399Z
+[run 4 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:41:12.872894Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 4 presale-S1] DB clock now 2026-10-13T18:41:15.063894Z, past H expiry
 [run 4 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 4 presale-S1] finalize F returned: status=finalizing err=nil
 [run 4 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 4 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:14.354102Z | true
-[run 4 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:16.577447Z | false
+[run 4 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:14.859399Z | true
+[run 4 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:17.079077Z | false
 [run 4 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 4 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:14.354102Z | true
-[run 4 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:16.577447Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 4 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:14.859399Z | true
+[run 4 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:17.079077Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 4 W] code window closes_at=2026-10-13T18:41:19.355458Z
+[run 4 W] admission A observed blocked on the code row: query_start=2026-10-13T18:41:17.530714Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 4 W] DB clock now 2026-10-13T18:41:19.561282Z, past closes_at; releasing the lock without an update
+[run 4 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:21.564664Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
 [run 5 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 5 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:16.808763Z | true
-[run 5 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 5 presale-S1] H created on P2: expires_at=2026-10-13T18:13:19.219107Z
-[run 5 presale-S1] finalize F observed blocked on P2: pid=112 wait=Lock xact_start=2026-10-13T18:13:17.234233Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 5 presale-S1] DB clock now 2026-10-13T18:13:19.425203Z, past H expiry
+[run 5 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:21.736304Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 5 presale-S1] H created on P2: expires_at=2026-10-13T18:41:24.173493Z
+[run 5 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:41:22.186907Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 5 presale-S1] DB clock now 2026-10-13T18:41:24.376694Z, past H expiry
 [run 5 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 5 presale-S1] finalize F returned: status=finalizing err=nil
 [run 5 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 5 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:19.219107Z | true
-[run 5 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:21.444604Z | false
+[run 5 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:24.173493Z | true
+[run 5 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:26.390984Z | false
 [run 5 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 5 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:19.219107Z | true
-[run 5 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:21.444604Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 5 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:24.173493Z | true
+[run 5 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:26.390984Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 5 W] code window closes_at=2026-10-13T18:41:28.677023Z
+[run 5 W] admission A observed blocked on the code row: query_start=2026-10-13T18:41:26.849104Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 5 W] DB clock now 2026-10-13T18:41:28.880242Z, past closes_at; releasing the lock without an update
+[run 5 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:30.884069Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
 [run 6 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 6 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:21.691009Z | true
-[run 6 presale-control] finalize H: status=finalizing err=nil; admission A on P1 after expiry: err=ErrPresaleCodeInvalid; redeemed=1 cap=1
-SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
-[run 6 presale-S1] H created on P2: expires_at=2026-10-13T18:13:24.111933Z
-[run 6 presale-S1] finalize F observed blocked on P2: pid=116 wait=Lock xact_start=2026-10-13T18:13:22.123828Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 6 presale-S1] DB clock now 2026-10-13T18:13:24.332423Z, past H expiry
+[run 6 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:31.12301Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 6 presale-S1] H created on P2: expires_at=2026-10-13T18:41:33.540078Z
+[run 6 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:41:31.550009Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 6 presale-S1] DB clock now 2026-10-13T18:41:33.755666Z, past H expiry
 [run 6 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 6 presale-S1] finalize F returned: status=finalizing err=nil
 [run 6 presale-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 6 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:24.111933Z | true
-[run 6 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:26.346293Z | false
+[run 6 presale-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:41:33.540078Z | true
+[run 6 presale-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:35.77021Z | false
 [run 6 presale-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 6 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:24.111933Z | true
-[run 6 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:26.346293Z | false
-SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
+[run 6 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:33.540078Z | true
+[run 6 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:41:35.77021Z | false
+SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+[run 6 W] code window closes_at=2026-10-13T18:41:38.041577Z
+[run 6 W] admission A observed blocked on the code row: query_start=2026-10-13T18:41:36.231142Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 6 W] DB clock now 2026-10-13T18:41:38.262005Z, past closes_at; releasing the lock without an update
+[run 6 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:41:40.265234Z | false
+SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
+RESULT mode=presale runs=6 exit=1 (0 all HELD, 1 BROKEN observed, 2 UNEXPECTED)

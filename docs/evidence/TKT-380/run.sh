@@ -2,6 +2,8 @@
 # TKT-380 probe runner. Disposable PostgreSQL, temporary module copy.
 # Usage: bash docs/evidence/TKT-380/run.sh OUTPUT_DIR
 # It changes no file in the repository except the files it writes in OUTPUT_DIR.
+# It exits 0 only when every probe run has its expected exit code AND every
+# schedule has its expected verdict in every repeat (see expect below).
 set -euo pipefail
 
 if [[ $# -ne 1 || -z "$1" ]]; then
@@ -30,6 +32,7 @@ trap cleanup EXIT INT TERM
 
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 command -v go >/dev/null || { echo "go is required" >&2; exit 2; }
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 2; }
 
 {
   echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -47,25 +50,34 @@ mod="$tmp_root/services/inventory"
 mkdir -p "$mod/cmd/tkt380probe"
 cp "$script_dir/probe.go" "$mod/cmd/tkt380probe/main.go"
 proto="$mod/internal/store/tkt380_prototype.go"
+presale_src="$mod/internal/store/presale_codes.go"
+cp "$presale_src" "$tmp_root/presale_codes.go.orig"
 
-build() { # $1 = binary name; prototype must already be in place
+build() { # $1 = binary name
   (cd "$mod" && GOWORK=off go build -o "$tmp_root/$1" ./cmd/tkt380probe)
+}
+
+# Mutation records are zero-context diffs (-U0): context lines would start
+# with a space before a tab, which `git diff --check` reports.
+mutate() { # $1 = name, $2 = sed program
+  sed "$2" "$script_dir/prototype.go" >"$proto"
+  diff -U0 --label prototype.go --label "prototype.go.mutation-$1" "$script_dir/prototype.go" "$proto" >"$out/mutation-$1.diff" || true
+  build "probe-mut-$1"
 }
 
 cp "$script_dir/prototype.go" "$proto"
 build probe-pristine
-
-# Mutation "time": judge expiry on transaction-start now() again.
-sed '/MUTATION-POINT:time/s/clock_timestamp()/now()/' "$script_dir/prototype.go" >"$proto"
-diff -u --label prototype.go --label prototype.go.mutation-time "$script_dir/prototype.go" "$proto" >"$out/mutation-time.diff" || true
-build probe-mut-time
-
-# Mutation "lock": remove the code row lock from the finalize path.
-sed '/MUTATION-POINT:lock/d' "$script_dir/prototype.go" >"$proto"
-diff -u --label prototype.go --label prototype.go.mutation-lock "$script_dir/prototype.go" "$proto" >"$out/mutation-lock.diff" || true
-build probe-mut-lock
-
+mutate time '/MUTATION-POINT:time/s/clock_timestamp()/now()/'
+mutate lock '/MUTATION-POINT:lock/d'
+mutate uncapped '/MUTATION-POINT:uncapped/s/skipUncapped := false/skipUncapped := true/'
 cp "$script_dir/prototype.go" "$proto"
+
+# Window-rule prototype: the code window read in a separate statement after the
+# code lock. Applied to the temporary copy only.
+python3 -I "$script_dir/window-fix.py" "$presale_src" >/dev/null
+diff -U0 --label presale_codes.go --label presale_codes.go.window-fix "$tmp_root/presale_codes.go.orig" "$presale_src" >"$out/window-fix.diff" || true
+build probe-window-fix
+cp "$tmp_root/presale_codes.go.orig" "$presale_src"
 
 docker run --detach --rm --name "$container_name" \
   --publish '127.0.0.1::5432' \
@@ -85,28 +97,79 @@ done
 sleep 2 # the entrypoint restarts the server once after initdb
 export DATABASE_URL="postgres://postgres:${db_password}@127.0.0.1:${host_port}/inventory?sslmode=disable"
 
-run() { # $1 = label, $2 = binary, rest = args
-  local label=$1 bin=$2
-  shift 2
+failures=0
+fail() {
+  echo "EXPECTATION FAILED: $*" | tee -a "$out/expectations.txt"
+  failures=$((failures + 1))
+}
+
+run() { # $1 = label, $2 = expected exit, $3 = binary, rest = args
+  local label=$1 want=$2 bin=$3
+  shift 3
   set +e
   "$tmp_root/$bin" "$@" >"$out/$label.txt" 2>&1
   local rc=$?
   set -e
-  echo "$label: $bin $* -> exit $rc" | tee -a "$out/exit-codes.txt"
+  echo "$label: $bin $* -> exit $rc (expected $want)" | tee -a "$out/exit-codes.txt"
+  [[ "$rc" -eq "$want" ]] || fail "$label exited $rc, expected $want"
 }
 
-# Probe 1: today's presale path. Control + forced race, 6 repeats.
-run probe1-presale probe-pristine presale 6
-# Probe 2: D13 prototype, baseline once, each mutation once, then 7 repeats.
-run probe2-baseline probe-pristine prototype 1
-run probe2-mutation-time probe-mut-time prototype 1
-run probe2-mutation-lock probe-mut-lock prototype 1
-run probe2-repeats probe-pristine prototype 7
+expect() { # $1 = label, $2 = schedule, $3 = verdict, $4 = runs
+  local file="$out/$1.txt" total match
+  total=$(grep -c "^SUMMARY $2 " "$file" || true)
+  match=$(grep -c "^SUMMARY $2 .*verdict=$3\$" "$file" || true)
+  if [[ "$total" -eq "$4" && "$match" -eq "$4" ]]; then
+    echo "ok   $1: $2 verdict=$3 in $match of $4 runs" >>"$out/expectations.txt"
+  else
+    fail "$1: $2 expected verdict=$3 in $4 of $4 runs, saw $match of $total"
+  fi
+}
 
-# Distinct normalized outcomes per file. One line per schedule means every
-# repeat produced the identical outcome.
-for f in probe1-presale probe2-baseline probe2-mutation-time probe2-mutation-lock probe2-repeats; do
+# Probe 1: today's code. Exit 1 = a defect was observed, as documented.
+run probe1-presale 1 probe-pristine presale 6
+expect probe1-presale presale-control HELD 6
+expect probe1-presale presale-S1 BROKEN 6
+expect probe1-presale window-control HELD 6
+expect probe1-presale W BROKEN 6
+
+# Probe 1b: the window rule prototype.
+run probe1-window-fix 0 probe-window-fix window 6
+expect probe1-window-fix window-control HELD 6
+expect probe1-window-fix W HELD 6
+
+# Probe 2: the D13 prototype. Baseline, each mutation, then 7 repeats.
+run probe2-baseline 0 probe-pristine prototype 1
+for s in prototype-S1 prototype-S2 prototype-S3; do expect probe2-baseline "$s" HELD 1; done
+
+run probe2-mutation-time 1 probe-mut-time prototype 1
+expect probe2-mutation-time prototype-S1 BROKEN 1
+expect probe2-mutation-time prototype-S2 HELD 1
+expect probe2-mutation-time prototype-S3 HELD 1
+
+run probe2-mutation-lock 1 probe-mut-lock prototype 1
+expect probe2-mutation-lock prototype-S1 HELD 1
+expect probe2-mutation-lock prototype-S2 BROKEN 1
+expect probe2-mutation-lock prototype-S3 BROKEN 1
+
+run probe2-mutation-uncapped 1 probe-mut-uncapped prototype 1
+expect probe2-mutation-uncapped prototype-S1 HELD 1
+expect probe2-mutation-uncapped prototype-S2 HELD 1
+expect probe2-mutation-uncapped prototype-S3 BROKEN 1
+
+run probe2-repeats 0 probe-pristine prototype 7
+for s in prototype-S1 prototype-S2 prototype-S3; do expect probe2-repeats "$s" HELD 7; done
+
+# Distinct outcome lines per file. One line per schedule means every repeat
+# produced the identical outcome.
+for f in probe1-presale probe1-window-fix probe2-baseline probe2-mutation-time probe2-mutation-lock probe2-mutation-uncapped probe2-repeats; do
   echo "== $f"
   grep '^SUMMARY' "$out/$f.txt" | sort | uniq -c
 done >"$out/summary-distinct.txt"
 cat "$out/summary-distinct.txt"
+cat "$out/expectations.txt"
+
+if [[ "$failures" -ne 0 ]]; then
+  echo "run.sh: $failures expectation(s) failed" >&2
+  exit 1
+fi
+echo "run.sh: every expectation met"

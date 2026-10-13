@@ -12,8 +12,10 @@
 //  2. Judge expiry on a fresh time read (clock_timestamp()) taken AFTER the code
 //     lock, not on transaction-start now().
 //
-// The presale code row stands in for the future promotion code row. The two
-// lines marked MUTATION-POINT are the ones run.sh edits for the mutation runs.
+// The presale code row stands in for the future promotion code row. The three
+// lines marked MUTATION-POINT are the ones run.sh edits for the mutation runs:
+// "time" reads now() instead, "lock" deletes the lock, and "uncapped" skips the
+// lock for a code that has no cap (the exception ADR-084 first proposed).
 package store
 
 import (
@@ -63,9 +65,17 @@ func (p *Postgres) TKT380PromotedTransition(ctx context.Context, org, id uuid.UU
 		return Claim{}, ErrConflict
 	}
 	// D13: a path that KEEPS usage (finalize, direct confirm) takes the code
-	// lock, then reads time afresh under it.
+	// lock, then reads time afresh under it. It does so whether or not the code
+	// is capped today: a cap can be added while this transaction is open (S3).
 	if code.Valid && (target == "finalizing" || target == "confirmed") {
-		err = tkt380LockCode(ctx, tx, org, c.Channel, code.String) // MUTATION-POINT:lock
+		var capped bool
+		if err = tx.QueryRowContext(ctx, `SELECT max_redemptions IS NOT NULL FROM presale_codes WHERE organizer_id=$1 AND channel_code=$2 AND code=$3`, org, c.Channel, code.String).Scan(&capped); err != nil {
+			return Claim{}, err
+		}
+		skipUncapped := false // MUTATION-POINT:uncapped
+		if capped || !skipUncapped {
+			err = tkt380LockCode(ctx, tx, org, c.Channel, code.String) // MUTATION-POINT:lock
+		}
 		if err != nil {
 			return Claim{}, err
 		}

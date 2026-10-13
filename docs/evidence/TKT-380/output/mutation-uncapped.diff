@@ -1,0 +1,5 @@
+--- prototype.go
++++ prototype.go.mutation-uncapped
+@@ -75 +75 @@
+-		skipUncapped := false // MUTATION-POINT:uncapped
++		skipUncapped := true // MUTATION-POINT:uncapped

@@ -1,5 +1,7 @@
-probe1-presale: probe-pristine presale 6 -> exit 0
-probe2-baseline: probe-pristine prototype 1 -> exit 0
-probe2-mutation-time: probe-mut-time prototype 1 -> exit 1
-probe2-mutation-lock: probe-mut-lock prototype 1 -> exit 1
-probe2-repeats: probe-pristine prototype 7 -> exit 0
+probe1-presale: probe-pristine presale 6 -> exit 1 (expected 1)
+probe1-window-fix: probe-window-fix window 6 -> exit 0 (expected 0)
+probe2-baseline: probe-pristine prototype 1 -> exit 0 (expected 0)
+probe2-mutation-time: probe-mut-time prototype 1 -> exit 1 (expected 1)
+probe2-mutation-lock: probe-mut-lock prototype 1 -> exit 1 (expected 1)
+probe2-mutation-uncapped: probe-mut-uncapped prototype 1 -> exit 1 (expected 1)
+probe2-repeats: probe-pristine prototype 7 -> exit 0 (expected 0)

@@ -1,15 +1,28 @@
 == probe1-presale
-      6 SUMMARY presale-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CONFIRMED
-      6 SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1
+      6 SUMMARY W a_err=nil redeemed=1 verdict=BROKEN
+      6 SUMMARY presale-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+      6 SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+      6 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+== probe1-window-fix
+      6 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
+      6 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 == probe2-baseline
-      1 SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
-      1 SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+      1 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S3 edit_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
 == probe2-mutation-time
-      1 SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=CAP-OVERSHOT
-      1 SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+      1 SUMMARY prototype-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+      1 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S3 edit_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
 == probe2-mutation-lock
-      1 SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
-      1 SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=false a_finished_while_f_open=true a_err=nil f_status=finalizing f_err=nil redeemed=2 cap=1 verdict=CAP-OVERSHOT
+      1 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S2 a_blocked_on_f=false a_err=nil f_status=finalizing redeemed=2 cap=1 verdict=BROKEN
+      1 SUMMARY prototype-S3 edit_blocked_on_f=false a_err=nil f_status=finalizing redeemed=2 cap=1 verdict=BROKEN
+== probe2-mutation-uncapped
+      1 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
+      1 SUMMARY prototype-S3 edit_blocked_on_f=false a_err=nil f_status=finalizing redeemed=2 cap=1 verdict=BROKEN
 == probe2-repeats
-      7 SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
-      7 SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+      7 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      7 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
+      7 SUMMARY prototype-S3 edit_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
