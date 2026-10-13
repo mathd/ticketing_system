@@ -4,7 +4,9 @@ Date: 2026-10-10
 
 ## Status
 
-Accepted as the repair requirement for TKT-504. The repair is not implemented or verified. Its high review finding remains blocking.
+Superseded, 2026-10-12. TKT-504 did not implement this repair. It upgraded Astro to 7.3.8, removed the cache patch, and accepted the remaining `http-cache-semantics` risk with a guard that fails if either app starts to use Astro image optimization. See `docs/conventions/security.md` § Accepted risk: CVE-2026-93748, and TKT-504 decisions D41–D50. The text below is kept as the record of the direction that was not taken.
+
+Original status: accepted as the repair requirement for TKT-504. The repair is not implemented or verified. Its high review finding remains blocking.
 
 ## Context
 

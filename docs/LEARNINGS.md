@@ -111,6 +111,10 @@ exists are in *Historical* at the bottom; their files are kept.
 - [**A load test's number is a claim about the server only if the generator's health is in the verdict**](./learnings/2026-07-17-load-test-generator-health-is-part-of-the-claim.md) —
   the first ceiling measured the client's in-flight cap. (TKT-82)
 
+- [**A Go patch release can break the linter**](./learnings/2026-10-13-a-go-patch-release-can-break-the-linter.md) —
+  golangci-lint v2.13.2 cannot read go1.27.2 export data, and `check-go-toolchain` compares minor
+  versions only. `lint-go` is the proof that a linter and a toolchain work together. (TKT-523)
+
 ## Distributed behaviour and events
 
 - [**Early schema acceptance needs semantic completeness, not idempotency**](./learnings/2026-08-03-schema-rollout-ordering-and-early-acceptance.md) —
@@ -197,6 +201,10 @@ exists are in *Historical* at the bottom; their files are kept.
   oapi-codegen binds and validates parameters *before* HandlerMiddlewares, so an in-handler
   credential check answers 400-with-detail to a caller holding none. Guard outside the generated
   handler; the guard and the router must read the same path. (TKT-214)
+
+- [**A version outside the advisory range is not a fix**](./learnings/2026-10-13-a-version-outside-the-advisory-range-is-not-a-fix.md) —
+  `http-cache-semantics` 4.3.0 left the advisory range and the scanners went silent; an executed
+  probe showed the same vulnerable `max-stale` code. Check the code, not the range. (TKT-504)
 
 ## Historical — the repo instance is gone, the lesson is kept
 

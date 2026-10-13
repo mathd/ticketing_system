@@ -124,7 +124,7 @@ The current cached Catalog page payload does not establish that complete quote. 
 - TKT-391 has a bounded event-pickup policy below, but multi-line stock and tax contracts remain dependencies. TKT-392 needs a liability and provider model before protection can be sold.
 - TKT-470 has an order-specific mailbox proof policy below. TKT-465 still must map and validate the exact records and disclosure scope; this record supplies no legal retention or compliance conclusion.
 - TKT-485 still needs a customer-bound payment handoff and provider evidence. ADR-069's opaque token rule does not establish that an agent grant authorizes a charge.
-- TKT-279, TKT-289, TKT-313, TKT-329 and TKT-492 retain their recorded blockers. TKT-504 has a selected repair direction below; its high finding remains unresolved until the fix is implemented and reviewed. This pass does not override a high finding, retry denied filesystem access, or authorize merge. TKT-286 and TKT-336 also retain their unfinished implementation/review state.
+- TKT-279, TKT-289, TKT-313, TKT-329 and TKT-492 retain their recorded blockers. TKT-504 had a selected repair direction below; it was later superseded (see § Persisted image cache). This pass does not override a high finding, retry denied filesystem access, or authorize merge. TKT-286 and TKT-336 also retain their unfinished implementation/review state.
 
 ## Local latency alert
 
@@ -142,6 +142,8 @@ TKT-470 requires the named order reference plus fresh mailbox control. Send a on
 
 TKT-504 disables stale-if-error reuse for persisted Astro remote-image entries. The inspected astro@7.3.5 patch has separate network-failure and 5xx fallback paths; remove stale reuse from both. If updated policy cannot be written and both old files cannot be deleted, a new process cannot discover the revoked permission from that directory. Keep valid fresh reuse and successful revalidation subject to the actual policy; failure to revalidate must not copy retained bytes to output. Cover both failed matching-304 and replacement-200 invalidation, followed by a new build/process and 503. Include old on-disk entries and both frontends. This selects a repair direction without adding a separate revocation store. The accepted high finding stays open until the implementation and review prove the repair. No merge or review override is granted.
 
+**Superseded, 2026-10-12.** TKT-504 did not implement this direction. It upgraded Astro to 7.3.8, removed the cache patch, and added `make check-astro-image-premise`, which fails if either app starts to use Astro image optimization. The residual `http-cache-semantics` risk is recorded in `docs/conventions/security.md` § Accepted risk: CVE-2026-93748. ADR-079 is superseded.
+
 ## Folded pass decision and stale reseller blocker
 
 TKT-281's owner-selected pass rule was folded into TKT-169, now Done. Current code refuses an admitted pass before money and retains the row-locked switch check. The existing TestAdmissionCheckCoversBothVocabularies and TKT-169's merged-code validation name the two cases. Close TKT-281 as delivered by TKT-169, carrying that evidence rather than claiming a new gate run. The late-scan-to-switch race remains TKT-498; it did not disappear when the policy was chosen.
@@ -150,7 +152,7 @@ TKT-23's old uncaptured-partner blocker describes agency terms. TKT-277 delivere
 
 ## Architecture records
 
-[ADR-078](../adr/ADR-078-optional-resend-and-bounded-delivery-retries.md) records the optional transport and retry policy. [ADR-079](../adr/ADR-079-persisted-image-cache-without-stale-if-error.md) records the TKT-504 repair requirement. Both state their unimplemented scope. ADR-075 remains proposed.
+[ADR-078](../adr/ADR-078-optional-resend-and-bounded-delivery-retries.md) records the optional transport and retry policy. [ADR-079](../adr/ADR-079-persisted-image-cache-without-stale-if-error.md) records the TKT-504 repair requirement; it is superseded. Both state their unimplemented scope. ADR-075 remains proposed.
 
 ## Applying the record
 
