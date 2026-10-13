@@ -4,12 +4,12 @@ TKT-380 probe 1 found two defects in the presale code path on 2026-10-13. Both a
 store level and not fixed. Fixing them is not in TKT-380's scope.
 
 1. **The cap can overshoot** when a queued finalize crosses hold expiry (found at `601d50be`;
-   re-confirmed on the fix-round run).
+   re-confirmed on the fix-round run). Filed as **TKT-543**.
 2. **An admission can pass after the code's window closed** when it waited on the code lock across
    `closes_at` (found on the fix-round run, worktree HEAD `275355d6`; no Inventory code changed
-   between the two heads).
+   between the two heads). Filed as **TKT-544**.
 
-# Finding 1: a presale code cap can overshoot when a queued finalize crosses hold expiry
+# Finding 1 (TKT-543): a presale code cap can overshoot when a queued finalize crosses hold expiry
 
 ## Summary
 
@@ -83,7 +83,7 @@ purpose for code-less claims (`services/inventory/internal/store/buyer_ttl_clock
 `:541`); a fix scoped to code-citing claims leaves those tests valid. The trade-off: a code-citing
 finalize that waited past its hold's expiry is refused.
 
-# Finding 2: a presale code can be redeemed after its window closed
+# Finding 2 (TKT-544): a presale code can be redeemed after its window closed
 
 ## Summary
 
@@ -129,5 +129,7 @@ the same schedule is refused in 6 of 6 runs ([`output/probe1-window-fix.txt`](ou
 
 ## Candidate fix
 
-Read the cap and the window in a separate statement after the `FOR UPDATE` returns, as
-`window-fix.py` does. ADR-084 §4 makes this a rule for promotion codes.
+Read the window in a separate statement after the `FOR UPDATE` returns. That is all
+`window-fix.py` changes: it moves the window read out of the locking statement and leaves the cap
+(`max_redemptions`) in it. ADR-084 §4 goes further for promotion codes: it reads the cap, the
+window and the usage after the lock. Probe 1b exercised only the window move.

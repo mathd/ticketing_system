@@ -141,7 +141,8 @@ the cap.
     - Pros: claim and redemption commit in one row, so they cannot disagree. The claim's own
       idempotent terminal transition is the one terminal release. Draw-down conserves units without
       new code: the source decrements and the child inherits the citation (`reservations.go:323`,
-      `:329`). Lazy expiry needs no write.
+      `:329`). Lazy expiry returns the units with no write (§3 states how this meets the owner's
+      "one idempotent terminal transition").
     - Cons: a separate usage expression from the presale one, because refunds must not return
       units. An index is needed, as for presale (0014 `:96`).
 - **(ii) Separate redemption records.** A table of redemptions with its own status.
@@ -166,7 +167,7 @@ cap overshoots (see Consequences, *Presale races*).
 - **T3. Count expired-but-unswept held claims as live until a sweep.** Safe, but a quiet pool is
   never swept, so its expired holds block the code with no bound. ADR-010 forbids a sweeper as a
   correctness requirement.
-- **T4. Every path that keeps or creates usage takes the code lock and judges expiry on a fresh
+- **T4. Every path in a named locking list (§4) takes the code lock and judges expiry on a fresh
   time read after it.** Probe 2 shows it closes the race in all three forced schedules.
 
 ## Decision
@@ -188,8 +189,9 @@ fail the hard constraint. This follows the plan's default rule for a non-decisiv
 | Journal facts | Payments | Unchanged. |
 
 How the two code definitions are provisioned together (one staff write that calls both, or an
-event that Inventory consumes) is TKT-382's design. The rule is fixed here: a code known to one side
-only is refused with the uniform refusal.
+event that Inventory consumes) is open; TKT-382 designs it. The rule is fixed here: a code that
+exists on one side only (a Catalog mapping without an Inventory row, or the reverse) fails closed
+with the uniform refusal.
 
 ### 2. The code is the capped and locked entity
 
@@ -214,25 +216,50 @@ Usage of a code is:
 This is a new expression. It must not reuse `consumedQuantity`. A test that refunds and rebuys must
 fail if someone swaps it in.
 
-Paths that write usage, and what each one does to it:
+Paths that write usage, and what each one does to it. The "Code lock" column is the locking list
+of §4; this table and §4 must stay identical.
 
-| Path | Effect on usage | Code lock |
+| Path | Effect on usage | Code lock through commit |
 |---|---|---|
-| `CreateHold` with a code (`store.go:503`) | Creates `+qty` | Yes, after the pool lock |
-| `CreateHold` replay of an expired claim (`store.go:575`) | Ends it (writes `expired`) | No |
-| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`) | Ends usage the predicate already excludes | **Never** |
-| `Transition` to `finalizing` | Keeps it | Yes |
-| `Transition` to `confirmed` from `held` (direct confirm, zero-total path) | Keeps it, permanently | Yes |
-| `Transition` to `confirmed` from `finalizing` | Keeps it, permanently | Not needed: a finalizing claim cannot expire |
-| `Transition` to `released`, or expiry inside `Transition` | Ends it | Not needed: removing usage can only make a concurrent count conservative |
-| Group placement with a code (`reservations.go:209`) | Creates `+qty` | Yes (when promotions reach groups) |
-| Draw-down (`reservations.go:268`–`:337`) | Moves units from source to child; total constant | Yes, for the child (when promotions reach groups) |
-| Refund capacity return (`refund_returns.go:148`) | None | No |
-| Conversion (`operational.go:345`) | None: operational holds carry no code | No |
-| Cap or window edit of a code | None: an edit never releases usage | Yes, `FOR UPDATE` (§4) |
+| Admission: `CreateHold` with a code (`store.go:503`) | Creates `+qty` | **Yes** |
+| Finalize from `held`: `Transition` to `finalizing` | Keeps it | **Yes** |
+| Direct confirm from `held`: `Transition` to `confirmed` (zero-total path) | Keeps it, permanently | **Yes** |
+| Draw-down child (`reservations.go:268`–`:337`) | Moves units from source to child; total constant | **Yes** (later slice) |
+| Group placement with a code (`reservations.go:209`) | Creates `+qty` | **Yes** (later slice) |
+| Conversion (`operational.go:345`) | None in the first slice: it applies no promotion | **Yes**, if a later design lets it carry a code |
+| Cap or window edit of a code | None: an edit never releases usage | **Yes**, `FOR UPDATE` |
+| Confirm from `finalizing`: `Transition` to `confirmed` | Keeps it, permanently | No: the claim already counts and never expires |
+| Expiry: the claim passes `expires_at` | Ends it: the terminal transition for expiry (below) | No: it is not a write |
+| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | None: they write the durable `expired` record for units already returned | No; `sweepExpired` **never** |
+| Explicit release: `Transition` to `released` (`store.go:891`) | Ends it: the terminal transition for release | No: it never adds usage |
+| Refund capacity return (`refund_returns.go:148`) | None | No: it never adds usage |
 
-Seated holds take no promotion in the first slice. A seated or group path must refuse a code until
-it is designed with this table.
+**One idempotent terminal transition: the reading this ADR takes.** The owner policy says
+"Expired or released unconfirmed holds return their units through one idempotent terminal
+transition" (backlog-decisions, *Promotion cap and corrections*). This ADR does not change that
+policy. It reads it as follows:
+
+- **Expiry.** The terminal transition is the claim passing its `expires_at`. From that instant the
+  usage expression excludes the claim. Under §4 no path can keep or revive usage after
+  `expires_at`: every locking path judges the claim on a fresh time under the code lock and refuses
+  it. Probe 2 shows this for a queued finalize (schedule S1 baseline: `expired`, `ErrConflict`). So
+  the return is one-way and happens exactly once.
+- **The durable record.** `sweepExpired`, the replay-expiry branch and the expiry branch of
+  `Transition` later write the `expired` status and history. That write returns nothing a second
+  time: the units were already returned. Until it runs, the stored status can still read `held`
+  (probe 2 S1 rows show this).
+- **Explicit release.** The terminal transition is the existing guarded release write. A repeat is
+  satisfied, and a release after expiry is satisfied (`store.go:854`, `:868`).
+
+The alternative reading (no unit returns until a terminal write exists) has a cost: a later
+admission could not count a returned unit until the write happened, so the write would have to run
+under the code lock. `sweepExpired` would then take the code lock, which this section forbids, or a
+code would stay blocked until a sweep reaches every pool, which ADR-010 forbids as a correctness
+requirement. Open question 6 asks the owner to confirm this reading.
+
+**First slice.** Promotions apply to GA reservation checkout only. Seated and group paths refuse a
+promotion code. Operational conversion applies none. A later slice that adds a path must design it
+against this table.
 
 ### 4. Lock order and the fresh-time invariant
 
@@ -240,11 +267,26 @@ it is designed with this table.
 a transaction takes no pool lock and no claim lock. When a path needs several locks of one kind, it
 takes them in sorted identity order. `sweepExpired` never takes a promotion code lock.
 
-**Fresh-time invariant:** every path that keeps or creates promoted usage (admission, finalize,
-direct confirm, draw-down child) takes the promotion code lock and holds it until it commits. It
-does so **whether or not the code has a cap**, because a cap can be added while the transaction is
-open. After the lock is held, it reads the cap, the window and the time in a **separate statement**
-(`clock_timestamp()`), and judges expiry on that time, not on transaction-start `now()`.
+**The locking list.** These paths take the promotion code lock and hold it until they commit:
+
+1. admission;
+2. finalize from `held`;
+3. direct confirm from `held`;
+4. draw-down child (later slice);
+5. group placement with a code (later slice);
+6. conversion, if a later design lets it carry a code (in the first slice it applies none);
+7. a cap or window edit.
+
+These paths do not take it: confirm from `finalizing` (the claim already counts and never expires);
+release, expiry, `sweepExpired`, the replay-expiry and `Transition` expiry branches, and the refund
+capacity return (none of them adds usage). §3's table and §11 use this same list.
+
+**Fresh-time invariant.** Every path in the locking list takes the lock **whether or not the code
+has a cap**, because a cap can be added while the transaction is open. After the lock is held, it
+reads the cap, the window, the usage and the time in **separate statements**, on
+`clock_timestamp()`. It judges expiry on that time, never on transaction-start `now()`. Admission
+follows this rule like every other path: it counts usage and reads the window on
+`clock_timestamp()` after the code lock.
 
 **Read after the lock, not in the locking statement.** Today `redeemPresaleCode` computes the
 window in the target list of the `SELECT … FOR UPDATE` itself (`presale_codes.go:87`–`:90`). The
@@ -273,10 +315,12 @@ the lock for an uncapped code fails S3 (a cap of 1 added while an uncapped final
 with 2 units).
 
 This specializes promoted paths only. `liveClaims` and the shared capacity predicates of ADR-010
-and ADR-024 stay unchanged. The admission count may keep `now()` for safety: an earlier time can
-only treat more holds as live, so it can refuse early but cannot overshoot (inference; probe 2 kept
-today's admission unchanged and the cap held). The TKT-380 plan (D13) still asks for a fresh time in
-the admission count, so a buyer is not refused for units that expired while the admission waited.
+and ADR-024 stay unchanged.
+
+A note on the evidence, not on the contract: the disposable prototype left today's admission
+unchanged, so in probe 2 admission still counted on transaction-start `now()` (TKT-380 D22). The
+probes therefore do not test the admission time base. The contract above is the one rule for
+production.
 
 ### 5. Immutable versions, the hold fingerprint and `unit_amount`
 
@@ -284,11 +328,15 @@ the admission count, so a buyer is not refused for units that expired while the 
   the version it was bound to.
 - The Inventory hold fingerprint (`store.go:368`) adds the promotion code, id and version. They are
   appended only when present and length-framed, exactly as the presale code is (`store.go:395`), so
-  no existing fingerprint changes.
+  a request without a promotion keeps its existing fingerprint bytes. TKT-381/TKT-382 must test both
+  that compatibility and that two promotion-bearing requests that differ do not collide.
 - The hold sends the **paid** unit face as `unit_amount`. The pre-discount face is not sent to
   Inventory. It lives in the Commerce snapshot.
 - A version freezes the reduction terms only. It does not freeze the Catalog price winner or the
   fees.
+- Inventory does not know Catalog's latest version. A version that Commerce resolved before the
+  hold is accepted even if Catalog publishes a newer version before the hold commits. The
+  reservation keeps the version it was admitted with.
 
 **Recovery of the complete quote: re-resolution before the reservation exists (option b).** The
 crash window is between the Inventory hold commit and the Commerce reservation insert
@@ -324,30 +372,32 @@ window into a refused retry and a leaked hold, to protect fields that no one has
 - A cap lowered below current usage refuses new admissions. It never releases existing usage.
 - A window change applies to new admissions only. An admitted hold may finalize after the window
   closes.
-- A code is disabled, not deleted. Claims cite it without a foreign key, as for presale codes.
+- A code row is disabled, never deleted. Claims cite it without a foreign key, as for presale
+  codes. The kept row keeps the code's identity and its lock target for the claims that cite it.
 
 ### 7. Redemption behaviour by lifecycle event (COS-1)
 
 | Event | What happens to usage | Rule |
 |---|---|---|
 | Admission | `+qty`, all or nothing | Pool → (presale) → code lock; then cap, window and usage in separate statements on fresh time (§4). |
-| Hold expiry (lazy) | Drops out of the count with no write | `liveClaims`. A later sweep writes `expired` under the pool lock only. |
-| Explicit release | Returns `qty` | `Transition` to `released`. Repeats and release-after-expiry are satisfied (`store.go:854`, `:868`). |
-| Finalize | Unchanged; now non-expiring | Code lock and fresh time. Refused if the hold expired at that time. |
-| Confirm | Consumed permanently | Direct confirm from `held` follows the finalize rule. |
+| Hold expiry (lazy) | Returned once, when the claim passes `expires_at`: the terminal transition for expiry (§3) | No path can revive it (§4). A later sweep writes the durable `expired` record under the pool lock only and returns nothing again. |
+| Explicit release | Returns `qty`: the terminal transition for release (§3) | The guarded `Transition` to `released`. Repeats and release-after-expiry are satisfied (`store.go:854`, `:868`). No code lock. |
+| Finalize from `held` | Unchanged; now non-expiring | Locking path: code lock and fresh time. Refused if the hold expired at that time. |
+| Confirm | Consumed permanently | From `held` (direct confirm): locking path, as finalize. From `finalizing`: no code lock; the claim already counts and never expires. |
 | Payment outcome unknown | Retained while `finalizing` | Released only on authoritative evidence (ADR-016). |
 | Refund (full, partial, cancellation run) | Unchanged | Usage counts the confirmed quantity, not net of `returned_quantity`. Capacity return is separate (ADR-038 §8). |
 | Exchange | Source unchanged; target carries no code | Owner policy. Exchange calls Inventory for the target hold (`exchanges.go:560`, `:572`, `:680`). |
 | Draw-down | Total constant: a draw of 4 from 10 leaves 6 on the source and 4 on the child | Child takes the code lock. Child expiry returns its 4 to the code, not to the source (ADR-027). Not in the TKT-381 slice. |
-| Conversion | None | Operational holds carry no code. No promotion on conversion in the first slice. |
+| Conversion | None | Operational holds carry no code. Conversion applies no promotion in the first slice; a later design that lets it carry one puts it on the locking list. |
 | Crash before the Inventory commit | No usage | The claim and its citation are one row in one transaction. |
 | Crash after the Inventory commit | One usage | Retry with the same key and terms replays the claim (`store.go:569`). Retry after expiry gets a conflict and creates no new usage (`store.go:575`). A retry re-resolves the quote; only the fingerprinted fields must match (§5). A newer version or a new paid unit is refused as key reuse; the first hold expires and returns its units (inference from `store.go:572`). |
 
 On TKT-382 D1: cross-pool cap locking is already proven for the presale shape by
 `TestPresaleCodeCapHoldsAcrossSlots`. Under model (i), crash recovery and exactly-once terminal
 release reduce to two existing claim properties: one-row atomic writes and the idempotent
-`Transition`. This spike read those properties in the code. It did not re-execute them. TKT-382
-must pin them with tests on the promoted path.
+`Transition`. TKT-380 established those by **code inspection only**. It did not execute a
+crash/lost-response proof or a release-replay proof. **TKT-382 must execute both on the promoted
+paths**; this ADR moves that proof obligation to TKT-382 rather than claiming it.
 
 ### 8. Composition rules and examples (COS-2)
 
@@ -399,20 +449,23 @@ Cap examples (model (i), code cap as stated):
 ### 10. Journal correlation and the signature boundary
 
 No journal change. The breakdown lives in Commerce. Every journal fact carries a `fact_id`
-(`services/payments/internal/store/store.go:68`), and Commerce derives each `fact_id`
-deterministically from the record that produced it. So TKT-493 correlates **by fact type and
-`fact_id`**, never by `order_id` alone: the payload `order_id` of an exchange fact is the
-**source** order for both legs (`services/commerce/internal/api/exchanges.go:841`, `:848`).
+(`services/payments/internal/store/store.go:68`). For the six Commerce fact types in the table
+below, Commerce derives the `fact_id` deterministically from the record that produced it. Other
+fact types have other derivations: Payments derives `payment.*` fact ids from the organizer, the
+payment key and the type (`services/payments/internal/api/server.go:412`, `:444`). TKT-493
+correlates **by fact type and `fact_id`**, never by `order_id` alone: the payload `order_id` of an
+exchange fact is the **source** order for both legs (`services/commerce/internal/api/exchanges.go:841`, `:848`).
 
 | Fact type | `fact_id` derived from | Breakdown basis |
 |---|---|---|
 | `order.created`, `order.completed`, `order.failed` | the order id and the type (`services/commerce/internal/api/server.go:1366`) | The order's reservation and its promotion and fee snapshot. |
-| `order.refunded` | the refund id (`services/commerce/internal/store/refunds.go:96`) | The refund record: quantity × the source reservation's `unit_amount` (the paid face). Show the source promotion as the basis, not as a new discount. |
-| `order.exchange.reversed` | the exchange id (`services/commerce/internal/store/exchanges.go:138`) | The exchange record's source reservation (`SourceReservation`) and its snapshot. |
-| `order.exchange.sold` | the exchange id (`services/commerce/internal/store/exchanges.go:141`) | The exchange record's replacement order (`ReplacementOrderID`) and its reservation: the target face with no promotion, plus the carried fee. |
+| `order.refunded` | the refund id (`services/commerce/internal/store/refunds.go:96`) | The refund record, then its order → `orders.reservation_id` → the source reservation and snapshot (the join at `refunds.go:122`). Amount = quantity × that reservation's `unit_amount` (the paid face). Show the source promotion as the basis, not as a new discount. |
+| `order.exchange.reversed` | the exchange id (`services/commerce/internal/store/exchanges.go:138`) | The exchange row's stored `source_order_id` → `orders.reservation_id` → the source reservation and snapshot. `SourceReservation` is not a stored exchange field: `lookupExchange` leaves it empty (`exchanges.go:318`–`:329`), and `BindOrderExchange` fills it from that same join (`:235`–`:237`, `:256`). |
+| `order.exchange.sold` | the exchange id (`services/commerce/internal/store/exchanges.go:141`) | The exchange row's stored `replacement_order_id` → `orders.reservation_id` → the replacement reservation: the target face with no promotion. The row also stores `replacement_reservation_id` (`exchanges.go:329`); the two must agree, or the breakdown shows as inconsistent. The carried fee is the row's `source_gross_total` − `source_total` (as `replacementGross` computes it, `services/commerce/internal/api/exchanges.go:800`). |
 
 To find the refund or exchange record, TKT-493 lists the refunds or exchanges of the payload
 `order_id` and matches the derived `fact_id`. A fact that matches no record shows as unavailable.
+A fact type not in the table (for example `payment.*`) is shown without a promotion breakdown.
 TKT-493 may ship the sale facts first and add the correction facts later. Until then it shows no
 breakdown for a correction fact; it must not show the source order's snapshot for it.
 
@@ -425,11 +478,12 @@ fiscal line-data extension must also resolve the ADR-003 conflict that
 
 ### 11. Throughput
 
-All admissions and finalizes of one code serialize on one row, from the code lock to the commit.
-That is a throughput ceiling per code. It was not measured here. A code shared by a whole on-sale
-is the worst case.
+Every path in §4's locking list serializes on the code row, from the code lock to the commit. That
+is a throughput ceiling per code. It was not measured here. A code shared by a whole on-sale is the
+worst case. The paths outside the list (confirm from `finalizing`, release, expiry, sweeps, refund
+capacity return) do not take the lock and do not add to it.
 
-In the first slice every promoted path takes the code row `FOR UPDATE`, capped or not. A later
+In the first slice every path in the locking list takes the code row `FOR UPDATE`, capped or not. A later
 optimization may let paths on an **uncapped** code take `FOR SHARE`, so they do not serialize with
 each other. That is correct only if all three of these hold: a cap or window edit takes
 `FOR UPDATE` on the same row; the path reads the cap again in a separate statement after its share
@@ -456,6 +510,10 @@ a TKT-502 limitation; no capture is invented to settle them.
    instead be frozen before the hold (a durable quote intent), so a retry never re-resolves?
 5. **Refusal UX.** May the buyer see "expired" or "used up" instead of the uniform refusal? That
    trades the enumeration guard for clarity.
+6. **"One idempotent terminal transition."** Confirm this ADR's reading (§3): for expiry, the
+   terminal transition is the claim passing `expires_at`, and the later `expired` write is only the
+   durable record; for release, it is the guarded release write. The alternative, a write before
+   the units return, would make `sweepExpired` take the code lock, which §3 forbids.
 
 ## Consequences
 
@@ -481,7 +539,7 @@ a TKT-502 limitation; no capture is invented to settle them.
 
 ### Presale races (probe 1): two confirmed on today's code
 
-**Finding 1, the cap.** Today's presale code path overshoots its cap. Probe 1 forced this schedule with real Inventory
+**Finding 1, the cap (filed as TKT-543).** Today's presale code path overshoots its cap. Probe 1 forced this schedule with real Inventory
 migrations and the real `CreateHold` and `Transition`, against PostgreSQL 18.4:
 
 1. Hold H (1 unit, code capped at 1) on pool P2.
@@ -504,7 +562,7 @@ draw-down child has the S2 shape (fresh time, no code lock, `reservations.go:268
 probed. Fixing the presale path is out of this spike's scope. The prototype in probe 2 is one
 candidate fix.
 
-**Finding 2, the window.** Today's presale code path can admit after the code's window closed.
+**Finding 2, the window (filed as TKT-544).** Today's presale code path can admit after the code's window closed.
 `redeemPresaleCode` computes the window inside its `SELECT … FOR UPDATE` (`presale_codes.go:87`).
 Probe 1 schedule W: a transaction locks the code row without updating it; an admission that starts
 before `closes_at` waits on that lock; the clock passes `closes_at`; the lock is released. The
