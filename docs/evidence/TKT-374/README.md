@@ -140,10 +140,10 @@ a remark in §1. Nothing more was analysed.
    a plain `grep -F` on the extracted, white-space-normalised text matches.
 6. For a quote with "…", grep each side of the cut on its own.
 
-The implementer checked all 87 double-quoted strings in the note this way on 2026-10-13. Every
+The implementer checked all 100 double-quoted strings in the note this way on 2026-10-13. Every
 French quote matched its source exactly, after white-space normalisation only. The other quoted
 strings are English. They come from repository files (ADR-003, ADR-048, `keyring.go`,
-`prd-v1.md`), from the ticket's COS text, or are the note's own glosses. Each repository quote was
+`prd-v1.md` as of `8683c6fc`, `docs/conventions/continuous-delivery.md`), from the ticket's COS text, or are the note's own glosses. Each repository quote was
 checked against the file at `8683c6fc`.
 
 ## 7. Code evidence

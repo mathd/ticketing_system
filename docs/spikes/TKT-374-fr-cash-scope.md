@@ -56,13 +56,16 @@ The full register with hashes is [sources.json](../evidence/TKT-374/sources.json
 | S15 | economie.gouv.fr | Cash-software certification page | — | **HTTP 403** |
 | S16 | DGFiP (BOFiP) | BOI-TVA-DECLA-20-30-20-30, ticketing (art. 290 quater) | 20120912 | Existence check only |
 
-**What was not read:**
+**What was not read (outstanding work, see §15):**
 - The consolidated text of CGI art. 286 I 3° bis was not read (Légifrance 403). Its content is
-  known here through BOFiP S01 §1 and through the amending article in S07.
+  known here through BOFiP S01 §1 and through the amending article in S07. Reading the current
+  consolidated provision is still to do.
 - The NF525 certification rules (INFOCERT) were not obtained. INFOCERT sends them "Une fois les
   formalités administratives effectuées - signature d’un devis et premier paiement d’une facture
   administrative" (after a signed quote and a first invoice payment) [S12]. No NF525 clause is
-  cited in this note.
+  cited in this note. Getting them is a procurement step for the owner (§14 Q5).
+- In their place, this note uses BOFiP II §§60–260 and LNE Rev 1.8 as the requirement text. That
+  substitution is a scope decision (D7). It is not a reading of the NF525 rules.
 
 ## 3. The legal change
 
@@ -191,23 +194,37 @@ the source code and controls its parameters).
 
 ## 7. Applicability matrix
 
-Legend: **IN** = in scope; **OUT** = out of scope; **U** = undetermined (facts missing). "U(35)"
-means: in scope unless both §35 conditions hold.
+**Common operator conditions.** Every cell below holds only for an operator that meets all of
+these. If one fails, the operator is out for every path.
+- **Customer class (§10):** the operator has some sales to individuals. An operator whose whole
+  turnover is with professionals is out.
+- **Establishment (§20):** "Les succursales et filiales de sociétés étrangères sont dans le champ
+  d’application" (branches and subsidiaries of foreign companies are in). By tolerance, "les
+  entreprises étrangères immatriculées à la TVA non établies en France sont hors champ du
+  dispositif" (foreign businesses registered for VAT but not established in France are out).
+- **Statutory exclusions (§25):** franchise en base, flat-rate farm refund, exempt-only sellers
+  are out.
+- **Banking relief (§35):** where both §35 conditions hold for the operator's whole activity, it is
+  relieved. Cash or stored value anywhere in its activity removes the relief.
+
+Legend: **IN** = in scope if the common conditions hold; **OUT** = out of scope; **U** =
+undetermined (facts missing). "U(35)" means: in scope if the common conditions hold, unless both
+§35 conditions hold.
 
 | Path | S1 | S2 | S3 | S4 | Deciding § (S01) | Missing facts |
 |---|---|---|---|---|---|---|
-| P1 Web checkout | U(35) | U(35) | U(35) | U(35) | §10, §30, §35, §37 Ex. 2 | Customer class (B2C share); the operator's full payment mix; the PSP's legal entity and status; §25 exclusions (franchise, exempt-only) |
+| P1 Web checkout | U(35) | U(35) | U(35) | U(35) | §10, §30, §35, §37 Ex. 2 | Customer class (B2C share); the operator's full payment mix; the PSP's legal entity and status; establishment (§20); §25 exclusions (franchise, exempt-only) |
 | P2 Staff sales (card) | U(35) | U(35) | U(35) | U(35) | same as P1 | same as P1 |
 | P3 Refunds, voids | Follows the sale | Follows the sale | Follows the sale | Follows the sale | §50 (last item: correction traces), §90 | none beyond P1 |
 | P4 Exchanges | Follows the sale | Follows the sale | Follows the sale | Follows the sale | §50, §90 | none beyond P1 |
 | P5 Comps, zero total | U | U | OUT (no fee) | U | §50 ("peut conduire à l’émission … d’un justificatif") | Whether a no-payment issue is a "transaction" under §50. Zero face value with a positive fee is a payment and follows P1. |
 | P6 Partner sales | U(35) | U(35) | U(35) | n/a | §10, §30, §35 | Who is the seller under merchant-of-record terms |
 | P7 Settlement | OUT | OUT | OUT | OUT | §30 | **Inference:** it records no payment from a customer. It splits a captured payment. Its fee lines feed S3 revenue. |
-| P8 POS with cash | IN | IN if the platform collects at the counter | n/a unless fees are sold at the counter | IN | §30 ("espèces"), §35 ("quelle que soit l’importance de cette partie") | VAT regime only (§25) |
-| P9 Cashless spends | IN (**Inference**) | IN (**Inference**) | n/a | IN (**Inference**) | §30, §35 | Spends are paid with stored value, not by a credit institution. |
+| P8 POS with cash | IN | IN if the platform collects at the counter | n/a unless fees are sold at the counter | IN | §10, §20, §25, §30 ("espèces"), §35 ("quelle que soit l’importance de cette partie") | Customer class (§10); establishment (§20); VAT regime (§25). §35 cannot apply. |
+| P9 Cashless spends | IN (**Inference**) | IN (**Inference**) | n/a | IN (**Inference**) | §10, §20, §25, §30, §35 | Customer class (§10); establishment (§20); VAT regime (§25). Spends are paid with stored value, not by a credit institution, so §35 cannot apply. |
 | P9 Top-up, balance refund | U | U | n/a | U | §30, §50 | Whether a top-up is a payment "en contrepartie d’une vente" (S01 §30). S01 does not say. |
-| P10 Invoicing | IN for payments from individuals | same | same | same | §40, §10 | B2B-only invoices are out (§10). §50, §170 and §200 have specific remarks for invoicing software. |
-| P11 Test mode | IN when deployed | IN | IN | IN | §50 ("module de type « école » ou « test »"), §150 | none |
+| P10 Invoicing | U(35) for payments from individuals | U(35) | U(35) | U(35) | §40, §10, §35 | Same as P1. B2B-only invoices are out (§10). §50, §170 and §200 have specific remarks for invoicing software. |
+| P11 Test mode | Protected test data when the deployment is in scope | same | same | same | §50 ("module de type « école » ou « test »"), §150 | None of its own. Test data does not bring a deployment into scope; it joins the protected data of a deployment that already is. |
 
 **Key finding: cash at the box office removes the relief for the whole operator.** If an operator
 takes cash at a TKT-16 counter, or uses TKT-15 stored value, the §35 relief is lost for all its
@@ -230,25 +247,25 @@ Quotes are kept short. NF525 clauses: not verified (§2).
 | Line data | §50: "doivent être enregistrées ligne par ligne": receipt number, date to the minute, register number, total incl. tax, per-line label, quantity, unit price, line total excl. tax, VAT rate, payment data, correction traces | Ex. 3: adds "un identifiant unique de l’établissement" and the payment date. Elementary data must be stored "et pas seulement pouvoir être retrouvées sur la base d’un calcul". "Un code article, identifiant article n’est pas suffisant." | Journal columns: `fact_id, organizer_id, sequence, fact_type, occurred_at, buyer_id, amount, currency, payload` (`services/payments/internal/store/migrations/0001_journal.sql`). Payload may hold only `order_id` (`store.go:239`). Commerce `reservations` holds `quantity, unit_amount, total_amount, ticket_type_id` (`services/commerce/internal/store/migrations/0001_checkout.sql`), outside the chain. | Missing from signed data: receipt number, register id, establishment id, label, quantity, unit price, line total excl. tax, VAT rate, payment method. No VAT concept exists in `services/`. **Conflict with ADR-003 Decision 4**, see §9. | TKT-32 (VAT rate, line total excl. tax); TKT-34 (receipt number); TKT-16 / TKT-379 (register, establishment); ADR-003 amendment ticket (journal fields) |
 | Corrections | §90: "par des opérations de « plus » et de « moins » et non par modification directe des données d’origine" | Ex. 4 | Compensating facts: `order.refunded`, `payment.voided`, `payment.refunded`, the exchange pair (`store.go:230`). Append-only triggers (`0001_journal.sql`). | Corrections are per order and amount. They are not per line, because the journal has no lines. The link to the original is `order_id` only. | TKT-11 profile; ADR-003 amendment ticket |
 | Test mode | §150: "factice" or "simulation" on receipts; operator id | Ex. 5: test data "explicitement identifiées" and secured like real data | Provider choice by key (`main.go:178`). Journal entries carry no test flag. | No test marker in the signed record or on receipts | TKT-11 profile → TKT-376, TKT-378 |
-| Closures | §170: daily, monthly and yearly closures. "Ces trois échéances sont cumulatives et impératives." | Ex. 6: no new, changed or cancelled transaction on a closed period | None (`git grep` finds no fiscal closure code in `services/`) | All. Late facts are a design question: exchange legs are written one after the other (`exchanges.go:831`), and recovery appends later. | TKT-376 (daily), TKT-377 (month, fiscal year) |
-| Totals and counters | §170: period grand total and perpetual total, "ne se remettant jamais à zéro"; counters continue across a version change | Ex. 7: totals per closure; "générées séparément pour chaque assujetti" | Per-organizer chain under a `journal_heads` row lock (`store.go:292`). This matches per-taxpayer separation in S1. | No totals. Order facts, payment facts and exchange legs cannot simply be summed. A revenue definition is needed. | TKT-376, TKT-377 |
+| Closures | §170: daily, monthly and yearly closures. "Ces trois échéances sont cumulatives et impératives." | Ex. 6: no new, changed or cancelled transaction on a closed period | None (`git grep` finds no fiscal closure code in `services/`) | All. Late facts are a design question: exchange legs are written one after the other (`exchanges.go:831`) with a historical time, and recovery appends later. The append path has no period check, so compatibility with ADR-003 Decision 4 is unresolved (§9). | TKT-376 (daily), TKT-377 (month, fiscal year) |
+| Totals and counters | §170: period grand total and perpetual total, "ne se remettant jamais à zéro"; counters continue across a version change | Ex. 7: totals per closure; "générées séparément pour chaque assujetti" | Per-organizer chain under a `journal_heads` row lock (`store.go:292`). Organizer equals taxable person only in S1 (and S4). Commerce sends the sale's organizer for the charge (`services/commerce/internal/api/server.go:1917`). Settlement stores every fee line, platform fees included, under that same organizer (`services/payments/internal/store/settlement.go:317`). | No totals. Order facts, payment facts and exchange legs cannot simply be summed. A revenue definition is needed. In S3 the platform's fee revenue is spread over many organizer partitions, and in S2 the taxable person depends on the mandate. So organizer totals alone do not meet Ex. 7. An explicit organizer→taxable-person mapping, including platform fee revenue, must exist before closures, totals or archives are defined. | TKT-376, TKT-377; owner (§14 Q1) |
 | Inalterability | §80, §90 (also against "modifications non tracées effectuées par le propriétaire et détenteur des données lui-même"), §100 (proof that data is unchanged "depuis son enregistrement"), §120 | Ex. 8: chain or keyed hash. The key must be unknown to "l’utilisateur final (le professionnel assujetti)". Restore to an earlier state: "L’opération doit être détectée ou rendue impossible." | SHA-256 chain plus HMAC-SHA-256 per entry (`store.go:132`, `:138`, `:312`). Keyring with retired keys (`services/payments/internal/store/keyring.go:33`). Verifier (`store.go:362`). HMAC-SHA-256 is on Ex. 8's acceptable list. | (a) Coordinated rollback is not detected (§10). (b) Key custody: the HMAC ring is secret material, and "every holder of the ring can forge" (`keyring.go:40`). In S2, S3 and S4 the taxable person holds it. (c) Coverage: Ex. 8 covers Ex. 3, 4, 5, 7, 9, 15 and 18 data. Today only journal columns are signed. Settlement entries are "**not** in the journal's hash chain" (ADR-048). | TKT-375 (rollback), TKT-11 (key custody) |
 | Security | §130: "Il doit empêcher leur suppression ou modification sans laisser de trace." Covers §50 data, changes, and receipt production data. §140: "de nature à garantir la restitution des données dans l’état de leur enregistrement d’origine" | Ex. 8 robustness: "Vérifier la sécurité des éléments en bout de chaîne, notamment contre leur suppression." | As above | Receipt production data is not in the journal. The chain tail is not protected against deletion together with its head (§10). | TKT-375; TKT-34 |
 | Receipts and reprints | §130 (data for receipts issued) | Ex. 9: before-payment and after-payment receipts must be distinct; "duplicata" on reprints; secured print and send trace. Its note says: "Facture, note, reçu, ticket, billets sont des justificatifs." | The ticket lifecycle trail records issue, delivery and reissue events (ADR-003 Decision 2). I did not check them against Ex. 9. | **Inference:** a ticket is itself a receipt under Ex. 9. No receipt number, no duplicate marking, and no print trace tied to the money journal. | TKT-34; TKT-379; TKT-11 |
 | Archive | §220 (at most yearly; "donner date certaine aux données archivées"), §230 ("format ouvert", French notice), §240 (archive generation trace), §250 | Ex. 10 (open format, frozen and time-stamped, totals included), Ex. 11 (one archive covers at most one year or fiscal year; any past period under 7 years), Ex. 12 (integrity can be checked without the system) | None | All | TKT-378 |
 | Purge | §155, §250, §260: "La purge n’est que partielle" (totals stay online) | Ex. 13, Ex. 14 | No purge. The journal is append-only. | A retention design is needed before any purge. Totals must never be purged. | TKT-378 |
-| Operation traceability | §240 | Ex. 15: archive, purge and restore operations, with time stamp and terminal id | None | All | TKT-378; TKT-375 (restore) |
+| Operation traceability | §240 | Ex. 15: archive, purge and **application** restore operations, with time stamp and terminal id. It excludes system restores: "Les restaurations « système » ne pouvant être tracées par la couche applicative, les restaurations de données concernées sont les restaurations effectuées depuis l’application/le logiciel d’encaissement." | None | All. This row is about tracing operations the application performs. Detecting or preventing a database or snapshot restore is a different requirement: Ex. 8 (Inalterability row, §10). | TKT-378 |
 | Conservation | §155 (six years), §180 ("et pas seulement sur le Z de caisse") | Ex. 16 (6 years, checked as 7), Ex. 17 (archives) | The journal keeps all entries. No retention policy is written. | Retention period, storage failure handling, backups versus archives | TKT-378 |
 | Centralisation, offline | §190 | Ex. 18: reliable transfer, a short offline period, user is told when offline. A browser web app "n’est pas considéré comme un système centralisateur". | Web paths are client-server. Offline admission (ADR-025) is for entry, not payment. | Applies to a planned POS with "offline tolerance" (`prd-v1.md:52`) | TKT-16, TKT-379 |
 | Tax-authority access | §60 ("un accès de l’administration fiscale à l’ensemble des données enregistrées"), §100 | Ex. 19: automated integrity check; a French manual "compréhensible par un non-informaticien" | Operator command `verify-journal` (`services/payments/cmd/payments/main.go:74`) | No access for the tax authority, no French manual, no export of compliance settings | TKT-378; TKT-11 |
-| Fiscal perimeter, versions | §330, §340 (major version = parameters that affect the four conditions changed), §380 (attestation for later minor versions) | Ex. 20 (list every fiscal-perimeter source file and fingerprint it), Ex. 21 (major and minor version numbers; any fiscal-perimeter code change increments the major version) | None. Continuous delivery to `main` (`docs/conventions/continuous-delivery.md`). | No perimeter and no version scheme. **Inference:** frequent releases that touch fiscal code would each be a new major version that needs a new certificate or attestation. | TKT-11 |
+| Fiscal perimeter, versions | §330, §340 (major version = parameters that affect the four conditions changed), §380 (attestation for later minor versions) | Ex. 20 (list every fiscal-perimeter source file and fingerprint it), Ex. 21 (major and minor version numbers; any fiscal-perimeter code change increments the major version) | None. The repository has continuous integration only: "not an application release or deployment pipeline", and "no commit is automatically deployed to an environment" (`docs/conventions/continuous-delivery.md`). Every PR and push to `main` runs `make check`. | No fiscal perimeter, no version scheme, no release process. **Inference, about a future release process:** each release that changes fiscal-perimeter code would be a new major version and need a new certificate or attestation (§340, Ex. 21). | TKT-11 |
 | Organisation | — (§290: the publisher, not the taxable person, obtains the certificate) | Ch. III: compliance management system (roles, legal watch, controls, design records, subcontractor control, distribution traceability). Ex. 1: seven documents in French. Ex. 2: supporting documentation. | None | All | Owner decision (TKT-11) |
 
 ## 9. Gaps against ADR-003, and the conflict
 
 [ADR-003](../adr/ADR-003-append-only-audit-trail.md) Decision 4 says that period closures, fiscal
 archives and audit export "must layer on the money journal **without schema or flow changes**".
-TKT-11's PRD row says the same (`docs/product/prd-v1.md:47`).
+TKT-11's PRD row said "validated to require no schema/flow changes" before this spike. It now records the conflict below (`docs/product/prd-v1.md:47`).
 
 **The conflict.** BOFiP §50 and LNE Ex. 3 require line-level data in the secured record: label,
 quantity, unit price, line total excl. tax, VAT rate, receipt number, register id and
@@ -259,9 +276,33 @@ it, and no VAT data exists. To satisfy §50 you must change the journal payload 
 producers, or both. That **conflicts with ADR-003 Decision 4**. This spike does not edit ADR-003
 (D4).
 
-What is additive and fits Decision 4 (**Inference**): closures and totals, archive export,
-operation traceability and an external witness for rollback can be built as new components that
-read the journal. Line data and receipt identity cannot.
+**Closures: compatibility with Decision 4 is unresolved.** LNE Ex. 6 says the system "ne doit
+pas permettre d’enregistrer de nouvelles transactions, de modifier ou d’annuler une transaction
+sur une période clôturée". A component that only reads the journal cannot enforce that. Today the
+append path accepts a caller-supplied `OccurredAt` and fills the clock only when it is zero
+(`services/payments/internal/store/store.go:268`). It inserts the fact with no period check
+(`store.go:313`). Producers send historical times on purpose: exchange legs reuse the exchange's
+`CreatedAt` (`services/commerce/internal/api/exchanges.go:832`, sent at `:847`), and
+compensation facts reuse a stored `bound_at` (`services/payments/internal/api/psp.go:492`,
+`services/payments/internal/api/partial_refund.go:126`). So a fact can land in a period that is
+already closed. Whether closures fit Decision 4 stays open until three things have a verified
+design:
+1. how a fact is assigned to a period (occurred time or append time);
+2. the atomic closure boundary (what the close and a concurrent append see);
+3. late and replayed facts (idempotent replays return the stored fact, `store.go:279`).
+The append path may need a period check. That is a flow change.
+
+The other items, checked one by one (**Inference**, not verified by a design):
+- **Archive export:** reads closed periods and totals. No change to the append flow is visible,
+  but it depends on the closure design above.
+- **Operation traceability (Ex. 15):** archive, purge and application-restore operations are new
+  operations. Recording them needs a new record type, in the journal or beside it. If it goes in
+  the journal, that is a schema change, because `validate()` accepts only listed fact types
+  (`store.go:230`).
+- **External witness for rollback (TKT-375):** reads heads and publishes them outside. No change
+  to the append flow is visible. If the witness must confirm before an append commits, that is a
+  flow change.
+- **Line data and receipt identity:** not additive (above).
 
 Also: ADR-003's title has a readiness label for this regime. The gaps above do not support that
 label as written. The amendment ticket should review it.
@@ -311,13 +352,23 @@ The two governing tests:
   journal's rollback blindness is stated in ADR-003 §Status, not pinned by a test.
 
 Both are correct about today's code. The lifecycle test pins a state, and the journal has the same
-blindness. §90, §130 and Ex. 8 appear to forbid that state. So **TKT-375 (witness journal heads
-outside the database) is a requirement, not hardening**, for any in-scope deployment.
+blindness. §90, §130 and Ex. 8 appear to forbid that state. So **rollback detection, the subject of
+TKT-375, is a requirement, not hardening**, for any in-scope deployment.
 
-In S2, S3 and S4 the taxable person is adversary A and adversary B. **Inference:** the witness and
-the key must then sit with a party the taxable person does not control. The Ex. 8 robustness check
-for case 3 mentions control "se basant sur un tiers de confiance" (based on a trusted third
-party).
+**The required property** (from §90, §130 and Ex. 8): the taxable person cannot roll back, delete
+or forge secured data without detection, and the signing key is not known to them. In S2, S3 and
+S4 the taxable person is adversary A and adversary B, so today's design does not give that
+property in those scenarios.
+
+**A recommended architecture, not a requirement.** Put the head witness and the signing key with
+a party the taxable person does not control. The Ex. 8 robustness check for case 3 mentions
+control "se basant sur un tiers de confiance" (based on a trusted third party). This rests on
+assumptions: the taxable person has administrator rights on the database and its host (true in
+S2–S4 by definition), and no in-database mechanism constrains a database writer (ADR-021). Other
+designs can meet the property. Ex. 8 says: "Ces solutions ne sont pas exhaustives et peuvent être
+utilisées conjointement, d’autres solutions peuvent être acceptées." Its examples include a key
+"pas aisément accessible par l'utilisateur" and an integrity proof stored "hors d’accès de
+l’utilisateur". TKT-375 chooses the mechanism.
 
 ## 11. Proof-route recommendation per scenario
 
@@ -340,7 +391,7 @@ Rules applied:
 | Scenario | Routes available | Recommendation | Premises to confirm |
 |---|---|---|---|
 | S1 SaaS | Certificate or attestation | Attestation is a valid route. Design to certification grade anyway (D10). | The platform holds the source code and controls the fiscal parameters (§300). Organizers cannot change them (§310). A version root and minor-version scheme exists (§380). |
-| S2 Collector | For the platform's own obligation: attestation only if its declared activity is cash-software publishing (§375); else certificate | Certification (provisional) | The mandate fact; the platform's declared activity |
+| S2 Collector | For the platform's own obligation: attestation only if its declared activity is cash-software publishing and that activity is real and corroborated (§375); else certificate | Certification (provisional) | The mandate fact; evidence of the platform's actual publishing activity, not only its NAF/NACE code (§14 Q6) |
 | S3 Own fees | Same as S2 | Certification (provisional) | Same as S2 |
 | S4 In-house | Certificate only (§375, §315 Ex. 3), unless the organizer's declared activity is cash-software publishing | Certification | Who modifies the code. Any change to fiscal functions invalidates the document (§315). |
 
@@ -360,12 +411,18 @@ this baseline unless the owner relaxes it:
    (§9).
 3. **Certification-grade evidence:** LNE Ex. 3–19 as the requirement text, Ex. 20–21 for release
    control.
-4. **Per-taxpayer separation.** Totals per organizer (Ex. 7). The existing per-organizer chain is
-   the base.
-5. **Rollback detected outside the database.** The key is not known to the taxable person (Ex. 8).
+4. **Per-taxpayer separation (Ex. 7).** Totals are per taxable person, not per organizer. The
+   per-organizer chain matches that only in S1 (and S4). Before closures, totals or archives are
+   defined, write an explicit mapping from organizer to taxable person that also places the
+   platform's own fee revenue (S3), which today sits under each sale's organizer
+   (`settlement.go:317`).
+5. **Rollback, deletion and forgery by the taxable person are detected or prevented, and the key
+   is not known to them** (Ex. 8). This covers database and snapshot restores. The mechanism is
+   TKT-375's choice; §10 recommends a party outside the taxable person's control.
 6. **Archive:** open format, French notice, one year or fiscal year per archive at most, integrity
-   checkable without the system (Ex. 10–12). Archive, purge and restore operations are traced
-   (Ex. 15).
+   checkable without the system (Ex. 10–12). Archive, purge and application-restore operations
+   are traced (Ex. 15). A system restore (database or snapshot) is not traced under Ex. 15; it must
+   be detected or prevented under Ex. 8 (item 5).
 7. **Tax-authority access with an automated integrity check and a French manual** (Ex. 19).
 8. **No reset of perpetual totals** across software versions (§170).
 
@@ -373,9 +430,9 @@ this baseline unless the owner relaxes it:
 
 | Ticket | Input |
 |---|---|
-| TKT-375 | Rollback detection is a requirement (§90, §130, Ex. 8). Name adversaries A and B per scenario (§10). The witness and the key are outside the taxable person's control in S2, S3 and S4. Restore operations need a trace (Ex. 15). |
-| TKT-376 | Daily closure (§170, Ex. 6). No new transactions in a closed period, so define where a late fact goes. Write a revenue definition for summing order, payment and exchange facts. Totals per organizer (Ex. 7). Test-mode data is separated (Ex. 5). |
-| TKT-377 | Month and fiscal-year closure. A fiscal year can differ from the calendar year, so it is per organizer. The perpetual total never resets on a version change (§170). |
+| TKT-375 | Required property (§90, §130, Ex. 8): the taxable person cannot roll back, delete or forge secured data undetected, and does not know the key. That includes database and snapshot restores (Ex. 8 robustness check). Name adversaries A and B per scenario (§10). Recommended, not required: a witness and key held by a party the taxable person does not control, under the assumptions in §10. Application-restore traceability (Ex. 15) belongs to TKT-378; system restores are out of Ex. 15. |
+| TKT-376 | Daily closure (§170, Ex. 6). No new transactions in a closed period, so define where a late fact goes. Write a revenue definition for summing order, payment and exchange facts. Totals per taxable person (Ex. 7): first get the organizer→taxable-person mapping, including platform fee revenue (§8 "Totals and counters", §12 item 4). Organizer totals alone are not enough outside S1. Test-mode data is separated (Ex. 5). |
+| TKT-377 | Month and fiscal-year closure. A fiscal year can differ from the calendar year, so it is per taxable person (see the TKT-376 mapping). The perpetual total never resets on a version change (§170). |
 | TKT-378 | Archive, purge, conservation, tax-authority access (§§155–260, Ex. 10–17, Ex. 19) |
 | TKT-379 | POS and cashless facts: register id, establishment id, payment method per tender, offline trace (Ex. 3, Ex. 18) |
 | TKT-32 | VAT rate and line total excl. tax per line, in the secured record (§50) |
@@ -394,10 +451,17 @@ this baseline unless the owner relaxes it:
    lost for all its sales.
 4. **Operator VAT facts.** Are buyers individuals? Is any operator B2B only, under the franchise,
    or exempt only (§25)?
-5. **NF525 mark.** Do you want the INFOCERT NF525 mark specifically? The rules come only after a
-   signed quote and a first payment [S12]. That is a purchase decision. LNE/BYCYB Rev 1.8 is
-   public and is the referential used here (D7).
-6. **Platform company's declared activity** (NAF/NACE). It decides §375 for S2 and S3.
+5. **NF525 rules.** The ticket asks for the NF525 referential. It was not obtained. The rules
+   come only after a signed quote and a first payment [S12], so getting them is a purchase
+   decision. Until then, this note substitutes BOFiP II and LNE/BYCYB Rev 1.8 (public, accredited)
+   by scope decision D7. Do you accept that substitution, or do you want the NF525 rules bought and
+   mapped (needed anyway if you want the INFOCERT NF525 mark)?
+6. **Platform company's software-publishing activity** (S2, S3). §375 allows a self-issued
+   attestation only if the declared activity is cash-software publishing and that activity is
+   "réelle et corroborée". NAF/NACE codes "ne peuvent à eux seuls être un mode de preuve de
+   l’activité de l’assujetti" (codes alone are not proof). What evidence of the actual activity
+   exists (revenue from publishing, other customers, contracts), besides the declaration and
+   codes?
 7. **Distribution model.** SaaS only, self-hosted, or a free-software licence? §45 and §315
    Example 4 make the user company the publisher for free software.
 8. **ADR-003 Decision 4.** Do you accept the amendment path in §9?
@@ -406,17 +470,22 @@ this baseline unless the owner relaxes it:
 ## 15. COS verdicts
 
 **COS-1 — "cites the current legal text, official tax guidance and the actual referential clauses
-for each proposed cash path": met, with two stated residuals.**
+for each proposed cash path": partly met.**
 - Official tax guidance: met. BOFiP 20260325 (S01) is read in full and cited by paragraph for each
   path (§7). The edition diff against 20250416 is done (§3.3).
-- Referential clauses: met under D7. BOFiP II §§60–260 and LNE Rev 1.8 Exigences 1–21 are cited
-  by number (§8). **Residual:** the NF525 (INFOCERT) rules were not obtained. No NF525 clause is
-  cited.
+- Referential clauses: partly met. The ticket asks for the applicable NF525 referential. It was not
+  obtained, and no NF525 clause is cited. By scope decision D7, this note substitutes BOFiP II
+  §§60–260 and LNE Rev 1.8 Exigences 1–21, cited by number (§8). That substitution is a decision,
+  not evidence that the NF525 rules say the same.
 - Legal text: partly met. The amending article (LF 2026 art. 125) is read in the AN definitive
-  text (S07). The Conseil constitutionnel decision (S08) does not strike it. **Residual:** the
-  consolidated text of CGI art. 286 I 3° bis was not read, because Légifrance answered HTTP 403.
-  For the base wording of 3° bis, this part of COS-1 is met through official guidance (S01 §1,
-  S03, S06) only.
+  text (S07). The Conseil constitutionnel decision (S08) does not strike it. The consolidated
+  text of CGI art. 286 I 3° bis was not read, because Légifrance answered HTTP 403. Its base
+  wording is known only through official guidance (S01 §1, S03, S06).
+
+**Outstanding work for COS-1:**
+1. Procure the NF525 rules (owner purchase decision, §14 Q5), then map them against §8.
+2. Read the consolidated CGI art. 286 I 3° bis in force (Légifrance by hand, or an official
+   export) and check it against S01 §1 and S07.
 
 **COS-2 — "lists gaps against ADR-003 and states whether certification or publisher attestation is
 the target; it does not assert compliance": met.**
