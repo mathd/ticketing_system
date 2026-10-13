@@ -532,7 +532,8 @@ function cell(html: string, channel: string, field: string): string | undefined 
  * the test fail and does not silently change what the test checks.
  */
 function withoutUiLanguageForm(html: string): string {
-  const languageForm = /<form\b[^>]*\baction="\/admin\/ui-language"[^>]*>[\s\S]*?<\/form>/g;
+  // `\s` before `action`, not `\b`: `\b` also matches inside `data-action=`.
+  const languageForm = /<form\b[^>]*\saction="\/admin\/ui-language"[^>]*>[\s\S]*?<\/form>/g;
   const found = html.match(languageForm)?.length ?? 0;
   if (found !== 1) throw new Error(`expected exactly one UI-language form, found ${found}`);
   return html.replace(languageForm, '');
