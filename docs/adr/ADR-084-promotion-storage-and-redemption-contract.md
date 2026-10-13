@@ -164,9 +164,10 @@ cap overshoots (see Consequences, *Presale races*).
 - **T2. The admission writes `expired` on the foreign claims it leaves out.** It must lock claims in
   other pools after the code lock. That breaks the lock order and can deadlock with a finalize that
   holds the claim and waits for the code (inference).
-- **T3. Count expired-but-unswept held claims as live until a sweep.** Safe, but a quiet pool is
-  never swept, so its expired holds block the code with no bound. ADR-010 forbids a sweeper as a
-  correctness requirement.
+- **T3. Count expired-but-unswept held claims until a terminal write.** Safe for the cap. Its cost
+  is liveness, not correctness: on a quiet pool, expired holds block the code's units until a sweep
+  or other cleanup writes the terminal state. This is reading R2 of the pending owner decision
+  (§3, open question 6).
 - **T4. Every path in a named locking list (§4) takes the code lock and judges expiry on a fresh
   time read after it.** Probe 2 shows it closes the race in all three forced schedules.
 
@@ -214,7 +215,8 @@ Usage of a code is the sum of `quantity` over the claims that cite the code and 
     OR status = 'finalizing'
     OR (status = 'held' AND expires_at > $t)     -- reading R1 (below)
 
-`$t` is the time the path read with `clock_timestamp()` after it took the code lock (§4). Under
+`$t` is the code's decision time, computed after the code lock is taken (R1, below):
+`greatest(clock_timestamp(), the code row's stored high-water)`, written back to the row. Under
 reading R2 (below) the last line becomes `OR status = 'held'`: expiry is ignored for held claims.
 
 This is a new predicate and a new expression. It must not reuse `consumedQuantity`, and it must not
@@ -236,7 +238,7 @@ of §4; this table and §4 must stay identical.
 | Cap or window edit of a code | None: an edit never releases usage | **Yes**, `FOR UPDATE` |
 | Confirm from `finalizing`: `Transition` to `confirmed` | Keeps it, permanently | No: the claim already counts and never expires |
 | Expiry: the claim passes `expires_at` | Under R1, ends it at the first code-locked decision after expiry (below). Under R2, none until a terminal write | No: it is not a write |
-| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | Under R1, none: they write the durable `expired` record. Under R2, they end it: each is a terminal write | No; `sweepExpired` **never** |
+| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | `sweepExpired` and the replay-expiry branch commit an `expired` write. `Transition`'s expiry branch commits only on a release; on a refused finalize or direct confirm it returns `ErrConflict` and its write rolls back (`store.go:882`–`:883`, deferred rollback `:824`). Under R1 a committed write is the durable record. Under R2 it ends usage: it is a terminal write | No; `sweepExpired` **never** |
 | Explicit release: `Transition` to `released` (`store.go:891`) | Ends it: the terminal transition for release | No: it never adds usage |
 | Refund capacity return (`refund_returns.go:148`) | None | No: it never adds usage |
 
@@ -249,17 +251,32 @@ expiry, are satisfied (`store.go:854`, `:868`).
 
 - **R1, logical expiry.** Expired units return without a write. The boundary is this: the units
   return at the **first code-locked decision after expiry that finds the claim still `held` and
-  expired** on its post-lock time (or finds it already written `expired`). Passing `expires_at`
-  alone does not return them. Decisions on one code are serialized by the code lock, so that
-  decision comes after any in-flight finalize. A finalize that decided before expiry and commits
-  after it keeps the unit: probe 2 baseline S2, where F decided before `expires_at`, committed
-  `finalizing`, and the waiting admission was refused
-  ([`probe2-baseline.txt`](../evidence/TKT-380/output/probe2-baseline.txt), lines 14–19). Post-lock
-  time only moves forward, so every later decision also excludes the claim: the return happens
-  once. `sweepExpired`, the replay-expiry branch and `Transition`'s expiry branch later write the
-  durable `expired` record; they return nothing. Until then the stored status can read `held`.
+  expired** on its decision time `$t` (or finds it already written `expired`). Passing
+  `expires_at` alone does not return them. Decisions on one code are serialized by the code lock,
+  so that decision comes after any in-flight finalize. A finalize that decided before expiry and
+  commits after it keeps the unit: probe 2 baseline S2, where F decided before `expires_at`,
+  committed `finalizing`, and the waiting admission was refused
+  ([`probe2-baseline.txt`](../evidence/TKT-380/output/probe2-baseline.txt), lines 14–19).
+  **The decision time must not decrease.** The wall clock can step backward (ADR-021, TKT-234
+  amendment: "Not that any wall clock is monotonic"). Without a guard: cap 1; H expires at 100;
+  admission A takes the lock at 101, excludes H and confirms a unit on P1; the clock steps back to
+  99; H's finalize takes the lock, judges H unexpired and finalizes; usage is 2. So the code row
+  stores a high-water decision time. Each code-locked decision computes
+  `$t = greatest(clock_timestamp(), high-water)` and writes `$t` back to the row before it commits.
+  Then every later decision also excludes the claim, and the return happens once. This needs a new
+  column on the code row (TKT-382 schema). That the high-water closes the clock-regression case is
+  reasoning, not tested; TKT-382 must add a forced backward-clock test for R1 (set the high-water in
+  the future, or inject a clock seam). Under R1 the window check also uses `$t`, so after a
+  backward clock step a high-water ahead of the clock can make the window open early (closing early
+  is the conservative side); TKT-382's backward-clock test must cover `opens_at` as well. This is
+  reasoning, not tested. The committed `expired` writes of `sweepExpired` and the
+  replay-expiry branch are the durable record; they return nothing. Until one runs, the stored
+  status can read `held`.
 - **R2, terminal write.** An expired `held` claim keeps counting until a terminal write commits:
-  `sweepExpired`, the replay-expiry branch, `Transition`'s expiry branch, or explicit release. That
+  `sweepExpired`, the replay-expiry branch, `Transition`'s expiry branch when it commits, or
+  explicit release. R2 does not depend on a monotonic clock for cap safety: a clock step can only
+  move a terminal write earlier or later; the claim counts until that write commits, and after it
+  no path can finalize the claim (`store.go:882`–`:883`). That
   write only decreases usage, so it needs **no** code lock: a concurrent admission sees either the
   old row, counts it and refuses (conservative), or the committed terminal row. The existing pool
   and claim locks serialize the write against a finalize. R2 also removes the cross-pool overshoot
@@ -268,18 +285,20 @@ expiry, are satisfied (`store.go:854`, `:868`).
 
 The costs of R2 are separate. **Cleanup:** a code's units stay blocked on a quiet pool until
 something writes the terminal state there, so R2 needs a sweeper or other cleanup for liveness (not
-for correctness). **Lock order:** an admission cannot do that cleanup itself, because it would take
-pool and claim locks after the code lock, which §4 forbids; the cleanup must run in its own
-transactions.
+for correctness). **Lock order:** an admission may sweep its own pool before it takes the code lock,
+as `CreateHold` already does (pool lock `store.go:524`, `sweepExpired` `:597`, then
+`redeemPresaleCode` `:682`). It cannot clean up foreign pools that it discovers under the code lock,
+because that would take pool and claim locks after the code lock, which §4 forbids; that cleanup
+must run in its own transactions.
 
 **This ADR's lock and time rules assume R1.** If the owner picks R2, these change:
 
 - §3: the predicate counts every `held` claim (above). The expiry row has no effect; the
   `sweepExpired`, replay-expiry and `Transition`-expiry rows become terminal writes. `Transition`'s
   expiry branch must then commit its write; today it rolls the write back when it returns
-  `ErrConflict` (`store.go:882`).
+  `ErrConflict` (`store.go:882`–`:883`, `:824`).
 - §4: finalize and direct confirm from `held` no longer add or revive usage, so they could leave the
-  locking list (inference). The post-lock time then serves the window check only.
+  locking list (inference). The decision time `$t` then serves the window check only.
 - §7: the hold-expiry row returns units at the terminal write, and a cleanup path is needed.
 - §8: example C3 (expiry returns units with no sweep) becomes "returns units after a terminal write".
 
@@ -309,9 +328,9 @@ capacity return (none of them adds usage). §3's table and §11 use this same li
 
 **Fresh-time invariant.** Every path in the locking list takes the lock **whether or not the code
 has a cap**, because a cap can be added while the transaction is open. After the lock is held, it
-reads the time `$t` with `clock_timestamp()`, then reads the cap, the window and the usage in
-**separate statements**. It judges the window and expiry on `$t`, with §3's promotion usage
-predicate, never on transaction-start `now()`. Admission follows this rule like every other path.
+computes the decision time `$t` (§3: `clock_timestamp()`, never below the code row's high-water),
+then reads the cap, the window and the usage in **separate statements**. It judges the window and
+expiry on `$t`, with §3's promotion usage predicate, never on transaction-start `now()`. Admission follows this rule like every other path.
 
 **Read after the lock, not in the locking statement.** Today `redeemPresaleCode` computes the
 window in the target list of the `SELECT … FOR UPDATE` itself (`presale_codes.go:87`–`:90`). The
