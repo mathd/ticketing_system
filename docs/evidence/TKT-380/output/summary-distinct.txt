@@ -26,3 +26,15 @@
       7 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
       7 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
       7 SUMMARY prototype-S3 edit_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
+== probe3-r2
+      6 SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+      6 SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      6 SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+== probe3-r2-mutation
+      1 SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+      1 SUMMARY r2-S1 a_err=nil f_status=finalizing f_err=nil redeemed_after_finalize=2 redeemed_after_confirm=2 cap=1 verdict=BROKEN
+      1 SUMMARY r2-liveness a_err=nil h_before_b=held b_err=ErrPresaleCodeInvalid h_after_b=held redeemed=1 cap=1 verdict=BROKEN
+== probe3-r2-repeats
+      7 SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+      7 SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+      7 SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD

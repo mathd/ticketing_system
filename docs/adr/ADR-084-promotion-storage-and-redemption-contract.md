@@ -341,8 +341,8 @@ the lock, a write can only keep usage (finalize, confirm, draw-down) or end it (
 A claim that a terminal write ended cannot be finalized again (`store.go:882`–`:883`). So no write
 outside the lock can make usage smaller and then larger, and a count read under the lock is never
 below the usage at its commit. Probe 3 observed the cap hold on today's presale path with the R2
-predicate in schedule S1 (6 of 6 runs, then 7 repeats), and observed it break with the predicate
-removed (Consequences, *Reading R2 executed*). Probe 1 schedule W shows why the window read must
+predicate in schedule S1 (6 of 6 runs, then 7 repeats), and observed it break with today's
+predicate in its place (Consequences, *Reading R2 executed*). Probe 1 schedule W shows why the window read must
 come after the lock.
 
 This specializes promoted paths only. `liveClaims` and the shared capacity predicates of ADR-010
@@ -609,6 +609,33 @@ admission is admitted: 6 of 6 runs. A control admission that starts after `close
 6 of 6 runs. With the window read moved to a separate statement after the lock (`window-fix.py`),
 the same schedule is refused: 6 of 6 runs. The blocker in a real system is any concurrent admission
 of the same code; the overrun is bounded by how long that admission holds the lock (inference).
+
+### Reading R2 executed (probe 3)
+
+Probe 3 built today's Inventory store with one change: the usage count that `redeemPresaleCode`
+reads under the code lock (`codeRedeemedQuantity`) counts every `confirmed`, `finalizing` or `held`
+claim, with no expiry test ([`r2-predicate.diff`](../evidence/TKT-380/output/r2-predicate.diff)).
+`CreateHold` and `Transition` are today's code. Code capped at 1, two pools, hold TTL 2 seconds.
+Observed summaries ([evidence](../evidence/TKT-380/README.md)):
+
+| Schedule | R2 build: 6 runs, then 7 repeats | Today's predicate (the mutation): 1 run |
+|---|---|---|
+| Control (finalize before expiry) | Admission refused, usage 1 | Admission refused, usage 1 |
+| S1 (probe 1's cap race) | Admission on P1 refused; the queued finalize succeeded; usage 1 after confirm | Admission admitted; finalize succeeded; usage 2 after confirm |
+| R2L (an expired hold H on P2, no terminal write) | Admission on P1 refused while H was `held`; a hold on P2 swept H to `expired` and was admitted; usage 1 | Admission on P1 admitted on the expired H; the hold on P2 was refused; H stayed `held` |
+
+Every repeat gave the same summary. The mutation turns S1 and R2L from held to broken, and the
+control stays held, so the probe can tell R2 from today's count.
+
+What this shows, and what it does not:
+
+- Under R2 the S1 overshoot does not occur, and a queued finalize keeps its unit. That is the R2
+  side of §3's claim, observed on today's presale path.
+- R2L shows the liveness cost and its pool-local relief: the code stays blocked for P1 until a
+  transaction on P2 writes H's expiry. It does not test a cleanup design; TKT-382 owns that.
+- Probe 3 changed only the predicate. It did not move the window read, did not edit a cap under
+  R2, and did not run Commerce or the HTTP layer. The operator read (`PresaleCodeStatuses`) was not
+  changed, so the usage it reports still judges expiry.
 
 ### Pre-mortem: four ways this ADR is wrong in six weeks
 

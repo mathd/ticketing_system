@@ -76,12 +76,23 @@ an inference.
 
 ## Candidate fix
 
-ADR-084's fresh-time invariant: a path that keeps or creates code usage takes the code row lock
-after its pool and claim locks, then judges expiry on `clock_timestamp()`. Probe 2 prototyped it on
-`Transition` and it held the cap in both schedules. It changes behaviour that two tests pin on
-purpose for code-less claims (`services/inventory/internal/store/buyer_ttl_clock_smoke_test.go:452`,
-`:541`); a fix scoped to code-citing claims leaves those tests valid. The trade-off: a code-citing
-finalize that waited past its hold's expiry is refused.
+Two candidates were executed. Choosing one for presale codes is TKT-543's decision.
+
+- **Reading R2 (probe 3), the reading the owner chose for promotions in ADR-084 §3.** The code's
+  usage count includes every `held` claim, expired or not, until a terminal write (sweep, release,
+  committed expiry) ends it. Probe 3 changed only that predicate on today's code: the admission on
+  P1 is refused and the queued finalize keeps its unit, usage 1, in 6 of 6 runs and 7 repeats; with
+  today's predicate the same schedule gives usage 2. No path gains a lock, and the finalize keeps
+  transaction-start time. The trade-off: an expired hold blocks the code's units until something
+  writes its expiry, and today every sweep is lazy and pool-local (probe 3 schedule R2L). The
+  presale count also subtracts refunds (ADR-064); the probe did not change that part.
+- **Reading R1 (probe 2), rejected for promotions.** A path that keeps or creates code usage takes
+  the code row lock after its pool and claim locks, then judges expiry on `clock_timestamp()`.
+  Probe 2 prototyped it on `Transition` and it held the cap in S1, S2 and S3. It changes behaviour
+  that two tests pin on purpose for code-less claims
+  (`services/inventory/internal/store/buyer_ttl_clock_smoke_test.go:452`, `:541`); a fix scoped to
+  code-citing claims leaves those tests valid. The trade-off: a code-citing finalize that waited
+  past its hold's expiry is refused, and the cap depends on a non-decreasing clock (ADR-084 §3).
 
 # Finding 2 (TKT-544): a presale code can be redeemed after its window closed
 

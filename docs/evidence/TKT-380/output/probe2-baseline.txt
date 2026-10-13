@@ -1,26 +1,26 @@
 postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
-[run 1 prototype-S1] H created on P2: expires_at=2026-10-13T18:42:07.310786Z
-[run 1 prototype-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T18:42:05.323325Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-[run 1 prototype-S1] DB clock now 2026-10-13T18:42:07.513079Z, past H expiry
+[run 1 prototype-S1] H created on P2: expires_at=2026-10-13T23:23:12.795513Z
+[run 1 prototype-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:23:10.80922Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 prototype-S1] DB clock now 2026-10-13T23:23:12.996069Z, past H expiry
 [run 1 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
 [run 1 prototype-S1] finalize F returned: status=expired err=ErrConflict
 [run 1 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:07.310786Z | true
-[run 1 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:09.529629Z | false
+[run 1 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:23:12.795513Z | true
+[run 1 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:23:15.010213Z | false
 [run 1 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:42:07.310786Z | true
-[run 1 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:42:09.529629Z | false
+[run 1 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:23:12.795513Z | true
+[run 1 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:23:15.010213Z | false
 SUMMARY prototype-S1 a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
-[run 1 prototype-S2] H created on P2: expires_at=2026-10-13T18:42:09.731017Z
-[run 1 prototype-S2] finalize F decided at 2026-10-13T18:42:07.740538Z (before expiry: true), status=finalizing err=nil
+[run 1 prototype-S2] H created on P2: expires_at=2026-10-13T23:23:15.242018Z
+[run 1 prototype-S2] finalize F decided at 2026-10-13T23:23:13.251096Z (before expiry: true), status=finalizing err=nil
 [run 1 prototype-S2] admission A on P1: finished while F was open=false, err=ErrPresaleCodeInvalid
 [run 1 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:42:09.731017Z | true
+[run 1 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:23:15.242018Z | true
 SUMMARY prototype-S2 a_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
-[run 1 prototype-S3] H created on P2 under an UNCAPPED code: expires_at=2026-10-13T18:42:12.12964Z
-[run 1 prototype-S3] finalize F decided at 2026-10-13T18:42:10.137934Z (before expiry: true), status=finalizing
+[run 1 prototype-S3] H created on P2 under an UNCAPPED code: expires_at=2026-10-13T23:23:17.649602Z
+[run 1 prototype-S3] finalize F decided at 2026-10-13T23:23:15.659083Z (before expiry: true), status=finalizing
 [run 1 prototype-S3] cap edit (cap 1) finished while F was open=false; admission A on P1 err=ErrPresaleCodeInvalid
 [run 1 prototype-S3] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
-[run 1 prototype-S3]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:42:12.12964Z | true
+[run 1 prototype-S3]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:23:17.649602Z | true
 SUMMARY prototype-S3 edit_blocked_on_f=true a_err=ErrPresaleCodeInvalid f_status=finalizing redeemed=1 cap=1 verdict=HELD
 RESULT mode=prototype runs=1 exit=0 (0 all HELD, 1 BROKEN observed, 2 UNEXPECTED)
