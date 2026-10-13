@@ -282,3 +282,48 @@ func TestAllocationRefusalsAreCodedOnTheWire(t *testing.T) {
 			refusal.Channel, "consumed")
 	}
 }
+
+// TKT-286. The staff availability read says which kind of pool the slot is, on the real
+// wire, for a GA slot and for a seated one.
+//
+// The field is OPTIONAL in the contract (so an older consumer keeps working), which means
+// schema validation alone lets inventory omit it and stay green. This test is what makes
+// "always emitted" true: the value is decoded as a RAW JSON value, so an absent field
+// cannot collapse into a default and match "ga" by accident, and the two pools must come
+// back DIFFERENT, so a constant cannot satisfy both.
+func TestTheStaffAvailabilityReadReportsThePoolKindOnTheWire(t *testing.T) {
+	if inventoryStaffToken() == "" {
+		t.Fatal("SMOKE_INVENTORY_STAFF_WRITE_TOKEN is not set: the credential could not be exercised")
+	}
+	gaSlot, _ := publishedSlot(t, "Pool Kind GA Hall", 50)
+	seatedSlot, _, _ := createRuleOffSeatedPerformance(t, 2, 3)
+
+	kindOf := func(slot string) any {
+		t.Helper()
+		url := fmt.Sprintf("%s/internal/slots/%s/availability?organizer_id=%s", inventoryURL, slot, organizerID)
+		var raw map[string]json.RawMessage
+		retry(t, 20*time.Second, func() error {
+			code, body := staffCredentialRequest(t, http.MethodGet, url, nil)
+			if code != http.StatusOK {
+				return fmt.Errorf("staff availability: %d %s", code, body)
+			}
+			raw = nil
+			return json.Unmarshal(body, &raw)
+		})
+		field, present := raw["inventory_kind"]
+		if !present {
+			t.Fatalf("slot %s: the staff read carries no inventory_kind", slot)
+		}
+		var v any
+		if err := json.Unmarshal(field, &v); err != nil {
+			t.Fatalf("slot %s: decode inventory_kind: %v", slot, err)
+		}
+		return v
+	}
+	if got := kindOf(gaSlot); got != "ga" {
+		t.Errorf("GA slot reported inventory_kind %v, want \"ga\"", got)
+	}
+	if got := kindOf(seatedSlot); got != "seated" {
+		t.Errorf("seated slot reported inventory_kind %v, want \"seated\"", got)
+	}
+}

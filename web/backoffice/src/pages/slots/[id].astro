@@ -28,6 +28,19 @@
 // to live anywhere. The slot id is a path parameter and is passed through — it is not an
 // authorization boundary, and inventory scopes the read and the write by organizer.
 //
+// A SEATED pool is different (TKT-286, owner decision D1). Inventory refuses every non-empty
+// allocation replace on one (TKT-176), so an editor for it only looks editable. The page
+// learns the kind from the same staff read it already makes (`inventory_kind`, decoded
+// strictly: an unreadable kind is an unavailable read, never a default) and, for a seated
+// pool, shows the stored allocations as text with one separate "Clear allocations" form.
+//
+// The two operations are told apart by the BODY, never the URL. The editor form carries no
+// `_action`; the clear form carries exactly `_action=clear-allocations`. A query-string
+// selector would be bookmarkable, and the editor's `action=""` keeps the document's query,
+// so a bookmarked `?action=clear-allocations` would steer a GA save into the clear branch.
+// Any other `_action`, or more than one, is refused with no write: `getAll`, because `get`
+// reads only the first value and so cannot tell a repeated selector from a single one.
+//
 // Relative form action, like every other back-office write: an absolute one trips the
 // origin handling even same-origin (TKT-105; `checkOrigin` is off and gate.ts is
 // authoritative).
@@ -57,6 +70,8 @@ import { AmbiguousMutationError } from '../../lib/upstream';
 
 const staff = Astro.locals.staff;
 if (!staff) throw new Error('unauthenticated request reached the slot allocations page');
+
+const CLEAR_ALLOCATIONS = 'clear-allocations';
 
 const slotId = Astro.params.id!;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -92,8 +107,75 @@ try {
 }
 const readFailed = availability === null;
 
-if (Astro.request.method === 'POST') {
-  const form = await Astro.request.formData();
+const isPost = Astro.request.method === 'POST';
+const postedForm = isPost ? await Astro.request.formData() : null;
+const operations = postedForm ? postedForm.getAll('_action') : [];
+
+if (isPost && postedForm && operations.length > 0 && !(operations.length === 1 && operations[0] === CLEAR_ALLOCATIONS)) {
+  // An operation this page does not offer, or the same selector repeated. Refused before
+  // anything is read as an instruction, and nothing is written.
+  Astro.response.status = 400;
+  errors = { rows: {}, form: 'This request names an operation this page does not offer. Nothing was changed.' };
+} else if (isPost && postedForm && operations.length === 1) {
+  // CLEAR ALLOCATIONS (TKT-286). Builds the empty set ITSELF and ignores every other
+  // submitted field — there is no row, organizer or intent flag to forge. It writes only
+  // when the POST's OWN fresh read (above) succeeded, says the pool is seated, and shows at
+  // least one allocation row. The rendered page cannot constrain a crafted POST, and
+  // inventory itself accepts an empty replace on a GA pool (and burns a revision on an
+  // empty seated one), so this page is the only guard.
+  //
+  // The revision sent is ALWAYS the submitted one. The fresh read's would be compared
+  // with itself and match every time — a precondition that cannot fail.
+  //
+  // Honest-writer boundary, not tamper-evidence (ADR-021): the read and the PUT are
+  // separate requests, and a pool's kind is immutable only because provisioning never
+  // changes it, not because the schema forbids it. A writer with database access could
+  // change it between the two.
+  submittedRevision = parseAllocationRevision(postedForm);
+  const refuseClear = (message: string) => {
+    Astro.response.status = 400;
+    errors = { rows: {}, form: message };
+  };
+  if (availability === null) {
+    refuseClear('Inventory could not be read, so nothing was cleared. Try again.');
+  } else if (availability.inventory_kind !== 'seated') {
+    refuseClear('Clearing allocations is only offered for a seated slot. Nothing was changed.');
+  } else if (availability.channels.length === 0) {
+    refuseClear('This slot has no allocations to clear. Nothing was changed.');
+  } else if (submittedRevision === undefined) {
+    refuseClear('This form was submitted without its revision, so nothing was cleared. Reload the page and try again.');
+  } else {
+    try {
+      await replaceChannelAllocations(slotId, {
+        organizer_id: staff.organizerId,
+        allocation_revision: submittedRevision,
+        allocations: [],
+      });
+      return Astro.redirect(here, 303);
+    } catch (e) {
+      if (e instanceof InventoryApiError) {
+        errors = e.code === 'allocation_revision_mismatch'
+          ? { rows: {}, form: 'Someone else changed this slot’s allocations, so nothing was cleared. Reload the page before clearing them.' }
+          : allocationErrors({ error: e.message, code: e.code, channel: e.channel }, []);
+      } else if (e instanceof AmbiguousMutationError) {
+        errors = {
+          rows: {},
+          form: 'Inventory may have saved this allocation set, but its response could not be verified. Reload and reconcile the current allocations before retrying.',
+        };
+      } else {
+        errors = { rows: {}, form: 'Inventory could not be reached. Nothing was cleared — try again.' };
+      }
+    }
+  }
+} else if (isPost && postedForm && availability?.inventory_kind === 'seated') {
+  Astro.response.status = 400;
+  errors = {
+    rows: {},
+    form: 'This slot uses reserved seating. Use the Clear allocations action to remove stored allocations.',
+  };
+} else if (isPost && postedForm) {
+  // The GA editor save path is unchanged. The seated no-action POST refusal runs above.
+  const form = postedForm;
   const rows = parseAllocationForm(form);
   submitted = rows;
   // The revision the RENDERED PAGE carried — not the one the fresh read above just
@@ -200,6 +282,9 @@ try {
 }
 
 const stored: ChannelAvailability[] = availability?.channels ?? [];
+const seated = availability?.inventory_kind === 'seated';
+// The revision a form renders: the SUBMITTED one after a refusal, else the current one.
+const renderedRevision = String(submittedRevision ?? availability?.allocation_revision ?? '');
 
 // What the form renders: the submitted rows after a refusal, otherwise the stored set.
 const rows: AllocationRow[] =
@@ -212,10 +297,12 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
 
 <Layout title="Channel allocations">
   <h1>Channel allocations</h1>
-  <p>
-    How much of this slot's capacity each sales channel may sell. Everything not allocated
-    stays available to the public channel.
-  </p>
+  {!readFailed && availability?.inventory_kind === 'ga' && (
+    <p>
+      How much of this slot's capacity each sales channel may sell. Everything not allocated
+      stays available to the public channel.
+    </p>
+  )}
 
   {errors.form && <p class="error" role="alert" data-form-error>{errors.form}</p>}
 
@@ -225,7 +312,87 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
     </p>
   )}
 
-  {!readFailed && availability && (
+  {!readFailed && availability && seated && (
+    <>
+      <p data-capacity={String(availability.capacity)}>
+        Inventory pool limit: <strong>{availability.capacity}</strong>.
+        Available pool capacity: <strong data-available={String(availability.available)}> {availability.available}</strong>.
+      </p>
+
+      <p data-seated-note>
+        This slot has reserved seating, which does not take channel allocations. The rows below
+        are what is stored; they cannot be edited here. The only change available is clearing
+        them.
+      </p>
+
+      {stored.length === 0 && <p data-empty>No channel allocations are stored for this slot.</p>}
+
+      {stored.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Channel</th>
+              <th>Cap</th>
+              <th>Sold or held</th>
+              <th>Release</th>
+              <th>Sales window opens</th>
+              <th>Sales window closes</th>
+              <th>Window</th>
+              <th>Requires code</th>
+              <th>Sold by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stored.map((c) => {
+              const known = registered.has(c.channel);
+              return (
+                <tr data-channel={c.channel} data-registered={String(known)}>
+                  <td data-field="channel">
+                    <code>{c.channel}</code>
+                    {!known && (
+                      <span data-unregistered title="No registry entry for this code">
+                        {' '}— not in the channel registry
+                      </span>
+                    )}
+                  </td>
+                  <td data-field="cap">{c.cap}</td>
+                  <td data-field="consumption">{c.held + c.confirmed}</td>
+                  <td data-field="release">
+                    {c.release_at ?? '—'}{' '}
+                    ({c.released ? 'released' : 'not yet released'})
+                  </td>
+                  <td data-field="opens">{c.opens_at ?? '—'}</td>
+                  <td data-field="closes">{c.closes_at ?? '—'}</td>
+                  <td data-field="window">{c.window_open ? 'open' : 'closed'}</td>
+                  <td data-field="requires-code">{c.requires_code ? 'yes' : 'no'}</td>
+                  <td data-field="sold-by">{c.sold_by ?? '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {/* A SEPARATE form, not a mode of the editor. It names exactly two fields: the
+          revision this page rendered and the operation. Its empty action preserves the
+          document query on POST; dispatch reads the operation from the body `_action`, and
+          success redirects to the canonical slot URL. After a refusal the SUBMITTED
+          revision is re-rendered, as in the editor (TKT-250). The button is disabled with
+          nothing to clear or no usable revision; that is a UI aid, and the handler decides
+          for itself. */}
+      <form method="post" action="" data-clear-allocations>
+        <input type="hidden" name="allocationRevision" value={renderedRevision} data-allocation-revision />
+        <input type="hidden" name="_action" value={CLEAR_ALLOCATIONS} />
+        <button
+          type="submit"
+          data-action="clear-allocations"
+          disabled={stored.length === 0 || renderedRevision === ''}
+        >Clear allocations</button>
+      </form>
+    </>
+  )}
+
+  {!readFailed && availability && !seated && (
     <>
       <p data-capacity={String(availability.capacity)}>
         Slot capacity <strong>{availability.capacity}</strong>, of which
@@ -242,7 +409,7 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
         <input
           type="hidden"
           name="allocationRevision"
-          value={String(submittedRevision ?? availability?.allocation_revision ?? '')}
+          value={renderedRevision}
           data-allocation-revision
         />
         {rows.length === 0 && <p data-empty>No channel allocations — the whole slot sells publicly.</p>}

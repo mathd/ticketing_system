@@ -1203,24 +1203,9 @@ func TestAnEmptyReplaceClearsLegacyAllocationsFromASeatedPool(t *testing.T) {
 	}
 }
 
-// The repair is reachable from the INTERNAL credential and NOT from the back office —
-// pinned deliberately, because it is a gap this ticket leaves open (ai-review pass 2).
-//
-// An empty replace clears a seated pool's legacy rows (see the test above), but the
-// back-office editor cannot send one: allocation-form.ts throws MissingAllocationChannel
-// for any current channel the submission omits, on purpose, because that screen edits
-// allocations and creates and deletes none (TKT-244 ai-review pass 4). So the repair
-// today runs through the X-Internal-Token path — an operator tool or a service call —
-// which may omit the revision and submit `allocations: []`.
-//
-// That is a real limitation and it is recorded rather than argued away. The scope call:
-// giving the back office a delete control is a UI change with its own authorization
-// question (which staff may wipe an allocation set, and how is it distinguished from the
-// sparse-submission bug that control was built to prevent), and this ticket's decision
-// was explicitly "one predicate, one refusal, one test". A follow-up owns it.
-//
-// If this test ever fails, the internal repair path changed and the follow-up became
-// urgent — do not delete it to make a change pass.
+// TKT-286 adds a separate admin back-office clear action that submits the allocation
+// revision. This test still pins the internal credential's unconditional empty replace,
+// which may omit the revision.
 func TestTheSeatedRepairPathIsTheUnconditionalReplace(t *testing.T) {
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, slot, _ := provisionedSeated(t, ctx, st, 10)

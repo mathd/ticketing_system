@@ -83,6 +83,18 @@ const slot = sql(
 );
 if (!slot) throw new Error('failed to seed an inventory pool');
 
+// Inventory stores the seat-map id without a catalog foreign key, and this editor
+// reads only inventory_kind and allocations. A generated id represents the non-null
+// catalog reference required by the seated-pool shape without coupling this spec to
+// venue-authoring's separate browser fixture.
+const seatedSlot = sql(
+  'inventory',
+  `INSERT INTO inventory_pools (slot_id, organizer_id, capacity, source_event_id, inventory_kind, seat_map_id)
+   VALUES (gen_random_uuid(), '${ORGANIZER}', 100, gen_random_uuid(), 'seated', gen_random_uuid())
+   RETURNING slot_id`,
+);
+if (!seatedSlot) throw new Error('failed to seed a seated inventory pool');
+
 // Two allocations. The first carries EVERY optional field at a non-default value: a
 // fixture that left any at its zero value could not tell preservation from coincidence,
 // because the defaults are exactly what a dropping implementation produces. The second
@@ -111,6 +123,15 @@ sql(
                        idempotency_key, request_fingerprint, claim_kind, channel_code)
    VALUES (gen_random_uuid(), '${ORGANIZER}', '${slot}', 12, 'confirmed',
            now() + interval '1 hour', 'browser-${stamp}', 'browser-${stamp}', 'buyer', '${boundChannel}')`,
+);
+
+sql(
+  'inventory',
+  `INSERT INTO channel_allocations (pool_id, channel_code, cap, opens_at, closes_at, release_at, requires_code, sold_by)
+   VALUES ('${seatedSlot}', 'legacy-seated-a', 17,
+           timestamptz '2026-08-02 10:11:12.123456+00', timestamptz '2026-12-30 20:21:22.654321+00',
+           timestamptz '2026-11-05 06:07:08.987654+00', true, '${reseller}'),
+          ('${seatedSlot}', 'legacy-seated-b', 9, NULL, NULL, NULL, false, NULL)`,
 );
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -607,6 +628,248 @@ try {
     plainCap === '33',
     `cap=${plainCap}, want 33 — the stale full-set replace would have overwritten it`,
   );
+
+  // --- 8. A bookmarked query must not turn the GA editor into a clear operation.
+  // The browser submits the form with the query still on its document URL. The body
+  // has no _action, so the request must follow the editor branch and redirect canonically.
+  await page.goto(`/admin/slots/${slot}?action=clear-allocations`, { waitUntil: 'domcontentloaded' });
+  await page.fill(`input[data-cap-for="${boundChannel}"]`, '51');
+  let bookmarkResponse;
+  [bookmarkResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === 'POST' && response.url().includes(`/admin/slots/${slot}?action=clear-allocations`),
+    ),
+    page.click('button[data-action="save-allocations"]'),
+  ]);
+  check(
+    'a GA save from the bookmarked clear-action URL follows the editor path',
+    bookmarkResponse.status() === 303,
+    `POST status=${bookmarkResponse.status()}`,
+  );
+  check(
+    'the bookmarked save redirects to the canonical slot URL',
+    page.url() === `${BASE}/admin/slots/${slot}`,
+    `URL=${page.url()}`,
+  );
+  check(
+    'the bookmarked GA save changed the edited cap',
+    (await page.locator(`input[data-cap-for="${boundChannel}"]`).inputValue()) === '51',
+  );
+  const bookmarkedSave = sql(
+    'inventory',
+    `SELECT channel_code || '|' || cap || '|' || coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+       || '|' || coalesce(sold_by::text, 'NULL')
+       || '|' || CASE WHEN requires_code THEN 'yes' ELSE 'no' END
+       || '|' || coalesce(to_char(opens_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+       || '|' || coalesce(to_char(closes_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+     FROM channel_allocations WHERE pool_id='${slot}' ORDER BY channel_code`,
+  );
+  check(
+    'the bookmarked GA save persisted the exact ordered allocation set',
+    bookmarkedSave ===
+      `${plainChannel}|33|NULL|NULL|no|NULL|NULL\n` +
+        `${boundChannel}|51|NULL|${reseller}|yes|2026-08-01T09:05:11.500000|2026-12-31T23:59:59.999999`,
+    `rows=${bookmarkedSave}`,
+  );
+
+  // --- 9. A seated clear uses the rendered revision and leaves stale allocations in
+  // place after a conflict. A fresh render then submits the clear and the database read
+  // must show the exact empty set.
+  await page.goto(`/admin/slots/${seatedSlot}`, { waitUntil: 'domcontentloaded' });
+  check(
+    'the seated allocations are read-only',
+    (await page.locator('tr[data-channel="legacy-seated-a"]').count()) === 1 &&
+    (await page.locator('tr[data-channel="legacy-seated-b"]').count()) === 1 &&
+    (await page.locator('tr[data-channel="legacy-seated-a"] input, tr[data-channel="legacy-seated-b"] input').count()) === 0 &&
+    (await page.locator('button[data-action="save-allocations"]').count()) === 0,
+  );
+  const available = page.locator('[data-available]');
+  const availableCount = await available.getAttribute('data-available');
+  const availableText = await available.innerText();
+  check(
+    'the seated pool shows 100 available pool capacity despite legacy allocation caps totaling 26',
+    availableCount === '100' && availableText.trim() === '100' &&
+      /Available pool capacity:\s*100/.test(await page.locator('[data-capacity]').innerText()),
+    `data-available=${availableCount}; text=${availableText}`,
+  );
+  const clearRevision = await page.locator('input[data-allocation-revision]').inputValue();
+  const originalRevision = sql(
+    'inventory',
+    `SELECT allocation_revision FROM inventory_pools WHERE slot_id='${seatedSlot}'`,
+  );
+  check(
+    'the clear form renders the seated pool allocation revision from SQL',
+    clearRevision === originalRevision,
+    `rendered=${clearRevision}, database=${originalRevision}`,
+  );
+  const seatedRows = () => sql(
+    'inventory',
+    `SELECT channel_code || '|' || cap || '|' || coalesce(sold_by::text, 'NULL')
+       || '|' || CASE WHEN requires_code THEN 'yes' ELSE 'no' END
+       || '|' || coalesce(to_char(opens_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+       || '|' || coalesce(to_char(closes_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+       || '|' || coalesce(to_char(release_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), 'NULL')
+     FROM channel_allocations WHERE pool_id='${seatedSlot}' ORDER BY channel_code`,
+  );
+  const seatedBefore = seatedRows();
+  check(
+    'the seated clear fixture has both legacy rows',
+    seatedBefore ===
+      `legacy-seated-a|17|${reseller}|yes|2026-08-02T10:11:12.123456|2026-12-30T20:21:22.654321|2026-11-05T06:07:08.987654\n` +
+        'legacy-seated-b|9|NULL|no|NULL|NULL|NULL',
+    `rows=${seatedBefore}`,
+  );
+  const competingRows =
+    `legacy-seated-a|18|${reseller}|yes|2026-08-02T10:11:12.123456|2026-12-30T20:21:22.654321|2026-11-05T06:07:08.987654\n` +
+    'legacy-seated-b|9|NULL|no|NULL|NULL|NULL';
+  sql(
+    'inventory',
+    `BEGIN;
+     UPDATE channel_allocations SET cap=18
+       WHERE pool_id='${seatedSlot}' AND channel_code='legacy-seated-a' AND cap=17;
+     UPDATE inventory_pools SET allocation_revision=allocation_revision+1
+       WHERE slot_id='${seatedSlot}';
+     COMMIT;`,
+  );
+  const revisionAfterCompetition = sql(
+    'inventory',
+    `SELECT allocation_revision FROM inventory_pools WHERE slot_id='${seatedSlot}'`,
+  );
+  const rowsAfterCompetition = seatedRows();
+  check(
+    'the competing SQL transaction changed one legacy row and advanced revision once',
+    rowsAfterCompetition === competingRows &&
+      BigInt(revisionAfterCompetition) === BigInt(clearRevision) + 1n,
+    `rows=${rowsAfterCompetition}; revision=${revisionAfterCompetition}, rendered=${clearRevision}`,
+  );
+
+  const assertClearRequest = (response, revision, label) => {
+    const request = response.request();
+    const fields = [...new URLSearchParams(request.postData() ?? '').entries()];
+    const exactFields = fields.length === 2 &&
+      fields.filter(([name]) => name === '_action').length === 1 &&
+      fields.filter(([name]) => name === 'allocationRevision').length === 1 &&
+      fields.some(([name, value]) => name === '_action' && value === 'clear-allocations') &&
+      fields.some(([name, value]) => name === 'allocationRevision' && value === revision);
+    check(
+      `${label} POST carries only clear action and allocation revision ${revision}`,
+      exactFields,
+      `body=${request.postData()}`,
+    );
+  };
+
+  let staleClearResponse;
+  [staleClearResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === `/admin/slots/${seatedSlot}`,
+    ),
+    page.click('button[data-action="clear-allocations"]'),
+  ]);
+  assertClearRequest(staleClearResponse, clearRevision, 'first stale clear');
+  check(
+    'the first stale seated clear does not redirect',
+    staleClearResponse.status() !== 303,
+    `POST status=${staleClearResponse.status()}`,
+  );
+  await page.waitForLoadState('domcontentloaded');
+  const staleClearToken = await page.locator('input[data-allocation-revision]').inputValue();
+  const staleClearRefused =
+    staleClearToken === clearRevision && (await page.locator('[data-form-error]').count()) === 1;
+  check(
+    'a stale seated clear is refused and preserves its rendered revision',
+    staleClearRefused && /nothing was cleared/i.test(await page.locator('[data-form-error]').innerText()),
+    `rendered=${staleClearToken}, submitted=${clearRevision}`,
+  );
+  const staleClearRows = seatedRows();
+  const staleClearPoolRevision = sql(
+    'inventory',
+    `SELECT allocation_revision FROM inventory_pools WHERE slot_id='${seatedSlot}'`,
+  );
+  const staleClearRowsUnchanged = staleClearRows === competingRows &&
+    staleClearPoolRevision === revisionAfterCompetition;
+  check(
+    'the first stale clear preserved the competing rows and revision R+1',
+    staleClearRowsUnchanged,
+    `rows=${staleClearRows}; revision=${staleClearPoolRevision}`,
+  );
+  if (!staleClearRefused || !staleClearRowsUnchanged || staleClearResponse.status() === 303) {
+    throw new Error(
+      `first stale seated clear failed: refusal=${staleClearRefused}, rowsAndRevision=${staleClearRowsUnchanged}, rows=${JSON.stringify(staleClearRows)}, revision=${staleClearPoolRevision}`,
+    );
+  }
+
+  let secondStaleClearResponse;
+  [secondStaleClearResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === `/admin/slots/${seatedSlot}`,
+    ),
+    page.click('button[data-action="clear-allocations"]'),
+  ]);
+  assertClearRequest(secondStaleClearResponse, clearRevision, 'second stale clear without reload');
+  check(
+    'the second stale clear without reload does not redirect',
+    secondStaleClearResponse.status() !== 303,
+    `POST status=${secondStaleClearResponse.status()}`,
+  );
+  await page.waitForLoadState('domcontentloaded');
+  const secondStaleToken = await page.locator('input[data-allocation-revision]').inputValue();
+  const secondStaleRows = seatedRows();
+  const secondStaleRevision = sql(
+    'inventory',
+    `SELECT allocation_revision FROM inventory_pools WHERE slot_id='${seatedSlot}'`,
+  );
+  check(
+    'the second refusal keeps hidden R and leaves exact competing rows at R+1',
+    secondStaleToken === clearRevision && secondStaleRows === competingRows &&
+      secondStaleRevision === revisionAfterCompetition,
+    `rendered=${secondStaleToken}; rows=${secondStaleRows}; revision=${secondStaleRevision}`,
+  );
+
+  await page.goto(`/admin/slots/${seatedSlot}`, { waitUntil: 'domcontentloaded' });
+  const freshRevision = await page.locator('input[data-allocation-revision]').inputValue();
+  check(
+    'reloading renders the current R+1 revision',
+    freshRevision === revisionAfterCompetition,
+    `rendered=${freshRevision}, database=${revisionAfterCompetition}`,
+  );
+  let clearResponse;
+  [clearResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === `/admin/slots/${seatedSlot}`,
+    ),
+    page.click('button[data-action="clear-allocations"]'),
+  ]);
+  assertClearRequest(clearResponse, freshRevision, 'fresh seated clear');
+  check('the fresh seated clear returns 303', clearResponse.status() === 303);
+  check(
+    'the seated clear redirects to the canonical slot URL',
+    clearResponse.headers().location === `/admin/slots/${seatedSlot}` &&
+      page.url() === `${BASE}/admin/slots/${seatedSlot}`,
+    `Location=${clearResponse.headers().location}; URL=${page.url()}`,
+  );
+  await page.waitForLoadState('domcontentloaded');
+  const clearedRows = sql(
+    'inventory',
+    `SELECT channel_code || '|' || cap FROM channel_allocations WHERE pool_id='${seatedSlot}'`,
+  );
+  const clearedCount = sql(
+    'inventory',
+    `SELECT count(*) FROM channel_allocations WHERE pool_id='${seatedSlot}'`,
+  );
+  check(
+    'the clear left exactly the empty allocation set',
+    clearedRows === '' && clearedCount === '0',
+    `rows=${JSON.stringify(clearedRows)}, count=${clearedCount}`,
+  );
+  const revisionAfterClear = sql(
+    'inventory',
+    `SELECT allocation_revision FROM inventory_pools WHERE slot_id='${seatedSlot}'`,
+  );
+  check(
+    'the successful clear advances the pool revision once more to original R+2',
+    BigInt(revisionAfterClear) === BigInt(originalRevision) + 2n,
+    `revision=${revisionAfterClear}, original=${originalRevision}`,
+  );
 } finally {
   await browser.close();
   // Remove only what this spec wrote directly. The pool, performance and venue are left
@@ -614,7 +877,7 @@ try {
   // that own it would leave inventory inconsistent for any later spec.
   try {
     sql('inventory', `DELETE FROM claims WHERE pool_id='${slot}'`);
-    sql('inventory', `DELETE FROM channel_allocations WHERE pool_id='${slot}'`);
+    sql('inventory', `DELETE FROM channel_allocations WHERE pool_id IN ('${slot}', '${seatedSlot}')`);
   } catch {
     // Cleanup failure must not mask a real result.
   }
