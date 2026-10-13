@@ -24,7 +24,8 @@ Only this README and `sources.json` are committed. No retrieved document is in t
 
 Two sessions fetched the sources on the same day:
 - **Orchestrator:** S01, S03–S06, S09–S12, X01, X02, and a first Légifrance attempt.
-- **Implementer (this run):** S02, S07, S08, S16, a second attempt at S13 and S14, and S15.
+- **Implementer (this run):** S02, S07, S08, S16, a second attempt at S13 and S14, and S15. In
+  fix round 2: S17.
 
 The implementer fetched with:
 
@@ -51,6 +52,7 @@ sha256sum <file>
 | S14 | legifrance …/JORFARTI000053508893 | **403** | Nothing |
 | S15 | economie.gouv.fr/entreprises/certification-logiciel-caisse | **403** | Nothing |
 | S16 | bofip …/1054-PGP.html → BOI-TVA-DECLA-20-30-20-30-20120912 | 200 | §1 and §10 only (existence check) |
+| S17 | tools.cofrac.fr/annexes/sect5/5-0696.pdf | 200 | Full certificate and technical annex (4 pages) |
 
 Text extraction:
 - **HTML:** a small Python script removes `script` and `style`, turns block ends into new lines,
@@ -125,6 +127,30 @@ a computer system, before entry. The rules are in CGI annex IV art. 50 sexies B 
 §10 says it applies to every venue where entry needs a paid price. Sporting events are excluded by
 a remark in §1. Nothing more was analysed.
 
+## 5a. Certifier accreditation check (fix round 2)
+
+The note's first version cited BYCYB's own statement of its COFRAC accreditation (S10). The
+implementer then tried COFRAC directly, once per URL:
+
+- `https://tools.cofrac.fr/annexes/sect5/5-0696.pdf`: HTTP 200, a 4-page PDF (S17). Extracted with
+  `pdftotext -layout`.
+- `https://www.cofrac.fr/annexes/sect5/5-0696.pdf`: HTTP 404.
+
+S17 is the "Attestation d'accréditation N° 5-0696", Rev. 1, for BYCYB (legal identifier 942788845,
+the same number as on S09's cover). It covers "NF EN ISO/IEC 17065:2012", product certification,
+valid from 18/02/2026 until 31/05/2030. The technical annex lists, under Code de la consommation
+L433-3 and following, the product "Système de caisse" with the programme "Référentiel de
+certification des systèmes de caisse". The annex names no version. The programme title differs
+from S09's title ("systèmes d’encaissement"). The note treats S09 as that programme by inference.
+
+## 5b. LNE addendum (auditor's check, not the implementer's)
+
+The decision audit of fix round 1 opened the LNE addendum
+`https://bycyb.com/wp-content/uploads/2025/06/Addendum-referentiel-caisse-Rev1.7.pdf`. The auditor
+reports that it covers Rev. 1.7 and the transfer of the referential to BYCYB, not a Rev. 1.8
+technical requirement. The implementer did not fetch or read it. It has no hash in
+`sources.json`.
+
 ## 6. How a reviewer re-checks a quote
 
 1. Find the source id next to the quote in the note, and get its URL and sha256 from
@@ -140,7 +166,7 @@ a remark in §1. Nothing more was analysed.
    a plain `grep -F` on the extracted, white-space-normalised text matches.
 6. For a quote with "…", grep each side of the cut on its own.
 
-The implementer checked all 100 double-quoted strings in the note this way on 2026-10-13. Every
+The implementer checked all 108 double-quoted strings in the note this way on 2026-10-13. Every
 French quote matched its source exactly, after white-space normalisation only. The other quoted
 strings are English. They come from repository files (ADR-003, ADR-048, `keyring.go`,
 `prd-v1.md` as of `8683c6fc`, `docs/conventions/continuous-delivery.md`), from the ticket's COS text, or are the note's own glosses. Each repository quote was

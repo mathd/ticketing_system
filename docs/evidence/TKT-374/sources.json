@@ -127,7 +127,7 @@
     "http_result": "200 (reached by redirect from https://www.lne.fr/sites/default/files/bloc-telecharger/referentiel-certification-systemes-caisse.pdf)",
     "sha256": "e49acbcae143350509c39ec3d673b7f26f0de28772e07deacdff1f2cd7fea2c3",
     "used_for": "COFRAC accreditation number (5-0696, ISO/CEI 17065) of the certifier",
-    "notes": "Saved by the orchestrator as lne-ref.pdf although the body is HTML. COFRAC's own scope page was not opened."
+    "notes": "Saved by the orchestrator as lne-ref.pdf although the body is HTML. The accreditation it states is confirmed independently by S17 (COFRAC certificate)."
   },
   {
     "id": "S11",
@@ -206,6 +206,19 @@
     "sha256": "1f018b1002b05424adb997601aa38e18de535400bf7ab9b1bce39eabc401af3a",
     "used_for": "D13 existence check of CGI art. 290 quater (out of scope)",
     "notes": "Existence and one-line coverage only; not analysed."
+  },
+  {
+    "id": "S17",
+    "publisher": "Comité français d'accréditation (COFRAC)",
+    "title": "Attestation d'accréditation N° 5-0696 — BYCYB (with technical annex)",
+    "edition": "Rev. 1",
+    "effective_or_published": "valid from 2026-02-18 until 2030-05-31",
+    "url": "https://tools.cofrac.fr/annexes/sect5/5-0696.pdf",
+    "accessed": "2026-10-13",
+    "http_result": "200 (application/pdf)",
+    "sha256": "9a7cbb867ab65b587976b800aa502e0ed1798349fd8d2f29270d6fedff83d04d",
+    "used_for": "Independent check of the certifier's accreditation scope (A5): ISO/IEC 17065:2012 product certification; technical annex lists 'Système de caisse' with programme 'Référentiel de certification des systèmes de caisse'",
+    "notes": "Fetched in fix round 2. Legal identifier 942788845 matches the BYCYB RCS number on S09's cover. The annex names no version of the programme; it says the version in force applies. The URL pattern was a guess that worked; https://www.cofrac.fr/annexes/sect5/5-0696.pdf returned 404. COFRAC says scope and validity must be re-checked on its site before use. The address differs from S09's cover (Montrouge here, Malakoff on S09); the legal identifier is the same."
   },
   {
     "id": "X01",
