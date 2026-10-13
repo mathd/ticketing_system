@@ -548,6 +548,19 @@ open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (.IGNORE on the allowlist target)" check-security-workflow-trigger
 
+# 12o. make check no longer runs the Astro image premise guard (TKT-504). The
+#      accepted risk for CVE-2026-93748 depends on that guard. The target still
+#      exists and passes when called by name, so only the check-all list shows it.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+before = s
+s = s.replace(' lint check-astro-image-premise ', ' lint ', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (check-astro-image-premise dropped from check-all)" check-security-workflow-trigger
+
 # 13. The hermetic workflow missing a production web image input. The enumerated
 #     path list covered the scanner and the storefront but not web/backoffice, so a
 #     broken back-office production image could merge with neither build path run —

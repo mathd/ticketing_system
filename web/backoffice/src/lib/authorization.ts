@@ -167,8 +167,9 @@ function segmentKind(segment: string): SegmentKind {
 /**
  * Astro's own route precedence, mirrored (ai-review pass 2, F1).
  *
- * Read from `astro/dist/core/routing/priority.js` (`routeComparator`) at the
- * installed 7.0.9 rather than described from memory, because the property that
+ * Read from the astro package's `dist/core/routing/priority.js`
+ * (`routeComparator`) at the installed 7.0.9 rather than described from memory,
+ * because the property that
  * matters is agreement with the router: a matcher that disagrees about which
  * route a URL IS cannot be trusted to say who may reach it.
  *
