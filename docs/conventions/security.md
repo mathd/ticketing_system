@@ -52,7 +52,7 @@ not name a mechanical check still depends on review.
   `pnpm-audit` job when it runs: on every scheduled run, and on a pull request that changes
   dependency files or `.trivyignore.yaml`. Trivy drops an expired entry silently, so
   `repository-scan` fails again only if the advisory still exists. govulncheck has no exception
-  path yet (TKT-524). See
+  path: a reachable Go advisory needs a bump. See
   [ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md).
 
 ## Input and data handling

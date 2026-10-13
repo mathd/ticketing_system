@@ -11,6 +11,22 @@ Current anchors (update as they move): Go 1.27.2 · Node 24.18.0 · pnpm 11 (pin
 which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.4 · Vite 8 ·
 React 19 · TypeScript 6.
 
+### Go directive and current holds (TKT-523)
+
+- **The `go` directive in `go.work` and in every `go.mod` names the patch release, 1.27.2.** With
+  `go 1.27.0`, the local `GOTOOLCHAIN=auto` selection can run 1.27.0, which has the standard-library
+  advisories, while CI runs 1.27.2. The directive is a minimum, not a lock: a newer local Go can
+  still run. `go.work` must be at least every module's directive.
+- **A Go patch release can break the linter.** golangci-lint v2.13.2 cannot read the go1.27.2
+  export data. `check-go-toolchain` compares minor versions only, so it stays green for that pair.
+  After a Go bump, run `make lint-go`.
+- **Hold: `github.com/dprotaso/go-yit` in `services/catalog/go.mod`.** It stays at the last commit
+  on `gopkg.in/yaml.v3` (`v0.0.0-20250513224043-18a80f8f6df4`). Later commits use another yaml
+  module, and `vmware-labs/yaml-jsonpath` v0.3.2 (its latest release) then stops compiling inside
+  `go tool oapi-codegen`. The reason is also above the pin. `go get -u tool` removes the hold, so
+  give the pinned version again in that command. Remove the hold when yaml-jsonpath uses the same
+  yaml module as go-yit.
+
 ## Executable dependency pins
 
 Container base images use an exact release tag and multi-architecture manifest digest. GitHub
