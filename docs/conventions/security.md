@@ -87,23 +87,34 @@ GitHub-hosted runners set none, and a self-hosted runner that sets one is outsid
 This risk has no `.trivyignore.yaml` entry. No scanner reports it, so an entry has nothing to
 suppress. An entry with no finding would also hide a later change to the advisory range.
 
-- **The advisory.** CVE-2026-93748 is GHSA-ch52-4w7c-c8xp. Its `max-stale` handling can disclose
-  cached responses across users. The advisory lists versions up to 4.2.0 as vulnerable and 4.2.1 as
-  fixed. Astro 7.3.8 resolves 4.3.0. The scanners do not report 4.3.0. The plan review compared the
-  4.3.0 code with the vulnerable code and found the same `max-stale` logic (read, not executed). We
-  treat 4.3.0 as vulnerable. No fixed release exists.
+- **The advisory.** CVE-2026-93748 is GHSA-ch52-4w7c-c8xp. It concerns the `max-stale` handling.
+  The advisory lists affected versions through 4.2.0 and lists no patched version. (`pnpm audit`
+  shows ">=4.2.1" as patched. It derives that value from the affected range.) Astro 7.3.8 resolves
+  4.3.0. The scanners do not report 4.3.0. The TKT-504 code review executed a probe against 4.3.0.
+  With `max-stale` in the request, the cache policy returned the cached response, with its
+  `Set-Cookie` headers, although the response had a zero cache lifetime. We treat 4.3.0 as
+  vulnerable. No fixed release exists.
 - **The only consumer.** Astro imports the package in one file:
-  `astro/dist/assets/build/remote.js`. That file runs at build time. It loads remote images, and
-  Astro calls it only for a remote image that `image.domains` or `image.remotePatterns` allows.
-  Astro calls only `new CachePolicy()`, `storable()` and `timeToLive()`. It does not call
-  `evaluateRequest()`, which holds the `max-stale` logic. We read this in the Astro 7.3.8 and
-  `http-cache-semantics` 4.3.0 code. We did not execute it.
+  `astro/dist/assets/build/remote.js`. That file is the remote image loader. It runs at build time.
+  Astro's image pipeline calls the loader only for a remote image that `image.domains` or
+  `image.remotePatterns` allows. The loader itself does not check the initial URL. It checks only
+  the redirect targets. The TKT-504 code review executed the loader with empty allowlists: it
+  fetched the URL and made a `CachePolicy`. Astro calls only `new CachePolicy()`, `storable()` and
+  `timeToLive()`. It does not call `evaluateRequest()`, which holds the `max-stale` logic. We read
+  this in the Astro 7.3.8 and `http-cache-semantics` 4.3.0 code. We did not execute it.
 - **The runtime images.** The built `dist` of the back office and the storefront contains no copy of
   the package. The runtime images ship `dist` only.
 - **The guard.** `make check-astro-image-premise` runs `scripts/check-astro-image-premise.mjs` in
-  `make check`. It fails if an app allows remote images, sets an image service, adds an integration
-  other than `@astrojs/react`, uses an adapter other than `@astrojs/node`, or imports the Astro image
-  pipeline. It does not read dependency code. The script lists its other limits.
+  `make check`. The guard evaluates each app config two times: with `NODE_ENV` unset, and with
+  `NODE_ENV=production`, which `astro build` sets before it loads the config. The guard fails if an
+  app allows remote images, sets an image service, adds an integration other than `@astrojs/react`,
+  or uses an adapter other than `@astrojs/node`. It also fails if app source imports the Astro image
+  pipeline, imports `http-cache-semantics`, or imports a module under `astro/dist/`. The last rule
+  exists because the loader does not check the initial URL. The guard does not run the hooks of the
+  allowed integration and adapter. We read the `updateConfig` calls in `@astrojs/react` 6.0.6 and
+  `@astrojs/node` 11.1.7. They change only the Vite config and the image endpoint. They add no
+  remote image domains or patterns. We did not execute them. The guard does not read dependency
+  code. The script lists its other limits.
 - **Removal.** Remove this paragraph when a fixed release of `http-cache-semantics` is available
   and installed. Review the risk again when the guard fails, and at each Astro upgrade.
 

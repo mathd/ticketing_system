@@ -73,8 +73,8 @@ function passes(files) {
 }
 
 // Exactly one rule fires, and it is the named one at the named place.
-function refusesOnly(files, where, rule, root = fixture(files)) {
-  const result = run(['--root', root]);
+function refusesOnly(files, where, rule, root = fixture(files), options = {}) {
+  const result = run(['--root', root], options);
   assert.equal(result.status, 1, `want exit 1, got ${result.status}:\n${result.stdout}${result.stderr}`);
   const lines = ruleLines(result.stderr);
   assert.equal(lines.length, 1, `want exactly one rule line, got:\n  ${lines.join('\n  ') || '(none)'}`);
@@ -82,6 +82,7 @@ function refusesOnly(files, where, rule, root = fixture(files)) {
   assert.ok(line.includes(`${where}: rule ${rule}:`), `want "${where}: rule ${rule}:", got:\n  ${line}`);
   assert.ok(line.includes('CVE-2026-93748'), `the diagnostic must name the CVE:\n  ${line}`);
   assert.ok(line.includes('TKT-504'), `the diagnostic must name the ticket:\n  ${line}`);
+  return line;
 }
 
 describe('clean trees pass', () => {
@@ -220,11 +221,93 @@ describe('import marker rules refuse', () => {
     );
   });
 
+  it('a relative deep import of the remote image loader refuses', () => {
+    refusesOnly(
+      { 'web/storefront/src/lib/loader.ts': "import { loadRemoteImage } from '../../node_modules/astro/dist/assets/build/remote.js';\n" },
+      'web/storefront/src/lib/loader.ts:1',
+      'astro/dist',
+    );
+  });
+
+  it('a bare deep import into astro/dist outside assets refuses', () => {
+    refusesOnly(
+      { 'web/backoffice/src/lib/build.ts': "export * from 'astro/dist/core/build/generate.js';\n" },
+      'web/backoffice/src/lib/build.ts:1',
+      'astro/dist',
+    );
+  });
+
+  it('a direct http-cache-semantics import refuses', () => {
+    refusesOnly(
+      { 'web/backoffice/src/lib/cache.ts': "import CachePolicy from 'http-cache-semantics';\n" },
+      'web/backoffice/src/lib/cache.ts:1',
+      'http-cache-semantics',
+    );
+  });
+
   it('a marker in a Markdown file refuses', () => {
     refusesOnly(
       { 'web/storefront/src/content/a.mdx': "import { Picture } from 'astro:assets';\n" },
       'web/storefront/src/content/a.mdx:1',
       'astro:assets',
+    );
+  });
+});
+
+describe('the config is evaluated as astro build evaluates it', () => {
+  // astro build sets NODE_ENV=production before it loads the config
+  // (astro/dist/core/build/index.js). The guard evaluates each config with
+  // NODE_ENV unset and with NODE_ENV=production, each in a fresh process.
+  const PRODUCTION_ONLY = "process.env.NODE_ENV === 'production' ? { domains: ['cdn.example.com'] } : {}";
+  const UNSET_ONLY = "process.env.NODE_ENV === undefined ? { domains: ['cdn.example.com'] } : {}";
+
+  it('remote domains set only for production refuse, and the diagnostic names production', () => {
+    const line = refusesOnly(
+      { 'web/storefront/astro.config.mjs': config({ image: PRODUCTION_ONLY }) },
+      'web/storefront/astro.config.mjs',
+      'image.domains',
+    );
+    assert.ok(line.includes('[NODE_ENV=production]'), `want only [NODE_ENV=production], got:\n  ${line}`);
+  });
+
+  it('remote domains set only with NODE_ENV unset refuse, even when the caller sets production', () => {
+    const line = refusesOnly(
+      { 'web/backoffice/astro.config.mjs': config({ image: UNSET_ONLY }) },
+      'web/backoffice/astro.config.mjs',
+      'image.domains',
+      undefined,
+      { env: { ...process.env, NODE_ENV: 'production' } },
+    );
+    assert.ok(line.includes('[NODE_ENV unset]'), `want only [NODE_ENV unset], got:\n  ${line}`);
+  });
+
+  it('a rule that fires in both environments is reported once, naming both', () => {
+    const line = refusesOnly(
+      { 'web/backoffice/astro.config.mjs': config({ image: "{ domains: ['cdn.example.com'] }" }) },
+      'web/backoffice/astro.config.mjs',
+      'image.domains',
+    );
+    assert.ok(line.includes('[NODE_ENV unset, NODE_ENV=production]'), `want both environments, got:\n  ${line}`);
+  });
+
+  it('the config runs with the app directory as its working directory', () => {
+    const cwdCheck = "process.cwd() === new URL('.', import.meta.url).pathname.replace(/\\/$/, '') ? {} : { domains: ['wrong-cwd'] }";
+    passes({ 'web/storefront/astro.config.mjs': config({ image: cwdCheck }) });
+  });
+
+  it('a non-array image.domains refuses', () => {
+    refusesOnly(
+      { 'web/storefront/astro.config.mjs': config({ image: '{ domains: () => [] }' }) },
+      'web/storefront/astro.config.mjs',
+      'image.domains',
+    );
+  });
+
+  it('output that the config prints does not change the result', () => {
+    refusesOnly(
+      { 'web/backoffice/astro.config.mjs': `console.log('{}');\n${config({ image: "{ remotePatterns: [{ hostname: 'x' }] }" })}` },
+      'web/backoffice/astro.config.mjs',
+      'image.remotePatterns',
     );
   });
 });
@@ -261,7 +344,7 @@ describe('the guard fails closed', () => {
   it('a config with no default export object refuses', () => {
     const result = run(['--root', fixture({ 'web/backoffice/astro.config.mjs': 'export const x = 1;\n' })]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /web\/backoffice\/astro\.config\.mjs: rule config-unreadable:/);
+    assert.match(result.stderr, /web\/backoffice\/astro\.config\.mjs: rule config-unreadable: the config has no default export object/);
   });
 
   it('integrations that are not an array refuse', () => {
