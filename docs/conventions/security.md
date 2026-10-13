@@ -82,6 +82,31 @@ minimal environment, the pnpmfile hooks off, and the registry and the lockfile d
 so no runner setting can change what it reports. Trivy reads `TRIVY_*` variables from the runner;
 GitHub-hosted runners set none, and a self-hosted runner that sets one is outside this control.
 
+### Accepted risk: CVE-2026-93748 in `http-cache-semantics` (TKT-504)
+
+This risk has no `.trivyignore.yaml` entry. No scanner reports it, so an entry has nothing to
+suppress. An entry with no finding would also hide a later change to the advisory range.
+
+- **The advisory.** CVE-2026-93748 is GHSA-ch52-4w7c-c8xp. Its `max-stale` handling can disclose
+  cached responses across users. The advisory lists versions up to 4.2.0 as vulnerable and 4.2.1 as
+  fixed. Astro 7.3.8 resolves 4.3.0. The scanners do not report 4.3.0. The plan review compared the
+  4.3.0 code with the vulnerable code and found the same `max-stale` logic (read, not executed). We
+  treat 4.3.0 as vulnerable. No fixed release exists.
+- **The only consumer.** Astro imports the package in one file:
+  `astro/dist/assets/build/remote.js`. That file runs at build time. It loads remote images, and
+  Astro calls it only for a remote image that `image.domains` or `image.remotePatterns` allows.
+  Astro calls only `new CachePolicy()`, `storable()` and `timeToLive()`. It does not call
+  `evaluateRequest()`, which holds the `max-stale` logic. We read this in the Astro 7.3.8 and
+  `http-cache-semantics` 4.3.0 code. We did not execute it.
+- **The runtime images.** The built `dist` of the back office and the storefront contains no copy of
+  the package. The runtime images ship `dist` only.
+- **The guard.** `make check-astro-image-premise` runs `scripts/check-astro-image-premise.mjs` in
+  `make check`. It fails if an app allows remote images, sets an image service, adds an integration
+  other than `@astrojs/react`, uses an adapter other than `@astrojs/node`, or imports the Astro image
+  pipeline. It does not read dependency code. The script lists its other limits.
+- **Removal.** Remove this paragraph when a fixed release of `http-cache-semantics` is available
+  and installed. Review the risk again when the guard fails, and at each Astro upgrade.
+
 ## Not yet production-ready
 
 The implemented identity and rate-limit controls fit a single-replica Compose testbed. Production

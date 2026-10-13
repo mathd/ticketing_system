@@ -16,7 +16,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-all gate-lock-held check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-astro-image-premise check-all gate-lock-held check-required-env up down clean
 
 # `make check` IS the wrapper. It holds .gate.lock so nothing edits the tree
 # mid-run (TKT-240), captures the log, and writes .gate.verdict from the exit
@@ -27,7 +27,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 check:
 	@./scripts/gate.sh
 
-check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-go-standalone test build smoke
+check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-astro-image-premise check-go-standalone test build smoke
 
 # The lock must be THIS run's, not merely present: a hand-made or stale lock is
 # not evidence that a wrapper is holding the tree still. GATE_LOCK is a variable
@@ -88,6 +88,16 @@ check-security-workflow-trigger:
 check-scan-allowlist:
 	@node --test scripts/scan-allowlist.test.mjs
 	@node scripts/scan-allowlist.mjs check
+
+## ---- Astro image premise (TKT-504, CVE-2026-93748) ----
+# http-cache-semantics has no fixed release. The accepted risk in
+# docs/conventions/security.md depends on one premise: the web apps do not use
+# Astro image optimization. This guard fails when that premise stops being true.
+# It imports each app's astro.config.mjs, so it runs after deps (and after lint,
+# outside the check-all span that gate-selftest seed 12i edits).
+check-astro-image-premise:
+	@node --test scripts/check-astro-image-premise.test.mjs
+	@node scripts/check-astro-image-premise.mjs
 
 check-hermetic-workflow-trigger:
 	@./scripts/check-hermetic-workflow-trigger.sh
