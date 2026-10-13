@@ -524,6 +524,18 @@ function cell(html: string, channel: string, field: string): string | undefined 
   return td?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * The HTML inside the page's one <main>: the content of the slot page, without the layout.
+ * The layout header has a UI-language form on every signed-in page (TKT-368), so a form
+ * check on the whole page counts the layout, not this page. When there is not exactly one
+ * <main>, this throws. An empty string must not pass a "no form" check.
+ */
+function mainContent(html: string): string {
+  const mains = [...html.matchAll(/<main\b[^>]*>([\s\S]*?)<\/main>/g)];
+  if (mains.length !== 1) throw new Error(`expected exactly one <main>, found ${mains.length}`);
+  return mains[0][1];
+}
+
 /** Every `name="…"` inside every <form>, as one list per form. */
 function formControlNames(html: string): string[][] {
   return [...html.matchAll(/<form\b[\s\S]*?<\/form>/g)].map((f) =>
@@ -575,7 +587,7 @@ describe('the slot page for a seated pool', () => {
     stubInventory(availabilityBody('seated'));
     const html = await (await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT })).text();
 
-    const forms = formControlNames(html);
+    const forms = formControlNames(mainContent(html));
     expect(forms).toHaveLength(1);
     expect([...forms[0]].sort()).toEqual(['_action', 'allocationRevision']);
     expect(html).toMatch(/name="_action"[^>]*value="clear-allocations"|value="clear-allocations"[^>]*name="_action"/);
@@ -779,7 +791,7 @@ describe('the slot page for a GA pool', () => {
     expect(html).toContain('name="cap.0"');
     expect(html).not.toContain('clear-allocations');
     expect(html).not.toContain('name="_action"');
-    expect(formControlNames(html)).toHaveLength(1);
+    expect(formControlNames(mainContent(html))).toHaveLength(1);
   }, 30_000);
 
   it('runs a POST with no `_action` as the editor, exactly as before (COS5)', async () => {
@@ -844,7 +856,7 @@ describe('the slot page when the pool kind is unknown', () => {
     expect(html).not.toContain('stays available to the public channel');
     expect(html).not.toContain('data-action="save-allocations"');
     expect(html).not.toContain('data-action="clear-allocations"');
-    expect(html).not.toContain('<form');
+    expect(mainContent(html)).not.toContain('<form');
     expect(puts).toHaveLength(0);
   }, 30_000);
 
