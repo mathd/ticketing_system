@@ -21,11 +21,10 @@ Both presale defects and their reproduction: [presale-race-finding.md](presale-r
 The run wrote to a scratch directory (the `command=` line in `output/environment.txt`); its
 contents were then copied to `output/` unchanged.
 
-The probe sources that ran. `output/environment.txt` records HEAD `23df1f9d`; these files were
-uncommitted edits on top of it, last modified before the run started (23:21:37Z), and were then
-committed unchanged with this README:
+The probe sources that ran are committed at the HEAD that `output/environment.txt` records
+(`3d85c471`), unchanged since:
 
-    e65aacfaa6e8fa5cc222f144612dbf88235adaf9dc32df63938a7089f5e5a201  probe.go
+    a04aabcfbdd8b50ac6d0ecf2b501c4d44ad2fcd56fb2860e779537d6f4250d8e  probe.go
     fa78f7b4faf70a43a6ebf27565c33fc8b988a3633bb6b6cd11c17dc1f96da4ad  prototype.go
     7c3575895586c9252a99090ed80b4f4f3f100bb7a35c4db3d3dff4ee50bc2789  window-fix.py
     739a9cc2888e5aa8775f771749caa4fe9a2521233210123ddb645cb2c71e0ee3  r2-predicate.py
@@ -128,17 +127,17 @@ Drives the shipped `CreateHold` and `Transition`. Distinct summaries, each ident
 
 Run 1 of S1 and W, verbatim from [`output/probe1-presale.txt`](output/probe1-presale.txt):
 
-    [run 1 presale-S1] H created on P2: expires_at=2026-10-13T23:21:52.701551Z
-    [run 1 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:21:50.715164Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-    [run 1 presale-S1] DB clock now 2026-10-13T23:21:52.915076Z, past H expiry
+    [run 1 presale-S1] H created on P2: expires_at=2026-10-13T23:38:35.591383Z
+    [run 1 presale-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:38:33.609375Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+    [run 1 presale-S1] DB clock now 2026-10-13T23:38:35.796644Z, past H expiry
     [run 1 presale-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
     [run 1 presale-S1] finalize F returned: status=finalizing err=nil
-    [run 1 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:21:52.701551Z | true
-    [run 1 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:21:54.929811Z | false
-    [run 1 W] code window closes_at=2026-10-13T23:21:57.206359Z
-    [run 1 W] admission A observed blocked on the code row: query_start=2026-10-13T23:21:55.372863Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-    [run 1 W] DB clock now 2026-10-13T23:21:57.417356Z, past closes_at; releasing the lock without an update
-    [run 1 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:21:59.42074Z | false
+    [run 1 presale-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:38:35.591383Z | true
+    [run 1 presale-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:38:37.816864Z | false
+    [run 1 W] code window closes_at=2026-10-13T23:38:40.097173Z
+    [run 1 W] admission A observed blocked on the code row: query_start=2026-10-13T23:38:38.276671Z (before closes_at: true) query="SELECT max_redemptions, ((opens_at IS NULL OR opens_at <= clock_timestamp())\n\tAND (closes_at IS NULL OR closes_at > clock_timestamp())) FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+    [run 1 W] DB clock now 2026-10-13T23:38:40.310505Z, past closes_at; releasing the lock without an update
+    [run 1 W]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:38:42.313337Z | false
 
 ## Probe 1b: the window rule (`probe1-window-fix.txt`)
 
@@ -179,11 +178,11 @@ today's code. The mutation is the same schedules on the pristine build, that is,
 
 Run 1 of R2L on the R2 build, verbatim from [`output/probe3-r2.txt`](output/probe3-r2.txt):
 
-    [run 1 r2-liveness] H created on P2: expires_at=2026-10-13T23:24:37.758303Z; DB clock now 2026-10-13T23:24:37.975035Z
+    [run 1 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:21.958323Z; DB clock now 2026-10-13T23:41:22.17064Z
     [run 1 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
     [run 1 r2-liveness] admission B on P2: err=nil
-    [run 1 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:24:37.758303Z | true
-    [run 1 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:24:39.981772Z | false
+    [run 1 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:21.958323Z | true
+    [run 1 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:24.181061Z | false
 
 S1 is the cap race of probe 1, so under R2 that defect does not occur. R2L shows the liveness cost:
 the code stays blocked for P1 until a transaction on P2 writes H's expiry.
@@ -207,9 +206,9 @@ the code stays blocked for P1 until a transaction on P2 writes H's expiry.
 - Probe 3 changed only the usage predicate. It did not move the window read (probe 1b did that
   separately), did not edit a cap under R2, and did not test a cleanup design. The operator read
   (`PresaleCodeStatuses`) was not changed, so the usage the probes report still judges expiry.
-- S1's verdict accepts two HELD outcomes: the R1 one (A admitted, F refused) and the R2 one (A
-  refused, F succeeds). The SUMMARY line shows which one occurred, and `output/summary-distinct.txt`
-  shows that each build produced only its own.
+- S1's HELD outcome depends on the mode: in modes `presale` and `prototype` only the R1 outcome (A
+  admitted, F refused) is HELD; in mode `r2` only the R2 outcome (A refused, F succeeds) is HELD.
+  So an R2 run cannot pass on the R1 outcome.
 - The W explanation (PostgreSQL computes the target list before the row-lock wait and does not
   recompute it for a row that was not updated) is an inference that matches the observation. It
   was not read in the PostgreSQL source during this spike.

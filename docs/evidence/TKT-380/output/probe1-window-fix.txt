@@ -1,38 +1,38 @@
 postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 1 W] code window closes_at=2026-10-13T23:22:48.037553Z
-[run 1 W] admission A observed blocked on the code row: query_start=2026-10-13T23:22:46.217703Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 1 W] DB clock now 2026-10-13T23:22:48.252378Z, past closes_at; releasing the lock without an update
+[run 1 W] code window closes_at=2026-10-13T23:39:31.534239Z
+[run 1 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:29.724034Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 1 W] DB clock now 2026-10-13T23:39:31.74708Z, past closes_at; releasing the lock without an update
 [run 1 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 2 W] code window closes_at=2026-10-13T23:22:52.490219Z
-[run 2 W] admission A observed blocked on the code row: query_start=2026-10-13T23:22:50.636408Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 2 W] DB clock now 2026-10-13T23:22:52.706127Z, past closes_at; releasing the lock without an update
+[run 2 W] code window closes_at=2026-10-13T23:39:35.998047Z
+[run 2 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:34.168706Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 2 W] DB clock now 2026-10-13T23:39:36.213923Z, past closes_at; releasing the lock without an update
 [run 2 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 3 W] code window closes_at=2026-10-13T23:22:56.9709Z
-[run 3 W] admission A observed blocked on the code row: query_start=2026-10-13T23:22:55.159649Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 3 W] DB clock now 2026-10-13T23:22:57.190188Z, past closes_at; releasing the lock without an update
+[run 3 W] code window closes_at=2026-10-13T23:39:40.484217Z
+[run 3 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:38.721095Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 3 W] DB clock now 2026-10-13T23:39:40.691773Z, past closes_at; releasing the lock without an update
 [run 3 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 4 W] code window closes_at=2026-10-13T23:23:01.44524Z
-[run 4 W] admission A observed blocked on the code row: query_start=2026-10-13T23:22:59.627627Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 4 W] DB clock now 2026-10-13T23:23:01.648747Z, past closes_at; releasing the lock without an update
+[run 4 W] code window closes_at=2026-10-13T23:39:44.959404Z
+[run 4 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:43.217997Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 4 W] DB clock now 2026-10-13T23:39:45.178617Z, past closes_at; releasing the lock without an update
 [run 4 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 5 W] code window closes_at=2026-10-13T23:23:05.891308Z
-[run 5 W] admission A observed blocked on the code row: query_start=2026-10-13T23:23:04.080357Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 5 W] DB clock now 2026-10-13T23:23:06.108133Z, past closes_at; releasing the lock without an update
+[run 5 W] code window closes_at=2026-10-13T23:39:49.432106Z
+[run 5 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:47.637195Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 5 W] DB clock now 2026-10-13T23:39:49.645519Z, past closes_at; releasing the lock without an update
 [run 5 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 SUMMARY window-control a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
-[run 6 W] code window closes_at=2026-10-13T23:23:10.36636Z
-[run 6 W] admission A observed blocked on the code row: query_start=2026-10-13T23:23:08.532785Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
-[run 6 W] DB clock now 2026-10-13T23:23:10.577875Z, past closes_at; releasing the lock without an update
+[run 6 W] code window closes_at=2026-10-13T23:39:53.894923Z
+[run 6 W] admission A observed blocked on the code row: query_start=2026-10-13T23:39:52.18888Z (before closes_at: true) query="SELECT max_redemptions FROM presale_codes\n\t\t WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE"
+[run 6 W] DB clock now 2026-10-13T23:39:54.10538Z, past closes_at; releasing the lock without an update
 [run 6 W] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
 SUMMARY W a_err=ErrPresaleCodeInvalid redeemed=0 verdict=HELD
 RESULT mode=window runs=6 exit=0 (0 all HELD, 1 BROKEN observed, 2 UNEXPECTED)
