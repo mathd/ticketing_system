@@ -141,8 +141,8 @@ the cap.
     - Pros: claim and redemption commit in one row, so they cannot disagree. The claim's own
       idempotent terminal transition is the one terminal release. Draw-down conserves units without
       new code: the source decrements and the child inherits the citation (`reservations.go:323`,
-      `:329`). Lazy expiry returns the units with no write (§3 states how this meets the owner's
-      "one idempotent terminal transition").
+      `:329`). Under reading R1, expiry returns the units with no write (§3; the owner chooses
+      between R1 and R2).
     - Cons: a separate usage expression from the presale one, because refunds must not return
       units. An index is needed, as for presale (0014 `:96`).
 - **(ii) Separate redemption records.** A table of redemptions with its own status.
@@ -207,14 +207,20 @@ with the uniform refusal.
 
 ### 3. Usage model (i): the claim cites the code
 
-Usage of a code is:
+Usage of a code is the sum of `quantity` over the claims that cite the code and match the
+**promotion usage predicate**:
 
-    sum over claims citing the code of
-      quantity  when status = 'confirmed'            -- returned_quantity is NOT subtracted
-      quantity  when the claim is live (liveClaims)
+    status = 'confirmed'                         -- returned_quantity is NOT subtracted
+    OR status = 'finalizing'
+    OR (status = 'held' AND expires_at > $t)     -- reading R1 (below)
 
-This is a new expression. It must not reuse `consumedQuantity`. A test that refunds and rebuys must
-fail if someone swaps it in.
+`$t` is the time the path read with `clock_timestamp()` after it took the code lock (§4). Under
+reading R2 (below) the last line becomes `OR status = 'held'`: expiry is ignored for held claims.
+
+This is a new predicate and a new expression. It must not reuse `consumedQuantity`, and it must not
+use `liveClaims`: `liveClaims` judges on transaction-start `now()` (`store.go:244`). `liveClaims`
+stays unchanged for pool capacity. A test that refunds and rebuys must fail if someone swaps
+`consumedQuantity` in.
 
 Paths that write usage, and what each one does to it. The "Code lock" column is the locking list
 of §4; this table and §4 must stay identical.
@@ -229,33 +235,53 @@ of §4; this table and §4 must stay identical.
 | Conversion (`operational.go:345`) | None in the first slice: it applies no promotion | **Yes**, if a later design lets it carry a code |
 | Cap or window edit of a code | None: an edit never releases usage | **Yes**, `FOR UPDATE` |
 | Confirm from `finalizing`: `Transition` to `confirmed` | Keeps it, permanently | No: the claim already counts and never expires |
-| Expiry: the claim passes `expires_at` | Ends it: the terminal transition for expiry (below) | No: it is not a write |
-| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | None: they write the durable `expired` record for units already returned | No; `sweepExpired` **never** |
+| Expiry: the claim passes `expires_at` | Under R1, ends it at the first code-locked decision after expiry (below). Under R2, none until a terminal write | No: it is not a write |
+| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | Under R1, none: they write the durable `expired` record. Under R2, they end it: each is a terminal write | No; `sweepExpired` **never** |
 | Explicit release: `Transition` to `released` (`store.go:891`) | Ends it: the terminal transition for release | No: it never adds usage |
 | Refund capacity return (`refund_returns.go:148`) | None | No: it never adds usage |
 
-**One idempotent terminal transition: the reading this ADR takes.** The owner policy says
-"Expired or released unconfirmed holds return their units through one idempotent terminal
-transition" (backlog-decisions, *Promotion cap and corrections*). This ADR does not change that
-policy. It reads it as follows:
+**One idempotent terminal transition: an owner decision is open.** The owner policy says expired
+or released unconfirmed holds return their units "through one idempotent terminal transition"
+(backlog-decisions, *Promotion cap and corrections*). Two readings exist. The owner must choose one
+before TKT-382 is built (open question 6). Explicit release is the same in both: the terminal
+transition is the existing guarded release write (`store.go:891`); a repeat, and a release after
+expiry, are satisfied (`store.go:854`, `:868`).
 
-- **Expiry.** The terminal transition is the claim passing its `expires_at`. From that instant the
-  usage expression excludes the claim. Under §4 no path can keep or revive usage after
-  `expires_at`: every locking path judges the claim on a fresh time under the code lock and refuses
-  it. Probe 2 shows this for a queued finalize (schedule S1 baseline: `expired`, `ErrConflict`). So
-  the return is one-way and happens exactly once.
-- **The durable record.** `sweepExpired`, the replay-expiry branch and the expiry branch of
-  `Transition` later write the `expired` status and history. That write returns nothing a second
-  time: the units were already returned. Until it runs, the stored status can still read `held`
-  (probe 2 S1 rows show this).
-- **Explicit release.** The terminal transition is the existing guarded release write. A repeat is
-  satisfied, and a release after expiry is satisfied (`store.go:854`, `:868`).
+- **R1, logical expiry.** Expired units return without a write. The boundary is this: the units
+  return at the **first code-locked decision after expiry that finds the claim still `held` and
+  expired** on its post-lock time (or finds it already written `expired`). Passing `expires_at`
+  alone does not return them. Decisions on one code are serialized by the code lock, so that
+  decision comes after any in-flight finalize. A finalize that decided before expiry and commits
+  after it keeps the unit: probe 2 baseline S2, where F decided before `expires_at`, committed
+  `finalizing`, and the waiting admission was refused
+  ([`probe2-baseline.txt`](../evidence/TKT-380/output/probe2-baseline.txt), lines 14–19). Post-lock
+  time only moves forward, so every later decision also excludes the claim: the return happens
+  once. `sweepExpired`, the replay-expiry branch and `Transition`'s expiry branch later write the
+  durable `expired` record; they return nothing. Until then the stored status can read `held`.
+- **R2, terminal write.** An expired `held` claim keeps counting until a terminal write commits:
+  `sweepExpired`, the replay-expiry branch, `Transition`'s expiry branch, or explicit release. That
+  write only decreases usage, so it needs **no** code lock: a concurrent admission sees either the
+  old row, counts it and refuses (conservative), or the committed terminal row. The existing pool
+  and claim locks serialize the write against a finalize. R2 also removes the cross-pool overshoot
+  of probe 1 S1 by itself: the expired but unswept claim H still counts, so the admission on P1
+  refuses (inference; not probed).
 
-The alternative reading (no unit returns until a terminal write exists) has a cost: a later
-admission could not count a returned unit until the write happened, so the write would have to run
-under the code lock. `sweepExpired` would then take the code lock, which this section forbids, or a
-code would stay blocked until a sweep reaches every pool, which ADR-010 forbids as a correctness
-requirement. Open question 6 asks the owner to confirm this reading.
+The costs of R2 are separate. **Cleanup:** a code's units stay blocked on a quiet pool until
+something writes the terminal state there, so R2 needs a sweeper or other cleanup for liveness (not
+for correctness). **Lock order:** an admission cannot do that cleanup itself, because it would take
+pool and claim locks after the code lock, which §4 forbids; the cleanup must run in its own
+transactions.
+
+**This ADR's lock and time rules assume R1.** If the owner picks R2, these change:
+
+- §3: the predicate counts every `held` claim (above). The expiry row has no effect; the
+  `sweepExpired`, replay-expiry and `Transition`-expiry rows become terminal writes. `Transition`'s
+  expiry branch must then commit its write; today it rolls the write back when it returns
+  `ErrConflict` (`store.go:882`).
+- §4: finalize and direct confirm from `held` no longer add or revive usage, so they could leave the
+  locking list (inference). The post-lock time then serves the window check only.
+- §7: the hold-expiry row returns units at the terminal write, and a cleanup path is needed.
+- §8: example C3 (expiry returns units with no sweep) becomes "returns units after a terminal write".
 
 **First slice.** Promotions apply to GA reservation checkout only. Seated and group paths refuse a
 promotion code. Operational conversion applies none. A later slice that adds a path must design it
@@ -283,10 +309,9 @@ capacity return (none of them adds usage). §3's table and §11 use this same li
 
 **Fresh-time invariant.** Every path in the locking list takes the lock **whether or not the code
 has a cap**, because a cap can be added while the transaction is open. After the lock is held, it
-reads the cap, the window, the usage and the time in **separate statements**, on
-`clock_timestamp()`. It judges expiry on that time, never on transaction-start `now()`. Admission
-follows this rule like every other path: it counts usage and reads the window on
-`clock_timestamp()` after the code lock.
+reads the time `$t` with `clock_timestamp()`, then reads the cap, the window and the usage in
+**separate statements**. It judges the window and expiry on `$t`, with §3's promotion usage
+predicate, never on transaction-start `now()`. Admission follows this rule like every other path.
 
 **Read after the lock, not in the locking statement.** Today `redeemPresaleCode` computes the
 window in the target list of the `SELECT … FOR UPDATE` itself (`presale_codes.go:87`–`:90`). The
@@ -380,7 +405,7 @@ window into a refused retry and a leaked hold, to protect fields that no one has
 | Event | What happens to usage | Rule |
 |---|---|---|
 | Admission | `+qty`, all or nothing | Pool → (presale) → code lock; then cap, window and usage in separate statements on fresh time (§4). |
-| Hold expiry (lazy) | Returned once, when the claim passes `expires_at`: the terminal transition for expiry (§3) | No path can revive it (§4). A later sweep writes the durable `expired` record under the pool lock only and returns nothing again. |
+| Hold expiry (lazy) | R1 (assumed): returned once, at the first code-locked decision after expiry that finds the claim `held` and expired (§3). R2: returned at the terminal write | R1: no later decision can revive it (§4); a later sweep writes the durable `expired` record under the pool lock only. Owner decision open (question 6). |
 | Explicit release | Returns `qty`: the terminal transition for release (§3) | The guarded `Transition` to `released`. Repeats and release-after-expiry are satisfied (`store.go:854`, `:868`). No code lock. |
 | Finalize from `held` | Unchanged; now non-expiring | Locking path: code lock and fresh time. Refused if the hold expired at that time. |
 | Confirm | Consumed permanently | From `held` (direct confirm): locking path, as finalize. From `finalizing`: no code lock; the claim already counts and never expires. |
@@ -451,8 +476,12 @@ Cap examples (model (i), code cap as stated):
 No journal change. The breakdown lives in Commerce. Every journal fact carries a `fact_id`
 (`services/payments/internal/store/store.go:68`). For the six Commerce fact types in the table
 below, Commerce derives the `fact_id` deterministically from the record that produced it. Other
-fact types have other derivations: Payments derives `payment.*` fact ids from the organizer, the
-payment key and the type (`services/payments/internal/api/server.go:412`, `:444`). TKT-493
+fact types have other derivations. Payments derives the fact id of a charge fact
+(`services/payments/internal/api/server.go:412`, `:444`) and of a whole-operation compensation
+(`services/payments/internal/api/psp.go:345`) from `payment:`, the organizer, the payment key and
+the type. A partial-refund leg's `payment.refunded` derives it from `payment-leg:`, the organizer,
+the source key and the refund key (`services/payments/internal/api/partial_refund.go:36`–`:37`,
+`:121`–`:126`). TKT-493
 correlates **by fact type and `fact_id`**, never by `order_id` alone: the payload `order_id` of an
 exchange fact is the **source** order for both legs (`services/commerce/internal/api/exchanges.go:841`, `:848`).
 
@@ -510,10 +539,11 @@ a TKT-502 limitation; no capture is invented to settle them.
    instead be frozen before the hold (a durable quote intent), so a retry never re-resolves?
 5. **Refusal UX.** May the buyer see "expired" or "used up" instead of the uniform refusal? That
    trades the enumeration guard for clarity.
-6. **"One idempotent terminal transition."** Confirm this ADR's reading (§3): for expiry, the
-   terminal transition is the claim passing `expires_at`, and the later `expired` write is only the
-   durable record; for release, it is the guarded release write. The alternative, a write before
-   the units return, would make `sweepExpired` take the code lock, which §3 forbids.
+6. **"One idempotent terminal transition."** Choose R1 (logical expiry: units return at the first
+   code-locked decision after expiry that finds the claim `held` and expired) or R2 (terminal
+   write: an expired `held` claim counts until `sweepExpired`, a replay-expiry, `Transition`'s
+   expiry branch or a release commits). This ADR assumes R1. R2 needs no code lock for the terminal
+   write but needs cleanup on quiet pools (§3). Decide before TKT-382 is built.
 
 ## Consequences
 
