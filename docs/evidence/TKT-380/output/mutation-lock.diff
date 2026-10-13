@@ -1,0 +1,10 @@
+--- prototype.go
++++ prototype.go.mutation-lock
+@@ -65,7 +65,6 @@
+ 	// D13: a path that KEEPS usage (finalize, direct confirm) takes the code
+ 	// lock, then reads time afresh under it.
+ 	if code.Valid && (target == "finalizing" || target == "confirmed") {
+-		err = tkt380LockCode(ctx, tx, org, c.Channel, code.String) // MUTATION-POINT:lock
+ 		if err != nil {
+ 			return Claim{}, err
+ 		}

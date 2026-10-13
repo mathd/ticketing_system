@@ -40,7 +40,7 @@ Each is one epic on the board with COS; IDs are board keys. Decomposition into U
 | TKT-4 | Inventory & reservation core | Contention-safe claims (no oversell under load), cart holds w/ TTL, operational holds (house/artist/kills), channel allocations, group/agency reservations, best-available seating |
 | TKT-5 | Pricing & overridable rules | Price levels per ticket type, time/tiered pricing, rule hierarchy venue→series→event→price with overrides; DSL spike (build vs declarative config) |
 | TKT-6 | Service fees & revenue splits | Fee schedules per channel, absorbed vs passed-on, rounding; split ledger across payees: system, venue, artist, extensible |
-| TKT-7 | Promotions & discount codes | Single-use and multi-use codes, %/fixed, redemption limits, comps |
+| TKT-7 | Promotions & discount codes | Single-use and multi-use codes, %/fixed, redemption limits, comps — storage and redemption contract: [ADR-084](../adr/ADR-084-promotion-storage-and-redemption-contract.md) |
 | TKT-8 | Cart, combos & cross-sell | Multi-item cart across inventory models; combos/packages (bundle pricing); parking & merchandise cross-sell; refund-protection add-on (buyer-paid, own refund/settlement semantics) |
 | TKT-9 | Orders & post-purchase | Refunds full/partial, exchanges w/ price-difference settlement, transfers & controlled resale, event-cancellation bulk flows |
 | TKT-10 | Payments & multi-currency | PSP port + fake provider (3DS-like challenge simulation); one currency per event, many across the platform, per-currency settlement, no FX inside an order; real PSP adapter later |

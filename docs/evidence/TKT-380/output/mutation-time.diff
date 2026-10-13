@@ -1,0 +1,11 @@
+--- prototype.go
++++ prototype.go.mutation-time
+@@ -69,7 +69,7 @@
+ 		if err != nil {
+ 			return Claim{}, err
+ 		}
+-		timeSQL := `SELECT clock_timestamp()` // MUTATION-POINT:time
++		timeSQL := `SELECT now()` // MUTATION-POINT:time
+ 		if err = tx.QueryRowContext(ctx, timeSQL).Scan(&c.ServerTime); err != nil {
+ 			return Claim{}, err
+ 		}

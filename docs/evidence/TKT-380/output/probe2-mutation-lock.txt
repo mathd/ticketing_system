@@ -1,0 +1,21 @@
+postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
+[run 1 prototype-S1] H created on P2: expires_at=2026-10-13T18:13:36.252693Z
+[run 1 prototype-S1] finalize F observed blocked on P2: pid=133 wait=Lock xact_start=2026-10-13T18:13:34.266176Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 prototype-S1] DB clock now 2026-10-13T18:13:36.45452Z, past H expiry
+[run 1 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 1 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 1 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:36.252693Z | true
+[run 1 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:38.470465Z | false
+[run 1 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:36.252693Z | true
+[run 1 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:38.470465Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 1 prototype-S2] H created on P2: expires_at=2026-10-13T18:13:38.709846Z
+[run 1 prototype-S2] finalize F decided at 2026-10-13T18:13:36.720262Z (before expiry: true), status=finalizing err=nil
+[run 1 prototype-S2] admission A on P1: blocked behind F's open transaction=false, finished while F was open=true, err=nil
+[run 1 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:38.709846Z | true
+[run 1 prototype-S2]   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:40.928962Z | false
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=false a_finished_while_f_open=true a_err=nil f_status=finalizing f_err=nil redeemed=2 cap=1 verdict=CAP-OVERSHOT
+RESULT prototype: CAP OVERSHOT in at least one run

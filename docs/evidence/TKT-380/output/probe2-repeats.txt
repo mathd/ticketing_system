@@ -1,0 +1,128 @@
+postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
+[run 1 prototype-S1] H created on P2: expires_at=2026-10-13T18:13:41.133832Z
+[run 1 prototype-S1] finalize F observed blocked on P2: pid=139 wait=Lock xact_start=2026-10-13T18:13:39.145003Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 prototype-S1] DB clock now 2026-10-13T18:13:41.340783Z, past H expiry
+[run 1 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 1 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 1 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:41.133832Z | true
+[run 1 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:43.359782Z | false
+[run 1 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:41.133832Z | true
+[run 1 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:43.359782Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 1 prototype-S2] H created on P2: expires_at=2026-10-13T18:13:43.54882Z
+[run 1 prototype-S2] finalize F decided at 2026-10-13T18:13:41.55735Z (before expiry: true), status=finalizing err=nil
+[run 1 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 1 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:43.54882Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 2 prototype-S1] H created on P2: expires_at=2026-10-13T18:13:45.953362Z
+[run 2 prototype-S1] finalize F observed blocked on P2: pid=144 wait=Lock xact_start=2026-10-13T18:13:43.964449Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 2 prototype-S1] DB clock now 2026-10-13T18:13:46.156015Z, past H expiry
+[run 2 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 2 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 2 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:45.953362Z | true
+[run 2 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:48.169859Z | false
+[run 2 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:45.953362Z | true
+[run 2 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:48.169859Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 2 prototype-S2] H created on P2: expires_at=2026-10-13T18:13:48.352244Z
+[run 2 prototype-S2] finalize F decided at 2026-10-13T18:13:46.361282Z (before expiry: true), status=finalizing err=nil
+[run 2 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 2 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:48.352244Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 3 prototype-S1] H created on P2: expires_at=2026-10-13T18:13:50.783148Z
+[run 3 prototype-S1] finalize F observed blocked on P2: pid=149 wait=Lock xact_start=2026-10-13T18:13:48.795586Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 3 prototype-S1] DB clock now 2026-10-13T18:13:50.990056Z, past H expiry
+[run 3 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 3 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 3 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:50.783148Z | true
+[run 3 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:53.003707Z | false
+[run 3 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:50.783148Z | true
+[run 3 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:53.003707Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 3 prototype-S2] H created on P2: expires_at=2026-10-13T18:13:53.187887Z
+[run 3 prototype-S2] finalize F decided at 2026-10-13T18:13:51.19607Z (before expiry: true), status=finalizing err=nil
+[run 3 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 3 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:53.187887Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 4 prototype-S1] H created on P2: expires_at=2026-10-13T18:13:55.581086Z
+[run 4 prototype-S1] finalize F observed blocked on P2: pid=154 wait=Lock xact_start=2026-10-13T18:13:53.591031Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 4 prototype-S1] DB clock now 2026-10-13T18:13:55.783198Z, past H expiry
+[run 4 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 4 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 4 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:55.581086Z | true
+[run 4 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:57.798976Z | false
+[run 4 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:13:55.581086Z | true
+[run 4 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:13:57.798976Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 4 prototype-S2] H created on P2: expires_at=2026-10-13T18:13:57.980169Z
+[run 4 prototype-S2] finalize F decided at 2026-10-13T18:13:55.987763Z (before expiry: true), status=finalizing err=nil
+[run 4 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 4 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:13:57.980169Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 5 prototype-S1] H created on P2: expires_at=2026-10-13T18:14:00.397884Z
+[run 5 prototype-S1] finalize F observed blocked on P2: pid=160 wait=Lock xact_start=2026-10-13T18:13:58.408294Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 5 prototype-S1] DB clock now 2026-10-13T18:14:00.598593Z, past H expiry
+[run 5 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 5 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 5 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:00.397884Z | true
+[run 5 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:02.615983Z | false
+[run 5 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:00.397884Z | true
+[run 5 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:14:02.615983Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 5 prototype-S2] H created on P2: expires_at=2026-10-13T18:14:02.800941Z
+[run 5 prototype-S2] finalize F decided at 2026-10-13T18:14:00.808939Z (before expiry: true), status=finalizing err=nil
+[run 5 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 5 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:14:02.800941Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 6 prototype-S1] H created on P2: expires_at=2026-10-13T18:14:05.220252Z
+[run 6 prototype-S1] finalize F observed blocked on P2: pid=165 wait=Lock xact_start=2026-10-13T18:14:03.231383Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 6 prototype-S1] DB clock now 2026-10-13T18:14:05.423064Z, past H expiry
+[run 6 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 6 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 6 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:05.220252Z | true
+[run 6 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:07.439759Z | false
+[run 6 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:05.220252Z | true
+[run 6 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:14:07.439759Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 6 prototype-S2] H created on P2: expires_at=2026-10-13T18:14:07.658661Z
+[run 6 prototype-S2] finalize F decided at 2026-10-13T18:14:05.666019Z (before expiry: true), status=finalizing err=nil
+[run 6 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 6 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:14:07.658661Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+[run 7 prototype-S1] H created on P2: expires_at=2026-10-13T18:14:10.06231Z
+[run 7 prototype-S1] finalize F observed blocked on P2: pid=170 wait=Lock xact_start=2026-10-13T18:14:08.073207Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 7 prototype-S1] DB clock now 2026-10-13T18:14:10.273232Z, past H expiry
+[run 7 prototype-S1] admission A on P1 with the same code: err=nil; F still blocked after A returned: true
+[run 7 prototype-S1] finalize F returned: status=expired err=ErrConflict
+[run 7 prototype-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 7 prototype-S1] after F   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:10.06231Z | true
+[run 7 prototype-S1] after F   A | P1 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:12.289482Z | false
+[run 7 prototype-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 7 prototype-S1] after confirm   H | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T18:14:10.06231Z | true
+[run 7 prototype-S1] after confirm   A | P1 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T18:14:12.289482Z | false
+SUMMARY prototype-S1 reach_f_started_before_expiry=true reach_f_blocked_through_admission=true a_err=nil f_status=expired f_err=ErrConflict redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=CAP-HELD
+[run 7 prototype-S2] H created on P2: expires_at=2026-10-13T18:14:12.510741Z
+[run 7 prototype-S2] finalize F decided at 2026-10-13T18:14:10.520731Z (before expiry: true), status=finalizing err=nil
+[run 7 prototype-S2] admission A on P1: blocked behind F's open transaction=true, finished while F was open=false, err=ErrPresaleCodeInvalid
+[run 7 prototype-S2] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 7 prototype-S2]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T18:14:12.510741Z | true
+SUMMARY prototype-S2 reach_f_decided_before_expiry=true a_blocked_on_f=true a_finished_while_f_open=false a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed=1 cap=1 verdict=CAP-HELD
+RESULT prototype: cap held in every run
