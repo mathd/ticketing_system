@@ -120,20 +120,20 @@ func main() {
 		case "presale":
 			all = append(all,
 				control(newFixture(ctx, admin, base, capOne(), nil), n),
-				s1(newFixture(ctx, admin, base, capOne(), nil), n, "presale-S1", false),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "presale-S1", false, false),
 				windowControl(ctx, admin, base, n),
 				w(ctx, admin, base, n))
 		case "window":
 			all = append(all, windowControl(ctx, admin, base, n), w(ctx, admin, base, n))
 		case "prototype":
 			all = append(all,
-				s1(newFixture(ctx, admin, base, capOne(), nil), n, "prototype-S1", true),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "prototype-S1", true, false),
 				s2(newFixture(ctx, admin, base, capOne(), nil), n),
 				s3(newFixture(ctx, admin, base, nil, nil), n))
 		case "r2":
 			all = append(all,
 				control(newFixture(ctx, admin, base, capOne(), nil), n),
-				s1(newFixture(ctx, admin, base, capOne(), nil), n, "r2-S1", false),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "r2-S1", false, true),
 				r2Liveness(newFixture(ctx, admin, base, capOne(), nil), n))
 		default:
 			fatalf("unknown mode %q", mode)
@@ -361,7 +361,10 @@ func control(f *fixture, n int) verdict {
 
 // s1 forces the time-base schedule. promoted=false drives today's Transition;
 // promoted=true drives the D13 prototype.
-func s1(f *fixture, n int, name string, promoted bool) verdict {
+// s1 forces schedule S1. r2 selects which outcome is HELD: false accepts only
+// the R1 outcome (A admitted, F refused as expired), true only the R2 outcome
+// (A refused, F succeeds). So an R2 run cannot pass on the R1 outcome.
+func s1(f *fixture, n int, name string, promoted, r2 bool) verdict {
 	defer f.drop()
 	tag := fmt.Sprintf("[run %d %s]", n, name)
 	h, err := f.hold(f.p2, "h-"+uuid.NewString())
@@ -433,11 +436,11 @@ func s1(f *fixture, n int, name string, promoted bool) verdict {
 
 	v := unexpected
 	switch {
-	case aerr == nil && errors.Is(r.err, store.ErrConflict) && r.c.Status == "expired" && afterConfirm == 1:
+	case !r2 && aerr == nil && errors.Is(r.err, store.ErrConflict) && r.c.Status == "expired" && afterConfirm == 1:
 		v = held
 	case aerr == nil && r.err == nil && r.c.Status == "finalizing" && afterConfirm == 2:
 		v = broken
-	case errors.Is(aerr, store.ErrPresaleCodeInvalid) && r.err == nil && r.c.Status == "finalizing" && afterConfirm == 1:
+	case r2 && errors.Is(aerr, store.ErrPresaleCodeInvalid) && r.err == nil && r.c.Status == "finalizing" && afterConfirm == 1:
 		// Reading R2: the expired, unswept H still counts, so the admission is
 		// refused and the finalize keeps the unit.
 		v = held

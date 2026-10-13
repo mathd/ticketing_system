@@ -140,9 +140,9 @@ the cap.
 ### B. Usage model: two options
 
 - **(i) Claim-row citation.** The claim carries the code, the promotion id and the version, as a
-  claim carries a presale code today (0014 `:74`). Usage = the sum, over claims citing the code, of
-  `quantity` for a confirmed claim (NOT net of `returned_quantity`) plus `quantity` for a live
-  claim.
+  claim carries a presale code today (0014 `:74`). Usage = the sum of `quantity` over claims
+  citing the code whose status is `confirmed` (NOT net of `returned_quantity`), `finalizing` or
+  `held`. Expiry alone does not remove a `held` claim from the sum; that is reading R2 (§3).
     - Pros: claim and redemption commit in one row, so they cannot disagree. The claim's own
       idempotent terminal transition is the one terminal release. Draw-down conserves units without
       new code: the source decrements and the child inherits the citation (`reservations.go:323`,
@@ -154,9 +154,8 @@ the cap.
     - Pros: an explicit audit row per redemption.
     - Cons: every path that writes a claim must also write the record in the same transaction. That
       is at least `CreateHold`, its replay-expiry branch, `Transition`, draw-down, and the seven
-      `sweepExpired` call sites. A missed path makes the record and the claim disagree. Lazy expiry
-      needs a predicate on the record that mirrors `liveClaims`, or the record stays "reserved"
-      after the claim died.
+      `sweepExpired` call sites. A missed path makes the record and the claim disagree: under R2,
+      every terminal write of the claim must also end the record in the same transaction.
 
 ### C. Time rule for paths that keep usage: four options
 
@@ -339,8 +338,10 @@ Why it works (argument, then observation). Under the code lock, the paths that a
 serial, and each reads usage in a statement that starts after the previous one committed. Outside
 the lock, a write can only keep usage (finalize, confirm, draw-down) or end it (a terminal write).
 A claim that a terminal write ended cannot be finalized again (`store.go:882`–`:883`). So no write
-outside the lock can make usage smaller and then larger, and a count read under the lock is never
-below the usage at its commit. Probe 3 observed the cap hold on today's presale path with the R2
+outside the lock can make usage smaller and then larger: usage that existed when an admission read
+it cannot grow before that admission commits. An admission is accepted only if the usage it read
+plus its own quantity is within the cap (`presale_codes.go:115`), so the usage at its commit is at
+most that sum. Probe 3 observed the cap hold on today's presale path with the R2
 predicate in schedule S1 (6 of 6 runs, then 7 repeats), and observed it break with today's
 predicate in its place (Consequences, *Reading R2 executed*). Probe 1 schedule W shows why the window read must
 come after the lock.
@@ -376,7 +377,9 @@ promotion and fees again (`:941`, `:955`), and sends the hold again. Then:
 - **Guaranteed equal to the first attempt:** every field in the hold fingerprint
   (`store.go:368`): organizer, slot, ticket type, quantity, paid `unit_amount`, currency, channel,
   presale code, reseller, and the promotion code, id and version. If any of them differs, the retry
-  is refused as key reuse (`store.go:572`), and the first hold expires and returns its units.
+  is refused as key reuse (`store.go:572`). The refusal returns before any expiry write or sweep
+  (`store.go:573`, then `:575`, `:597`) and commits nothing, so under R2 the first hold keeps its
+  units until a terminal write ends it: a sweep of its pool, or the cleanup TKT-382 owns (§3).
 - **May differ from the first attempt:** the original unit face and the reduction (for example
   1500 and 1501 both give paid 1350 at 1000 bps), the price provenance, the fee amounts, the fee
   snapshot and `total_amount`.
@@ -420,7 +423,7 @@ window into a refused retry and a leaked hold, to protect fields that no one has
 | Draw-down | Total constant: a draw of 4 from 10 leaves 6 on the source and 4 on the child | No code lock under R2: the total is constant (the later slice confirms this). The child's terminal write returns its 4 to the code, not to the source (ADR-027). Not in the TKT-381 slice. |
 | Conversion | None | Operational holds carry no code. Conversion applies no promotion in the first slice; a later design that lets it carry one puts it on the locking list. |
 | Crash before the Inventory commit | No usage | The claim and its citation are one row in one transaction. |
-| Crash after the Inventory commit | One usage | Retry with the same key and terms replays the claim (`store.go:569`). Retry after expiry gets a conflict and creates no new usage (`store.go:575`). A retry re-resolves the quote; only the fingerprinted fields must match (§5). A newer version or a new paid unit is refused as key reuse; the first hold expires and returns its units (inference from `store.go:572`). |
+| Crash after the Inventory commit | One usage | Retry with the same key and terms replays the claim (`store.go:569`). Retry after expiry gets a conflict and creates no new usage (`store.go:575`). A retry re-resolves the quote; only the fingerprinted fields must match (§5). A newer version or a new paid unit is refused as key reuse before any expiry write (`store.go:572`–`:573`); the first hold keeps its units until a terminal write ends it (§3, cleanup: TKT-382). |
 
 On TKT-382 D1: cross-pool cap locking is already proven for the presale shape by
 `TestPresaleCodeCapHoldsAcrossSlots`. Under model (i), crash recovery and exactly-once terminal
