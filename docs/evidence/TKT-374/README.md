@@ -166,7 +166,7 @@ technical requirement. The implementer did not fetch or read it. It has no hash 
    a plain `grep -F` on the extracted, white-space-normalised text matches.
 6. For a quote with "…", grep each side of the cut on its own.
 
-The implementer checked all 108 double-quoted strings in the note this way on 2026-10-13. Every
+The implementer checked all 110 double-quoted strings in the note this way on 2026-10-13. Every
 French quote matched its source exactly, after white-space normalisation only. The other quoted
 strings are English. They come from repository files (ADR-003, ADR-048, `keyring.go`,
 `prd-v1.md` as of `8683c6fc`, `docs/conventions/continuous-delivery.md`), from the ticket's COS text, or are the note's own glosses. Each repository quote was

@@ -238,7 +238,7 @@ Legend:
 | P8 POS with cash | IN | Seller IN; collector U(m) if the platform collects at the counter, else n/a | n/a unless fees are sold at the counter | IN | §10, §20, §25, §30 ("espèces"), §35 ("quelle que soit l’importance de cette partie") | Customer class (§10); establishment (§20); VAT regime (§25). §35 cannot apply. |
 | P9 Cashless spends | IN, conditional (**Inference**) | Seller IN, conditional (**Inference**); collector U(m) if the platform runs the wallet | n/a | IN, conditional (**Inference**) | §10, §20, §25, §30, §35 | Customer class (§10); establishment (§20); VAT regime (§25). Spends are paid with stored value, not by a credit institution, so §35 cannot apply. |
 | P9 Top-up, balance refund | U | U (both roles) | n/a | U | §30, §50 | Whether a top-up is a payment "en contrepartie d’une vente" (S01 §30). S01 does not say. |
-| P10 Invoicing | U(35) for payments from individuals | Seller U(35); collector U(m) | U(35) | U(35) | §40, §10, §35 | Same as P1. B2B-only invoices are out (§10). §50, §170 and §200 have specific remarks for invoicing software. |
+| P10 Invoicing | U(35) | Seller U(35); collector U(m) | U(35) | U(35) | §10, §20, §25, §35, §40, §50, §75 | Same as P1: the seller-role conditions apply. Only a seller whose whole turnover is B2B is out (§10). Invoicing software enters scope when it is used "pour le suivi extra-comptable de ses règlements provenant des non assujettis" (§40). The in-scope cash function then covers every payment it records, B2B invoices included: §75 says it "doit enregistrer toutes les données d’origine relatives aux règlements", and §50 covers all transaction and payment data. §50, §170 and §200 have specific remarks for invoicing software. |
 | P11 Test mode | Protected test data when the deployment is in scope | same | same | same | §50 ("module de type « école » ou « test »"), §150 | None of its own. Test data does not bring a deployment into scope; it joins the protected data of a deployment that already is. |
 
 **Key finding: cash at the box office removes the relief for the whole operator.** If an operator
@@ -489,8 +489,8 @@ this baseline unless the owner relaxes it:
    payment institution, e-money institution)? This decides §35 condition 2. Not verified here.
 3. **Payment mix.** Will any operator take cash, vouchers or stored value? If yes, §35 relief is
    lost for all its sales.
-4. **Operator VAT facts.** Are buyers individuals? Is any operator B2B only, under the franchise,
-   or exempt only (§25)?
+4. **Operator VAT facts.** Does each seller have any sales to individuals? Is any seller B2B only
+   (its whole turnover), under the franchise, or exempt only (§25)?
 5. **NF525 rules.** The ticket asks for the NF525 referential. It was not obtained. The rules
    come only after a signed quote and a first payment [S12], so getting them is a purchase
    decision. Until then, this note substitutes BOFiP II and LNE/BYCYB Rev 1.8 (public, accredited)
