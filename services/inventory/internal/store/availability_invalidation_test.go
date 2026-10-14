@@ -129,15 +129,6 @@ func TestAvailabilityMutationsUseInvalidatingCommit(t *testing.T) {
 		// availability answer changes.
 		"moot.go":   true,
 		"parked.go": true,
-		// presale_cleanup.go (TKT-543, D16) commits only the expiry of held claims that are
-		// already due (expires_at <= now()), and every availability answer counts held
-		// claims through liveClaims (directly or via consumingClaims), which already leaves
-		// out a due hold: Availability, SeatOccupancy, StaffAvailability and its channel rows,
-		// reservedForChannelsSQL, the sold-out decision and effectiveCapacity. So no answer
-		// changes. An invalidation here would be HARMFUL, not merely unneeded: it shows on
-		// the public availability read, and only a valid, exhausted presale code triggers
-		// the cleanup. TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools pins it.
-		"presale_cleanup.go": true,
 	}
 
 	offenders, scanned, err := scanForRawCommits(".", exempt)

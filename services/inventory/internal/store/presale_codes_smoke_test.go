@@ -233,8 +233,8 @@ func TestUncappedPresaleCodeNeverExhausts(t *testing.T) {
 // Since TKT-543 the code count keeps an expired held claim until a terminal write
 // commits (presaleUsageClaims). Both holds here are on the SAME pool, and CreateHold
 // sweeps its own pool inside its transaction before it counts the code: that sweep is
-// the terminal write. TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools covers an
-// expired hold on another pool.
+// the terminal write. TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept
+// pins what happens when the expired hold is on ANOTHER pool.
 func TestExpiredHoldReturnsItsRedemption(t *testing.T) {
 	// Negative TTL: every buyer hold is born expired.
 	ctx, st, _ := storeForTest(t, -time.Second)
@@ -721,84 +721,6 @@ func TestRedemptionCountIsIndexBacked(t *testing.T) {
 	if strings.Contains(plan, "Seq Scan on claims") {
 		t.Fatalf("the redemption count sequentially scans claims:\n%s", plan)
 	}
-
-	// TKT-543: the cleanup's DISCOVERY query, both halves again (plan amendment A5).
-	//
-	// Its scope is the cleanup's scope: sweepExpired expires every due claim of any pool
-	// discovery returns. So each pool below holds claims that differ from a reclaimable
-	// one in exactly ONE predicate, and every predicate has a row that only it excludes.
-	// Removing the organizer filter is caught HERE and nowhere else: end to end, the
-	// cleanup's organizer-scoped pool lock skips a foreign organizer's pool (D9).
-	otherOrg, otherOrgPool := provisioned(t, ctx, st, 100)
-	reclaimA, reclaimB := slotFor(t, ctx, st, org, 100), slotFor(t, ctx, st, org, 100)
-	channelPool, codePool := slotFor(t, ctx, st, org, 100), slotFor(t, ctx, st, org, 100)
-	livePool, finalizingPool := slotFor(t, ctx, st, org, 100), slotFor(t, ctx, st, org, 100)
-	for _, s := range []struct {
-		org, pool            uuid.UUID
-		channel, code        string
-		status, expiresAfter string
-		qty                  int32
-	}{
-		// Reclaimable. Two claims in reclaimB, so the per-pool quantity is a sum.
-		{org, reclaimA, "presale", "PLANNER", "held", "-1 minute", 2},
-		{org, reclaimB, "presale", "PLANNER", "held", "-1 minute", 3},
-		{org, reclaimB, "presale", "PLANNER", "held", "-2 minutes", 4},
-		// One exclusion each.
-		{org, slot, "presale", "PLANNER", "held", "-1 minute", 1},                 // pool_id <> $4
-		{otherOrg, otherOrgPool, "presale", "PLANNER", "held", "-1 minute", 1},    // organizer_id
-		{org, channelPool, "elsewhere", "PLANNER", "held", "-1 minute", 1},        // channel_code
-		{org, codePool, "presale", "NOT-PLANNER", "held", "-1 minute", 1},         // presale_code
-		{org, livePool, "presale", "PLANNER", "held", "1 hour", 1},                // expires_at <= now()
-		{org, finalizingPool, "presale", "PLANNER", "finalizing", "-1 minute", 1}, // status='held'
-	} {
-		if _, err := db.ExecContext(ctx, `INSERT INTO claims(id, organizer_id, pool_id, quantity, status, expires_at,
-				idempotency_key, request_fingerprint, claim_kind, channel_code, presale_code)
-			VALUES(gen_random_uuid(), $1, $2, $3, $4, now() + $5::interval, 'disc-' || gen_random_uuid(), 'fp', 'buyer', $6, $7)`,
-			s.org, s.pool, s.qty, s.status, s.expiresAfter, s.channel, s.code); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.ExecContext(ctx, `ANALYZE claims`); err != nil {
-		t.Fatal(err)
-	}
-
-	rows, err := db.QueryContext(ctx, expiredPresalePoolsSQL, org, "presale", "PLANNER", slot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := map[uuid.UUID]int64{}
-	for rows.Next() {
-		var pool uuid.UUID
-		var qty int64
-		if err = rows.Scan(&pool, &qty); err != nil {
-			t.Fatal(err)
-		}
-		found[pool] = qty
-	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err = rows.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(found) != 2 || found[reclaimA] != 2 || found[reclaimB] != 7 {
-		names := map[uuid.UUID]string{reclaimA: "reclaimA", reclaimB: "reclaimB", slot: "the admission's pool",
-			otherOrgPool: "another organizer", channelPool: "another channel", codePool: "another code",
-			livePool: "a live hold", finalizingPool: "a finalizing claim"}
-		got := map[string]int64{}
-		for p, q := range found {
-			got[names[p]] = q
-		}
-		t.Fatalf("discovery found %v, want exactly map[reclaimA:2 reclaimB:7]: the cleanup would sweep "+
-			"pools the request does not cite", got)
-	}
-	plan = explainGenericPlan(t, db, expiredPresalePoolsSQL, org, "presale", "PLANNER", slot)
-	if !strings.Contains(plan, "claims_presale_usage") {
-		t.Fatalf("discovery does not use claims_presale_usage:\n%s", plan)
-	}
-	if strings.Contains(plan, "Seq Scan on claims") {
-		t.Fatalf("discovery sequentially scans claims:\n%s", plan)
-	}
 }
 
 // Retrying a hold that presented a code to an UNGATED channel must REPLAY, not
@@ -880,7 +802,7 @@ func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TKT-543: the presale cap across pools.
+// TKT-543: the presale cap across pools (reading R2).
 //
 // A presale code spans pools, and only the code row lock serializes its admissions
 // (ADR-064 §2). The terminal write that ends a held claim's usage is pool-local and takes
@@ -893,19 +815,13 @@ func TestUngatedCodeBearingHoldReplaysOnRetry(t *testing.T) {
 const (
 	raceChannel = "presale"
 	raceCode    = "CAP"
-	// transitionPoolLock is Transition's pool lock. Matched as a whole statement: the
-	// cleanup's lock differs from it only by a marker and an organizer filter (D9), so a
-	// match on the table name would find either one
+	// transitionPoolLock is Transition's pool lock, matched as a whole statement: a match on
+	// the table name would find any pool lock
 	// (docs/learnings/2026-07-16-lock-handshakes-pin-the-exact-statement.md).
 	transitionPoolLock = "SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
-	// cleanupPoolLock is the marker on the statement that the cross-pool cleanup uses to
-	// lock a foreign pool (D9). Nothing else in inventory carries it.
-	cleanupPoolLock = "/* presale-cleanup pool lock */"
 	// drawDownChildInsert is the start of DrawDownGroupReservation's child INSERT. The
 	// INSERT in CreateHold ends its column list with reseller_scope, not staff_scope.
 	drawDownChildInsert = "INSERT INTO claims(id,organizer_id,pool_id,ticket_type_id,quantity,unit_amount,currency,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,presale_code,staff_scope)"
-	// codeRowLock identifies redeemPresaleCode's lock on the presale_codes row.
-	codeRowLock = "SELECT max_redemptions,"
 )
 
 // presaleRace is one organizer with three pools. Each pool has a gated allocation on
@@ -921,23 +837,12 @@ type presaleRace struct {
 
 func newPresaleRace(t *testing.T, maxRedemptions int32) presaleRace {
 	t.Helper()
-	return newPresaleRaceWithPools(t, maxRedemptions, uuid.New(), uuid.New())
-}
-
-// newPresaleRaceWithPools is newPresaleRace with P2 and P3 chosen by the caller, so a test
-// can force the pool-id order in which the cleanup visits them.
-func newPresaleRaceWithPools(t *testing.T, maxRedemptions int32, p2, p3 uuid.UUID) presaleRace {
-	t.Helper()
 	// A one-minute buyer TTL: no claim a test creates through the store expires by itself.
 	// Every expiry in these tests is placed deliberately.
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, p1 := provisioned(t, ctx, st, 50)
-	f := presaleRace{ctx: ctx, st: st, db: db, org: org, p1: p1, p2: p2, p3: p3}
-	for _, p := range []uuid.UUID{f.p2, f.p3} {
-		if err := st.Provision(ctx, uuid.New(), p, org, 50); err != nil {
-			t.Fatal(err)
-		}
-	}
+	f := presaleRace{ctx: ctx, st: st, db: db, org: org, p1: p1,
+		p2: slotFor(t, ctx, st, org, 50), p3: slotFor(t, ctx, st, org, 50)}
 	for _, p := range []uuid.UUID{f.p1, f.p2, f.p3} {
 		mustReplace(t, ctx, st, org, p, []ChannelAllocation{{Channel: raceChannel, Cap: 50, RequiresCode: true}})
 	}
@@ -1042,11 +947,6 @@ type lockWait struct {
 
 // waitingOn reports the backend that runs a statement containing stmt and waits for a
 // lock that the backend holder blocks. It asserts nothing about an absence.
-//
-// The holder is part of the match because a QUEUED waiter is blocked by the waiter ahead
-// of it, not by the transaction that holds the row: a cleanup queued behind a finalize
-// reports the finalize's pid, and the blocker's pid never appears for it (TKT-543 plan
-// amendment A1, observed on PostgreSQL 18.4).
 func waitingOn(t *testing.T, ctx context.Context, db *sql.DB, holder int, stmt string) (lockWait, bool) {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `SELECT pid, xact_start, query_start FROM pg_stat_activity
@@ -1085,28 +985,6 @@ func awaitWaitingOn(t *testing.T, ctx context.Context, db *sql.DB, holder int, s
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("reach: no backend running %q was blocked by pid %d within 10s", stmt, holder)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-// awaitResultOrWait returns the result as soon as it arrives (true), or returns false as
-// soon as a backend running stmt is observed waiting behind holder.
-func awaitResultOrWait[T any](t *testing.T, ctx context.Context, db *sql.DB, ch <-chan T, holder int, stmt string) (T, bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		select {
-		case v := <-ch:
-			return v, true
-		default:
-		}
-		if _, ok := waitingOn(t, ctx, db, holder, stmt); ok {
-			var zero T
-			return zero, false
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("within 10s the call neither returned nor was observed waiting on %q behind pid %d", stmt, holder)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -1165,15 +1043,6 @@ func expiryRecords(t *testing.T, ctx context.Context, db *sql.DB, id uuid.UUID) 
 	return n
 }
 
-func historyRecords(t *testing.T, ctx context.Context, db *sql.DB, id uuid.UUID) int {
-	t.Helper()
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM claim_history WHERE claim_id=$1`, id).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 func poolClaims(t *testing.T, ctx context.Context, db *sql.DB, pool uuid.UUID) int {
 	t.Helper()
 	var n int
@@ -1220,27 +1089,6 @@ func assertUniformRefusal(t *testing.T, what string, err error) {
 	}
 }
 
-// slotInvalidations records which slots the availability cache was told about.
-type slotInvalidations struct {
-	mu    sync.Mutex
-	slots map[uuid.UUID]int
-}
-
-func (s *slotInvalidations) record(slot uuid.UUID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.slots == nil {
-		s.slots = map[uuid.UUID]int{}
-	}
-	s.slots[slot]++
-}
-
-func (s *slotInvalidations) count(slot uuid.UUID) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.slots[slot]
-}
-
 // ⭐ TKT-543 COS-1/2: a finalize that queued on its pool before its hold expired keeps the
 // unit, so an admission on ANOTHER pool must have counted that hold.
 //
@@ -1253,8 +1101,8 @@ func (s *slotInvalidations) count(slot uuid.UUID) int {
 // 6 of 6 runs.
 //
 // Reading R2 (ADR-084 §3) counts every held claim until a terminal write commits, so the
-// admission counts H and is refused. Its cleanup then queues on P2 behind the finalize and
-// finds H finalizing, so there is nothing to reclaim and the refusal stands.
+// admission counts H and is refused at once, while the finalize still waits; the finalize
+// then keeps H. The expected values follow from the cap: one unit is ever sold.
 //
 // The schedule completes before any assertion, and every claim that survives is confirmed:
 // a broken run then shows the units it would actually sell, not an early stop.
@@ -1274,19 +1122,15 @@ func TestPresaleCapCountsExpiredHoldWhileFinalizeWaits(t *testing.T) {
 	}
 	awaitDBPast(t, f.ctx, f.db, expiry)
 
-	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
-	// Release only once the admission has returned, or once its cleanup is queued behind
-	// the finalize. Waiting for the admission alone would deadlock the test when the
-	// cleanup waits for a pool that only the release frees.
-	adm, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, fin.pid, cleanupPoolLock)
-	t.Logf("admission returned before the release: %v (false: its cleanup was observed queued behind the finalize)", returned)
+	// The admission takes no lock on P2, so it returns while the finalize still waits.
+	adm := await(t, spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") }), "the admission")
+	if w, ok := waitingOn(t, f.ctx, f.db, blockerPID, transitionPoolLock); !ok || w.pid != fin.pid {
+		t.Fatal("reach: the finalize no longer waits on P2 after the admission returned")
+	}
 	if err := blocker.Rollback(); err != nil {
 		t.Fatal(err)
 	}
 	fr := await(t, finalized, "the finalize")
-	if !returned {
-		adm = await(t, admitted, "the admission")
-	}
 	if fr.err == nil {
 		f.confirm(t, h.ID)
 	}
@@ -1319,7 +1163,8 @@ func TestPresaleCapCountsExpiredHoldWhileFinalizeWaits(t *testing.T) {
 // and then inserts the child. If the source expires between the decision and the commit,
 // and an admission on another pool runs in that gap, consumingClaims saw neither the
 // expired source nor the uncommitted child, and admitted. The child then commits with the
-// citation: two units for a cap of 1.
+// citation: two units for a cap of 1. Under R2 the admission counts the expired source,
+// which stays held until the draw-down commits, and is refused at once.
 //
 // The seam that holds the draw-down between its decision and its commit: an uncommitted
 // staff claim with the draw-down's idempotency key. claims_staff_idempotency (migration
@@ -1347,19 +1192,19 @@ func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
 			t.Fatalf("reach: in %d attempts the draw-down never waited at its child INSERT before the source's expiry", attempts)
 		}
 	}
-	f, src, blocker, drawn, ins := r.f, r.src, r.blocker, r.drawn, r.ins
+	f, src, blocker, blockerPID, drawn, ins := r.f, r.src, r.blocker, r.blockerPID, r.drawn, r.ins
 	awaitDBPast(t, f.ctx, f.db, *src.ExpiresAt)
 
-	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
-	adm, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, ins.pid, cleanupPoolLock)
-	t.Logf("admission returned before the release: %v (false: its cleanup was observed queued behind the draw-down)", returned)
+	// The admission takes no lock on P2 or P3, so it returns while the draw-down still
+	// waits at its child INSERT.
+	adm := await(t, spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") }), "the admission")
+	if w, ok := waitingOn(t, f.ctx, f.db, blockerPID, drawDownChildInsert); !ok || w.pid != ins.pid {
+		t.Fatal("reach: the draw-down no longer waits at its child INSERT after the admission returned")
+	}
 	if err := blocker.Rollback(); err != nil {
 		t.Fatal(err)
 	}
 	dr := await(t, drawn, "the draw-down")
-	if !returned {
-		adm = await(t, admitted, "the admission")
-	}
 	if dr.err == nil {
 		f.confirm(t, dr.res.Child.ID)
 	}
@@ -1399,11 +1244,12 @@ func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
 // drawDownSchedule is one fixture of the draw-down race, with the draw-down held at its
 // child INSERT by the blocker.
 type drawDownSchedule struct {
-	f       presaleRace
-	src     GroupReservation
-	blocker *sql.Tx
-	drawn   <-chan drawResult
-	ins     lockWait
+	f          presaleRace
+	src        GroupReservation
+	blocker    *sql.Tx
+	blockerPID int
+	drawn      <-chan drawResult
+	ins        lockWait
 }
 
 // drawDownWaitingAtItsInsert builds a fresh fixture and tries to reach the schedule: the
@@ -1432,7 +1278,7 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 	for {
 		if ins, ok := waitingOn(t, f.ctx, f.db, blockerPID, drawDownChildInsert); ok {
 			if ins.queryStart.Before(*src.ExpiresAt) {
-				return drawDownSchedule{f, src, blocker, drawn, ins}, true
+				return drawDownSchedule{f, src, blocker, blockerPID, drawn, ins}, true
 			}
 			t.Logf("missed: the child INSERT started at %v, not before the source's expiry %v; rebuilding", ins.queryStart, *src.ExpiresAt)
 			return drawDownSchedule{}, false
@@ -1463,8 +1309,16 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 			// clock_timestamp() at its INSERT (after the decision). Only updated_at at or
 			// after expires_at PROVES the source was due; an occurred_at before expires_at
 			// proves it was not.
+			//
+			// ASSUMPTION: the database clock does not step backwards between the draw-down's
+			// transaction start and its history insert, so updated_at <= occurred_at. A
+			// sample that contradicts it (updated_at at or after expires_at while occurred_at
+			// is before it) proves nothing either way, and fails rather than rebuilds.
 			exp := *src.ExpiresAt
 			switch {
+			case !updatedAt.Before(exp) && recordedAt.Valid && recordedAt.Time.Before(exp):
+				t.Fatalf("contradictory clock sample: the draw-down began at %v, at or after the source's expiry %v, "+
+					"but recorded the expiry at %v, before it; the clock stepped backwards", updatedAt, exp, recordedAt.Time)
 			case !updatedAt.Before(exp):
 				t.Logf("missed: the draw-down began at %v, after the source's expiry %v, committed the expiry and refused; rebuilding", updatedAt, exp)
 				return drawDownSchedule{}, false
@@ -1484,380 +1338,15 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 	}
 }
 
-// ⭐ TKT-543 COS-3: an expired hold on a QUIET pool does not lock the code out of every
-// other pool.
-//
-// R2 counts the expired H until a terminal write commits, and the only terminal write that
-// does not need a request on P2 is the admission's own cleanup (D2). Nothing else touches
-// P2 in this test. Without the cleanup a single-use code refuses its own buyer on P1 for
-// as long as P2 stays quiet, which is a regression from consumingClaims.
-//
-// The committed expiry is the essential assertion. Under consumingClaims the admission
-// succeeds while H stays held: an acceptance-only check would pass on the defective code.
-//
-// Archived and closed P2: guardOffering refuses new holds there, so no hold sweeps them.
-// An archived pool is never swept again; a closed one only after it reopens or a staff
-// capacity adjustment. A cleanup that refused them would pin the code that long (D9).
-//
-// The cleanup must NOT invalidate P2's cached availability (D16, which reverses this
-// test's first version): see the assertion below.
-func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
-	buyer := func(f presaleRace, key string) holdResult { return f.admit(f.ctx, f.p1, 1, key) }
-	// One expiry for every call: it is part of the placement's fingerprint, so a retry
-	// with a different one is a different request.
-	groupExpiry := time.Now().Add(time.Hour)
-	group := func(f presaleRace, key string) holdResult {
-		r, replay, err := f.st.PlaceGroupReservation(f.ctx, f.org, f.p1, 1, "agency", groupExpiry,
-			raceChannel, "staff", "group", key, WithPresaleCode(raceCode))
-		return holdResult{Claim{ID: r.ID, Status: r.Status}, replay, err}
-	}
-	for _, tc := range []struct {
-		name    string
-		admit   func(presaleRace, string) holdResult
-		p2State string
-	}{
-		{"buyer admission", buyer, ""},
-		{"group placement", group, ""},
-		{"buyer admission, P2 archived", buyer, `lifecycle_status='archived'`},
-		{"buyer admission, P2 closed", buyer, `closure_status='closed'`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newPresaleRace(t, 1)
-			h := f.hold(t, f.p2, 1, "h")
-			mustAgeClaim(t, f.ctx, f.db, h.ID, "clock_timestamp() - interval '1 second'")
-			if tc.p2State != "" {
-				if _, err := f.db.ExecContext(f.ctx, `UPDATE inventory_pools SET `+tc.p2State+` WHERE slot_id=$1`, f.p2); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var inv slotInvalidations
-			f.st.RegisterAvailabilityInvalidator(inv.record)
-
-			first := tc.admit(f, "reclaim")
-			if first.err != nil {
-				t.Fatalf("admission on P1 refused although the code's only usage is an expired hold on a quiet P2: %v", first.err)
-			}
-			if s := claimStatus(t, f.ctx, f.db, h.ID); s != "expired" {
-				t.Fatalf("H is %q after the admission, want expired: no terminal write committed on P2", s)
-			}
-			if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
-				t.Fatalf("H has %d expiry records, want exactly 1", n)
-			}
-			// D16: the cleanup invalidates NO cache entry of P2. An eviction shows on the
-			// public availability read (a fresh Age header and body), and only a valid,
-			// exhausted code triggers a cleanup. No answer needs it: every availability read
-			// counts held claims through liveClaims, which already leaves out a due hold.
-			// P1's invalidation, by the admission's own commit, proves the recorder is wired.
-			if n := inv.count(f.p1); n == 0 {
-				t.Fatal("reach: the recorder saw no invalidation of P1, so it cannot see one of P2 either")
-			}
-			if n := inv.count(f.p2); n != 0 {
-				t.Fatalf("the cleanup invalidated P2's availability cache %d times, want 0: the eviction is visible on the public read, and only a valid exhausted code causes it", n)
-			}
-			if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 1 {
-				t.Fatalf("usage = %d after the reclaiming admission, want 1 (the new claim only)", got)
-			}
-
-			again := tc.admit(f, "reclaim")
-			if again.err != nil || !again.replay || again.claim.ID != first.claim.ID {
-				t.Fatalf("retry of the admitted request: id=%s replay=%v err=%v, want a replay of %s",
-					again.claim.ID, again.replay, again.err, first.claim.ID)
-			}
-			var n int
-			if err := f.db.QueryRowContext(f.ctx, `SELECT count(*) FROM claims WHERE organizer_id=$1 AND idempotency_key='reclaim'`, f.org).Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			if n != 1 {
-				t.Fatalf("%d claims carry the retried key, want 1", n)
-			}
-			if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
-				t.Fatalf("H has %d expiry records after the retry, want exactly 1", n)
-			}
-		})
-	}
-}
-
-// TKT-543 COS-3/4, D13: the cleanup writes a terminal state only to expired held claims
-// citing the requested organizer, channel AND code, and changes nothing else.
-//
-// Two scopes decide that, and each has its own poisons.
-//
-//   - Discovery decides which pools the cleanup locks. Each poison in its OWN pool differs
-//     from the target in one identity field. Its claim must keep its state, and its pool
-//     must not even be locked, which the test sees by holding that pool locked itself.
-//     With discovery's organizer filter removed, the organizer poison still stays untouched
-//     because the cleanup's lock is scoped to the organizer and skips a pool it finds no
-//     row for (D9); TestRedemptionCountIsIndexBacked proves that filter instead (plan
-//     amendment A2).
-//   - The cleanup's UPDATE decides which claims of a locked pool it expires. Each poison IN
-//     P2 differs from the target in one predicate of that UPDATE and must keep its state
-//     and its history. The UPDATE's organizer predicate has no poison: every claim the
-//     store writes into a pool belongs to that pool's organizer, so none can be built.
-//
-// Why the second scope matters (D13; review finding 2, [high]). A replay of a GA hold
-// answers 409 when the hold is held and past its expiry, and 200 when it is already
-// expired. If the cleanup expired every due claim of P2, as sweepExpired does, a caller
-// with an unrelated expired hold on P2 could replay it and learn that a code it had
-// guessed is valid and exhausted.
-//
-// Also pinned: the cleanup does not settle P2's draining capacity cut (its timing would be
-// one more observable that a code triggers, and it changes no liveClaims count), and H's
-// expiry record has exactly the shape sweepExpired writes. The comparison is with a row a
-// real sweepExpired writes in this pool afterwards, not with a copy of its SQL.
-func TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode(t *testing.T) {
-	// Usage of raceCode on raceChannel under R2: H 1 + live 1 + finalizing 1 = 3, the cap.
-	// A one-unit request is refused, can reclaim H only, and then fits: 3 - 1 + 1 = 3.
-	f := newPresaleRace(t, 3)
-	// P2 sells three channels: the code's, another gated one that also accepts raceCode,
-	// and an ungated one. 30 + 10 + 10 = 50, P2's capacity.
-	mustReplace(t, f.ctx, f.st, f.org, f.p2, []ChannelAllocation{
-		{Channel: raceChannel, Cap: 30, RequiresCode: true},
-		{Channel: "agency", Cap: 10, RequiresCode: true},
-		{Channel: "open", Cap: 10},
-	})
-	mustIssue(t, f.ctx, f.st, PresaleCode{OrganizerID: f.org, Channel: "agency", Code: raceCode})
-	mustIssue(t, f.ctx, f.st, PresaleCode{OrganizerID: f.org, Channel: raceChannel, Code: "OTHER-CODE"})
-	onP2 := func(key, channel, code string) Claim {
-		t.Helper()
-		var opts []HoldOption
-		if code != "" {
-			opts = append(opts, WithPresaleCode(code))
-		}
-		c, _, err := f.st.CreateHold(f.ctx, f.org, f.p2, uuid.Nil, 1, 0, "", channel, key, opts...)
-		if err != nil {
-			t.Fatalf("seed %s on P2: %v", key, err)
-		}
-		return c
-	}
-	h := onP2("h", raceChannel, raceCode)
-	type poison struct {
-		name    string
-		id      uuid.UUID
-		pool    uuid.UUID
-		status  string
-		history int
-	}
-	samePool := []poison{
-		{name: "same pool, not yet expired (expires_at <= now())", id: onP2("live", raceChannel, raceCode).ID},
-		{name: "same pool, finalizing (status = 'held')", id: onP2("finalizing", raceChannel, raceCode).ID},
-		{name: "same pool, another code (presale_code)", id: onP2("other-code", raceChannel, "OTHER-CODE").ID},
-		{name: "same pool, another channel (channel_code)", id: onP2("other-channel", "agency", raceCode).ID},
-		{name: "same pool, no code (presale_code)", id: onP2("no-code", "open", "").ID},
-	}
-	if _, err := f.st.Transition(f.ctx, f.org, samePool[1].id, "finalizing"); err != nil {
-		t.Fatal(err)
-	}
-	// A draining cut on P2: demand is 6 live units, so a cut to 1 clamps at 6 and waits.
-	if adj, _, err := f.st.AdjustCapacity(f.ctx, f.org, f.p2, 1, "staff", "cut", "cut"); err != nil || adj.Status != "clamped" {
-		t.Fatalf("draining cut on P2: status=%q err=%v, want clamped", adj.Status, err)
-	}
-	for _, id := range []uuid.UUID{h.ID, samePool[2].id, samePool[3].id, samePool[4].id} {
-		mustAgeClaim(t, f.ctx, f.db, id, "clock_timestamp() - interval '1 second'")
-	}
-	// The finalize happened before expiry; now its expires_at is past too.
-	if res, err := f.db.ExecContext(f.ctx, `UPDATE claims SET expires_at=clock_timestamp()-interval '1 second'
-		WHERE id=$1 AND status='finalizing'`, samePool[1].id); err != nil {
-		t.Fatal(err)
-	} else if n, _ := res.RowsAffected(); n != 1 {
-		t.Fatalf("aging the finalizing claim changed %d rows, want 1", n)
-	}
-
-	var otherPools []poison
-	seed := func(name string, org uuid.UUID, channel, code string) {
-		t.Helper()
-		pool := slotFor(t, f.ctx, f.st, org, 50)
-		mustReplace(t, f.ctx, f.st, org, pool, []ChannelAllocation{{Channel: channel, Cap: 50, RequiresCode: true}})
-		mustIssue(t, f.ctx, f.st, PresaleCode{OrganizerID: org, Channel: channel, Code: code})
-		c, _, err := f.st.CreateHold(f.ctx, org, pool, uuid.Nil, 1, 0, "", channel, "poison-"+name, WithPresaleCode(code))
-		if err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
-		mustAgeClaim(t, f.ctx, f.db, c.ID, "clock_timestamp() - interval '1 second'")
-		otherPools = append(otherPools, poison{name: name, id: c.ID, pool: pool})
-	}
-	seed("another organizer", uuid.New(), raceChannel, raceCode)
-	seed("another channel", f.org, "other-channel", raceCode)
-	seed("another code", f.org, raceChannel, "OTHER-CODE")
-
-	for _, ps := range [][]poison{samePool, otherPools} {
-		for i := range ps {
-			ps[i].status = claimStatus(t, f.ctx, f.db, ps[i].id)
-			ps[i].history = historyRecords(t, f.ctx, f.db, ps[i].id)
-		}
-	}
-	poolState := func() string {
-		t.Helper()
-		var capacity int32
-		var target sql.NullInt32
-		if err := f.db.QueryRowContext(f.ctx, `SELECT capacity, target_capacity FROM inventory_pools WHERE slot_id=$1`, f.p2).Scan(&capacity, &target); err != nil {
-			t.Fatal(err)
-		}
-		return fmt.Sprintf("capacity=%d target=%v", capacity, target)
-	}
-	cutBefore := poolState()
-
-	// Each poison pool is locked while the admission runs, and the cleanup's lock timeout is
-	// raised past this test's bound. A pool that discovery selected wrongly is then SEEN:
-	// the cleanup waits to lock it. That wait is the only trace such a pool would keep,
-	// because the cleanup's write is scoped (D13) and it invalidates no cache (D16).
-	f.st.cleanupLockTimeout = 20 * time.Second
-	type blocked struct {
-		name string
-		tx   *sql.Tx
-		pid  int
-	}
-	var blockers []blocked
-	for _, p := range otherPools {
-		tx, pid := lockedBy(t, f.ctx, f.db, transitionPoolLock, p.pool)
-		blockers = append(blockers, blocked{p.name, tx, pid})
-	}
-	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
-	var r holdResult
-	deadline := time.Now().Add(10 * time.Second)
-watch:
-	for {
-		select {
-		case r = <-admitted:
-			break watch
-		default:
-		}
-		for _, b := range blockers {
-			if _, ok := waitingOn(t, f.ctx, f.db, b.pid, cleanupPoolLock); ok {
-				t.Fatalf("poison (%s): the cleanup waits to lock its pool; discovery selected a pool the request does not cite", b.name)
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the admission on P1 did not return within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	for _, b := range blockers {
-		if err := b.tx.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if r.err != nil {
-		t.Fatalf("admission on P1: %v", r.err)
-	}
-	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "expired" {
-		t.Fatalf("the target H is %q, want expired", s)
-	}
-	if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
-		t.Fatalf("H has %d expiry records, want exactly 1", n)
-	}
-	for _, p := range samePool {
-		if s := claimStatus(t, f.ctx, f.db, p.id); s != p.status {
-			t.Errorf("%s is %q, want %q: the cleanup wrote a claim that does not cite the requested code as due", p.name, s, p.status)
-		}
-		if n := historyRecords(t, f.ctx, f.db, p.id); n != p.history {
-			t.Errorf("%s has %d history records, want %d", p.name, n, p.history)
-		}
-	}
-	for _, p := range otherPools {
-		if s := claimStatus(t, f.ctx, f.db, p.id); s != p.status {
-			t.Errorf("poison (%s) is %q, want %q: the cleanup swept a pool the request does not cite", p.name, s, p.status)
-		}
-		if n := historyRecords(t, f.ctx, f.db, p.id); n != p.history {
-			t.Errorf("poison (%s) has %d history records, want %d", p.name, n, p.history)
-		}
-	}
-	if got := poolState(); got != cutBefore {
-		t.Errorf("P2's draining cut went from %s to %s during the cleanup; the cleanup must not settle it", cutBefore, got)
-	}
-
-	// The shape of H's expiry record against one that sweepExpired writes: AdjustCapacity
-	// sweeps P2 and commits, which expires the code-less claim.
-	if _, _, err := f.st.AdjustCapacity(f.ctx, f.org, f.p2, 50, "staff", "restore", "restore"); err != nil {
-		t.Fatal(err)
-	}
-	if s := claimStatus(t, f.ctx, f.db, samePool[4].id); s != "expired" {
-		t.Fatalf("reach: the code-less claim is %q after a committed sweepExpired of P2, want expired", s)
-	}
-	shape := func(id uuid.UUID) string {
-		t.Helper()
-		var s string
-		if err := f.db.QueryRowContext(f.ctx, `SELECT (to_jsonb(h) - 'id' - 'claim_id' - 'occurred_at' - 'append_order')::text
-			FROM claim_history h WHERE claim_id=$1 AND action='expire'`, id).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	if got, want := shape(h.ID), shape(samePool[4].id); got != want {
-		t.Fatalf("H's expiry record differs from the one sweepExpired writes:\n got %s\nwant %s", got, want)
-	}
-}
-
-// ⭐ TKT-543 COS-3: two mirror admissions, each blocked by the other's expired claim, both
-// finish and the cap holds.
-//
-// Cap 2. P1 and P2 each carry one expired, unswept unit of the code. A1 asks for 2 on P1,
-// A2 asks for 2 on P2. Each admission sweeps its OWN pool inside its transaction, so each
-// counts only the other pool's expired unit: 1 + 2 > 2 for both. Each must clean up the
-// pool the other holds.
-//
-// The forced schedule puts both on the code row together: a blocker holds it, A1 queues on
-// it, A2 queues behind A1, then the blocker goes. If an admission cleaned up while it still
-// held its pool and the code, A1 would wait for P2 while A2 waits for the code that A1
-// holds. Rolling back first is what makes that impossible.
-//
-// PostgreSQL cannot see that cycle: A1's admission transaction would be idle, waiting in
-// Go for its own cleanup, not waiting on a lock. Only the cleanup's lock_timeout would end
-// it, and it would end in exactly the results asserted below. So the timeout is raised past
-// this test's 10s bound: a cycle then fails the test instead of passing slowly.
-func TestPresaleMirrorAdmissionsReleaseLocksBeforeCleanup(t *testing.T) {
-	f := newPresaleRace(t, 2)
-	f.st.cleanupLockTimeout = 20 * time.Second
-	e1 := f.hold(t, f.p1, 1, "e1")
-	e2 := f.hold(t, f.p2, 1, "e2")
-	mustAgeClaim(t, f.ctx, f.db, e1.ID, "clock_timestamp() - interval '1 second'")
-	mustAgeClaim(t, f.ctx, f.db, e2.ID, "clock_timestamp() - interval '1 second'")
-
-	blocker, blockerPID := lockedBy(t, f.ctx, f.db,
-		`SELECT 1 FROM presale_codes WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE`,
-		f.org, raceChannel, raceCode)
-	first := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 2, "a1") })
-	a1 := awaitWaitingOn(t, f.ctx, f.db, blockerPID, codeRowLock)
-	second := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p2, 2, "a2") })
-	awaitWaitingOn(t, f.ctx, f.db, a1.pid, codeRowLock)
-	if err := blocker.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	r1 := await(t, first, "A1 on P1")
-	r2 := await(t, second, "A2 on P2")
-
-	for name, id := range map[string]uuid.UUID{"P1's expired unit": e1.ID, "P2's expired unit": e2.ID} {
-		if s := claimStatus(t, f.ctx, f.db, id); s != "expired" {
-			t.Errorf("%s is %q, want expired", name, s)
-		}
-	}
-	var admitted, refused int
-	for _, r := range []holdResult{r1, r2} {
-		switch {
-		case r.err == nil:
-			admitted++
-		case errors.Is(r.err, ErrPresaleCodeInvalid) && r.err.Error() == ErrPresaleCodeInvalid.Error():
-			refused++
-		default:
-			t.Errorf("a mirror admission returned %v, want success or the uniform refusal", r.err)
-		}
-	}
-	if admitted != 1 || refused != 1 {
-		t.Fatalf("admitted=%d refused=%d (A1 err=%v, A2 err=%v), want exactly one of each", admitted, refused, r1.err, r2.err)
-	}
-	if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 2 {
-		t.Fatalf("usage = %d, want 2: the one two-unit admission", got)
-	}
-}
-
-// ⭐ TKT-543 COS-4: a claim's code usage lasts until a terminal write commits, and the two
-// reads count it by their own rules.
+// ⭐ TKT-543: a claim's code usage lasts until a terminal write commits, and the two reads
+// count it by their own rules.
 //
 // The admission count (codeRedeemedQuantity) is reading R2 (ADR-084 §3): every confirmed,
 // finalizing or held claim citing the code, with no expiry test, confirmed net of refund
 // returns (consumedQuantity, unchanged). The operator read (PresaleCodeStatuses) keeps
-// consumingClaims (D6): an expired held claim that nothing has swept yet is NOT in it. That
-// claim is only potentially reclaimable: a finalize that queued before its expiry can still
-// keep it (TestPresaleCapCountsExpiredHoldWhileFinalizeWaits).
+// consumingClaims (D19): an expired held claim that nothing has swept yet is NOT in it, so
+// it reports the usage as it will be after the next sweep of each pool. Until then the
+// admission can refuse a code that the operator read shows with headroom (ADR-064 §3).
 //
 // Every expected value below is derived from those two rules, not from a run. Each case
 // has its own organizer, pool and code, so no case can feed another.
@@ -2017,306 +1506,52 @@ func TestPresaleUsageCountsUntilTerminalWrite(t *testing.T) {
 	}
 }
 
-// TKT-543 D8: a cleanup that cannot get a foreign pool gives up after lock_timeout, and
-// the caller sees the uniform refusal, nothing else.
+// TKT-543's ACCEPTED COST, pinned: an expired hold on a quiet pool keeps its code blocked on
+// every other pool until a write on that pool sweeps it (ADR-064 §3, decision D18).
 //
-// A returned lock-timeout error would be a 500 that only a VALID, exhausted code can
-// produce: a distinguishable refusal, which ADR-064 §4 forbids. The bound keeps a refused
-// request from queuing behind a hot pool for a whole on-sale. A cleanup that gives up
-// costs liveness only: H keeps counting, and the next request can reclaim it.
+// Reading R2 counts an expired held claim until a terminal write commits, and every
+// terminal write in the request path is pool-local: an admission sweeps only its own pool.
+// A request-triggered cleanup of the other pools was built and rejected, because every
+// effect it left was a code-enumeration oracle (ADR-064 §3). So H on a quiet P2 keeps a
+// single-use code exhausted for P1, and an admission on P1 is refused. Any committed write
+// on P2 that sweeps it (here a code-less hold on P2's ungated channel) writes H's expiry,
+// and the admission on P1 then succeeds.
 //
-// With NO cleanup transaction committed there is no retry either. That is D14's chosen
-// policy, not a claim that a retry must fail (an operator raising the cap meanwhile could
-// make one succeed). Since D17 a retry's refusal is the uniform one too, so the answer
-// cannot show whether a retry ran. Its pool lock can: a retry takes P1's pool lock again.
-// Once the first attempt has rolled back and the cleanup waits on P2, the test holds P1's
-// lock itself, and a retry would be SEEN waiting on it.
-func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
+// TKT-547 (a background sweeper) will change the FIRST half of this test: once the sweeper
+// has run, H is expired without any request on P2, and the first admission on P1 succeeds.
+// Change this test with TKT-547; the first half is a documented cost, not a property to
+// keep.
+func TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept(t *testing.T) {
 	f := newPresaleRace(t, 1)
+	// P2 also sells an ungated channel, so a hold on P2 that presents no code can commit a
+	// sweep of P2. 40 + 10 = 50, P2's capacity.
+	mustReplace(t, f.ctx, f.st, f.org, f.p2, []ChannelAllocation{
+		{Channel: raceChannel, Cap: 40, RequiresCode: true},
+		{Channel: "open", Cap: 10},
+	})
 	h := f.hold(t, f.p2, 1, "h")
 	mustAgeClaim(t, f.ctx, f.db, h.ID, "clock_timestamp() - interval '1 second'")
 
-	blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p2)
-	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
-	adm, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, blockerPID, cleanupPoolLock)
-	if !returned {
-		p1Blocker, p1PID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p1)
-		r, done := awaitResultOrWait(t, f.ctx, f.db, admitted, p1PID, gaPoolLock)
-		if !done {
-			t.Fatal("the admission ran again after a cleanup that committed nothing: it waits for P1's pool lock")
-		}
-		adm = r
-		if err := p1Blocker.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := blocker.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-
-	assertUniformRefusal(t, "the admission whose cleanup could not lock P2", adm.err)
-	if returned {
-		t.Fatal("reach: the admission returned before its cleanup was observed waiting on P2")
-	}
+	// The cost: H is past its expiry, nothing has written that, and it still counts (R2).
+	assertUniformRefusal(t, "an admission on P1 while H on P2 is expired but unswept", f.admit(f.ctx, f.p1, 1, "blocked").err)
 	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "held" {
-		t.Fatalf("H is %q, want held: the cleanup gave up, so no terminal write may have committed", s)
+		t.Fatalf("H is %q after the refused admission on P1, want held: nothing on P1 writes P2's claims", s)
 	}
 	if n := poolClaims(t, f.ctx, f.db, f.p1); n != 0 {
 		t.Fatalf("the refused admission left %d claims on P1, want 0", n)
 	}
-}
 
-// TKT-543 D7: the cleanup runs only when the expired usage it could reclaim would make the
-// request fit: redeemed - reclaimable + qty <= cap.
-//
-// Every cap refusal pays for one discovery query. Without this bound it would also pay for
-// a cleanup and a second admission whenever ANY expired claim cited the code, so during an
-// on-sale of a genuinely exhausted code every refused request would take the locks of the
-// pools that hold those claims.
-//
-// P2 stays locked, and the cleanup's lock timeout is raised past this test's bound: a
-// cleanup that starts is SEEN waiting on P2, rather than ending in a refusal that looks
-// like the right one.
-func TestPresaleCleanupRunsOnlyWhenExpiredUsageCanCoverTheShortfall(t *testing.T) {
-	f := newPresaleRace(t, 3)
-	f.st.cleanupLockTimeout = 20 * time.Second
-	h := f.hold(t, f.p2, 1, "h")
-	sold := f.hold(t, f.p3, 2, "sold")
-	f.confirm(t, sold.ID)
-	mustAgeClaim(t, f.ctx, f.db, h.ID, "clock_timestamp() - interval '1 second'")
-	// Counted usage (R2): H's 1 on P2 + 2 confirmed on P3 = 3, the cap. Reclaimable: 1.
-
-	blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p2)
-
-	// Two units: 3 - 1 + 2 = 4 > 3. A complete cleanup would still leave it refused.
-	two := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 2, "two") })
-	r, returned := awaitResultOrWait(t, f.ctx, f.db, two, blockerPID, cleanupPoolLock)
-	if !returned {
-		t.Fatal("a request that reclaiming every expired unit could not satisfy started a cleanup, and it waits on P2")
-	}
-	assertUniformRefusal(t, "two units against one reclaimable", r.err)
-	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "held" {
-		t.Fatalf("H is %q after a refusal that needed no cleanup, want held", s)
-	}
-
-	// One unit: 3 - 1 + 1 = 3 <= 3. The fixture reaches the other answer: a cleanup
-	// starts and waits on P2 ...
-	one := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "one") })
-	if _, returned := awaitResultOrWait(t, f.ctx, f.db, one, blockerPID, cleanupPoolLock); returned {
-		t.Fatal("reach: a request that reclaiming one unit would satisfy returned without starting a cleanup")
-	}
-	// ... and the request is admitted once P2 is free.
-	if err := blocker.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if r := await(t, one, "the one-unit admission"); r.err != nil {
-		t.Fatalf("one unit against one reclaimable unit: %v, want admitted", r.err)
+	// A committed write on P2 that sweeps it.
+	if _, _, err := f.st.CreateHold(f.ctx, f.org, f.p2, uuid.Nil, 1, 0, "", "open", "sweeps-p2"); err != nil {
+		t.Fatalf("a code-less hold on P2: %v", err)
 	}
 	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "expired" {
-		t.Fatalf("H is %q after the reclaiming admission, want expired", s)
+		t.Fatalf("H is %q after a committed hold on P2, want expired", s)
 	}
-}
-
-// TKT-543: the cleanup runs only after the window and seller checks, on both admission
-// paths.
-//
-// A cap refusal triggers it, and the code is judged after the window and the seller
-// (window -> seller -> code -> capacity; ADR-064 §5, TKT-246). A cleanup ahead of either
-// guard would let a caller who may not sell take foreign pool locks and write terminal
-// states. It would also make a closed or bound channel answer slowly exactly when the code
-// is exhausted: a latency oracle on a code the caller never got to present.
-//
-// Each request below presents an exhausted code whose expired usage sits on a LOCKED P2,
-// with the cleanup's lock timeout raised past this test's bound. A cleanup that ran would
-// be seen waiting there. The guard must answer first.
-func TestPresaleCleanupStaysBehindTheWindowAndSellerChecks(t *testing.T) {
-	f := newPresaleRace(t, 1)
-	f.st.cleanupLockTimeout = 20 * time.Second
-	h := f.hold(t, f.p2, 1, "h")
-	mustAgeClaim(t, f.ctx, f.db, h.ID, "clock_timestamp() - interval '1 second'")
-	blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p2)
-
-	expiry := time.Now().Add(time.Hour)
-	buyer := func(ctx context.Context, key string) error { return f.admit(ctx, f.p1, 1, key).err }
-	group := func(ctx context.Context, key string) error {
-		_, _, err := f.st.PlaceGroupReservation(ctx, f.org, f.p1, 1, "agency", expiry, raceChannel,
-			"staff", "group", key, WithPresaleCode(raceCode))
-		return err
+	if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
+		t.Fatalf("H has %d expiry records, want exactly 1", n)
 	}
-	refuses := func(name string, admit func(context.Context, string) error, want error) {
-		t.Helper()
-		ch := spawn(t, f.ctx, func(ctx context.Context) error { return admit(ctx, name) })
-		err, returned := awaitResultOrWait(t, f.ctx, f.db, ch, blockerPID, cleanupPoolLock)
-		if !returned {
-			t.Fatalf("%s: a cleanup started before the guard refused, and it waits on P2", name)
-		}
-		if !errors.Is(err, want) {
-			t.Fatalf("%s: got %v, want %v", name, err, want)
-		}
-	}
-
-	bindSeller(t, f.ctx, f.db, f.p1, raceChannel, uuid.New())
-	refuses("buyer, not the seller", buyer, ErrUnavailable)
-	refuses("group, not the seller", group, ErrUnavailable)
-	if _, err := f.db.ExecContext(f.ctx, `UPDATE channel_allocations SET sold_by=NULL WHERE pool_id=$1 AND channel_code=$2`,
-		f.p1, raceChannel); err != nil {
-		t.Fatal(err)
-	}
-	setWindow(t, f.ctx, f.db, f.p1, raceChannel, "clock_timestamp() + interval '1 hour'", "NULL")
-	refuses("buyer, window closed", buyer, ErrChannelWindowClosed)
-	refuses("group, window closed", group, ErrChannelWindowClosed)
-	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "held" {
-		t.Fatalf("H is %q after refusals by the window and the seller, want held", s)
-	}
-
-	// The fixture reaches the cleanup once both guards admit: an eligible request waits
-	// on P2, and is admitted when P2 is free.
-	setWindow(t, f.ctx, f.db, f.p1, raceChannel, "NULL", "NULL")
-	eligible := spawn(t, f.ctx, func(ctx context.Context) error { return buyer(ctx, "eligible") })
-	if _, returned := awaitResultOrWait(t, f.ctx, f.db, eligible, blockerPID, cleanupPoolLock); returned {
-		t.Fatal("reach: an eligible request returned without starting a cleanup")
-	}
-	if err := blocker.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if err := await(t, eligible, "the eligible admission"); err != nil {
-		t.Fatalf("the eligible admission: %v, want admitted", err)
-	}
-}
-
-// TKT-543 D14: a pool the cleanup cannot lock does not stop it reaching the others.
-//
-// Cap 2. P2 is quiet and P3 is locked, and each holds one expired, unswept unit of the
-// code. A one-unit request on P1 is refused (2 + 1 > 2) and fits once EITHER unit is
-// reclaimed. P3's lock times out. The cleanup must still reclaim P2, and the admission must
-// run again because that cleanup committed.
-//
-// The cleanup visits pools in pool-id order, so the test forces both orders by choosing the
-// ids. Stopping at the first failure blocks P2 for as long as P3 stays busy when P3 sorts
-// first, and gives up a retry that would now fit when P2 sorts first.
-//
-// P3's unit must stay held: the cleanup writes a pool's claims only under that pool's lock.
-func TestPresaleCleanupContinuesPastALockedPool(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		lockedFirst bool
-	}{
-		{"locked pool sorts first", true},
-		{"locked pool sorts last", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			first, last := uuid.New(), uuid.New()
-			first[0], last[0] = 0x00, 0xff
-			quiet, locked := first, last
-			if tc.lockedFirst {
-				quiet, locked = last, first
-			}
-			f := newPresaleRaceWithPools(t, 2, quiet, locked)
-			eq := f.hold(t, quiet, 1, "quiet")
-			el := f.hold(t, locked, 1, "locked")
-			mustAgeClaim(t, f.ctx, f.db, eq.ID, "clock_timestamp() - interval '1 second'")
-			mustAgeClaim(t, f.ctx, f.db, el.ID, "clock_timestamp() - interval '1 second'")
-
-			blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, locked)
-			admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
-			if _, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, blockerPID, cleanupPoolLock); returned {
-				t.Fatal("reach: the admission returned before its cleanup waited on the locked pool")
-			}
-			// Reach: the order is the one this case forces. When the cleanup waits on the
-			// locked pool, the quiet pool's unit is already reclaimed only if it came first.
-			wantQuiet := "expired"
-			if tc.lockedFirst {
-				wantQuiet = "held"
-			}
-			if s := claimStatus(t, f.ctx, f.db, eq.ID); s != wantQuiet {
-				t.Fatalf("reach: while the cleanup waits on the locked pool, the quiet pool's unit is %q, want %q", s, wantQuiet)
-			}
-			adm := await(t, admitted, "the admission whose cleanup meets a locked pool")
-			if err := blocker.Rollback(); err != nil {
-				t.Fatal(err)
-			}
-
-			if adm.err != nil {
-				t.Fatalf("admission on P1: %v, want admitted: reclaiming the quiet pool's unit alone makes it fit", adm.err)
-			}
-			if s := claimStatus(t, f.ctx, f.db, eq.ID); s != "expired" {
-				t.Fatalf("the quiet pool's unit is %q, want expired", s)
-			}
-			if s := claimStatus(t, f.ctx, f.db, el.ID); s != "held" {
-				t.Fatalf("the locked pool's unit is %q, want held: it was written without its pool's lock", s)
-			}
-			if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 2 {
-				t.Fatalf("usage = %d, want 2: the locked pool's unit and the new claim", got)
-			}
-		})
-	}
-}
-
-// ⭐ TKT-543 D17: once the first attempt is refused on the code cap, the request answers
-// success or the uniform refusal, whatever its retry meets.
-//
-// Review pass 3's schedule. A finalize queued on P2 before H's expiry keeps H. The
-// admission on P1 is refused on the code (H counts), and its cleanup queues on P2 behind the
-// finalize. While it waits, P1's channel window closes. The finalize commits H as
-// finalizing; the cleanup finds nothing due and commits an empty transaction, so the
-// admission runs again, and the retry meets the closed window. Answering
-// channel_window_closed there would tell a valid, exhausted code from an unknown one, which
-// the same timing refuses at once with presale_code_invalid: the oracle ADR-064 §4 forbids.
-// The first attempt already decided this request's refusal; the retry may only turn it into
-// a success.
-func TestPresaleRetryAnswersOnlySuccessOrTheUniformRefusal(t *testing.T) {
-	groupExpiry := time.Now().Add(time.Hour)
-	for _, tc := range []struct {
-		name  string
-		admit func(f presaleRace, ctx context.Context, code, key string) error
-	}{
-		{"buyer admission", func(f presaleRace, ctx context.Context, code, key string) error {
-			_, _, err := f.st.CreateHold(ctx, f.org, f.p1, uuid.Nil, 1, 0, "", raceChannel, key, WithPresaleCode(code))
-			return err
-		}},
-		{"group placement", func(f presaleRace, ctx context.Context, code, key string) error {
-			_, _, err := f.st.PlaceGroupReservation(ctx, f.org, f.p1, 1, "agency", groupExpiry, raceChannel,
-				"staff", "group", key, WithPresaleCode(code))
-			return err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newPresaleRace(t, 1)
-			h := f.hold(t, f.p2, 1, "h")
-
-			blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p2)
-			finalized := spawn(t, f.ctx, func(ctx context.Context) transitionResult {
-				c, err := f.st.Transition(ctx, f.org, h.ID, "finalizing")
-				return transitionResult{c, err}
-			})
-			fin := awaitWaitingOn(t, f.ctx, f.db, blockerPID, transitionPoolLock)
-			expiry := expireNow(t, f.ctx, f.db, h.ID)
-			if !fin.xactStart.Before(expiry) {
-				t.Fatalf("reach: the finalize's transaction began at %v, not before H's expiry %v", fin.xactStart, expiry)
-			}
-			awaitDBPast(t, f.ctx, f.db, expiry)
-
-			admitted := spawn(t, f.ctx, func(ctx context.Context) error { return tc.admit(f, ctx, raceCode, "a") })
-			if _, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, fin.pid, cleanupPoolLock); returned {
-				t.Fatal("reach: the admission returned before its cleanup queued behind the finalize")
-			}
-			// The control, at the same moment: an unknown code is refused by the code, at once.
-			assertUniformRefusal(t, "an unknown code at the same moment", tc.admit(f, f.ctx, "NEVER-ISSUED", "control"))
-			setWindow(t, f.ctx, f.db, f.p1, raceChannel, "clock_timestamp() + interval '1 hour'", "NULL")
-			if err := blocker.Rollback(); err != nil {
-				t.Fatal(err)
-			}
-			fr := await(t, finalized, "the finalize")
-			err := await(t, admitted, "the admission")
-
-			// Reach: the finalize kept H, so the cleanup had nothing to expire.
-			if fr.err != nil || claimStatus(t, f.ctx, f.db, h.ID) != "finalizing" {
-				t.Fatalf("reach: the finalize returned %v and H is %q, want H finalizing", fr.err, claimStatus(t, f.ctx, f.db, h.ID))
-			}
-			assertUniformRefusal(t, "the exhausted code whose retry met a closed window", err)
-			if n := poolClaims(t, f.ctx, f.db, f.p1); n != 0 {
-				t.Fatalf("the refused admission left %d claims on P1, want 0", n)
-			}
-		})
+	if r := f.admit(f.ctx, f.p1, 1, "after-sweep"); r.err != nil {
+		t.Fatalf("an admission on P1 after P2 was swept: %v, want admitted", r.err)
 	}
 }

@@ -62,10 +62,9 @@ var (
 	//
 	// Name the adversary (ADR-021): this defeats a scraper reading response
 	// bodies. It does NOT defeat one measuring latency — an exhausted-code
-	// refusal costs a usage aggregation and a discovery query an unknown-code
-	// refusal does not, and sometimes a cross-pool cleanup and a second admission
-	// (TKT-543) — nor one who simply observes that a channel is gated. Rate
-	// limiting is ADR-051's and is not claimed here.
+	// refusal costs a usage aggregation an unknown-code refusal does not — nor
+	// one who simply observes that a channel is gated. Rate limiting is ADR-051's
+	// and is not claimed here.
 	ErrPresaleCodeInvalid = errors.New("invalid presale code")
 	ErrIdempotency        = errors.New("idempotency key reused with different request")
 	// ErrAllocationCapsExceedCapacity: the submitted allocation set sums above the
@@ -313,11 +312,6 @@ type Postgres struct {
 	quarantineCap int
 	// baScan overrides MaxBestAvailableScan in tests; 0 = the constant (seat_claims.go).
 	baScan int32
-	// cleanupLockTimeout overrides presaleCleanupLockTimeout in tests; 0 = the
-	// constant (presale_codes.go). A test that must tell a cleanup which WAITED from one
-	// which never started sets it longer than its own bounded wait, so a misplaced
-	// cleanup blocks the test instead of ending in a refusal that looks correct.
-	cleanupLockTimeout time.Duration
 	// The availability-cache invalidation seam (TKT-205) —
 	// availability_invalidation.go.
 	invalidatorFields
@@ -511,61 +505,10 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	for _, opt := range opts {
 		opt(&o)
 	}
+	presaleCode := o.presaleCode
 	if qty <= 0 {
 		return Claim{}, false, fmt.Errorf("quantity must be positive")
 	}
-	// ONE fingerprint for this request, computed HERE — before any attempt runs, so
-	// the requiresCode normalisation inside an attempt ("an ungated allocation ignores
-	// the code") cannot reach it. Both the replay comparison and the INSERT use this
-	// value, in every attempt.
-	//
-	// Computing it twice is what TKT-296 D1 was: the comparison ran before the
-	// clear and saw the code, the INSERT ran after and did not, so a first request
-	// stored code-less bytes and its own identical retry compared code-bearing ones
-	// and was refused as key reuse — a leaked hold plus a failed checkout retry, on
-	// the buyer path. PlaceGroupReservation never had the bug because it already
-	// computes fp once, pre-clear (reservations.go).
-	//
-	// The FORMAT is untouched: fingerprint() still appends channel and code only
-	// when non-empty, so every code-less record in every database keeps its exact
-	// bytes (TestFingerprintStaysByteIdenticalWithoutAPresaleCode). Only requests
-	// that actually carry a code against an ungated channel change, and only
-	// forward: a row written before this change stored code-less bytes, so its
-	// retry still mismatches until its TTL expires. That is today's behaviour, not
-	// a regression this introduces.
-	requestFP := fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, o.presaleCode, o.reseller)
-
-	// A refusal by the presale code COUNT may be caused by expired holds on other
-	// pools that nothing has swept yet (TKT-543): the count keeps them until a
-	// terminal write commits. The attempt has rolled back by now and holds no lock,
-	// so reclaim them in their own transactions and decide once more, from the
-	// start: replay, offering, window and seller are all judged again.
-	c, replay, err := p.createHoldAttempt(ctx, org, slot, ticketType, qty, unitAmount, currency, channel, key, o, requestFP)
-	refused, capped := asPresaleCapExceeded(err)
-	if !capped {
-		return c, replay, err
-	}
-	// From here the request is refused by the code, and it has two possible answers:
-	// a successful retry, or the uniform refusal (ADR-064 §4; D5, D17). The retry exists
-	// only to give a reclaimed unit a chance. ANY error it meets — another guard that
-	// changed while the cleanup waited (a window that closed), a conflict, a database
-	// error — becomes the uniform refusal too: answering it would tell a valid,
-	// exhausted code from an unknown one under the same timing. This is the one place
-	// this path turns the private signal into the public refusal.
-	if p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
-		if c, replay, err = p.createHoldAttempt(ctx, org, slot, ticketType, qty, unitAmount, currency, channel, key, o, requestFP); err == nil {
-			return c, replay, nil
-		}
-	}
-	return Claim{}, false, ErrPresaleCodeInvalid
-}
-
-// createHoldAttempt is ONE complete admission transaction. It returns presaleCapExceeded
-// for an exhausted code, and only CreateHold may see that.
-func (p *Postgres) createHoldAttempt(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, o holdOptions, requestFP string) (Claim, bool, error) {
-	// A fresh copy per attempt: the ungated normalisation below clears it, and the
-	// next attempt must see the code the caller presented.
-	presaleCode := o.presaleCode
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Claim{}, false, err
@@ -602,7 +545,27 @@ func (p *Postgres) createHoldAttempt(ctx context.Context, org, slot, ticketType 
 	// `IS NOT DISTINCT FROM` rather than `=` because the public scope is NULL and NULL
 	// = NULL is unknown, which would find nothing and place a second hold on every
 	// public retry. The lookup and the uniqueness must agree exactly or a replay
-	// becomes a duplicate claim. requestFP comes from CreateHold, computed once.
+	// becomes a duplicate claim.
+	// ONE fingerprint for this request, computed HERE — before the requiresCode
+	// normalisation at "an ungated allocation ignores the code" below clears
+	// presaleCode. Both the replay comparison and the INSERT use this value.
+	//
+	// Computing it twice is what TKT-296 D1 was: the comparison ran before the
+	// clear and saw the code, the INSERT ran after and did not, so a first request
+	// stored code-less bytes and its own identical retry compared code-bearing ones
+	// and was refused as key reuse — a leaked hold plus a failed checkout retry, on
+	// the buyer path. PlaceGroupReservation never had the bug because it already
+	// computes fp once, pre-clear (reservations.go:51-55).
+	//
+	// The FORMAT is untouched: fingerprint() still appends channel and code only
+	// when non-empty, so every code-less record in every database keeps its exact
+	// bytes (TestFingerprintStaysByteIdenticalWithoutAPresaleCode). Only requests
+	// that actually carry a code against an ungated channel change, and only
+	// forward: a row written before this change stored code-less bytes, so its
+	// retry still mismatches until its TTL expires. That is today's behaviour, not
+	// a regression this introduces.
+	requestFP := fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller)
+
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3 AND staff_scope IS NULL`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {

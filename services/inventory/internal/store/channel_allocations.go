@@ -87,9 +87,13 @@ const presaleUsageClaims = `(status IN ('confirmed','finalizing','held'))`
 // presaleUsageClaims): an expired held claim that no terminal write has reached still counts
 // here and no longer counts against its channel. Derived, never a counter: a counter cannot
 // be decremented by LAZY hold expiry without a sweeper, and ADR-010 forbids requiring one
-// for correctness. Because an expired claim counts until something writes its expiry, an
-// admission refused by this count may reclaim the code's expired claims on other pools
-// (reclaimExpiredPresaleUsage) and then decide again.
+// for correctness.
+//
+// THE COST, accepted (ADR-064 §3): an expired hold on a quiet pool keeps counting here
+// until a write on ITS pool sweeps it. An admission sweeps only its own pool, so such a
+// hold can keep a code exhausted for every other pool. Nothing in the request path reclaims
+// it on purpose: a request-triggered cleanup was built and rejected, because every effect
+// it left was a code-enumeration oracle. TKT-547 (a background sweeper) is the remedy.
 //
 // NOT SCOPED BY pool_id, and that is the whole difficulty of this ticket. A channel
 // allocation is PRIMARY KEY (pool_id, channel_code), so every other derived count in this

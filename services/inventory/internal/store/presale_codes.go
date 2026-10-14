@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,10 +33,10 @@ type PresaleCode struct {
 // answer being reachable from the storefront.
 type PresaleCodeStatus struct {
 	PresaleCode
-	Redeemed   int64  `json:"redeemed"`
+	Redeemed   int64 `json:"redeemed"`
 	Remaining  *int64 `json:"remaining,omitempty"`
-	WindowOpen bool   `json:"window_open"`
-	Exhausted  bool   `json:"exhausted"`
+	WindowOpen bool  `json:"window_open"`
+	Exhausted  bool  `json:"exhausted"`
 }
 
 // redeemPresaleCode decides whether `code` may be redeemed for `qty` more units
@@ -65,15 +64,9 @@ type PresaleCodeStatus struct {
 //
 // LOCK ORDER IS FIXED: pool first, then code, never the reverse. Nothing else in
 // inventory locks a presale_codes row, so this is the only order that exists and
-// two claim transactions can never hold one another's next lock. The cross-pool
-// cleanup (reclaimExpiredPresaleUsage) takes pool and claim locks and NO code lock,
-// and it runs only after the refused admission rolled back, so it adds no order.
+// two claim transactions can never hold one another's next lock.
 //
-// Returns ErrPresaleCodeInvalid for every refusal EXCEPT exhaustion, which returns
-// the unexported presaleCapExceeded (TKT-543, D5). Exhaustion is the one cause an
-// expired, unswept claim can produce, so it is the one the callers try to reclaim
-// for. They convert it to ErrPresaleCodeInvalid before returning, so the caller
-// still sees one refusal for all five causes.
+// Returns ErrPresaleCodeInvalid — uniformly — for every refusal.
 func redeemPresaleCode(ctx context.Context, tx *sql.Tx, org uuid.UUID, channel, code string, qty int32) error {
 	if code == "" {
 		// A gated allocation with no code presented. Same refusal as a wrong one:
@@ -120,36 +113,9 @@ func redeemPresaleCode(ctx context.Context, tx *sql.Tx, org uuid.UUID, channel, 
 	// int64 throughout: two valid int32 counters can wrap a 32-bit sum, the same
 	// trap CreateHold's capacity arithmetic already documents.
 	if redeemed+int64(qty) > int64(maxRedemptions.Int32) {
-		return presaleCapExceeded{redeemed: redeemed, max: int64(maxRedemptions.Int32)}
+		return ErrPresaleCodeInvalid
 	}
 	return nil
-}
-
-// presaleCapExceeded is the exhaustion refusal of redeemPresaleCode, with the usage
-// the admission counted under the code lock and the code's cap (TKT-543, D5, D7).
-//
-// It never leaves the store. CreateHold and PlaceGroupReservation consume it, may
-// reclaim and retry, and return ErrPresaleCodeInvalid for a final refusal: the
-// public refusal stays uniform across the five causes (ADR-064 §4).
-//
-// It deliberately does NOT wrap ErrPresaleCodeInvalid. A wrapper that forgot to
-// convert it would then leak nothing visible, and the missing conversion would stay
-// hidden until someone changed the message. Unwrapped, an escape is an unmapped
-// error, which the API answers 500: TestPresaleRefusalsStayUniformAfterCrossPoolCleanup
-// goes red on either path, and TestEveryInvalidPresaleCodeRefusesIdentically on the
-// hold path.
-type presaleCapExceeded struct {
-	redeemed int64
-	max      int64
-}
-
-func (e presaleCapExceeded) Error() string {
-	return fmt.Sprintf("presale code usage %d plus this request exceeds its cap %d", e.redeemed, e.max)
-}
-
-func asPresaleCapExceeded(err error) (presaleCapExceeded, bool) {
-	var e presaleCapExceeded
-	return e, errors.As(err, &e)
 }
 
 // IssuePresaleCode creates or replaces a code. Operator surface, internal only.
