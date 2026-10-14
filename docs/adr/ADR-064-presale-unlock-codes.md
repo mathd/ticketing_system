@@ -199,8 +199,8 @@ first keep a quiet pool's expired usage counted for as long as it stays busy, an
 retry that the pools already cleaned make fit (`TestPresaleCleanupContinuesPastALockedPool`, both
 orders). A discovery error ends the cleanup with the uniform refusal. Terminal writes already
 committed stand on their own. A group placement's second attempt judges its explicit expiry again
-on `clock_timestamp()`, so a placement whose `expires_at` passed during the cleanup ends in
-`ErrConflict`, as a placement queued past its expiry already does.
+on `clock_timestamp()`, so a placement whose `expires_at` passed during the cleanup is refused by
+that attempt; the request answers the uniform refusal, not `ErrConflict` (D17, §4).
 
 A counter cannot be decremented by **lazy** hold expiry without a sweeper, and ADR-010 forbids
 requiring one for correctness. Derived also gets refunds right for free: `consumedQuantity` is net
@@ -236,10 +236,30 @@ and `TestPresaleRefusalsStayUniformAfterCrossPoolCleanup` would fail on the exha
 cleanup's own errors, a lock timeout included, are never returned: they would be a 500 that only a
 valid, exhausted code can produce. The cleanup runs after the window and seller checks
 (`TestPresaleCleanupStaysBehindTheWindowAndSellerChecks`), so a caller who may not sell never
-reaches it. Its writes change only claims that cite the requested code (§3, D13), they change no
-availability answer, and they invalidate no cache (§3, D16). Through a status or a body they are
-therefore visible only to a caller who holds a claim citing that code (by replaying it) or who
-presents the code. The pool locks the cleanup takes show only as latency.
+reaches it.
+
+**Once the first attempt is refused on the code, the request answers a successful retry or the
+uniform refusal, nothing else (D17; review pass 3 finding 1).** Any error the retry meets becomes
+`ErrPresaleCodeInvalid`: another guard that changed while the cleanup waited (a channel window that
+closed, a placement's explicit expiry that passed), a conflict, a database error. Before D17, a
+cleanup that waited behind a queued finalize, committed nothing useful and retried into a window
+that had just closed answered `channel_window_closed`, while an unknown code at the same moment
+answered `presale_code_invalid`. The first attempt had already decided the request's refusal under
+window → code → capacity; the retry exists only to turn it into a success.
+`TestPresaleRetryAnswersOnlySuccessOrTheUniformRefusal` (both admission paths) and
+`TestPresaleRetryRefusalIsUniformOnTheWire` (the body on `POST /holds`) run that schedule. The cost:
+a request whose own retry met a newly closed window reports the code refusal, for a request already
+refused by the code.
+
+**Who can see the cleanup.** Its writes change only claims that cite the requested code (§3, D13),
+they change no availability answer, and they invalidate no cache (§3, D16). Through a **public**
+status or body (the gateway refuses every `/internal/` route) they are therefore visible only to a
+caller who holds a claim citing that code (by replaying it) or who presents the code. Internal
+callers are not covered: the history routes (`opHistory` → `History`) return a claim's expiry row to
+any caller with the internal credential and the organizer id, without the code. To the requesting
+caller, the time the cleanup waits for its locks is latency only because of D17; before it, that
+wait could change the retry's answer. To other requests on a cleaned pool, the cleanup's lock is
+one more short write: it is held for one UPDATE and a commit.
 
 What it does change is **latency**, which this section already does not claim. An exhausted-code
 refusal now also costs a discovery query; when expired usage could cover the shortfall, it costs one
@@ -360,11 +380,17 @@ claim in this ADR should be read as saying otherwise.
   cleaned pool, mirror admissions, discovery scope (end to end, by holding each wrong pool locked
   and watching for the cleanup's wait), the scope of the cleanup's write within a pool and the
   shape of its history rows, a locked
-  pool sorting before and after a quiet one, the reclaimable-quantity bound, the lock timeout, and
+  pool sorting before and after a quiet one, the reclaimable-quantity bound, the lock timeout, no
+  retry after a cleanup that committed nothing (seen as a retry waiting for the admission pool's
+  lock, which the test holds), a retry that meets a window closed during the cleanup (D17), and
   precedence behind the window and the seller; the wire body on both admission endpoints through
   the validated router. Each has a mutation it turns red, and each forced schedule passed 8 of 8
   repeats. The draw-down schedule depends on reaching the child INSERT within a 2 s margin, so its
-  test rebuilds the fixture, at most three times, when that reach condition is missed; once reached,
+  test rebuilds the fixture, at most three times, when that reach condition is missed. It rebuilds
+  only when the draw-down refused with the source's expiry committed AND the claim's `updated_at`
+  (that transaction's start) is at or after the source's `expires_at`, which proves the source was
+  due when the draw-down decided; an expiry recorded before `expires_at` fails the test as
+  premature, and a run between those two bounds cannot be classified and fails too. Once reached,
   its cap assertions always run. The organizer predicate of the cleanup's write has no test: the
   store writes into a pool only claims of that pool's organizer, so no test can build the row it
   would exclude. In every run, the cleanup
@@ -372,8 +398,8 @@ claim in this ADR should be read as saying otherwise.
   observed PostgreSQL behaviour, not a documented guarantee. If it changed, the cleanup would expire
   the hold first and the finalize would be refused (`Transition` refuses a finalize of an `expired`
   claim): the cap would still hold, with the opposite winner. That is argued from the code, not
-  executed. Not tested: more than two concurrent admissions racing through the cleanup, and a cap or
-  window edit during a cleanup.
+  executed. Not tested: more than two concurrent admissions racing through the cleanup, and a cap
+  edit during a cleanup.
 - **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the
   code's `closes_at` is admitted after the window closed, because the window is read in the locking
   statement. ADR-084 §4 records the fix for promotions; the presale path keeps today's statement.
