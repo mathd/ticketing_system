@@ -1439,7 +1439,19 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 		}
 		select {
 		case r := <-drawn:
-			t.Logf("missed: the draw-down returned (err=%v) without waiting at its child INSERT; it decided after the source's expiry; rebuilding", r.err)
+			// Retry ONLY on the one early result a lost race produces: the draw-down found
+			// the source past its expiry, committed that expiry, and refused. Anything else
+			// is a defect or a broken fixture, and retrying it would hide it.
+			var expires int
+			if err := f.db.QueryRowContext(f.ctx, `SELECT count(*) FROM claim_history WHERE claim_id=$1 AND action='expire'`, src.ID).Scan(&expires); err != nil {
+				t.Fatal(err)
+			}
+			status := claimStatus(t, f.ctx, f.db, src.ID)
+			if !errors.Is(r.err, ErrConflict) || status != "expired" || expires != 1 {
+				t.Fatalf("the draw-down returned before its child INSERT with err=%v, source %q and %d expiry records; "+
+					"only ErrConflict with a committed expiry is a missed schedule", r.err, status, expires)
+			}
+			t.Logf("missed: the draw-down decided after the source's expiry, committed it and refused; rebuilding")
 			return drawDownSchedule{}, false
 		default:
 		}
@@ -1464,6 +1476,9 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 // Archived and closed P2: guardOffering refuses new holds there, so no hold sweeps them.
 // An archived pool is never swept again; a closed one only after it reopens or a staff
 // capacity adjustment. A cleanup that refused them would pin the code that long (D9).
+//
+// The cleanup must NOT invalidate P2's cached availability (D16, which reverses this
+// test's first version): see the assertion below.
 func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
 	buyer := func(f presaleRace, key string) holdResult { return f.admit(f.ctx, f.p1, 1, key) }
 	// One expiry for every call: it is part of the placement's fingerprint, so a retry
@@ -1506,8 +1521,16 @@ func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
 			if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
 				t.Fatalf("H has %d expiry records, want exactly 1", n)
 			}
-			if n := inv.count(f.p2); n == 0 {
-				t.Fatal("the cleanup changed P2's availability and did not invalidate P2's cache entry")
+			// D16: the cleanup invalidates NO cache entry of P2. An eviction shows on the
+			// public availability read (a fresh Age header and body), and only a valid,
+			// exhausted code triggers a cleanup. No answer needs it: every availability read
+			// counts held claims through liveClaims, which already leaves out a due hold.
+			// P1's invalidation, by the admission's own commit, proves the recorder is wired.
+			if n := inv.count(f.p1); n == 0 {
+				t.Fatal("reach: the recorder saw no invalidation of P1, so it cannot see one of P2 either")
+			}
+			if n := inv.count(f.p2); n != 0 {
+				t.Fatalf("the cleanup invalidated P2's availability cache %d times, want 0: the eviction is visible on the public read, and only a valid exhausted code causes it", n)
 			}
 			if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 1 {
 				t.Fatalf("usage = %d after the reclaiming admission, want 1 (the new claim only)", got)
@@ -1537,13 +1560,13 @@ func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
 //
 // Two scopes decide that, and each has its own poisons.
 //
-//   - Discovery decides which pools the cleanup locks and commits. Each poison in its OWN
-//     pool differs from the target in one identity field. Its claim must keep its state,
-//     and its pool must not even be committed: the cache invalidation is the trace of a
-//     commit. With discovery's organizer filter removed, the organizer poison still stays
-//     untouched because the cleanup's lock is scoped to the organizer and skips a pool it
-//     finds no row for (D9); TestRedemptionCountIsIndexBacked proves that filter instead
-//     (plan amendment A2).
+//   - Discovery decides which pools the cleanup locks. Each poison in its OWN pool differs
+//     from the target in one identity field. Its claim must keep its state, and its pool
+//     must not even be locked, which the test sees by holding that pool locked itself.
+//     With discovery's organizer filter removed, the organizer poison still stays untouched
+//     because the cleanup's lock is scoped to the organizer and skips a pool it finds no
+//     row for (D9); TestRedemptionCountIsIndexBacked proves that filter instead (plan
+//     amendment A2).
 //   - The cleanup's UPDATE decides which claims of a locked pool it expires. Each poison IN
 //     P2 differs from the target in one predicate of that UPDATE and must keep its state
 //     and its history. The UPDATE's organizer predicate has no poison: every claim the
@@ -1650,10 +1673,48 @@ func TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode(t *testing.T) {
 		return fmt.Sprintf("capacity=%d target=%v", capacity, target)
 	}
 	cutBefore := poolState()
-	var inv slotInvalidations
-	f.st.RegisterAvailabilityInvalidator(inv.record)
 
-	if r := f.admit(f.ctx, f.p1, 1, "a"); r.err != nil {
+	// Each poison pool is locked while the admission runs, and the cleanup's lock timeout is
+	// raised past this test's bound. A pool that discovery selected wrongly is then SEEN:
+	// the cleanup waits to lock it. That wait is the only trace such a pool would keep,
+	// because the cleanup's write is scoped (D13) and it invalidates no cache (D16).
+	f.st.cleanupLockTimeout = 20 * time.Second
+	type blocked struct {
+		name string
+		tx   *sql.Tx
+		pid  int
+	}
+	var blockers []blocked
+	for _, p := range otherPools {
+		tx, pid := lockedBy(t, f.ctx, f.db, transitionPoolLock, p.pool)
+		blockers = append(blockers, blocked{p.name, tx, pid})
+	}
+	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
+	var r holdResult
+	deadline := time.Now().Add(10 * time.Second)
+watch:
+	for {
+		select {
+		case r = <-admitted:
+			break watch
+		default:
+		}
+		for _, b := range blockers {
+			if _, ok := waitingOn(t, f.ctx, f.db, b.pid, cleanupPoolLock); ok {
+				t.Fatalf("poison (%s): the cleanup waits to lock its pool; discovery selected a pool the request does not cite", b.name)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the admission on P1 did not return within 10s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, b := range blockers {
+		if err := b.tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.err != nil {
 		t.Fatalf("admission on P1: %v", r.err)
 	}
 	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "expired" {
@@ -1676,9 +1737,6 @@ func TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode(t *testing.T) {
 		}
 		if n := historyRecords(t, f.ctx, f.db, p.id); n != p.history {
 			t.Errorf("poison (%s) has %d history records, want %d", p.name, n, p.history)
-		}
-		if n := inv.count(p.pool); n != 0 {
-			t.Errorf("poison (%s): its pool was committed and invalidated %d times; the cleanup locked a pool the request does not cite", p.name, n)
 		}
 	}
 	if got := poolState(); got != cutBefore {
@@ -1945,10 +2003,11 @@ func TestPresaleUsageCountsUntilTerminalWrite(t *testing.T) {
 // request from queuing behind a hot pool for a whole on-sale. A cleanup that gives up
 // costs liveness only: H keeps counting, and the next request can reclaim it.
 //
-// With NO cleanup transaction committed there is no retry either (D14): only a concurrent
-// terminal write could make it succeed. The test closes P1's channel window while the
-// cleanup waits, so a retry would be visible: it would answer ErrChannelWindowClosed, while
-// the refusal that must come back is the first attempt's.
+// With NO cleanup transaction committed there is no retry either. That is D14's chosen
+// policy, not a claim that a retry must fail (an operator raising the cap meanwhile could
+// make one succeed). The test closes P1's channel window while the cleanup waits, so a
+// retry would be visible: it would answer ErrChannelWindowClosed, while the refusal that
+// must come back is the first attempt's.
 func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
 	f := newPresaleRace(t, 1)
 	h := f.hold(t, f.p2, 1, "h")
