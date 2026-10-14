@@ -10,6 +10,8 @@
 //	             window control, W.
 //	window N     Window control and W only (run.sh uses it on the window-fix build).
 //	prototype N  The D13 prototype (TKT380PromotedTransition). Per run: S1, S2, S3.
+//	r2 N         TODAY's CreateHold and Transition, built with r2-predicate.py
+//	             (reading R2). Per run: control, S1, R2L.
 //
 // Schedules:
 //
@@ -23,6 +25,9 @@
 //	                runs.
 //	W (code window) An admission waits on the code row lock, held by a transaction
 //	                that does not update the row, across the code's closes_at.
+//	R2L (cleanup)   A hold expires unconfirmed on P2 with no terminal write. An
+//	                admission on P1 runs, then a hold on P2 (its lazy sweep of P2
+//	                writes the expiry first).
 //
 // Every SUMMARY line ends in verdict=HELD (the rule held), verdict=BROKEN (the
 // defect was observed) or verdict=UNEXPECTED (any other outcome). A reach
@@ -84,7 +89,7 @@ func fatalf(format string, args ...any) {
 
 func main() {
 	if len(os.Args) != 3 {
-		fatalf("usage: tkt380probe presale|window|prototype RUNS")
+		fatalf("usage: tkt380probe presale|window|prototype|r2 RUNS")
 	}
 	mode := os.Args[1]
 	runs, err := strconv.Atoi(os.Args[2])
@@ -115,16 +120,21 @@ func main() {
 		case "presale":
 			all = append(all,
 				control(newFixture(ctx, admin, base, capOne(), nil), n),
-				s1(newFixture(ctx, admin, base, capOne(), nil), n, "presale-S1", false),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "presale-S1", false, false),
 				windowControl(ctx, admin, base, n),
 				w(ctx, admin, base, n))
 		case "window":
 			all = append(all, windowControl(ctx, admin, base, n), w(ctx, admin, base, n))
 		case "prototype":
 			all = append(all,
-				s1(newFixture(ctx, admin, base, capOne(), nil), n, "prototype-S1", true),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "prototype-S1", true, false),
 				s2(newFixture(ctx, admin, base, capOne(), nil), n),
 				s3(newFixture(ctx, admin, base, nil, nil), n))
+		case "r2":
+			all = append(all,
+				control(newFixture(ctx, admin, base, capOne(), nil), n),
+				s1(newFixture(ctx, admin, base, capOne(), nil), n, "r2-S1", false, true),
+				r2Liveness(newFixture(ctx, admin, base, capOne(), nil), n))
 		default:
 			fatalf("unknown mode %q", mode)
 		}
@@ -351,7 +361,10 @@ func control(f *fixture, n int) verdict {
 
 // s1 forces the time-base schedule. promoted=false drives today's Transition;
 // promoted=true drives the D13 prototype.
-func s1(f *fixture, n int, name string, promoted bool) verdict {
+// s1 forces schedule S1. r2 selects which outcome is HELD: false accepts only
+// the R1 outcome (A admitted, F refused as expired), true only the R2 outcome
+// (A refused, F succeeds). So an R2 run cannot pass on the R1 outcome.
+func s1(f *fixture, n int, name string, promoted, r2 bool) verdict {
 	defer f.drop()
 	tag := fmt.Sprintf("[run %d %s]", n, name)
 	h, err := f.hold(f.p2, "h-"+uuid.NewString())
@@ -423,13 +436,57 @@ func s1(f *fixture, n int, name string, promoted bool) verdict {
 
 	v := unexpected
 	switch {
-	case aerr == nil && errors.Is(r.err, store.ErrConflict) && r.c.Status == "expired" && afterConfirm == 1:
+	case !r2 && aerr == nil && errors.Is(r.err, store.ErrConflict) && r.c.Status == "expired" && afterConfirm == 1:
 		v = held
 	case aerr == nil && r.err == nil && r.c.Status == "finalizing" && afterConfirm == 2:
 		v = broken
+	case r2 && errors.Is(aerr, store.ErrPresaleCodeInvalid) && r.err == nil && r.c.Status == "finalizing" && afterConfirm == 1:
+		// Reading R2: the expired, unswept H still counts, so the admission is
+		// refused and the finalize keeps the unit.
+		v = held
 	}
 	fmt.Printf("SUMMARY %s a_err=%s f_status=%s f_err=%s redeemed_after_finalize=%d redeemed_after_confirm=%d cap=1 verdict=%s\n",
 		name, errText(aerr), r.c.Status, errText(r.err), afterFinalize, afterConfirm, v)
+	return v
+}
+
+// r2Liveness forces schedule R2L. Under R2 the admission on P1 is refused
+// (H still counts: nothing wrote its expiry), and the hold on P2 is admitted
+// (CreateHold sweeps P2 before it takes the code lock, so H is expired first).
+// HELD needs both. BROKEN is the R1 outcome: the P1 admission is admitted on
+// an expired H with no terminal write.
+func r2Liveness(f *fixture, n int) verdict {
+	defer f.drop()
+	tag := fmt.Sprintf("[run %d r2-liveness]", n)
+	h, err := f.hold(f.p2, "h-"+uuid.NewString())
+	if err != nil {
+		fatalf("%s hold H: %v", tag, err)
+	}
+	past := f.waitDBPast(*h.ExpiresAt)
+	fmt.Printf("%s H created on P2: expires_at=%s; DB clock now %s\n", tag, ts(*h.ExpiresAt), ts(past))
+	a, aerr := f.hold(f.p1, "a-"+uuid.NewString())
+	fmt.Printf("%s admission A on P1: err=%s\n", tag, errText(aerr))
+	var hBefore string
+	if err = f.db.QueryRowContext(f.ctx, `SELECT status FROM claims WHERE id=$1`, h.ID).Scan(&hBefore); err != nil {
+		fatalf("%s read H: %v", tag, err)
+	}
+	b, berr := f.hold(f.p2, "b-"+uuid.NewString())
+	fmt.Printf("%s admission B on P2: err=%s\n", tag, errText(berr))
+	var hAfter string
+	if err = f.db.QueryRowContext(f.ctx, `SELECT status FROM claims WHERE id=$1`, h.ID).Scan(&hAfter); err != nil {
+		fatalf("%s read H: %v", tag, err)
+	}
+	f.printRows(tag, map[uuid.UUID]string{h.ID: "H", a.ID: "A", b.ID: "B"})
+	r := f.redeemed()
+	v := unexpected
+	switch {
+	case errors.Is(aerr, store.ErrPresaleCodeInvalid) && hBefore == "held" && berr == nil && hAfter == "expired" && r == 1:
+		v = held
+	case aerr == nil:
+		v = broken
+	}
+	fmt.Printf("SUMMARY r2-liveness a_err=%s h_before_b=%s b_err=%s h_after_b=%s redeemed=%d cap=1 verdict=%s\n",
+		errText(aerr), hBefore, errText(berr), hAfter, r, v)
 	return v
 }
 

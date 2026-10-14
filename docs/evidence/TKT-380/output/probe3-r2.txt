@@ -1,0 +1,122 @@
+postgres server_version=18.4 (Debian 18.4-1.pgdg12+1)
+[run 1 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:17.092451Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 1 r2-S1] H created on P2: expires_at=2026-10-13T23:41:19.513239Z
+[run 1 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:17.529442Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 1 r2-S1] DB clock now 2026-10-13T23:41:19.718849Z, past H expiry
+[run 1 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 1 r2-S1] finalize F returned: status=finalizing err=nil
+[run 1 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:19.513239Z | true
+[run 1 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:19.513239Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 1 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:21.958323Z; DB clock now 2026-10-13T23:41:22.17064Z
+[run 1 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 1 r2-liveness] admission B on P2: err=nil
+[run 1 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 1 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:21.958323Z | true
+[run 1 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:24.181061Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+[run 2 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:24.398034Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 2 r2-S1] H created on P2: expires_at=2026-10-13T23:41:26.807608Z
+[run 2 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:24.819661Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 2 r2-S1] DB clock now 2026-10-13T23:41:27.010215Z, past H expiry
+[run 2 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 2 r2-S1] finalize F returned: status=finalizing err=nil
+[run 2 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:26.807608Z | true
+[run 2 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:26.807608Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 2 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:29.237809Z; DB clock now 2026-10-13T23:41:29.454919Z
+[run 2 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 2 r2-liveness] admission B on P2: err=nil
+[run 2 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 2 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:29.237809Z | true
+[run 2 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:31.465838Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+[run 3 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:31.650104Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 3 r2-S1] H created on P2: expires_at=2026-10-13T23:41:34.05917Z
+[run 3 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:32.073681Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 3 r2-S1] DB clock now 2026-10-13T23:41:34.260841Z, past H expiry
+[run 3 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 3 r2-S1] finalize F returned: status=finalizing err=nil
+[run 3 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:34.05917Z | true
+[run 3 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:34.05917Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 3 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:36.529305Z; DB clock now 2026-10-13T23:41:36.740537Z
+[run 3 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 3 r2-liveness] admission B on P2: err=nil
+[run 3 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 3 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:36.529305Z | true
+[run 3 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:38.75228Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+[run 4 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:38.977691Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 4 r2-S1] H created on P2: expires_at=2026-10-13T23:41:41.425184Z
+[run 4 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:39.440757Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 4 r2-S1] DB clock now 2026-10-13T23:41:41.629399Z, past H expiry
+[run 4 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 4 r2-S1] finalize F returned: status=finalizing err=nil
+[run 4 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:41.425184Z | true
+[run 4 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:41.425184Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 4 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:43.829436Z; DB clock now 2026-10-13T23:41:44.036523Z
+[run 4 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 4 r2-liveness] admission B on P2: err=nil
+[run 4 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 4 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:43.829436Z | true
+[run 4 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:46.045126Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+[run 5 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:46.224465Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 5 r2-S1] H created on P2: expires_at=2026-10-13T23:41:48.617344Z
+[run 5 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:46.628499Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 5 r2-S1] DB clock now 2026-10-13T23:41:48.818634Z, past H expiry
+[run 5 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 5 r2-S1] finalize F returned: status=finalizing err=nil
+[run 5 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:48.617344Z | true
+[run 5 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:48.617344Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 5 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:50.986124Z; DB clock now 2026-10-13T23:41:51.204188Z
+[run 5 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 5 r2-liveness] admission B on P2: err=nil
+[run 5 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 5 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:50.986124Z | true
+[run 5 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:41:53.2124Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+[run 6 presale-control] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 presale-control]   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:53.37518Z | true
+SUMMARY presale-control f_status=finalizing f_err=nil a_err=ErrPresaleCodeInvalid redeemed=1 cap=1 verdict=HELD
+[run 6 r2-S1] H created on P2: expires_at=2026-10-13T23:41:55.750565Z
+[run 6 r2-S1] finalize F observed blocked on P2: wait=Lock xact_start=2026-10-13T23:41:53.761703Z (before expiry: true) query="SELECT 1 FROM inventory_pools WHERE slot_id=$1 FOR UPDATE"
+[run 6 r2-S1] DB clock now 2026-10-13T23:41:55.963697Z, past H expiry
+[run 6 r2-S1] admission A on P1 with the same code: err=ErrPresaleCodeInvalid; F still blocked after A returned: true
+[run 6 r2-S1] finalize F returned: status=finalizing err=nil
+[run 6 r2-S1] after F claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 r2-S1] after F   H | P2 | finalizing | 1 | PROMO-CAP-1 | 2026-10-13T23:41:55.750565Z | true
+[run 6 r2-S1] after confirm claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 r2-S1] after confirm   H | P2 | confirmed | 1 | PROMO-CAP-1 | 2026-10-13T23:41:55.750565Z | true
+SUMMARY r2-S1 a_err=ErrPresaleCodeInvalid f_status=finalizing f_err=nil redeemed_after_finalize=1 redeemed_after_confirm=1 cap=1 verdict=HELD
+[run 6 r2-liveness] H created on P2: expires_at=2026-10-13T23:41:58.207357Z; DB clock now 2026-10-13T23:41:58.410765Z
+[run 6 r2-liveness] admission A on P1: err=ErrPresaleCodeInvalid
+[run 6 r2-liveness] admission B on P2: err=nil
+[run 6 r2-liveness] claims (name | pool | status | qty | code | expires_at | past_expiry_now):
+[run 6 r2-liveness]   H | P2 | expired | 1 | PROMO-CAP-1 | 2026-10-13T23:41:58.207357Z | true
+[run 6 r2-liveness]   B | P2 | held | 1 | PROMO-CAP-1 | 2026-10-13T23:42:00.420059Z | false
+SUMMARY r2-liveness a_err=ErrPresaleCodeInvalid h_before_b=held b_err=nil h_after_b=expired redeemed=1 cap=1 verdict=HELD
+RESULT mode=r2 runs=6 exit=0 (0 all HELD, 1 BROKEN observed, 2 UNEXPECTED)
