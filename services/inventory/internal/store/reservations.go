@@ -53,6 +53,29 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 		fpParts = append(fpParts, fmt.Sprintf("c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode))
 	}
 	fp := opFingerprint(fpParts...)
+
+	// The same rule as CreateHold (TKT-543): a refusal by the presale code COUNT may
+	// be caused by expired claims on other pools that nothing has swept yet. The
+	// attempt has rolled back and holds no lock, so reclaim them and decide once more,
+	// from the start. The retry judges the explicit expiry again on clock_timestamp(),
+	// so a placement whose expiry passed during the cleanup ends in ErrConflict.
+	h, replay, err := p.placeGroupReservationAttempt(ctx, org, slot, qty, counterparty, expiresAt, channel, actor, reason, key, o, fp)
+	if refused, ok := asPresaleCapExceeded(err); ok && p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
+		h, replay, err = p.placeGroupReservationAttempt(ctx, org, slot, qty, counterparty, expiresAt, channel, actor, reason, key, o, fp)
+	}
+	// The ONE place this path turns the private signal into the public refusal
+	// (ADR-064 §4, D5).
+	if _, ok := asPresaleCapExceeded(err); ok {
+		return GroupReservation{}, false, ErrPresaleCodeInvalid
+	}
+	return h, replay, err
+}
+
+// placeGroupReservationAttempt is ONE complete placement transaction. It returns
+// presaleCapExceeded for an exhausted code, and only PlaceGroupReservation may see that.
+func (p *Postgres) placeGroupReservationAttempt(ctx context.Context, org, slot uuid.UUID, qty int32, counterparty string, expiresAt time.Time, channel, actor, reason, key string, o holdOptions, fp string) (GroupReservation, bool, error) {
+	// A fresh copy per attempt: the ungated normalisation below clears it.
+	presaleCode := o.presaleCode
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return GroupReservation{}, false, err
@@ -202,10 +225,11 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 		}
 	}
 	h := GroupReservation{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Counterparty: counterparty, Channel: channel, Status: "held"}
-	// The SOURCE reservation cites the code; its draw-down children deliberately do
-	// NOT (ADR-064). consumingClaims counts a live source AND its live children, so
-	// a code cited on both would have the same units counted twice and a code capped
-	// at 10 would exhaust at 5. The redemption happened here, once.
+	// The SOURCE reservation cites the code, and every draw-down child INHERITS the
+	// citation (ADR-064 §6; DrawDownGroupReservation below). That is not a double
+	// count: a draw-down decrements the source by exactly the drawn quantity, or
+	// releases it whole, so source plus children always sums to what was placed here.
+	// The redemption happened here, once; a draw-down moves it and redeems nothing.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code,staff_scope)
 		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,''),true) RETURNING expires_at,now()`,
 		h.ID, org, slot, qty, expiresAt, key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
