@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,9 +51,24 @@ const windowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 // be the hand-copy consumedQuantity's comment warns about.
 //
 // A code's window and its CHANNEL's window are independent and BOTH must admit the
-// instant. A code valid all week on a channel that opens Friday sells Friday.
+// instant. A code valid all week on a channel that opens Friday sells Friday. "The
+// instant" is literal: after the code lock, redeemPresaleCode judges both at ONE sampled
+// instant (atInstant, TKT-544 D9).
 const codeWindowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
+
+// atInstant is a shipped window predicate (windowOpen, codeWindowOpen) judged at `instant`
+// instead of at clock_timestamp(). Only the clock changes: the bounds, the half-open
+// comparisons and the NULL rules stay the const's own text, so each window keeps ONE
+// source, and TestPresaleCodeWindowIsHalfOpen and TestChannelSalesWindowIsHalfOpen
+// evaluate this same derivation at a literal instant.
+//
+// It exists because two windows that must admit the same instant cannot each call
+// clock_timestamp(): every call is a new sample, and two windows that abut (one closes at
+// T, the other opens at T) both admit when T falls between the samples (TKT-544 D9).
+func atInstant(predicate, instant string) string {
+	return strings.ReplaceAll(predicate, "clock_timestamp()", instant)
+}
 
 // consumingClaims is what counts against a channel's cap: confirmed consumption is
 // permanent, live holds are temporary. Built on liveClaims so expiry semantics can never

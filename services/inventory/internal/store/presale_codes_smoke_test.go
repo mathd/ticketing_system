@@ -271,11 +271,11 @@ func TestPresaleCodeWindowIsHalfOpen(t *testing.T) {
 
 	eval := func(t *testing.T, opens, closes string) bool {
 		t.Helper()
-		q := `SELECT ` + codeWindowOpen + ` FROM (SELECT ` + opens + `::timestamptz AS opens_at, ` +
-			closes + `::timestamptz AS closes_at) w`
 		// The shipped const reads clock_timestamp(); pin it to a literal so a bound
-		// can sit exactly ON the evaluation instant.
-		q = strings.ReplaceAll(q, "clock_timestamp()", "$1::timestamptz")
+		// can sit exactly ON the evaluation instant. atInstant is the derivation the
+		// claim path itself uses (presaleDecision), so this judges that form.
+		q := `SELECT ` + atInstant(codeWindowOpen, "$1::timestamptz") + ` FROM (SELECT ` + opens +
+			`::timestamptz AS opens_at, ` + closes + `::timestamptz AS closes_at) w`
 		var open bool
 		if err := db.QueryRowContext(ctx, q, "2026-08-10T12:00:00Z").Scan(&open); err != nil {
 			t.Fatal(err)
@@ -1587,7 +1587,8 @@ func TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
-// TKT-544: every window an admission depends on is judged AFTER the code-lock wait.
+// TKT-544: the channel's window and the code's window are judged AFTER the
+// code-lock wait.
 //
 // The code row lock can WAIT. A redemption of the same code on another pool holds
 // it without updating the row, and so can an issuance. So an admission can reach
@@ -1600,6 +1601,11 @@ func TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept(t *testing.T)
 // (TKT-380 probe 1 schedule W: 6 of 6 admitted after closes_at). The channel's
 // window had the same exposure one statement earlier: the caller read it under
 // the pool lock, before the code-lock wait.
+//
+// Since D9, one statement after the lock judges the channel's window and the
+// code's window and cap at ONE sampled instant, and a channel that closed during
+// the wait answers the uniform ErrPresaleCodeInvalid. A distinct answer there was
+// an oracle: only a code with a row can wait on it.
 //
 // THE SEAM IS A REAL POSTGRESQL LOCK, held by a blocker transaction that never
 // writes. No production hook. A blocker that UPDATED the code row would let
@@ -1683,15 +1689,17 @@ type admissionOutcome struct {
 //  1. a blocker transaction takes its lock (hold) and writes nothing;
 //  2. the admission starts and is observed waiting in its code-lock statement,
 //     blocked by exactly the blocker, while the database clock is before boundary;
-//  3. the database clock passes boundary (plus 200 ms), and the admission is
+//  3. during, when it is not nil, runs while the admission waits (it must not
+//     wait on the blocker itself);
+//  4. the database clock passes boundary (plus 200 ms), and the admission is
 //     confirmed still waiting;
-//  4. the blocker rolls back, and the admission finishes.
+//  5. the blocker rolls back, and the admission finishes.
 //
 // Every wait is on an observed database state, bounded by ctx. On a failure, the
 // cleanup releases the blocker and waits for the admission before storeForTest
 // drops the schema.
 func admitAcrossBoundary(t *testing.T, ctx context.Context, db *sql.DB, boundary time.Time,
-	hold func(context.Context, *sql.Tx) error, admit func() (uuid.UUID, bool, error)) admissionOutcome {
+	hold func(context.Context, *sql.Tx) error, admit func() (uuid.UUID, bool, error), during func()) admissionOutcome {
 	t.Helper()
 	if now := dbNow(t, ctx, db); !now.Before(boundary) {
 		t.Fatalf("setup: the database clock (%s) is already at the boundary (%s); the schedule cannot be forced",
@@ -1789,7 +1797,12 @@ func admitAcrossBoundary(t *testing.T, ctx context.Context, db *sql.DB, boundary
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// (3) Past the boundary by the database clock, still waiting.
+	// (3) Other work while the admission waits.
+	if during != nil {
+		during()
+	}
+
+	// (4) Past the boundary by the database clock, still waiting.
 	for {
 		var past bool
 		if err = db.QueryRowContext(ctx,
@@ -1812,7 +1825,7 @@ func admitAcrossBoundary(t *testing.T, ctx context.Context, db *sql.DB, boundary
 	}
 	t.Logf("database clock is past the boundary; the blocker rolls back without a write")
 
-	// (4) Release and collect.
+	// (5) Release and collect.
 	if err = btx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
@@ -1888,7 +1901,7 @@ func TestPresaleCodeWindowAfterCodeLock(t *testing.T) {
 				mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: code, ClosesAt: &closes})
 
 				out := admitAcrossBoundary(t, ctx, db, closes, holdCodeRow(org, "presale", code),
-					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) })
+					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) }, nil)
 
 				rows := claimsUnderKey(t, ctx, db, org, key)
 				if !errors.Is(out.err, ErrPresaleCodeInvalid) || out.replay || len(rows) != 0 {
@@ -1914,7 +1927,7 @@ func TestPresaleCodeWindowAfterCodeLock(t *testing.T) {
 				mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: code, OpensAt: &opens})
 
 				out := admitAcrossBoundary(t, ctx, db, opens, holdCodeRow(org, "presale", code),
-					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) })
+					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) }, nil)
 
 				rows := claimsUnderKey(t, ctx, db, org, key)
 				if out.err != nil || out.replay {
@@ -1931,19 +1944,22 @@ func TestPresaleCodeWindowAfterCodeLock(t *testing.T) {
 	}
 }
 
-// The CHANNEL's window, judged again after the code-lock wait (TKT-544 D3).
+// The CHANNEL's window, judged again after the code-lock wait (TKT-544 D3, D9).
 //
 // The caller reads the channel's window under the pool lock, BEFORE
 // redeemPresaleCode waits on the code. A channel that closes during that wait
-// must still refuse with channel_window_closed: ADR-054's "nobody can buy outside
-// the window", and the window -> code precedence of ADR-064 §5.
+// must still refuse: ADR-054's "nobody can buy outside the window".
 //
-// THE ANSWER MUST NOT DEPEND ON THE CODE. A valid code and an unknown code must get
-// the same answer under the same schedule, so the window is judged again whether
-// or not the code row exists. A row lock cannot delay an unknown code (it has no
-// row), so the shared schedule locks the TABLE (holdCodeTable). The row-lock case
-// stays as well, because it is the schedule production can produce: another
-// redemption of the same code.
+// It refuses with the UNIFORM ErrPresaleCodeInvalid, not ErrChannelWindowClosed
+// (D9). Only a code that has a row can wait on it, so a distinct answer after the
+// wait would tell a caller that the code exists (TestPresaleRefusalIsUniform-
+// AcrossTheCodeLockWait). A channel that is closed at the caller's check, before
+// the code step, still answers channel_window_closed.
+//
+// A valid code and an unknown code get the same answer under the same schedule.
+// A row lock cannot delay an unknown code (it has no row), so the shared schedule
+// locks the TABLE (holdCodeTable). The row-lock case stays as well, because it is
+// the schedule production can produce: another redemption of the same code.
 func TestChannelWindowAfterCodeLock(t *testing.T) {
 	const validCode = "VALID-544"
 	for _, path := range presaleAdmissions {
@@ -1974,20 +1990,244 @@ func TestChannelWindowAfterCodeLock(t *testing.T) {
 						{Channel: "presale", Cap: 100, RequiresCode: true, ClosesAt: &closes}})
 
 					out := admitAcrossBoundary(t, ctx, db, closes, tc.hold(org),
-						func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, tc.code, key) })
+						func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, tc.code, key) }, nil)
 
 					rows := claimsUnderKey(t, ctx, db, org, key)
-					if !errors.Is(out.err, ErrChannelWindowClosed) || out.replay || len(rows) != 0 {
+					if !errors.Is(out.err, ErrPresaleCodeInvalid) || out.replay || len(rows) != 0 {
 						t.Fatalf("admission with code %q across the CHANNEL's closes_at: err=%v replay=%v, "+
-							"claims under its key: %v; want ErrChannelWindowClosed and no claim. The channel "+
-							"window was judged only before the code-lock wait.",
+							"claims under its key: %v; want the uniform ErrPresaleCodeInvalid and no claim. "+
+							"A claim means the channel window was judged only before the code-lock wait; "+
+							"ErrChannelWindowClosed means the answer after the wait is distinct (D9).",
 							tc.code, out.err, out.replay, rows)
 					}
-					if out.err.Error() != ErrChannelWindowClosed.Error() {
-						t.Fatalf("message %q differs from %q", out.err.Error(), ErrChannelWindowClosed.Error())
+					if out.err.Error() != ErrPresaleCodeInvalid.Error() {
+						t.Fatalf("message %q differs from the uniform %q", out.err.Error(), ErrPresaleCodeInvalid.Error())
 					}
 				})
 			}
 		})
 	}
+}
+
+// ONE clock sample decides the channel's window AND the code's window (TKT-544 D9).
+//
+// Two half-open windows that abut — the channel closes at T, the code opens at T —
+// must never both admit. Judged at one instant they cannot: before T the code is
+// not open, from T on the channel is closed. Judged at two instants (one for the
+// channel, a later one for the code) they can, if T falls between the samples.
+//
+// At the admission tier that gap cannot be forced. The two samples are adjacent
+// statements of one transaction, and no lock can sit between them: the admission
+// already holds ROW SHARE on presale_codes and ACCESS SHARE on channel_allocations,
+// so no blocker can take a lock that a plain read would wait on. So this test sits
+// at the tier that DECIDES: it calls redeemPresaleCode in a transaction whose
+// clock_timestamp() is a test-only function in this schema, ahead of pg_catalog on
+// the search_path (executed on PostgreSQL 18.4: pg_catalog is searched first
+// unless it is named later in the path). Each call returns the next instant of a
+// fixed sequence, one hour apart, starting at 11:30 — so every sample is visible
+// and the "gap" is an hour wide.
+//
+// No production hook: the production SQL is unchanged and unaware of the test.
+// The function is VOLATILE, the same class as clock_timestamp(), so PostgreSQL
+// evaluates it the way it evaluates the real one.
+//
+// Both orientations of the abutting pair are judged, because a two-sample
+// statement admits only when the earlier sample goes to the window that closes.
+// A control case, with both windows open at the first sample, proves the fixture
+// can admit at all.
+func TestPresaleDecisionSamplesTheClockOnce(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Hour)
+	org, slot := provisioned(t, ctx, st, 100)
+	var schema string
+	if err := db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE SEQUENCE clock_ticks`,
+		`CREATE FUNCTION clock_timestamp() RETURNS timestamptz VOLATILE LANGUAGE sql AS $$
+			SELECT '2026-08-10T11:30:00Z'::timestamptz + (nextval('` + schema + `.clock_ticks') - 1) * interval '1 hour' $$`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	instant := func(s string) *time.Time {
+		v, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &v
+	}
+	const code = "ADJACENT-544"
+	for _, tc := range []struct {
+		name                  string
+		chOpens, chCloses     *time.Time
+		codeOpens, codeCloses *time.Time
+		wantAdmitted          bool
+	}{
+		// The reachable orientation: the channel closes at T while the code opens at T.
+		{"the channel closes at T and the code opens at T", nil, instant("2026-08-10T12:00:00Z"),
+			instant("2026-08-10T12:00:00Z"), nil, false},
+		// The mirror: the code closes at T while the channel opens at T.
+		{"the code closes at T and the channel opens at T", instant("2026-08-10T12:00:00Z"), nil,
+			nil, instant("2026-08-10T12:00:00Z"), false},
+		// Control: the first sample (11:30) is inside both windows.
+		{"control: both windows contain the first sample", nil, instant("2026-08-10T13:00:00Z"),
+			instant("2026-08-10T11:00:00Z"), nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mustReplace(t, ctx, st, org, slot, []ChannelAllocation{
+				{Channel: "presale", Cap: 100, RequiresCode: true, OpensAt: tc.chOpens, ClosesAt: tc.chCloses}})
+			// Uncapped: the usage count never runs, so only the two windows decide.
+			mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: code,
+				OpensAt: tc.codeOpens, ClosesAt: tc.codeCloses})
+
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err = tx.ExecContext(ctx, `SET LOCAL search_path = `+schema+`, pg_catalog`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.ExecContext(ctx, `SELECT setval('clock_ticks', 1, false)`); err != nil {
+				t.Fatal(err)
+			}
+			redeemErr := redeemPresaleCode(ctx, tx, org, slot, "presale", code, lockScheduleQty)
+			var last int64
+			var called bool
+			if err = tx.QueryRowContext(ctx, `SELECT last_value, is_called FROM clock_ticks`).Scan(&last, &called); err != nil {
+				t.Fatal(err)
+			}
+			samples := int64(0)
+			if called {
+				samples = last
+			}
+
+			if samples != 1 {
+				t.Errorf("redeemPresaleCode sampled the database clock %d times, want exactly 1: the "+
+					"channel's window and the code's window must be judged at ONE instant (D9), or "+
+					"two abutting windows can both admit (err=%v)", samples, redeemErr)
+			}
+			if tc.wantAdmitted {
+				if redeemErr != nil {
+					t.Fatalf("control: both windows contain the sampled instant, got %v; the fixture "+
+						"cannot admit, so the refusals above would prove nothing", redeemErr)
+				}
+				return
+			}
+			if redeemErr == nil {
+				t.Fatalf("ADMITTED across two abutting windows: the channel's window and the code's "+
+					"window were judged at different instants (%d clock samples)", samples)
+			}
+			if !errors.Is(redeemErr, ErrPresaleCodeInvalid) || redeemErr.Error() != ErrPresaleCodeInvalid.Error() {
+				t.Fatalf("got %v, want the uniform ErrPresaleCodeInvalid: the code step answers one "+
+					"refusal whatever closed (D9)", redeemErr)
+			}
+		})
+	}
+}
+
+// ⭐ THE ORACLE SCHEDULE (TKT-544 D9): the code step answers ONE refusal whatever
+// the code is, including after a wait that only a code with a row can have.
+//
+// Production can produce this: a redemption of an EXHAUSTED code on another pool
+// holds the code's row (here, a blocker that never writes), and an attacker's
+// admission with that code waits on it across the channel's closes_at. Meanwhile
+// admissions with an UNKNOWN code, NO code, and a code of ANOTHER channel, each on
+// its own pool so they do not queue behind the first one's pool lock, have no row
+// to wait on and finish before closes_at. All four must answer the identical
+// error. With D3 the waiting one answered channel_window_closed and the other
+// three presale_code_invalid, which tells the caller which code exists.
+//
+// The wire body is asserted where it is decided, in the api package
+// (TestPresaleRefusalBodyIsUniformAcrossTheCodeLockWait).
+func TestPresaleRefusalIsUniformAcrossTheCodeLockWait(t *testing.T) {
+	const exhausted, other = "EXHAUSTED-544", "OTHER-CHANNEL-544"
+	for _, path := range presaleAdmissions {
+		t.Run(path.name, func(t *testing.T) {
+			ctx, st, db := storeForTest(t, time.Hour)
+			org, exhaustedPool := provisioned(t, ctx, st, 100)
+			unknownPool := slotFor(t, ctx, st, org, 100)
+			emptyPool := slotFor(t, ctx, st, org, 100)
+			otherPool := slotFor(t, ctx, st, org, 100)
+			pools := []uuid.UUID{exhaustedPool, unknownPool, emptyPool, otherPool}
+			for _, p := range pools {
+				mustReplace(t, ctx, st, org, p, []ChannelAllocation{{Channel: "presale", Cap: 100, RequiresCode: true}})
+			}
+			mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: exhausted,
+				MaxRedemptions: capOf(lockScheduleQty)})
+			mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "reseller", Code: other})
+			// Spend the cap, so the code is exhausted for real rather than by assertion.
+			if _, _, err := path.admit(ctx, st, org, exhaustedPool, exhausted, "spend"); err != nil {
+				t.Fatalf("spend the exhausted code: %v", err)
+			}
+			// Last setup step, from the database clock: every pool's channel closes at once.
+			closes := dbClockOffset(t, db, windowMargin)
+			for _, p := range pools {
+				mustReplace(t, ctx, st, org, p, []ChannelAllocation{
+					{Channel: "presale", Cap: 100, RequiresCode: true, ClosesAt: &closes}})
+			}
+
+			noRow := []struct {
+				name, code, key string
+				pool            uuid.UUID
+				out             admissionOutcome
+			}{
+				{"unknown code", "NEVER-ISSUED-544", "unknown", unknownPool, admissionOutcome{}},
+				{"no code", "", "empty", emptyPool, admissionOutcome{}},
+				{"code of another channel", other, "other-channel", otherPool, admissionOutcome{}},
+			}
+			waited := admitAcrossBoundary(t, ctx, db, closes, holdCodeRow(org, "presale", exhausted),
+				func() (uuid.UUID, bool, error) {
+					return path.admit(ctx, st, org, exhaustedPool, exhausted, "exhausted")
+				},
+				func() {
+					for i := range noRow {
+						r := &noRow[i]
+						r.out.id, r.out.replay, r.out.err = path.admit(ctx, st, org, r.pool, r.code, r.key)
+					}
+					// They answered while the channel was still open: the comparison is
+					// between requests that all started before closes_at.
+					if now := dbNow(t, ctx, db); !now.Before(closes) {
+						t.Fatalf("setup: the three no-row admissions finished only at %s, not before the "+
+							"channel's closes_at %s", now.UTC().Format(time.RFC3339Nano),
+							closes.UTC().Format(time.RFC3339Nano))
+					}
+				})
+
+			answers := []struct {
+				name, key string
+				out       admissionOutcome
+			}{{"exhausted code that waited on its row across closes_at", "exhausted", waited}}
+			for _, r := range noRow {
+				answers = append(answers, struct {
+					name, key string
+					out       admissionOutcome
+				}{r.name + " (no row, no wait)", r.key, r.out})
+			}
+			var report []string
+			uniform := true
+			for _, a := range answers {
+				rows := claimsUnderKey(t, ctx, db, org, a.key)
+				report = append(report, a.name+": err="+errString(a.out.err)+" claims="+strconv.Itoa(len(rows)))
+				if !errors.Is(a.out.err, ErrPresaleCodeInvalid) || a.out.err.Error() != ErrPresaleCodeInvalid.Error() ||
+					a.out.replay || len(rows) != 0 {
+					uniform = false
+				}
+			}
+			if !uniform {
+				t.Fatalf("the four refusals differ; each must be the uniform ErrPresaleCodeInvalid with no "+
+					"claim:\n  %s\nA distinct answer for the code that waited tells the caller the code "+
+					"has a row (ADR-064 §4).", strings.Join(report, "\n  "))
+			}
+		})
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return strconv.Quote(err.Error())
 }

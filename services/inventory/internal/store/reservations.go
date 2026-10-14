@@ -160,7 +160,8 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			// quantity-neutral, so it redeems nothing new either.
 			//
 			// As in CreateHold, redeemPresaleCode judges this channel's window again
-			// after the code lock, which can wait (TKT-544).
+			// after the code lock, which can wait, and a channel that closed during
+			// that wait answers the uniform ErrPresaleCodeInvalid (TKT-544 D9).
 			if requiresCode {
 				if err = redeemPresaleCode(ctx, tx, org, slot, channel, presaleCode, qty); err != nil {
 					return GroupReservation{}, false, err

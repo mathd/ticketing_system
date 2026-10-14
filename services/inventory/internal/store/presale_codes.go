@@ -39,6 +39,32 @@ type PresaleCodeStatus struct {
 	Exhausted  bool   `json:"exhausted"`
 }
 
+// presaleDecision judges, at ONE database instant, what redeemPresaleCode decides
+// after the code lock: is the channel's window open ($1 pool, $2 channel), is the
+// code's window open ($3 organizer, $2 channel, $4 code), and what is its cap.
+//
+// ONE SAMPLE. clock_timestamp() appears once, in the `decision` CTE, and both
+// windows read decision.instant through atInstant, so they are the shipped
+// predicates judged at the same instant. A WITH query is evaluated once per
+// execution of the parent query, and one that contains a volatile function is never
+// folded into it (PostgreSQL 18 documentation, §7.8.3); MATERIALIZED states that
+// intent explicitly. Executed on PostgreSQL 18.4 with a counting function in place
+// of the clock: one call, with and without MATERIALIZED, while two direct calls in
+// one statement are two samples. TestPresaleDecisionSamplesTheClockOnce pins it.
+//
+// The code row is LEFT JOINed (LATERAL), so an unknown code is judged by the same
+// statement at the same instant and comes back with codeOpen false and no cap. The
+// allocation is an inner join: its absence returns no row.
+var presaleDecision = `WITH decision AS MATERIALIZED (SELECT clock_timestamp() AS instant)
+SELECT ch.is_open, COALESCE(c.is_open, false), c.max_redemptions
+FROM decision
+CROSS JOIN LATERAL (
+	SELECT ` + atInstant(windowOpen, "decision.instant") + ` AS is_open
+	FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2) ch
+LEFT JOIN LATERAL (
+	SELECT max_redemptions, ` + atInstant(codeWindowOpen, "decision.instant") + ` AS is_open
+	FROM presale_codes WHERE organizer_id=$3 AND channel_code=$2 AND code=$4) c ON true`
+
 // redeemPresaleCode decides whether `code` may be redeemed for `qty` more units
 // on (org, channel), and MUST be called inside the claim transaction, after the
 // row lock on pool `slot` and after the caller has judged the channel's window on
@@ -72,13 +98,14 @@ type PresaleCodeStatus struct {
 // DECIDE AFTER THE WAIT (TKT-544). The code lock can WAIT. Another redemption of
 // the same code on a different pool holds it without updating the row, and an
 // issuance holds it too. The pool lock this transaction already holds does not
-// exclude either of them. So every time-dependent decision is taken in a statement
-// that starts AFTER the lock statement returns:
+// exclude either of them. So the channel window and code window decisions, and the
+// cap, are taken in ONE statement that starts AFTER the lock statement returns:
 //
 //  1. the lock statement computes nothing that depends on time;
-//  2. the CHANNEL's window is judged again: the caller judged it before this wait;
-//  3. the code's cap and window are read;
-//  4. usage is counted for a capped code.
+//  2. presaleDecision samples the database clock ONCE and judges, at that one
+//     instant, the CHANNEL's window (the caller judged it before this wait), the
+//     code's window, and reads the code's cap;
+//  3. usage is counted for a capped code.
 //
 // A value in the lock statement's own target list is not enough. PostgreSQL
 // computed the old combined statement's window before the wait, and did not
@@ -89,78 +116,66 @@ type PresaleCodeStatus struct {
 // WHERE clause is checked again only for a row that the holder updated (documented
 // behaviour, not executed for this ticket).
 //
-// A boundary that passes AFTER these reads, during the counting or the insert, is
+// ONE ANSWER FOR THE CODE STEP (D9). Every refusal this function makes is
+// ErrPresaleCodeInvalid, INCLUDING a channel that closed during the wait. Only a
+// code that has a row can wait on it: an unknown code, no code and a code of
+// another channel have no row and answer at once. So a distinct
+// channel_window_closed after the wait would tell a caller that the code exists
+// (ADR-064 §4). A channel that is already closed at the caller's check, before
+// this function, still answers channel_window_closed there.
+//
+// A boundary that passes AFTER the decision, during the counting or the insert, is
 // outside the guarantee: the decision is judged once the last wait before it ends,
 // not at commit.
 //
-// Returns ErrChannelWindowClosed when the channel's window closed during the wait,
-// and ErrPresaleCodeInvalid, uniformly, for every refusal of the code.
+// Returns ErrPresaleCodeInvalid, uniformly, for every refusal.
 func redeemPresaleCode(ctx context.Context, tx *sql.Tx, org, slot uuid.UUID, channel, code string, qty int32) error {
+	if code == "" {
+		// A gated allocation with no code presented. No row can match (the schema
+		// refuses an empty code), so there is nothing to lock or to judge, and the
+		// answer is the same refusal as a wrong code: telling the caller "you forgot
+		// the code" versus "that code is wrong" is already half an oracle.
+		return ErrPresaleCodeInvalid
+	}
+
 	// 1. Take the code row lock. The statement reads no term of the code: see
 	// above for why a term read here would be stale.
 	//
-	// An empty or unknown code has no row to lock, which is correct: it is
-	// refused below, and a refusal needs no serialization. It still goes through
-	// step 2 first, so the channel's answer cannot depend on whether the code
-	// exists.
+	// An unknown code has no row to lock, which is correct: it is refused below,
+	// and a refusal needs no serialization. It still goes through step 2, so it is
+	// judged by the same statement as a code that exists.
 	//
 	// The channel is part of the primary key, so a code issued on another channel
 	// simply does not match here — the wrong-channel case needs no separate
 	// branch and cannot accidentally report a different refusal.
 	codeRowLocked := false
-	if code != "" {
-		var locked int
-		err := tx.QueryRowContext(ctx,
-			`SELECT 1 FROM presale_codes WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE`,
-			org, channel, code).Scan(&locked)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-		case err != nil:
-			return err
-		default:
-			codeRowLocked = true
-		}
-	}
-
-	// 2. Judge the channel's window again, with the same predicate, on the same
-	// allocation row the caller read. The row itself cannot have changed: the
-	// only writer of channel_allocations (ReplaceChannelAllocations) takes the
-	// pool lock this transaction holds. Only the clock moved. So a missing row is
-	// a fault, not a refusal, and it returns as an error.
-	//
-	// Precedence stays window -> code (ADR-064 §5): a channel that closed during
-	// the wait refuses as closed, whatever the code is.
-	var channelOpen bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT (`+windowOpen+`) FROM channel_allocations WHERE pool_id=$1 AND channel_code=$2`,
-		slot, channel).Scan(&channelOpen); err != nil {
-		return err
-	}
-	if !channelOpen {
-		return ErrChannelWindowClosed
-	}
-	if !codeRowLocked {
-		// No code presented, or no such code on this channel. The same refusal for
-		// both: telling the caller "you forgot the code" versus "that code is
-		// wrong" is already half an oracle.
-		return ErrPresaleCodeInvalid
-	}
-
-	// 3. The terms, read after the lock. The row cannot disappear while this
-	// transaction holds its lock; a missing row still gets the uniform refusal.
-	var maxRedemptions sql.NullInt32
-	var codeOpen bool
+	var locked int
 	err := tx.QueryRowContext(ctx,
-		`SELECT max_redemptions, (`+codeWindowOpen+`) FROM presale_codes
-		 WHERE organizer_id=$1 AND channel_code=$2 AND code=$3`,
-		org, channel, code).Scan(&maxRedemptions, &codeOpen)
+		`SELECT 1 FROM presale_codes WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE`,
+		org, channel, code).Scan(&locked)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return ErrPresaleCodeInvalid
 	case err != nil:
 		return err
+	default:
+		codeRowLocked = true
 	}
-	if !codeOpen {
+
+	// 2. One instant, three terms. The allocation row is the one the caller read:
+	// the only writer of channel_allocations (ReplaceChannelAllocations) takes the
+	// pool lock this transaction holds, so only the clock has moved. A missing
+	// allocation row is therefore a fault, not a refusal: no row comes back, and
+	// that returns as an error.
+	var channelOpen, codeOpen bool
+	var maxRedemptions sql.NullInt32
+	if err = tx.QueryRowContext(ctx, presaleDecision, slot, channel, org, code).
+		Scan(&channelOpen, &codeOpen, &maxRedemptions); err != nil {
+		return err
+	}
+	// codeRowLocked, not "the row is there now": a code issued and committed
+	// between the two statements would be visible to step 2 without being locked,
+	// and its usage would then be counted with nothing serializing it.
+	if !codeRowLocked || !channelOpen || !codeOpen {
 		return ErrPresaleCodeInvalid
 	}
 	if !maxRedemptions.Valid {
