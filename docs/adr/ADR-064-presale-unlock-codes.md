@@ -9,6 +9,15 @@ Accepted (TKT-239; epic TKT-17, US-CH5)
 Supersedes nothing. Extends [ADR-024](./ADR-024-channel-allocations.md) (channel allocations) and
 [ADR-054](./ADR-054-per-channel-sales-windows.md) (sales windows).
 
+**A code's usage counts a held claim until a terminal write (2026-10-14, TKT-543).** Amended below
+in §3 and §Consequences. A code capped at N could end with more than N confirmed units: an
+admission on one pool left out an expired, unswept hold on another pool, and a finalize that had
+queued on that pool before the expiry then kept the hold
+([TKT-380 evidence](../evidence/TKT-380/README.md), probe 1, S1). The admission count now follows
+reading R2 of [ADR-084](./ADR-084-promotion-storage-and-redemption-contract.md) §3. The cost is
+accepted and recorded in §3: an expired hold on a quiet pool keeps its code's units blocked for
+other pools until a write on that pool sweeps it; TKT-547 is the remedy.
+
 ## Context
 
 ADR-024 gave a channel **how much** it may sell. ADR-054 gave it **when**. Neither says **who**.
@@ -67,9 +76,85 @@ exotic mechanism would have needed a justification it does not have.
 
 ### 3. Consumption is **derived**, never a counter
 
-`codeRedeemedQuantity` sums `consumedQuantity` over claims citing the code, filtered by
-`consumingClaims` — the same expressions that count against a channel cap, so the two can never
-disagree.
+`codeRedeemedQuantity` sums `consumedQuantity` over the claims citing the code whose status is
+`confirmed`, `finalizing` or `held`, with **no expiry test** (`presaleUsageClaims`; amended by
+TKT-543, reading R2 of ADR-084 §3).
+
+**What this section first said, and why it changed.** It filtered by `consumingClaims`, the predicate
+that counts against a channel cap, "so the two can never disagree". That agreement was the defect.
+A channel's count is pool-scoped, so the pool lock orders it against every finalize on that pool.
+A code's count spans pools, and a held claim's expiry is judged by whichever transaction on *its*
+pool runs next. `Transition` judges it on transaction-start `now()` (ADR-024, TKT-148), so a
+finalize that queued on its pool before the hold expired still finalizes it afterwards. An
+admission on another pool had already left the expired hold out of the count and admitted one
+more unit: a code capped at 1 sold 2. The same happens on the draw-down child path, whose decision
+precedes its commit. TKT-380 probe 3 executed R2 on the finalize race only (buyer holds and
+`Transition`): the cap held in 6 of 6 runs and 7 repeats, and today's predicate broke it. No probe
+covered the draw-down path. `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` and
+`TestPresaleCapCountsReservationWhileDrawDownInsertWaits` force both schedules, the second being the
+first executed evidence for the draw-down path: 2 confirmed units for a cap of 1 with the old
+predicate, 1 with R2.
+
+**What is still shared, and what now differs on purpose.**
+
+- The quantity: `consumedQuantity`, net of refund returns, in every count. A refund returns a
+  redemption exactly as it returns a seat.
+- Channel consumption keeps `consumingClaims`, and pool capacity keeps the confirmed counter plus
+  `liveClaims`: an expired held claim stops counting there for any transaction whose start time
+  (`now()`) has reached its `expires_at`.
+- The admission count keeps an expired held claim until a **terminal write commits**: a
+  `sweepExpired` whose transaction commits, the replay-expiry branch of `CreateHold`, the expiry
+  branch of a refused draw-down, `Transition`'s expiry branch when it commits, or a release.
+  Passing `expires_at` alone returns nothing. After a terminal write no path can finalize the
+  claim, which is why this closes the race.
+- The **operator** read (`PresaleCodeStatuses`) keeps `consumingClaims` (D19). It reports current
+  usage under that predicate: confirmed claims net of returns, finalizing claims, and held claims
+  whose `expires_at` has not passed. It predicts nothing. It is lower than the admission count by
+  the expired held claims that no terminal write has reached, so admission can refuse a code that
+  this read shows with headroom for as long as such a claim stays unwritten; a queued finalize or
+  draw-down can still keep it. R2 in the operator read would show a code as exhausted for every
+  abandoned cart. An operator who raised the cap on that reading would raise it without need: once
+  the carts were swept, the code would sell up to the raised cap, more than the operator meant to
+  allow. The read has no caller outside tests yet; TKT-309, which owns the operator surface, must
+  show both numbers or explain the gap. `TestPresaleUsageCountsUntilTerminalWrite` asserts both
+  counts, before and after a terminal write, for each claim state.
+
+**The accepted cost: liveness across pools.** Every terminal write in the request path is
+pool-local: an admission sweeps only its own pool before it counts. So an expired, unswept hold on a
+quiet pool keeps its code's units counted for every other pool until a write on that pool sweeps
+it, and a single-use code can refuse its own buyer elsewhere for that long. Same-pool reclamation is
+unchanged. This departs from the previous presale usage rule: under `consumingClaims` an expired
+hold stopped counting against its code as soon as its `expires_at` passed, so no quiet pool could
+block a code; under R2 it counts until a terminal write on its own pool. Pool capacity is not
+affected: it still counts through `liveClaims`, so a transaction excludes an expired hold from its
+pool's capacity once that transaction's start time (`now()`) has reached the hold's expiry, and
+the next mutation reclaims it, as ADR-010 describes. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept` pins the
+cost. **TKT-547**, a background sweeper, is the remedy, and will change that test's first half.
+
+**Rejected: a request-triggered cleanup (owner decision D18).** It was built: on a cap refusal, the
+admission rolled back, expired the code's due claims on the other pools in their own transactions,
+then retried. Four adversarial review passes each found a way for a caller without the code to tell
+a valid, exhausted code from an unknown one, because only that code triggered the cleanup and every
+effect it left was visible:
+
+- the replay answer of an unrelated expired hold on a cleaned pool (409 before the cleanup, 200
+  after), while the cleanup used `sweepExpired`;
+- the eviction of the cleaned pool's availability cache, visible on the public read (`Age` header
+  and body);
+- the retry's own refusal: a channel window that closed while the cleanup waited answered
+  `channel_window_closed`, where an unknown code answered `presale_code_invalid`;
+- the answer of a concurrent code-less hold on the cleaned pool whose transaction began before a
+  hold there expired: 201 if a cleanup had expired that hold meanwhile, 409 `sold_out` if not;
+- a commit's ambiguity: answering every failed retry with the code refusal turned a retry whose
+  commit acknowledgement was lost into a definite refusal that left a claim and a consumed key
+  behind, which an unknown-code refusal never does.
+
+The first three were reproduced by tests before each fix; the last two were found by reading the
+code in the fourth pass and were not executed.
+
+Each fix closed one channel and the next pass found another; the class is the design, not a local
+defect. Do not rebuild it in the request path: anything a code guess can trigger is an oracle
+(§4). Liveness belongs to a process that no request triggers (TKT-547).
 
 A counter cannot be decremented by **lazy** hold expiry without a sweeper, and ADR-010 forbids
 requiring one for correctness. Derived also gets refunds right for free: `consumedQuantity` is net
@@ -118,7 +203,8 @@ first version had children *not* inherit, reasoning that `consumingClaims` count
 its live children, so citing both would double-count and exhaust a cap at half value.
 
 That reasoning is false. A draw-down **decrements the source by exactly the drawn quantity**, or
-releases it whole when fully drawn — source + children always sums to the original. Citing both is
+releases it whole when fully drawn — a released source keeps its quantity for the record but no
+longer counts — so a committed draw-down preserves the code's counted usage. Citing both is
 conservative, not duplicative.
 
 The consequence of the wrong version was measured, not argued: drawing a 10-unit reservation fully
@@ -196,3 +282,22 @@ claim in this ADR should be read as saying otherwise.
   report a clean sellout curve while selling nothing.
 - `make browser` is not required — there is no web surface in this ticket. Issuance is API-only; a
   back-office UI is out of scope.
+- **Evidence for reading R2, and its limits (TKT-543).** Executed against PostgreSQL 18.4 with
+  forced schedules (`pg_blocking_pids` handshakes, database-clock boundaries): the finalize race and
+  the draw-down race each end with 1 confirmed unit for a cap of 1, and with 2 when
+  `codeRedeemedQuantity` goes back to `consumingClaims`; 8 of 8 repeats each. The draw-down
+  schedule must reach the child INSERT before a source expiry set 2 s ahead, so its test rebuilds
+  the fixture, at most three times, in exactly three cases: less than 1 s of the source's life is
+  left on the database clock when the draw-down is about to start; the draw-down reaches its child
+  INSERT only at or after the source's expiry; or it refuses with the source's expiry committed and
+  the claim's `updated_at` (that transaction's start) is at or after `expires_at`. Any other early
+  result fails the test. A sample whose transaction began before `expires_at` and recorded the
+  expiry after it cannot be classified, because the decision time is not observable; it fails closed
+  as an unprovable sample, and with the 1 s margin it needs more than 1 s to elapse between the margin
+  check and the draw-down's decision, with its transaction starting before the expiry (the delay can
+  fall before the transaction begins as well as inside it). These rules assume the database clock does not step backwards inside
+  one transaction; a contradictory sample fails the test. Not tested: a cap edit while a finalize or
+  draw-down is queued.
+- **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the
+  code's `closes_at` is admitted after the window closed, because the window is read in the locking
+  statement. ADR-084 §4 records the fix for promotions; the presale path keeps today's statement.
