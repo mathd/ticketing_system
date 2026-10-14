@@ -35,6 +35,12 @@ a CHECK makes a reversed window unrepresentable.
 decide with stale time and sell a closed channel. ADR-024 wrote this reasoning down for `release_at`;
 a window is the same shape.
 
+**A second wait (TKT-544).** On a gated allocation ([ADR-064](./ADR-064-presale-unlock-codes.md)),
+the claim path also waits on the presale code row lock, **after** this predicate was read. Before
+TKT-544, a channel that closed during that wait still sold. Now `redeemPresaleCode` judges the window
+again after the code lock (ADR-064 §2, *Decide after the wait*), so the claim is refused with
+`channel_window_closed`.
+
 **One const, reused in all three paths.** `consumedQuantity`'s comment records why: six call sites
 summed a claim's consumption and one silently used a different expression. A window predicate copied
 by hand into three claim paths would fork the same way, and the fork would be invisible until a hold

@@ -52,8 +52,9 @@ dependency on the highest-contention path in the system.
 
 ### 2. Redemption is serialized by the **`presale_codes` row lock**, not the pool lock
 
-`SELECT … FROM presale_codes WHERE (organizer_id, channel_code, code) … FOR UPDATE`, taken **after**
-the pool lock.
+`SELECT 1 FROM presale_codes WHERE (organizer_id, channel_code, code) … FOR UPDATE`, taken **after**
+the pool lock. The locking statement reads no term of the code. The transaction reads the terms in
+later statements, after the lock is held (see *Decide after the wait* below; TKT-544).
 
 This is the ticket's load-bearing decision and the one that is easiest to get wrong, because the
 wrong version looks right:
@@ -66,8 +67,45 @@ pool locks**, never block each other, both read usage = N−1, and both insert.
 
 **Verified, not argued:** with the row lock removed, a code capped at 5 granted **7**.
 
-**Lock order is fixed: pool → code**, never the reverse. Nothing else in inventory locks a
-`presale_codes` row, so no other order exists and self-deadlock is impossible.
+**Lock order is fixed: pool → code**, never the reverse. Two paths lock a `presale_codes` row:
+redemption, and `IssuePresaleCode`'s upsert. Issuance takes no pool lock, so it holds the code lock
+alone and adds no second order. Every claim transaction takes its pool lock before the code lock. So
+no two transactions can each hold the lock that the other needs next. *(Corrected by TKT-544: the
+original text said that nothing else locks a code row.)*
+
+**Decide after the wait (TKT-544).** The code lock can **wait**. A redemption of the same code on
+another pool holds the row without updating it, and an issuance holds it too. The pool lock that the
+admission already holds excludes neither. So every time-dependent admission decision is taken in a
+statement that starts **after** the lock statement returns:
+
+1. The lock statement (`SELECT 1 … FOR UPDATE`) computes nothing that depends on time.
+2. The **channel's** window is judged again, with ADR-054's predicate on the same allocation row. The
+   caller judged it under the pool lock, **before** this wait. A channel that closed during the wait
+   refuses with `channel_window_closed`. This read runs whether or not the code row exists, so a
+   valid code and an unknown code get the same answer.
+3. The code's cap and window are read.
+4. Usage is counted for a capped code.
+
+The original version computed the code's window in the target list of the `FOR UPDATE` statement.
+PostgreSQL computed that value before the wait, and did not compute it again when the holder ended
+without an update: TKT-380 probe 1 schedule W admitted 6 of 6 times after `closes_at`
+([evidence](../evidence/TKT-380/README.md)). That explanation is an inference that matches the
+observation. Moving the predicate into `WHERE` would not help: PostgreSQL's Read Committed
+documentation says that `WHERE` is checked again only for a row that the holder updated (documented
+behaviour, not executed for TKT-544). The design source is
+[ADR-084 §4](./ADR-084-promotion-storage-and-redemption-contract.md) (Proposed), which states the same
+rule for promotion codes.
+
+Pinned by `TestPresaleCodeWindowAfterCodeLock` (the code's window closes, or opens, during the wait)
+and `TestChannelWindowAfterCodeLock` (the channel's window closes during the wait, with a valid and
+with an unknown code), on `CreateHold` and on `PlaceGroupReservation`. Each one holds a real
+PostgreSQL lock in a transaction that never writes, and proves that the admission waits in the
+code-lock statement from before the boundary.
+
+**Limits.** A decision is taken when the last wait before it ends, not at commit. A boundary that
+passes during the usage count or the claim insert (an insert can wait on an idempotency-key conflict)
+is outside this guarantee. The allocation's `release_at` (`activeAllocation`) is still judged only in
+the caller's read, before the code-lock wait; TKT-544 does not change it.
 
 Rejected: `pg_advisory_xact_lock` on a hash of the code identity (ADR-029's shape). That pattern
 exists in *catalog* precisely because a seat-map family identity **is not a row**. Here the row
@@ -190,7 +228,10 @@ debugging "my code doesn't work" needs the answer, and that surface is internal-
 4. Pool or channel capacity → code-less `insufficient capacity`
 
 Window before code: a closed channel is not selling to anyone, so "wrong code" would be a misleading
-answer to a request a *valid* code would also have refused. Code before capacity, for the reason
+answer to a request a *valid* code would also have refused. Since TKT-544 the window is judged twice:
+by the caller under the pool lock, and again after the code lock (§2, *Decide after the wait*). So a
+channel that closes while the admission waits for the code lock still answers
+`channel_window_closed`, before any judgement of the code. Code before capacity, for the reason
 TKT-238's review established — a channel-property refusal masked by a full pool makes a gated
 presale read as a **sellout exactly when the on-sale is busiest**.
 
