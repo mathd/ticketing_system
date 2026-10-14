@@ -99,8 +99,9 @@ predicate, 1 with R2.
 
 - The quantity: `consumedQuantity`, net of refund returns, in every count. A refund returns a
   redemption exactly as it returns a seat.
-- Channel and pool accounting keep `consumingClaims`: an expired held claim stops counting there
-  as soon as `expires_at` passes.
+- Channel consumption keeps `consumingClaims`, and pool capacity keeps the confirmed counter plus
+  `liveClaims`: an expired held claim stops counting there for any transaction whose start time
+  (`now()`) has reached its `expires_at`.
 - The admission count keeps an expired held claim until a **terminal write commits**: a
   `sweepExpired` whose transaction commits, the replay-expiry branch of `CreateHold`, the expiry
   branch of a refused draw-down, `Transition`'s expiry branch when it commits, or a release.

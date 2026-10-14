@@ -74,8 +74,9 @@ const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
 // commits closes that, because a terminal write is the one thing after which no path can
 // finalize the claim.
 //
-// Channel and pool accounting keep consumingClaims: their counts are pool-scoped, so the
-// pool lock already orders them against the finalize.
+// Channel consumption keeps consumingClaims and pool capacity keeps the confirmed
+// counter plus liveClaims (expiry judged on transaction-start now()): their counts are
+// pool-scoped, so the pool lock already orders them against the finalize.
 const presaleUsageClaims = `(status IN ('confirmed','finalizing','held'))`
 
 // codeRedeemedQuantity is HOW MUCH of a presale code the ADMISSION path counts as used:
