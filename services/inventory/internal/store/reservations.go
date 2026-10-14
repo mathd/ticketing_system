@@ -204,9 +204,11 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	h := GroupReservation{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Counterparty: counterparty, Channel: channel, Status: "held"}
 	// The SOURCE reservation cites the code, and every draw-down child INHERITS the
 	// citation (ADR-064 §6; DrawDownGroupReservation below). That is not a double
-	// count: a draw-down decrements the source by exactly the drawn quantity, or
-	// releases it whole, so source plus children always sums to what was placed here.
-	// The redemption happened here, once; a draw-down moves it and redeems nothing.
+	// count: a committed draw-down preserves the code's counted usage. A partial draw
+	// decrements the held source by exactly the drawn quantity; a whole draw releases
+	// the source, which keeps its quantity for the record but no longer counts, while
+	// the child carries all of it. The redemption happened here, once; a draw-down
+	// moves it and redeems nothing.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code,staff_scope)
 		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,''),true) RETURNING expires_at,now()`,
 		h.ID, org, slot, qty, expiresAt, key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
@@ -306,9 +308,10 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	//
 	// The first version of this deliberately did not, reasoning that the source and
 	// its children would double-count. That reasoning was WRONG and running it
-	// proved so: a draw-down DECREMENTS the source by exactly qty (or releases it
-	// whole, above), so source + children always sums to the original quantity.
-	// Citing both is conservative, not duplicative.
+	// proved so: a draw-down DECREMENTS the source by exactly qty, or releases it
+	// whole (a released source keeps its quantity for the record but no longer
+	// counts), so a committed draw-down preserves the code's counted usage. Citing
+	// both is conservative, not duplicative.
 	//
 	// Without the citation the units stay consumed while the redemption count
 	// forgets them: drawing a 10-unit reservation fully down took usage from 10 to

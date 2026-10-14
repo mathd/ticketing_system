@@ -25,8 +25,9 @@ if after != 6 { t.Fatalf("derived usage is %d, want 6", after) }
 Green. It stayed green through the whole ticket.
 
 The reasoning was false. A draw-down **decrements the source by exactly the drawn quantity** (or
-releases it whole), so source + children always sums to the original — citing both is conservative,
-not duplicative. Without the citation the units stay consumed while the count forgets them:
+releases it whole, after which the source keeps its quantity for the record but no longer counts),
+so a committed draw-down preserves the counted usage — citing both is conservative, not
+duplicative. Without the citation the units stay consumed while the count forgets them:
 
 ```
 after placing 10:      usage=10

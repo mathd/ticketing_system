@@ -471,8 +471,9 @@ func TestConfirmedClaimKeepsItsRedemptionForever(t *testing.T) {
 // The first version of this ticket had the child NOT inherit the citation, on the
 // reasoning that source and children would double-count. That reasoning was wrong
 // and ai-review caught it: a draw-down DECREMENTS the source by exactly the drawn
-// quantity (or releases it whole), so source + children always sums to the
-// original. Citing both is conservative.
+// quantity, or releases it whole (a released source keeps its quantity for the
+// record but no longer counts), so a committed draw-down preserves the code's
+// counted usage. Citing both is conservative.
 //
 // Measured on the un-fixed build: drawing a 10-unit reservation fully down took
 // usage from 10 to ZERO and a code "capped at 10" then granted 10 MORE — 20 units
@@ -1241,6 +1242,10 @@ func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
 	}
 }
 
+// drawDownMargin is how much of the source's life must be left, on the database clock, when
+// the draw-down starts (see drawDownWaitingAtItsInsert).
+const drawDownMargin = "1 second"
+
 // drawDownSchedule is one fixture of the draw-down race, with the draw-down held at its
 // child INSERT by the blocker.
 type drawDownSchedule struct {
@@ -1270,6 +1275,19 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 		`INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reservation_counterparty,staff_scope)
 		 VALUES(gen_random_uuid(),$1,$2,1,'held',now()+interval '1 hour',$3,'seam-blocker','reservation','seam-blocker',true)`,
 		f.org, f.p3, drawKey)
+	// MARGIN. The draw-down starts only while at least drawDownMargin of the source's life
+	// is left on the database clock. A decision after the expiry then needs a delay longer
+	// than the margin between this check and the decision, which keeps the unprovable band
+	// below out of reach in practice. A short margin is a missed reach, not a result.
+	var enough bool
+	if err := f.db.QueryRowContext(f.ctx, `SELECT $1::timestamptz - clock_timestamp() >= $2::interval`,
+		*src.ExpiresAt, drawDownMargin).Scan(&enough); err != nil {
+		t.Fatal(err)
+	}
+	if !enough {
+		t.Logf("missed: less than %s of the source's life was left when the draw-down was about to start; rebuilding", drawDownMargin)
+		return drawDownSchedule{}, false
+	}
 	drawn := spawn(t, f.ctx, func(ctx context.Context) drawResult {
 		r, _, err := f.st.DrawDownGroupReservation(ctx, f.org, src.ID, uuid.Nil, f.p2, 1, 0, "", "staff", "draw", drawKey)
 		return drawResult{r, err}
@@ -1314,6 +1332,14 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 			// transaction start and its history insert, so updated_at <= occurred_at. A
 			// sample that contradicts it (updated_at at or after expires_at while occurred_at
 			// is before it) proves nothing either way, and fails rather than rebuilds.
+			//
+			// The band between the bounds (updated_at before expires_at, occurred_at at or
+			// after it) is UNPROVABLE, not a defect: the decision time is not observable, so
+			// a correct late decision and a premature expiry look the same. It fails closed.
+			// With the margin above, reaching it takes a delay longer than drawDownMargin
+			// between the margin check and the decision while the draw-down's transaction is
+			// already open. RESIDUAL: such a stall inside that one transaction fails the test
+			// although production may be correct.
 			exp := *src.ExpiresAt
 			switch {
 			case !updatedAt.Before(exp) && recordedAt.Valid && recordedAt.Time.Before(exp):
@@ -1325,9 +1351,10 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 			case recordedAt.Valid && recordedAt.Time.Before(exp):
 				t.Fatalf("premature expiry: the draw-down recorded the source's expiry at %v, before its expires_at %v", recordedAt.Time, exp)
 			default:
-				t.Fatalf("the draw-down expired the source, but its transaction began at %v, before the source's expires_at %v, "+
-					"and recorded the expiry at %v: nothing shows the source was due when it decided, so this is not "+
-					"retried as a missed schedule", updatedAt, exp, recordedAt.Time)
+				t.Fatalf("unprovable sample, not evidence of a defect: the draw-down's transaction began at %v, before the "+
+					"source's expires_at %v, and recorded the expiry at %v, after it. Its decision time is not observable, so "+
+					"a late decision (a stall of more than %s inside that transaction) cannot be told from a premature "+
+					"expiry; the test fails closed rather than retrying", updatedAt, exp, recordedAt.Time, drawDownMargin)
 			}
 		default:
 		}
@@ -1344,9 +1371,10 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 // The admission count (codeRedeemedQuantity) is reading R2 (ADR-084 §3): every confirmed,
 // finalizing or held claim citing the code, with no expiry test, confirmed net of refund
 // returns (consumedQuantity, unchanged). The operator read (PresaleCodeStatuses) keeps
-// consumingClaims (D19): an expired held claim that nothing has swept yet is NOT in it, so
-// it reports the usage as it will be after the next sweep of each pool. Until then the
-// admission can refuse a code that the operator read shows with headroom (ADR-064 §3).
+// consumingClaims (D19): it reports current usage under that predicate and predicts
+// nothing. An expired held claim that no terminal write has reached is NOT in it, so the
+// admission can refuse a code that the operator read shows with headroom for as long as
+// that claim stays unwritten (ADR-064 §3).
 //
 // Every expected value below is derived from those two rules, not from a run. Each case
 // has its own organizer, pool and code, so no case can feed another.

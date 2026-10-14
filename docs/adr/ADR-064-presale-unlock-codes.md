@@ -88,10 +88,12 @@ pool runs next. `Transition` judges it on transaction-start `now()` (ADR-024, TK
 finalize that queued on its pool before the hold expired still finalizes it afterwards. An
 admission on another pool had already left the expired hold out of the count and admitted one
 more unit: a code capped at 1 sold 2. The same happens on the draw-down child path, whose decision
-precedes its commit. TKT-380 probe 3 executed R2 on this exact path (the cap held in 6 of 6 runs and
-7 repeats; today's predicate broke it). `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` and
-`TestPresaleCapCountsReservationWhileDrawDownInsertWaits` force both schedules: 2 confirmed units for
-a cap of 1 with the old predicate, 1 with R2.
+precedes its commit. TKT-380 probe 3 executed R2 on the finalize race only (buyer holds and
+`Transition`): the cap held in 6 of 6 runs and 7 repeats, and today's predicate broke it. No probe
+covered the draw-down path. `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` and
+`TestPresaleCapCountsReservationWhileDrawDownInsertWaits` force both schedules, the second being the
+first executed evidence for the draw-down path: 2 confirmed units for a cap of 1 with the old
+predicate, 1 with R2.
 
 **What is still shared, and what now differs on purpose.**
 
@@ -104,24 +106,28 @@ a cap of 1 with the old predicate, 1 with R2.
   branch of a refused draw-down, `Transition`'s expiry branch when it commits, or a release.
   Passing `expires_at` alone returns nothing. After a terminal write no path can finalize the
   claim, which is why this closes the race.
-- The **operator** read (`PresaleCodeStatuses`) keeps `consumingClaims` (D19). It leaves out
-  expired held claims that no terminal write has reached, so it reports the usage as it will be
-  after the next sweep of each pool. Until then, admission can refuse a code that this read shows
-  with headroom. R2 in the operator read would show a code as exhausted for every abandoned cart,
-  and an operator who raised the cap on that reading would oversell once the carts were swept.
-  The read has no caller outside tests yet; TKT-309, which owns the operator surface, must show
-  both numbers or explain the gap. `TestPresaleUsageCountsUntilTerminalWrite` asserts both counts,
-  before and after a terminal write, for each claim state.
+- The **operator** read (`PresaleCodeStatuses`) keeps `consumingClaims` (D19). It reports current
+  usage under that predicate: confirmed claims net of returns, finalizing claims, and held claims
+  whose `expires_at` has not passed. It predicts nothing. It is lower than the admission count by
+  the expired held claims that no terminal write has reached, so admission can refuse a code that
+  this read shows with headroom for as long as such a claim stays unwritten; a queued finalize or
+  draw-down can still keep it. R2 in the operator read would show a code as exhausted for every
+  abandoned cart. An operator who raised the cap on that reading would raise it without need: once
+  the carts were swept, the code would sell up to the raised cap, more than the operator meant to
+  allow. The read has no caller outside tests yet; TKT-309, which owns the operator surface, must
+  show both numbers or explain the gap. `TestPresaleUsageCountsUntilTerminalWrite` asserts both
+  counts, before and after a terminal write, for each claim state.
 
-**The accepted cost: liveness across pools, and a departure from ADR-010.** Every terminal write in
-the request path is pool-local: an admission sweeps only its own pool before it counts. So an
-expired, unswept hold on a quiet pool keeps its code's units counted for every other pool until a
-write on that pool sweeps it, and a single-use code can refuse its own buyer elsewhere for that
-long. Same-pool reclamation is unchanged. For a code across pools this departs from ADR-010's
-"expired capacity is reclaimed on the next mutation": the next mutation of the code (an admission
-on another pool) does not reclaim it. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept`
-pins the cost. **TKT-547**, a background sweeper, is the remedy, and will change that test's first
-half.
+**The accepted cost: liveness across pools.** Every terminal write in the request path is
+pool-local: an admission sweeps only its own pool before it counts. So an expired, unswept hold on a
+quiet pool keeps its code's units counted for every other pool until a write on that pool sweeps
+it, and a single-use code can refuse its own buyer elsewhere for that long. Same-pool reclamation is
+unchanged. This departs from the previous presale usage rule: under `consumingClaims` an expired
+hold stopped counting against its code as soon as its `expires_at` passed, so no quiet pool could
+block a code; under R2 it counts until a terminal write on its own pool. Pool capacity is not
+affected: it still counts through `liveClaims`, so an expired hold frees its pool's capacity at
+once, as ADR-010 describes. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept` pins the
+cost. **TKT-547**, a background sweeper, is the remedy, and will change that test's first half.
 
 **Rejected: a request-triggered cleanup (owner decision D18).** It was built: on a cap refusal, the
 admission rolled back, expired the code's due claims on the other pools in their own transactions,
@@ -195,7 +201,8 @@ first version had children *not* inherit, reasoning that `consumingClaims` count
 its live children, so citing both would double-count and exhaust a cap at half value.
 
 That reasoning is false. A draw-down **decrements the source by exactly the drawn quantity**, or
-releases it whole when fully drawn — source + children always sums to the original. Citing both is
+releases it whole when fully drawn — a released source keeps its quantity for the record but no
+longer counts — so a committed draw-down preserves the code's counted usage. Citing both is
 conservative, not duplicative.
 
 The consequence of the wrong version was measured, not argued: drawing a 10-unit reservation fully
@@ -277,11 +284,17 @@ claim in this ADR should be read as saying otherwise.
   forced schedules (`pg_blocking_pids` handshakes, database-clock boundaries): the finalize race and
   the draw-down race each end with 1 confirmed unit for a cap of 1, and with 2 when
   `codeRedeemedQuantity` goes back to `consumingClaims`; 8 of 8 repeats each. The draw-down
-  schedule depends on reaching the child INSERT within a 2 s margin, so its test rebuilds the
-  fixture, at most three times, only when the draw-down refused with the source's expiry committed
-  and the claim's `updated_at` (that transaction's start) is at or after `expires_at`. That rule
-  assumes the database clock does not step backwards inside one transaction; a contradictory
-  sample fails the test. Not tested: a cap edit while a finalize or draw-down is queued.
+  schedule must reach the child INSERT before a source expiry set 2 s ahead, so its test rebuilds
+  the fixture, at most three times, in exactly three cases: less than 1 s of the source's life is
+  left on the database clock when the draw-down is about to start; the draw-down reaches its child
+  INSERT only at or after the source's expiry; or it refuses with the source's expiry committed and
+  the claim's `updated_at` (that transaction's start) is at or after `expires_at`. Any other early
+  result fails the test. A sample whose transaction began before `expires_at` and recorded the
+  expiry after it cannot be classified, because the decision time is not observable; it fails closed
+  as an unprovable sample, and with the 1 s margin it needs a stall of more than 1 s inside the
+  draw-down's own transaction. These rules assume the database clock does not step backwards inside
+  one transaction; a contradictory sample fails the test. Not tested: a cap edit while a finalize or
+  draw-down is queued.
 - **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the
   code's `closes_at` is admitted after the window closed, because the window is read in the locking
   statement. ADR-084 §4 records the fix for promotions; the presale path keeps today's statement.
