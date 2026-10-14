@@ -1440,19 +1440,41 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 		select {
 		case r := <-drawn:
 			// Retry ONLY on the one early result a lost race produces: the draw-down found
-			// the source past its expiry, committed that expiry, and refused. Anything else
-			// is a defect or a broken fixture, and retrying it would hide it.
+			// the source DUE, committed that expiry, and refused. Anything else is a defect
+			// or a broken fixture, and retrying it would hide it.
+			var status string
+			var updatedAt time.Time
 			var expires int
-			if err := f.db.QueryRowContext(f.ctx, `SELECT count(*) FROM claim_history WHERE claim_id=$1 AND action='expire'`, src.ID).Scan(&expires); err != nil {
+			var recordedAt sql.NullTime
+			if err := f.db.QueryRowContext(f.ctx, `SELECT c.status, c.updated_at,
+					(SELECT count(*) FROM claim_history h WHERE h.claim_id=c.id AND h.action='expire'),
+					(SELECT max(h.occurred_at) FROM claim_history h WHERE h.claim_id=c.id AND h.action='expire')
+				FROM claims c WHERE c.id=$1`, src.ID).Scan(&status, &updatedAt, &expires, &recordedAt); err != nil {
 				t.Fatal(err)
 			}
-			status := claimStatus(t, f.ctx, f.db, src.ID)
 			if !errors.Is(r.err, ErrConflict) || status != "expired" || expires != 1 {
 				t.Fatalf("the draw-down returned before its child INSERT with err=%v, source %q and %d expiry records; "+
 					"only ErrConflict with a committed expiry is a missed schedule", r.err, status, expires)
 			}
-			t.Logf("missed: the draw-down decided after the source's expiry, committed it and refused; rebuilding")
-			return drawDownSchedule{}, false
+			// WAS the source due when the draw-down decided? The decision reads
+			// clock_timestamp() in its source SELECT, which no column keeps. Two columns
+			// bound it: the claim's updated_at is that transaction's now() (its start, so at
+			// or before the decision), and the expiry record's occurred_at defaults to
+			// clock_timestamp() at its INSERT (after the decision). Only updated_at at or
+			// after expires_at PROVES the source was due; an occurred_at before expires_at
+			// proves it was not.
+			exp := *src.ExpiresAt
+			switch {
+			case !updatedAt.Before(exp):
+				t.Logf("missed: the draw-down began at %v, after the source's expiry %v, committed the expiry and refused; rebuilding", updatedAt, exp)
+				return drawDownSchedule{}, false
+			case recordedAt.Valid && recordedAt.Time.Before(exp):
+				t.Fatalf("premature expiry: the draw-down recorded the source's expiry at %v, before its expires_at %v", recordedAt.Time, exp)
+			default:
+				t.Fatalf("the draw-down expired the source, but its transaction began at %v, before the source's expires_at %v, "+
+					"and recorded the expiry at %v: nothing shows the source was due when it decided, so this is not "+
+					"retried as a missed schedule", updatedAt, exp, recordedAt.Time)
+			}
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -2005,9 +2027,10 @@ func TestPresaleUsageCountsUntilTerminalWrite(t *testing.T) {
 //
 // With NO cleanup transaction committed there is no retry either. That is D14's chosen
 // policy, not a claim that a retry must fail (an operator raising the cap meanwhile could
-// make one succeed). The test closes P1's channel window while the cleanup waits, so a
-// retry would be visible: it would answer ErrChannelWindowClosed, while the refusal that
-// must come back is the first attempt's.
+// make one succeed). Since D17 a retry's refusal is the uniform one too, so the answer
+// cannot show whether a retry ran. Its pool lock can: a retry takes P1's pool lock again.
+// Once the first attempt has rolled back and the cleanup waits on P2, the test holds P1's
+// lock itself, and a retry would be SEEN waiting on it.
 func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
 	f := newPresaleRace(t, 1)
 	h := f.hold(t, f.p2, 1, "h")
@@ -2017,8 +2040,15 @@ func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
 	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
 	adm, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, blockerPID, cleanupPoolLock)
 	if !returned {
-		setWindow(t, f.ctx, f.db, f.p1, raceChannel, "clock_timestamp() + interval '1 hour'", "NULL")
-		adm = await(t, admitted, "the admission whose cleanup waits on a locked P2")
+		p1Blocker, p1PID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p1)
+		r, done := awaitResultOrWait(t, f.ctx, f.db, admitted, p1PID, gaPoolLock)
+		if !done {
+			t.Fatal("the admission ran again after a cleanup that committed nothing: it waits for P1's pool lock")
+		}
+		adm = r
+		if err := p1Blocker.Rollback(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := blocker.Rollback(); err != nil {
 		t.Fatal(err)
@@ -2217,6 +2247,75 @@ func TestPresaleCleanupContinuesPastALockedPool(t *testing.T) {
 			}
 			if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 2 {
 				t.Fatalf("usage = %d, want 2: the locked pool's unit and the new claim", got)
+			}
+		})
+	}
+}
+
+// ⭐ TKT-543 D17: once the first attempt is refused on the code cap, the request answers
+// success or the uniform refusal, whatever its retry meets.
+//
+// Review pass 3's schedule. A finalize queued on P2 before H's expiry keeps H. The
+// admission on P1 is refused on the code (H counts), and its cleanup queues on P2 behind the
+// finalize. While it waits, P1's channel window closes. The finalize commits H as
+// finalizing; the cleanup finds nothing due and commits an empty transaction, so the
+// admission runs again, and the retry meets the closed window. Answering
+// channel_window_closed there would tell a valid, exhausted code from an unknown one, which
+// the same timing refuses at once with presale_code_invalid: the oracle ADR-064 §4 forbids.
+// The first attempt already decided this request's refusal; the retry may only turn it into
+// a success.
+func TestPresaleRetryAnswersOnlySuccessOrTheUniformRefusal(t *testing.T) {
+	groupExpiry := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name  string
+		admit func(f presaleRace, ctx context.Context, code, key string) error
+	}{
+		{"buyer admission", func(f presaleRace, ctx context.Context, code, key string) error {
+			_, _, err := f.st.CreateHold(ctx, f.org, f.p1, uuid.Nil, 1, 0, "", raceChannel, key, WithPresaleCode(code))
+			return err
+		}},
+		{"group placement", func(f presaleRace, ctx context.Context, code, key string) error {
+			_, _, err := f.st.PlaceGroupReservation(ctx, f.org, f.p1, 1, "agency", groupExpiry, raceChannel,
+				"staff", "group", key, WithPresaleCode(code))
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPresaleRace(t, 1)
+			h := f.hold(t, f.p2, 1, "h")
+
+			blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, f.p2)
+			finalized := spawn(t, f.ctx, func(ctx context.Context) transitionResult {
+				c, err := f.st.Transition(ctx, f.org, h.ID, "finalizing")
+				return transitionResult{c, err}
+			})
+			fin := awaitWaitingOn(t, f.ctx, f.db, blockerPID, transitionPoolLock)
+			expiry := expireNow(t, f.ctx, f.db, h.ID)
+			if !fin.xactStart.Before(expiry) {
+				t.Fatalf("reach: the finalize's transaction began at %v, not before H's expiry %v", fin.xactStart, expiry)
+			}
+			awaitDBPast(t, f.ctx, f.db, expiry)
+
+			admitted := spawn(t, f.ctx, func(ctx context.Context) error { return tc.admit(f, ctx, raceCode, "a") })
+			if _, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, fin.pid, cleanupPoolLock); returned {
+				t.Fatal("reach: the admission returned before its cleanup queued behind the finalize")
+			}
+			// The control, at the same moment: an unknown code is refused by the code, at once.
+			assertUniformRefusal(t, "an unknown code at the same moment", tc.admit(f, f.ctx, "NEVER-ISSUED", "control"))
+			setWindow(t, f.ctx, f.db, f.p1, raceChannel, "clock_timestamp() + interval '1 hour'", "NULL")
+			if err := blocker.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			fr := await(t, finalized, "the finalize")
+			err := await(t, admitted, "the admission")
+
+			// Reach: the finalize kept H, so the cleanup had nothing to expire.
+			if fr.err != nil || claimStatus(t, f.ctx, f.db, h.ID) != "finalizing" {
+				t.Fatalf("reach: the finalize returned %v and H is %q, want H finalizing", fr.err, claimStatus(t, f.ctx, f.db, h.ID))
+			}
+			assertUniformRefusal(t, "the exhausted code whose retry met a closed window", err)
+			if n := poolClaims(t, f.ctx, f.db, f.p1); n != 0 {
+				t.Fatalf("the refused admission left %d claims on P1, want 0", n)
 			}
 		})
 	}

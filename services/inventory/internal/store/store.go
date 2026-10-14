@@ -541,15 +541,23 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// so reclaim them in their own transactions and decide once more, from the
 	// start: replay, offering, window and seller are all judged again.
 	c, replay, err := p.createHoldAttempt(ctx, org, slot, ticketType, qty, unitAmount, currency, channel, key, o, requestFP)
-	if refused, ok := asPresaleCapExceeded(err); ok && p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
-		c, replay, err = p.createHoldAttempt(ctx, org, slot, ticketType, qty, unitAmount, currency, channel, key, o, requestFP)
+	refused, capped := asPresaleCapExceeded(err)
+	if !capped {
+		return c, replay, err
 	}
-	// The ONE place this path turns the private signal into the public refusal
-	// (ADR-064 §4, D5): no exit below this line can carry it.
-	if _, ok := asPresaleCapExceeded(err); ok {
-		return Claim{}, false, ErrPresaleCodeInvalid
+	// From here the request is refused by the code, and it has two possible answers:
+	// a successful retry, or the uniform refusal (ADR-064 §4; D5, D17). The retry exists
+	// only to give a reclaimed unit a chance. ANY error it meets — another guard that
+	// changed while the cleanup waited (a window that closed), a conflict, a database
+	// error — becomes the uniform refusal too: answering it would tell a valid,
+	// exhausted code from an unknown one under the same timing. This is the one place
+	// this path turns the private signal into the public refusal.
+	if p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
+		if c, replay, err = p.createHoldAttempt(ctx, org, slot, ticketType, qty, unitAmount, currency, channel, key, o, requestFP); err == nil {
+			return c, replay, nil
+		}
 	}
-	return c, replay, err
+	return Claim{}, false, ErrPresaleCodeInvalid
 }
 
 // createHoldAttempt is ONE complete admission transaction. It returns presaleCapExceeded

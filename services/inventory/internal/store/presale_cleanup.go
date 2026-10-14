@@ -83,9 +83,17 @@ const presaleCleanupLockTimeout = 2 * time.Second
 //
 // What a caller can see of this write. It changes only claims that cite the code, it
 // changes no availability answer (see cleanupExpiredPresalePool), and it invalidates no
-// cache (D16). Through a status or a body, it is therefore visible only to a caller who
-// holds a claim citing the code (by replaying that claim) or who presents the code. Its
-// pool lock shows only as latency, which ADR-064 §4 does not claim to hide.
+// cache (D16). Through a PUBLIC status or body (the gateway refuses every /internal/
+// route), it is therefore visible only to a caller who holds a claim citing the code (by
+// replaying that claim) or who presents the code. Internal callers are not covered: the
+// history routes (opHistory -> History) return a claim's expiry row to any caller with
+// the internal credential and the organizer id, without the code.
+//
+// What its locks show. To the requesting caller, the time the cleanup waits for them is
+// latency only because of D17: a guard that changed during the wait (a channel window that
+// closed) used to change the retry's answer, and CreateHold and PlaceGroupReservation now
+// answer any failed retry with the uniform refusal. To other requests on a cleaned pool,
+// the lock is one more short write: it is held for one UPDATE and a commit.
 //
 // Every predicate is load-bearing (TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode
 // and, for pool_id, TestPresaleCleanupContinuesPastALockedPool), except organizer_id: the

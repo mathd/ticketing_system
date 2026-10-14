@@ -57,18 +57,24 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 	// The same rule as CreateHold (TKT-543): a refusal by the presale code COUNT may
 	// be caused by expired claims on other pools that nothing has swept yet. The
 	// attempt has rolled back and holds no lock, so reclaim them and decide once more,
-	// from the start. The retry judges the explicit expiry again on clock_timestamp(),
-	// so a placement whose expiry passed during the cleanup ends in ErrConflict.
+	// from the start.
 	h, replay, err := p.placeGroupReservationAttempt(ctx, org, slot, qty, counterparty, expiresAt, channel, actor, reason, key, o, fp)
-	if refused, ok := asPresaleCapExceeded(err); ok && p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
-		h, replay, err = p.placeGroupReservationAttempt(ctx, org, slot, qty, counterparty, expiresAt, channel, actor, reason, key, o, fp)
+	refused, capped := asPresaleCapExceeded(err)
+	if !capped {
+		return h, replay, err
 	}
-	// The ONE place this path turns the private signal into the public refusal
-	// (ADR-064 §4, D5).
-	if _, ok := asPresaleCapExceeded(err); ok {
-		return GroupReservation{}, false, ErrPresaleCodeInvalid
+	// From here the only answers are a successful retry or the uniform refusal (ADR-064
+	// §4; D5, D17), for CreateHold's reason. That includes a placement whose explicit
+	// expiry passed during the cleanup: its retry judges the expiry again on
+	// clock_timestamp() and refuses, and the request answers the uniform refusal, not
+	// ErrConflict. This is the one place this path turns the private signal into the
+	// public refusal.
+	if p.reclaimExpiredPresaleUsage(ctx, org, slot, channel, o.presaleCode, qty, refused) {
+		if h, replay, err = p.placeGroupReservationAttempt(ctx, org, slot, qty, counterparty, expiresAt, channel, actor, reason, key, o, fp); err == nil {
+			return h, replay, nil
+		}
 	}
-	return h, replay, err
+	return GroupReservation{}, false, ErrPresaleCodeInvalid
 }
 
 // placeGroupReservationAttempt is ONE complete placement transaction. It returns
