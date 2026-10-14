@@ -82,8 +82,10 @@ taken in **one** statement that starts **after** the lock statement returns:
 2. One statement samples `clock_timestamp()` **once** (a `MATERIALIZED` CTE) and judges, at that one
    instant, the **channel's** window (ADR-054's predicate, on the allocation row the caller read under
    the pool lock **before** this wait) and the **code's** window, and reads the code's cap. The code
-   row is `LEFT JOIN`ed, so an unknown code is judged by the same statement at the same instant. The
-   two predicates are the shipped consts with only the clock replaced (`atInstant`), not copies.
+   row is `LEFT JOIN`ed, so an unknown code runs the same statement as a known one. That evens out
+   the work, not the answer: an unknown code is refused whatever the statement returns, so removing
+   the statement for it changes no answer and no test catches it. The two predicates are the shipped
+   consts with only the clock replaced (`atInstant`), not copies.
 3. Usage is counted for a capped code.
 
 **One instant (D9).** Two half-open windows that abut — the channel closes at T, the code opens at

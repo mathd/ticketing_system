@@ -51,10 +51,12 @@ type PresaleCodeStatus struct {
 // intent explicitly. Executed on PostgreSQL 18.4 with a counting function in place
 // of the clock: one call, with and without MATERIALIZED, while two direct calls in
 // one statement are two samples. TestPresaleDecisionSamplesTheClockOnce pins it.
+// MATERIALIZED is therefore not what that test catches: removing it stays green,
+// because the volatile rule alone already keeps one evaluation.
 //
-// The code row is LEFT JOINed (LATERAL), so an unknown code is judged by the same
-// statement at the same instant and comes back with codeOpen false and no cap. The
-// allocation is an inner join: its absence returns no row.
+// The code row is LEFT JOINed (LATERAL), so an unknown code runs the same
+// statement and comes back with codeOpen false and no cap. The allocation is an
+// inner join: its absence returns no row.
 var presaleDecision = `WITH decision AS MATERIALIZED (SELECT clock_timestamp() AS instant)
 SELECT ch.is_open, COALESCE(c.is_open, false), c.max_redemptions
 FROM decision
@@ -142,8 +144,11 @@ func redeemPresaleCode(ctx context.Context, tx *sql.Tx, org, slot uuid.UUID, cha
 	// above for why a term read here would be stale.
 	//
 	// An unknown code has no row to lock, which is correct: it is refused below,
-	// and a refusal needs no serialization. It still goes through step 2, so it is
-	// judged by the same statement as a code that exists.
+	// and a refusal needs no serialization. It still goes through step 2, so it
+	// runs the same statements as a code that exists. That evens out the WORK, not
+	// the answer: an unknown code is refused whatever step 2 returns, and no test
+	// can tell the two apart from an answer (removing step 2 for it stays green).
+	// Latency is not defended (ADR-064 §4).
 	//
 	// The channel is part of the primary key, so a code issued on another channel
 	// simply does not match here — the wrong-channel case needs no separate
