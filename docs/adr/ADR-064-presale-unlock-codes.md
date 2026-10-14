@@ -9,15 +9,14 @@ Accepted (TKT-239; epic TKT-17, US-CH5)
 Supersedes nothing. Extends [ADR-024](./ADR-024-channel-allocations.md) (channel allocations) and
 [ADR-054](./ADR-054-per-channel-sales-windows.md) (sales windows).
 
-**Usage counts until a terminal write, and a cap refusal reclaims across pools (2026-10-13,
-TKT-543).** Amended below in §2, §3, §4 and §Consequences. A code capped at N could end with more
-than N confirmed units: an admission on one pool left out an expired, unswept hold on another
-pool, and a finalize that had queued on that pool before the expiry then kept the hold
+**A code's usage counts a held claim until a terminal write (2026-10-14, TKT-543).** Amended below
+in §3 and §Consequences. A code capped at N could end with more than N confirmed units: an
+admission on one pool left out an expired, unswept hold on another pool, and a finalize that had
+queued on that pool before the expiry then kept the hold
 ([TKT-380 evidence](../evidence/TKT-380/README.md), probe 1, S1). The admission count now follows
-reading R2 of [ADR-084](./ADR-084-promotion-storage-and-redemption-contract.md) §3: an expired held
-claim counts until a terminal write commits. So that an expired hold on a quiet pool does not lock
-its code out of every other pool, a cap refusal first tries to reclaim the code's expired claims on
-other pools, and decides once more if any of that committed. The refusal stays uniform.
+reading R2 of [ADR-084](./ADR-084-promotion-storage-and-redemption-contract.md) §3. The cost is
+accepted and recorded in §3: an expired hold on a quiet pool keeps its code's units blocked for
+other pools until a write on that pool sweeps it; TKT-547 is the remedy.
 
 ## Context
 
@@ -70,18 +69,6 @@ pool locks**, never block each other, both read usage = N−1, and both insert.
 **Lock order is fixed: pool → code**, never the reverse. Nothing else in inventory locks a
 `presale_codes` row, so no other order exists and self-deadlock is impossible.
 
-**The cross-pool cleanup adds no lock order (TKT-543).** The cleanup of §3 takes pool and claim
-locks and never the code lock. It starts only after the refused admission has rolled back, so it
-holds no lock when it waits for one. It locks one foreign pool per transaction, commits that
-transaction before it opens the next, and goes in pool-id order. A finalize or a draw-down that
-holds a foreign pool when the cleanup arrives keeps it; the cleanup waits, then sees the committed
-state. The cleanup must not run inside the admission transaction: that transaction holds its own
-pool and the code, and a mirror admission on the other pool would wait for the code while holding
-the pool the cleanup wants. PostgreSQL did not detect that cycle (one side waits in Go, not on a
-lock). With the cleanup moved before the rollback, `TestPresaleMirrorAdmissionsReleaseLocksBeforeCleanup`
-did not finish within 10 s when the cleanup's lock timeout was raised to 20 s, and it passed in
-2.2 s with the 2 s timeout, which is why the test raises it.
-
 Rejected: `pg_advisory_xact_lock` on a hash of the code identity (ADR-029's shape). That pattern
 exists in *catalog* precisely because a seat-map family identity **is not a row**. Here the row
 exists, and `refund_returns.go` already does pool-lock-then-second-row-lock in this service. The
@@ -100,13 +87,15 @@ A code's count spans pools, and a held claim's expiry is judged by whichever tra
 pool runs next. `Transition` judges it on transaction-start `now()` (ADR-024, TKT-148), so a
 finalize that queued on its pool before the hold expired still finalizes it afterwards. An
 admission on another pool had already left the expired hold out of the count and admitted one
-more unit: a code capped at 1 sold 2. `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` and
-`TestPresaleCapCountsReservationWhileDrawDownInsertWaits` (the draw-down child path) force that
-schedule; both measured 2 confirmed units for a cap of 1 on the old predicate and 1 on the new.
+more unit: a code capped at 1 sold 2. The same happens on the draw-down child path, whose decision
+precedes its commit. TKT-380 probe 3 executed R2 on this exact path (the cap held in 6 of 6 runs and
+7 repeats; today's predicate broke it). `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` and
+`TestPresaleCapCountsReservationWhileDrawDownInsertWaits` force both schedules: 2 confirmed units for
+a cap of 1 with the old predicate, 1 with R2.
 
 **What is still shared, and what now differs on purpose.**
 
-- The quantity: `consumedQuantity`, net of refund returns, in both counts. A refund returns a
+- The quantity: `consumedQuantity`, net of refund returns, in every count. A refund returns a
   redemption exactly as it returns a seat.
 - Channel and pool accounting keep `consumingClaims`: an expired held claim stops counting there
   as soon as `expires_at` passes.
@@ -115,92 +104,49 @@ schedule; both measured 2 confirmed units for a cap of 1 on the old predicate an
   branch of a refused draw-down, `Transition`'s expiry branch when it commits, or a release.
   Passing `expires_at` alone returns nothing. After a terminal write no path can finalize the
   claim, which is why this closes the race.
-- The **operator** read (`PresaleCodeStatuses`) keeps `consumingClaims`. It leaves out expired held
-  claims that no terminal write has reached, so it is lower than the admission count by the
-  expired, unswept quantity. That quantity is only **potentially** reclaimable: the cleanup below
-  reclaims it unless a finalize or draw-down that queued on its pool before the expiry gets there
-  first and keeps it, as `TestPresaleCapCountsExpiredHoldWhileFinalizeWaits` shows. R2 in the
-  operator read would show a code as exhausted for every abandoned cart on a quiet or archived
-  pool, and an operator who raised the cap on that reading would oversell once the cleanup ran.
-  The cost of the choice is the opposite error, for a shorter time: by the two predicates (no test
-  asserts it), while a queued finalize or draw-down keeps an expired claim, the operator read shows
-  headroom that admission cannot use. A later operator
-  surface (TKT-309) can add a reclaimable field. `TestPresaleUsageCountsUntilTerminalWrite`
-  asserts both counts, before and after a terminal write, for each claim state.
+- The **operator** read (`PresaleCodeStatuses`) keeps `consumingClaims` (D19). It leaves out
+  expired held claims that no terminal write has reached, so it reports the usage as it will be
+  after the next sweep of each pool. Until then, admission can refuse a code that this read shows
+  with headroom. R2 in the operator read would show a code as exhausted for every abandoned cart,
+  and an operator who raised the cap on that reading would oversell once the carts were swept.
+  The read has no caller outside tests yet; TKT-309, which owns the operator surface, must show
+  both numbers or explain the gap. `TestPresaleUsageCountsUntilTerminalWrite` asserts both counts,
+  before and after a terminal write, for each claim state.
 
-**The cross-pool cleanup (TKT-543).** R2 alone would let an expired hold on a quiet pool block its
-code on every other pool until some write reached that pool, and ADR-010 promises that expired
-capacity is reclaimed by the next mutation without a sweeper. So an admission refused by the code
-**count**, and by no other cause, does this in both `CreateHold` and `PlaceGroupReservation`:
+**The accepted cost: liveness across pools, and a departure from ADR-010.** Every terminal write in
+the request path is pool-local: an admission sweeps only its own pool before it counts. So an
+expired, unswept hold on a quiet pool keeps its code's units counted for every other pool until a
+write on that pool sweeps it, and a single-use code can refuse its own buyer elsewhere for that
+long. Same-pool reclamation is unchanged. For a code across pools this departs from ADR-010's
+"expired capacity is reclaimed on the next mutation": the next mutation of the code (an admission
+on another pool) does not reclaim it. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept`
+pins the cost. **TKT-547**, a background sweeper, is the remedy, and will change that test's first
+half.
 
-1. Its transaction rolls back, and its own-pool sweep with it.
-2. Discovery, outside any transaction (`expiredPresalePoolsSQL`): the pools other than its own
-   with an expired held claim citing exactly this organizer, channel and code, and the quantity
-   on each. It is backed by `claims_presale_usage`. It decides which pools the cleanup locks.
-3. If nothing was found, or `redeemed − reclaimable + qty > cap`, the refusal stands at once: no
-   cleanup could make the request fit, and a genuinely exhausted code must not make every refused
-   request of an on-sale lock the pools that hold its expired claims.
-4. Otherwise, one transaction per pool, in pool-id order: a 2 s `lock_timeout` (`SET LOCAL`); lock the
-   pool with a statement scoped to the organizer and marked `/* presale-cleanup pool lock */`, and
-   skip the pool if no row comes back; expire the due held claims of that pool that cite exactly
-   this organizer, channel and code, writing each `claim_history` row exactly as `sweepExpired`
-   does (`presaleCleanupExpireSQL`); commit with a plain commit that invalidates **no**
-   availability cache (D16, below). There is no offering guard: an archived or closed pool
-   refuses new holds, so no hold sweeps it. An archived pool is never swept again; a closed one
-   only after it reopens or a staff capacity adjustment.
-5. If at least one of those transactions committed, the whole admission runs once more, from the
-   idempotency replay onward, with every guard. There is no second cleanup. If none committed, the
-   request gets the uniform refusal at once. That is a chosen policy, to keep a refusal whose
-   cleanup changed nothing at one admission. It does not claim a retry would have failed:
-   something concurrent, such as another terminal write or an operator raising the cap, could have
-   made it succeed, and the next request sees that change.
+**Rejected: a request-triggered cleanup (owner decision D18).** It was built: on a cap refusal, the
+admission rolled back, expired the code's due claims on the other pools in their own transactions,
+then retried. Four adversarial review passes each found a way for a caller without the code to tell
+a valid, exhausted code from an unknown one, because only that code triggered the cleanup and every
+effect it left was visible:
 
-The cleanup lives in its own file, `presale_cleanup.go`, which commits with `tx.Commit()` and is
-exempt as a whole file from `TestAvailabilityMutationsUseInvalidatingCommit`.
+- the replay answer of an unrelated expired hold on a cleaned pool (409 before the cleanup, 200
+  after), while the cleanup used `sweepExpired`;
+- the eviction of the cleaned pool's availability cache, visible on the public read (`Age` header
+  and body);
+- the retry's own refusal: a channel window that closed while the cleanup waited answered
+  `channel_window_closed`, where an unknown code answered `presale_code_invalid`;
+- the answer of a concurrent code-less hold on the cleaned pool whose transaction began before a
+  hold there expired: 201 if a cleanup had expired that hold meanwhile, 409 `sold_out` if not;
+- a commit's ambiguity: answering every failed retry with the code refusal turned a retry whose
+  commit acknowledgement was lost into a definite refusal that left a claim and a consumed key
+  behind, which an unknown-code refusal never does.
 
-**Why not `sweepExpired` (D13; blind review finding 2).** `sweepExpired` expires *every* due claim of
-the pool. A replay of a GA hold answers 409 when the hold is held and past its expiry, and 200 when
-it is already expired. A cleanup that expired an unrelated hold would therefore let that hold's
-owner replay it and learn that a code they had guessed is valid and exhausted: a refusal
-distinguishable by status and body, which §4 forbids. Scoped to the code, the cleanup's writes change
-only claims citing that code. Two more things `sweepExpired` does are left out. `reconcileCapacity`
-would settle a draining cut at a moment a code request chose, in a pool the request does not sell
-from; it reads demand through `liveClaims`, which already leaves out every due hold, so skipping it
-changes no count. The cut settles at the next write on that pool that runs `reconcileCapacity` (a new
-hold, placement or capacity adjustment, which sweep first; a release; a refund return; an expiry
-that `Transition` or a draw-down commits; not a finalize or a confirm), as it would have without the
-cleanup, and reads never wait for it because `effectiveCapacity` re-derives the clamp.
-`releaseSeatsForTerminal` has nothing to do: only GA claims can cite a code.
-`TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode` asserts all of this, and compares the
-expiry row with one a real `sweepExpired` writes. The replay inconsistency itself (200 for an expired
-hold, 409 for an unswept one) predates this ticket. ADR-010 says a replay after release or expiry
-returns the terminal claim, so changing either answer changes that contract for every caller; it is
-recorded as a separate ticket.
+The first three were reproduced by tests before each fix; the last two were found by reading the
+code in the fourth pass and were not executed.
 
-**Why no cache invalidation (D16; review pass 2 finding 1).** Committing through
-`commitAvailability` evicted every cached variant of the foreign pool's availability, and the public
-availability read shows an eviction: a fresh `Age` header and body. Only a valid, exhausted code
-triggers a cleanup, so the eviction was the same code oracle again. No answer needs it. The write
-flips only held claims that are already due, and every availability answer counts held claims
-through `liveClaims` (directly or through `consumingClaims`), which already leaves out a due hold.
-That was checked read by read: `Availability`, `SeatOccupancy`, `StaffAvailability` and its channel
-rows, `reservedForChannelsSQL`, the sold-out decision of `CreateHold`, and `effectiveCapacity`; the
-two caches that receive invalidations wrap `Availability` and `SeatOccupancy`. So a fresh read gives
-the same answer before and after the write, and a cached one is no staler than it would be without
-the cleanup (the cache TTL bounds it, as before). `TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools`
-asserts that a cleanup which reclaims P2 triggers no invalidation of P2. A future availability read
-that counted a due held claim would make this exemption wrong; it would have to invalidate here.
-
-The cleanup waits for a busy pool rather than skipping it: the pools that matter are held by a
-finalize or a draw-down, and neither sweeps. **One failed pool does not end the cleanup (D14; blind
-review finding 1).** An error on one pool, its lock timeout included, ends that pool's transaction
-only, and the next pool is tried. Stopping at the first failure would let a busy pool that sorts
-first keep a quiet pool's expired usage counted for as long as it stays busy, and would give up a
-retry that the pools already cleaned make fit (`TestPresaleCleanupContinuesPastALockedPool`, both
-orders). A discovery error ends the cleanup with the uniform refusal. Terminal writes already
-committed stand on their own. A group placement's second attempt judges its explicit expiry again
-on `clock_timestamp()`, so a placement whose `expires_at` passed during the cleanup is refused by
-that attempt; the request answers the uniform refusal, not `ErrConflict` (D17, §4).
+Each fix closed one channel and the next pass found another; the class is the design, not a local
+defect. Do not rebuild it in the request path: anything a code guess can trigger is an oracle
+(§4). Liveness belongs to a process that no request triggers (TKT-547).
 
 A counter cannot be decremented by **lazy** hold expiry without a sweeper, and ADR-010 forbids
 requiring one for correctness. Derived also gets refunds right for free: `consumedQuantity` is net
@@ -227,44 +173,6 @@ limiting (ADR-051) is the control for those and is **not claimed here**.
 
 The **operator** read (`PresaleCodeStatuses`) does distinguish them, deliberately: an operator
 debugging "my code doesn't work" needs the answer, and that surface is internal-only.
-
-**The cross-pool cleanup does not change the refusal (TKT-543).** Inside the store the exhausted
-cause is an unexported signal, so that the two admission paths can tell it from the other four
-and reclaim only for it. Each path turns it into `ErrPresaleCodeInvalid` in one place before it
-returns, and the signal does not wrap the public sentinel, so a path that forgot would answer 500
-and `TestPresaleRefusalsStayUniformAfterCrossPoolCleanup` would fail on the exhausted cause. The
-cleanup's own errors, a lock timeout included, are never returned: they would be a 500 that only a
-valid, exhausted code can produce. The cleanup runs after the window and seller checks
-(`TestPresaleCleanupStaysBehindTheWindowAndSellerChecks`), so a caller who may not sell never
-reaches it.
-
-**Once the first attempt is refused on the code, the request answers a successful retry or the
-uniform refusal, nothing else (D17; review pass 3 finding 1).** Any error the retry meets becomes
-`ErrPresaleCodeInvalid`: another guard that changed while the cleanup waited (a channel window that
-closed, a placement's explicit expiry that passed), a conflict, a database error. Before D17, a
-cleanup that waited behind a queued finalize, committed nothing useful and retried into a window
-that had just closed answered `channel_window_closed`, while an unknown code at the same moment
-answered `presale_code_invalid`. The first attempt had already decided the request's refusal under
-window → code → capacity; the retry exists only to turn it into a success.
-`TestPresaleRetryAnswersOnlySuccessOrTheUniformRefusal` (both admission paths) and
-`TestPresaleRetryRefusalIsUniformOnTheWire` (the body on `POST /holds`) run that schedule. The cost:
-a request whose own retry met a newly closed window reports the code refusal, for a request already
-refused by the code.
-
-**Who can see the cleanup.** Its writes change only claims that cite the requested code (§3, D13),
-they change no availability answer, and they invalidate no cache (§3, D16). Through a **public**
-status or body (the gateway refuses every `/internal/` route) they are therefore visible only to a
-caller who holds a claim citing that code (by replaying it) or who presents the code. Internal
-callers are not covered: the history routes (`opHistory` → `History`) return a claim's expiry row to
-any caller with the internal credential and the organizer id, without the code. To the requesting
-caller, the time the cleanup waits for its locks is latency only because of D17; before it, that
-wait could change the retry's answer. To other requests on a cleaned pool, the cleanup's lock is
-one more short write: it is held for one UPDATE and a commit.
-
-What it does change is **latency**, which this section already does not claim. An exhausted-code
-refusal now also costs a discovery query; when expired usage could cover the shortfall, it costs one
-cleanup transaction per discovered pool, each of which can wait up to 2 s for a busy pool, and a
-second admission when at least one of them committed.
 
 ### 5. Refusal **precedence**: window → code → capacity
 
@@ -365,41 +273,15 @@ claim in this ADR should be read as saying otherwise.
   report a clean sellout curve while selling nothing.
 - `make browser` is not required — there is no web surface in this ticket. Issuance is API-only; a
   back-office UI is out of scope.
-- **Cost of a cap refusal (TKT-543).** At most two admission transactions, one discovery query, and
-  one cleanup transaction per discovered pool. One retry bounds the work, not the wait: each
-  cleanup can wait up to 2 s for a busy pool, and since one failed pool does not end the cleanup
-  (D14), the request waits for all of them. A refusal with no reclaimable usage, or with too little
-  to cover the shortfall, adds only the discovery query. Successful admissions pay nothing.
-- **A failed cleanup is silent (TKT-543).** The store has no logger, and the error is not returned
-  (§4). It costs liveness, not correctness: the expired claim keeps counting until the next cleanup
-  or sweep reaches its pool. A persistent failure would show only as a code that refuses with
-  usage the operator read does not report.
-- **Evidence and its limits (TKT-543).** Executed against PostgreSQL 18.4 with forced schedules
-  (`pg_blocking_pids` handshakes, database-clock boundaries): the finalize and draw-down races, the
-  quiet-pool reclamation (open, archived and closed foreign pool) with no cache invalidation of the
-  cleaned pool, mirror admissions, discovery scope (end to end, by holding each wrong pool locked
-  and watching for the cleanup's wait), the scope of the cleanup's write within a pool and the
-  shape of its history rows, a locked
-  pool sorting before and after a quiet one, the reclaimable-quantity bound, the lock timeout, no
-  retry after a cleanup that committed nothing (seen as a retry waiting for the admission pool's
-  lock, which the test holds), a retry that meets a window closed during the cleanup (D17), and
-  precedence behind the window and the seller; the wire body on both admission endpoints through
-  the validated router. Each has a mutation it turns red, and each forced schedule passed 8 of 8
-  repeats. The draw-down schedule depends on reaching the child INSERT within a 2 s margin, so its
-  test rebuilds the fixture, at most three times, when that reach condition is missed. It rebuilds
-  only when the draw-down refused with the source's expiry committed AND the claim's `updated_at`
-  (that transaction's start) is at or after the source's `expires_at`, which proves the source was
-  due when the draw-down decided; an expiry recorded before `expires_at` fails the test as
-  premature, and a run between those two bounds cannot be classified and fails too. Once reached,
-  its cap assertions always run. The organizer predicate of the cleanup's write has no test: the
-  store writes into a pool only claims of that pool's organizer, so no test can build the row it
-  would exclude. In every run, the cleanup
-  queued behind the waiting finalize or draw-down and got the pool after it. That queue order is
-  observed PostgreSQL behaviour, not a documented guarantee. If it changed, the cleanup would expire
-  the hold first and the finalize would be refused (`Transition` refuses a finalize of an `expired`
-  claim): the cap would still hold, with the opposite winner. That is argued from the code, not
-  executed. Not tested: more than two concurrent admissions racing through the cleanup, and a cap
-  edit during a cleanup.
+- **Evidence for reading R2, and its limits (TKT-543).** Executed against PostgreSQL 18.4 with
+  forced schedules (`pg_blocking_pids` handshakes, database-clock boundaries): the finalize race and
+  the draw-down race each end with 1 confirmed unit for a cap of 1, and with 2 when
+  `codeRedeemedQuantity` goes back to `consumingClaims`; 8 of 8 repeats each. The draw-down
+  schedule depends on reaching the child INSERT within a 2 s margin, so its test rebuilds the
+  fixture, at most three times, only when the draw-down refused with the source's expiry committed
+  and the claim's `updated_at` (that transaction's start) is at or after `expires_at`. That rule
+  assumes the database clock does not step backwards inside one transaction; a contradictory
+  sample fails the test. Not tested: a cap edit while a finalize or draw-down is queued.
 - **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the
   code's `closes_at` is admitted after the window closed, because the window is read in the locking
   statement. ADR-084 §4 records the fix for promotions; the presale path keeps today's statement.
