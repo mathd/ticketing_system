@@ -125,8 +125,9 @@ it, and a single-use code can refuse its own buyer elsewhere for that long. Same
 unchanged. This departs from the previous presale usage rule: under `consumingClaims` an expired
 hold stopped counting against its code as soon as its `expires_at` passed, so no quiet pool could
 block a code; under R2 it counts until a terminal write on its own pool. Pool capacity is not
-affected: it still counts through `liveClaims`, so an expired hold frees its pool's capacity at
-once, as ADR-010 describes. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept` pins the
+affected: it still counts through `liveClaims`, so a transaction excludes an expired hold from its
+pool's capacity once that transaction's start time (`now()`) has reached the hold's expiry, and
+the next mutation reclaims it, as ADR-010 describes. `TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept` pins the
 cost. **TKT-547**, a background sweeper, is the remedy, and will change that test's first half.
 
 **Rejected: a request-triggered cleanup (owner decision D18).** It was built: on a cap refusal, the
@@ -291,8 +292,9 @@ claim in this ADR should be read as saying otherwise.
   the claim's `updated_at` (that transaction's start) is at or after `expires_at`. Any other early
   result fails the test. A sample whose transaction began before `expires_at` and recorded the
   expiry after it cannot be classified, because the decision time is not observable; it fails closed
-  as an unprovable sample, and with the 1 s margin it needs a stall of more than 1 s inside the
-  draw-down's own transaction. These rules assume the database clock does not step backwards inside
+  as an unprovable sample, and with the 1 s margin it needs more than 1 s to elapse between the margin
+  check and the draw-down's decision, with its transaction starting before the expiry (the delay can
+  fall before the transaction begins as well as inside it). These rules assume the database clock does not step backwards inside
   one transaction; a contradictory sample fails the test. Not tested: a cap edit while a finalize or
   draw-down is queued.
 - **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the

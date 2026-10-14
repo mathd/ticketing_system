@@ -1336,10 +1336,11 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 			// The band between the bounds (updated_at before expires_at, occurred_at at or
 			// after it) is UNPROVABLE, not a defect: the decision time is not observable, so
 			// a correct late decision and a premature expiry look the same. It fails closed.
-			// With the margin above, reaching it takes a delay longer than drawDownMargin
-			// between the margin check and the decision while the draw-down's transaction is
-			// already open. RESIDUAL: such a stall inside that one transaction fails the test
-			// although production may be correct.
+			// With the margin above, reaching it takes more than drawDownMargin to elapse
+			// between the margin check and the decision, with the transaction starting before
+			// the expiry: the delay can fall before BeginTx (goroutine start, the pool lookup)
+			// as well as inside the transaction. RESIDUAL: such a delay fails the test although
+			// production may be correct.
 			exp := *src.ExpiresAt
 			switch {
 			case !updatedAt.Before(exp) && recordedAt.Valid && recordedAt.Time.Before(exp):
@@ -1353,7 +1354,7 @@ func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
 			default:
 				t.Fatalf("unprovable sample, not evidence of a defect: the draw-down's transaction began at %v, before the "+
 					"source's expires_at %v, and recorded the expiry at %v, after it. Its decision time is not observable, so "+
-					"a late decision (a stall of more than %s inside that transaction) cannot be told from a premature "+
+					"a late decision (more than %s between the margin check and the decision) cannot be told from a premature "+
 					"expiry; the test fails closed rather than retrying", updatedAt, exp, recordedAt.Time, drawDownMargin)
 			}
 		default:
