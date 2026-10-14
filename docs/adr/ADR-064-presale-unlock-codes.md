@@ -75,16 +75,31 @@ original text said that nothing else locks a code row.)*
 
 **Decide after the wait (TKT-544).** The code lock can **wait**. A redemption of the same code on
 another pool holds the row without updating it, and an issuance holds it too. The pool lock that the
-admission already holds excludes neither. So every time-dependent admission decision is taken in a
-statement that starts **after** the lock statement returns:
+admission already holds excludes neither. So the code and channel window decisions, and the cap, are
+taken in **one** statement that starts **after** the lock statement returns:
 
 1. The lock statement (`SELECT 1 … FOR UPDATE`) computes nothing that depends on time.
-2. The **channel's** window is judged again, with ADR-054's predicate on the same allocation row. The
-   caller judged it under the pool lock, **before** this wait. A channel that closed during the wait
-   refuses with `channel_window_closed`. This read runs whether or not the code row exists, so a
-   valid code and an unknown code get the same answer.
-3. The code's cap and window are read.
-4. Usage is counted for a capped code.
+2. One statement samples `clock_timestamp()` **once** (a `MATERIALIZED` CTE) and judges, at that one
+   instant, the **channel's** window (ADR-054's predicate, on the allocation row the caller read under
+   the pool lock **before** this wait) and the **code's** window, and reads the code's cap. The code
+   row is `LEFT JOIN`ed, so an unknown code is judged by the same statement at the same instant. The
+   two predicates are the shipped consts with only the clock replaced (`atInstant`), not copies.
+3. Usage is counted for a capped code.
+
+**One instant (D9).** Two half-open windows that abut — the channel closes at T, the code opens at
+T — must never both admit. Judged at two instants, one per window, they both admit when T falls
+between the two samples; judged at one instant, they cannot. A `WITH` query is evaluated once per
+execution, and one that contains a volatile function is never folded into its parent (PostgreSQL 18
+documentation §7.8.3); executed on 18.4 with a counting function in place of the clock: one call.
+
+**One answer (D9).** Every refusal of this step is the uniform `presale_code_invalid`, **including a
+channel that closed during the wait**. Only a code that has a row can wait on it: an unknown code, no
+code and a code of another channel have no row and answer at once. A distinct
+`channel_window_closed` after the wait would therefore tell a caller that the code exists — the
+oracle §4 forbids. The cost: a buyer whose channel closed while they waited for the code lock reads
+"invalid presale code" rather than "window closed". They could not have bought either way. A channel
+that is already closed at the caller's check, **before** the code step, still answers
+`channel_window_closed` (§5).
 
 The original version computed the code's window in the target list of the `FOR UPDATE` statement.
 PostgreSQL computed that value before the wait, and did not compute it again when the holder ended
@@ -98,9 +113,17 @@ rule for promotion codes.
 
 Pinned by `TestPresaleCodeWindowAfterCodeLock` (the code's window closes, or opens, during the wait)
 and `TestChannelWindowAfterCodeLock` (the channel's window closes during the wait, with a valid and
-with an unknown code), on `CreateHold` and on `PlaceGroupReservation`. Each one holds a real
-PostgreSQL lock in a transaction that never writes, and proves that the admission waits in the
-code-lock statement from before the boundary.
+with an unknown code: both answer `presale_code_invalid`), on `CreateHold` and on
+`PlaceGroupReservation`. Each one holds a real PostgreSQL lock in a transaction that never writes,
+and proves that the admission waits in the code-lock statement from before the boundary.
+`TestPresaleRefusalIsUniformAcrossTheCodeLockWait` (store, both paths) and
+`TestPresaleRefusalBodyIsUniformAcrossTheCodeLockWait` (`POST /holds`, validated router) force the
+oracle schedule: an exhausted code waits on its row across the channel's `closes_at` while an
+unknown code, no code and a code of another channel, on their own pools, answer before it. All four
+answers are identical. `TestPresaleDecisionSamplesTheClockOnce` pins the single sample where it is
+decided, in `redeemPresaleCode`, with a test-only `clock_timestamp()` ahead of `pg_catalog` on the
+search path: the abutting windows refuse, and the clock is read once. That gap cannot be forced at
+the admission tier, because no lock can sit between two adjacent reads of one transaction.
 
 **Limits.** A decision is taken when the last wait before it ends, not at commit. A boundary that
 passes during the usage count or the claim insert (an insert can wait on an idempotency-key conflict)
@@ -207,14 +230,16 @@ suite, not in the code.
 
 Absent, unknown, wrong-channel, exhausted, and out-of-window all return `ErrPresaleCodeInvalid`
 with an identical message and an identical wire body: `409 {"code":"presale_code_invalid",
-"error":"invalid presale code"}`.
+"error":"invalid presale code"}`. Since TKT-544 (D9) a sixth case returns it too: a channel window
+that closed while the admission waited for the code lock (§2, *One answer*).
 
 A distinguishing refusal is an **enumeration oracle** — submitting candidates and learning "exists
 but spent" versus "no such code" is how presales get scraped.
 
 **Name the adversary (ADR-021).** This defeats a scraper reading **response bodies**. It does **not**
 defeat one measuring **latency** — an exhausted-code refusal costs a usage aggregation an
-unknown-code refusal does not — nor one who simply observes that a channel is gated at all. Rate
+unknown-code refusal does not, and only a code that has a row can wait on its lock — nor one who
+simply observes that a channel is gated at all. Rate
 limiting (ADR-051) is the control for those and is **not claimed here**.
 
 The **operator** read (`PresaleCodeStatuses`) does distinguish them, deliberately: an operator
@@ -229,9 +254,12 @@ debugging "my code doesn't work" needs the answer, and that surface is internal-
 
 Window before code: a closed channel is not selling to anyone, so "wrong code" would be a misleading
 answer to a request a *valid* code would also have refused. Since TKT-544 the window is judged twice:
-by the caller under the pool lock, and again after the code lock (§2, *Decide after the wait*). So a
-channel that closes while the admission waits for the code lock still answers
-`channel_window_closed`, before any judgement of the code. Code before capacity, for the reason
+by the caller under the pool lock, and again after the code lock, at the same instant as the code
+(§2). The two judgements answer differently on purpose (D9). A channel closed at the caller's check
+answers `channel_window_closed`, before anything about the code is read. A channel that closes while
+the admission waits for the code lock answers the uniform `presale_code_invalid`, because only a code
+with a row can wait, and a distinct answer there would name it. Either way nothing is sold. Code
+before capacity, for the reason
 TKT-238's review established — a channel-property refusal masked by a full pool makes a gated
 presale read as a **sellout exactly when the on-sale is busiest**.
 

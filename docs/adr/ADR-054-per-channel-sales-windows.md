@@ -38,8 +38,11 @@ a window is the same shape.
 **A second wait (TKT-544).** On a gated allocation ([ADR-064](./ADR-064-presale-unlock-codes.md)),
 the claim path also waits on the presale code row lock, **after** this predicate was read. Before
 TKT-544, a channel that closed during that wait still sold. Now `redeemPresaleCode` judges the window
-again after the code lock (ADR-064 §2, *Decide after the wait*), so the claim is refused with
-`channel_window_closed`.
+again after the code lock, at the same instant as the code's window (ADR-064 §2, *Decide after the
+wait*), so the claim is refused. That one refusal is the uniform `presale_code_invalid`, not §5's
+`channel_window_closed`: only a code with a row can wait on its lock, so a distinct answer after the
+wait would tell the caller that the code exists (ADR-064 §2, *One answer*). A channel already closed
+when the claim path reads this predicate still answers `channel_window_closed`.
 
 **One const, reused in all three paths.** `consumedQuantity`'s comment records why: six call sites
 summed a claim's consumption and one silently used a different expression. A window predicate copied
