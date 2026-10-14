@@ -88,8 +88,8 @@ const presaleUsageClaims = `(status IN ('confirmed','finalizing','held'))`
 // here and no longer counts against its channel. Derived, never a counter: a counter cannot
 // be decremented by LAZY hold expiry without a sweeper, and ADR-010 forbids requiring one
 // for correctness. Because an expired claim counts until something writes its expiry, an
-// admission refused by this count first reclaims the code's expired claims on other pools
-// (reclaimExpiredPresaleUsage) and then decides again.
+// admission refused by this count may reclaim the code's expired claims on other pools
+// (reclaimExpiredPresaleUsage) and then decide again.
 //
 // NOT SCOPED BY pool_id, and that is the whole difficulty of this ticket. A channel
 // allocation is PRIMARY KEY (pool_id, channel_code), so every other derived count in this

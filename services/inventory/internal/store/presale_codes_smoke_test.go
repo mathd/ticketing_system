@@ -1401,8 +1401,9 @@ func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
 // The committed expiry is the essential assertion. Under consumingClaims the admission
 // succeeds while H stays held: an acceptance-only check would pass on the defective code.
 //
-// Archived and closed P2: nothing else sweeps those pools (store.go guards new holds on
-// them), so a cleanup that refused them would pin the code for good (D9).
+// Archived and closed P2: guardOffering refuses new holds there, so no hold sweeps them.
+// An archived pool is never swept again; a closed one only after it reopens or a staff
+// capacity adjustment. A cleanup that refused them would pin the code that long (D9).
 func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
 	buyer := func(f presaleRace, key string) holdResult { return f.admit(f.ctx, f.p1, 1, key) }
 	// One expiry for every call: it is part of the placement's fingerprint, so a retry

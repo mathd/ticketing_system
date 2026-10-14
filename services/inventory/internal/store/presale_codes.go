@@ -135,9 +135,9 @@ func redeemPresaleCode(ctx context.Context, tx *sql.Tx, org uuid.UUID, channel, 
 // It deliberately does NOT wrap ErrPresaleCodeInvalid. A wrapper that forgot to
 // convert it would then leak nothing visible, and the missing conversion would stay
 // hidden until someone changed the message. Unwrapped, an escape is an unmapped
-// error, which the API answers 500, and
-// TestPresaleRefusalsStayUniformAfterCrossPoolCleanup and
-// TestEveryInvalidPresaleCodeRefusesIdentically go red.
+// error, which the API answers 500: TestPresaleRefusalsStayUniformAfterCrossPoolCleanup
+// goes red on either path, and TestEveryInvalidPresaleCodeRefusesIdentically on the
+// hold path.
 type presaleCapExceeded struct {
 	redeemed int64
 	max      int64
@@ -157,11 +157,13 @@ func asPresaleCapExceeded(err error) (presaleCapExceeded, bool) {
 // this (organizer, channel, code), with the quantity on each that a terminal write
 // would stop counting (D7).
 //
-// The scope of the cleanup is decided HERE and nowhere else. sweepExpired expires
-// every due claim of a pool it is given, whatever that claim cites, so a pool this
-// query selects wrongly gets a terminal write it did not ask for. Each identity
-// predicate is therefore load-bearing, and
-// TestRedemptionCountIsIndexBacked has one row that only it excludes.
+// The scope of the cleanup is decided HERE. sweepExpired expires every due claim of
+// a pool it is given, whatever that claim cites, so a pool this query selects wrongly
+// gets terminal writes nobody asked for. The cleanup's organizer-scoped lock is the
+// only other line of defence, and it covers the organizer alone. Each predicate is
+// therefore load-bearing, and TestRedemptionCountIsIndexBacked has a row that only
+// it excludes (all but `expires_at IS NOT NULL`, which keeps sweepExpired's own
+// spelling: a NULL expiry already fails `<=`).
 //
 // The admission's own pool is excluded because the admission already swept it
 // inside its own transaction before it counted: its expired claims were not part
@@ -180,8 +182,8 @@ const expiredPresalePoolsSQL = `SELECT pool_id, sum(quantity)::bigint FROM claim
 // presaleCleanupPoolLock locks ONE foreign pool for the cleanup (D9).
 //
 // Scoped to the organizer because sweepExpired filters on pool_id only: without the
-// scope, a discovery mistake would sweep another organizer's pool under that pool's
-// lock and nobody's authority. With it, such a pool finds no row and is skipped.
+// scope, a discovery mistake would sweep another organizer's pool, which this request
+// has no business writing. With it, such a pool finds no row and is skipped.
 //
 // The marker exists for the tests. Transition locks a pool with the same statement
 // minus the marker and the organizer, and a handshake must tell the cleanup's wait
@@ -207,9 +209,10 @@ const presaleCleanupLockTimeout = 2 * time.Second
 // of every other pool indefinitely. This is the "next mutation" that reclaims it.
 //
 // WHEN IT RUNS. Only after an admission was refused by the code count AND rolled back,
-// so it starts holding no lock at all. That is what makes it deadlock-free: it never
-// waits for a pool while holding a pool or the code, and a mirror admission that waits
-// for the code cannot be waiting for something it holds. The refusal comes after the
+// so it starts holding no lock at all. When it waits for a foreign pool, its caller
+// holds neither its own pool nor the code, so a mirror admission that holds that
+// foreign pool and waits for the code is not waiting for anything of the caller's
+// (TestPresaleMirrorAdmissionsReleaseLocksBeforeCleanup). The refusal comes after the
 // window and seller checks, so a caller who may not sell never reaches it.
 //
 // WHAT IT COSTS. One discovery query, then one transaction per discovered pool, each
@@ -268,9 +271,11 @@ func (p *Postgres) expiredPresalePools(ctx context.Context, org uuid.UUID, chann
 // sweep does. A claim that a queued finalize or draw-down settled first is no longer
 // due, so the cleanup sees the committed state and leaves it.
 //
-// NO offering guard. An archived or closed pool refuses new holds, so nothing else will
-// ever sweep it; guarding here would pin the code for good. classifySeatClaimsInPool is
-// the precedent for a sweep without the guard.
+// NO offering guard. An archived or closed pool refuses new holds, so no hold sweeps it:
+// an archived pool never again (archival is terminal, and AdjustCapacity refuses it too),
+// a closed one only after it reopens or staff adjust its capacity. Guarding here would
+// pin the code that long. classifySeatClaimsInPool is the precedent for a sweep without
+// the guard.
 func (p *Postgres) cleanupExpiredPresalePool(ctx context.Context, org, pool uuid.UUID) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
