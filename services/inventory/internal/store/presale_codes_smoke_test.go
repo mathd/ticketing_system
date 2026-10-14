@@ -921,12 +921,23 @@ type presaleRace struct {
 
 func newPresaleRace(t *testing.T, maxRedemptions int32) presaleRace {
 	t.Helper()
+	return newPresaleRaceWithPools(t, maxRedemptions, uuid.New(), uuid.New())
+}
+
+// newPresaleRaceWithPools is newPresaleRace with P2 and P3 chosen by the caller, so a test
+// can force the pool-id order in which the cleanup visits them.
+func newPresaleRaceWithPools(t *testing.T, maxRedemptions int32, p2, p3 uuid.UUID) presaleRace {
+	t.Helper()
 	// A one-minute buyer TTL: no claim a test creates through the store expires by itself.
 	// Every expiry in these tests is placed deliberately.
 	ctx, st, db := storeForTest(t, time.Minute)
 	org, p1 := provisioned(t, ctx, st, 50)
-	f := presaleRace{ctx: ctx, st: st, db: db, org: org, p1: p1,
-		p2: slotFor(t, ctx, st, org, 50), p3: slotFor(t, ctx, st, org, 50)}
+	f := presaleRace{ctx: ctx, st: st, db: db, org: org, p1: p1, p2: p2, p3: p3}
+	for _, p := range []uuid.UUID{f.p2, f.p3} {
+		if err := st.Provision(ctx, uuid.New(), p, org, 50); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, p := range []uuid.UUID{f.p1, f.p2, f.p3} {
 		mustReplace(t, ctx, st, org, p, []ChannelAllocation{{Channel: raceChannel, Cap: 50, RequiresCode: true}})
 	}
@@ -1319,29 +1330,24 @@ func TestPresaleCapCountsExpiredHoldWhileFinalizeWaits(t *testing.T) {
 //
 // The source's expiry is absolute and short. It cannot be moved from inside the wait the
 // way the hold above is, because the draw-down holds the source's row lock while it waits.
+// So the schedule is a race the fixture can lose: on a loaded host, placement, the blocker
+// and the draw-down can take longer than the margin, and the draw-down then decides after
+// the expiry and never reaches its INSERT. That is a missed REACH condition, not a result,
+// so drawDownWaitingAtItsInsert rebuilds the fixture and tries again, a bounded number of
+// times. Once the schedule is reached, every cap assertion below is mandatory.
 func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
-	f := newPresaleRace(t, 1)
-	src, _, err := f.st.PlaceGroupReservation(f.ctx, f.org, f.p2, 1, "agency", dbClockOffset(t, f.db, "2 seconds"),
-		raceChannel, "staff", "seed", "src", WithPresaleCode(raceCode))
-	if err != nil {
-		t.Fatalf("place the source: %v", err)
+	const attempts = 3
+	var r drawDownSchedule
+	for attempt := 1; ; attempt++ {
+		var reached bool
+		if r, reached = drawDownWaitingAtItsInsert(t); reached {
+			break
+		}
+		if attempt == attempts {
+			t.Fatalf("reach: in %d attempts the draw-down never waited at its child INSERT before the source's expiry", attempts)
+		}
 	}
-
-	const drawKey = "draw"
-	blocker, blockerPID := lockedBy(t, f.ctx, f.db,
-		`INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reservation_counterparty,staff_scope)
-		 VALUES(gen_random_uuid(),$1,$2,1,'held',now()+interval '1 hour',$3,'seam-blocker','reservation','seam-blocker',true)`,
-		f.org, f.p3, drawKey)
-	drawn := spawn(t, f.ctx, func(ctx context.Context) drawResult {
-		r, _, err := f.st.DrawDownGroupReservation(ctx, f.org, src.ID, uuid.Nil, f.p2, 1, 0, "", "staff", "draw", drawKey)
-		return drawResult{r, err}
-	})
-	ins := awaitWaitingOn(t, f.ctx, f.db, blockerPID, drawDownChildInsert)
-	// The INSERT starts after the decision, so an INSERT that started before the expiry
-	// proves the decision did too.
-	if !ins.queryStart.Before(*src.ExpiresAt) {
-		t.Fatalf("reach: the child INSERT started at %v, not before the source's expiry %v", ins.queryStart, *src.ExpiresAt)
-	}
+	f, src, blocker, drawn, ins := r.f, r.src, r.blocker, r.drawn, r.ins
 	awaitDBPast(t, f.ctx, f.db, *src.ExpiresAt)
 
 	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
@@ -1387,6 +1393,60 @@ func TestPresaleCapCountsReservationWhileDrawDownInsertWaits(t *testing.T) {
 	}
 	if got := operatorStatus(t, f.ctx, f.st, f.org, raceChannel, raceCode).Redeemed; got != 1 {
 		t.Fatalf("operator usage = %d after confirm, want 1", got)
+	}
+}
+
+// drawDownSchedule is one fixture of the draw-down race, with the draw-down held at its
+// child INSERT by the blocker.
+type drawDownSchedule struct {
+	f       presaleRace
+	src     GroupReservation
+	blocker *sql.Tx
+	drawn   <-chan drawResult
+	ins     lockWait
+}
+
+// drawDownWaitingAtItsInsert builds a fresh fixture and tries to reach the schedule: the
+// draw-down waits at its child INSERT, and that INSERT started before the source's expiry.
+// The INSERT starts after the decision, so an INSERT that started before the expiry proves
+// the decision did too. It reports false when this fixture missed; a missed fixture is
+// left to its own schema and cleanups.
+func drawDownWaitingAtItsInsert(t *testing.T) (drawDownSchedule, bool) {
+	t.Helper()
+	f := newPresaleRace(t, 1)
+	src, _, err := f.st.PlaceGroupReservation(f.ctx, f.org, f.p2, 1, "agency", dbClockOffset(t, f.db, "2 seconds"),
+		raceChannel, "staff", "seed", "src", WithPresaleCode(raceCode))
+	if err != nil {
+		t.Fatalf("place the source: %v", err)
+	}
+	const drawKey = "draw"
+	blocker, blockerPID := lockedBy(t, f.ctx, f.db,
+		`INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,reservation_counterparty,staff_scope)
+		 VALUES(gen_random_uuid(),$1,$2,1,'held',now()+interval '1 hour',$3,'seam-blocker','reservation','seam-blocker',true)`,
+		f.org, f.p3, drawKey)
+	drawn := spawn(t, f.ctx, func(ctx context.Context) drawResult {
+		r, _, err := f.st.DrawDownGroupReservation(ctx, f.org, src.ID, uuid.Nil, f.p2, 1, 0, "", "staff", "draw", drawKey)
+		return drawResult{r, err}
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if ins, ok := waitingOn(t, f.ctx, f.db, blockerPID, drawDownChildInsert); ok {
+			if ins.queryStart.Before(*src.ExpiresAt) {
+				return drawDownSchedule{f, src, blocker, drawn, ins}, true
+			}
+			t.Logf("missed: the child INSERT started at %v, not before the source's expiry %v; rebuilding", ins.queryStart, *src.ExpiresAt)
+			return drawDownSchedule{}, false
+		}
+		select {
+		case r := <-drawn:
+			t.Logf("missed: the draw-down returned (err=%v) without waiting at its child INSERT; it decided after the source's expiry; rebuilding", r.err)
+			return drawDownSchedule{}, false
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reach: within 10s the draw-down neither waited at its child INSERT nor returned")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1472,28 +1532,92 @@ func TestPresaleAdmissionReclaimsExpiredCodeUsageAcrossPools(t *testing.T) {
 	}
 }
 
-// TKT-543 COS-3/4: the cleanup touches only pools with an expired claim citing the
-// requested organizer, channel AND code.
+// TKT-543 COS-3/4, D13: the cleanup writes a terminal state only to expired held claims
+// citing the requested organizer, channel AND code, and changes nothing else.
 //
-// sweepExpired expires every due claim in a pool it is given, so the scope of the cleanup
-// is decided entirely by which pools discovery selects. Each poison claim below sits in its
-// own pool and differs from the target in exactly one identity field.
+// Two scopes decide that, and each has its own poisons.
 //
-// The organizer poison stays untouched even with discovery's organizer filter removed,
-// because the cleanup's pool lock is scoped to the organizer and skips a pool it finds no
-// row for (D9). That filter is proven by the discovery scope assertion in
-// TestRedemptionCountIsIndexBacked instead (plan amendment A2).
-func TestPresaleCleanupTouchesOnlyPoolsCitingTheRequestedCode(t *testing.T) {
-	f := newPresaleRace(t, 1)
-	h := f.hold(t, f.p2, 1, "h")
-	mustAgeClaim(t, f.ctx, f.db, h.ID, "clock_timestamp() - interval '1 second'")
-
+//   - Discovery decides which pools the cleanup locks and commits. Each poison in its OWN
+//     pool differs from the target in one identity field. Its claim must keep its state,
+//     and its pool must not even be committed: the cache invalidation is the trace of a
+//     commit. With discovery's organizer filter removed, the organizer poison still stays
+//     untouched because the cleanup's lock is scoped to the organizer and skips a pool it
+//     finds no row for (D9); TestRedemptionCountIsIndexBacked proves that filter instead
+//     (plan amendment A2).
+//   - The cleanup's UPDATE decides which claims of a locked pool it expires. Each poison IN
+//     P2 differs from the target in one predicate of that UPDATE and must keep its state
+//     and its history. The UPDATE's organizer predicate has no poison: every claim the
+//     store writes into a pool belongs to that pool's organizer, so none can be built.
+//
+// Why the second scope matters (D13; review finding 2, [high]). A replay of a GA hold
+// answers 409 when the hold is held and past its expiry, and 200 when it is already
+// expired. If the cleanup expired every due claim of P2, as sweepExpired does, a caller
+// with an unrelated expired hold on P2 could replay it and learn that a code it had
+// guessed is valid and exhausted.
+//
+// Also pinned: the cleanup does not settle P2's draining capacity cut (its timing would be
+// one more observable that a code triggers, and it changes no liveClaims count), and H's
+// expiry record has exactly the shape sweepExpired writes. The comparison is with a row a
+// real sweepExpired writes in this pool afterwards, not with a copy of its SQL.
+func TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode(t *testing.T) {
+	// Usage of raceCode on raceChannel under R2: H 1 + live 1 + finalizing 1 = 3, the cap.
+	// A one-unit request is refused, can reclaim H only, and then fits: 3 - 1 + 1 = 3.
+	f := newPresaleRace(t, 3)
+	// P2 sells three channels: the code's, another gated one that also accepts raceCode,
+	// and an ungated one. 30 + 10 + 10 = 50, P2's capacity.
+	mustReplace(t, f.ctx, f.st, f.org, f.p2, []ChannelAllocation{
+		{Channel: raceChannel, Cap: 30, RequiresCode: true},
+		{Channel: "agency", Cap: 10, RequiresCode: true},
+		{Channel: "open", Cap: 10},
+	})
+	mustIssue(t, f.ctx, f.st, PresaleCode{OrganizerID: f.org, Channel: "agency", Code: raceCode})
+	mustIssue(t, f.ctx, f.st, PresaleCode{OrganizerID: f.org, Channel: raceChannel, Code: "OTHER-CODE"})
+	onP2 := func(key, channel, code string) Claim {
+		t.Helper()
+		var opts []HoldOption
+		if code != "" {
+			opts = append(opts, WithPresaleCode(code))
+		}
+		c, _, err := f.st.CreateHold(f.ctx, f.org, f.p2, uuid.Nil, 1, 0, "", channel, key, opts...)
+		if err != nil {
+			t.Fatalf("seed %s on P2: %v", key, err)
+		}
+		return c
+	}
+	h := onP2("h", raceChannel, raceCode)
 	type poison struct {
 		name    string
 		id      uuid.UUID
+		pool    uuid.UUID
+		status  string
 		history int
 	}
-	var poisons []poison
+	samePool := []poison{
+		{name: "same pool, not yet expired (expires_at <= now())", id: onP2("live", raceChannel, raceCode).ID},
+		{name: "same pool, finalizing (status = 'held')", id: onP2("finalizing", raceChannel, raceCode).ID},
+		{name: "same pool, another code (presale_code)", id: onP2("other-code", raceChannel, "OTHER-CODE").ID},
+		{name: "same pool, another channel (channel_code)", id: onP2("other-channel", "agency", raceCode).ID},
+		{name: "same pool, no code (presale_code)", id: onP2("no-code", "open", "").ID},
+	}
+	if _, err := f.st.Transition(f.ctx, f.org, samePool[1].id, "finalizing"); err != nil {
+		t.Fatal(err)
+	}
+	// A draining cut on P2: demand is 6 live units, so a cut to 1 clamps at 6 and waits.
+	if adj, _, err := f.st.AdjustCapacity(f.ctx, f.org, f.p2, 1, "staff", "cut", "cut"); err != nil || adj.Status != "clamped" {
+		t.Fatalf("draining cut on P2: status=%q err=%v, want clamped", adj.Status, err)
+	}
+	for _, id := range []uuid.UUID{h.ID, samePool[2].id, samePool[3].id, samePool[4].id} {
+		mustAgeClaim(t, f.ctx, f.db, id, "clock_timestamp() - interval '1 second'")
+	}
+	// The finalize happened before expiry; now its expires_at is past too.
+	if res, err := f.db.ExecContext(f.ctx, `UPDATE claims SET expires_at=clock_timestamp()-interval '1 second'
+		WHERE id=$1 AND status='finalizing'`, samePool[1].id); err != nil {
+		t.Fatal(err)
+	} else if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("aging the finalizing claim changed %d rows, want 1", n)
+	}
+
+	var otherPools []poison
 	seed := func(name string, org uuid.UUID, channel, code string) {
 		t.Helper()
 		pool := slotFor(t, f.ctx, f.st, org, 50)
@@ -1504,11 +1628,30 @@ func TestPresaleCleanupTouchesOnlyPoolsCitingTheRequestedCode(t *testing.T) {
 			t.Fatalf("seed %s: %v", name, err)
 		}
 		mustAgeClaim(t, f.ctx, f.db, c.ID, "clock_timestamp() - interval '1 second'")
-		poisons = append(poisons, poison{name, c.ID, historyRecords(t, f.ctx, f.db, c.ID)})
+		otherPools = append(otherPools, poison{name: name, id: c.ID, pool: pool})
 	}
 	seed("another organizer", uuid.New(), raceChannel, raceCode)
 	seed("another channel", f.org, "other-channel", raceCode)
 	seed("another code", f.org, raceChannel, "OTHER-CODE")
+
+	for _, ps := range [][]poison{samePool, otherPools} {
+		for i := range ps {
+			ps[i].status = claimStatus(t, f.ctx, f.db, ps[i].id)
+			ps[i].history = historyRecords(t, f.ctx, f.db, ps[i].id)
+		}
+	}
+	poolState := func() string {
+		t.Helper()
+		var capacity int32
+		var target sql.NullInt32
+		if err := f.db.QueryRowContext(f.ctx, `SELECT capacity, target_capacity FROM inventory_pools WHERE slot_id=$1`, f.p2).Scan(&capacity, &target); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("capacity=%d target=%v", capacity, target)
+	}
+	cutBefore := poolState()
+	var inv slotInvalidations
+	f.st.RegisterAvailabilityInvalidator(inv.record)
 
 	if r := f.admit(f.ctx, f.p1, 1, "a"); r.err != nil {
 		t.Fatalf("admission on P1: %v", r.err)
@@ -1516,13 +1659,51 @@ func TestPresaleCleanupTouchesOnlyPoolsCitingTheRequestedCode(t *testing.T) {
 	if s := claimStatus(t, f.ctx, f.db, h.ID); s != "expired" {
 		t.Fatalf("the target H is %q, want expired", s)
 	}
-	for _, p := range poisons {
-		if s := claimStatus(t, f.ctx, f.db, p.id); s != "held" {
-			t.Errorf("poison (%s) is %q, want held: the cleanup swept a pool the request does not cite", p.name, s)
+	if n := expiryRecords(t, f.ctx, f.db, h.ID); n != 1 {
+		t.Fatalf("H has %d expiry records, want exactly 1", n)
+	}
+	for _, p := range samePool {
+		if s := claimStatus(t, f.ctx, f.db, p.id); s != p.status {
+			t.Errorf("%s is %q, want %q: the cleanup wrote a claim that does not cite the requested code as due", p.name, s, p.status)
+		}
+		if n := historyRecords(t, f.ctx, f.db, p.id); n != p.history {
+			t.Errorf("%s has %d history records, want %d", p.name, n, p.history)
+		}
+	}
+	for _, p := range otherPools {
+		if s := claimStatus(t, f.ctx, f.db, p.id); s != p.status {
+			t.Errorf("poison (%s) is %q, want %q: the cleanup swept a pool the request does not cite", p.name, s, p.status)
 		}
 		if n := historyRecords(t, f.ctx, f.db, p.id); n != p.history {
 			t.Errorf("poison (%s) has %d history records, want %d", p.name, n, p.history)
 		}
+		if n := inv.count(p.pool); n != 0 {
+			t.Errorf("poison (%s): its pool was committed and invalidated %d times; the cleanup locked a pool the request does not cite", p.name, n)
+		}
+	}
+	if got := poolState(); got != cutBefore {
+		t.Errorf("P2's draining cut went from %s to %s during the cleanup; the cleanup must not settle it", cutBefore, got)
+	}
+
+	// The shape of H's expiry record against one that sweepExpired writes: AdjustCapacity
+	// sweeps P2 and commits, which expires the code-less claim.
+	if _, _, err := f.st.AdjustCapacity(f.ctx, f.org, f.p2, 50, "staff", "restore", "restore"); err != nil {
+		t.Fatal(err)
+	}
+	if s := claimStatus(t, f.ctx, f.db, samePool[4].id); s != "expired" {
+		t.Fatalf("reach: the code-less claim is %q after a committed sweepExpired of P2, want expired", s)
+	}
+	shape := func(id uuid.UUID) string {
+		t.Helper()
+		var s string
+		if err := f.db.QueryRowContext(f.ctx, `SELECT (to_jsonb(h) - 'id' - 'claim_id' - 'occurred_at' - 'append_order')::text
+			FROM claim_history h WHERE claim_id=$1 AND action='expire'`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if got, want := shape(h.ID), shape(samePool[4].id); got != want {
+		t.Fatalf("H's expiry record differs from the one sweepExpired writes:\n got %s\nwant %s", got, want)
 	}
 }
 
@@ -1594,8 +1775,9 @@ func TestPresaleMirrorAdmissionsReleaseLocksBeforeCleanup(t *testing.T) {
 // The admission count (codeRedeemedQuantity) is reading R2 (ADR-084 §3): every confirmed,
 // finalizing or held claim citing the code, with no expiry test, confirmed net of refund
 // returns (consumedQuantity, unchanged). The operator read (PresaleCodeStatuses) keeps
-// consumingClaims (D6): it reports what remains after reclamation, so an expired held claim
-// that nothing has swept yet is NOT in it.
+// consumingClaims (D6): an expired held claim that nothing has swept yet is NOT in it. That
+// claim is only potentially reclaimable: a finalize that queued before its expiry can still
+// keep it (TestPresaleCapCountsExpiredHoldWhileFinalizeWaits).
 //
 // Every expected value below is derived from those two rules, not from a run. Each case
 // has its own organizer, pool and code, so no case can feed another.
@@ -1762,6 +1944,11 @@ func TestPresaleUsageCountsUntilTerminalWrite(t *testing.T) {
 // produce: a distinguishable refusal, which ADR-064 §4 forbids. The bound keeps a refused
 // request from queuing behind a hot pool for a whole on-sale. A cleanup that gives up
 // costs liveness only: H keeps counting, and the next request can reclaim it.
+//
+// With NO cleanup transaction committed there is no retry either (D14): only a concurrent
+// terminal write could make it succeed. The test closes P1's channel window while the
+// cleanup waits, so a retry would be visible: it would answer ErrChannelWindowClosed, while
+// the refusal that must come back is the first attempt's.
 func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
 	f := newPresaleRace(t, 1)
 	h := f.hold(t, f.p2, 1, "h")
@@ -1771,6 +1958,7 @@ func TestPresaleCleanupGivesUpOnALockedPoolWithTheUniformRefusal(t *testing.T) {
 	admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
 	adm, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, blockerPID, cleanupPoolLock)
 	if !returned {
+		setWindow(t, f.ctx, f.db, f.p1, raceChannel, "clock_timestamp() + interval '1 hour'", "NULL")
 		adm = await(t, admitted, "the admission whose cleanup waits on a locked P2")
 	}
 	if err := blocker.Rollback(); err != nil {
@@ -1904,5 +2092,73 @@ func TestPresaleCleanupStaysBehindTheWindowAndSellerChecks(t *testing.T) {
 	}
 	if err := await(t, eligible, "the eligible admission"); err != nil {
 		t.Fatalf("the eligible admission: %v, want admitted", err)
+	}
+}
+
+// TKT-543 D14: a pool the cleanup cannot lock does not stop it reaching the others.
+//
+// Cap 2. P2 is quiet and P3 is locked, and each holds one expired, unswept unit of the
+// code. A one-unit request on P1 is refused (2 + 1 > 2) and fits once EITHER unit is
+// reclaimed. P3's lock times out. The cleanup must still reclaim P2, and the admission must
+// run again because that cleanup committed.
+//
+// The cleanup visits pools in pool-id order, so the test forces both orders by choosing the
+// ids. Stopping at the first failure blocks P2 for as long as P3 stays busy when P3 sorts
+// first, and gives up a retry that would now fit when P2 sorts first.
+//
+// P3's unit must stay held: the cleanup writes a pool's claims only under that pool's lock.
+func TestPresaleCleanupContinuesPastALockedPool(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		lockedFirst bool
+	}{
+		{"locked pool sorts first", true},
+		{"locked pool sorts last", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, last := uuid.New(), uuid.New()
+			first[0], last[0] = 0x00, 0xff
+			quiet, locked := first, last
+			if tc.lockedFirst {
+				quiet, locked = last, first
+			}
+			f := newPresaleRaceWithPools(t, 2, quiet, locked)
+			eq := f.hold(t, quiet, 1, "quiet")
+			el := f.hold(t, locked, 1, "locked")
+			mustAgeClaim(t, f.ctx, f.db, eq.ID, "clock_timestamp() - interval '1 second'")
+			mustAgeClaim(t, f.ctx, f.db, el.ID, "clock_timestamp() - interval '1 second'")
+
+			blocker, blockerPID := lockedBy(t, f.ctx, f.db, transitionPoolLock, locked)
+			admitted := spawn(t, f.ctx, func(ctx context.Context) holdResult { return f.admit(ctx, f.p1, 1, "a") })
+			if _, returned := awaitResultOrWait(t, f.ctx, f.db, admitted, blockerPID, cleanupPoolLock); returned {
+				t.Fatal("reach: the admission returned before its cleanup waited on the locked pool")
+			}
+			// Reach: the order is the one this case forces. When the cleanup waits on the
+			// locked pool, the quiet pool's unit is already reclaimed only if it came first.
+			wantQuiet := "expired"
+			if tc.lockedFirst {
+				wantQuiet = "held"
+			}
+			if s := claimStatus(t, f.ctx, f.db, eq.ID); s != wantQuiet {
+				t.Fatalf("reach: while the cleanup waits on the locked pool, the quiet pool's unit is %q, want %q", s, wantQuiet)
+			}
+			adm := await(t, admitted, "the admission whose cleanup meets a locked pool")
+			if err := blocker.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+
+			if adm.err != nil {
+				t.Fatalf("admission on P1: %v, want admitted: reclaiming the quiet pool's unit alone makes it fit", adm.err)
+			}
+			if s := claimStatus(t, f.ctx, f.db, eq.ID); s != "expired" {
+				t.Fatalf("the quiet pool's unit is %q, want expired", s)
+			}
+			if s := claimStatus(t, f.ctx, f.db, el.ID); s != "held" {
+				t.Fatalf("the locked pool's unit is %q, want held: it was written without its pool's lock", s)
+			}
+			if got := redeemedUnits(t, f.ctx, f.db, f.org, raceChannel, raceCode); got != 2 {
+				t.Fatalf("usage = %d, want 2: the locked pool's unit and the new claim", got)
+			}
+		})
 	}
 }

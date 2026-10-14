@@ -157,20 +157,20 @@ func asPresaleCapExceeded(err error) (presaleCapExceeded, bool) {
 // this (organizer, channel, code), with the quantity on each that a terminal write
 // would stop counting (D7).
 //
-// The scope of the cleanup is decided HERE. sweepExpired expires every due claim of
-// a pool it is given, whatever that claim cites, so a pool this query selects wrongly
-// gets terminal writes nobody asked for. The cleanup's organizer-scoped lock is the
-// only other line of defence, and it covers the organizer alone. Each predicate is
-// therefore load-bearing, and TestRedemptionCountIsIndexBacked has a row that only
-// it excludes (all but `expires_at IS NOT NULL`, which keeps sweepExpired's own
-// spelling: a NULL expiry already fails `<=`).
+// It decides which pools the cleanup locks, commits and invalidates. Which claims of
+// such a pool are written is decided again by presaleCleanupExpireSQL, under the
+// pool's lock. A pool this query selects wrongly therefore costs a lock wait, a commit
+// and a cache invalidation, but no write. Each predicate is load-bearing all the same,
+// and TestRedemptionCountIsIndexBacked has a row that only it excludes (all but
+// `expires_at IS NOT NULL`, which keeps sweepExpired's own spelling: a NULL expiry
+// already fails `<=`).
 //
 // The admission's own pool is excluded because the admission already swept it
 // inside its own transaction before it counted: its expired claims were not part
 // of the usage that refused it.
 //
 // now() belongs to this statement alone: discovery runs outside any transaction,
-// and sweepExpired rechecks status and expiry under the pool lock anyway. Backed by
+// and the cleanup rechecks status and expiry under the pool lock anyway. Backed by
 // claims_presale_usage (organizer_id, channel_code, presale_code, status,
 // expires_at), the same index as codeRedeemedQuantity (ADR-019).
 const expiredPresalePoolsSQL = `SELECT pool_id, sum(quantity)::bigint FROM claims
@@ -181,9 +181,10 @@ const expiredPresalePoolsSQL = `SELECT pool_id, sum(quantity)::bigint FROM claim
 
 // presaleCleanupPoolLock locks ONE foreign pool for the cleanup (D9).
 //
-// Scoped to the organizer because sweepExpired filters on pool_id only: without the
-// scope, a discovery mistake would sweep another organizer's pool, which this request
-// has no business writing. With it, such a pool finds no row and is skipped.
+// Scoped to the organizer so that a discovery mistake never makes this request wait
+// for, commit or invalidate another organizer's pool: such a pool finds no row and is
+// skipped. presaleCleanupExpireSQL is scoped to the organizer as well, so the lock is
+// not what stops the write.
 //
 // The marker exists for the tests. Transition locks a pool with the same statement
 // minus the marker and the organizer, and a handshake must tell the cleanup's wait
@@ -196,9 +197,34 @@ const presaleCleanupPoolLock = `SELECT 1 /* presale-cleanup pool lock */ FROM in
 // The cleanup WAITS rather than skipping a locked pool: the pools that matter are
 // held by a finalize or a draw-down, which never sweep, and SKIP LOCKED would give
 // up on exactly those. The bound stops a refused request from queuing behind a hot
-// pool for a whole on-sale. When it fires, the cleanup stops and the admission
-// returns the uniform refusal: a cleanup failure costs liveness, never correctness.
+// pool for a whole on-sale. When it fires, that pool's cleanup ends and the next pool
+// is tried (D14): a cleanup failure costs liveness, never correctness.
 const presaleCleanupLockTimeout = 2 * time.Second
+
+// presaleCleanupExpireSQL is the cleanup's terminal write for ONE pool (TKT-543, D13):
+// it expires the due held claims of that pool that cite exactly this (organizer,
+// channel, code), and records each expiry exactly as sweepExpired does. The history
+// columns and values are sweepExpired's, and
+// TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode compares the rows.
+//
+// NOT sweepExpired, which expires EVERY due claim of the pool. A GA replay answers 409
+// for a hold that is held and past its expiry, and 200 for one already expired. So if
+// a request with a guessed code could expire an unrelated hold, the hold's owner could
+// replay it and learn that the code is valid and exhausted (review finding 2), a
+// distinction ADR-064 §4 forbids. Scoped to the code, the write can be observed only by
+// a caller who already holds a claim citing it.
+//
+// Every predicate is load-bearing (TestPresaleCleanupTouchesOnlyClaimsCitingTheRequestedCode
+// and, for pool_id, TestPresaleCleanupContinuesPastALockedPool), except organizer_id: the
+// store writes into a pool only claims of the pool's organizer, so no test can build the
+// row it excludes. It stays so the write never depends on that.
+const presaleCleanupExpireSQL = `WITH swept AS (
+		UPDATE claims SET status='expired', updated_at=now()
+		WHERE pool_id=$1 AND organizer_id=$2 AND channel_code=$3 AND presale_code=$4
+		  AND status='held' AND expires_at IS NOT NULL AND expires_at<=now()
+		RETURNING id, organizer_id, quantity)
+	INSERT INTO claim_history(id, organizer_id, claim_id, action, actor, reason, quantity, quantity_after, status_after)
+	SELECT gen_random_uuid(), organizer_id, id, 'expire', 'system', 'ttl_elapsed', quantity, 0, 'expired' FROM swept`
 
 // reclaimExpiredPresaleUsage is the cross-pool cleanup (TKT-543, D2, D3, D7, D8, D9).
 // It reports whether the caller should run its admission once more.
@@ -222,9 +248,16 @@ const presaleCleanupLockTimeout = 2 * time.Second
 // pool's lock twice each.
 //
 // ERRORS ARE NOT RETURNED (D8). A returned error would be a 500 that only a valid,
-// exhausted code can produce, which is the oracle ADR-064 §4 forbids. Any error ends the
-// cleanup and the caller refuses uniformly. The terminal writes already committed are
-// valid on their own. The cost is that a persistent cleanup failure is silent.
+// exhausted code can produce, which is the oracle ADR-064 §4 forbids. The cost is that
+// a persistent cleanup failure is silent.
+//
+// ONE FAILED POOL DOES NOT END THE CLEANUP (D14). A pool that cannot be locked in time,
+// or fails otherwise, is left as it is and the next pool is tried: stopping would let a
+// busy pool that sorts first keep a quiet pool's expired usage counted for as long as it
+// stays busy, and would throw away a retry that the pools already cleaned make fit. The
+// caller runs its admission again only if at least one cleanup transaction committed;
+// with none, only a concurrent terminal write could make a retry succeed. A discovery
+// error ends the cleanup with no retry.
 func (p *Postgres) reclaimExpiredPresaleUsage(ctx context.Context, org, admissionPool uuid.UUID, channel, code string, qty int32, refused presaleCapExceeded) bool {
 	pools, reclaimable, err := p.expiredPresalePools(ctx, org, channel, code, admissionPool)
 	if err != nil || len(pools) == 0 {
@@ -233,12 +266,13 @@ func (p *Postgres) reclaimExpiredPresaleUsage(ctx context.Context, org, admissio
 	if refused.redeemed-reclaimable+int64(qty) > refused.max {
 		return false
 	}
+	committed := false
 	for _, pool := range pools {
-		if err = p.cleanupExpiredPresalePool(ctx, org, pool); err != nil {
-			return false
+		if ok, err := p.cleanupExpiredPresalePool(ctx, org, pool, channel, code); err == nil && ok {
+			committed = true
 		}
 	}
-	return true
+	return committed
 }
 
 // expiredPresalePools reads discovery completely and closes it before any cleanup
@@ -263,23 +297,33 @@ func (p *Postgres) expiredPresalePools(ctx context.Context, org uuid.UUID, chann
 	return pools, total, rows.Err()
 }
 
-// cleanupExpiredPresalePool writes the terminal state of every due claim in ONE foreign
-// pool, in its own transaction, under that pool's lock only (D9).
+// cleanupExpiredPresalePool writes the terminal state of the due claims citing this
+// code in ONE foreign pool, in its own transaction, under that pool's lock only (D9,
+// D13). It reports whether its transaction committed.
 //
-// sweepExpired is reused unchanged: it rechecks status and expiry under the lock, and
-// keeps history, seat release and capacity-cut reconciliation exactly as every other
-// sweep does. A claim that a queued finalize or draw-down settled first is no longer
-// due, so the cleanup sees the committed state and leaves it.
+// The UPDATE in presaleCleanupExpireSQL rechecks status and expiry under the lock, in a
+// statement that starts after the lock is granted. A claim that a queued finalize or
+// draw-down settled first is no longer due, so the cleanup sees the committed state and
+// leaves it.
+//
+// Two things sweepExpired does are left out on purpose (D13):
+//   - reconcileCapacity. Settling a draining cut at cleanup time would be one more
+//     change that a code request triggers in a pool it does not sell from. It changes
+//     no count either: reconcileCapacity reads demand through liveClaims, which already
+//     leaves out every due hold, so the cut settles at the pool's next mutation exactly
+//     as it would have without this cleanup.
+//   - releaseSeatsForTerminal. A presale code can be cited only by GA claims: no seated
+//     claim path takes a code, so there are no seats to release.
 //
 // NO offering guard. An archived or closed pool refuses new holds, so no hold sweeps it:
 // an archived pool never again (archival is terminal, and AdjustCapacity refuses it too),
 // a closed one only after it reopens or staff adjust its capacity. Guarding here would
 // pin the code that long. classifySeatClaimsInPool is the precedent for a sweep without
 // the guard.
-func (p *Postgres) cleanupExpiredPresalePool(ctx context.Context, org, pool uuid.UUID) error {
+func (p *Postgres) cleanupExpiredPresalePool(ctx context.Context, org, pool uuid.UUID, channel, code string) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	timeout := presaleCleanupLockTimeout
@@ -287,20 +331,23 @@ func (p *Postgres) cleanupExpiredPresalePool(ctx context.Context, org, pool uuid
 		timeout = p.cleanupLockTimeout
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL lock_timeout = '%dms'`, timeout.Milliseconds())); err != nil {
-		return err
+		return false, err
 	}
 	var locked int
 	err = tx.QueryRowContext(ctx, presaleCleanupPoolLock, pool, org).Scan(&locked)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err = sweepExpired(ctx, tx, pool); err != nil {
-		return err
+	if _, err = tx.ExecContext(ctx, presaleCleanupExpireSQL, pool, org, channel, code); err != nil {
+		return false, err
 	}
-	return p.commitAvailability(tx, pool)
+	if err = p.commitAvailability(tx, pool); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // IssuePresaleCode creates or replaces a code. Operator surface, internal only.
