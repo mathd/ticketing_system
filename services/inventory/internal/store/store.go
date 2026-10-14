@@ -678,8 +678,13 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			// redeemPresaleCode takes the presale_codes ROW LOCK. The pool lock
 			// above does NOT serialize a code: a code spans slots, so two holds on
 			// different pools take different pool locks. See its comment.
+			//
+			// That lock can WAIT, so the window judged above can be stale when it
+			// returns. redeemPresaleCode judges this channel's window again after
+			// the lock, before the code (TKT-544), and can return
+			// ErrChannelWindowClosed.
 			if requiresCode {
-				if err := redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+				if err := redeemPresaleCode(ctx, tx, org, slot, channel, presaleCode, qty); err != nil {
 					return Claim{}, false, err
 				}
 			}

@@ -158,8 +158,11 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			// Placement IS gated for the same reason it is window-gated: it creates
 			// NEW consumption. Draw-down is not, and must not be: a draw-down is
 			// quantity-neutral, so it redeems nothing new either.
+			//
+			// As in CreateHold, redeemPresaleCode judges this channel's window again
+			// after the code lock, which can wait (TKT-544).
 			if requiresCode {
-				if err = redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+				if err = redeemPresaleCode(ctx, tx, org, slot, channel, presaleCode, qty); err != nil {
 					return GroupReservation{}, false, err
 				}
 			}
@@ -267,6 +270,24 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	// sourcePresaleCode is read under the SAME row lock as the rest of the source,
 	// so the citation the child inherits cannot be a different code than the one
 	// whose units are being moved.
+	//
+	// `decision` is clock_timestamp() in the target list of a FOR UPDATE. If this
+	// statement WAITED on the row lock, that value would be stale: PostgreSQL
+	// computes the target list before the wait, and does not compute it again
+	// when the holder ends without updating the row (TKT-380 probe 1 schedule W,
+	// which TKT-544 fixed in redeemPresaleCode). Here the statement cannot wait in
+	// a shipped schedule, and only because of today's writers:
+	//
+	//   - every application writer of a claims row takes that claim's pool lock
+	//     first, and this transaction already holds it;
+	//   - every insert that takes FOR KEY SHARE on a claims row through a foreign
+	//     key (claim_history.claim_id and related_claim_id; claim_seats) cites a
+	//     claim of the pool its own transaction has locked.
+	//
+	// That is a property of the writers at TKT-544, found by inspection, not of
+	// this statement. A new writer that locks a claims row without its pool lock
+	// makes this decision stale: then read the time in a separate statement after
+	// the lock, as redeemPresaleCode does.
 	var sourcePresaleCode string
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),COALESCE(presale_code,''),expires_at,clock_timestamp(),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
 		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &channel, &sourcePresaleCode, &c.ExpiresAt, &decision, &c.Kind)

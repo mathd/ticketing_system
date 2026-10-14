@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1582,5 +1583,411 @@ func TestPresaleCodeStaysBlockedByAnExpiredHoldUntilItsPoolIsSwept(t *testing.T)
 	}
 	if r := f.admit(f.ctx, f.p1, 1, "after-sweep"); r.err != nil {
 		t.Fatalf("an admission on P1 after P2 was swept: %v, want admitted", r.err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TKT-544: every window an admission depends on is judged AFTER the code-lock wait.
+//
+// The code row lock can WAIT. A redemption of the same code on another pool holds
+// it without updating the row, and so can an issuance. So an admission can reach
+// the code-lock statement before a window boundary and get the lock after it.
+// Whatever it judged before that wait is stale.
+//
+// Before the fix, redeemPresaleCode computed the code's window in the target list
+// of the FOR UPDATE statement itself. PostgreSQL computed that value before the
+// wait and did not compute it again, because the holder did not update the row
+// (TKT-380 probe 1 schedule W: 6 of 6 admitted after closes_at). The channel's
+// window had the same exposure one statement earlier: the caller read it under
+// the pool lock, before the code-lock wait.
+//
+// THE SEAM IS A REAL POSTGRESQL LOCK, held by a blocker transaction that never
+// writes. No production hook. A blocker that UPDATED the code row would let
+// PostgreSQL check the row again and could hide the defect, so it only locks.
+//
+// THE HANDSHAKE PINS THE STATEMENT
+// (docs/learnings/2026-07-16-lock-handshakes-pin-the-exact-statement.md): exactly
+// one backend, in a Lock wait, whose blocking pids are exactly the blocker's, and
+// whose statement matches codeLockStatement. It must be seen while the database
+// clock is still before the boundary. If it is not, the test fails as a setup
+// failure. It never skips and never passes on a refusal it did not force.
+// ---------------------------------------------------------------------------
+
+// codeLockStatement is a LIKE pattern for the code-lock statement in
+// redeemPresaleCode. It names the table, the key predicate and FOR UPDATE, never
+// the projection, so the old combined statement
+// `SELECT max_redemptions, (window) FROM presale_codes WHERE … FOR UPDATE` matches
+// it too. A mutation that restores that statement still reaches the forced
+// schedule, and goes red on the outcome, not on the setup.
+const codeLockStatement = `SELECT % FROM presale_codes%WHERE organizer_id=$1 AND channel_code=$2 AND code=$3 FOR UPDATE%`
+
+// windowMargin is how far past the database clock a fixture puts the boundary.
+// The handshake usually lands within tens of milliseconds; the margin is for a
+// loaded machine. If it is not enough, the handshake fails loudly.
+const windowMargin = "3 seconds"
+
+// lockScheduleQty is the quantity each admission asks for: not 1, so that the
+// claim-row assertion can tell the requested quantity from a default.
+const lockScheduleQty = 2
+
+// presaleAdmission is one path that REDEEMS a code: both create new consumption.
+type presaleAdmission struct {
+	name  string
+	admit func(ctx context.Context, st *Postgres, org, slot uuid.UUID, code, key string) (uuid.UUID, bool, error)
+}
+
+var presaleAdmissions = []presaleAdmission{
+	{"CreateHold", func(ctx context.Context, st *Postgres, org, slot uuid.UUID, code, key string) (uuid.UUID, bool, error) {
+		c, replay, err := st.CreateHold(ctx, org, slot, uuid.Nil, lockScheduleQty, 0, "", "presale", key,
+			WithPresaleCode(code))
+		return c.ID, replay, err
+	}},
+	{"PlaceGroupReservation", func(ctx context.Context, st *Postgres, org, slot uuid.UUID, code, key string) (uuid.UUID, bool, error) {
+		// A distant expiry: nothing but the window under test may refuse.
+		r, replay, err := st.PlaceGroupReservation(ctx, org, slot, lockScheduleQty, "agency-544",
+			time.Now().Add(24*time.Hour), "presale", "staff", "tkt-544", key, WithPresaleCode(code))
+		return r.ID, replay, err
+	}},
+}
+
+// holdCodeRow locks a code's row the way a concurrent redemption on another pool
+// does: FOR UPDATE, never written. It is spelled unlike codeLockStatement (key
+// order, projection), so the blocker cannot match the waiter's pattern.
+func holdCodeRow(org uuid.UUID, channel, code string) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		var got string
+		return tx.QueryRowContext(ctx,
+			`SELECT code FROM presale_codes WHERE code=$1 AND channel_code=$2 AND organizer_id=$3 FOR UPDATE`,
+			code, channel, org).Scan(&got)
+	}
+}
+
+// holdCodeTable takes EXCLUSIVE on presale_codes. That mode conflicts with the
+// ROW SHARE lock that every SELECT … FOR UPDATE on the table takes, and not with
+// the ACCESS SHARE of a plain read. It is the only lock that can delay the
+// code-lock statement for a code that has NO row, because a row lock needs a row.
+// So it is the one schedule a valid code and an unknown code can share.
+func holdCodeTable(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `LOCK TABLE presale_codes IN EXCLUSIVE MODE`)
+	return err
+}
+
+type admissionOutcome struct {
+	id     uuid.UUID
+	replay bool
+	err    error
+}
+
+// admitAcrossBoundary forces this schedule:
+//
+//  1. a blocker transaction takes its lock (hold) and writes nothing;
+//  2. the admission starts and is observed waiting in its code-lock statement,
+//     blocked by exactly the blocker, while the database clock is before boundary;
+//  3. the database clock passes boundary (plus 200 ms), and the admission is
+//     confirmed still waiting;
+//  4. the blocker rolls back, and the admission finishes.
+//
+// Every wait is on an observed database state, bounded by ctx. On a failure, the
+// cleanup releases the blocker and waits for the admission before storeForTest
+// drops the schema.
+func admitAcrossBoundary(t *testing.T, ctx context.Context, db *sql.DB, boundary time.Time,
+	hold func(context.Context, *sql.Tx) error, admit func() (uuid.UUID, bool, error)) admissionOutcome {
+	t.Helper()
+	if now := dbNow(t, ctx, db); !now.Before(boundary) {
+		t.Fatalf("setup: the database clock (%s) is already at the boundary (%s); the schedule cannot be forced",
+			now.UTC().Format(time.RFC3339Nano), boundary.UTC().Format(time.RFC3339Nano))
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	btx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	var out admissionOutcome
+	finished := make(chan struct{})
+	started := false
+	t.Cleanup(func() {
+		// Before storeForTest's cleanups (LIFO): DROP SCHEMA would queue behind
+		// the blocker, and the admission behind both.
+		_ = btx.Rollback()
+		_ = conn.Close()
+		if started {
+			<-finished // bounded by ctx's deadline
+		}
+	})
+	var bpid int
+	if err = btx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&bpid); err != nil {
+		t.Fatal(err)
+	}
+	if err = hold(ctx, btx); err != nil {
+		t.Fatalf("setup: the blocker could not take its lock: %v", err)
+	}
+
+	started = true
+	go func() {
+		defer close(finished)
+		out.id, out.replay, out.err = admit()
+	}()
+
+	// (2) The handshake.
+	var waiterPID int
+	for {
+		select {
+		case <-finished:
+			t.Fatalf("setup: the admission returned (err=%v) without waiting in the code-lock statement; "+
+				"the schedule was not forced", out.err)
+		default:
+		}
+		rows, err := db.QueryContext(ctx, `SELECT pid, query_start, clock_timestamp(), COALESCE(wait_event,''), query
+			FROM pg_stat_activity
+			WHERE wait_event_type='Lock' AND pg_blocking_pids(pid) = ARRAY[$1::integer] AND query LIKE $2`,
+			bpid, codeLockStatement)
+		if err != nil {
+			t.Fatal(err)
+		}
+		type waiter struct {
+			pid              int
+			queryStart, seen time.Time
+			waitEvent, query string
+		}
+		var ws []waiter
+		for rows.Next() {
+			var w waiter
+			if err = rows.Scan(&w.pid, &w.queryStart, &w.seen, &w.waitEvent, &w.query); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			ws = append(ws, w)
+		}
+		if err = rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		_ = rows.Close()
+		if len(ws) > 1 {
+			t.Fatalf("setup: %d backends wait on the blocker in a code-lock statement, want exactly 1", len(ws))
+		}
+		if len(ws) == 1 {
+			w := ws[0]
+			if !w.seen.Before(boundary) || !w.queryStart.Before(boundary) {
+				t.Fatalf("setup: the admission was seen waiting only at %s (query_start %s), not before the boundary %s",
+					w.seen.UTC().Format(time.RFC3339Nano), w.queryStart.UTC().Format(time.RFC3339Nano),
+					boundary.UTC().Format(time.RFC3339Nano))
+			}
+			t.Logf("admission pid %d waits on blocker pid %d (wait_event=%s) since %s, seen at %s, boundary %s; query=%q",
+				w.pid, bpid, w.waitEvent, w.queryStart.UTC().Format(time.RFC3339Nano),
+				w.seen.UTC().Format(time.RFC3339Nano), boundary.UTC().Format(time.RFC3339Nano), w.query)
+			waiterPID = w.pid
+			break
+		}
+		if now := dbNow(t, ctx, db); !now.Before(boundary) {
+			t.Fatalf("setup: no admission waited on blocker pid %d in a statement matching %q before the boundary %s",
+				bpid, codeLockStatement, boundary.UTC().Format(time.RFC3339Nano))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// (3) Past the boundary by the database clock, still waiting.
+	for {
+		var past bool
+		if err = db.QueryRowContext(ctx,
+			`SELECT clock_timestamp() > $1::timestamptz + interval '200 milliseconds'`, boundary).Scan(&past); err != nil {
+			t.Fatal(err)
+		}
+		if past {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var stillWaiting bool
+	if err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+		WHERE pid=$1 AND wait_event_type='Lock' AND pg_blocking_pids(pid) = ARRAY[$2::integer] AND query LIKE $3)`,
+		waiterPID, bpid, codeLockStatement).Scan(&stillWaiting); err != nil {
+		t.Fatal(err)
+	}
+	if !stillWaiting {
+		t.Fatalf("setup: admission pid %d stopped waiting before the blocker released its lock", waiterPID)
+	}
+	t.Logf("database clock is past the boundary; the blocker rolls back without a write")
+
+	// (4) Release and collect.
+	if err = btx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatalf("the admission did not finish after the blocker released: %v", ctx.Err())
+	}
+	return out
+}
+
+// keyedClaim is a claim row as persisted, read independently of every derived
+// count (codeRedeemedQuantity among them, which TKT-543 changes).
+type keyedClaim struct {
+	id, pool      uuid.UUID
+	status        string
+	qty           int32
+	channel, code string
+}
+
+func (c keyedClaim) String() string {
+	return "{id=" + c.id.String() + " pool=" + c.pool.String() + " status=" + c.status +
+		" qty=" + strconv.Itoa(int(c.qty)) + " channel=" + c.channel + " presale_code=" + c.code + "}"
+}
+
+func claimsUnderKey(t *testing.T, ctx context.Context, db *sql.DB, org uuid.UUID, key string) []keyedClaim {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT id, pool_id, status, quantity, COALESCE(channel_code,''), COALESCE(presale_code,'')
+		FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 ORDER BY id`, org, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []keyedClaim
+	for rows.Next() {
+		var c keyedClaim
+		if err = rows.Scan(&c.id, &c.pool, &c.status, &c.qty, &c.channel, &c.code); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The CODE's window, on both bounds and both admission paths, judged after the
+// code-lock wait.
+//
+// The code is UNCAPPED in every case, so the usage count never runs: these
+// schedules are independent of codeRedeemedQuantity, which TKT-543 changes. The
+// channel's window is unbounded and capacity is generous, so nothing but the
+// code's window can decide.
+//
+// Exact equality at a bound stays with TestPresaleCodeWindowIsHalfOpen, which
+// substitutes a literal clock into the shipped predicate. A wall-clock "exactly
+// now" fixture cannot express it.
+func TestPresaleCodeWindowAfterCodeLock(t *testing.T) {
+	for _, path := range presaleAdmissions {
+		t.Run(path.name, func(t *testing.T) {
+			// closes_at falls inside the wait: the admission started while the code
+			// was valid and gets the lock after it closed. It must be refused.
+			// Failing state: one extra held claim under the attempt's key, citing
+			// the code.
+			t.Run("a code that closes during the wait refuses", func(t *testing.T) {
+				ctx, st, db := storeForTest(t, time.Hour)
+				org, slot := provisioned(t, ctx, st, 100)
+				mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 100, RequiresCode: true}})
+				const code, key = "CLOSING-544", "across-close"
+				// Last setup step, from the database clock.
+				closes := dbClockOffset(t, db, windowMargin)
+				mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: code, ClosesAt: &closes})
+
+				out := admitAcrossBoundary(t, ctx, db, closes, holdCodeRow(org, "presale", code),
+					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) })
+
+				rows := claimsUnderKey(t, ctx, db, org, key)
+				if !errors.Is(out.err, ErrPresaleCodeInvalid) || out.replay || len(rows) != 0 {
+					t.Fatalf("admission across the code's closes_at: err=%v replay=%v, claims under its key: %v; "+
+						"want ErrPresaleCodeInvalid and no claim. The code window was judged before the "+
+						"code-lock wait, so a code that closed during the wait still sold.",
+						out.err, out.replay, rows)
+				}
+				if out.err.Error() != ErrPresaleCodeInvalid.Error() {
+					t.Fatalf("message %q differs from the uniform %q", out.err.Error(), ErrPresaleCodeInvalid.Error())
+				}
+			})
+
+			// opens_at falls inside the wait: the admission started before the code
+			// was valid and gets the lock after it opened. Judged after the wait, it
+			// is admitted, and exactly one claim cites the code.
+			t.Run("a code that opens during the wait admits", func(t *testing.T) {
+				ctx, st, db := storeForTest(t, time.Hour)
+				org, slot := provisioned(t, ctx, st, 100)
+				mustReplace(t, ctx, st, org, slot, []ChannelAllocation{{Channel: "presale", Cap: 100, RequiresCode: true}})
+				const code, key = "OPENING-544", "across-open"
+				opens := dbClockOffset(t, db, windowMargin)
+				mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: code, OpensAt: &opens})
+
+				out := admitAcrossBoundary(t, ctx, db, opens, holdCodeRow(org, "presale", code),
+					func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, code, key) })
+
+				rows := claimsUnderKey(t, ctx, db, org, key)
+				if out.err != nil || out.replay {
+					t.Fatalf("admission across the code's opens_at: err=%v replay=%v, claims under its key: %v; "+
+						"want it admitted. The code window was judged before the code-lock wait, when "+
+						"the code had not opened yet.", out.err, out.replay, rows)
+				}
+				want := keyedClaim{id: out.id, pool: slot, status: "held", qty: lockScheduleQty, channel: "presale", code: code}
+				if len(rows) != 1 || rows[0] != want {
+					t.Fatalf("claims under the admitted key: %v, want exactly %v", rows, want)
+				}
+			})
+		})
+	}
+}
+
+// The CHANNEL's window, judged again after the code-lock wait (TKT-544 D3).
+//
+// The caller reads the channel's window under the pool lock, BEFORE
+// redeemPresaleCode waits on the code. A channel that closes during that wait
+// must still refuse with channel_window_closed: ADR-054's "nobody can buy outside
+// the window", and the window -> code precedence of ADR-064 §5.
+//
+// THE ANSWER MUST NOT DEPEND ON THE CODE. A valid code and an unknown code must get
+// the same answer under the same schedule, so the window is judged again whether
+// or not the code row exists. A row lock cannot delay an unknown code (it has no
+// row), so the shared schedule locks the TABLE (holdCodeTable). The row-lock case
+// stays as well, because it is the schedule production can produce: another
+// redemption of the same code.
+func TestChannelWindowAfterCodeLock(t *testing.T) {
+	const validCode = "VALID-544"
+	for _, path := range presaleAdmissions {
+		t.Run(path.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				code string
+				hold func(org uuid.UUID) func(context.Context, *sql.Tx) error
+			}{
+				{"a redemption on another pool holds the code row, valid code", validCode,
+					func(org uuid.UUID) func(context.Context, *sql.Tx) error {
+						return holdCodeRow(org, "presale", validCode)
+					}},
+				{"the code table is locked, valid code", validCode,
+					func(uuid.UUID) func(context.Context, *sql.Tx) error { return holdCodeTable }},
+				{"the code table is locked, unknown code", "NEVER-ISSUED-544",
+					func(uuid.UUID) func(context.Context, *sql.Tx) error { return holdCodeTable }},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					ctx, st, db := storeForTest(t, time.Hour)
+					org, slot := provisioned(t, ctx, st, 100)
+					// Uncapped, unbounded code: it cannot refuse on its own terms.
+					mustIssue(t, ctx, st, PresaleCode{OrganizerID: org, Channel: "presale", Code: validCode})
+					const key = "channel-across-close"
+					// Last setup step, from the database clock.
+					closes := dbClockOffset(t, db, windowMargin)
+					mustReplace(t, ctx, st, org, slot, []ChannelAllocation{
+						{Channel: "presale", Cap: 100, RequiresCode: true, ClosesAt: &closes}})
+
+					out := admitAcrossBoundary(t, ctx, db, closes, tc.hold(org),
+						func() (uuid.UUID, bool, error) { return path.admit(ctx, st, org, slot, tc.code, key) })
+
+					rows := claimsUnderKey(t, ctx, db, org, key)
+					if !errors.Is(out.err, ErrChannelWindowClosed) || out.replay || len(rows) != 0 {
+						t.Fatalf("admission with code %q across the CHANNEL's closes_at: err=%v replay=%v, "+
+							"claims under its key: %v; want ErrChannelWindowClosed and no claim. The channel "+
+							"window was judged only before the code-lock wait.",
+							tc.code, out.err, out.replay, rows)
+					}
+					if out.err.Error() != ErrChannelWindowClosed.Error() {
+						t.Fatalf("message %q differs from %q", out.err.Error(), ErrChannelWindowClosed.Error())
+					}
+				})
+			}
+		})
 	}
 }
