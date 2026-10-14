@@ -207,6 +207,10 @@ func TestPresaleRefusalBodyIsUniformAcrossTheCodeLockWait(t *testing.T) {
 			}
 			pids = append(pids, pid)
 		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
 		_ = rows.Close()
 		switch {
 		case len(pids) > 1:
