@@ -238,13 +238,13 @@ of §4; this table and §4 must stay identical.
 | Admission: `CreateHold` with a code (`store.go:503`) | Creates `+qty` | **Yes** |
 | Finalize from `held`: `Transition` to `finalizing` | Keeps it | No: it never adds usage |
 | Direct confirm from `held`: `Transition` to `confirmed` (zero-total path) | Keeps it, permanently | No: it never adds usage |
-| Draw-down child (`reservations.go:268`–`:337`) | Moves units from source to child; total constant | No: the total is constant (the later slice confirms this) |
+| Draw-down child (`reservations.go:268`–`:337`) | A successful draw-down moves units from source to child; total constant. A draw-down whose source has expired commits the source's expiry and refuses (`:281`–`:294`): a terminal write, listed in the next rows | No: the total is constant (the later slice confirms this) |
 | Group placement with a code (`reservations.go:209`) | Creates `+qty` | **Yes** (later slice) |
 | Conversion (`operational.go:345`) | None in the first slice: it applies no promotion | **Yes**, if a later design lets it carry a code |
 | Cap or window edit of a code | None: an edit never releases usage | **Yes**, `FOR UPDATE` |
 | Confirm from `finalizing`: `Transition` to `confirmed` | Keeps it, permanently | No: the claim already counts and never expires |
 | Expiry: the claim passes `expires_at` | None. The claim counts until a terminal write | No: it is not a write |
-| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`) and the expiry branch of `Transition` (`store.go:839`) | Ends it when the `expired` write commits: a terminal write. `sweepExpired` and the replay-expiry branch commit it. `Transition`'s expiry branch commits it only on a release; on a refused finalize or direct confirm it returns `ErrConflict` and its write rolls back (`store.go:882`–`:883`, deferred rollback `:824`), so the claim counts until another terminal write. That costs liveness, not correctness | No; `sweepExpired` **never** |
+| `sweepExpired` (`store.go:259`; called at `store.go:597`, `reservations.go:105`, `operational.go:177`, `capacity.go:60`, `seat_claims.go:754`, `:1165`, `:1652`), the replay-expiry branch of `CreateHold` (`store.go:575`), the expiry branch of a refused draw-down (`reservations.go:281`–`:294`) and the expiry branch of `Transition` (`store.go:839`) | Ends it when the `expired` write commits: a terminal write. `sweepExpired` writes inside its caller's transaction, so its write is terminal only if the caller commits: an admission that sweeps and is then refused (for example by the code count, `store.go:683`, deferred rollback `:516`) rolls the sweep back, and the claim keeps counting (probe 3 mutation, R2L: `h_after_b=held`). The replay-expiry and draw-down expiry branches commit their write before they refuse. `Transition`'s expiry branch commits it only on a release; on a refused finalize or direct confirm it returns `ErrConflict` and its write rolls back (`store.go:882`–`:883`, deferred rollback `:824`), so the claim counts until another terminal write. That costs liveness, not correctness | No; `sweepExpired` **never** |
 | Explicit release: `Transition` to `released` (`store.go:891`) | Ends it: the terminal transition for release | No: it never adds usage |
 | Refund capacity return (`refund_returns.go:148`) | None | No: it never adds usage |
 
@@ -253,8 +253,8 @@ says expired or released unconfirmed holds return their units "through one idemp
 transition" (backlog-decisions, *Promotion cap and corrections*). The owner chose this reading:
 
 - **R2, terminal write.** An expired `held` claim keeps counting until a terminal write commits:
-  `sweepExpired`, the replay-expiry branch, `Transition`'s expiry branch when it commits, or
-  explicit release. Explicit release is the existing guarded release write (`store.go:891`); a
+  `sweepExpired` when its caller commits, the replay-expiry branch, a refused draw-down's expiry
+  branch, `Transition`'s expiry branch when it commits, or explicit release. Explicit release is the existing guarded release write (`store.go:891`); a
   repeat, and a release after expiry, are satisfied (`store.go:854`, `:868`). Each terminal write is
   a guarded status change, so a repeat returns nothing.
 - R2 does not depend on a monotonic clock for cap safety: a clock step can only move a terminal
@@ -413,7 +413,7 @@ window into a refused retry and a leaked hold, to protect fields that no one has
 | Event | What happens to usage | Rule |
 |---|---|---|
 | Admission | `+qty`, all or nothing | Pool → (presale) → code lock; then cap, window and usage in separate statements; the window on fresh time (§4). |
-| Hold expiry (lazy) | None until a terminal write commits; then `qty` returns once | R2 (§3). The terminal write is `sweepExpired`, the replay-expiry branch, a committed `Transition` expiry branch, or a release. A repeat returns nothing. On a quiet pool the units stay blocked until cleanup runs (TKT-382). |
+| Hold expiry (lazy) | None until a terminal write commits; then `qty` returns once | R2 (§3). The terminal write is a committed `sweepExpired`, the replay-expiry branch, a refused draw-down's expiry branch, a committed `Transition` expiry branch, or a release. A sweep inside a refused admission rolls back. A repeat returns nothing. On a quiet pool the units stay blocked until cleanup runs (TKT-382). |
 | Explicit release | Returns `qty`: the terminal transition for release (§3) | The guarded `Transition` to `released`. Repeats and release-after-expiry are satisfied (`store.go:854`, `:868`). No code lock. |
 | Finalize from `held` | Unchanged; now non-expiring | No code lock. Judged on transaction-start `now()`, as for code-less claims (`store.go:829`). A finalize that waited on its pool lock past expiry still succeeds: the claim counted the whole time (probe 3 S1). |
 | Confirm | Consumed permanently | From `held` (direct confirm): no code lock, as finalize. From `finalizing`: no code lock; the claim already counts and never expires. |
