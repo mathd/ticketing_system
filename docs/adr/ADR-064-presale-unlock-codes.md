@@ -339,6 +339,7 @@ claim in this ADR should be read as saying otherwise.
   fall before the transaction begins as well as inside it). These rules assume the database clock does not step backwards inside
   one transaction; a contradictory sample fails the test. Not tested: a cap edit while a finalize or
   draw-down is queued.
-- **Not fixed here.** TKT-380 probe W: an admission that waits on the code row lock across the
-  code's `closes_at` is admitted after the window closed, because the window is read in the locking
-  statement. ADR-084 §4 records the fix for promotions; the presale path keeps today's statement.
+- **Not fixed by TKT-543; fixed by TKT-544.** TKT-380 probe W: an admission that waited on the code
+  row lock across the code's `closes_at` was admitted after the window closed, because the window was
+  read in the locking statement. TKT-544 moved the window reads after the lock (§2, *Decide after the
+  wait*).
