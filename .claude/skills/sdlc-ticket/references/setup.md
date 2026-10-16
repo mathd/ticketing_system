@@ -82,7 +82,7 @@ The admin route provisions the space alongside the Jira project (§1). Record it
 
 ## 4. Code repo branch protection (agent, via `gh`)
 
-Default branch: PR required, the CI check required, no direct push.
+Default branch: require a PR and the CI check on the host (on GitHub, a repository ruleset; commit its payload to the repo). Record any bypass actors in the project's instructions. Verify with `gh api repos/<o>/<r>/rules/branches/<b>` and by attempting a forbidden operation as an identity without bypass.
 
 ## 5. Resolve + write config (agent)
 

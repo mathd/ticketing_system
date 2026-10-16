@@ -410,6 +410,157 @@ open(p, 'w').write(s)
 SEED
 expect_fail "security workflow trigger (secret scanning dropped)" check-security-workflow-trigger
 
+# 12d. The scan allowlist wiring (ADR-081). The pnpm-audit job audits only
+#      through `scan-allowlist.mjs audit`, which checks expiry and then runs pnpm
+#      in a configuration that the runner cannot change. Each seed loses one
+#      part of that wiring, and no scan goes red for any of them.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (audit wrapper step dropped)" check-security-workflow-trigger
+
+# 12e. The wrapper replaced by a plain `pnpm audit`: no expiry check, and pnpm
+#      reads the runner's settings and pnpmfile hooks again.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: pnpm audit --audit-level high\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (plain pnpm audit instead of the wrapper)" check-security-workflow-trigger
+
+# 12f. `pnpm audit --ignore` writes the ignore list and exits 0 without
+#      reporting the remaining findings; a step before the wrapper adds it.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: pnpm audit --audit-level high --ignore GHSA-7w5x-hrqm-74c2\n      - run: node scripts/scan-allowlist.mjs audit\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (pnpm audit --ignore)" check-security-workflow-trigger
+
+# 12g. The wrapper still runs, but its failure no longer fails the job.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: node scripts/scan-allowlist.mjs audit\n        continue-on-error: true\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (audit wrapper made tolerant)" check-security-workflow-trigger
+
+# 12h. Trivy no longer reads the allowlist.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('          trivyignores: .trivyignore.yaml\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (trivyignores input dropped)" check-security-workflow-trigger
+
+# 12i. make check no longer runs the allowlist checker. The target still exists
+#      and still passes when called by name, so only the check-all list shows it.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+before = s
+s = s.replace(' check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ',
+              ' check-security-workflow-trigger check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint ', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (check-scan-allowlist dropped from check-all)" check-security-workflow-trigger
+
+# 12j. The allowlist checker itself, on the real files: a pnpm mirror that is not
+#      the allowlist's. The seed adds a GHSA that no reviewed entry names, so it
+#      makes drift whatever the mirror holds today, empty or not.
+expect_pass "scan allowlist (clean baseline)" check-scan-allowlist
+python3 - <<'SEED'
+p = 'pnpm-workspace.yaml'
+s = open(p).read()
+before = s
+extra = '    - GHSA-2222-2222-2222\n'
+if '  ignoreGhsas: []\n' in s:
+    s = s.replace('  ignoreGhsas: []\n', '  ignoreGhsas:\n' + extra, 1)
+else:
+    assert '  ignoreGhsas:\n' in s, 'the mirror is not in the block form that sync writes'
+    s = s.replace('  ignoreGhsas:\n', '  ignoreGhsas:\n' + extra, 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "scan allowlist (pnpm mirror drift)" check-scan-allowlist
+
+# 12k. The job timeout removed: nothing then bounds a job that hangs before the
+#      audit step.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('    timeout-minutes: 15\n', '', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (pnpm-audit timeout-minutes dropped)" check-security-workflow-trigger
+
+# 12l. A quoted "if" key skips the wrapper step; a line matcher did not see it.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('      - run: node scripts/scan-allowlist.mjs audit\n', '      - run: node scripts/scan-allowlist.mjs audit\n        "if": false\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (quoted if on the audit wrapper step)" check-security-workflow-trigger
+
+# 12m. Trivy still runs, but its findings no longer fail the job.
+python3 - <<'SEED'
+p = '.github/workflows/security.yaml'
+s = open(p).read()
+before = s
+s = s.replace('          exit-code: "1"\n', '          exit-code: "0"\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (Trivy exit-code 0)" check-security-workflow-trigger
+
+# 12n. `.IGNORE` makes make ignore the errors of the allowlist target, so
+#      `make check` passes while the checker fails.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+before = s
+s = s.replace('check-scan-allowlist:\n', '.IGNORE: check-scan-allowlist\ncheck-scan-allowlist:\n', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (.IGNORE on the allowlist target)" check-security-workflow-trigger
+
+# 12o. make check no longer runs the Astro image premise guard (TKT-504). The
+#      accepted risk for CVE-2026-93748 depends on that guard. The target still
+#      exists and passes when called by name, so only the check-all list shows it.
+python3 - <<'SEED'
+p = 'Makefile'
+s = open(p).read()
+before = s
+s = s.replace(' lint check-astro-image-premise ', ' lint ', 1)
+assert s != before, 'the seed did not apply; update it to the current file'
+open(p, 'w').write(s)
+SEED
+expect_fail "security workflow trigger (check-astro-image-premise dropped from check-all)" check-security-workflow-trigger
+
 # 13. The hermetic workflow missing a production web image input. The enumerated
 #     path list covered the scanner and the storefront but not web/backoffice, so a
 #     broken back-office production image could merge with neither build path run —
@@ -506,6 +657,22 @@ SEED
   expect_fail "hermetic workflow trigger ($overlay is uncovered)" check-hermetic-workflow-trigger
 done
 
+# TKT-327: nats-init provisions two service durables from deploy/nats/consumers/, under the ACL in
+# nats-server.conf. Each entry is independently required.
+for nats_input in deploy/nats/nats-server.conf '"deploy/nats/consumers/**"'; do
+  python3 - "$nats_input" <<'SEED'
+import sys
+
+p = '.github/workflows/hermetic.yaml'
+s = open(p).read()
+needle = f'      - {sys.argv[1]}\n'
+if s.count(needle) != 1:
+    raise SystemExit(f'expected one workflow path entry: {sys.argv[1]}')
+open(p, 'w').write(s.replace(needle, '', 1))
+SEED
+  expect_fail "hermetic workflow trigger ($nats_input is uncovered)" check-hermetic-workflow-trigger
+done
+
 sed -i 's/- run: make smoke-hermetic/- run: make smoke/' .github/workflows/hermetic.yaml
 expect_fail "hermetic workflow trigger (job runs the fast smoke target)" check-hermetic-workflow-trigger
 
@@ -531,6 +698,236 @@ if s.count(needle) != 1:
 open(p, 'w').write(s.replace(needle, needle + '        continue-on-error: true\n', 1))
 SEED
 expect_fail "hermetic workflow trigger (smoke failure ignored)" check-hermetic-workflow-trigger
+
+# 13b. The main ruleset requires the `check` context (TKT-324). That context must
+#      report on every PR, come from check.yaml's `check` job, run `make check`, and
+#      have exactly one producer. The guard reads YAML line by line, so it accepts
+#      only an allowlisted block-style shape and refuses every other shape (fail
+#      closed). Each seed breaks one refusal. A YAML spelling that the guard
+#      silently misread would pass, so the spelling seeds (flow style, quoted keys,
+#      a list, a second document) matter as much as the policy seeds.
+# check_seed FILE OLD NEW: replace the one OLD in FILE with NEW (\n is a newline).
+check_seed() {
+  python3 - "$@" <<'SEED'
+import sys
+
+p, old, new = sys.argv[1], sys.argv[2].replace('\\n', '\n'), sys.argv[3].replace('\\n', '\n')
+s = open(p).read()
+if s.count(old) != 1:
+    raise SystemExit(f'expected one {old!r} in {p}')
+open(p, 'w').write(s.replace(old, new, 1))
+SEED
+}
+CW=.github/workflows/check.yaml
+HW=.github/workflows/hermetic.yaml
+CJOB='  check:\n    runs-on: ubuntu-latest\n'
+MAKE_STEP='      - run: make check\n'
+LAST_STEP='      - run: ./scripts/gate-selftest.sh\n'
+HJOB='  hermetic-smoke:\n'
+expect_pass "check workflow trigger (clean baseline)" check-check-workflow-trigger
+
+# Events: only push (branches: [main]) and an empty pull_request are allowed. A
+# path filter, a branch or type filter, or a missing event can skip the workflow,
+# and a skipped workflow leaves a required check pending.
+check_seed $CW '    branches: [main]\n' '    branches: [main]\n    paths-ignore: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths-ignore filter on push)" check-check-workflow-trigger
+check_seed $CW '    branches: [main]\n' '    branches: [main]\n    paths: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths filter on push)" check-check-workflow-trigger
+check_seed $CW '    branches: [main]\n' '    branches: [develop]\n'
+expect_fail "check workflow trigger (push no longer targets main)" check-check-workflow-trigger
+# Quote stripping would read this as main. Only the exact text is accepted.
+check_seed $CW '    branches: [main]\n' "    branches: [\"m'a'in\"]\n"
+expect_fail "check workflow trigger (push branches spelled with quotes)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    paths-ignore: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths-ignore filter on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    paths: ["docs/**"]\n'
+expect_fail "check workflow trigger (paths filter on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    branches-ignore: [main]\n'
+expect_fail "check workflow trigger (branches-ignore on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n    types: [labeled]\n'
+expect_fail "check workflow trigger (types on pull_request)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' ''
+expect_fail "check workflow trigger (pull_request event removed)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' ''
+expect_fail "check workflow trigger (push event removed)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' '  push:\n'
+expect_fail "check workflow trigger (push branches removed)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request:\n  workflow_dispatch:\n'
+expect_fail "check workflow trigger (extra event)" check-check-workflow-trigger
+
+# Spellings the line reader cannot interpret. Each one hides a filter, a
+# condition or an event from a reader that expects block style.
+check_seed $CW '  pull_request:\n' '  pull_request: { paths-ignore: ["docs/**"] }\n'
+expect_fail "check workflow trigger (flow-style event)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' '  pull_request: {"paths-ignore": ["docs/**"]}\n'
+expect_fail "check workflow trigger (quoted key in a flow-style event)" check-check-workflow-trigger
+check_seed $CW '  pull_request:\n' "  'pull_request':\n"
+expect_fail "check workflow trigger (quoted event key)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n    branches: [main]\n  pull_request:\n' 'on: [push, pull_request]\n'
+expect_fail "check workflow trigger (on: as a list)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n' '"on":\n  push:\n'
+expect_fail "check workflow trigger (quoted on: key)" check-check-workflow-trigger
+# The bad copy comes FIRST: a reader where the last duplicate wins sees only the
+# clean one.
+check_seed $CW 'on:\n  push:\n' 'on:\n  pull_request:\n    paths-ignore: ["docs/**"]\non:\n  push:\n'
+expect_fail "check workflow trigger (second on: block)" check-check-workflow-trigger
+# A second document holding only keys the first lacks: no duplicate key shows it.
+check_seed $CW "$LAST_STEP" "${LAST_STEP}"'---\nenv:\n  SECOND_DOCUMENT: "1"\n'
+expect_fail "check workflow trigger (second YAML document)" check-check-workflow-trigger
+check_seed $CW 'on:\n  push:\n' 'true:\n  push:\n'
+expect_fail "check workflow trigger (no on: key)" check-check-workflow-trigger
+check_seed $CW '  push:\n    branches: [main]\n' '  push: {branches: [main], paths: ["docs/**"]}\n'
+expect_fail "check workflow trigger (flow-style push)" check-check-workflow-trigger
+
+# The job that reports the context: block style, allowlisted job and step keys,
+# and no step that can be skipped or ignored. Any of these lets the required
+# check read success without `make check` deciding it.
+check_seed $CW "$CJOB" "${CJOB}    if: github.event_name == 'push'\n"
+expect_fail "check workflow trigger (check job made conditional)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    needs: gate-selftest\n"
+expect_fail "check workflow trigger (check job needs another job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    continue-on-error: true\n"
+expect_fail "check workflow trigger (check job ignores failure)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}    <<: *defaults\n"
+expect_fail "check workflow trigger (merge key in check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" '  check-old:\n    runs-on: ubuntu-latest\n'
+check_seed $CW '  check-old:\n' '  check: {runs-on: ubuntu-latest, if: false, steps: [{run: make check}]}\n  check-old:\n'
+expect_fail "check workflow trigger (flow-style check job)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}        if: false\n"
+expect_fail "check workflow trigger (make check step made conditional)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}        continue-on-error: true\n"
+expect_fail "check workflow trigger (make check step ignores failure)" check-check-workflow-trigger
+# The step seeds keep the `make check` step, so the step count cannot be what
+# refuses them.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - { run: echo extra, if: false }\n'
+expect_fail "check workflow trigger (flow-style step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        "if": false\n'
+expect_fail "check workflow trigger (quoted key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" '      - run: make lint\n        run: make check\n'
+expect_fail "check workflow trigger (duplicate key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        <<: *step\n'
+expect_fail "check workflow trigger (merge key in a step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" '      - run: make lint\n'
+expect_fail "check workflow trigger (make check step removed)" check-check-workflow-trigger
+# A more-indented line continues a plain scalar: GitHub runs `make check
+# --just-print`, while a line reader sees `make check`. Each step's values must
+# be one line, and a block scalar (| or >) is refused the same way.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'          --just-print\n'
+expect_fail "check workflow trigger (make check run continues with --just-print)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'          || true\n'
+expect_fail "check workflow trigger (make check run continues with || true)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - run: |\n          make check\n'
+expect_fail "check workflow trigger (block scalar run)" check-check-workflow-trigger
+# An empty block scalar has no lines below it, so only the indicator shows it.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - run: >-\n'
+expect_fail "check workflow trigger (empty block scalar run)" check-check-workflow-trigger
+# A step may hold only name, uses, with, run and id. shell and env can change what
+# `make check` does without changing its text.
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        shell: bash -n {0}\n'
+expect_fail "check workflow trigger (shell on the make check step)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        env:\n          MAKEFLAGS: --just-print\n'
+expect_fail "check workflow trigger (env on the make check step)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    env:\n      MAKEFLAGS: --just-print\n'
+expect_fail "check workflow trigger (env on the check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    defaults:\n      run:\n        shell: bash -n {0}\n'
+expect_fail "check workflow trigger (defaults on the check job)" check-check-workflow-trigger
+check_seed $CW 'jobs:\n' 'defaults:\n  run:\n    shell: bash -n {0}\n\njobs:\n'
+expect_fail "check workflow trigger (workflow-level defaults)" check-check-workflow-trigger
+check_seed $CW 'jobs:\n' 'env:\n  MAKEFLAGS: --just-print\n\njobs:\n'
+expect_fail "check workflow trigger (workflow-level env)" check-check-workflow-trigger
+# The OPPOSITE failure: keys that cannot make the check pass without the gate
+# must not be refused.
+check_seed $CW "$CJOB" "${CJOB}"'    permissions:\n      contents: read\n'
+expect_pass "check workflow trigger (permissions on the check job)" check-check-workflow-trigger
+check_seed $CW "$CJOB" "${CJOB}"'    timeout-minutes: 30\n'
+expect_pass "check workflow trigger (timeout-minutes on the check job)" check-check-workflow-trigger
+check_seed $CW "$MAKE_STEP" "${MAKE_STEP}${MAKE_STEP}"
+expect_pass "check workflow trigger (two make check steps)" check-check-workflow-trigger
+# A comment after `with:` leaves its value empty; the mapping below it is not a
+# continued scalar.
+check_seed $CW '        with:\n          path: ~/.cache/golangci-lint\n' '        with: # tool cache\n          path: ~/.cache/golangci-lint\n'
+expect_pass "check workflow trigger (comment after with:)" check-check-workflow-trigger
+
+# Ruleset: the context is the job's reported name, which is the job id, or its
+# `name:` when one is set. A rename and an added name both orphan it.
+check_seed $CW "$CJOB" '  gate:\n    runs-on: ubuntu-latest\n'
+expect_fail "check workflow trigger (check job renamed)" check-check-workflow-trigger
+check_seed $CW "$CJOB" '  check:\n    name: gate\n    runs-on: ubuntu-latest\n'
+expect_fail "check workflow trigger (check job given another name)" check-check-workflow-trigger
+# A ruleset that names no required check makes that comparison vacuous.
+python3 - <<'SEED'
+import json
+
+p = '.github/rulesets/main.json'
+data = json.load(open(p))
+before = len(data['rules'])
+data['rules'] = [r for r in data['rules'] if r['type'] != 'required_status_checks']
+if len(data['rules']) != before - 1:
+    raise SystemExit('expected one required_status_checks rule')
+open(p, 'w').write(json.dumps(data, indent=2) + '\n')
+SEED
+expect_fail "check workflow trigger (ruleset names no required check)" check-check-workflow-trigger
+rm .github/rulesets/main.json
+expect_fail "check workflow trigger (ruleset file missing)" check-check-workflow-trigger
+
+# One producer: no other job, in any workflow, may report the same name. It
+# could satisfy the requirement without `make check`.
+# The renamed job also runs `make check`, so it passes every job rule and only
+# the duplicate refusal can fail this seed.
+check_seed $CW '  gate-selftest:\n' '  gate-selftest:\n    name: check\n'
+check_seed $CW '      - run: make deps\n' "$MAKE_STEP"
+expect_fail "check workflow trigger (second job named check)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (job id check in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky: {name: check, runs-on: ubuntu-latest, steps: [{run: "true"}]}\n\n'"$HJOB"
+expect_fail "check workflow trigger (flow-style job in another workflow)" check-check-workflow-trigger
+printf 'on: push\njobs: {check: {runs-on: ubuntu-latest, steps: [{run: "true"}]}}\n' > .github/workflows/sneaky.yaml
+expect_fail "check workflow trigger (flow-style jobs: in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: ${{ '"'check'"' }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (expression job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    "name": check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (quoted name: key in another workflow)" check-check-workflow-trigger
+# A job name must be a plain one-line scalar or a simply quoted string. A quoted
+# `check` is still `check`; an escape or a folded scalar cannot be read plainly.
+check_seed $HW "$HJOB" '  sneaky:\n    name: "check"\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (quoted job name check in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: "che\x63k"\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: >-\n      check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (folded job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: ch\n      eck\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (multi-line plain job name in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  sneaky:\n    name: c${{ matrix.x }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (expression name with a prefix of check)" check-check-workflow-trigger
+# The OPPOSITE failure: an expression name whose literal prefix rules out
+# `check`, and a quoted key that is not a job id or name, protect nothing.
+check_seed $HW "$HJOB" '  sneaky:\n    name: govulncheck-${{ matrix.module }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_pass "check workflow trigger (expression name that cannot be check)" check-check-workflow-trigger
+check_seed $HW "${HJOB}"'    runs-on: ubuntu-latest\n' "${HJOB}"'    runs-on: ubuntu-latest\n    "timeout-minutes": 30\n'
+expect_pass "check workflow trigger (quoted key elsewhere in another workflow)" check-check-workflow-trigger
+check_seed $HW 'name: hermetic-smoke\n' '"name": hermetic-smoke\n'
+expect_pass "check workflow trigger (quoted top-level key in another workflow)" check-check-workflow-trigger
+# But a quoted key with an escape decodes to another key: "na\x6de" is `name`,
+# "jo\x62s" is `jobs`, "che\x63k" is the job id `check`. Stripping the quotes
+# without decoding misreads all three, so any quoted key with a backslash is
+# refused, in every workflow.
+check_seed $HW "$HJOB" '  sneaky:\n    "na\x6de": check\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped name key in another workflow)" check-check-workflow-trigger
+cat > .github/workflows/sneaky.yaml <<'WORKFLOW'
+on: push
+"jo\x62s":
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+WORKFLOW
+expect_fail "check workflow trigger (escaped jobs key in another workflow)" check-check-workflow-trigger
+check_seed $HW "$HJOB" '  "che\x63k":\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_fail "check workflow trigger (escaped job id in another workflow)" check-check-workflow-trigger
+# The OPPOSITE failure: a job whose id is `check` but whose reported name is
+# something else does not report the context, so it must not be refused.
+check_seed $HW "$HJOB" '  check:\n    name: unrelated\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
+expect_pass "check workflow trigger (job id check reports another name)" check-check-workflow-trigger
 
 # 14. Every tracked generated API output must have a registry entry. Otherwise
 #     deleting an entry stops regeneration and leaves the stale tracked file

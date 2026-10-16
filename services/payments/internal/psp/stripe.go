@@ -455,8 +455,8 @@ func (s *Stripe) resolveRefund(ctx context.Context, providerRef, idempotencyKey 
 				// Including a FAILED refund: the money did not come back, so this is not
 				// resolved — but re-submitting would be a fresh money movement chosen by a
 				// heuristic. mapRefundStatus returns the terminal ErrRefundFailed carrying
-				// the re_, which is the evidence a human reconciles from. Whether a failed
-				// refund may ever be re-submitted is TKT-347's policy question.
+				// the re_, which is the evidence a human reconciles from. The platform never
+				// re-submits a failed refund (ADR-032 §Refund rule 3, TKT-347).
 				res, e := mapRefundStatus(rf)
 				return res, true, e
 			case refundMatchInconclusive:

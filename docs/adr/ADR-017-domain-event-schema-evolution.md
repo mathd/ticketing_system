@@ -206,8 +206,16 @@ On *ordering* the two sides, given a bump is required:
       bound is no longer an invisible server default. Recovery is deliberate, not automatic:
       readiness still latches false on the first quarantined event (now Postgres-backed, so a
       restart cannot clear it while unresolved rows exist), and the exit is deploy-newer-binary →
-      `inventory reprocess-quarantine` (republishes the stored bytes verbatim, deterministic
-      `Nats-Msg-Id`, marks only after broker accept) → restart. Only if the quarantine itself
+      `inventory reprocess-quarantine` → restart. **Since TKT-326 the command reprocesses
+      in-process:** it runs the live handler on the stored bytes, against inventory's own
+      database, and publishes nothing (it republished them onto catalog's subjects before). It
+      dispatches on `schema` before `data` exactly as the live consumer does, because it IS the
+      live handler. A row is marked only after the handler acked it (projection or moot record
+      committed) or terminated it. A row the handler defers (an offering event before its pool, a
+      catalog outage, an unusable answer) stays pending, so **a supported row that defers keeps
+      readiness down after the restart** — before TKT-326 it was marked as soon as the broker
+      accepted the republication. A catalog outage during the run is a deferral (exit zero); a
+      store failure or a cancelled run exits non-zero. Only if the quarantine itself
       fills do new future variants fall back to delayed NAKs — a loud stall at the explicit
       inventory-owned bound, still never a drop. Poison stays poison: `schema <= 0`, missing id,
       below-min variants and id collisions (two payloads under one id, ADR-009 §5) terminate and
@@ -262,7 +270,8 @@ On *ordering* the two sides, given a bump is required:
       consumer resumes from its stored position and does **not** re-read acknowledged history, so
       restarting cannot resurrect an event it already processed. That is the only guarantee it
       gives. Events published **while the consumer was stopped are pending, not history**
-      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `CreateOrUpdateConsumer`), so if
+      (`AckExplicitPolicy`, `MaxDeliver: -1`, `consumer.go`'s `consumerConfig`; since TKT-327
+      `nats-init` creates the durable from it and the service binds), so if
       catalog emitted Schema 3 during inventory's downtime, restarting the *old* binary against the
       same durable delivers them — straight to the `default` arm. Since TKT-61 that means held (now
       quarantined + acked, TKT-68) and

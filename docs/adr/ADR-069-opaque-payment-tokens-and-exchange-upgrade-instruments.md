@@ -150,6 +150,17 @@ Per [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s discipline: nothi
 tamper-evidence claim. This is a boundary and a refusal, both enforced by ordinary code that a writer
 with database or deployment access can change.
 
+## Amendment (2026-10-04, TKT-285) — a zero-total checkout still requires a token and does not forward it
+
+Commerce forwards `payment_token` to payments **only when a charge is made**. A checkout whose
+persisted gross total is zero calls no charge (ADR-011, TKT-285 amendment), so the token goes nowhere.
+
+The token is still **required** on both checkout surfaces (public and partner), because both contracts
+declare `minLength: 1`, and the token is part of the request fingerprint that makes a replay
+idempotent. Making it optional for a free order is a public and partner contract change that this
+ticket does not need, so it is left for a separate change. The storefront keeps sending a token for a
+free order.
+
 ## References
 
 - TKT-301 (architecture finding R1, code finding R9 of the 2026-08-28 review)

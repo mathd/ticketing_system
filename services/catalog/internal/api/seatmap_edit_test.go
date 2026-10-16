@@ -41,11 +41,15 @@ func TestEditSeatMapOrphanedPinReturns409(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("orphaning edit must be 409, got %d %s", rec.Code, rec.Body.String())
 	}
-	body := decode[Error](t, rec)
-	if body.Error == "" {
-		t.Fatalf("409 must carry an actionable error message, got empty")
+	// The pin message, exactly. The seatless message must not stand in for it: the
+	// two refusals are different facts, and the operator fixes each differently.
+	if body := decode[Error](t, rec); body.Error != orphanPinMessage {
+		t.Fatalf("409 error = %q, want the pin message %q", body.Error, orphanPinMessage)
 	}
 }
+
+// orphanPinMessage is the 409 body for an edit that drops a pinned seat identity (TKT-105).
+const orphanPinMessage = "edit would orphan a seat identity pinned by a sale or hold; the new geometry must keep every pinned seat (same section/row/seat labels)"
 
 // TestEditSeatMapCreatesNewPublishedVersion is COS-1/COS-2: a valid edit mints a
 // new published version (version+1) that keeps the pinned seat, leaves the
@@ -76,6 +80,56 @@ func TestEditSeatMapCreatesNewPublishedVersion(t *testing.T) {
 	// The new version emits its own seat_map.published.
 	if len(e.pub.seatMapsPub) == 0 || e.pub.seatMapsPub[len(e.pub.seatMapsPub)-1].Version != nv.Version {
 		t.Fatalf("new version must emit seat_map.published for version %d, got %+v", nv.Version, e.pub.seatMapsPub)
+	}
+}
+
+// TestEditSeatMapRefusesEmptyGeometry (TKT-318 COS-2) answers an edit with no seats with
+// 409 and the seatless message. The map keeps its one version, and nothing is emitted.
+func TestEditSeatMapRefusesEmptyGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sections []SeatMapEditSection
+	}{
+		{"no sections", []SeatMapEditSection{}},
+		{"a section with no rows", []SeatMapEditSection{{Name: "Orchestra", Position: 1, Rows: []SeatMapEditRow{}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			venueID := seedVenue(t, e, "La Grande Salle")
+			m := seedPublishedMap(t, e, venueID, "Main floor")
+			before, emitted := len(e.store.seatMaps), len(e.pub.seatMapsPub)
+
+			rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/edit", SeatMapEdit{Sections: tc.sections})
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("empty edit must be 409, got %d %s", rec.Code, rec.Body.String())
+			}
+			if got := decode[Error](t, rec).Error; got != seatlessMessage {
+				t.Fatalf("error = %q, want %q", got, seatlessMessage)
+			}
+			if n := len(e.store.seatMaps); n != before {
+				t.Fatalf("refused edit left %d version(s), want none", n-before)
+			}
+			if n := len(e.pub.seatMapsPub); n != emitted {
+				t.Fatalf("refused edit emitted %d event(s), want none", n-emitted)
+			}
+		})
+	}
+}
+
+// TestEditSeatMapEmptyWithPinsIsSeatlessNotPin (TKT-318 COS-3) keeps the order of the two
+// refusals: an empty edit of a pinned map gets the seatless message, not the pin message.
+func TestEditSeatMapEmptyWithPinsIsSeatlessNotPin(t *testing.T) {
+	e := newEnv(t)
+	venueID := seedVenue(t, e, "La Grande Salle")
+	m := seedPublishedMap(t, e, venueID, "Main floor")
+	e.store.pinSeat(m.Id, "Orchestra/A/1")
+
+	rec := e.do("POST", "/seat-maps/"+m.Id.String()+"/edit", SeatMapEdit{Sections: []SeatMapEditSection{}})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("empty edit of a pinned map must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	if got := decode[Error](t, rec).Error; got != seatlessMessage {
+		t.Fatalf("error = %q, want the seatless message, not the pin message", got)
 	}
 }
 

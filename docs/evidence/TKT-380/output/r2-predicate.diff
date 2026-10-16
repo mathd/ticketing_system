@@ -1,0 +1,5 @@
+--- channel_allocations.go
++++ channel_allocations.go.r2
+@@ -79 +79 @@
+-	WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3 AND ` + consumingClaims
++	WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3 AND status IN ('confirmed','finalizing','held')`

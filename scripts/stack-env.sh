@@ -55,7 +55,12 @@ export GATEWAY_PORT=$((18080 + SLOT)) POSTGRES_PORT=$((15432 + SLOT)) NATS_PORT=
        CATALOG_PORT=$((15080 + SLOT)) INVENTORY_PORT=$((16080 + SLOT)) COMMERCE_PORT=$((17080 + SLOT)) PAYMENTS_PORT=$((17580 + SLOT)) \
        ACCESS_PORT=$((18580 + SLOT)) \
        ACCESS_EVENT_RETRY_BACKOFF=100ms,200ms,400ms,800ms,1s,1s \
+       NATS_ACCESS_TICKET_ISSUER_CONFIG=access-ticket-issuer.smoke.json \
        ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL=1s
+# TKT-327: ACCESS_EVENT_RETRY_BACKOFF and NATS_ACCESS_TICKET_ISSUER_CONFIG above are ONE setting.
+# nats-init pre-provisions access-ticket-issuer from
+# deploy/nats/consumers/$NATS_ACCESS_TICKET_ISSUER_CONFIG, and access refuses to start when the
+# durable's BackOff differs from ACCESS_EVENT_RETRY_BACKOFF. Change both or neither.
 echo "$STACK: project=$PROJECT gateway=$GATEWAY_PORT postgres=$POSTGRES_PORT nats=$NATS_PORT (slot $SLOT from $ROOT)"
 
 # One credential per invocation (TKT-83): generated here so the isolated
@@ -77,15 +82,22 @@ export INTERNAL_SERVICE_TOKEN="$SMOKE_INTERNAL_TOKEN"
 SMOKE_CATALOG_STAFF_WRITE_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export SMOKE_CATALOG_STAFF_WRITE_TOKEN
 export CATALOG_STAFF_WRITE_TOKEN="$SMOKE_CATALOG_STAFF_WRITE_TOKEN"
-# TKT-245: catalog's organizer-assertion signing key. A separate /dev/urandom
-# read for a reason the ticket turns on -- catalog refuses to start when this
-# equals CATALOG_STAFF_WRITE_TOKEN, because a signing key equal to the write
-# credential lets anyone who can write mint their own tenancy. Deriving one from
-# the other here would make the smoke suite the one place that guard is never
-# exercised honestly.
-SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-export SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY
-export CATALOG_ORGANIZER_ASSERTION_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_KEY"
+# TKT-245, TKT-287: catalog's organizer-assertion Ed25519 pair, its own keygen
+# call. Catalog refuses to start when the seed equals CATALOG_STAFF_WRITE_TOKEN,
+# because a signing key equal to the write credential lets anyone who can write
+# mint their own tenancy; deriving one from the other here would make the smoke
+# suite the one place that guard is never exercised honestly.
+#
+# The seed is exported to the TEST PROCESS as SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED,
+# so smoke can mint an assertion for an organizer it has no staff account in (the
+# cross-tenant cases). COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS carries only the
+# public half, for commerce.
+read -r SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED SMOKE_CATALOG_ORGANIZER_ASSERTION_PUB < <(cd "$ROOT/services/access" && go run ./cmd/access keygen)
+export SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED
+export CATALOG_ORGANIZER_ASSERTION_KID="catalog-org/local-v1"
+export SMOKE_CATALOG_ORGANIZER_ASSERTION_KID="$CATALOG_ORGANIZER_ASSERTION_KID"
+export CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY="$SMOKE_CATALOG_ORGANIZER_ASSERTION_SEED"
+export COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS="$CATALOG_ORGANIZER_ASSERTION_KID=$SMOKE_CATALOG_ORGANIZER_ASSERTION_PUB"
 # TKT-194. A separate /dev/urandom read, not a copy: commerce refuses to start
 # when this equals INTERNAL_SERVICE_TOKEN, and the back office refuses to refund
 # when it equals CATALOG_STAFF_WRITE_TOKEN. Deriving one from another here would
@@ -134,10 +146,11 @@ for role in CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
 done
 unset password
 
-# TKT-170 / ADR-072: NATS per-principal credentials. Seven independent draws.
+# TKT-170 / ADR-072: NATS per-principal credentials. Six independent draws (TKT-326 removed
+# the operator principal: reprocess-quarantine no longer uses NATS).
 # Exported for compose (NATS_<PRINCIPAL>_PASSWORD) and the smoke test process (SMOKE_NATS_<PRINCIPAL>_PASSWORD).
 # Never print credential values.
-for role in ADMIN CATALOG INVENTORY INVENTORY_REPROCESS COMMERCE PAYMENTS ACCESS; do
+for role in ADMIN CATALOG INVENTORY COMMERCE PAYMENTS ACCESS; do
 	nats_pass=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 	export "NATS_${role}_PASSWORD=$nats_pass"
 	export "SMOKE_NATS_${role}_PASSWORD=$nats_pass"

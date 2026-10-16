@@ -40,11 +40,11 @@ func (s *Server) AuthenticateStaff(w http.ResponseWriter, r *http.Request) {
 	if !s.allowStaffAuth(w, r, in.Identifier) {
 		return
 	}
-	if len(s.organizerAssertionKey) == 0 {
+	if s.organizerAssertions == nil {
 		// Startup refuses this configuration. Keep the handler fail-closed too,
 		// because a separately constructed server must not report a successful
 		// principal that cannot satisfy StaffPrincipal's assertion contract.
-		s.log.ErrorContext(r.Context(), "staff authentication has no organizer assertion key")
+		s.log.ErrorContext(r.Context(), "staff authentication has no organizer assertion signer")
 		writeJSON(w, http.StatusInternalServerError, Error{Error: "authentication unavailable"})
 		return
 	}

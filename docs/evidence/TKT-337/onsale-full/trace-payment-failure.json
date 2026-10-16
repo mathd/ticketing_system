@@ -1,0 +1,780 @@
+{
+  "spans": [
+    "commerce CLIENT \"HTTP POST\" http://inventory:8080/internal/holds/47f85bba-b471-4192-8404-6006ae22c4ae/finalize?organizer_id=00000000-0000-0000-0000-000000000001 status=200 duration=0.006s",
+    "commerce CLIENT \"HTTP POST\" http://payments:8080/internal/charges status=500 duration=0.004s",
+    "commerce CLIENT \"HTTP POST\" http://payments:8080/internal/facts status=200 duration=0.006s",
+    "commerce SERVER \"POST\" /orders status=202 duration=0.032s",
+    "gateway SERVER \"POST /api/commerce/\" /api/commerce/orders status=202 duration=0.033s",
+    "inventory SERVER \"POST\" /internal/holds/47f85bba-b471-4192-8404-6006ae22c4ae/finalize status=200 duration=0.005s",
+    "payments SERVER \"POST\" /internal/charges status=500 duration=0.003s",
+    "payments SERVER \"POST\" /internal/facts status=200 duration=0.004s"
+  ],
+  "tempo": {
+    "metrics": {
+      "inspectedBytes": "208301"
+    },
+    "trace": {
+      "resourceSpans": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "gateway"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "18111"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "37886"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "148"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "79"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "202"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/api/commerce/orders"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "localhost"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316633857181",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST /api/commerce/",
+                  "parentSpanId": "rE1APQkQXds=",
+                  "spanId": "g3r2WlwNhoI=",
+                  "startTimeUnixNano": "1791769316601021761",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "commerce"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.13"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "38858"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.1"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "148"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "79"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "202"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/orders"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "commerce"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316633411849",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "rE1APQkQXds=",
+                  "spanId": "odmCEd4ZtgQ=",
+                  "startTimeUnixNano": "1791769316601221082",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://payments:8080/internal/facts"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "payments"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316616238496",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP POST",
+                  "parentSpanId": "odmCEd4ZtgQ=",
+                  "spanId": "CcT6Bf/w9zw=",
+                  "startTimeUnixNano": "1791769316610451338",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://inventory:8080/internal/holds/47f85bba-b471-4192-8404-6006ae22c4ae/finalize?organizer_id=00000000-0000-0000-0000-000000000001"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "inventory"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316622237378",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP POST",
+                  "parentSpanId": "odmCEd4ZtgQ=",
+                  "spanId": "VTTwjEEE3h8=",
+                  "startTimeUnixNano": "1791769316616304128",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.full",
+                      "value": {
+                        "stringValue": "http://payments:8080/internal/charges"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "500"
+                      }
+                    },
+                    {
+                      "key": "error.type",
+                      "value": {
+                        "stringValue": "500"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "payments"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316628731899",
+                  "kind": "SPAN_KIND_CLIENT",
+                  "name": "HTTP POST",
+                  "parentSpanId": "odmCEd4ZtgQ=",
+                  "spanId": "dutVfkPbqXI=",
+                  "startTimeUnixNano": "1791769316625117786",
+                  "status": {
+                    "code": "STATUS_CODE_ERROR"
+                  },
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "payments"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "42184"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "318"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "105"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/internal/facts"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "payments"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316615815509",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "CcT6Bf/w9zw=",
+                  "spanId": "YcBYo9DkStU=",
+                  "startTimeUnixNano": "1791769316611317640",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                },
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "42184"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.request.body.size",
+                      "value": {
+                        "intValue": "326"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "40"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "500"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/internal/charges"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "payments"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316628382452",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "dutVfkPbqXI=",
+                  "spanId": "0EQLiunXH/U=",
+                  "startTimeUnixNano": "1791769316625449475",
+                  "status": {
+                    "code": "STATUS_CODE_ERROR"
+                  },
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "telemetry.sdk.language",
+                "value": {
+                  "stringValue": "go"
+                }
+              },
+              {
+                "key": "telemetry.sdk.name",
+                "value": {
+                  "stringValue": "opentelemetry"
+                }
+              },
+              {
+                "key": "telemetry.sdk.version",
+                "value": {
+                  "stringValue": "1.44.0"
+                }
+              },
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "inventory"
+                }
+              }
+            ]
+          },
+          "scopeSpans": [
+            {
+              "scope": {
+                "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                "version": "0.69.0"
+              },
+              "spans": [
+                {
+                  "attributes": [
+                    {
+                      "key": "url.scheme",
+                      "value": {
+                        "stringValue": "http"
+                      }
+                    },
+                    {
+                      "key": "server.port",
+                      "value": {
+                        "intValue": "8080"
+                      }
+                    },
+                    {
+                      "key": "network.peer.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.peer.port",
+                      "value": {
+                        "intValue": "58532"
+                      }
+                    },
+                    {
+                      "key": "user_agent.original",
+                      "value": {
+                        "stringValue": "Go-http-client/1.1"
+                      }
+                    },
+                    {
+                      "key": "client.address",
+                      "value": {
+                        "stringValue": "172.26.0.10"
+                      }
+                    },
+                    {
+                      "key": "network.protocol.version",
+                      "value": {
+                        "stringValue": "1.1"
+                      }
+                    },
+                    {
+                      "key": "http.response.body.size",
+                      "value": {
+                        "intValue": "368"
+                      }
+                    },
+                    {
+                      "key": "http.response.status_code",
+                      "value": {
+                        "intValue": "200"
+                      }
+                    },
+                    {
+                      "key": "http.request.method",
+                      "value": {
+                        "stringValue": "POST"
+                      }
+                    },
+                    {
+                      "key": "url.path",
+                      "value": {
+                        "stringValue": "/internal/holds/47f85bba-b471-4192-8404-6006ae22c4ae/finalize"
+                      }
+                    },
+                    {
+                      "key": "server.address",
+                      "value": {
+                        "stringValue": "inventory"
+                      }
+                    }
+                  ],
+                  "endTimeUnixNano": "1791769316621964345",
+                  "kind": "SPAN_KIND_SERVER",
+                  "name": "POST",
+                  "parentSpanId": "VTTwjEEE3h8=",
+                  "spanId": "Uzp7Pg5Zycs=",
+                  "startTimeUnixNano": "1791769316616535855",
+                  "status": {},
+                  "traceId": "NSdQhxsSb9JoLTJ10+ntqA=="
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "trace_id": "352750871b126fd2682d3275d3e9eda8"
+}

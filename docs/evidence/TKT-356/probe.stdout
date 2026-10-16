@@ -1,0 +1,109 @@
+
+Opaque short-code candidate.
+PASS preloaded opaque code resolves for bound ticket    got=true want=true
+PASS opaque code rejects another ticket                 got=false want=false
+PASS opaque code rejects at expiry                      got=false want=false
+PASS offline opaque lookup without mapping              got=false want=false
+TKT-356 fixed-clock candidate model; all IDs and signing material are synthetic.
+Online interval [nbf, exp); candidate offline interval [nbf-5s, exp+5s).
+PASS online old nbf-1s                                  got=false want=false
+PASS online old nbf                                     got=true want=true
+PASS online old nbf+1s                                  got=true want=true
+PASS online old exp-1s                                  got=true want=true
+PASS online old exp                                     got=false want=false
+PASS online old exp+1s                                  got=false want=false
+PASS offline old nbf-5s-1s                              got=false want=false
+PASS offline old nbf-5s                                 got=true want=true
+PASS offline old nbf-5s+1s                              got=true want=true
+PASS offline old exp+5s-1s                              got=true want=true
+PASS offline old exp+5s                                 got=false want=false
+PASS offline old exp+5s+1s                              got=false want=false
+PASS online fresh nbf-1s                                got=false want=false
+PASS online fresh nbf                                   got=true want=true
+PASS online fresh nbf+1s                                got=true want=true
+PASS online fresh exp-1s                                got=true want=true
+PASS online fresh exp                                   got=false want=false
+PASS online fresh exp+1s                                got=false want=false
+PASS offline fresh nbf-5s-1s                            got=false want=false
+PASS offline fresh nbf-5s                               got=true want=true
+PASS offline fresh nbf-5s+1s                            got=true want=true
+PASS offline fresh exp+5s-1s                            got=true want=true
+PASS offline fresh exp+5s                               got=false want=false
+PASS offline fresh exp+5s+1s                            got=false want=false
+
+Old screenshot at true T+35s; device offsets are seconds.
+PASS old screenshot true=T+35s device-offset=-6s        got=true want=true
+PASS old screenshot true=T+35s device-offset=-5s        got=true want=true
+PASS old screenshot true=T+35s device-offset=+0s        got=false want=false
+PASS old screenshot true=T+35s device-offset=+5s        got=false want=false
+PASS old screenshot true=T+35s device-offset=+6s        got=false want=false
+Fresh credential at true T+35s; all tested device offsets fall within [T+25s, T+65s).
+PASS fresh credential true=T+35s device-offset=-6s      got=true want=true
+PASS fresh credential true=T+35s device-offset=-5s      got=true want=true
+PASS fresh credential true=T+35s device-offset=+0s      got=true want=true
+PASS fresh credential true=T+35s device-offset=+5s      got=true want=true
+PASS fresh credential true=T+35s device-offset=+6s      got=true want=true
+PASS old screenshot true=T+39s, slowest allowed device=-5s got=true want=true
+PASS old screenshot true=T+40s, slowest allowed device=-5s got=false want=false
+PASS shared-secret verifier can create accepted code MAC got=true want=true
+PASS Ed25519 candidate signature                        got=true want=true
+PASS tampered signature refused                         got=false want=false
+PASS unknown key refused                                got=false want=false
+PASS online old payload at T+35s                        got=false want=false
+PASS online fresh payload at T+35s                      got=true want=true
+PASS image link T+599s                                  got=true want=true
+PASS image link T+600s                                  got=true want=true
+PASS image link T+600.5s                                got=true want=true
+PASS image link T+601s                                  got=false want=false
+PASS image URL is expired at static identity check time T+601s got=true want=true
+PASS synthetic no-expiry static signed identity verifies after image URL expiry at T+601s got=true want=true
+
+Offline time evidence model.
+PASS unknown clock evidence refuses                     got=false want=false
+PASS clock rollback detected                            got=false want=false
+PASS wall advance under toy rollback check              got=true want=true
+
+Occurrence/reconciliation candidate model.
+PASS delayed online receipt sees credential expiry      got=false want=false
+PASS local admission at T+29s passed offline check      got=true want=true
+PASS valid local evaluation decision                    got=admitted want=admitted
+PASS valid local evaluation opens gate                  got=true want=true
+PASS delayed admission sync outcome                     got=admission_recorded want=admission_recorded
+PASS delayed admission count                            got=1 want=1
+PASS same occurrence repeated                           got=replay want=replay
+PASS same occurrence with changed decision collides     got=occurrence_collision want=occurrence_collision
+PASS distinct occurrence at second gate                 got=conflict_second_gate want=conflict_second_gate
+PASS second gate does not add admission                 got=1 want=1
+PASS missing clock local evaluation decision            got=unknown_clock want=unknown_clock
+PASS missing clock local evaluation keeps gate closed   got=false want=false
+PASS missing clock refusal sync                         got=refusal_recorded want=refusal_recorded
+PASS same missing clock refusal repeated                got=replay want=replay
+PASS missing clock refusal does not add admission       got=1 want=1
+PASS rolled-back clock local evaluation decision        got=unknown_clock want=unknown_clock
+PASS rolled-back clock local evaluation keeps gate closed got=false want=false
+PASS rolled-back clock refusal sync                     got=refusal_recorded want=refusal_recorded
+PASS same rolled-back clock refusal repeated            got=replay want=replay
+PASS clock refusals do not add admission                got=1 want=1
+PASS early signed credential at T-6 local evaluation decision got=not_yet_valid want=not_yet_valid
+PASS early signed credential keeps gate closed          got=false want=false
+PASS early refusal sync                                 got=refusal_recorded want=refusal_recorded
+PASS same early refusal repeated                        got=replay want=replay
+PASS early refusal does not add admission               got=1 want=1
+PASS offline lower-bound equality local evaluation decision got=admitted want=admitted
+PASS offline lower-bound equality opens gate            got=true want=true
+PASS expired local evaluation decision                  got=expired_credential want=expired_credential
+PASS expired local evaluation keeps gate closed         got=false want=false
+PASS expired refusal sync                               got=refusal_recorded want=refusal_recorded
+PASS same refusal occurrence repeated                   got=replay want=replay
+PASS refusal does not add admission                     got=1 want=1
+PASS local refusal occurrence count                     got=4 want=4
+PASS unknown decision rejected before ledger mutation   got=unknown_decision want=unknown_decision
+PASS unknown decision leaves ledger unchanged           got=rows=6 admissions=1 refusals=4 admitted=1 want=rows=6 admissions=1 refusals=4 admitted=1
+
+Reconciliation admission-skew copied predicate: abs(device-receipt) > 24h.
+PASS reconciliation flag +24h-1s                        got=false want=false
+PASS reconciliation flag +24h                           got=false want=false
+PASS reconciliation flag +24h+1s                        got=true want=true
+PASS reconciliation flag -24h                           got=false want=false
+PASS reconciliation flag -24h-1s                        got=true want=true
+LIMIT: model only. The clock-evidence input is synthetic and does not attest real time. No scanner integration, mode enforcement, refusal routing, or production key use.

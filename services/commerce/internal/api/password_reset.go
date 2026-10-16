@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	commercestore "ticketing/services/commerce/internal/store"
 )
@@ -36,6 +37,75 @@ var (
 
 type passwordResetRequestBody struct {
 	Email string `json:"email"`
+	// Locale is a pointer so that an ABSENT field (English, the pre-TKT-366 caller) is
+	// told apart from a present one. Go also decodes `null` into nil, so the handler
+	// cannot refuse `null` itself; the contract does, and that is tested on the router.
+	Locale *string `json:"locale"`
+}
+
+// resetLocaleUnsupported is the refusal for a locale outside the set. It names no
+// address and is written before the lookup, so it is the same for every address.
+const resetLocaleUnsupported = "unsupported locale"
+
+// defaultResetLocale is what an absent locale means. English, because that is what every
+// reset message said before TKT-366, and a caller that predates the field (the old
+// storefront during a rolling deploy) must keep getting it.
+const defaultResetLocale = "en"
+
+// resetCopy is the fixed text of one locale's reset message.
+//
+// body is a format with two verbs, in this order: the link, then the lifetime phrase.
+//
+// lifetime holds the phrase for each token lifetime the copy can state IN WORDS. The
+// message selects the phrase for commercestore.ResetTokenTTL itself, so the words are
+// chosen by the constant, not beside it. A test requires a phrase for ResetTokenTTL in
+// every locale: words do not follow a constant, so a TTL change fails that test until a
+// phrase for the new value is written here. The storefront's resetRequested strings state
+// the same lifetime; the test's failure message names them, but no test reads them.
+type resetCopy struct {
+	path     string
+	subject  string
+	body     string
+	lifetime map[time.Duration]string
+}
+
+// resetCopies is the closed set of locales a reset message can be written in. A locale
+// is supported if and only if it has copy here, so the handler's check and the copy
+// cannot drift: widening the contract's enum without adding copy still gets a 400.
+//
+// The paths are literals, one per locale, and never built from the request value. The
+// value only SELECTS an entry; nothing the caller typed is copied into the message.
+var resetCopies = map[string]resetCopy{
+	"en": {
+		path:    "/en/account/reset-password",
+		subject: "Reset your password",
+		body: `Someone asked to reset the password for this address.
+
+Open this link to choose a new one:
+
+%s
+
+The link works once and expires in %s. If you did not ask for this, nothing has
+changed and you can ignore this message.
+`,
+		lifetime: map[time.Duration]string{time.Hour: "one hour"},
+	},
+	// Vouvoiement and typographic apostrophes, as in the storefront's French strings
+	// (web/storefront/src/lib/locales.ts).
+	"fr": {
+		path:    "/fr/account/reset-password",
+		subject: "Réinitialisez votre mot de passe",
+		body: `Quelqu’un a demandé la réinitialisation du mot de passe associé à cette adresse.
+
+Ouvrez ce lien pour en choisir un nouveau :
+
+%s
+
+Ce lien ne fonctionne qu’une fois et expire dans %s. Si vous n’êtes pas
+à l’origine de cette demande, rien n’a changé et vous pouvez ignorer ce message.
+`,
+		lifetime: map[time.Duration]string{time.Hour: "une heure"},
+	},
 }
 
 type passwordResetCompletionBody struct {
@@ -53,6 +123,20 @@ func (s *Server) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// The locale is checked BEFORE the recovery budget and before the store. A refused
+	// locale enqueues nothing, so it has no mail cost to bound; charging it would let a
+	// caller spend a victim's budget with requests that can never send them anything,
+	// and would add a limiter key per refused request. The contract refuses the same
+	// values first on the real router, so this keeps both tiers in step.
+	locale := defaultResetLocale
+	if in.Locale != nil {
+		locale = *in.Locale
+	}
+	copyFor, ok := resetCopies[locale]
+	if !ok {
+		write(w, http.StatusBadRequest, map[string]string{"error": resetLocaleUnsupported})
+		return
+	}
 	// Before the store call, for the reason registerCustomer states. This is also
 	// the operation with an OUTBOUND cost — every accepted request enqueues a
 	// message — so the subject budget here is what stops one address being mail
@@ -61,7 +145,10 @@ func (s *Server) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := requestPasswordResetFn(r.Context(), s.db, in.Email, s.composeResetMail); err != nil {
+	compose := func(tok commercestore.IssuedResetToken) (string, string, string) {
+		return s.composeResetMail(copyFor, tok)
+	}
+	if _, err := requestPasswordResetFn(r.Context(), s.db, in.Email, compose); err != nil {
 		// An outage is NOT reported as a refusal, and it is not reported as success
 		// either. A buyer told "we sent you a link" when nothing was enqueued waits
 		// forever for mail that does not exist; a 500 tells them to try again.
@@ -108,28 +195,24 @@ func (s *Server) completePasswordReset(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]string{"customer_id": customer.String()})
 }
 
-// composeResetMail builds the message. It is passed to the store so that the copy lives
-// here, beside the other customer-facing strings, and the store never learns what a
-// password reset email says.
+// composeResetMail builds the message from one locale's fixed copy. It is passed to the
+// store (through a request-local closure that holds the chosen copy) so that the copy
+// lives here, beside the other customer-facing strings, and the store never learns what
+// a password reset email says.
 //
 // THE LINK'S BASE IS SERVER-CONFIGURED, NEVER TAKEN FROM THE REQUEST. Building it from
 // the Host header (or from any caller-supplied field) turns this endpoint into a
 // phishing generator: an attacker submits a victim's address with their own host, and
 // the victim receives a genuine reset link pointing at the attacker's site. That is the
 // classic host-header injection and it is why nothing here reads r.
-func (s *Server) composeResetMail(tok commercestore.IssuedResetToken) (recipient, subject, body string) {
-	link := s.publicURL + "/en/account/reset-password?token=" + url.QueryEscape(tok.Raw)
-	subject = "Reset your password"
-	body = fmt.Sprintf(`Someone asked to reset the password for this address.
-
-Open this link to choose a new one:
-
-%s
-
-The link works once and expires in %s. If you did not ask for this, nothing has
-changed and you can ignore this message.
-`, link, commercestore.ResetTokenTTL)
-	return tok.Email, subject, body
+//
+// Since TKT-366 ONE request value takes part: the locale, and only after the handler has
+// matched it against the closed set in resetCopies. It selects which fixed copy and which
+// fixed path are used. It never becomes part of the origin, the recipient, or any text —
+// the caller chooses an entry, not a string (ADR-050 § TKT-366 amendment).
+func (s *Server) composeResetMail(c resetCopy, tok commercestore.IssuedResetToken) (recipient, subject, body string) {
+	link := s.publicURL + c.path + "?token=" + url.QueryEscape(tok.Raw)
+	return tok.Email, c.subject, fmt.Sprintf(c.body, link, c.lifetime[commercestore.ResetTokenTTL])
 }
 
 // WarnIfResetMailUnconfigured is logged once at startup rather than per request. A

@@ -7,7 +7,7 @@ import { unresolvedRefund } from '../src/lib/order-console';
 import { AmbiguousMutationError, UPSTREAM_DEADLINE_MS } from '../src/lib/upstream';
 
 const ASSERTION =
-  'v1.11111111-1111-1111-1111-111111111111.00000000-0000-0000-0000-000000000001.99999999999.testmac';
+  'v2.catalog-org/test.11111111-1111-1111-1111-111111111111.00000000-0000-0000-0000-000000000001.99999999999.testsig';
 const ORGANIZER = '00000000-0000-0000-0000-000000000001';
 const ORDER = '11111111-1111-4111-8111-111111111111';
 const SLOT = '22222222-2222-4222-8222-222222222222';
@@ -85,6 +85,7 @@ describe('back-office upstream operation deadlines', () => {
           displayName: 'Box office',
           kind: 'pos',
           enabled: true,
+          expectedRevision: 0,
         }),
     ],
     [
@@ -135,7 +136,7 @@ describe('back-office upstream operation deadlines', () => {
       quantity: 1,
       reason: 'customer called',
       actor: 'staff-42',
-      organizerId: 'org-1',
+      assertion: 'session-assertion',
       idempotencyKey: 'refund-key-1',
     };
     const result = refundOrder(request);

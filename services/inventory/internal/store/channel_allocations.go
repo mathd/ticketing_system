@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,24 +51,66 @@ const windowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 // be the hand-copy consumedQuantity's comment warns about.
 //
 // A code's window and its CHANNEL's window are independent and BOTH must admit the
-// instant. A code valid all week on a channel that opens Friday sells Friday.
+// instant. A code valid all week on a channel that opens Friday sells Friday. "The
+// instant" is literal: after the code lock, redeemPresaleCode judges both at ONE sampled
+// instant (atInstant, TKT-544 D9).
 const codeWindowOpen = `(opens_at IS NULL OR opens_at <= clock_timestamp())
 	AND (closes_at IS NULL OR closes_at > clock_timestamp())`
+
+// atInstant is a shipped window predicate (windowOpen, codeWindowOpen) judged at `instant`
+// instead of at clock_timestamp(). Only the clock changes: the bounds, the half-open
+// comparisons and the NULL rules stay the const's own text, so each window keeps ONE
+// source, and TestPresaleCodeWindowIsHalfOpen and TestChannelSalesWindowIsHalfOpen
+// evaluate this same derivation at a literal instant.
+//
+// It exists because two windows that must admit the same instant cannot each call
+// clock_timestamp(): every call is a new sample, and two windows that abut (one closes at
+// T, the other opens at T) both admit when T falls between the samples (TKT-544 D9).
+func atInstant(predicate, instant string) string {
+	return strings.ReplaceAll(predicate, "clock_timestamp()", instant)
+}
 
 // consumingClaims is what counts against a channel's cap: confirmed consumption is
 // permanent, live holds are temporary. Built on liveClaims so expiry semantics can never
 // fork between pool and channel accounting.
 const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
 
-// codeRedeemedQuantity is HOW MUCH of a presale code has been redeemed: the same
-// consumed-quantity sum that counts against a channel cap, scoped to the code instead of
-// the pool.
+// presaleUsageClaims is which claims count against a presale code's cap: every confirmed,
+// finalizing or held claim that cites it, with NO expiry test (TKT-543; reading R2 of
+// ADR-084 §3). An expired held claim keeps counting until a terminal write commits
+// (sweepExpired in a transaction that commits, the replay-expiry branch, a refused
+// draw-down's expiry branch, Transition's expiry branch when it commits, or a release).
 //
-// Built from consumedQuantity and consumingClaims deliberately — a code's redemption count
-// must mean exactly what a channel's consumption means, or a refund would return channel
-// capacity while leaving a redemption burnt, and a hold expiry would free a seat while
-// keeping its code spent. Derived, never a counter: a counter cannot be decremented by
-// LAZY hold expiry without a sweeper, and ADR-010 forbids requiring one for correctness.
+// It is deliberately NOT consumingClaims. A code spans pools, and a hold's expiry is
+// judged by whichever transaction on ITS pool runs next. Transition judges it on
+// transaction-start now() (TKT-148), so a finalize that queued on its pool lock before the
+// hold expired still finalizes it after it expired. An admission on another pool that had
+// already left the expired hold out of the count admitted a unit the finalize then kept:
+// a code capped at 1 sold 2 (TKT-380 probe 1, S1). Counting the hold until a terminal write
+// commits closes that, because a terminal write is the one thing after which no path can
+// finalize the claim.
+//
+// Channel consumption keeps consumingClaims and pool capacity keeps the confirmed
+// counter plus liveClaims (expiry judged on transaction-start now()): their counts are
+// pool-scoped, so the pool lock already orders them against the finalize.
+const presaleUsageClaims = `(status IN ('confirmed','finalizing','held'))`
+
+// codeRedeemedQuantity is HOW MUCH of a presale code the ADMISSION path counts as used:
+// the consumed-quantity sum, scoped to the code instead of the pool, over
+// presaleUsageClaims.
+//
+// Built from consumedQuantity deliberately: a refund returns a redemption exactly as it
+// returns channel capacity. The claims it sums differ from a channel's on purpose (see
+// presaleUsageClaims): an expired held claim that no terminal write has reached still counts
+// here and no longer counts against its channel. Derived, never a counter: a counter cannot
+// be decremented by LAZY hold expiry without a sweeper, and ADR-010 forbids requiring one
+// for correctness.
+//
+// THE COST, accepted (ADR-064 §3): an expired hold on a quiet pool keeps counting here
+// until a write on ITS pool sweeps it. An admission sweeps only its own pool, so such a
+// hold can keep a code exhausted for every other pool. Nothing in the request path reclaims
+// it on purpose: a request-triggered cleanup was built and rejected, because every effect
+// it left was a code-enumeration oracle. TKT-547 (a background sweeper) is the remedy.
 //
 // NOT SCOPED BY pool_id, and that is the whole difficulty of this ticket. A channel
 // allocation is PRIMARY KEY (pool_id, channel_code), so every other derived count in this
@@ -76,7 +119,7 @@ const consumingClaims = `(status='confirmed' OR ` + liveClaims + `)`
 // reads rows the pool lock does not cover. The presale_codes ROW LOCK is what serializes
 // it — see redeemPresaleCode.
 const codeRedeemedQuantity = `SELECT COALESCE(sum(` + consumedQuantity + `),0)::bigint FROM claims
-	WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3 AND ` + consumingClaims
+	WHERE organizer_id=$1 AND channel_code=$2 AND presale_code=$3 AND ` + presaleUsageClaims
 
 // consumedQuantity is HOW MUCH a counted claim consumes — net of anything a refund gave
 // back (TKT-161). Confirmed capacity is no longer permanent: a refund returns part of it,

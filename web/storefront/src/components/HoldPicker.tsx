@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { components } from '../lib/commerce-api-types.gen';
 import { formatMoney } from '../lib/format';
-import { UI_STRINGS } from '../lib/locales';
+import { UI_STRINGS, fill, plural } from '../lib/locales';
 import { dateTimeField, uuidField } from '../lib/wire-primitives';
 import SeatMapPicker, { type SeatMapHandle, type SeatSelection } from './SeatMapPicker';
 
@@ -169,6 +169,13 @@ function decodeReservationRefusal(
   };
 }
 
+// isSoldOutRefusal reads commerce's GA sellout (TKT-341, ADR-082): a 409 body with a
+// string `error` and EXACTLY `code: "sold_out"`. Anything else, including a body that
+// does not parse, is not a sellout and keeps the neutral refusal.
+function isSoldOutRefusal(value: unknown): boolean {
+  return isObject(value) && typeof value.error === 'string' && value.code === 'sold_out';
+}
+
 function decodeOrderResult(value: unknown): OrderResult {
   const body = objectBody(value, 'order result');
   if (body.status !== 'completed') throw new TypeError('order result status must be completed');
@@ -207,7 +214,9 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [reservation, setReservation] = useState<Reservation | null>(null);
-  const [name, setName] = useState('Test Buyer');
+  // The testbed's initial buyer name, in the page's language (TKT-365). Only the initial
+  // value: once the buyer types, the field holds their data.
+  const [name, setName] = useState(() => UI_STRINGS[locale].testBuyerName);
   const [email, setEmail] = useState('buyer@example.test');
   const [paymentToken, setPaymentToken] = useState('fake-ok');
   const [ticketLink, setTicketLink] = useState<string | null>(null);
@@ -279,27 +288,39 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         body: JSON.stringify(claim),
       });
       if (!response.ok) {
+        // A 409 body is read ONCE, here, and both branches below decide on that one
+        // value. A body that does not parse reads as null: it is neither a seat
+        // refusal nor a sellout.
+        const refusalBody: unknown = response.status === 409
+          ? await response.json().catch(() => null)
+          : null;
         // TKT-173 answers a contended selection by NAME. Handing those identities to
         // the map is the whole point of it going to that trouble: the buyer sees
         // exactly which seats they lost, keeps the ones they did not, and the map
         // re-renders rather than going stale under a generic error.
         if (seated && response.status === 409) {
-          const refusal = decodeReservationRefusal(
-            await response.json().catch(() => null),
-            requestedSeats ?? [],
-          );
+          const refusal = decodeReservationRefusal(refusalBody, requestedSeats ?? []);
           if (refusal?.code === 'seat_taken') {
             map.current?.applyConflict(refusal.seat_identities);
-            setStatus(t.seatsNoLongerAvailable.replace('{seats}', refusal.seat_identities.join(', ')));
+            setStatus(plural(locale, t.seatsNoLongerAvailable, refusal.seat_identities.length, {
+              seats: refusal.seat_identities.join(', '),
+            }));
             return;
           }
           // An orphan refusal names seats that are FREE and that the buyer did not
           // request. They must NOT go through the conflict channel: marking them
           // unavailable would remove the buyer's only repair, which is to add one.
           if (refusal?.code === 'orphaned_seats' && refusal.seat_identities?.length) {
-            setStatus(t.seatsWouldStrand.replace('{seats}', refusal.seat_identities.join(', ')));
+            setStatus(plural(locale, t.seatsWouldStrand, refusal.seat_identities.length, {
+              seats: refusal.seat_identities.join(', '),
+            }));
             return;
           }
+        }
+        // GA only, like commerce: a seated refusal keeps the mapping above. No
+        // waitlist action yet; a later story adds it behind an account check.
+        if (!seated && isSoldOutRefusal(refusalBody)) {
+          setStatus(t.soldOut); return;
         }
         setStatus(t.quantityUnavailable); return;
       }
@@ -375,12 +396,13 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       ? <SeatMapPicker ref={map} organizerId={organizerId} slotId={slotId!} seatMapId={seatMapId!} locale={locale} onSelectionChange={onSelectionChange} />
       : <label>{t.quantity} <input aria-label={t.quantity} type="number" min="1" max="50" value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value))))} /></label>}
     <button type="button" disabled={busy || holding || (seated && !selection.claimable)} onClick={reserve}>{seated ? t.reserveSeats : t.reserve}</button>
-    <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${seconds}s` : ''}</span>
+    <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${fill(t.holdCountdown, { n: seconds })}` : ''}</span>
     {ticketLink && <a href={ticketLink}>{t.viewMyTickets}</a>}
     {reservation && remaining !== null && remaining > 0 && <div className="checkout-form">
       <label>{t.nameLabel} <input aria-label={t.nameLabel} value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>{t.emailLabel} <input aria-label={t.emailLabel} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-      <label>Fake payment <select aria-label="Fake payment" value={paymentToken} onChange={(e) => setPaymentToken(e.target.value)}><option value="fake-ok">Success</option><option value="fake-decline">Decline</option><option value="fake-timeout">Timeout</option></select></label>
+      {/* The option values are payment tokens and stay untranslated (TKT-365). */}
+      <label>{t.fakePaymentLabel} <select aria-label={t.fakePaymentLabel} value={paymentToken} onChange={(e) => setPaymentToken(e.target.value)}><option value="fake-ok">{t.fakePaymentSuccess}</option><option value="fake-decline">{t.fakePaymentDecline}</option><option value="fake-timeout">{t.fakePaymentTimeout}</option></select></label>
       <button type="button" disabled={busy} onClick={checkout}>{t.pay} {formatMoney(reservation.amount, reservation.currency, locale)}</button>
     </div>}
   </div>;

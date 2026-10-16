@@ -183,6 +183,27 @@ func TestGatewayStillEdgeDeniesCommercesRefund(t *testing.T) {
 			t.Errorf("%s is reachable from the public edge: %d %s", path, code, body)
 		}
 	}
+	// TKT-287: the full staff pair — credential AND a valid organizer assertion —
+	// with an otherwise valid request on each of the three staff operations, is still
+	// refused at the edge. Holding everything the back office holds opens nothing
+	// from the public internet.
+	order := "00000000-0000-0000-0000-000000000001"
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPost, "/api/commerce/internal/orders/" + order + "/refunds", map[string]any{"quantity": 1, "actor": "a", "reason": "r"}},
+		{http.MethodPost, "/api/commerce/internal/orders/" + order + "/voids", map[string]any{"actor": "a", "reason": "r"}},
+		{http.MethodGet, "/api/commerce/internal/orders/" + order, nil},
+	} {
+		code, body := commerceStaffCall(t, tc.method, gatewayURL+tc.path, "gateway-deny-"+tc.method, staffHeaders(t, organizerID), tc.body)
+		// The GATEWAY's own refusal body, not just a 404: the order id is not a real
+		// order, so commerce would also answer 404 if the edge forwarded the request.
+		// Only this body proves the edge refused it.
+		if code != http.StatusNotFound || strings.TrimSpace(string(body)) != `{"error":"refused at the gateway edge"}` {
+			t.Errorf("%s %s with the full staff pair was not refused AT THE EDGE: %d %s", tc.method, tc.path, code, body)
+		}
+	}
 }
 
 func postRaw(t *testing.T, target, staffToken string) (int, string, http.Header) {

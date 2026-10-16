@@ -40,11 +40,11 @@ Each is one epic on the board with COS; IDs are board keys. Decomposition into U
 | TKT-4 | Inventory & reservation core | Contention-safe claims (no oversell under load), cart holds w/ TTL, operational holds (house/artist/kills), channel allocations, group/agency reservations, best-available seating |
 | TKT-5 | Pricing & overridable rules | Price levels per ticket type, time/tiered pricing, rule hierarchy venue→series→event→price with overrides; DSL spike (build vs declarative config) |
 | TKT-6 | Service fees & revenue splits | Fee schedules per channel, absorbed vs passed-on, rounding; split ledger across payees: system, venue, artist, extensible |
-| TKT-7 | Promotions & discount codes | Single-use and multi-use codes, %/fixed, redemption limits, comps |
+| TKT-7 | Promotions & discount codes | Single-use and multi-use codes, %/fixed, redemption limits, comps — storage and redemption contract: [ADR-084](../adr/ADR-084-promotion-storage-and-redemption-contract.md) |
 | TKT-8 | Cart, combos & cross-sell | Multi-item cart across inventory models; combos/packages (bundle pricing); parking & merchandise cross-sell; refund-protection add-on (buyer-paid, own refund/settlement semantics) |
 | TKT-9 | Orders & post-purchase | Refunds full/partial, exchanges w/ price-difference settlement, transfers & controlled resale, event-cancellation bulk flows |
 | TKT-10 | Payments & multi-currency | PSP port + fake provider (3DS-like challenge simulation); one currency per event, many across the platform, per-currency settlement, no FX inside an order; real PSP adapter later |
-| TKT-11 | NF525 compliance profile (later phase) | When the French market is prioritized: period closures (Z), fiscal archives, audit export layered on the ADR-003 journal — validated to require no schema/flow changes; verify inferred ISCA reading against the referential |
+| TKT-11 | NF525 compliance profile (later phase) | When the French market is prioritized: period closures (Z), fiscal archives, audit export layered on the ADR-003 journal. The [TKT-374](../spikes/TKT-374-fr-cash-scope.md) note finds that §50 line data needs a journal schema or producer change, in conflict with ADR-003 Decision 4 (owner decision pending); verify inferred ISCA reading against the referential |
 | TKT-12 | Passes & entitlements | Venue season tickets; park season passes (unlimited entries, named holder w/ photo binding); multi-park passes |
 | TKT-13 | Lodging & bookable resources | Camping: nightly stays, check-in/out, occupancy; cabanas: day-slot tied to park visit; parking inventory |
 | TKT-14 | Festivals | Multi-day passes + day tickets on shared capacity (zones/stages), festival camping add-on, RFID wristband media (activation/binding, simulated hardware) |

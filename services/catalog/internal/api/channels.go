@@ -30,6 +30,7 @@ func channelResponse(c store.Channel) Channel {
 		DisplayName: c.DisplayName,
 		Kind:        ChannelKind(c.Kind),
 		Enabled:     c.Enabled,
+		Revision:    c.Revision,
 		CreatedAt:   c.CreatedAt,
 		UpdatedAt:   c.UpdatedAt,
 	}
@@ -130,7 +131,7 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 	// Verified before removing the parameter: the back office is the ONLY caller
 	// repo-wide (web/backoffice/src/lib/catalog.ts), so no service-to-service
 	// caller loses the ability to name an organizer it is not.
-	scope, err := verifyOrganizerAssertion(s.organizerAssertionKey,
+	scope, err := verifyOrganizerAssertion(s.organizerAssertions,
 		r.Header.Get(organizerAssertionHeader), time.Now())
 	if err != nil {
 		// Same uninformative refusal as everywhere else: absent, expired, forged
@@ -185,11 +186,16 @@ func (s *Server) UpdateChannel(w http.ResponseWriter, r *http.Request, channelId
 	if !ok {
 		return
 	}
+	// expected_revision is forwarded exactly as sent (TKT-325, ADR-080). The
+	// contract declares it required, non-null and an integer in 0..2^53-1, and
+	// the request validator refuses anything else before this handler runs —
+	// so a decoded zero here is a token the caller sent, never an absent one.
 	c, err := s.channels.UpdateChannel(r.Context(), organizerID, channelId, store.ChannelUpdate{
-		Code:        in.Code,
-		DisplayName: in.DisplayName,
-		Kind:        store.ChannelKind(in.Kind),
-		Enabled:     in.Enabled,
+		Code:             in.Code,
+		DisplayName:      in.DisplayName,
+		Kind:             store.ChannelKind(in.Kind),
+		Enabled:          in.Enabled,
+		ExpectedRevision: in.ExpectedRevision,
 	})
 	if err != nil {
 		s.writeStoreError(w, r, err)

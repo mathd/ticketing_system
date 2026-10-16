@@ -5,8 +5,11 @@
 // One page, four actions, state in the query string. That is the idiom
 // venues/[id].astro already proves for four writes plus a publish: `_action`
 // dispatch, post/redirect/get on success, re-render with the error on failure,
-// relative form actions (an absolute one trips the origin handling even
-// same-origin — TKT-105). Each extra page would be another ROUTE_MATRIX row,
+// relative form actions (`action=""` posts back to this URL with its query, which
+// is the progress). The action is not a CSRF matter: TKT-105's "absolute action"
+// trap was Astro's checkOrigin, which is off (astro.config.mjs), and the gate
+// (gateRequest) compares the request's Origin with the forwarded public origin
+// whatever the action is. Each extra page would be another ROUTE_MATRIX row,
 // another role test and another browser check, for no domain benefit.
 //
 // The query string carries IDENTITY only — which event, which slot — never
@@ -23,13 +26,56 @@ import {
   getVenues,
   publishPerformance,
 } from '../../lib/catalog';
-import { parseCurrency, parseLocalizedName, parseMinorUnits } from '../../lib/event-builder';
+import {
+  catalogRefusalKey,
+  parseCurrency,
+  parseLocalizedName,
+  parseMinorUnits,
+  type ParseError,
+} from '../../lib/event-builder';
+import { uiLanguageFrom } from '../../lib/ui-language';
+import { UI_STRINGS, fill, splitAt } from '../../lib/ui-strings';
 
 const staff = Astro.locals.staff;
 if (!staff) throw new Error('unauthenticated request reached the event builder');
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const here = `${base}/events/new`;
+
+// The operator's UI language (TKT-368). It decides how this page SAYS things and
+// nothing else: the content fields below are always `name_en` and `name_fr`, both
+// required, whatever language the labels around them are in — catalog's
+// SupportedLocales are not the operator's reading language.
+const lang = uiLanguageFrom(Astro.cookies);
+const t = UI_STRINGS[lang];
+
+/**
+ * What the alert says. `detail` is catalog's own reason, kept verbatim after a
+ * lead in the UI language (D1(d)) and rendered under lang="en", because it is
+ * catalog's English and the part that says WHY.
+ */
+type PageError = { message: string; detail?: string };
+const parseError = (e: ParseError): PageError => ({ message: fill(t[e.key], e.params) });
+const refusal = (e: CatalogApiError): PageError => ({ message: t[catalogRefusalKey(e.status)], detail: e.message });
+
+/** Catalog's slot status, said in the UI language. Display only. */
+const statusLabel = (status: string | null | undefined): string => {
+  switch (status) {
+    case 'draft':
+      return t.statusDraft;
+    case 'published':
+      return t.statusPublished;
+    case 'archived':
+      return t.statusArchived;
+    case null:
+    case undefined:
+      return t.statusUnknown;
+    default:
+      // A status this page does not know is shown as catalog spelled it, rather
+      // than hidden behind "unknown".
+      return status;
+  }
+};
 
 // Progress, carried across requests. Present ids mean that step succeeded.
 let eventId = Astro.url.searchParams.get('event');
@@ -38,7 +84,7 @@ let ticketTypeId = Astro.url.searchParams.get('ticket_type');
 
 // On a failed submit we re-render rather than redirect, so the operator keeps
 // what they typed (COS-4). `errorField` drives which input is flagged.
-let error: string | null = null;
+let error: PageError | null = null;
 let errorField: string | null = null;
 let submitted: Record<string, string> = {};
 let venues: Awaited<ReturnType<typeof getVenues>> = [];
@@ -57,10 +103,7 @@ try {
   venues = await getVenues(staff.organizerId);
 } catch (e) {
   readFailed = true;
-  error =
-    e instanceof CatalogApiError
-      ? e.message
-      : 'Something went wrong talking to the catalog. Try again.';
+  error = e instanceof CatalogApiError ? refusal(e) : { message: t.catalogUnavailable };
 }
 
 // TKT-200: one idempotency key per rendered create form.
@@ -76,8 +119,9 @@ try {
 // regardless — the value is rendered into a hidden input server-side.
 const freshKey = () => crypto.randomUUID();
 
-// Keys for the forms this request renders. On a failed submit these are
-// REPLACED below by the submitted ones (see `carriedKey`).
+// Keys for the forms this request renders. When a POST re-renders the form it
+// received, that form's key is REPLACED below by the submitted one (see
+// `carriedKey`).
 let eventKey = freshKey();
 let performanceKey = freshKey();
 let ticketTypeKey = freshKey();
@@ -88,12 +132,28 @@ if (Astro.request.method === 'POST') {
   const field = (name: string) => String(form.get(name) ?? '');
   submitted = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
-  // The SUBMITTED key, not a fresh one. On a validation failure this page
-  // re-renders the form the operator just posted, and re-rendering a NEW key
-  // there would mean the corrected resubmit is a different request as far as
-  // catalog is concerned — so a double-click on the corrected form would once
-  // again produce two rows. Falls back to a fresh key only when the field is
-  // absent entirely, which is a form that predates this change.
+  // The SUBMITTED key, not a fresh one, whenever this request re-renders the
+  // form it received.
+  //
+  // The case that needs it is the AMBIGUOUS write: when catalog's answer is lost
+  // (a reset connection, a 5xx, an unreadable success — AmbiguousMutationError),
+  // catalog may already have created the row under that key. Re-rendering the
+  // same key makes the operator's retry the SAME request, so catalog answers
+  // with the row it may have created instead of creating a second one. A fresh
+  // key there would make the retry a new write and could duplicate the row.
+  //
+  // After a definite refusal (a local validation failure, or a catalog 4xx) THIS
+  // submit created no row — catalog stores the key on the row it creates
+  // (migration 0020) — so carrying the key adds nothing and costs nothing. If an
+  // earlier ambiguous write did commit under it, a resubmit with different terms
+  // gets catalog's 409 "idempotency key reused with different terms", which is
+  // the reconcile-first answer the ambiguous message asks for.
+  //
+  // Double-click protection does not depend on any of this: two clicks on ONE
+  // rendered form both send that form's hidden key, whichever key was rendered.
+  //
+  // A fresh key is minted when the submitted value is EMPTY or the field is
+  // absent: `||` treats the two alike.
   const carriedKey = (name: string) => field(name) || freshKey();
   if (action === 'create-event') eventKey = carriedKey('idempotency_key');
   if (action === 'create-performance') performanceKey = carriedKey('idempotency_key');
@@ -124,7 +184,7 @@ if (Astro.request.method === 'POST') {
     if (action === 'create-event') {
       const name = parseLocalizedName({ en: field('name_en'), fr: field('name_fr') });
       if (!name.ok) {
-        error = name.message;
+        error = parseError(name.error);
         errorField = `name_${name.field}`;
       } else {
         const created = await createEvent(
@@ -163,7 +223,7 @@ if (Astro.request.method === 'POST') {
       const currency = parseCurrency(field('currency'));
       const bad = [name, amount, currency].find((r) => !r.ok);
       if (bad && !bad.ok) {
-        error = bad.message;
+        error = parseError(bad.error);
         errorField = bad.field === 'en' || bad.field === 'fr' ? `tt_name_${bad.field}` : bad.field;
       } else if (name.ok && amount.ok && currency.ok) {
         const tt = await createTicketType(staff.organizerAssertion, staff.organizerId, {
@@ -201,7 +261,7 @@ if (Astro.request.method === 'POST') {
         // show an error and a success for the same request (pass 4).
         error = null;
       } else {
-        error = `Catalog reports this date as ${slot.status ?? 'unknown'}, not published.`;
+        error = { message: fill(t.publicationNotPublished, { status: statusLabel(slot.status) }) };
       }
     }
   } catch (e) {
@@ -209,26 +269,30 @@ if (Astro.request.method === 'POST') {
     // refusals that matter here are catalog's to make (ADR-018): a grouped
     // festival day publishes through its festival, an archived slot cannot
     // transition, a slot with no ticket type is not sellable. Surfacing our own
-    // paraphrase would be a second lifecycle opinion.
+    // paraphrase would be a second lifecycle opinion. TKT-368 adds only a lead in
+    // the UI language before it, chosen by status class (D1(d)).
     error = e instanceof CatalogApiError
-      ? e.message
+      ? refusal(e)
       : e instanceof AmbiguousMutationError
-        ? action === 'publish-performance'
-          ? 'Catalog may have published this date, but its response could not be verified. Reload and reconcile the current event state before retrying.'
-          : 'Catalog may have saved this step, but its response could not be verified. Reload and reconcile the current event state before retrying. This form keeps the same idempotency key.'
-        : 'Something went wrong talking to the catalog. Try again.';
+        ? { message: action === 'publish-performance' ? t.publishAmbiguous : t.saveAmbiguous }
+        : { message: t.catalogUnavailable };
   }
 }
 
 const step = publishedStatus ? 5 : ticketTypeId ? 4 : performanceId ? 3 : eventId ? 2 : 1;
 const val = (name: string) => submitted[name] ?? '';
+const [reportedBefore, reportedAfter] = splitAt(t.publicationReported, 'status');
 ---
 
-<Layout title="Create an event — Back-office">
-  <h1>Create an event</h1>
-  <p class="muted">Step {Math.min(step, 4)} of 4</p>
+<Layout title={t.createEventTitle} lang={lang}>
+  <h1>{t.createEvent}</h1>
+  <p class="muted">{fill(t.stepProgress, { step: Math.min(step, 4) })}</p>
 
-  {error && <p class="error" role="alert">{error}</p>}
+  {error && (
+    <p class="error" role="alert">{error.message}{error.detail && (
+      <Fragment> <span lang="en">{error.detail}</span></Fragment>
+    )}</p>
+  )}
 
   {step === 1 && (
     <form method="post" action="">
@@ -238,25 +302,28 @@ const val = (name: string) => submitted[name] ?? '';
            returns one resource; after a refusal the SUBMITTED key is
            re-rendered, so the corrected resubmit is still that request. -->
       <input type="hidden" name="idempotency_key" value={eventKey} />
-      <h2>1. The event</h2>
-      <label for="name_en">Name (English)</label>
-      <input id="name_en" name="name_en" required value={val('name_en')}
+      <h2>{t.eventStep}</h2>
+      {/* The labels follow the UI language; the field NAMES never do, and
+          neither does each field's `lang`: it is the language of the CONTENT
+          typed into it, so it never inherits the document's UI language. */}
+      <label for="name_en">{t.eventNameEnglish}</label>
+      <input id="name_en" name="name_en" lang="en" required value={val('name_en')}
              aria-invalid={errorField === 'name_en' ? 'true' : undefined} />
-      <label for="name_fr">Nom (français)</label>
-      <input id="name_fr" name="name_fr" required value={val('name_fr')}
+      <label for="name_fr">{t.eventNameFrench}</label>
+      <input id="name_fr" name="name_fr" lang="fr" required value={val('name_fr')}
              aria-invalid={errorField === 'name_fr' ? 'true' : undefined} />
-      <button type="submit">Create event</button>
+      <button type="submit">{t.createEventAction}</button>
     </form>
   )}
 
   {step === 2 && readFailed && (
     <section>
-      <h2>2. When and where</h2>
+      <h2>{t.dateStep}</h2>
       {/* The venue list could not be read, so this step cannot be completed —
           and an enabled <select> over an empty list would invite an operator to
           submit something that cannot succeed (ai-review pass 4). The error
           above says why. */}
-      <p>The venue list is unavailable, so this step cannot be completed yet.</p>
+      <p>{t.venueListUnavailable}</p>
     </section>
   )}
 
@@ -268,21 +335,21 @@ const val = (name: string) => submitted[name] ?? '';
            returns one resource; after a refusal the SUBMITTED key is
            re-rendered, so the corrected resubmit is still that request. -->
       <input type="hidden" name="idempotency_key" value={performanceKey} />
-      <h2>2. When and where</h2>
-      <label for="venue_id">Venue</label>
+      <h2>{t.dateStep}</h2>
+      <label for="venue_id">{t.venue}</label>
       <select id="venue_id" name="venue_id" required>
         {venues.map((v) => <option value={v.id} selected={v.id === val('venue_id')}>{v.name}</option>)}
       </select>
-      <label for="starts_at">Starts at</label>
+      <label for="starts_at">{t.startsAt}</label>
       {/* RFC 3339 WITH an offset, not a datetime-local value. A local value
           carries no zone, and resolving one in the server's zone would shift
           the slot for every organizer who is not next to the server. */}
       <input id="starts_at" name="starts_at" required placeholder="2026-09-18T19:30:00+02:00"
              value={val('starts_at')} aria-invalid={errorField === 'starts_at' ? 'true' : undefined} />
-      <label for="timezone">Timezone (IANA)</label>
+      <label for="timezone">{t.timezone}</label>
       <input id="timezone" name="timezone" required placeholder="Europe/Paris"
              value={val('timezone')} aria-invalid={errorField === 'timezone' ? 'true' : undefined} />
-      <button type="submit">Add the date</button>
+      <button type="submit">{t.addDate}</button>
     </form>
   )}
 
@@ -294,44 +361,44 @@ const val = (name: string) => submitted[name] ?? '';
            returns one resource; after a refusal the SUBMITTED key is
            re-rendered, so the corrected resubmit is still that request. -->
       <input type="hidden" name="idempotency_key" value={ticketTypeKey} />
-      <h2>3. The price</h2>
-      <label for="tt_name_en">Ticket name (English)</label>
-      <input id="tt_name_en" name="tt_name_en" required value={val('tt_name_en')}
+      <h2>{t.priceStep}</h2>
+      <label for="tt_name_en">{t.ticketNameEnglish}</label>
+      <input id="tt_name_en" name="tt_name_en" lang="en" required value={val('tt_name_en')}
              aria-invalid={errorField === 'tt_name_en' ? 'true' : undefined} />
-      <label for="tt_name_fr">Nom du billet (français)</label>
-      <input id="tt_name_fr" name="tt_name_fr" required value={val('tt_name_fr')}
+      <label for="tt_name_fr">{t.ticketNameFrench}</label>
+      <input id="tt_name_fr" name="tt_name_fr" lang="fr" required value={val('tt_name_fr')}
              aria-invalid={errorField === 'tt_name_fr' ? 'true' : undefined} />
-      <label for="amount">Amount in minor units</label>
+      <label for="amount">{t.amountMinorUnits}</label>
       {/* Minor units, not a decimal: €45.50 is 4550. The alternative is
           parseFloat times a hundred, which is inexact in binary and assumes
           every currency has two decimals — JPY has none (ADR-001). */}
       <input id="amount" name="amount" required inputmode="numeric" pattern="[0-9]+"
-             placeholder="4550 (= €45.50)" value={val('amount')}
+             placeholder={t.amountExample} value={val('amount')}
              aria-invalid={errorField === 'amount' ? 'true' : undefined} />
-      <label for="currency">Currency</label>
+      <label for="currency">{t.currency}</label>
       <input id="currency" name="currency" required placeholder="EUR" value={val('currency')}
              aria-invalid={errorField === 'currency' ? 'true' : undefined} />
-      <button type="submit">Set the price</button>
+      <button type="submit">{t.setPrice}</button>
     </form>
   )}
 
   {step === 4 && (
     <form method="post" action="">
       <input type="hidden" name="_action" value="publish-performance" />
-      <h2>4. Publish</h2>
-      <p>This makes the date available to buyers.</p>
-      <button type="submit">Publish</button>
+      <h2>{t.publishStep}</h2>
+      <p>{t.publishExplanation}</p>
+      <button type="submit">{t.publish}</button>
     </form>
   )}
 
   {publishedStatus && (
     <section class="done">
-      <h2>Publication accepted</h2>
+      <h2>{t.publicationAccepted}</h2>
       {/* Catalog's own status for the slot it just published — NOT a claim about
           sellability, which also waits on inventory provisioning this slot
           asynchronously. "On sale" would be a promise this page cannot keep. */}
-      <p>Catalog reports this date as <strong>{publishedStatus}</strong>.</p>
-      <p><a href={base}>Back to venues</a></p>
+      <p>{reportedBefore}<strong>{statusLabel(publishedStatus)}</strong>{reportedAfter}</p>
+      <p><a href={base}>{t.backToVenues}</a></p>
     </section>
   )}
 </Layout>

@@ -152,8 +152,19 @@ function decodeStaffAvailability(value: unknown, expectedSlotId: string): StaffA
   if (offeringStatus !== 'open' && offeringStatus !== 'closed' && offeringStatus !== 'archived') {
     throw new Error('response offering_status is not recognized');
   }
+  // STRICT, though the contract declares the field optional (TKT-286 / D5): inventory
+  // always emits it, and what it means decides whether the page may show an editor. A
+  // missing or unknown kind therefore fails the read — the page's "inventory unavailable"
+  // state — instead of defaulting to GA, which would bring back an editor that looks
+  // editable on a seated slot and cannot save. Cost: a back office newer than its
+  // inventory cannot show the page until inventory is deployed with it.
+  const inventoryKind = body.inventory_kind;
+  if (inventoryKind !== 'ga' && inventoryKind !== 'seated') {
+    throw new Error('response inventory_kind is not recognized');
+  }
   return {
     slot_id: slotId,
+    inventory_kind: inventoryKind,
     capacity: positiveWholeNumber(body.capacity, 'staff availability capacity'),
     ...(body.target_capacity === undefined
       ? {}

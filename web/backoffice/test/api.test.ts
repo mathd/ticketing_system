@@ -32,7 +32,7 @@ import {
 const TEST_ORGANIZER_ID = '00000000-0000-0000-0000-000000000001';
 const STAFF_ID = '50000000-0000-4000-8000-000000000001';
 const TEST_ASSERTION =
-  `v1.${STAFF_ID}.${TEST_ORGANIZER_ID}.99999999999.${'A'.repeat(43)}`;
+  `v2.catalog-org/test.${STAFF_ID}.${TEST_ORGANIZER_ID}.99999999999.${'A'.repeat(86)}`;
 const VENUE_ID = '00000000-0000-0000-0000-0000000000a2';
 const MAP_ID = '10000000-0000-4000-8000-000000000001';
 const MAP_VERSION_ID = '10000000-0000-4000-8000-000000000002';
@@ -98,6 +98,7 @@ function validChannel(overrides: Record<string, unknown> = {}) {
     display_name: 'Box office',
     kind: 'pos',
     enabled: true,
+    revision: 0,
     created_at: '2026-07-20T12:00:00Z',
     updated_at: '2026-07-20T12:00:00Z',
     ...overrides,
@@ -271,10 +272,26 @@ describe('seat-map edit + versioning client (TKT-105)', () => {
 
   it('surfaces the server {error} body on a rejected edit (409 orphan), not just the status', async () => {
     spyFetch({ error: 'edit would orphan a seat identity pinned by a sale or hold' }, 409);
+    // A real orphan submits geometry. An empty edit is a different refusal (TKT-318).
+    const orphaning = {
+      sections: [{ name: 'Orchestra', position: 1, rows: [{ label: 'A', position: 1, seats: [{ label: '2', position: 1 }] }] }],
+    };
     // The actionable message reaches the UI — a bare "409" would be useless.
     await expect(
-      editSeatMap(MAP_ID, { sections: [] }, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
+      editSeatMap(MAP_ID, orphaning, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
     ).rejects.toThrow(/orphan a seat identity pinned/);
+  });
+
+  it('surfaces the seatless refusal on a publish of a map with no seats (TKT-318)', async () => {
+    spyFetch({ error: 'a seat map needs at least one seat before it can be published, saved, or seated against' }, 409);
+    await expect(publishSeatMap(MAP_ID, TEST_ASSERTION)).rejects.toThrow(/needs at least one seat before it can be published/);
+  });
+
+  it('surfaces the seatless refusal on an edit with no seats (TKT-318)', async () => {
+    spyFetch({ error: 'a seat map needs at least one seat before it can be published, saved, or seated against' }, 409);
+    await expect(
+      editSeatMap(MAP_ID, { sections: [] }, TEST_ORGANIZER_ID, VENUE_ID, TEST_ASSERTION),
+    ).rejects.toThrow(/needs at least one seat before it can be published/);
   });
 
   it('throws a typed CatalogApiError carrying the status', async () => {
@@ -665,7 +682,7 @@ describe('the order console reads (TKT-193)', () => {
     );
     const got = await refundOrder({
       orderId: ORDER, quantity: 1, reason: 'customer called',
-      actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'key-1',
+      actor: 'staff-42', assertion: 'session-assertion', idempotencyKey: 'key-1',
     });
 
     expect(got).toMatchObject({ ok: true });
@@ -683,12 +700,13 @@ describe('the order console reads (TKT-193)', () => {
   // it from the form would make a refund attributable to whatever the client
   // typed, which is not attributable at all — and it matters more now that box
   // office can refund, because attribution is the control that remains.
-  it('sends only the four contract fields, with actor and organizer from the caller', async () => {
+  // TKT-287: the organizer travels as the session's ASSERTION header, never in the
+  // body. toEqual on the exact body is what catches organizer_id coming back.
+  it('sends only the three contract fields, with actor from the caller and the assertion as a header', async () => {
     const calls = spyFetch(validRefund({ amount: 1, refunded_amount: 1 }), 200);
-    await refundOrder({ orderId: ORDER, quantity: 2, reason: 'why', actor: 'staff-42', organizerId: 'org-1', idempotencyKey: 'k' });
-    expect(calls[0].body).toEqual({
-      organizer_id: 'org-1', quantity: 2, actor: 'staff-42', reason: 'why',
-    });
+    await refundOrder({ orderId: ORDER, quantity: 2, reason: 'why', actor: 'staff-42', assertion: 'session-assertion', idempotencyKey: 'k' });
+    expect(calls[0].body).toEqual({ quantity: 2, actor: 'staff-42', reason: 'why' });
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe('session-assertion');
   });
 
   it.each([
@@ -700,7 +718,7 @@ describe('the order console reads (TKT-193)', () => {
     [503, 'ambiguous'],
   ])('maps a %i to %s without inventing a refund', async (status, kind) => {
     spyFetch({ error: 'commerce says no' }, status);
-    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
     expect(got).toMatchObject({ ok: false, kind, message: 'commerce says no' });
   });
 
@@ -725,7 +743,7 @@ describe('the order console reads (TKT-193)', () => {
     ['a non-boolean tickets_voided', validRefund({ tickets_voided: 'yes' })],
   ])('treats %s as ambiguous rather than a refund', async (_name, body) => {
     spyFetch(body, 200);
-    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', organizerId: 'o', idempotencyKey: 'k' });
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
     expect(got).toMatchObject({ ok: false, kind: 'ambiguous' });
   });
 
@@ -844,6 +862,12 @@ describe('the channel registry client (TKT-236)', () => {
     ['display_name', { display_name: undefined }],
     ['kind', { kind: 'affiliate' }],
     ['enabled', { enabled: 'yes' }],
+    ['revision (missing)', { revision: undefined }],
+    ['revision (null)', { revision: null }],
+    ['revision (string)', { revision: '1' }],
+    ['revision (negative)', { revision: -1 }],
+    ['revision (fractional)', { revision: 1.5 }],
+    ['revision (unsafe integer)', { revision: 9007199254740992 }],
     ['created_at', { created_at: undefined }],
     ['updated_at', { updated_at: undefined }],
   ])('refuses a channel with an invalid %s', async (_field, replacement) => {
@@ -887,9 +911,9 @@ describe('the channel registry client (TKT-236)', () => {
   // The PUT is a full replacement. An omitted field is not "unchanged" — it is
   // absent, and for `enabled` that reads as false.
   it('sends every mutable field on update, and NO organizer', async () => {
-    const calls = spyFetch(validChannel({ display_name: 'Counter', enabled: false }), 200);
+    const calls = spyFetch(validChannel({ display_name: 'Counter', enabled: false, revision: 8 }), 200);
     await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
-      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false,
+      code: 'pos', displayName: 'Counter', kind: 'pos', enabled: false, expectedRevision: 7,
     });
     expect(calls[0].url).toContain(`/api/catalog/channels/${CHANNEL_ID}`);
     // The write is still scoped to a tenant -- the channel id comes from a form
@@ -901,8 +925,64 @@ describe('the channel registry client (TKT-236)', () => {
       display_name: 'Counter',
       kind: 'pos',
       enabled: false,
+      // TKT-325: the token the caller passed, unchanged — not re-read, not
+      // defaulted. 7, not 0, so a client that dropped it would fail here.
+      expected_revision: 7,
     });
     expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe(TEST_ASSERTION);
+  });
+
+  it('sends expected_revision 0 as a number, not as an omission', async () => {
+    const calls = spyFetch(validChannel({ revision: 1 }), 200);
+    await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    });
+    expect(calls[0].body).toHaveProperty('expected_revision', 0);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe', 9007199254740992],
+    ['NaN', Number.NaN],
+  ])('refuses a %s expected revision before any request', async (_name, expectedRevision) => {
+    const calls = spyFetch(validChannel(), 200);
+    await expect(updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision,
+    })).rejects.toThrow(/revision/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('decodes the revision the update answered', async () => {
+    spyFetch(validChannel({ revision: 8 }), 200);
+    const got = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 7,
+    });
+    expect(got.revision).toBe(8);
+  });
+
+  // The 409 has two causes, and only `code` tells them apart. A parsed error that
+  // dropped it would classify every stale refusal as a code-field error.
+  it('keeps the machine code of a coded refusal', async () => {
+    spyFetch({ error: 'channel changed since it was read; nothing was saved', code: 'channel_revision_mismatch' }, 409);
+    const error = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CatalogApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: 'channel_revision_mismatch',
+      message: 'channel changed since it was read; nothing was saved',
+    });
+  });
+
+  it('leaves code undefined on an uncoded refusal', async () => {
+    spyFetch({ error: 'channel code is immutable' }, 409);
+    const error = await updateChannel(TEST_ASSERTION, TEST_ORGANIZER_ID, CHANNEL_ID, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 0,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CatalogApiError);
+    expect((error as CatalogApiError).code).toBeUndefined();
   });
 });
 
@@ -914,7 +994,7 @@ describe('inventory allocation client', () => {
   it('reads staff availability direct, with its own credential and never the shared one', async () => {
     const calls = spyFetch(
       { slot_id: SLOT, capacity: 100, buyer_held: 0, operational_held: 0, reservation_held: 0,
-        confirmed: 0, available: 100, public_available: 60, offering_status: 'open', channels: [] },
+        confirmed: 0, available: 100, public_available: 60, offering_status: 'open', channels: [], inventory_kind: 'ga' },
       200,
     );
     await getStaffAvailability(SLOT, 'org-1');

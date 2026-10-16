@@ -52,6 +52,12 @@ func enrolReseller(args []string) error {
 	defer func() { _ = db.Close() }()
 
 	cred, token, err := store.EnrolResellerCredential(ctx, db, organizer, reseller, channel, label)
+	if errors.Is(err, store.ErrResellerCredentialCap) {
+		// The remedy, not just the refusal (TKT-290): the cap has no override, so the
+		// operator must know which command shows what to revoke.
+		return fmt.Errorf("%w (at most %d live per organizer and reseller); revoke one first — see list-resellers %s",
+			err, store.MaxLiveResellerCredentials, organizer)
+	}
 	if err != nil {
 		return fmt.Errorf("enrol: %w", err)
 	}

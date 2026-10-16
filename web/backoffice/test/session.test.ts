@@ -13,7 +13,7 @@ import {
 // what these pre-existing session tests are measuring: they are about the 8h
 // session lifetime, the cap and the sweep. The clamp has its own tests below.
 const FAR_FUTURE_ASSERTION =
-  'v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.99999999999.mac';
+  'v2.catalog-org/test.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.99999999999.sig';
 let sessions = createSessionStore();
 
 const principal = {
@@ -200,9 +200,9 @@ describe('the session map is bounded (ai-review pass 2, S1)', () => {
 describe('session lifetime is clamped to the assertion (TKT-245)', () => {
   /** An assertion in catalog's format, expiring `secondsFromNow` after `now`. */
   const assertionExpiringAt = (nowMs: number, secondsFromNow: number) =>
-    `v1.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.${
+    `v2.catalog-org/test.11111111-1111-1111-1111-111111111111.22222222-2222-2222-2222-222222222222.${
       Math.floor(nowMs / 1000) + secondsFromNow
-    }.mac`;
+    }.sig`;
 
   // TKT-302. The two tests below are the ones that fail if the monotonic clock is
   // ever reverted, or if the two clocks are merged back into one parameter.
@@ -309,7 +309,15 @@ describe('session lifetime is clamped to the assertion (TKT-245)', () => {
   // rather than a clear refusal there.
   it('falls back to the session TTL when the assertion cannot be parsed', () => {
     const now = 1_800_000_000_000;
-    for (const bad of ['', 'not-a-token', 'v1.only.three.parts', 'v1.a.b.not-a-number.mac']) {
+    for (const bad of [
+      '',
+      'not-a-token',
+      'v2.only.three.parts',
+      'v2.catalog-org/test.a.b.not-a-number.sig',
+      // The retired v1 shape: its expiry sits in another position, so reading it
+      // as v2 would clamp the session to a uuid parsed as a number.
+      `v1.a.b.${Math.floor(now / 1000) + 60}.mac`,
+    ]) {
       sessions = createSessionStore();
       const token = sessions.create({ ...principal, organizerAssertion: bad }, now, now);
       expect(sessions.lookup(token, now + SESSION_TTL_MS - 1000), `bad=${bad}`).toBeDefined();

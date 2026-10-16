@@ -185,9 +185,10 @@ Scoped to one customer, never global: a reset must not sign out strangers.
   else.
 - Replay of a redeemed or expired token, by the conditional `UPDATE`.
 - A caller who submits a victim's address with their own `Host`. The link's origin is
-  server-configured (`PUBLIC_BASE_URL`) and **nothing in the compose path reads the request** —
-  building it from a header would make this endpoint a phishing generator that mails victims a
-  genuine link pointing at the attacker's site.
+  server-configured (`PUBLIC_BASE_URL`) and **nothing in the compose path reads the request**
+  except the closed-set locale that the *TKT-366 amendment* below names. Building the origin from
+  a header would make this endpoint a phishing generator that mails victims a genuine link
+  pointing at the attacker's site.
 - An attacker holding a stolen storefront session, once the owner resets **through the
   storefront**.
 - Header injection into a recipient or subject: CR/LF are refused at the port, by every
@@ -225,6 +226,40 @@ Scoped to one customer, never global: a reset must not sign out strangers.
   caller can bypass the storefront and change a password with the session map untouched. §7's
   guarantee is the storefront route's, not commerce's.
 - **Cross-replica and cross-restart session invalidation**, by ADR-049 §4's design.
+
+#### TKT-366 amendment: the language of the reset message
+
+Date: 2026-10-12. This amends the "nothing in the compose path reads the request" clause above.
+That clause was true until TKT-366 and is no longer exactly true.
+
+- **One request value now takes part in the message: `locale`.** The reset request body has an
+  optional `locale` field, `en` or `fr`. The storefront sends the locale of the route that the
+  form was submitted on. It does not send a form field.
+- **The value selects. It does not supply text.** The handler looks the value up in a closed
+  table of fixed copy (`resetCopies` in `services/commerce/internal/api/password_reset.go`).
+  Each entry holds a subject, a body, a lifetime phrase and a literal path
+  (`/en/account/reset-password` or `/fr/account/reset-password`). No character that the caller
+  sent goes into the message. The origin stays `PUBLIC_BASE_URL`. The recipient stays the
+  registered address. So the Host-header refusal above is unchanged.
+- **Absent means English.** A caller built before the field gets the message it got before.
+  During a rolling deploy, that caller is the storefront on its old build.
+- **A present value outside the table gets a 400 before the account lookup.** On the real router
+  the contract refuses it first. The handler refuses it too, before the recovery budget. A
+  refusal sends no mail, so it does not spend a budget, and it is the same for every address.
+  Both languages share one recovery budget for an address.
+- **Deploy commerce before the storefront.** Commerce before TKT-366 refuses a body that has a
+  `locale` field. A new storefront in front of an old commerce therefore gets a 400 on every
+  reset request. The other order is safe because the field is optional.
+- **The copy states the lifetime in words** ("one hour", "une heure"), not as a Go duration
+  (`1h0m0s`). The message selects its phrase by `ResetTokenTTL`, and a test requires a phrase
+  for `ResetTokenTTL` in every locale, so a TTL change fails the test until the words are
+  written. The storefront's acknowledgement strings state the same lifetime; the test's failure
+  message names them, but no test reads them.
+- **The French subject is not ASCII.** The fake accepts it, and the outbox and the drainer keep
+  it byte for byte (a smoke test proves this). The first real provider must encode a non-ASCII
+  subject header (RFC 2047). No real sender exists yet, so nothing does this today.
+- **To make `locale` required later** is a separate expand-then-contract change, after every
+  caller sends it.
 
 ## Consequences
 

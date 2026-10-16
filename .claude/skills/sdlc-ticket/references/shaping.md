@@ -166,14 +166,21 @@ A spike is a ticket `type: "Spike"` whose deliverable is a **decision, not code*
 
 - **Create**: summary = the question; body/comment carries the **timebox** (default: 1 day) and
   expected output; link parent `blocked-by` spike; usually `risk:low` (plan gate skipped).
-- **Flow**: same pipeline, same labels. Building = investigate (read code, prototype, measure) —
-  **no PR expected**; a throwaway branch is fine, delete it. **Spikes skip PO Review**: they close
+- **Flow**: same pipeline, same labels. Building = investigate (read code, prototype, measure).
+  **A spike that commits a deliverable** (an ADR, a decision note, probe evidence) **goes through a
+  branch and a PR** and merges only after `check` succeeds, like any other ticket: the `main`
+  ruleset does not stop an agent session, so the pipeline must (TKT-374 pushed straight to `main`).
+  A spike that commits nothing needs no PR; delete its throwaway branch. **Spikes skip PO Review**: they close
   `Building → Done` directly (the answer is judged by the humans at the parent's Gate 1, so a
   separate acceptance gate would be ceremony). Remove the pipeline label at Done as usual.
 - **Close**: at Done, post the answer on the **parent** as
   `<!-- sdlc:stage=backlog kind=spike-result -->` (recommendation + evidence, ≤ 10 lines), flip the
   parent's readiness item (`open` → `met`, drop the `spike` ref into the note), and update the
   parent's `kind=readiness` comment.
+- **Executed proofs stay on the story that implements the work.** The spike names the proofs the
+  story must execute (tests, mutations, races) and probes only the riskiest assumption, enough to
+  choose. It does not build the story's test suite in advance. TKT-380 spent about half its time on
+  proofs that later moved back to TKT-382.
 - **Timebox is real**: expiring without an answer IS an answer ("too uncertain — descope or
   re-slice"); post that as the spike-result.
 - Multiple spikes per parent are normal; they're the "multiple blockers during shaping" case and

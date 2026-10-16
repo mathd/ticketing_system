@@ -85,6 +85,33 @@ func TestDisplayNamesOmitUnknownIdsRatherThanFailing(t *testing.T) {
 	}
 }
 
+// TKT-365 (ADR-083). Access shows ticket history times in the performance's zone, and
+// this read is where it gets that zone. Two performances in two DIFFERENT zones: a
+// handler that answered one zone for every id, or swapped them, would fail here, and a
+// single-zone fixture could not tell.
+func TestDisplayNamesCarryEachPerformancesTimeZone(t *testing.T) {
+	e := newEnv(t)
+	kolkata := e.store.seedPerformance(t, "published")
+	paris := e.store.seedPerformance(t, "draft")
+	e.store.setTimezone(kolkata, "Asia/Kolkata")
+	e.store.setTimezone(paris, "Europe/Paris")
+
+	rec, out := displayNames(t, e, []uuid.UUID{kolkata, paris}, "fr")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	want := map[uuid.UUID]string{kolkata: "Asia/Kolkata", paris: "Europe/Paris"}
+	if len(out.Performances) != len(want) {
+		t.Fatalf("resolved %d performances, want %d: %+v", len(out.Performances), len(want), out.Performances)
+	}
+	for _, p := range out.Performances {
+		if p.Timezone != want[p.PerformanceId] {
+			t.Errorf("performance %s timezone = %q, want %q", p.PerformanceId, p.Timezone, want[p.PerformanceId])
+		}
+	}
+}
+
 func TestDisplayNamesRefuseAnUnsupportedLocale(t *testing.T) {
 	e := newEnv(t)
 	id := e.store.seedPerformance(t, "published")
@@ -125,7 +152,14 @@ func (f *fakeStore) seedPerformance(t *testing.T, status string) uuid.UUID {
 		Name: store.LocalizedText{"en": "Electric Night " + performanceID.String()[:8], "fr": "Nuit Électrique"},
 	}
 	f.performances[performanceID] = store.Performance{
-		ID: performanceID, EventID: eventID, Status: status, StartsAt: &starts,
+		ID: performanceID, EventID: eventID, Status: status, StartsAt: &starts, Timezone: "UTC",
 	}
 	return performanceID
+}
+
+// setTimezone gives one seeded performance its own zone (TKT-365).
+func (f *fakeStore) setTimezone(id uuid.UUID, zone string) {
+	p := f.performances[id]
+	p.Timezone = zone
+	f.performances[id] = p
 }

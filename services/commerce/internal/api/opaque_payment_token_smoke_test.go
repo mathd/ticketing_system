@@ -129,8 +129,16 @@ func TestCheckoutStillRefusesAnEmptyPaymentTokenLocally(t *testing.T) {
 // which checkout answers 409 for — correct behaviour, and the wrong fixture for this test.
 func seedCheckoutable(t *testing.T, db *sql.DB, ctx context.Context) (organizer, reservation uuid.UUID) {
 	t.Helper()
+	return seedCheckoutableAt(t, db, ctx, 2500)
+}
+
+// seedCheckoutableAt is seedCheckoutable at an explicit gross total (TKT-285 needs zero).
+// Face value equals the total: no fee snapshot is seeded, so settlementPlanFromSnapshot
+// accepts only a reservation whose gross is its face value.
+func seedCheckoutableAt(t *testing.T, db *sql.DB, ctx context.Context, unit int64) (organizer, reservation uuid.UUID) {
+	t.Helper()
 	organizer, reservation = uuid.New(), uuid.New()
-	const unit, quantity = 2500, 1
+	const quantity = 1
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,
 		                         unit_amount,total_amount,face_value_amount,currency,status)
@@ -353,7 +361,6 @@ func TestAPaymentsTokenRefusalIsAnswered400NotParkedForRecovery(t *testing.T) {
 	}
 }
 
-
 // The token is OPTIONAL, and only an upgrade needs it (TKT-301, ADR-069).
 //
 // The shared exchange helper supplies one to every request, which is convenient and hides
@@ -404,4 +411,3 @@ func TestOnlyAnUpgradeNeedsAnInstrument(t *testing.T) {
 		})
 	}
 }
-

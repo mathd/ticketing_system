@@ -24,11 +24,13 @@ import (
 // protocol itself (money → fact → completion → reversal) lives in internal/refunds, which
 // the event-cancellation bulk runner shares (TKT-159): one money path, two callers.
 
+// refundRequest carries no organizer (TKT-287): the tenant is the verified
+// assertion's, from staffOrganizer, and a body naming one is refused by the
+// decoder as an unknown field.
 type refundRequest struct {
-	OrganizerID uuid.UUID `json:"organizer_id"`
-	Quantity    int32     `json:"quantity"`
-	Actor       string    `json:"actor"`
-	Reason      string    `json:"reason"`
+	Quantity int32  `json:"quantity"`
+	Actor    string `json:"actor"`
+	Reason   string `json:"reason"`
 }
 
 // refundProblem maps a store or coordinator error onto the status the contract declares.
@@ -61,15 +63,15 @@ func refundProblem(err error) (int, string) {
 }
 
 func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
-	// Either the shared internal token or the back office's commerce credential
-	// (TKT-194). One of the three internal operations that accept the second —
-	// this refund, the void (TKT-171), and the staff order read (TKT-201); every
-	// other one still compares the internal token inline, and
-	// staff_credential_test.go enumerates them to keep that true.
+	// The back office's commerce credential AND a verified organizer assertion
+	// (TKT-287); the organizer is the assertion's. One of the three staff
+	// operations — this refund, the void (TKT-171), and the staff order read
+	// (TKT-201); staff_credential_test.go enumerates the rest to keep them closed.
 	//
 	// Same 404 as everywhere else in this service, not a 401: it does not
-	// confirm the route exists.
-	if !s.staffOrInternal(r) {
+	// confirm the route exists (ADR-043).
+	organizer, ok := s.staffOrganizer(r)
+	if !ok {
 		write(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -96,14 +98,14 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.OrganizerID == uuid.Nil || in.Quantity < 1 || in.Quantity > 50 ||
+	if in.Quantity < 1 || in.Quantity > 50 ||
 		strings.TrimSpace(in.Actor) == "" || strings.TrimSpace(in.Reason) == "" {
 		write(w, 400, map[string]string{"error": "invalid refund"})
 		return
 	}
 
 	result, err := s.refunds.Refund(r.Context(), commercestore.RefundRequest{
-		OrderID: order, OrganizerID: in.OrganizerID, Quantity: in.Quantity,
+		OrderID: order, OrganizerID: organizer, Quantity: in.Quantity,
 		IdempotencyKey: key, Actor: in.Actor, Reason: in.Reason,
 	})
 	if err != nil {

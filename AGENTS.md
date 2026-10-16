@@ -24,6 +24,7 @@ experiment stays valid.
 
 ## Working agreement
 
+- **On autonomous runs, do not override a `[high]` or higher blocking review finding; escalate it to the owner.** Fixing it is allowed. A recorded override does not make a blocking finding safe (TKT-283; decision TKT-234, prompted by TKT-230).
 - **The stack is decided and scaffolded.** Five Go services (catalog, inventory, commerce,
   payments, access) behind a Go gateway, TypeScript + React frontends, PostgreSQL (one database
   per service), NATS JetStream, all under one `docker compose up`. Layout and service ownership:
@@ -296,6 +297,16 @@ experiment stays valid.
   edited `scripts/smoke.sh` at 23:01:47 during a run that ended 23:02:33 and spent a full cycle
   diagnosing it. The neighbouring rule — never chain a command onto the gate — already exists; this
   is its twin.
+- **`main` has a GitHub ruleset** (`.github/rulesets/main.json`, runbook in
+  `docs/conventions/continuous-delivery.md`). It requires a PR and a successful `check` from GitHub
+  Actions for every actor except the repository admin role, which has `always` bypass. On this
+  personal repo, that role is only the owner `mathd`. **Agent sessions authenticate as `mathd`, so the
+  host refuses nothing they do.** A direct push, a force-push and a merge with `check` red all
+  succeed. The host refusal binds Dependabot and any future collaborator. For agents, the rule is the
+  pipeline's: direct pushes only for internal maintenance, and ticketed work is merged only after
+  `check` succeeds, never with `--admin` or the bypass checkbox. No approvals, up-to-date
+  requirement, or other required check are configured. No hook refuses `--admin` yet; TKT-518
+  tracks that guard.
 - **Specs before code.** Prefer writing/refining a spec or PRD before implementing. Ground work in
   the written spec, not in assumptions about how ticketing "usually" works.
 - **Record decisions.** Capture architecture and design decisions as ADRs in `docs/adr/`

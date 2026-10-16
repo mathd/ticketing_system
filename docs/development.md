@@ -52,6 +52,9 @@ back office in `web/backoffice` (served under `/admin/`, ADR-042), and the React
 
 Every service calls `obs.Setup()`: OTLP export (traces, metrics, logs) to the `lgtm`
 container + structured JSON on stdout with `trace_id`/`span_id`. Grafana at :3000.
+Grafana loads the versioned checkout-path dashboard from `deploy/grafana/` (uid
+`ticketing-checkout-path`, TKT-337). Change the JSON file, not the dashboard in the UI: Grafana
+refuses to save a provisioned dashboard. How to read it: `docs/verification/checkout-dashboard/README.md`.
 Cross-service calls must use `obs.Client()` so W3C trace context propagates.
 
 ## Access failed-event recovery
@@ -82,35 +85,176 @@ quarantined event and stays down across restarts while unresolved rows exist —
 Postgres-backed, not ack-window-backed.
 
 To recover: deploy an inventory binary whose schema registry covers the quarantined variants,
-run `inventory reprocess-quarantine` (one-shot subcommand using the `inventory-reprocess` operator
-credential; republishes the stored envelopes byte-identically to their original subjects with
-deterministic `Nats-Msg-Id`s, marks rows only after the broker accepts):
+then run `inventory reprocess-quarantine`. It is a one-shot subcommand. Since TKT-326 it applies
+each stored envelope **in-process**: it runs the live consumer's handler on the exact stored bytes,
+against inventory's own database. It publishes nothing, and it needs no NATS connection and no NATS
+credential. It needs `DATABASE_URL`, `CATALOG_URL` and `INTERNAL_SERVICE_TOKEN`, because the
+handler resolves some events against catalog (schema-1, schema-4 and schema-5 publications, and
+every closure). It refuses to start, before it reads a row, when `CATALOG_URL` or
+`INTERNAL_SERVICE_TOKEN` is empty. The inventory container already has all three:
 
 ```bash
-export NATS_INVENTORY_REPROCESS_PASSWORD="$(docker compose config --environment | grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' | cut -d= -f2-)"
-docker compose run --rm \
-  -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
-  inventory reprocess-quarantine
+docker compose run --rm inventory reprocess-quarantine
 ```
 
-Two details that decide whether this command works, both found by review (ai-review F4):
+**The subcommand is `reprocess-quarantine`, not `/app reprocess-quarantine`.** The image declares
+`ENTRYPOINT ["/app"]` (`build/go.Dockerfile:21`), so an explicit `/app` makes argv
+`/app /app reprocess-quarantine`; `os.Args[1]` is then `/app`, which is not a registered
+subcommand, and the binary **starts in server mode** instead of reprocessing
+(`services/inventory/cmd/inventory/main.go:39-41`; found by ai-review F4).
 
-- **Read the password from `.env` on the command line.** `make up` writes it to `.env` and does not
-  export it. Compose reads `.env` for its own interpolation, but `-e NATS_URL="...${VAR}..."` is
-  expanded by YOUR SHELL first, which substitutes empty and hands the broker a credential-less URL.
-  The connection then sits in `RECONNECTING` and the subcommand hangs rather than failing.
-- **The subcommand is `reprocess-quarantine`, not `/app reprocess-quarantine`.** The image declares
-  `ENTRYPOINT ["/app"]` (`build/go.Dockerfile:21`), so an explicit `/app` makes argv
-  `/app /app reprocess-quarantine`; `os.Args[1]` is then `/app`, which is not a registered
-  subcommand, and the binary **starts in server mode** instead of reprocessing
-  (`services/inventory/cmd/inventory/main.go:39-41`).
+Each run is one pass over the unresolved rows, oldest first. It prints
+`applied=N terminal=N unsupported=N deferred=N`:
 
-Then restart inventory — startup confirms no unresolved rows remain and readiness returns. Rows the running binary still cannot read stay unresolved and keep
-readiness down; `reinjected_at` means broker republication succeeded, never that inventory
-business processing completed (that is `consumed_events`' job). Reinjected rows are pruned
-7 days after reinjection; unresolved rows never age out. If the quarantine itself fills, new
-future-schema events fall back to delayed NAKs — a deliberate, loud stall at an
-inventory-owned bound, not a drop.
+- **applied**: the handler acked the event. Its projection, or its moot record, is committed, and
+  the row is resolved.
+- **terminal**: the handler made its terminal decision and terminated the event. The row is
+  resolved. Its envelope bytes stay in the row for inspection until retention prunes them. A
+  terminal decision usually means the payload is invalid at a schema this binary knows, but not
+  always: a valid seated publication that meets conflicting stored adjacency is refused with
+  `ErrSeatProjectionIncomplete` and terminates (its transaction rolls back). For such a row,
+  inspect the stored projection, not the envelope. Repairing that stored state can make the same
+  bytes applicable again.
+- **unsupported**: this binary still cannot read the schema. The row stays pending.
+- **deferred**: the handler asked for a delayed retry and no store write failed. The causes are an
+  offering event that arrives before its pool, a catalog outage, and an unusable catalog answer.
+  The handler's log line gives the cause. The row stays pending. A deferred row is never parked: a
+  quarantine row has no broker delivery count, so the ADR-077 park bound cannot apply to it.
+
+The exit status is zero when rows stay unsupported or deferred. It is non-zero on a store failure
+(an immediate retry, or a failed moot record or moot fallback write), on a failed mark, on a
+missing catalog configuration, and when the run is cancelled (SIGINT or SIGTERM). **A catalog
+outage is a deferral, so the run exits zero: read the `deferred` count.** A pool-kind mismatch
+(`ErrPoolKindMismatch`) is an immediate retry in the live handler, so the command exits non-zero on
+every run until the conflict is repaired. That is loud on purpose.
+
+Then restart inventory — startup confirms no unresolved rows remain and readiness returns.
+Unsupported and deferred rows stay unresolved and keep readiness down after the restart. **This
+changed with TKT-326:** before, a supported row was marked as soon as the broker accepted its
+republication, so a row that could not apply yet did not keep readiness down. Now it does, until a
+later run applies it. Repair the cause (provision the pool, restore catalog), then run the command
+again and restart.
+
+`reinjected_at` keeps its TKT-68 name. Since TKT-326 a non-null value means that the handler
+applied or terminated the event. A value written by an earlier binary means only that the broker
+accepted a republication, not that inventory business processing completed (that is
+`consumed_events`' job). Resolved rows are pruned 7 days after resolution; unresolved rows never
+age out. If the quarantine itself fills, new future-schema events fall back to delayed NAKs — a
+deliberate, loud stall at an inventory-owned bound, not a drop.
+
+## Inventory moot slots and parked catalog events (TKT-317)
+
+Two kinds of catalog event leave a durable record. ADR-077 gives the decisions and the limits.
+
+- `moot_slots` holds moot records: slots that catalog did not publish when one of their events was
+  handled. Each record has a `source`. A `publication` record lets a later archive or closure for
+  that slot be consumed without a pool. A `closure` record is kept, and it authorises nothing: the
+  archive waits for its pool. Rows are never deleted.
+- `catalog_event_parked` holds a known catalog event whose catalog answer stayed unusable through
+  five deliveries. The broker message was terminated. The row keeps the exact bytes that were
+  delivered, and `reason` holds the catalog error. Only schema-1 publications and closures park,
+  because only they call the performance lookup. Organizer conflicts and transport failures do
+  not park.
+
+Neither record changes readiness. A parked event is not version skew, so `reprocess-quarantine`
+does not apply to it.
+
+### Inspect
+
+The inventory database is `inventory`:
+
+```bash
+docker compose exec postgres psql -U postgres -d inventory
+```
+
+```sql
+-- Parked catalog events, oldest first. envelope is the exact delivered bytes.
+SELECT subject, event_id, schema, organizer_id, slot_id, delivery_count, reason, parked_at,
+       encode(envelope, 'escape') AS envelope
+FROM catalog_event_parked
+ORDER BY parked_at;
+
+-- Moot records: slots catalog did not publish when one of their events was handled. Only a
+-- 'publication' source lets a later archive or closure through without a pool.
+SELECT organizer_id, slot_id, source, source_event_id, recorded_at
+FROM moot_slots
+ORDER BY recorded_at;
+```
+
+### Signals
+
+- Counter `inventory.catalog.events.parked`. It rises by one for each newly parked event. The
+  `subject` attribute names the catalog subject. A duplicate park of the same bytes does not rise.
+- ERROR log `catalog event parked after unusable catalog answers; terminating`, with `subject`,
+  `event_id`, `schema`, `slot_id`, `deliveries` and `err`.
+- Below the bound, each retry logs ERROR `catalog answer unusable; retrying`.
+- This change adds no alert rule. The counter and the log are signals. The row is the durable
+  evidence.
+
+### Re-drive
+
+No command re-drives a parked event. The steps below are manual.
+
+- `inventory reprocess-quarantine` reads `catalog_event_quarantine` only. It does not read
+  `catalog_event_parked`.
+- No catalog command re-emits a closure or an archive. The catalog re-emit commands
+  (`reemit-policies`, `reemit-orphan-prevention`, `reemit-best-available-ordering`) re-emit
+  publications only, and none of them targets one event. Each one selects the slots that are
+  published when it reads a batch, so a slot archived after that read can still be re-emitted.
+  `reemit-policies` re-emits every ungrouped slot that is published when its batch is read.
+
+1. Read the `reason` column, and repair the catalog answer.
+2. Restart inventory. For a parked closure whose pool exists, startup reconciliation reads the
+   closure state from catalog and applies it. A parked publication creates no pool, so
+   reconciliation does not repair it. If reconciliation fails at startup, inventory starts
+   fail-open, and the event stream is the only convergence path. The existing durable does not
+   redeliver a terminated message.
+3. If the event must be applied, publish its stored `envelope` unchanged to the subject in the
+   `subject` column. Use a new `Nats-Msg-Id`. The broker drops a message whose id it already holds
+   inside its duplicate window. Publish with the `platform-admin` principal
+   (`NATS_ADMIN_PASSWORD`). Besides catalog, it is the only principal with publish rights on
+   catalog subjects (ADR-072). TKT-326 removed the operator principal that this step used before.
+   This step is not automated, and TKT-317 did not run it.
+4. A re-driven event is not in `consumed_events` until it applies, so it applies once. If it
+   parks again with the same bytes, the row does not change. Different bytes under the same
+   event id are refused, and the first copy stays.
+
+While a parked closure stays unrepaired, the pool keeps its old closure state. An open pool in
+inventory still accepts new holds, even if catalog has closed the slot.
+
+## Restoring `claim_history` (TKT-295)
+
+Since TKT-295, `append_order` leads the order of inventory's `claim_history` (ADR-021 §Amendment
+(TKT-295)). A restore must keep the numbers and the sequence that issues them consistent:
+
+1. Stop every inventory writer and any maintenance session before the restore.
+2. Restore the rows. Keep `append_order` (legacy NULLs included) and `occurred_at` as they are.
+   An ordinary `INSERT` or `COPY` fires `claim_history_set_append_order` and **renumbers** the
+   rows in input order — that keeps relative order only if the input is already in append order,
+   and no tool here checks that. To keep the original numbers, disable that trigger for the load.
+   A session with `session_replication_role = replica` also skips it.
+3. Re-enable the trigger, and return the restore session to its normal role.
+4. With writers still stopped, run the guard:
+
+   ```bash
+   docker compose run --rm --no-deps inventory check-claim-history-sequence
+   ```
+
+   Exit 0 (`status=ok`): continue. A refusal (`status=needs-repair`) means the next append would be
+   numbered at or below restored history. Run it with `--repair` (it only advances the sequence to
+   the restored maximum; it never changes a row), then run the check again and require exit 0.
+   These refusals are never repaired, and need an operator: the numbering trigger is missing,
+   disabled or replica-only (step 3 did not happen); the sequence's settings differ from
+   migration 0012 (increment 1, cache 1, no cycle, a positive range); or fewer than two numbers remain (an
+   ordinary append uses two).
+5. Reopen writes.
+
+The guard holds `claim_history` locked for the whole check (`SHARE ROW EXCLUSIVE`), so it waits
+for any append still in flight and blocks new ones until it is done — run it while writes are
+stopped. That lock does not cover a `nextval` called outside an insert, which is one reason step 1
+stops maintenance sessions too. `--timeout` (default `30s`) bounds the whole check, lock wait
+included; `max(append_order)` scans the table, so give a large restore a longer one. It does not
+detect missing, duplicated or dishonest rows.
 
 ## Seat-pin reconciliation (TKT-112)
 
@@ -948,6 +1092,20 @@ already have. So a developer who once set `INVENTORY_STAFF_WRITE_TOKEN` equal to
 `INTERNAL_SERVICE_TOKEN` by hand keeps that value and inventory will keep refusing to start —
 delete the line from `.env` and re-run `make up` to get a fresh independent draw.
 
+**The organizer assertion is signed with an Ed25519 pair (TKT-287, ADR-058 § Amendment).** `make up`
+writes three values together: `CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY` (the private seed, catalog
+only), `CATALOG_ORGANIZER_ASSERTION_KID` (default `catalog-org/local-v1`) and
+`COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (`kid=<public key>`, for commerce to verify with). An
+`.env` from before TKT-287 keeps its values and gains the pair. The retired
+`CATALOG_ORGANIZER_ASSERTION_KEY` (HMAC) is no longer read, and you can delete it. Catalog refuses to
+start when the seed is not canonical raw-standard base64, or when another credential *is* the seed
+in a common text form (raw bytes, any base64 spelling, hex).
+
+To rotate, delete the seed and keyring lines from `.env` and run `make up`. **Every live assertion
+then fails, and staff must sign in again.** The same is true of the deploy that first ships v2:
+there is no v1 window, and catalog and the back office must be redeployed together. The back office
+holds assertions only in its in-process session map, so restarting it clears them.
+
 **Verifying a change here needs a real browser.** The smoke suite submits the login and logout
 forms through the real gateway and Astro SSR layer, but it sets `Origin` itself — it cannot
 prove a browser sends it on a same-origin POST, nor that a browser honours `SameSite`. Run
@@ -962,29 +1120,85 @@ under the default `$G` account ([ADR-072](adr/ADR-072-nats-publisher-acls.md)).
 ### Credential generation
 
 Stack credentials generate automatically during `make up` via `scripts/env-bootstrap.sh`. Each of the
-seven principals receives an independent `/dev/urandom` draw stored in `.env`:
-- `NATS_ADMIN_PASSWORD`: full broker rights, used by `nats-init` and smoke tests.
+six principals receives an independent `/dev/urandom` draw stored in `.env`:
+- `NATS_ADMIN_PASSWORD`: full broker rights, used by `nats-init`, smoke tests, and an operator's
+  manual re-drive of a parked catalog event.
 - `NATS_CATALOG_PASSWORD`: publish rights for catalog events.
 - `NATS_COMMERCE_PASSWORD`: publish rights for commerce order events.
 - `NATS_ACCESS_PASSWORD`: publish rights for access alarms and subscription rights for order/performance events.
 - `NATS_INVENTORY_PASSWORD`: consumer rights only; zero platform publish rights.
-- `NATS_INVENTORY_REPROCESS_PASSWORD`: operator credential for `inventory reprocess-quarantine`. Delivered ONLY to the `nats` container.
 - `NATS_PAYMENTS_PASSWORD`: zero publish/subscribe rights; used for connection healthcheck only.
 
-### Operator invocation
+### Quarantine reprocess needs no NATS credential
 
-To run `inventory reprocess-quarantine`, pass `NATS_URL` with the operator password:
+Since TKT-326, `inventory reprocess-quarantine` applies quarantined events in-process and does not
+connect to NATS (see the quarantine operations section above). TKT-326 removed the operator
+principal and its password from the broker configuration, Compose and both credential scripts. A
+`NATS_INVENTORY_REPROCESS_PASSWORD=` line left in an existing `.env` is read by nothing and can be
+deleted.
 
-```bash
-export NATS_INVENTORY_REPROCESS_PASSWORD="$(docker compose config --environment | grep -m1 '^NATS_INVENTORY_REPROCESS_PASSWORD=' | cut -d= -f2-)"
-docker compose run --rm \
-  -e NATS_URL="nats://inventory-reprocess:${NATS_INVENTORY_REPROCESS_PASSWORD}@nats:4222" \
-  inventory reprocess-quarantine
+### Pre-provisioned service durables (TKT-327)
+
+`nats-init` creates `inventory-catalog-offering` and `access-ticket-issuer` from the committed files
+in `deploy/nats/consumers/`, under `platform-admin`. inventory and access cannot create them: their
+filters are plural, so a create request carries the filters in its body, where no subject permission
+can constrain them (ADR-072 §5, §6(a)). Each service binds to its durable at startup and compares it
+with its `consumerConfig()`. A missing or different durable stops the service before it consumes,
+with an error that names the durable and each field that differs (ADR-034 §Amendment:
+pre-provisioned plural-filter durables).
+
+**Migrating an existing stack.**
+
+1. Run `make up`. It re-runs `nats-init`, which creates a durable only when INFO does not find it.
+   The durables the old service code created are kept with their cursors. They carry the same
+   explicitly set fields, so they pass the startup comparison (this was executed against the
+   pinned broker).
+2. Run `docker compose restart nats`. The removed CREATE grants stay in force until the broker
+   re-reads `deploy/nats/nats-server.conf`. Compose does not recreate a container when only the
+   content of a mounted file changes, so `make up` leaves `nats` on the old ACL. The services
+   reconnect by themselves.
+3. **Never use `make down` for this.** It runs `docker compose down -v`, which deletes every volume:
+   the JetStream store and all service databases.
+
+**When a service refuses its durable.** Its log names the durable and the differing fields. The
+service never repairs the durable. An operator does, under `platform-admin`. Set up a client on the
+stack's network once:
+
+```sh
+export NATS_ADMIN_PASSWORD=<the value from .env>
+nats_admin() {
+  docker run --rm --network ticketing_default -v "$PWD/deploy/nats/consumers:/consumers:ro" \
+    natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c \
+    nats --server "nats://platform-admin:${NATS_ADMIN_PASSWORD}@nats:4222" "$@"
+}
 ```
 
-The password is read from `.env` on the command line because `make up` writes it there without
-exporting it, and the subcommand carries no `/app` prefix because the image already sets
-`ENTRYPOINT ["/app"]`. See the operator section above for why each matters.
+- **`inventory-catalog-offering`, a field NATS can change in place** (for example a filter or
+  MaxAckPending): check the edit, then apply it, and the cursor is kept:
+  `nats_admin consumer edit PLATFORM inventory-catalog-offering --config /consumers/inventory-catalog-offering.json --dry-run`,
+  then the same command with `-f` in place of `--dry-run`. Executed on the pinned CLI and broker
+  for a dropped filter.
+- **`access-ticket-issuer`:** the pinned CLI refuses `consumer edit --config` for this durable. It
+  reports that a consumer with a BackOff does not support editing Ack Wait, and it refused even
+  with `ack_wait` added to the file. Delete and re-provision it, as in the next item. Use the file
+  that agrees with `ACCESS_EVENT_RETRY_BACKOFF` (`access-ticket-issuer.json` for the default
+  schedule).
+- **Any other difference** (for example the deliver policy): delete the durable and let `nats-init`
+  create it again: `nats_admin consumer rm PLATFORM <durable> -f`, then `make up`.
+  **This replays.** A new durable starts at `deliver_policy: all` and redelivers every event the
+  stream retains. Deduplication makes that safe for the schemas the binary knows. A retained schema
+  it does not know parks the consumer unready, which is the recreation case of ADR-017 §5(b).
+
+**A deleted durable no longer comes back by itself.** Before TKT-327 the service recreated it at
+restart. Now the service exits, and the restarted container fails its bind and restart-loops until
+`nats-init` runs again (`make up`). The recreation replays, as above.
+
+**Changing a consumer's config** means changing the service's `consumerConfig()` and its file in
+`deploy/nats/consumers/` together. A unit test in each consumer package compares the default file
+with the code. For access, the smoke stacks use `access-ticket-issuer.smoke.json`, which must agree
+with the `ACCESS_EVENT_RETRY_BACKOFF` that `scripts/stack-env.sh` sets; a smoke stack whose two
+values disagree fails to start. `nats-init` does not update a durable that exists, so an existing
+stack also needs the reconciliation above.
 
 ### Credential rotation
 

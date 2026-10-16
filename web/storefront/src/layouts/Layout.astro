@@ -34,7 +34,7 @@ const switchTarget = (target: Locale) =>
         */}
         <a href={`/${locale}/account`}>{t.account}</a>
       </nav>
-      <nav class="locales" aria-label="Language">
+      <nav class="locales" aria-label={t.languageLabel}>
         {
           LOCALES.map((l) => (
             <a href={switchTarget(l)} aria-current={l === locale ? 'true' : undefined} lang={l}>

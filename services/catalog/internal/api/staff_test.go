@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"ticketing/services/catalog/internal/store"
+	"ticketing/shared/organizerassertion"
 )
 
 // TKT-190 US-B1. The handler's whole job is to map three store outcomes onto
@@ -75,7 +76,7 @@ func TestAuthenticateStaffMintsAnAssertionForTheResolvedOrganizer(t *testing.T) 
 	if got.OrganizerAssertion == "" {
 		t.Fatal("sign-in returned no organizer assertion; the back office has nothing to forward")
 	}
-	scope, err := verifyOrganizerAssertion(testOrganizerAssertionKey, got.OrganizerAssertion, time.Now())
+	scope, err := verifyOrganizerAssertion(testOrganizerAssertionSigner(t), got.OrganizerAssertion, time.Now())
 	if err != nil {
 		t.Fatalf("the minted assertion does not verify against catalog's own key: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestAuthenticateStaffMintsNothingWhenTheCredentialsAreRefused(t *testing.T)
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status %d, want 401", rec.Code)
 			}
-			if strings.Contains(rec.Body.String(), organizerAssertionVersion+".") {
+			if strings.Contains(rec.Body.String(), organizerassertion.Version+".") {
 				t.Fatalf("a refused sign-in returned something assertion-shaped: %s", rec.Body.String())
 			}
 		})
@@ -120,7 +121,7 @@ func TestAuthenticateStaffMintsNothingWhenTheCredentialsAreRefused(t *testing.T)
 // construction path cannot return a contract-invalid successful principal.
 func TestAuthenticateStaffWithNoAssertionKeyFailsClosed(t *testing.T) {
 	// The construction path that forgets the key.
-	e := newEnvWithAssertionKey(t, "")
+	e := newEnvWithAssertionSigner(t, nil)
 	staffID, org := uuid.New(), uuid.New()
 	e.store.staffAccounts["ada@example.test"] = staffAuthResult{
 		account:  store.StaffAccount{ID: staffID, OrganizerID: org, Identifier: "ada@example.test", Role: "admin"},
@@ -135,7 +136,7 @@ func TestAuthenticateStaffWithNoAssertionKeyFailsClosed(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "authentication unavailable") {
 		t.Fatalf("unkeyed server returned the wrong failure: %s", body)
 	}
-	if strings.Contains(rec.Body.String(), organizerAssertionVersion+".") {
+	if strings.Contains(rec.Body.String(), organizerassertion.Version+".") {
 		t.Fatalf("an unkeyed server returned something assertion-shaped: %s", rec.Body.String())
 	}
 }

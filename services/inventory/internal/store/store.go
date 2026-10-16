@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,23 @@ var (
 	ErrNotFound    = errors.New("not found")
 	ErrUnavailable = errors.New("insufficient capacity")
 	ErrConflict    = errors.New("conflicting terminal state")
+	// ErrSoldOut: an unchannelled GA hold found zero public headroom at the locked
+	// decision (TKT-341, ADR-082). Public headroom is the admission expression:
+	// limit - confirmed - live held - capacity reserved for active channels.
+	//
+	// It WRAPS ErrUnavailable, so every caller that matches ErrUnavailable behaves as
+	// before. The code is additional information, not a new classification.
+	//
+	// It is point-in-time, not permanent. Live holds expire and channel reservations
+	// release, so the same request can succeed later.
+	//
+	// Only the public path returns it. A partial shortage (0 < headroom < quantity)
+	// stays ErrUnavailable, because the buyer can buy fewer now. Every capacity or
+	// seller refusal of a channel request stays ErrUnavailable too (the window and
+	// presale refusals keep their own sentinels): a distinct channel code would tell
+	// a prober which channels exist and who sells them (TKT-246). It has no Channel() method,
+	// so the structural match in the API mapper cannot claim it (TKT-307).
+	ErrSoldOut = fmt.Errorf("%w: sold out", ErrUnavailable)
 	// ErrChannelWindowClosed: the channel has an allocation with headroom and the
 	// pool has capacity, but the channel's sales window is not open right now
 	// (TKT-238 / ADR-054).
@@ -348,6 +366,23 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
 // idempotency records created before the channel migration keep replaying (ADR-009).
+//
+// It is NOT injective on its own (TKT-510). The channel is appended without a frame
+// when there is no code, and the currency is never framed. So a channel or a currency
+// can spell the code frame of a different request:
+//
+//	(channel "agency", code "CODE") and (channel "agency:c6:agency:p4:CODE", no code)
+//
+// have the same pre-hash. TestFingerprintCollisionsAcrossDifferentChannelsArePinned
+// pins these collisions.
+//
+// It is injective only for requests with an EQUAL channel and an EQUAL currency in ONE
+// reseller scope, when the fixed fields contain no ':'. They are UUIDs and integers,
+// and the handler limits the currency to EUR or "". Then the tail after ":"+channel is
+// empty, the reseller frame, or the length-framed code, and these cannot be confused.
+//
+// Replay is safe because CreateHold compares the stored channel and currency as well
+// as this value. Any new caller that compares this value must do the same.
 func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string, reseller uuid.UUID) string {
 	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
 	if channel != "" {
@@ -355,10 +390,14 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	}
 	// The presale code is appended ONLY when non-empty, for exactly the reason the
 	// channel above is: an unconditional append rehashes EVERY claim in the
-	// database, so every in-flight retry stops replaying and re-executes instead —
-	// a double-sell on retry, system-wide, from what looks like adding a field
-	// (TKT-239 plan-review). TestFingerprintStaysByteIdenticalWithoutAPresaleCode
-	// pins the legacy bytes with golden literals.
+	// database, so every in-flight retry stops matching its stored fingerprint.
+	// A mismatch is a permanent ErrIdempotency for that key (ADR-010), and
+	// commerce shows it to the buyer as 409 "inventory unavailable"
+	// (commerce/internal/api/server.go, the GA hold refusal). So every buyer
+	// with a retry in flight fails checkout, system-wide, from what looks like
+	// adding a field (TKT-239 plan-review).
+	// TestFingerprintStaysByteIdenticalWithoutAPresaleCode pins the legacy bytes
+	// with golden literals.
 	//
 	// It must be IN the fingerprint though: two holds sharing an idempotency key
 	// but presenting different codes are different requests, and replaying one as
@@ -369,12 +408,15 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	// ambiguous: (channel="a", code="b:c") and (channel="a:b", code="c") produced
 	// byte-identical input and therefore the same hash — measured, not theorised.
 	// The second request would then replay the first BEFORE its allocation or code
-	// was ever checked. Length-prefixing removes the ambiguity: no two distinct
-	// (channel, code) pairs can produce the same framing.
+	// was ever checked.
+	//
+	// The frame separates two codes on the SAME channel. It does not separate two
+	// channels: the bare ":"+channel above comes first, and a code-less channel
+	// can spell this frame (TKT-510, see the function comment). CreateHold
+	// compares the channel for that reason.
 	//
 	// Only code-bearing requests are framed. A code-less request keeps the exact
-	// legacy algorithm, so nothing already in a database is rehashed — the
-	// collision needs a non-empty code to be reachable at all.
+	// legacy algorithm, so nothing already in a database is rehashed.
 	if presaleCode != "" {
 		s += fmt.Sprintf(":c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode)
 	}
@@ -483,6 +525,19 @@ func sellerAdmits(soldBy uuid.NullUUID, caller uuid.UUID) bool {
 	return caller != uuid.Nil && soldBy.UUID == caller
 }
 
+// storedCurrency is the value that claims.currency (varchar(3)) stores for currency.
+// PostgreSQL stores a longer value only when every character after the third is a
+// space, and then it drops those spaces. Any other longer value fails the INSERT.
+// varchar counts characters, not bytes. Do not truncate any other value: "EUR:c0::p1:K"
+// must stay different from "EUR" (TestARequestInAnotherCurrencyDoesNotReplayAStoredHold).
+func storedCurrency(currency string) string {
+	r := []rune(currency)
+	if len(r) > 3 && strings.Trim(string(r[3:]), " ") == "" {
+		return string(r[:3])
+	}
+	return currency
+}
+
 func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, opts ...HoldOption) (Claim, bool, error) {
 	var o holdOptions
 	for _, opt := range opts {
@@ -545,14 +600,31 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// bytes (TestFingerprintStaysByteIdenticalWithoutAPresaleCode). Only requests
 	// that actually carry a code against an ungated channel change, and only
 	// forward: a row written before this change stored code-less bytes, so its
-	// retry still mismatches until its TTL expires. That is today's behaviour, not
-	// a regression this introduces.
+	// retry still mismatches. A mismatch is a permanent ErrIdempotency for that
+	// key, also after the hold expires (ADR-010: a key is single-use across the
+	// claim's lifecycle). That is today's behaviour, not a regression this
+	// introduces.
 	requestFP := fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller)
 
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3 AND staff_scope IS NULL`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != requestFP {
+		// The fingerprint alone does not identify a request (TKT-510). The channel
+		// is not framed when there is no code, and the currency is never framed,
+		// so either one can spell the code frame of a different request. An
+		// equal fingerprint with a different channel or currency is a different
+		// request, so it is a key reuse (ADR-024: "a replay that changes or
+		// drops the channel is a key reuse").
+		//
+		// existing.Channel is COALESCE(channel_code,''), and the INSERT stores
+		// NULLIF(channel,''), so an empty channel compares equal to itself. The
+		// currency column can store a different value than the request sent (see
+		// storedCurrency), so the compare uses the stored form of the request.
+		//
+		// This check stays BEFORE the expiry branch. A key is single-use across
+		// the claim's lifecycle (ADR-010), so a different request must not write
+		// the stored claim's expiry. Only the claim's own retry can do that.
+		if fp != requestFP || existing.Channel != channel || existing.Currency != storedCurrency(currency) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
@@ -661,8 +733,15 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 			// redeemPresaleCode takes the presale_codes ROW LOCK. The pool lock
 			// above does NOT serialize a code: a code spans slots, so two holds on
 			// different pools take different pool locks. See its comment.
+			//
+			// That lock can WAIT, so the window judged above can be stale when it
+			// returns. redeemPresaleCode judges this channel's window again after
+			// the lock, at the same instant as the code's window (TKT-544). A
+			// channel that closed during that wait answers the uniform
+			// ErrPresaleCodeInvalid, not ErrChannelWindowClosed: only a code with a
+			// row can wait, so a distinct answer would name the code (D9).
 			if requiresCode {
-				if err := redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+				if err := redeemPresaleCode(ctx, tx, org, slot, channel, presaleCode, qty); err != nil {
 					return Claim{}, false, err
 				}
 			}
@@ -681,10 +760,20 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		return Claim{}, false, err
 	}
 	// int64 math: three valid int32 counters can wrap a 32-bit sum (ai-review finding 4).
-	if int64(confirmed)+int64(held)+int64(qty) > int64(limit) {
-		return Claim{}, false, ErrUnavailable
-	}
+	//
+	// The global bound is computed here and applied on both paths, but the public
+	// path applies it only AFTER it classifies the refusal (TKT-341). Refusing here
+	// first answered the code-less refusal when the global headroom was below the
+	// quantity and the public headroom was already zero, which is a sellout.
+	globalShort := int64(confirmed)+int64(held)+int64(qty) > int64(limit)
 	if channel != "" {
+		// Every capacity refusal of a channel request stays the code-less
+		// ErrUnavailable, never ErrSoldOut (TKT-246, ADR-082): a distinct code would
+		// tell a prober which channels exist and who sells them. The window and
+		// presale refusals above keep their own sentinels.
+		if globalShort {
+			return Claim{}, false, ErrUnavailable
+		}
 		// The allocation and its window were read above, before the pool-capacity
 		// check, so a closed window refuses as a closed window whatever the pool
 		// looks like. What remains here is the CAP check, which is genuinely
@@ -710,7 +799,21 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		if err = tx.QueryRowContext(ctx, reservedForChannelsSQL, slot).Scan(&reserved); err != nil {
 			return Claim{}, false, err
 		}
-		if int64(confirmed)+int64(held)+int64(qty)+reserved > int64(limit) {
+		// ONE expression for admission and for the sellout classification (ADR-082).
+		// A demand term that a later change adds to admission (for example ADR-075's
+		// pending captures) must go here, and then it moves both.
+		publicRemaining := int64(limit) - int64(confirmed) - int64(held) - reserved
+		// Zero OR LESS: a draining cut or oversized allocations can make the
+		// headroom negative, and that is a sellout too.
+		if publicRemaining <= 0 {
+			return Claim{}, false, ErrSoldOut
+		}
+		// A partial shortage is not a sellout: the buyer can buy fewer now.
+		//
+		// globalShort is implied by the headroom check while reservedForChannelsSQL
+		// clamps every allocation at zero (GREATEST). It stays as the oversell bound
+		// that does not depend on that clamp or on activeAllocation's clock.
+		if int64(qty) > publicRemaining || globalShort {
 			return Claim{}, false, ErrUnavailable
 		}
 	}

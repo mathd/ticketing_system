@@ -4,7 +4,7 @@ import type { Ref } from 'react';
 import { parseMaxAge } from '../lib/cache';
 import type { SeatMapGeometry, SeatMapRow, SeatMapSeat, SeatMapSection } from '../lib/api';
 import type { Locale } from '../lib/locales';
-import { UI_STRINGS } from '../lib/locales';
+import { UI_STRINGS, plural } from '../lib/locales';
 import { dateTimeField, sameUuid, uuidField } from '../lib/wire-primitives';
 
 // SeatMapPicker is TKT-174's seat concern, end to end: it reads the published
@@ -558,7 +558,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         return current.filter((seat) => seat !== identity);
       }
       if (current.length >= ceiling) {
-        setNotice(t.seatLimitReached.replace('{n}', String(ceiling)));
+        setNotice(plural(locale, t.seatLimitReached, ceiling));
         return current;
       }
       setNotice('');
@@ -608,7 +608,7 @@ export default function SeatMapPicker({ organizerId, slotId, seatMapId, locale, 
         </section>
       ))}
       <p className="seat-status" role="status">
-        {notice || t.seatsSelected.replace('{n}', String(selected.length)).replace('{max}', String(ceiling))}
+        {notice || plural(locale, t.seatsSelected, selected.length, { max: ceiling })}
       </p>
     </div>
   );

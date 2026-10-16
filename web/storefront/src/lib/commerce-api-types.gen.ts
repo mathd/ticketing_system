@@ -13,6 +13,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description A 409 with `code: sold_out` means that inventory found zero public headroom for this GA request at its locked decision (TKT-341, ADR-082). It is point-in-time and retryable. A partial shortage, a closed slot and every other inventory refusal keep the code-less 409, except `seated_pool_unsupported` for a quantity request on a seated pool. A seated request keeps its own codes. */
         post: operations["createReservation"];
         delete?: never;
         options?: never;
@@ -231,7 +232,7 @@ export interface paths {
          *
          *     GA only: `quantity`, no `seat_identities`. Seated pools do not consult channel allocations at all (TKT-176 owns that seam), so a seated partner sale would claim an authorization this contract cannot deliver.
          *
-         *     409 is inventory's refusal, and it is deliberately uniform across "sold out", "not your allocation" and "no allocation configured". A distinguishing code would tell a caller which channels exist and who owns them — the enumeration oracle `presale_code_invalid` was made uniform to prevent.
+         *     409 is inventory's refusal, and it is deliberately uniform across "sold out", "not your allocation" and "no allocation configured". A distinguishing code would tell a caller which channels exist and who owns them — the enumeration oracle `presale_code_invalid` was made uniform to prevent. This route therefore never sends `sold_out` (TKT-341, ADR-082), although the shared Error schema lists it.
          */
         post: operations["createPartnerReservation"];
         delete?: never;
@@ -484,10 +485,10 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169).
+             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.
              * @enum {string}
              */
-            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "source_tickets_already_admitted";
+            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "source_tickets_already_admitted" | "sold_out";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
         };
@@ -611,6 +612,12 @@ export interface components {
         /** @description An address to send a reset link to (TKT-226). minLength 1, deliberately — not 3 as on registration. A floor that refuses a short address BEFORE the lookup would answer differently from one that reaches it, which is the same oracle CustomerCredentials avoids by using 1 instead of 8 on the password. */
         PasswordResetRequest: {
             email: string;
+            /**
+             * @description The language of the message and of the link's page (TKT-366). The storefront sends the locale of the route the form was submitted on. It selects fixed copy and the fixed path /{locale}/account/reset-password and nothing else: the link's origin stays server-configured and the recipient stays the registered address.
+             *     OPTIONAL, and absent means en. A caller built before this field (the storefront still on its old build during a rolling deploy) must keep getting its English message, not a refusal. A present value outside the set is refused with 400 before the address is looked up, so the refusal is the same for every address. Deploy commerce before the storefront: an older commerce refuses this field (ADR-050 § TKT-366 amendment).
+             * @enum {string}
+             */
+            locale?: "en" | "fr";
         };
         /**
          * @description A redemption (TKT-226). The token is 32 random bytes in base64url, so 43 characters; the bound is loose rather than exact because a token of the wrong length must be refused by the LOOKUP, identically to one that is simply unknown, and not by the validator with a different status.
@@ -792,8 +799,6 @@ export interface components {
             status: string;
         };
         VoidCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             actor: string;
             reason: string;
         };
@@ -808,8 +813,6 @@ export interface components {
             replay: boolean;
         };
         RefundCreate: {
-            /** Format: uuid */
-            organizer_id: string;
             quantity: number;
             actor: string;
             reason: string;
@@ -1882,9 +1885,7 @@ export interface operations {
     };
     getStaffOrderDetail: {
         parameters: {
-            query: {
-                organizer_id: components["parameters"]["OrganizerIdQuery"];
-            };
+            query?: never;
             header?: never;
             path: {
                 id: components["parameters"]["Id"];

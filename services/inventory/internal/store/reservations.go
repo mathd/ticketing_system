@@ -158,8 +158,12 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 			// Placement IS gated for the same reason it is window-gated: it creates
 			// NEW consumption. Draw-down is not, and must not be: a draw-down is
 			// quantity-neutral, so it redeems nothing new either.
+			//
+			// As in CreateHold, redeemPresaleCode judges this channel's window again
+			// after the code lock, which can wait, and a channel that closed during
+			// that wait answers the uniform ErrPresaleCodeInvalid (TKT-544 D9).
 			if requiresCode {
-				if err = redeemPresaleCode(ctx, tx, org, channel, presaleCode, qty); err != nil {
+				if err = redeemPresaleCode(ctx, tx, org, slot, channel, presaleCode, qty); err != nil {
 					return GroupReservation{}, false, err
 				}
 			}
@@ -202,10 +206,13 @@ func (p *Postgres) PlaceGroupReservation(ctx context.Context, org, slot uuid.UUI
 		}
 	}
 	h := GroupReservation{ID: uuid.New(), OrganizerID: org, PoolID: slot, Quantity: qty, Counterparty: counterparty, Channel: channel, Status: "held"}
-	// The SOURCE reservation cites the code; its draw-down children deliberately do
-	// NOT (ADR-064). consumingClaims counts a live source AND its live children, so
-	// a code cited on both would have the same units counted twice and a code capped
-	// at 10 would exhaust at 5. The redemption happened here, once.
+	// The SOURCE reservation cites the code, and every draw-down child INHERITS the
+	// citation (ADR-064 §6; DrawDownGroupReservation below). That is not a double
+	// count: a committed draw-down preserves the code's counted usage. A partial draw
+	// decrements the held source by exactly the drawn quantity; a whole draw releases
+	// the source, which keeps its quantity for the record but no longer counts, while
+	// the child carries all of it. The redemption happened here, once; a draw-down
+	// moves it and redeems nothing.
 	err = tx.QueryRowContext(ctx, `INSERT INTO claims(id,organizer_id,pool_id,quantity,status,expires_at,idempotency_key,request_fingerprint,claim_kind,channel_code,reservation_counterparty,presale_code,staff_scope)
 		VALUES($1,$2,$3,$4,'held',$5,$6,$7,'reservation',NULLIF($8,''),$9,NULLIF($10,''),true) RETURNING expires_at,now()`,
 		h.ID, org, slot, qty, expiresAt, key, fp, channel, counterparty, presaleCode).Scan(&h.ExpiresAt, &h.ServerTime)
@@ -264,6 +271,24 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	// sourcePresaleCode is read under the SAME row lock as the rest of the source,
 	// so the citation the child inherits cannot be a different code than the one
 	// whose units are being moved.
+	//
+	// `decision` is clock_timestamp() in the target list of a FOR UPDATE. If this
+	// statement WAITED on the row lock, that value would be stale: PostgreSQL
+	// computes the target list before the wait, and does not compute it again
+	// when the holder ends without updating the row (TKT-380 probe 1 schedule W,
+	// which TKT-544 fixed in redeemPresaleCode). Here the statement cannot wait in
+	// a shipped schedule, and only because of today's writers:
+	//
+	//   - every application writer of a claims row takes that claim's pool lock
+	//     first, and this transaction already holds it;
+	//   - every insert that takes FOR KEY SHARE on a claims row through a foreign
+	//     key (claim_history.claim_id and related_claim_id; claim_seats) cites a
+	//     claim of the pool its own transaction has locked.
+	//
+	// That is a property of the writers at TKT-544, found by inspection, not of
+	// this statement. A new writer that locks a claims row without its pool lock
+	// makes this decision stale: then read the time in a separate statement after
+	// the lock, as redeemPresaleCode does.
 	var sourcePresaleCode string
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),COALESCE(presale_code,''),expires_at,clock_timestamp(),claim_kind FROM claims WHERE id=$1 AND organizer_id=$2 FOR UPDATE`, id, org).
 		Scan(&c.ID, &c.OrganizerID, &c.PoolID, &c.Quantity, &c.Status, &channel, &sourcePresaleCode, &c.ExpiresAt, &decision, &c.Kind)
@@ -305,9 +330,10 @@ func (p *Postgres) DrawDownGroupReservation(ctx context.Context, org, id, ticket
 	//
 	// The first version of this deliberately did not, reasoning that the source and
 	// its children would double-count. That reasoning was WRONG and running it
-	// proved so: a draw-down DECREMENTS the source by exactly qty (or releases it
-	// whole, above), so source + children always sums to the original quantity.
-	// Citing both is conservative, not duplicative.
+	// proved so: a draw-down DECREMENTS the source by exactly qty, or releases it
+	// whole (a released source keeps its quantity for the record but no longer
+	// counts), so a committed draw-down preserves the code's counted usage. Citing
+	// both is conservative, not duplicative.
 	//
 	// Without the citation the units stay consumed while the redemption count
 	// forgets them: drawing a 10-unit reservation fully down took usage from 10 to

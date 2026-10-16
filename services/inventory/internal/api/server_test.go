@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -308,6 +310,12 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 		// the value is in the CLOSED Error.code enum, so a drifting body is a 500 in
 		// production under ADR-028, not a cosmetic difference.
 		{store.ErrPresaleCodeInvalid, 409, `{"code":"presale_code_invalid","error":"invalid presale code"}`},
+		// TKT-341 / ADR-082. A public GA hold with zero public headroom carries
+		// `sold_out`, bare or wrapped. ErrSoldOut wraps ErrUnavailable, so without its
+		// own case above the generic branch it falls into the code-less shape on the
+		// next row, which is the default outcome.
+		{store.ErrSoldOut, 409, `{"code":"sold_out","error":"insufficient capacity: sold out"}`},
+		{fmt.Errorf("hold: %w", store.ErrSoldOut), 409, `{"code":"sold_out","error":"hold: insufficient capacity: sold out"}`},
 		{store.ErrUnavailable, 409, `{"error":"insufficient capacity"}`},
 		{store.ErrIdempotency, 409, `{"error":"idempotency key reused with different request"}`},
 		{store.ErrNotFound, 404, `{"error":"not found"}`},
@@ -320,6 +328,52 @@ func TestOfferingStateProblemsAreDistinguishable(t *testing.T) {
 		if got := strings.TrimSpace(res.Body.String()); got != tt.wantBody {
 			t.Fatalf("%v: body=%s want=%s", tt.err, got, tt.wantBody)
 		}
+	}
+}
+
+// soldOutNamingAChannel is a hypothetical wrapper that both carries a channel and
+// wraps ErrSoldOut. No store path builds one today. It pins the placement of the
+// sold_out case ABOVE the structural belowConsumption match (TKT-307): placed below,
+// this error answers `allocation_cap_below_consumption`.
+type soldOutNamingAChannel struct{ channel string }
+
+func (e soldOutNamingAChannel) Error() string   { return "presale: " + store.ErrSoldOut.Error() }
+func (e soldOutNamingAChannel) Unwrap() error   { return store.ErrSoldOut }
+func (e soldOutNamingAChannel) Channel() string { return e.channel }
+
+func TestASelloutIsMatchedAboveTheStructuralChannelMatch(t *testing.T) {
+	res := httptest.NewRecorder()
+	problem(res, soldOutNamingAChannel{channel: "presale"})
+	want := `{"code":"sold_out","error":"presale: insufficient capacity: sold out"}`
+	if got := strings.TrimSpace(res.Body.String()); res.Code != 409 || got != want {
+		t.Fatalf("status=%d body=%s, want 409 %s", res.Code, got, want)
+	}
+}
+
+// The operator's malformed-input 400 and the buyer's 409 stay distinct (ADR-064).
+// The unmapped row pins the static 500, so a raw store error never reaches the body.
+func TestPresaleCodeProblemsKeepOperatorAndBuyerErrorsDistinct(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{"operator input", store.ErrPresaleCodeInvalidInput, 400, `{"error":"invalid presale code definition"}`},
+		{"operator input wrapped", fmt.Errorf("issue: %w", store.ErrPresaleCodeInvalidInput), 400, `{"error":"issue: invalid presale code definition"}`},
+		{"buyer conflict", store.ErrPresaleCodeInvalid, 409, `{"code":"presale_code_invalid","error":"invalid presale code"}`},
+		{"unmapped error", errors.New("pq: duplicate key value violates constraint presale_codes_pkey"), 500, `{"error":"internal error"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			problem(res, tt.err)
+			if res.Code != tt.wantCode {
+				t.Fatalf("%v: status=%d want=%d", tt.err, res.Code, tt.wantCode)
+			}
+			if got := strings.TrimSpace(res.Body.String()); got != tt.wantBody {
+				t.Fatalf("%v: body=%s want=%s", tt.err, got, tt.wantBody)
+			}
+		})
 	}
 }
 

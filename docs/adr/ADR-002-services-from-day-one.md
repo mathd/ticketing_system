@@ -15,6 +15,8 @@ total, and everything downstream — remains `commerce`'s. Read the table's "pri
 evaluation" as composition, not as resolution. The line: catalog answers *"what does this ticket
 type cost, and why"*; commerce answers *"what does this order total"*.
 
+**See [ADR-084](./ADR-084-promotion-storage-and-redemption-contract.md) (Proposed, 2026-10-13, TKT-380)** — *promotion ownership only*: `catalog` keeps promotion terms with its rule definitions, `inventory` takes a promotion code's cap, window and redemption beside its claims (as ADR-064 did for presale codes), and `commerce` keeps composition. Nothing here changes unless ADR-084 is accepted.
+
 ## Context
 
 The owner decided during discovery (2026-07-12) that the system is built as separate services from the start — isolating the contention-heavy inventory core early is the point, and exercising AI-assisted development against a distributed estate is part of the testbed's purpose. Deployment is Docker Compose only; the team is one owner + AI agents. The risk to manage is integration tax: with ~24 capability epics, a fine-grained service cut would spend the project on plumbing.

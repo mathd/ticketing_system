@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"strings"
@@ -154,9 +155,9 @@ func TestStaleRecoveryClaimantCannotDisturbSuccessor(t *testing.T) {
 		t.Fatal("re-claim must carry a distinct claim id")
 	}
 
-	// The stale claimant's release must not clear the live claim.
-	if err := ReleaseStuckOrder(ctx, db, s.OrderID, d1.ClaimID, errors.New("stale")); err != nil {
-		t.Fatal(err)
+	// The stale claimant's release must not clear the live claim, and must say it matched nothing.
+	if parked, err := ReleaseStuckOrder(ctx, db, s.OrderID, d1.ClaimID, errors.New("stale")); parked || !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale claimant's release: parked=%t err=%v, want false and ErrRecoveryConflict", parked, err)
 	}
 	var claim uuid.NullUUID
 	if err := db.QueryRowContext(ctx, `SELECT recovery_claim_id FROM orders WHERE id=$1`, s.OrderID).Scan(&claim); err != nil {
@@ -171,11 +172,125 @@ func TestStaleRecoveryClaimantCannotDisturbSuccessor(t *testing.T) {
 	}
 }
 
+// recoveryState reads every column the claim fence and the parking decision touch, as text, so
+// two reads compare exactly, microseconds included. A release or abandon that reached the
+// successor's row would change at least one of them.
+func recoveryState(t *testing.T, db *sql.DB, ctx context.Context, orderID uuid.UUID) string {
+	t.Helper()
+	var state string
+	if err := db.QueryRowContext(ctx, `
+		SELECT concat_ws('|',
+		       coalesce(recovery_claim_id::text,'-'), coalesce(recovery_lease_until::text,'-'),
+		       recovery_attempts::text, recovery_next_attempt_at::text,
+		       coalesce(recovery_parked_at::text,'-'), coalesce(recovery_last_error,'-'),
+		       status, updated_at::text)
+		FROM orders WHERE id=$1`, orderID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// setRecoveryAttempts places a row at an attempt count directly, so a test starts at the
+// parking boundary instead of driving there.
+func setRecoveryAttempts(t *testing.T, db *sql.DB, ctx context.Context, orderID uuid.UUID, n int) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_attempts=$2 WHERE id=$1`, orderID, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// expireLease lapses the current claim's lease, as a claimant that stalls mid-drive would. The
+// next ClaimStuckOrders then hands the row to a successor.
+func expireLease(t *testing.T, db *sql.DB, ctx context.Context, orderID uuid.UUID) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_lease_until=now()-interval '1 second' WHERE id=$1`, orderID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TKT-322. A stale claimant's release lands on the parking boundary, where a release that ignored
+// the claim would charge the successor's row and park it. The release must refuse, and the
+// successor's row must stay exactly as the successor left it.
+func TestStaleReleaseAtTheBoundaryLeavesTheSuccessorUntouched(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "confirmation_pending")
+	setRecoveryAttempts(t, db, ctx, s.OrderID, MaxRecoveryAttempts-1)
+
+	stale := claimStuckOne(t, s.OrderID)
+	expireLease(t, db, ctx, s.OrderID)
+	live := claimStuckOne(t, s.OrderID)
+	if stale.ClaimID == live.ClaimID {
+		t.Fatal("re-claim must carry a distinct claim id")
+	}
+	before := recoveryState(t, db, ctx, s.OrderID)
+
+	parked, err := ReleaseStuckOrder(ctx, db, s.OrderID, stale.ClaimID, errors.New("stale"))
+	if parked || !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale release: parked=%t err=%v, want false and ErrRecoveryConflict", parked, err)
+	}
+	if after := recoveryState(t, db, ctx, s.OrderID); after != before {
+		t.Fatalf("stale release changed the successor's row:\n before %s\n after  %s", before, after)
+	}
+}
+
+// TKT-322. An abandon has no attempt to charge, so the claim predicate is its only protection, and
+// the successor's row is where a missing predicate would show. A stale abandon must report that it
+// matched nothing. The live claimant's abandon still succeeds and releases the row.
+func TestStaleAbandonReportsConflictAndLeavesTheSuccessorClaimed(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := seedStuck(t, "created")
+
+	stale := claimStuckOne(t, s.OrderID)
+	expireLease(t, db, ctx, s.OrderID)
+	live := claimStuckOne(t, s.OrderID)
+	if stale.ClaimID == live.ClaimID {
+		t.Fatal("re-claim must carry a distinct claim id")
+	}
+	before := recoveryState(t, db, ctx, s.OrderID)
+
+	if err := AbandonRecoveryClaim(ctx, db, s.OrderID, stale.ClaimID); !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("stale abandon: err=%v, want ErrRecoveryConflict", err)
+	}
+	if after := recoveryState(t, db, ctx, s.OrderID); after != before {
+		t.Fatalf("stale abandon changed the successor's row:\n before %s\n after  %s", before, after)
+	}
+	if err := AbandonRecoveryClaim(ctx, db, s.OrderID, live.ClaimID); err != nil {
+		t.Fatalf("live abandon: %v", err)
+	}
+	var claim sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT recovery_claim_id::text FROM orders WHERE id=$1`, s.OrderID).Scan(&claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Valid {
+		t.Fatalf("live abandon left claim %s on the row", claim.String)
+	}
+}
+
+// TKT-322. A failed write is not a supersession. database/sql refuses a call whose context is
+// already cancelled before it reaches the server, so the release must return that failure.
+// Reporting it as ErrRecoveryConflict would tell an operator the row belongs to a successor.
+func TestReleaseFailureIsNotReportedAsSupersession(t *testing.T) {
+	db, ctx := outboxDB(t)
+	s := claimStuckOne(t, seedStuck(t, "created").OrderID)
+	before := recoveryState(t, db, ctx, s.OrderID)
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	parked, err := ReleaseStuckOrder(cancelled, db, s.OrderID, s.ClaimID, errors.New("downstream down"))
+	if err == nil || errors.Is(err, ErrRecoveryConflict) || parked {
+		t.Fatalf("release with a cancelled context: parked=%t err=%v, want a failure that is not a conflict", parked, err)
+	}
+	if after := recoveryState(t, db, ctx, s.OrderID); after != before {
+		t.Fatalf("a failed release changed the row:\n before %s\n after  %s", before, after)
+	}
+}
+
 // An unrecoverable order must not starve the rest: claiming is oldest-first.
 func TestExhaustedRecoveryParksAndStopsBlocking(t *testing.T) {
 	db, ctx := outboxDB(t)
 	poison := seedStuck(t, "confirmation_pending")
 
+	var failures int
 	for range MaxRecoveryAttempts + 1 {
 		claimed, err := ClaimStuckOrders(ctx, db, 50, time.Minute)
 		if err != nil {
@@ -185,8 +300,14 @@ func TestExhaustedRecoveryParksAndStopsBlocking(t *testing.T) {
 			if c.OrderID != poison.OrderID {
 				continue
 			}
-			if err := ReleaseStuckOrder(ctx, db, c.OrderID, c.ClaimID, errors.New("inventory down")); err != nil {
+			failures++
+			reported, err := ReleaseStuckOrder(ctx, db, c.OrderID, c.ClaimID, errors.New("inventory down"))
+			if err != nil {
 				t.Fatal(err)
+			}
+			// Only the failure that reaches the budget may report parking.
+			if want := failures >= MaxRecoveryAttempts; reported != want {
+				t.Fatalf("failure %d: release reported parked=%t, want %t", failures, reported, want)
 			}
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_next_attempt_at=now() WHERE id=$1 AND recovery_parked_at IS NULL`, poison.OrderID); err != nil {
@@ -363,8 +484,8 @@ func TestAbandoningAfterARealFailureDoesNotGiveBackTheFailedAttempt(t *testing.T
 
 	// One real driven failure.
 	first := claimStuckOne(t, seeded.OrderID)
-	if err := ReleaseStuckOrder(ctx, db, first.OrderID, first.ClaimID, errors.New("downstream down")); err != nil {
-		t.Fatal(err)
+	if parked, err := ReleaseStuckOrder(ctx, db, first.OrderID, first.ClaimID, errors.New("downstream down")); err != nil || parked {
+		t.Fatalf("first driven failure: parked=%t err=%v, want not parked and no error", parked, err)
 	}
 	var charged int
 	if err := db.QueryRowContext(ctx, `SELECT recovery_attempts FROM orders WHERE id=$1`, seeded.OrderID).Scan(&charged); err != nil {
@@ -400,14 +521,17 @@ func TestParkingBoundaryIsExactlyMaxRecoveryAttemptsDrivenFailures(t *testing.T)
 	db, ctx := outboxDB(t)
 	seeded := seedStuck(t, "created")
 
-	fail := func() {
+	// fail drives one failure and returns what the release reported about parking.
+	fail := func() bool {
 		if _, err := db.ExecContext(ctx, `UPDATE orders SET recovery_next_attempt_at=now()-interval '1 minute' WHERE id=$1`, seeded.OrderID); err != nil {
 			t.Fatal(err)
 		}
 		c := claimStuckOne(t, seeded.OrderID)
-		if err := ReleaseStuckOrder(ctx, db, c.OrderID, c.ClaimID, errors.New("downstream down")); err != nil {
+		reported, err := ReleaseStuckOrder(ctx, db, c.OrderID, c.ClaimID, errors.New("downstream down"))
+		if err != nil {
 			t.Fatal(err)
 		}
+		return reported
 	}
 	parked := func() bool {
 		var at sql.NullTime
@@ -418,12 +542,16 @@ func TestParkingBoundaryIsExactlyMaxRecoveryAttemptsDrivenFailures(t *testing.T)
 	}
 
 	for i := 1; i < MaxRecoveryAttempts; i++ {
-		fail()
+		if fail() {
+			t.Fatalf("release reported parked after %d driven failures, want park only at %d", i, MaxRecoveryAttempts)
+		}
 		if parked() {
 			t.Fatalf("parked after %d driven failures, want park only at %d", i, MaxRecoveryAttempts)
 		}
 	}
-	fail()
+	if !fail() {
+		t.Fatalf("release reported not parked after %d driven failures, want parked", MaxRecoveryAttempts)
+	}
 	if !parked() {
 		t.Fatalf("not parked after %d driven failures, want parked", MaxRecoveryAttempts)
 	}
@@ -894,4 +1022,138 @@ func claimStuckOne(t *testing.T, order uuid.UUID) StuckOrder {
 	}
 	t.Fatalf("order %s not claimable", order)
 	return StuckOrder{}
+}
+
+// seedZeroStuck is seedStuck for a ZERO-TOTAL order (TKT-285): the reservation row itself
+// carries a zero gross total, which is what ClaimStuckOrders reads into StuckOrder.Amount.
+//
+// The returned StuckOrder is deliberately NOT given an Amount here. seedStuck leaves it unset,
+// and a test that read the fixture's own field instead of the claim's would be comparing the
+// fixture with itself: it would stay green with the claim's SQL total replaced by a constant.
+// Tests that care read the order back through the real claim (claimedZero).
+func seedZeroStuck(t *testing.T, status string) StuckOrder {
+	t.Helper()
+	s := seedStuck(t, status)
+	db, ctx := outboxDB(t)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE reservations SET unit_amount=0,total_amount=0,face_value_amount=0 WHERE id=$1`, s.ReservationID); err != nil {
+		t.Fatalf("zero the seeded reservation: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_facts WHERE order_id=$1`, s.OrderID) })
+	return s
+}
+
+// claimedZero loads the seeded order through the REAL claim SQL, so Amount and Currency are
+// what production would read from reservations.total_amount.
+func claimedZero(t *testing.T, s StuckOrder) StuckOrder {
+	t.Helper()
+	db, ctx := outboxDB(t)
+	claimed, err := ClaimStuckOrders(ctx, db, 10000, time.Minute)
+	if err != nil {
+		t.Fatalf("claim stuck orders: %v", err)
+	}
+	for _, c := range claimed {
+		if c.OrderID == s.OrderID {
+			return c
+		}
+	}
+	t.Fatalf("the seeded zero-total order %s was not claimable", s.OrderID)
+	return StuckOrder{}
+}
+
+// TKT-285 (D16). The order facts a zero-total completion journals must carry the order's real
+// gross total — zero — and the same identity and first timestamp on every replay, because the
+// recovery runner re-submits them on retries. Seeded and re-read as a coherent ZERO reservation,
+// NOT seedStuck's 2500 row: that row has an unpopulated Amount, so asserting "amount 0" on it
+// would pass with the claim's SQL total replaced by any constant that the fixture then ignores.
+func TestZeroTotalOrderFactsReplayWithTheirIdentityTimeAndAmount(t *testing.T) {
+	db, ctx := outboxDB(t)
+	seeded := seedZeroStuck(t, "created")
+	order := claimedZero(t, seeded)
+	if order.Amount != 0 || order.Currency != "EUR" {
+		t.Fatalf("the claim read %d %s for a zero-total reservation, want 0 EUR", order.Amount, order.Currency)
+	}
+
+	for _, factType := range []string{"order.created", "order.completed"} {
+		first, firstAt, err := RecordOrderFact(ctx, db, order, factType)
+		if err != nil {
+			t.Fatalf("%s: record: %v", factType, err)
+		}
+		second, secondAt, err := RecordOrderFact(ctx, db, order, factType)
+		if err != nil {
+			t.Fatalf("%s: re-record: %v", factType, err)
+		}
+		wantID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(order.OrderID.String()+":"+factType))
+		if first != wantID || second != wantID {
+			t.Errorf("%s: ids %s / %s, want the derived %s on every replay", factType, first, second, wantID)
+		}
+		if !secondAt.Equal(firstAt) {
+			t.Errorf("%s: occurred_at moved from %s to %s on replay", factType, firstAt, secondAt)
+		}
+
+		var rows int
+		var amount int64
+		var currency string
+		var stored time.Time
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*), coalesce(max(amount),-1), coalesce(max(currency),''), max(occurred_at)
+			FROM order_facts WHERE order_id=$1 AND fact_type=$2`, order.OrderID, factType).
+			Scan(&rows, &amount, &currency, &stored); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 || amount != 0 || currency != "EUR" || !stored.Equal(firstAt) {
+			t.Errorf("%s: stored rows=%d amount=%d currency=%q at=%s, want 1 row of 0 EUR at %s",
+				factType, rows, amount, currency, stored, firstAt)
+		}
+	}
+}
+
+// OrderFactRecorded is the evidence read the zero-total branch decides on, so its two answers
+// each get a case — and the read must create nothing, or asking for the intent fact would
+// manufacture it.
+func TestOrderFactRecordedAnswersFromTheDeterministicFactAndWritesNothing(t *testing.T) {
+	db, ctx := outboxDB(t)
+	order := claimedZero(t, seedZeroStuck(t, "created"))
+	other := claimedZero(t, seedZeroStuck(t, "created"))
+
+	recorded := func(o StuckOrder, factType string) bool {
+		t.Helper()
+		ok, err := OrderFactRecorded(ctx, db, o.OrderID, factType)
+		if err != nil {
+			t.Fatalf("OrderFactRecorded(%s): %v", factType, err)
+		}
+		return ok
+	}
+	countFacts := func() int {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_facts WHERE order_id IN ($1,$2)`,
+			order.OrderID, other.OrderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if recorded(order, "order.created") {
+		t.Fatal("a fact that was never written reads as recorded")
+	}
+	if n := countFacts(); n != 0 {
+		t.Fatalf("the read created %d row(s)", n)
+	}
+	if _, _, err := RecordOrderFact(ctx, db, order, "order.created"); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded(order, "order.created") {
+		t.Fatal("a recorded fact reads as absent")
+	}
+	// Scoped to the type and to the order: a different type, and a different order's fact,
+	// must not satisfy the question.
+	if recorded(order, "order.completed") {
+		t.Error("order.created satisfied a question about order.completed")
+	}
+	if recorded(other, "order.created") {
+		t.Error("another order's order.created satisfied this order's question")
+	}
+	if n := countFacts(); n != 1 {
+		t.Fatalf("order_facts holds %d row(s) after one write and several reads, want 1", n)
+	}
 }

@@ -38,7 +38,7 @@ const OTHER_SLOT = '80000000-0000-4000-8000-000000000002';
 const ORDER = '90000000-0000-4000-8000-000000000001';
 const OTHER_ORDER = '90000000-0000-4000-8000-000000000002';
 const REFUND = 'a0000000-0000-4000-8000-000000000001';
-const ASSERTION = `v1.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`;
+const ASSERTION = `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`;
 const MAX_INT32 = 2_147_483_647;
 
 function answer(body: unknown, status = 200): void {
@@ -101,6 +101,7 @@ function channel(overrides: Record<string, unknown> = {}) {
     display_name: 'Box office',
     kind: 'pos',
     enabled: true,
+    revision: 3,
     created_at: '2026-09-01T10:00:00Z',
     updated_at: '2026-09-01T10:00:00Z',
     ...overrides,
@@ -119,6 +120,7 @@ function staffAvailability(overrides: Record<string, unknown> = {}) {
     public_available: 50,
     offering_status: 'open',
     channels: [],
+    inventory_kind: 'ga',
     allocation_revision: 2,
     ...overrides,
   };
@@ -258,13 +260,17 @@ describe('catalog response decoding', () => {
   });
 
   it.each([
-    ['the wrong version', `v2.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
-    ['the wrong field count', `v1.${STAFF}.${ORGANIZER}.99999999999`],
-    ['a malformed embedded staff id', `v1.staff.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
-    ['a malformed embedded organizer id', `v1.${STAFF}.organizer.99999999999.${'A'.repeat(43)}`],
-    ['a malformed expiry', `v1.${STAFF}.${ORGANIZER}.later.${'A'.repeat(43)}`],
-    ['an overflowing expiry', `v1.${STAFF}.${ORGANIZER}.9223372036854775808.${'A'.repeat(43)}`],
-    ['a malformed signature', `v1.${STAFF}.${ORGANIZER}.99999999999.short`],
+    ['the retired v1 format', `v1.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
+    ['an unknown version', `v3.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['a key id outside the namespace', `v2.access-qr/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['an empty key id', `v2..${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['the wrong field count', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999`],
+    ['a malformed embedded staff id', `v2.catalog-org/test.staff.${ORGANIZER}.99999999999.${'A'.repeat(86)}`],
+    ['a malformed embedded organizer id', `v2.catalog-org/test.${STAFF}.organizer.99999999999.${'A'.repeat(86)}`],
+    ['a malformed expiry', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.later.${'A'.repeat(86)}`],
+    ['an overflowing expiry', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.9223372036854775808.${'A'.repeat(86)}`],
+    ['a malformed signature', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.short`],
+    ['an HMAC-length signature', `v2.catalog-org/test.${STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`],
   ])('rejects a principal whose organizer assertion has %s', async (_name, assertion) => {
     answer({
       staff_id: STAFF,
@@ -280,7 +286,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${STAFF}.${OTHER_ORGANIZER}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${STAFF}.${OTHER_ORGANIZER}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).rejects.toThrow(/organizer/);
   });
@@ -290,7 +296,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${OTHER_STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${OTHER_STAFF}.${ORGANIZER}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).rejects.toThrow(/staff/);
   });
@@ -300,7 +306,7 @@ describe('catalog response decoding', () => {
       staff_id: STAFF,
       organizer_id: ORGANIZER,
       role: 'admin',
-      organizer_assertion: `v1.${STAFF.toUpperCase()}.${ORGANIZER.toUpperCase()}.99999999999.${'A'.repeat(43)}`,
+      organizer_assertion: `v2.catalog-org/test.${STAFF.toUpperCase()}.${ORGANIZER.toUpperCase()}.99999999999.${'A'.repeat(86)}`,
     });
     await expect(authenticateStaff('staff@example.test', 'password')).resolves.toMatchObject({
       staffId: STAFF,
@@ -382,7 +388,7 @@ describe('catalog response decoding', () => {
   it('rejects an update response for another channel', async () => {
     answer(channel({ id: '70000000-0000-4000-8000-000000000002' }));
     const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
-      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true,
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
     }).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AmbiguousMutationError);
     expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/not the one requested/) });
@@ -409,7 +415,7 @@ describe('catalog response decoding', () => {
   it('rejects an updated channel attributed to another organizer', async () => {
     answer(channel({ organizer_id: OTHER_ORGANIZER }));
     const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
-      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true,
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
     }).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AmbiguousMutationError);
     expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/organizer_id/) });
@@ -567,6 +573,37 @@ describe('catalog response decoding', () => {
     await expect(listChannelsForOperator(ASSERTION, ORGANIZER)).rejects.toThrow(/100 characters/);
   });
 
+  // TKT-325. The revision is the token both channel forms send back, so a
+  // missing or malformed one must make the read UNAVAILABLE. Synthesizing 0
+  // would render a token that matches every never-edited channel, and the page
+  // would quietly offer an unprotected write.
+  it('returns the stored revision exactly', async () => {
+    answer({ channels: [channel({ revision: 9007199254740991 })] });
+    const [got] = await listChannelsForOperator(ASSERTION, ORGANIZER);
+    expect(got?.revision).toBe(9007199254740991);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['a string', '3'],
+    ['negative', -1],
+    ['fractional', 2.5],
+    ['beyond the safe-integer range', 9007199254740992],
+  ])('makes the channel read unavailable when the revision is %s', async (_name, revision) => {
+    answer({ channels: [channel({ revision })] });
+    await expect(listChannelsForOperator(ASSERTION, ORGANIZER)).rejects.toThrow(/revision/);
+  });
+
+  it('rejects an update response with a malformed revision as ambiguous, never as revision 0', async () => {
+    answer(channel({ revision: undefined }));
+    const error = await updateChannel(ASSERTION, ORGANIZER, CHANNEL, {
+      code: 'pos', displayName: 'Box office', kind: 'pos', enabled: true, expectedRevision: 3,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AmbiguousMutationError);
+    expect((error as Error).cause).toMatchObject({ message: expect.stringMatching(/revision/) });
+  });
+
   it('rejects any listed channel attributed to another organizer', async () => {
     answer({ channels: [channel(), channel({ organizer_id: OTHER_ORGANIZER })] });
     await expect(listChannelsForOperator(ASSERTION, ORGANIZER)).rejects.toThrow(/organizer_id/);
@@ -581,6 +618,17 @@ describe('inventory response decoding', () => {
     ['a negative counter', staffAvailability({ available: -1 })],
     ['an unknown offering status', staffAvailability({ offering_status: 'paused' })],
     ['an invalid allocation revision', staffAvailability({ allocation_revision: -1 })],
+    // TKT-286 / D5. The kind decides whether the page may show an editor at all, so an
+    // uncertain one is a failed read — never a default. Each is its own malformation class:
+    // absence (an older inventory), null, the wrong type, an unknown value, and the empty
+    // string. A missing kind read as "ga" would bring back the editor that looks editable
+    // on a seated slot and cannot save.
+    ['an absent inventory kind', staffAvailability({ inventory_kind: undefined })],
+    ['a null inventory kind', staffAvailability({ inventory_kind: null })],
+    ['a numeric inventory kind', staffAvailability({ inventory_kind: 1 })],
+    ['an unknown inventory kind', staffAvailability({ inventory_kind: 'hybrid' })],
+    ['an empty inventory kind', staffAvailability({ inventory_kind: '' })],
+    ['a differently cased inventory kind', staffAvailability({ inventory_kind: 'GA' })],
     ['a malformed nested date', staffAvailability({ channels: [{
       channel: 'presale', cap: 10, released: false, window_open: true,
       held: 0, confirmed: 0, available: 10, opens_at: 'tomorrow',
@@ -592,6 +640,13 @@ describe('inventory response decoding', () => {
   ])('rejects staff availability with %s', async (_name, body) => {
     answer(body);
     await expect(getStaffAvailability(SLOT, ORGANIZER)).rejects.toThrow();
+  });
+
+  it.each(['ga', 'seated'] as const)('preserves the %s inventory kind', async (kind) => {
+    answer(staffAvailability({ inventory_kind: kind }));
+    await expect(getStaffAvailability(SLOT, ORGANIZER)).resolves.toMatchObject({
+      inventory_kind: kind,
+    });
   });
 
   const allocation = {
@@ -652,7 +707,7 @@ describe('commerce and access response decoding', () => {
       quantity: 1,
       reason: 'requested',
       actor: STAFF,
-      organizerId: ORGANIZER,
+      assertion: ASSERTION,
       idempotencyKey: 'key',
     })).resolves.toMatchObject({ ok: false, kind: 'ambiguous' });
   });
@@ -782,7 +837,7 @@ describe('literal contract edges remain decodable', () => {
       quantity: 50,
       reason: 'requested',
       actor: STAFF,
-      organizerId: ORGANIZER,
+      assertion: ASSERTION,
       idempotencyKey: 'key',
     })).resolves.toMatchObject({
       ok: true,

@@ -53,7 +53,10 @@ func (s *backlogStore) AbandonRecoveryClaim(context.Context, uuid.UUID, uuid.UUI
 func (s *backlogStore) MarkReleased(context.Context, store.StuckOrder) error {
 	panic("a recovery transition reached the metrics fake")
 }
-func (s *backlogStore) ReleaseStuckOrder(context.Context, uuid.UUID, uuid.UUID, error) error {
+func (s *backlogStore) OrderFactRecorded(context.Context, uuid.UUID, string) (bool, error) {
+	panic("a recovery transition reached the metrics fake")
+}
+func (s *backlogStore) ReleaseStuckOrder(context.Context, uuid.UUID, uuid.UUID, error) (bool, error) {
 	panic("a recovery transition reached the metrics fake")
 }
 
@@ -93,13 +96,14 @@ func collect(t *testing.T, st Store) (map[string]int64, error) {
 
 // Every registered series carries the value the store reported for it.
 //
-// The four values are deliberately DISTINCT. With 1/1/1/1 a callback that observed the
-// wrong field into the wrong instrument — the likeliest real mistake in a four-way
+// The six values are deliberately DISTINCT. With equal values a callback that observed the
+// wrong field into the wrong instrument — the likeliest real mistake in a six-way
 // ObserveInt64 block — would produce an identical collection and the test could not see
 // it. Distinct values make a transposition fail.
 func TestObserveMetricsReportsEveryBacklogSeries(t *testing.T) {
 	st := &backlogStore{b: store.RecoveryBacklog{
 		Parked: 3, ReconciliationRequired: 5, Total: 8, OldestAgeSeconds: 7200,
+		EligibleUnparked: store.EligibleUnparkedRecoveryBacklog{Count: 11, OldestAgeSeconds: 1800},
 	}}
 	got, err := collect(t, st)
 	if err != nil {
@@ -108,10 +112,12 @@ func TestObserveMetricsReportsEveryBacklogSeries(t *testing.T) {
 	// Derived from what the store reported, which is the contract: the callback's job is
 	// to pass the store's answer through unchanged.
 	want := map[string]int64{
-		"commerce.recovery.parked":                         3,
-		"commerce.recovery.parked.reconciliation_required": 5,
-		"commerce.recovery.parked.total":                   8,
-		"commerce.recovery.parked.oldest_age_seconds":      7200,
+		"commerce.recovery.parked":                               3,
+		"commerce.recovery.parked.reconciliation_required":       5,
+		"commerce.recovery.parked.total":                         8,
+		"commerce.recovery.parked.oldest_age_seconds":            7200,
+		"commerce.recovery.eligible_unparked":                    11,
+		"commerce.recovery.eligible_unparked.oldest_age_seconds": 1800,
 	}
 	for name, w := range want {
 		v, ok := got[name]
@@ -122,10 +128,10 @@ func TestObserveMetricsReportsEveryBacklogSeries(t *testing.T) {
 			t.Fatalf("%s = %d, want %d", name, v, w)
 		}
 	}
-	// One snapshot for all four series: separate reads could report a total that
-	// disagrees with its own splits.
+	// One snapshot for all six series: separate reads could report a total that
+	// disagrees with its own splits, or an eligible count that disagrees with its age.
 	if st.calls != 1 {
-		t.Fatalf("the store was read %d times, want 1: all four series must come from one snapshot", st.calls)
+		t.Fatalf("the store was read %d times, want 1: all six series must come from one snapshot", st.calls)
 	}
 }
 

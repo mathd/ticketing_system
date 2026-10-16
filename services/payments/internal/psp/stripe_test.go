@@ -304,7 +304,7 @@ func TestStripeRefundResolutionSurfacesPendingWithoutResubmitting(t *testing.T) 
 }
 
 // A FAILED refund found during resolution is terminal and carries the re_ reference. It
-// does not license a re-submit; re-submission policy is tracked by TKT-347.
+// does not license a re-submit; the platform never re-submits one (ADR-032 §Refund rule 3, TKT-347).
 func TestStripeRefundResolutionFailsClosedOnAFailedRefund(t *testing.T) {
 	stub := newStripeStub(t, map[string]stubResp{"GET /v1/refunds": {200, refundListFailed}})
 	s := newStripeForStub(stub)

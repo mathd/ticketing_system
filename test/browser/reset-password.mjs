@@ -99,43 +99,80 @@ try {
     (await signInPage.locator('a[href$="/account/forgot-password"]').count()) > 0,
   );
 
-  // --- 4. Submit the request form. The answer must be the same for an unknown address.
+  // --- 4. The ENGLISH form keeps its English message (TKT-366). Submitted first: a later
+  // request supersedes this token, so the full reset below uses the French one.
   await anonPage.fill('#email', email);
   await anonPage.click('button[type=submit]');
   await anonPage.waitForLoadState('domcontentloaded');
-  const knownText = (await anonPage.locator('body').innerText()).trim();
+  const enText = (await anonPage.locator('body').innerText()).trim();
+  check('the English request form submits and is acknowledged', enText.includes('reset link'), enText.slice(0, 120));
+
+  const awaitDrained = async (subject) => {
+    let state = '';
+    for (let i = 0; i < 40 && state !== `t|${subject}`; i++) {
+      state = latestMail(email, "CASE WHEN sent_at IS NULL THEN 'f' ELSE 't' END || '|' || subject");
+      if (state !== `t|${subject}`) await new Promise((r) => setTimeout(r, 500));
+    }
+    return state === `t|${subject}`;
+  };
+  // The FIRST url in the body, exactly as stored. Nothing here rebuilds it.
+  const storedLink = () => latestMail(email, "substring(body from 'https?://[^[:space:]]+')");
+
   check(
-    'the request form submits and is acknowledged',
-    knownText.includes('reset link'),
+    'the English message was enqueued and retired through the offline fake',
+    await awaitDrained('Reset your password'),
+    latestMail(email, 'subject'),
+  );
+  const enLink = storedLink();
+  check(
+    'the English message links to the English page on this stack',
+    enLink.startsWith(`${BASE}/en/account/reset-password?token=`),
+    enLink.replace(/token=.*/, 'token=…'),
+  );
+
+  // --- 5. The FRENCH form (TKT-366). The page's route locale decides the language of the
+  // message and of the link's page; nothing in the form says it.
+  const frPage = await anon.newPage();
+  const frForgot = await frPage.goto('/fr/account/forgot-password', { waitUntil: 'domcontentloaded' });
+  check('the French forgot-password page is reachable signed out', frForgot.status() === 200, frPage.url());
+  await frPage.fill('#email', email);
+  await frPage.click('button[type=submit]');
+  await frPage.waitForLoadState('domcontentloaded');
+  const knownText = (await frPage.locator('body').innerText()).trim();
+  check(
+    'the French request form submits and is acknowledged in French',
+    knownText.includes('un lien est en route'),
     knownText.slice(0, 120),
   );
 
   const unknownPage = await anon.newPage();
-  await unknownPage.goto('/en/account/forgot-password', { waitUntil: 'domcontentloaded' });
+  await unknownPage.goto('/fr/account/forgot-password', { waitUntil: 'domcontentloaded' });
   await unknownPage.fill('#email', stranger);
   await unknownPage.click('button[type=submit]');
   await unknownPage.waitForLoadState('domcontentloaded');
   const unknownText = (await unknownPage.locator('body').innerText()).trim();
   check(
-    'an unknown address gets a byte-identical page',
+    'an unknown address gets a byte-identical French page',
     knownText === unknownText,
     knownText === unknownText ? '' : 'the rendered pages differ — enumeration oracle',
   );
 
-  // --- 5. The message exists and the drainer retired it via the offline fake.
-  let drained = '';
-  for (let i = 0; i < 40 && drained !== 't'; i++) {
-    drained = latestMail(email, 'sent_at IS NOT NULL');
-    if (drained !== 't') await new Promise((r) => setTimeout(r, 500));
-  }
-  const enqueued = latestMail(email, '1') === '1';
-  check('a message was enqueued', enqueued, enqueued ? '' : 'nothing in mail_outbox');
-  check('the drainer retired it through the offline fake', drained === 't');
-  // substring(... from pattern) returns the first capture group, so the token never has
-  // to be parsed out of a body that may span lines.
-  const token = latestMail(email, "substring(body from 'token=([A-Za-z0-9_-]+)')");
-  check('the message carries a token', Boolean(token));
-
+  // The French message exists and the drainer retired it via the offline fake.
+  check(
+    'the French message was enqueued and retired through the offline fake',
+    await awaitDrained('Réinitialisez votre mot de passe'),
+    latestMail(email, 'subject'),
+  );
+  const link = storedLink();
+  check(
+    'the French message links to the French page on this stack, at the configured origin',
+    link.startsWith(`${BASE}/fr/account/reset-password?token=`),
+    link.replace(/token=.*/, 'token=…'),
+  );
+  check(
+    'the French body says the lifetime in words',
+    latestMail(email, "(body LIKE '%expire dans une heure.%')::text") === 'true',
+  );
   check(
     'no message is enqueued for an address with no account',
     latestMail(stranger, '1') === '',
@@ -150,10 +187,20 @@ try {
       postedUrl = req.url();
     }
   });
-  const opened = await resetPage.goto(`/en/account/reset-password?token=${token}`, {
-    waitUntil: 'domcontentloaded',
-  });
-  check('the mailed link opens the reset form', opened.status() === 200);
+  // The EXACT stored link, origin included — browser.sh points the stack's
+  // PUBLIC_BASE_URL at this gateway, so the link the buyer would click is this one.
+  // Never navigate to a link on another origin: a stack started before that export
+  // (browser.sh run on an old stack) mails links to :8080, which is the owner's dev
+  // stack. check() only records a failure, so stop here instead.
+  if (!link.startsWith(`${BASE}/`)) {
+    throw new Error(`the stored reset link is not on this stack's gateway (${BASE}); refusing to open it: ${link.replace(/token=.*/, 'token=…')}`);
+  }
+  const opened = await resetPage.goto(link, { waitUntil: 'domcontentloaded' });
+  check(
+    'the mailed link opens the French reset form',
+    opened.status() === 200 && new URL(resetPage.url()).pathname === '/fr/account/reset-password',
+    resetPage.url().replace(/token=.*/, 'token=…'),
+  );
   check(
     'the reset page is no-store',
     (opened.headers()['cache-control'] ?? '').includes('no-store'),
@@ -216,14 +263,14 @@ try {
 
   // --- 9. The link is single-use.
   const replay = await anon.newPage();
-  await replay.goto(`/en/account/reset-password?token=${token}`, { waitUntil: 'domcontentloaded' });
+  await replay.goto(link, { waitUntil: 'domcontentloaded' });
   await replay.fill('#password', 'a third password').catch(() => {});
   await replay.click('button[type=submit]').catch(() => {});
   await replay.waitForLoadState('domcontentloaded');
   const replayText = (await replay.locator('body').innerText()).trim();
   check(
     'a redeemed link is refused',
-    replayText.includes('invalid') || replayText.includes('expired'),
+    replayText.includes('invalide') || replayText.includes('expiré'),
     replayText.slice(0, 120),
   );
 } finally {

@@ -1,11 +1,16 @@
 import { UPSTREAM_DEADLINE_MS, withUpstreamDeadline } from './upstream';
 import type { components } from './access-api-types.gen';
+import { formatHistoryTime, historyLabel } from './format';
+import type { Locale } from './locales';
 import { dateTimeField, sameUuid, uuidField } from './wire-primitives';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:8080';
 
 /** Access's generated response type. The decoder below checks the wire value. */
 export type TicketBundle = components['schemas']['TicketBundle'];
+
+/** Access's presentation verdict for one ticket (TKT-355): the generated union. */
+type TicketValidity = components['schemas']['TicketValidity'];
 
 export type TicketBundleResult =
   | { ok: true; value: TicketBundle }
@@ -37,6 +42,39 @@ function stringField(value: unknown, name: string): string {
   return value;
 }
 
+/**
+ * The verdict, decoded to the generated union or refused (TKT-355).
+ *
+ * There is NO default. A missing or malformed verdict refuses the whole bundle, and the
+ * page answers 503: reading it as "valid" would show a dead QR, and recomputing it from
+ * history would put a second rule beside Access's. Only the exact forms the contract
+ * declares pass, so a valid verdict with a reason, a voided one without, and any extra
+ * field all fail closed.
+ */
+function decodeValidity(value: unknown, name: string): TicketValidity {
+  const validity = objectBody(value, name);
+  const fields = Object.keys(validity).length;
+  if (validity.status === 'valid' && fields === 1) return { status: 'valid' };
+  if (validity.status === 'voided' && fields === 2) {
+    if (validity.reason === 'refunded' || validity.reason === 'exchanged') {
+      return { status: 'voided', reason: validity.reason };
+    }
+  }
+  throw new TypeError(`${name} is not a declared ticket verdict`);
+}
+
+/**
+ * The ticket's performance zone (TKT-365, ADR-083): required and nullable. Null is Access
+ * saying Catalog did not answer, and the page shows labelled UTC. An ABSENT field, or a
+ * value that is not a non-empty string, is a contract break and refuses the bundle like
+ * every other malformed field. Whether ICU knows the zone is the formatter's question.
+ */
+function decodeZone(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value === 'string' && value.length > 0) return value;
+  throw new TypeError(`${name} must be null or a non-empty string`);
+}
+
 function decodeTicketBundle(value: unknown, expectedOrderRef: string): TicketBundle {
   const body = objectBody(value, 'ticket bundle');
   const orderRef = uuidField(body.order_ref, 'order_ref');
@@ -54,6 +92,8 @@ function decodeTicketBundle(value: unknown, expectedOrderRef: string): TicketBun
         qr_payload: stringField(ticket.qr_payload, `tickets[${ticketIndex}].qr_payload`),
         issued_at: dateTimeField(ticket.issued_at, `tickets[${ticketIndex}].issued_at`),
         qr_url: stringField(ticket.qr_url, `tickets[${ticketIndex}].qr_url`),
+        validity: decodeValidity(ticket.validity, `tickets[${ticketIndex}].validity`),
+        performance_timezone: decodeZone(ticket.performance_timezone, `tickets[${ticketIndex}].performance_timezone`),
         history: ticket.history.map((value, eventIndex) => {
           const event = objectBody(value, `tickets[${ticketIndex}].history[${eventIndex}]`);
           const sequence = event.sequence;
@@ -145,14 +185,55 @@ export async function getTicketBundle(orderRef: string): Promise<TicketBundleRes
  */
 export type TicketForDisplay = {
   qrUrl: string;
-  history: ReadonlyArray<{ type: string; occurredAt: string }>;
+  validity: DisplayValidity;
+  /**
+   * TKT-365: everything the page shows about one history entry, decided here in checked
+   * TypeScript. `label` is localized (historyOther for an unknown type), `time` is
+   * formatted in the ticket's performance zone (labelled UTC when Access sent none), and
+   * `occurredAt` is the raw instant for `<time datetime>`.
+   */
+  history: ReadonlyArray<{ label: string; time: string; occurredAt: string }>;
 };
 
-export function ticketsForDisplay(bundle: TicketBundle): TicketForDisplay[] {
+/**
+ * The verdict the page renders (TKT-355). Its own closed type rather than an alias of
+ * the generated one: `displayValidity` below switches over every generated status and
+ * reason with no default, so a status or reason added to the contract stops this file
+ * compiling until someone decides how the page shows it.
+ */
+export type DisplayValidity =
+  | { kind: 'valid' }
+  | { kind: 'voided'; reason: 'refunded' | 'exchanged' };
+
+function unhandled(value: never): never {
+  throw new TypeError(`unhandled ticket verdict: ${JSON.stringify(value)}`);
+}
+
+function displayValidity(validity: TicketValidity): DisplayValidity {
+  switch (validity.status) {
+    case 'valid':
+      return { kind: 'valid' };
+    case 'voided':
+      switch (validity.reason) {
+        case 'refunded':
+          return { kind: 'voided', reason: 'refunded' };
+        case 'exchanged':
+          return { kind: 'voided', reason: 'exchanged' };
+        default:
+          return unhandled(validity.reason);
+      }
+    default:
+      return unhandled(validity);
+  }
+}
+
+export function ticketsForDisplay(bundle: TicketBundle, locale: Locale): TicketForDisplay[] {
   return bundle.tickets.map((ticket) => ({
     qrUrl: ticket.qr_url,
+    validity: displayValidity(ticket.validity),
     history: ticket.history.map((event) => ({
-      type: event.type,
+      label: historyLabel(event.type, locale),
+      time: formatHistoryTime(event.occurred_at, ticket.performance_timezone, locale),
       occurredAt: event.occurred_at,
     })),
   }));

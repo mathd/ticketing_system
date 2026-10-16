@@ -24,10 +24,16 @@ automation should only be extracted after real repetition appears.
 
 `make check` is the merge gate and runs generation drift checks, Go/TypeScript lint and tests,
 builds, and the isolated Compose smoke suite. `gate-selftest` independently confirms the gate fails
-when lint, test, or build defects are seeded. Repository branch-protection settings are outside this
-repo; do not claim a required-review/check policy that is not visible or verified. The security
-workflow is a separate blocking signal: Go findings are reachability-aware, while pnpm and Trivy
-fail on high or critical findings.
+when lint, test, or build defects are seeded. A GitHub ruleset on `main` requires the `check` job;
+see [Main ruleset](#main-ruleset). `gate-selftest` and the security workflow are not required
+checks. The security workflow is a separate blocking signal for review: Go findings are
+reachability-aware, while pnpm and Trivy fail on high or critical findings. A finding that a bump
+cannot fix yet goes in the reviewed, expiring allowlist `.trivyignore.yaml`, not in a per-PR
+override. `make check` validates the allowlist and its pnpm mirror, and its verdict does not
+depend on the clock. The `pnpm-audit` job audits only through `node scripts/scan-allowlist.mjs
+audit`, which fails on an entry that expires within one hour and then runs `pnpm audit` in a
+configuration that no runner setting can change
+([ADR-081](../adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md)).
 
 Run this locally before handoff:
 
@@ -38,6 +44,76 @@ make check
 
 Use focused package tests while iterating. Do not weaken or skip a failing check to make a branch
 green; diagnose flakes and record non-obvious fixes in `docs/LEARNINGS.md`.
+
+### Main ruleset
+
+`main` has a GitHub repository ruleset. Its payload is `.github/rulesets/main.json`. That file is the
+source of truth, and the live ruleset is applied from the merged file.
+
+- It requires a pull request and a successful `check` from GitHub Actions (`integration_id` 15368).
+  It requires no approvals, no up-to-date branch, and no other check.
+- The repository admin role has `always` bypass. On this personal repository, that role is only the
+  owner, `mathd`. Agent sessions authenticate as `mathd`, so the host refuses nothing they do. The
+  host refusal binds Dependabot and any future collaborator. `AGENTS.md` states the rule that agents
+  follow.
+- The refusal for an actor without bypass (TKT-324's COS3) is verified against a temporary twin
+  ruleset with no bypass actor, on a probe branch, not on `main` itself. TKT-324's ticket thread
+  records the commands and their output.
+- Every PR and every push to `main` runs `check.yaml`, with no path filter. A skipped workflow leaves
+  a required check pending.
+
+Apply the ruleset from the merged file:
+
+```bash
+gh api --method POST repos/mathd/ticketing_system/rulesets --input .github/rulesets/main.json
+```
+
+Read it back and compare it with the file:
+
+```bash
+gh api repos/mathd/ticketing_system/rulesets/<id>
+gh api repos/mathd/ticketing_system/rules/branches/main
+```
+
+Compare `name`, `target`, `enforcement`, `conditions`, `bypass_actors` and `rules`. Ignore ids, URLs
+and timestamps. Make sure that `current_user_can_bypass` is `always` for `mathd`. If it is `never`,
+delete the ruleset immediately.
+
+To roll back, delete the ruleset, then read `rules/branches/main` again and correct this section:
+
+```bash
+gh api --method DELETE repos/mathd/ticketing_system/rulesets/<id>
+```
+
+Nothing compares the live ruleset with the file automatically. Compare them by hand after each
+change. The gate checks only the static invariants. `make check-check-workflow-trigger` reads the
+files line by line, without a YAML library. In `check.yaml` it accepts only one block-style shape,
+and it refuses as unsupported anything it cannot read plainly:
+
+- `on:` holds exactly `push` (only the text `branches: [main]`) and an empty `pull_request`. There
+  is no workflow-level `defaults:` or `env:`.
+- Each required context is the reported name of a `check.yaml` job: its `name:` when set, else its
+  job id.
+- That job holds only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes`. Its steps
+  hold only `name`, `uses`, `with`, `run` and `id`, so `if:`, `continue-on-error`, `shell:` and
+  `env:` are refused. Each step key's own value is one plain line. The guard does not read the
+  inputs below `with:`, so it accepts any action input (see the threat model below). At least one
+  step is exactly `run: make check`.
+- In `check.yaml`, flow style, quoted keys, duplicate keys, merge keys, a second YAML document, and
+  a multi-line or block scalar in a step are refused as unsupported.
+- No other job in any workflow reports the same name. In the other workflows the guard reads only
+  job ids and names. A job must be block style, and its `name:` must be a plain one-line scalar or
+  a simply quoted string (a double-quoted string with no backslash). A quoted key is read there,
+  but a double-quoted key with a backslash is refused in every workflow, because YAML can decode
+  an escape to another key. A single-quoted string takes a backslash literally. An expression
+  `name:` is refused only if its literal prefix could still make it a required context.
+
+Threat model: the guard is a tripwire against accidental or careless edits to `check.yaml` and the
+ruleset. It does not, and cannot, stop a writer who changes the Makefile `check` target,
+`scripts/gate.sh`, a step that writes `$GITHUB_ENV`, or the guard itself. It does not read action
+inputs either. An input that changes the checked-out ref (for example `ref: main` on
+`actions/checkout`, which makes the gate run `main`'s code instead of the PR's) or the environment
+passes the guard. Those changes are reviewed in the PR like any other code.
 
 ## Pre-commit ↔ CI alignment
 

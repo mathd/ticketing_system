@@ -61,3 +61,34 @@ status/compensation are required before replacing the fake PSP.
 - One hot organizer journal serializes appends. Sharding is a later compatible optimization.
 - PostgreSQL 18.4 is the scaffold used by Compose and the version accepted by ADR-007. TKT-46
   aligned the working agreement with that existing authority.
+
+## Amendment (2026-10-04, TKT-285) — a zero-total checkout journals no charge, and recovery can complete from `held`
+
+This amendment adds two exceptions to the protocol above. The rest of it is unchanged.
+
+**1. No charge for a zero total.** A checkout whose persisted gross `reservations.total_amount` is
+zero does not call payments `POST /internal/charges`. No payment operation exists for the order, and
+no `payment.*` fact is written. The order still follows the protocol in every other way: commerce
+records `order.created` and `order.completed` in `order_facts` with deterministic fact IDs, and
+submits both to payments `/internal/facts`. Both facts carry amount 0 and the order currency. The
+journal accepts them because neither type is a money-moving type (`moneyMovingTypes`), so the
+positive-amount rule does not apply. Skipping the charge does not make checkout independent of
+payments: the fact submission still needs it.
+
+The key is the **gross** total, which includes passed-on fees. A zero face value with a passed-on fee
+has a positive total and is charged.
+
+**2. Recovery can confirm from `held`.** The recovery runner completes a zero-total order that
+crashed after its `order.created` fact. If the crash came before the inventory finalize, the claim is
+still `held`, and the runner confirms it directly. Inventory accepts a confirm from both `held` and
+`finalizing`. Only the `finalizing` history entry is missing for such an order. The runner replays
+`order.created`, confirms, submits `order.completed`, and then runs the shared completion
+transaction. Recovery did not submit `order.completed` for paid orders before this change, and it
+still does not (see ADR-016, TKT-285 amendment).
+
+**What this does not claim.** An absorbed fee on a zero-gross order is **not** recorded by this
+change. There is no capture, so there is no capture ledger (ADR-048 ties a ledger to
+`payment.captured`), and recording one would invent a payment fact (ADR-003). It does **not** follow
+that nothing is owed: ADR-048 allows a negative organizer line when absorbed fees exceed face value,
+so a comp can still owe a platform fee. Where that obligation lives is open and tracked as TKT-502.
+This is ordinary application code. It is not a tamper-evidence claim (ADR-021).

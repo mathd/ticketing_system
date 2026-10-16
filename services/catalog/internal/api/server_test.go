@@ -176,6 +176,17 @@ func (f *fakeStore) CreateSeatMap(_ context.Context, in store.SeatMapInput) (sto
 	return m, nil
 }
 
+// seatMapHasSeats reports whether any seat belongs to this version (TKT-318). It is the
+// fake's counterpart to the store's seat existence check, and it is per version id.
+func (f *fakeStore) seatMapHasSeats(id uuid.UUID) bool {
+	for _, s := range f.seatSeats {
+		if s.seatMapID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeStore) draftMap(id, org uuid.UUID) (store.SeatMap, bool) {
 	m, ok := f.seatMaps[id]
 	return m, ok && m.OrganizerID == org && m.Status == "draft"
@@ -204,6 +215,10 @@ func (f *fakeStore) PublishSeatMap(_ context.Context, organizerID, id uuid.UUID)
 		return store.SeatMap{}, false, store.ErrIllegalTransition
 	}
 	if m.Status != "published" {
+		// TKT-318: the store flips a draft only when it has seats.
+		if !f.seatMapHasSeats(id) {
+			return store.SeatMap{}, false, store.ErrSeatMapSeatless
+		}
 		now := time.Now().UTC()
 		m.Status = "published"
 		m.PublishedAt = &now
@@ -261,6 +276,16 @@ func (f *fakeStore) pinSeat(anyVersionID uuid.UUID, identity string) {
 // new geometry. The authoritative behaviour is proven by the store smoke tests;
 // this fake exists so the HTTP handler can be tested without Postgres.
 func (f *fakeStore) EditSeatMap(_ context.Context, in store.EditSeatMapInput) (store.SeatMap, bool, error) {
+	// TKT-318: an edit with no seats is refused before the family is resolved, as in the store.
+	seats := 0
+	for _, sec := range in.Sections {
+		for _, row := range sec.Rows {
+			seats += len(row.Seats)
+		}
+	}
+	if seats == 0 {
+		return store.SeatMap{}, false, store.ErrSeatMapSeatless
+	}
 	cur, ok := f.currentPublishedInFamily(in.SeatMapID, in.OrganizerID)
 	if !ok {
 		return store.SeatMap{}, false, fmt.Errorf("seat map: %w", store.ErrNotFound)
@@ -686,6 +711,10 @@ func (f *fakeStore) CreatePerformance(_ context.Context, in store.PerformanceInp
 		if m.Status != "published" {
 			return store.Performance{}, store.ErrSeatMapNotPublished
 		}
+		// TKT-318: a version with no seats cannot seat a slot.
+		if !f.seatMapHasSeats(*in.SeatMapID) {
+			return store.Performance{}, store.ErrSeatMapSeatless
+		}
 	}
 	re := in.ReEntry
 	if re.Mode == "" {
@@ -890,6 +919,7 @@ func (f *fakeStore) PerformanceDisplayNames(_ context.Context, ids []uuid.UUID) 
 			PerformanceID: id,
 			EventName:     f.events[p.EventID].Name,
 			StartsAt:      p.StartsAt,
+			Timezone:      p.Timezone,
 		})
 	}
 	return out, nil
@@ -1365,18 +1395,18 @@ func newEnv(t *testing.T) *env {
 	// Keyed, so the whole env can exercise the organizer assertion (TKT-245): an
 	// unkeyed server verifies nothing, which would make every assertion test in
 	// this package pass for the wrong reason.
-	return newEnvWithAssertionKey(t, testOrganizerAssertionKey)
+	return newEnvWithAssertionSigner(t, testOrganizerAssertionSigner(t))
 }
 
-// newEnvWithAssertionKey builds the same env with a chosen assertion key. Pass ""
-// for the unkeyed server -- the construction path that forgets, which must mint
-// and verify nothing rather than minting something unverifiable.
-func newEnvWithAssertionKey(t *testing.T, assertionKey string) *env {
+// newEnvWithAssertionSigner builds the same env with a chosen assertion signer.
+// Pass nil for the unkeyed server -- the construction path that forgets, which
+// must mint and verify nothing rather than minting something unverifiable.
+func newEnvWithAssertionSigner(t *testing.T, signer *OrganizerAssertionSigner) *env {
 	t.Helper()
 	st := newFakeStore()
 	pub := &fakePublisher{}
 	srv := NewServer(st, pub, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-internal-token", testStaffWriteToken).
-		WithOrganizerAssertionKey(assertionKey)
+		WithOrganizerAssertionSigner(signer)
 	h, err := NewRouter(srv, true)
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
@@ -1602,17 +1632,30 @@ func (e *env) do(method, path string, body any) *httptest.ResponseRecorder {
 // to act as a DIFFERENT tenant than the env's default -- the cross-tenant cases.
 func (e *env) assertionFor(organizerID uuid.UUID) string {
 	e.t.Helper()
-	return mintOrganizerAssertion(testOrganizerAssertionKey, uuid.New(), organizerID, time.Now().Add(time.Hour))
+	return mintOrganizerAssertion(testOrganizerAssertionSigner(e.t), uuid.New(), organizerID, time.Now().Add(time.Hour))
 }
 
 // testStaffWriteToken is the credential newEnv configures; do() presents it on
 // unsafe requests. Guard tests use doWithHeaders to present something else.
 const testStaffWriteToken = "test-staff-write-token"
 
-// Distinct from testStaffWriteToken on purpose (TKT-245): the two answer
-// different questions, and a test suite that used one value for both could not
-// tell "the credential was accepted" from "the assertion verified".
-const testOrganizerAssertionKey = "test-organizer-assertion-key"
+// testOrganizerAssertionSeed is a fixed Ed25519 seed (32 bytes of 0x07,
+// raw-standard base64). Distinct from testStaffWriteToken on purpose (TKT-245):
+// the two answer different questions, and a test suite that used one value for
+// both could not tell "the credential was accepted" from "the assertion verified".
+const testOrganizerAssertionSeed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+
+const testOrganizerAssertionKID = "catalog-org/test"
+
+// testOrganizerAssertionSigner is the signer newEnv configures.
+func testOrganizerAssertionSigner(t testing.TB) *OrganizerAssertionSigner {
+	t.Helper()
+	signer, err := NewOrganizerAssertionSigner(testOrganizerAssertionSeed, testOrganizerAssertionKID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
 
 func (e *env) validateResponse(req *http.Request, rec *httptest.ResponseRecorder) {
 	e.t.Helper()
@@ -3220,12 +3263,21 @@ func (f *fakeStore) UpdateChannel(_ context.Context, organizerID, id uuid.UUID, 
 	if !ok || c.OrganizerID != organizerID {
 		return store.Channel{}, store.ErrNotFound
 	}
+	// TKT-325: the same order as the real store — ownership, then revision,
+	// then code — and the bump happens only on success. This fake compares in
+	// Go with no lock, so API tests prove the handler forwards the token and
+	// maps the refusal; the lock and the SQL order are proved by the store
+	// smoke tests (channels_smoke_test.go), the tier where they exist.
+	if in.ExpectedRevision != c.Revision {
+		return store.Channel{}, store.ErrChannelRevisionMismatch
+	}
 	if in.Code != c.Code {
 		return store.Channel{}, store.ErrChannelCodeImmutable
 	}
 	c.DisplayName = in.DisplayName
 	c.Kind = in.Kind
 	c.Enabled = in.Enabled
+	c.Revision++
 	// Written explicitly, as the real store does — there is no trigger.
 	c.UpdatedAt = time.Now().UTC().Add(time.Millisecond)
 	f.channels[id] = c

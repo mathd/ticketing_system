@@ -51,6 +51,12 @@ func TestPerformanceDisplayNamesResolveAgainstRealPostgres(t *testing.T) {
 	if got[0].StartsAt != nil {
 		t.Fatalf("a festival day reported a start instant: %v", *got[0].StartsAt)
 	}
+	// TKT-365 (ADR-083): the zone is the stored column, scanned from the real row. The
+	// fixture's zone is not UTC, so a scan that left the field at a default, or a query
+	// that dropped the column, cannot pass.
+	if got[0].Timezone != "America/Toronto" {
+		t.Fatalf("timezone = %q, want the stored America/Toronto", got[0].Timezone)
+	}
 }
 
 // A festival day is seeded in DRAFT, which is the point: publication controls

@@ -258,11 +258,17 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	// `Amount <= 0`, not `< 0` (TKT-285). A zero charge used to pass here, bind an operation, reach
+	// the provider, and only then be refused by validateConfirmed — leaving a bound operation that
+	// could never resolve. Commerce skips the provider for a zero total, so a zero arriving here is
+	// a caller defect and is refused before the lookup, the bind and the provider. The contract
+	// declares the same bound (`Charge.amount` minimum 1); the validator answers first on the
+	// routed endpoint, and this is the guard for a caller that reaches the handler without it.
 	// One idea of which currencies exist, shared with the journal
 	// (store.SupportedCurrencies). It was a hard-coded "EUR" here against a
 	// three-letter check in the journal, so the boundary and the durable record
 	// disagreed about the assumption they both rest on (ai-review S13).
-	if in.OrderID == uuid.Nil || in.OrganizerID == uuid.Nil || in.BuyerID == uuid.Nil || in.Amount < 0 || !store.SupportedCurrencies[in.Currency] {
+	if in.OrderID == uuid.Nil || in.OrganizerID == uuid.Nil || in.BuyerID == uuid.Nil || in.Amount <= 0 || !store.SupportedCurrencies[in.Currency] {
 		write(w, 400, map[string]string{"error": "invalid charge"})
 		return
 	}

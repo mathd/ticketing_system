@@ -327,6 +327,56 @@ describe('role enforcement (COS-2, COS-4, COS-6)', () => {
     expect(await real.text()).toBe(await imaginary.text());
   });
 
+  // TKT-368: the UI-language endpoint goes through the same gate as every other
+  // write. Anonymous callers are sent to sign in and a cross-site POST is refused,
+  // and in both cases the endpoint (which would set the cookie) never runs.
+  it('sends an anonymous language switch to sign in without running the endpoint', async () => {
+    let reached = 0;
+    const res = await gateRequest({
+      request: new Request('http://backoffice:8080/admin/ui-language', { method: 'POST', headers: trusted }),
+      pathname: '/admin/ui-language',
+      sessionToken: '',
+      lookup: () => undefined as { staffId: string; organizerId: string; role: string } | undefined,
+      onAuthenticated: () => {},
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        reached++;
+        return new Response(null, { status: 303 });
+      },
+    });
+    expect(res.status).toBe(302);
+    expect(reached).toBe(0);
+  });
+
+  it('refuses a cross-site language switch before the endpoint runs', async () => {
+    let reached = 0;
+    const res = await gateRequest({
+      request: new Request('http://backoffice:8080/admin/ui-language', {
+        method: 'POST',
+        headers: { ...trusted, origin: 'https://evil.example' },
+      }),
+      pathname: '/admin/ui-language',
+      sessionToken: 'tok',
+      lookup: () => ({ staffId: 's1', organizerId: 'o1', role: 'admin' }),
+      onAuthenticated: () => {},
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        reached++;
+        return new Response(null, { status: 303 });
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(reached).toBe(0);
+  });
+
+  it('lets every signed-in role reach the language switch', async () => {
+    for (const role of ['admin', 'box_office', 'finance']) {
+      const { calls, res } = run('/admin/ui-language', role);
+      expect((await res).status, role).toBe(200);
+      expect(calls.next, role).toBe(1);
+    }
+  });
+
   // COS-7: authentication still precedes authorization, and the difference is
   // observable — anonymous gets a redirect, wrong-role gets a refusal.
   it('redirects an anonymous caller rather than refusing them', async () => {
@@ -340,5 +390,87 @@ describe('role enforcement (COS-2, COS-4, COS-6)', () => {
       next: async () => new Response('the page', { status: 200 }),
     });
     expect(res.status).toBe(302);
+  });
+
+  it('gates the seated clear POST before its page or write path (TKT-286)', async () => {
+    const pathname = '/admin/slots/slot-286';
+    const body = new URLSearchParams([
+      ['_action', 'clear-allocations'],
+      ['allocationRevision', '7'],
+    ]).toString();
+
+    const post = (origin: string, trustedOrigin: boolean) => new Request(
+      `http://backoffice:8080${pathname}`,
+      {
+        method: 'POST',
+        headers: {
+          ...(trustedOrigin ? trusted : {
+            'x-forwarded-proto': 'http',
+            'x-forwarded-host': 'localhost:8080',
+          }),
+          origin,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      },
+    );
+
+    const anonymousCalls = { lookup: 0, lookedUpToken: '', authenticated: 0, next: 0 };
+    const anonymous = await gateRequest({
+      request: post('http://localhost:8080', true),
+      pathname,
+      sessionToken: '',
+      lookup: (token) => {
+        anonymousCalls.lookup++;
+        anonymousCalls.lookedUpToken = token;
+        return undefined as { staffId: string; organizerId: string; role: string } | undefined;
+      },
+      onAuthenticated: () => { anonymousCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        anonymousCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(anonymous.status).toBe(302);
+    expect(anonymousCalls).toEqual({ lookup: 1, lookedUpToken: '', authenticated: 0, next: 0 });
+
+    const financeCalls = { lookup: 0, authenticated: 0, next: 0 };
+    const finance = await gateRequest({
+      request: post('http://localhost:8080', true),
+      pathname,
+      sessionToken: 'finance-token',
+      lookup: () => {
+        financeCalls.lookup++;
+        return { staffId: 'finance-staff', organizerId: 'o1', role: 'finance' };
+      },
+      onAuthenticated: () => { financeCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        financeCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(finance.status).toBe(403);
+    expect(financeCalls).toEqual({ lookup: 1, authenticated: 0, next: 0 });
+
+    const hostileCalls = { lookup: 0, authenticated: 0, next: 0 };
+    const hostileOrigin = await gateRequest({
+      request: post('http://evil.example', false),
+      pathname,
+      sessionToken: 'admin-token',
+      lookup: () => {
+        hostileCalls.lookup++;
+        return { staffId: 'admin-staff', organizerId: 'o1', role: 'admin' };
+      },
+      onAuthenticated: () => { hostileCalls.authenticated++; },
+      redirectToLogin: () => new Response(null, { status: 302 }),
+      next: async () => {
+        hostileCalls.next++;
+        return new Response('page/write path', { status: 200 });
+      },
+    });
+    expect(hostileOrigin.status).toBe(403);
+    expect(hostileCalls).toEqual({ lookup: 0, authenticated: 0, next: 0 });
   });
 });

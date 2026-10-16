@@ -1,6 +1,8 @@
 // Back-office shell: Astro 7 SSR + React (ADR-006), reusing the storefront's
-// real scaffolding (@astrojs/node standalone, ssr.noExternal) minus i18n — a
-// single-locale staff tool. It serves under /admin/ (base), because the gateway
+// real scaffolding (@astrojs/node standalone, ssr.noExternal) minus Astro's i18n
+// routing: the staff UI language is a cookie preference set by POST
+// /admin/ui-language (TKT-368), not a path prefix, so no URL changes with it.
+// It serves under /admin/ (base), because the gateway
 // proxies /admin/ to this app WITHOUT stripping the prefix (web-shell rule,
 // gateway/cmd/gateway/main.go); a missing base would 404 every asset behind the
 // proxy. The healthz probe therefore lives at /admin/healthz (see compose).

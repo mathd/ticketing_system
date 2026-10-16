@@ -1,7 +1,7 @@
 ---
 import type { PublicEventDetail } from '../lib/api';
 import { formatMoney, formatStartsAt } from '../lib/format';
-import type { Locale } from '../lib/locales';
+import { fill, type Locale } from '../lib/locales';
 import HoldPicker from './HoldPicker';
 
 type Performance = PublicEventDetail['performances'][number];
@@ -9,7 +9,9 @@ interface Props {
   performance: Performance;
   organizerId: string;
   locale: Locale;
-  venueLabel: string;
+  // The venue line template, `{name}` included (TKT-365): the punctuation around the name
+  // is the locale's, so French writes « Salle : … » with its own space.
+  venueLine: string;
   ticketsLabel: string;
   // Whether a day is individually purchasable. Festival days draw on a shared
   // festival pool and are NOT claimable per-day in this skeleton — the picker
@@ -23,7 +25,7 @@ const {
   performance: perf,
   organizerId,
   locale,
-  venueLabel,
+  venueLine,
   ticketsLabel,
   purchasable = true,
   soldSeparatelyLabel,
@@ -32,7 +34,7 @@ const {
 
 <section class="performance">
   <h3>{formatStartsAt(perf.starts_at, perf.timezone, locale)}</h3>
-  <p class="venue">{venueLabel}: {perf.venue.name}</p>
+  <p class="venue">{fill(venueLine, { name: perf.venue.name })}</p>
   <h4>{ticketsLabel}</h4>
   <ul class="tickets">
     {perf.ticket_types.map((tt) => <li><span>{tt.name}</span><span class="price">{formatMoney(tt.price.amount, tt.price.currency, locale)}</span></li>)}

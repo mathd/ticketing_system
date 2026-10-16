@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,10 +27,23 @@ type fakeMsg struct {
 	subject string
 	data    []byte
 	actions []string
+	// delivered is the broker's delivery count. Zero reads as the first delivery.
+	delivered uint64
+	// metaErr makes Metadata fail, as an unreadable broker reply would.
+	metaErr error
+	// onAck runs as the message is acked, so a test can observe what the ack depends on.
+	onAck func()
 }
 
 func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return &jetstream.MsgMetadata{NumDelivered: 1}, nil
+	if m.metaErr != nil {
+		return nil, m.metaErr
+	}
+	n := m.delivered
+	if n == 0 {
+		n = 1
+	}
+	return &jetstream.MsgMetadata{NumDelivered: n}, nil
 }
 func (m *fakeMsg) Data() []byte         { return m.data }
 func (m *fakeMsg) Headers() nats.Header { return nil }
@@ -39,8 +53,14 @@ func (m *fakeMsg) Subject() string {
 	}
 	return m.subject
 }
-func (m *fakeMsg) Reply() string                   { return "" }
-func (m *fakeMsg) Ack() error                      { m.actions = append(m.actions, "ack"); return nil }
+func (m *fakeMsg) Reply() string { return "" }
+func (m *fakeMsg) Ack() error {
+	m.actions = append(m.actions, "ack")
+	if m.onAck != nil {
+		m.onAck()
+	}
+	return nil
+}
 func (m *fakeMsg) DoubleAck(context.Context) error { return m.Ack() }
 func (m *fakeMsg) Nak() error                      { m.actions = append(m.actions, "nak"); return nil }
 func (m *fakeMsg) NakWithDelay(time.Duration) error {
@@ -845,10 +865,13 @@ func TestSchema1DispositionsAreRetryTerminateOrMoot(t *testing.T) {
 	body := `{"id":` + uid + `,"schema":1,"data":{"performance_id":` + uid + `,"organizer_id":` + uid + `}}`
 
 	for name, tc := range map[string]struct {
-		resolver fakeResolver
-		body     string
-		want     string // the one action that must appear
-		why      string
+		resolver   fakeResolver
+		body       string
+		want       string // the one action that must appear
+		why        string
+		delivered  uint64 // broker delivery count; zero is the first delivery
+		metaErr    error  // makes the delivery count unreadable
+		wantParked int    // parked rows the store must hold afterwards
 	}{
 		// UNCHANGED, and asserted so the fix cannot be "terminate schema 1": catalog
 		// being unreachable is an outage, and terminating drops the publication for
@@ -879,16 +902,100 @@ func TestSchema1DispositionsAreRetryTerminateOrMoot(t *testing.T) {
 			want:     "term",
 			why:      "the payload is poison before any lookup; this failure does not depend on catalog at all",
 		},
+		// TKT-317 D2. Catalog answered, and the answer cannot be used. Below the bound it is
+		// retried. At the bound and past it, the event is parked and terminated. The three rows
+		// around the bound pin the boundary.
+		"an unusable answer below the bound retries": {
+			resolver:  fakeResolver{err: errCatalogUnusable},
+			body:      body,
+			want:      "nak-delay",
+			why:       "an early unusable answer may still be a catalog blip that clears",
+			delivered: parkAfterDeliveries - 1,
+		},
+		"an unusable answer at the bound parks": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "the bound is reached, so the event is parked durably and terminated",
+			delivered:  parkAfterDeliveries,
+			wantParked: 1,
+		},
+		"an unusable answer past the bound parks": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "every delivery past the bound parks too, and the bound is never reset",
+			delivered:  parkAfterDeliveries + 1,
+			wantParked: 1,
+		},
+		// The bound counts every delivery, not consecutive bad answers. A message whose earlier
+		// deliveries failed on transport is parked at its first unusable answer past the bound.
+		"an unusable answer after transport failures parks at once": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "earlier transport failures count towards the bound, and do not restart it",
+			delivered:  parkAfterDeliveries + 2,
+			wantParked: 1,
+		},
+		// R6 (TKT-317): the bound as literal delivery numbers. They are written out here, not derived
+		// from parkAfterDeliveries, so changing the constant moves no fixture and fails these rows.
+		// The bound is five deliveries: four retries, and five and six park.
+		"delivery 4 of an unusable answer retries (literal)": {
+			resolver:  fakeResolver{err: errCatalogUnusable},
+			body:      body,
+			want:      "nak-delay",
+			why:       "four deliveries are below the five-delivery bound",
+			delivered: 4,
+		},
+		"delivery 5 of an unusable answer parks (literal)": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "five deliveries is the bound, so the event is parked",
+			delivered:  5,
+			wantParked: 1,
+		},
+		"delivery 6 of an unusable answer parks (literal)": {
+			resolver:   fakeResolver{err: errCatalogUnusable},
+			body:       body,
+			want:       "term",
+			why:        "six deliveries is past the bound, so the event is parked",
+			delivered:  6,
+			wantParked: 1,
+		},
+		// Transport is never parked. Only an answer that was received and cannot be used is bounded.
+		"a transport failure past the bound still retries": {
+			resolver:  fakeResolver{err: errResolveUnavailable},
+			body:      body,
+			want:      "nak-delay",
+			why:       "a dependency outage is not a bad answer, and parking it would lose a publication",
+			delivered: parkAfterDeliveries + 1,
+		},
+		"an unreadable delivery count retries": {
+			resolver: fakeResolver{err: errCatalogUnusable},
+			body:     body,
+			want:     "nak-delay",
+			why:      "without a delivery count the bound cannot be judged, so the message is kept",
+			metaErr:  errors.New("no metadata"),
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := testConsumer()
+			c, st := testConsumerWithStore()
 			c.resolver = tc.resolver
-			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tc.body))}
+			msg := &fakeMsg{data: []byte(withSubjectType(subjectPublished, tc.body)), delivered: tc.delivered, metaErr: tc.metaErr}
 
 			c.handle(context.Background(), msg)
 
 			if !slices.Contains(msg.actions, tc.want) {
 				t.Fatalf("actions = %v, want %q — %s", msg.actions, tc.want, tc.why)
+			}
+			if len(st.parked) != tc.wantParked {
+				t.Fatalf("parked = %d, want %d — %s", len(st.parked), tc.wantParked, tc.why)
+			}
+			if tc.wantParked == 1 && !bytes.Equal(st.parked[0].Envelope, msg.data) {
+				t.Errorf("the parked record holds %q, not the delivered envelope %q; the record must keep the exact bytes",
+					st.parked[0].Envelope, msg.data)
 			}
 			for _, other := range []string{"ack", "term", "nak-delay"} {
 				if other != tc.want && slices.Contains(msg.actions, other) {
@@ -905,4 +1012,67 @@ func TestSchema1DispositionsAreRetryTerminateOrMoot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TKT-317 D2: a bounded park needs a durable record first. A store failure keeps the message for
+// redelivery, and a collision is poison: it is terminated, and the first copy stays as it was.
+func TestTKT317ParkWriteFailureRetainsTheMessageAndACollisionTerminates(t *testing.T) {
+	ctx := context.Background()
+	evt := uuid.NewString()
+	body := `{"id":"` + evt + `","schema":1,"data":{"performance_id":"` + perfID + `","organizer_id":"` + orgID + `","closure_version":1}}`
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"a store failure retains the message", errors.New("db down"), "nak-delay"},
+		{"a collision is poison", store.ErrCatalogParkedCollision, "term"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeCatalogStore{parkErr: tc.err}
+			c := offeringConsumer(st, fakeResolver{err: errCatalogUnusable})
+			msg := &fakeMsg{subject: subjectClosed, data: []byte(withSubjectType(subjectClosed, body)), delivered: parkAfterDeliveries}
+
+			c.handle(ctx, msg)
+
+			if len(msg.actions) != 1 || msg.actions[0] != tc.want {
+				t.Fatalf("actions = %v, want exactly [%s]", msg.actions, tc.want)
+			}
+			if !c.Ready() {
+				t.Fatal("a failed park latched readiness; an unusable answer is not version skew")
+			}
+		})
+	}
+}
+
+// TKT-317 D2: the bound applies to unusable answers only, so a recovery before the bound provisions
+// normally, with no parked record.
+func TestTKT317UnusableAnswerRecoversBeforeTheBound(t *testing.T) {
+	ctx := context.Background()
+	org, slot, pubID := uuid.New(), uuid.New(), uuid.New()
+	body := tkt317Publication(pubID, slot, org)
+	st := &fakeCatalogStore{}
+
+	early := offeringConsumer(st, fakeResolver{err: errCatalogUnusable})
+	first := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body)), delivered: parkAfterDeliveries - 1}
+	early.handle(ctx, first)
+	if !slices.Contains(first.actions, "nak-delay") {
+		t.Fatalf("first delivery actions = %v, want a delayed retry", first.actions)
+	}
+
+	later := offeringConsumer(st, fakeResolver{organizerID: org, capacity: 10})
+	second := &fakeMsg{data: []byte(withSubjectType(subjectPublished, body)), delivered: parkAfterDeliveries}
+	later.handle(ctx, second)
+	if !slices.Contains(second.actions, "ack") || len(st.provisioned) != 1 {
+		t.Fatalf("recovered delivery actions = %v, provisioned = %v; want ack and one pool", second.actions, st.provisioned)
+	}
+	if len(st.parked) != 0 {
+		t.Fatalf("a recovered event was parked: %v", st.parked)
+	}
+}
+
+// tkt317Publication is a handwritten schema-1 publication literal. It is not built from the type
+// under test (ADR-017).
+func tkt317Publication(id, slot, org uuid.UUID) string {
+	return fmt.Sprintf(`{"id":"%s","schema":1,"data":{"performance_id":"%s","organizer_id":"%s"}}`, id, slot, org)
 }

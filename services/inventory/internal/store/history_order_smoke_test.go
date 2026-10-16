@@ -135,101 +135,73 @@ func TestHistoryOrdersTiedTimestampsByAppendOrder(t *testing.T) {
 	}
 }
 
-// TestHistoryOrdersDistinctTimestampsByOccurredAt pins the other direction: append_order
-// is a TIE-BREAK, not the primary key of the order. A row with a LATER occurred_at but a
-// LOWER append_order must still sort last.
+// TestHistoryOrdersDistinctTimestampsByAppendOrder: append order LEADS (TKT-295, owner
+// decision D1: ORDER BY append_order NULLS FIRST, occurred_at, id).
 //
-// Without this, an implementation that ordered by append_order first would pass the tie
-// test above while silently reordering every history that has distinct timestamps — which
-// is all of them, almost all of the time (ai-review finding 1).
+// REVERSED from TKT-234's gap sentinel `TestHistoryOrdersDistinctTimestampsByOccurredAt`,
+// which pinned the old wall-clock-first preference as a KNOWN gap so it could not drift
+// silently. TKT-295 closes that gap, so the pin is reversed here, deliberately, not deleted.
 //
-// ────────────────────────────────────────────────────────────────────────────────────────
-// TKT-234 / ADR-021 §Amendment (2026-09-01): THIS TEST IS ALSO A GAP SENTINEL. READ BEFORE
-// CHANGING IT.
+// The state is REACHABLE through ordinary writes: `occurred_at` defaults to
+// clock_timestamp(), so a backward clock step between two inserts gives an increasing
+// append_order against a decreasing occurred_at, with the numbering trigger firing
+// normally. This fixture builds exactly that WITH THE TRIGGER ENABLED — it supplies the two
+// inverted timestamps and lets the trigger number the rows — so no state is synthesized.
 //
-// It records the CURRENT preference — wall clock first — and that preference is exactly the
-// exposure ADR-021's amendment names and does NOT close: `claim_history` has no hash chain,
-// so unlike access's lifecycle trail its sort key IS its ordering guarantee, and a backward
-// clock step genuinely reorders history that was appended in a definite order.
-//
-// So this test going red is not automatically a regression. **TKT-295 promotes
-// `append_order` to the primary sort key**, and when it does, this test MUST go red. Reverse
-// it deliberately, with the legacy-NULL boundary stated — do not delete it, and do not
-// "fix" it by weakening the assertion. That is the discipline ADR-021's rollback-gap test
-// exists to enforce: a known gap is pinned as PRESENT so it cannot drift silently, and the
-// day it closes, the pin is updated rather than removed.
-//
-// TWO THINGS TKT-295 INHERITS, and the first one corrects an earlier reading of this test.
-//
-//   - **The state this fixture builds IS honestly reachable, and that is the whole point.**
-//     An earlier draft of this comment (and TKT-234's shaping note) said the trigger makes
-//     it "unreachable through the normal path". That is wrong, and it matters: the trigger
-//     controls WHO ASSIGNS `append_order`, not the RELATIVE ORDER of the two columns.
-//     `occurred_at` defaults to `clock_timestamp()` (0012:43), so a backward clock step
-//     between two ordinary inserts produces exactly this state — an increasing
-//     `append_order` against a decreasing `occurred_at` — with the trigger firing normally
-//     throughout. `withTriggerDisabled` is used here only to CONSTRUCT the state
-//     deterministically without waiting for a clock step; it is a convenience, not evidence
-//     that the state is synthetic. **This test therefore records a real exposure**, which is
-//     precisely why it is a gap sentinel rather than a curiosity.
-//   - **The trigger does not govern every writer.** Measured against this repo's PostgreSQL:
-//     an ordinary INSERT fires it (a supplied 999 became 1), `COPY` fires it, and it does
-//     **not** fire for any session running `SET session_replication_role = replica` — the
-//     same insert kept 999 — because this is an ordinary `CREATE TRIGGER` with no
-//     `ENABLE REPLICA`/`ENABLE ALWAYS`. Logical-replication apply is one such session; a
-//     maintenance session is another. Worse than either alone: a subscription's INITIAL
-//     SYNC uses `COPY` and therefore renumbers, then streaming apply preserves publisher
-//     values — two independently generated numbering schemes in one column, which may
-//     overlap. Not a live hazard (nothing here configures replication; `wal_level` is
-//     `replica`, not `logical`). **Migration 0012 now records this exception at the trigger
-//     itself** — that is the authoritative statement; this is a pointer to it. ADR-021
-//     §Amendment (TKT-234) says what it would cost.
-//   - Its sibling `TestHistoryOrdersTiedTimestampsByAppendOrder` (:83) is INDEPENDENT of
-//     this one and must stay green through TKT-295: same-microsecond collisions ordered by
-//     `append_order` is a regression proof, not a preference.
-// ────────────────────────────────────────────────────────────────────────────────────────
-func TestHistoryOrdersDistinctTimestampsByOccurredAt(t *testing.T) {
+// What the order proves (ADR-021 § Amendment): honest-writer consistency, not
+// tamper-evidence. A writer that disables the trigger or runs with
+// session_replication_role=replica supplies append_order itself.
+func TestHistoryOrdersDistinctTimestampsByAppendOrder(t *testing.T) {
 	f := historyFixture(t)
+	fixtureRows, err := f.st.History(f.ctx, f.org, f.claim)
+	if err != nil || len(fixtureRows) != 1 {
+		t.Fatalf("setup: fixture history = %+v, %v; want one row", fixtureRows, err)
+	}
 
 	var base time.Time
 	if err := f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&base); err != nil {
 		t.Fatal(err)
 	}
-	later, earlier := uuid.New(), uuid.New()
-
-	// The trigger overwrites whatever a writer supplies, so it is disabled here to assign
-	// append_order DETERMINISTICALLY — that is the only reason, and it is worth being exact
-	// because an earlier version of this comment said the trigger makes the resulting state
-	// "unreachable through the normal path". IT DOES NOT (see the block above this test):
-	// occurred_at defaults to clock_timestamp(), so a backward clock step between two
-	// ordinary inserts produces the same disagreement with the trigger firing throughout.
-	// Disabling it buys a fixture that does not depend on moving the system clock.
-	// Restored immediately, and by t.Cleanup so a failure between the two statements cannot
-	// leave it disabled for the rest of the schema's life.
-	withTriggerDisabled(t, f, func() {
-		insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
-			VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5,$6)`
-		// Appended with the LOWER append_order but the LATER timestamp.
-		if _, err := f.db.ExecContext(f.ctx, insert, later, f.org, f.claim, "release", base.Add(time.Second), 1_000_001); err != nil {
-			t.Fatal(err)
-		}
-		// HIGHER append_order, EARLIER timestamp: must come first.
-		if _, err := f.db.ExecContext(f.ctx, insert, earlier, f.org, f.claim, "place", base, 1_000_002); err != nil {
-			t.Fatal(err)
-		}
-	})
+	appendedFirst, appendedSecond := uuid.New(), uuid.New()
+	insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at)
+		VALUES($1,$2,$3,$4,'staff:a','r',1,1,'held',$5)`
+	// Appended FIRST, stamped LATER — the clock then stepped back for the second append.
+	if _, err := f.db.ExecContext(f.ctx, insert, appendedFirst, f.org, f.claim, "place", base.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.ExecContext(f.ctx, insert, appendedSecond, f.org, f.claim, "release", base); err != nil {
+		t.Fatal(err)
+	}
+	var firstNo, secondNo int64
+	if err := f.db.QueryRowContext(f.ctx, `SELECT (SELECT append_order FROM claim_history WHERE id=$1), (SELECT append_order FROM claim_history WHERE id=$2)`,
+		appendedFirst, appendedSecond).Scan(&firstNo, &secondNo); err != nil {
+		t.Fatal(err)
+	}
+	if firstNo >= secondNo {
+		t.Fatalf("setup: the trigger numbered the rows %d, %d; want increasing in append order", firstNo, secondNo)
+	}
 
 	hist, err := f.st.History(f.ctx, f.org, f.claim)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hist) != 3 {
-		t.Fatalf("history = %d rows, want 3: %+v", len(hist), hist)
+	want := []uuid.UUID{fixtureRows[0].HistoryID, appendedFirst, appendedSecond}
+	assertHistoryIDs(t, hist, want, "a backward clock step must not reorder history appended in a definite order")
+}
+
+func assertHistoryIDs(t *testing.T, hist []HistoryEntry, want []uuid.UUID, why string) {
+	t.Helper()
+	got := make([]uuid.UUID, len(hist))
+	for i, h := range hist {
+		got[i] = h.HistoryID
 	}
-	if hist[1].HistoryID != earlier || hist[2].HistoryID != later {
-		t.Fatalf("distinct timestamps ordered as [%s %s], want [%s %s] — occurred_at must "+
-			"remain the primary key of the order; append_order only breaks ties",
-			hist[1].HistoryID, hist[2].HistoryID, earlier, later)
+	if len(got) != len(want) {
+		t.Fatalf("history = %v, want %v (%s)", got, want, why)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("history = %v, want %v (%s)", got, want, why)
+		}
 	}
 }
 
@@ -259,6 +231,11 @@ func TestHistoryOrdersLegacyRowsBeforeTiedNewRows(t *testing.T) {
 		}
 	})
 
+	// withTriggerDisabled restores the trigger at CLEANUP, so it is re-enabled explicitly here:
+	// the fresh row must be numbered by the real trigger, as every row after 0012 is.
+	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE claim_history ENABLE TRIGGER claim_history_set_append_order`); err != nil {
+		t.Fatal(err)
+	}
 	// A new row sharing the legacy row's timestamp.
 	fresh := uuid.New()
 	if _, err := f.db.ExecContext(f.ctx,
@@ -274,10 +251,12 @@ func TestHistoryOrdersLegacyRowsBeforeTiedNewRows(t *testing.T) {
 	if len(hist) != 3 {
 		t.Fatalf("history = %d rows, want 3: %+v", len(hist), hist)
 	}
-	if hist[1].HistoryID != legacy || hist[2].HistoryID != fresh {
-		t.Fatalf("legacy/new tie ordered as [%s %s], want legacy %s first then %s — "+
-			"NULLS FIRST places an unordered legacy row before a row written after the migration",
-			hist[1].HistoryID, hist[2].HistoryID, legacy, fresh)
+	// TKT-295: append_order LEADS with NULLS FIRST, so the legacy row precedes EVERY numbered
+	// row — including the fixture's, which was written earlier in this test but after 0012.
+	// A pre-0012 row is by definition older than any numbered row on the ordinary write path.
+	if hist[0].HistoryID != legacy || hist[2].HistoryID != fresh {
+		t.Fatalf("history = [%s %s %s], want legacy %s first and %s last — NULLS FIRST places "+
+			"every legacy row before every numbered row", hist[0].HistoryID, hist[1].HistoryID, hist[2].HistoryID, legacy, fresh)
 	}
 }
 
@@ -404,4 +383,109 @@ func TestClaimHistoryRejectsNonPositiveAppendOrder(t *testing.T) {
 			t.Fatalf("rejected, but not by the positivity constraint: %v", err)
 		}
 	})
+}
+
+// TKT-295 COS3: legacy rows precede numbered rows EVEN WHEN their timestamps are later, and
+// keep occurred_at, id order among themselves. Legacy NULLs are seeded with the trigger
+// disabled — the only way to produce one today; on the ordinary path every row after 0012
+// is numbered.
+func TestHistoryOrdersLegacyRowsFirstByOccurredAtAmongThemselves(t *testing.T) {
+	f := historyFixture(t)
+	fixtureRows, err := f.st.History(f.ctx, f.org, f.claim)
+	if err != nil || len(fixtureRows) != 1 {
+		t.Fatalf("setup: fixture history = %+v, %v", fixtureRows, err)
+	}
+	var base time.Time
+	if err := f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&base); err != nil {
+		t.Fatal(err)
+	}
+	// Two legacy rows, both LATER than the numbered fixture row, inserted in REVERSE time
+	// order and with uuids opposite their time order, so only `occurred_at` can sort them.
+	legacyEarly := uuid.MustParse("ffffffff-ffff-4fff-8fff-fffffffffff0")
+	legacyLate := uuid.MustParse("00000000-0000-4000-8000-00000000000a")
+	withTriggerDisabled(t, f, func() {
+		insert := `INSERT INTO claim_history(id,organizer_id,claim_id,action,actor,reason,quantity,quantity_after,status_after,occurred_at,append_order)
+			VALUES($1,$2,$3,'place','staff:a','r',1,1,'held',$4,NULL)`
+		if _, err := f.db.ExecContext(f.ctx, insert, legacyLate, f.org, f.claim, base.Add(2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.ExecContext(f.ctx, insert, legacyEarly, f.org, f.claim, base.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	hist, err := f.st.History(f.ctx, f.org, f.claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHistoryIDs(t, hist, []uuid.UUID{legacyEarly, legacyLate, fixtureRows[0].HistoryID},
+		"legacy rows first, by occurred_at among themselves, then numbered rows")
+}
+
+// capacityRow inserts a pool-shaped (adjust_capacity) history row; append_order is left to
+// the trigger unless the trigger is disabled and a NULL is wanted.
+func capacityRow(t *testing.T, f historyFixtureData, slot, id uuid.UUID, at time.Time, legacyNull bool) {
+	t.Helper()
+	col, val := "", ""
+	if legacyNull {
+		col, val = ",append_order", ",NULL"
+	}
+	if _, err := f.db.ExecContext(f.ctx, `INSERT INTO claim_history(id,organizer_id,pool_id,action,actor,reason,quantity,quantity_after,status_after,idempotency_key,request_fingerprint,occurred_at`+col+`)
+		VALUES($1,$2,$3,'adjust_capacity','staff','resize',10,10,'applied',$4,'fp',$5`+val+`)`,
+		id, f.org, slot, "k-"+id.String(), at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TKT-295: the same three properties on the OTHER read, CapacityHistory — the reads are
+// separate statements and must not drift apart.
+func TestCapacityHistoryOrdersByAppendOrder(t *testing.T) {
+	ctx, st, db := storeForTest(t, 10*time.Minute)
+	org, slot := provisioned(t, ctx, st, 10)
+	f := historyFixtureData{ctx: ctx, st: st, db: db, org: org}
+	var base time.Time
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&base); err != nil {
+		t.Fatal(err)
+	}
+	ids := func() []uuid.UUID {
+		hist, err := st.CapacityHistory(ctx, org, slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []uuid.UUID{}
+		for _, h := range hist {
+			out = append(out, h.HistoryID)
+		}
+		return out
+	}
+	existing := ids()
+
+	// Distinct timestamps inverted against append order (a backward clock step).
+	first, second := uuid.New(), uuid.New()
+	capacityRow(t, f, slot, first, base.Add(time.Second), false)
+	capacityRow(t, f, slot, second, base, false)
+	// A tie on occurred_at, uuids opposite append order.
+	tieFirst := uuid.MustParse("ffffffff-ffff-4fff-8fff-ffffffffffff")
+	tieSecond := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	capacityRow(t, f, slot, tieFirst, base, false)
+	capacityRow(t, f, slot, tieSecond, base, false)
+	// Two legacy rows, LATER than everything, which must still come first — inserted in
+	// reverse time order with uuids opposite their time order, so only occurred_at can order
+	// them among themselves.
+	legacyEarly := uuid.MustParse("ffffffff-ffff-4fff-8fff-fffffffffff0")
+	legacyLate := uuid.MustParse("00000000-0000-4000-8000-00000000000a")
+	withTriggerDisabled(t, f, func() {
+		capacityRow(t, f, slot, legacyLate, base.Add(2*time.Hour), true)
+		capacityRow(t, f, slot, legacyEarly, base.Add(time.Hour), true)
+	})
+
+	got := ids()
+	want := append(append([]uuid.UUID{legacyEarly, legacyLate}, existing...), first, second, tieFirst, tieSecond)
+	if len(got) != len(want) {
+		t.Fatalf("capacity history = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("capacity history = %v, want %v (legacy first, then append order)", got, want)
+		}
+	}
 }

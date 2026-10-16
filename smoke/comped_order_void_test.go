@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -22,13 +23,16 @@ import (
 // service-to-service; the absence of money is a fact about commerce's tables and
 // the payments journal. A unit test can see one or the other.
 //
-// The comped order is built by a zero-price ticket type rather than by writing
-// unit_amount directly: the path a real comped ticket takes is a catalog price of
-// 0, and a fixture that wrote the column would prove the void works on a state the
-// system might never produce.
+// The comped order is built by a zero-price ticket type and checked out at zero
+// (TKT-285): the path a real comped ticket takes is a catalog price of 0, and a
+// fixture that wrote the column would prove the void works on a state the system
+// might never produce. Until TKT-285 a zero checkout answered 202 payment_unknown,
+// so this test bought the ticket at face value and zeroed the reservation afterwards —
+// a state with a real PSP charge still behind it, which the old comment here
+// confessed. That fixture is gone; the order below has no payment operation at all.
 func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	ctx := context.Background()
-	slot, tt := publishedSlot(t, "Comped Void Hall", 10)
+	slot, tt := publishedSlotAt(t, "Comped Void Hall", 10, 0)
 
 	_, _, _, before := staffAvailability(t, slot)
 
@@ -61,57 +65,14 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 		t.Fatalf("available after the comped sale = %d, want %d — the fixture must actually hold a seat", held, before-2)
 	}
 
-	// The order is bought at face value and then made comped, rather than being
-	// checked out at a zero price.
-	//
-	// Not a shortcut, and worth stating exactly: a zero-amount CHECKOUT does not
-	// currently complete — it answers 202 payment_unknown, because the charge leg
-	// does not resolve for a zero total. That is a real, separate limitation of the
-	// purchase path, it predates this ticket, and it is filed rather than fixed
-	// here (TKT-171 is about REVERSING a comped order, not about creating one).
-	//
-	// What this ticket needs is an order in the state a comped order occupies —
-	// completed, with tickets issued, holding capacity, and NOTHING CAPTURED —
-	// which is exactly what the cancellation runner encounters. That state is what
-	// is built here. The reversal reads both money columns under the order row
-	// lock, so this fixture exercises the same predicate a genuinely comped order
-	// would.
-	//
-	// ONE HONEST LIMITATION, stated because the first version of this test hid it.
-	// A PSP charge for the original purchase still exists behind this order; only
-	// commerce's columns are zeroed. So this test proves the void does not write
-	// commerce money — no refund row, no refund fact, an untouched projection — and
-	// it does NOT prove anything about the provider, because the fixture's provider
-	// state is a lie the fixture told.
-	//
-	// That distinction is load-bearing: an earlier version asserted "no refund
-	// occurred" against exactly this fixture and thereby demonstrated a CHARGED
-	// order being voided without reimbursement while calling it success (ai-review
-	// F1). The guard that now makes that impossible — a void requires
-	// total_amount 0, so an order with captured fees is refused — is proven at the
-	// store and runner tiers, where the state can be built without lying about a
-	// provider. See TestBindOrderVoidRefusesAZeroFaceOrderThatCapturedFees.
-	com0, err := pgx.Connect(ctx, dsn("commerce", "commerce"))
-	if err != nil {
-		t.Fatal(err)
+	// What the order IS, before anything is reversed: bought at zero, so payments holds no
+	// operation and no settlement row for it and its journal is exactly the two order facts.
+	// This is the property that makes "the void moves no money" mean something here — with a
+	// PSP charge behind the order the same assertions would be about a lie the fixture told.
+	if reservation["amount"] != float64(0) {
+		t.Fatalf("reserved total = %v, want 0: the ticket type is priced at zero", reservation["amount"])
 	}
-	// Every money column AND the fee snapshot, together. Migration 0014 enforces
-	// both that face <= total (reservations_face_value_bounds) and that the stored
-	// snapshot AGREES with the columns it explains (reservations_fee_snapshot_shape:
-	// "a snapshot that says one thing while the row charges another is worse than no
-	// snapshot"). Zeroing them piecemeal is refused, twice — the schema resisting an
-	// incoherent comped state, which is the behaviour those constraints exist for.
-	if _, err := com0.Exec(ctx, `UPDATE reservations
-		SET unit_amount=0, total_amount=0, face_value_amount=0,
-		    fee_resolution_snapshot = jsonb_set(jsonb_set(jsonb_set(
-		        fee_resolution_snapshot,
-		        '{face_value}', '0'::jsonb),
-		        '{passed_on_fees}', '0'::jsonb),
-		        '{total_amount}', '0'::jsonb)
-		WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, order.OrderID); err != nil {
-		t.Fatal(err)
-	}
-	_ = com0.Close(ctx)
+	assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 
 	// AFTER issuance, deliberately: voiding drives access, which answers 503 until
 	// the tickets exist (its outbox/JetStream path is asynchronous). Voiding earlier
@@ -135,9 +96,22 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 		return nil
 	})
 
-	code, body = internalJSON(t, http.MethodPost,
-		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "event cancelled"})
+	// TKT-287 COS3, executed: each refusal predicate first, each with its own key.
+	// None may void anything — checked below by capacity still being held, and by the
+	// owner's void then arriving fresh (replay=false) for the whole order.
+	voidURL := fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID)
+	for i, tc := range staffRefusals(t) {
+		code, body := commerceStaffCall(t, http.MethodPost, voidURL, fmt.Sprintf("void-refused-%d-%s", i, slot),
+			tc.headers, map[string]any{"actor": "staff:tenancy", "reason": "cross-tenant probe"})
+		assertStaffRefusal(t, tc.name, code, body)
+		// After EACH refusal, not once at the end: capacity still held.
+		if _, _, _, held := staffAvailability(t, slot); held != before-2 {
+			t.Fatalf("%s: available = %d, want %d — a refused void returned capacity", tc.name, held, before-2)
+		}
+	}
+
+	code, body = commerceStaffCall(t, http.MethodPost, voidURL, "void-"+slot, staffHeaders(t, organizerID),
+		map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
 	if code != http.StatusOK {
 		t.Fatalf("void comped order: %d %s", code, body)
 	}
@@ -198,6 +172,9 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if facts != 0 {
 		t.Fatalf("the void wrote %d refund facts; ADR-003 — the journal records what happened", facts)
 	}
+	// And payments' side, re-read exactly: still the order's two purchase facts and nothing
+	// the reversal could have added — no refund fact, no operation, no settlement row.
+	assertZeroOrderJournal(t, ctx, order.OrderID, fmt.Sprint(reservation["buyer_id"]))
 	var refundStatus string
 	var refundedQty int
 	if err := com.QueryRow(ctx, `SELECT refund_status, refunded_quantity FROM orders WHERE id=$1`, order.OrderID).Scan(&refundStatus, &refundedQty); err != nil {
@@ -228,9 +205,9 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	// A replay converges on the same void rather than reversing twice — and it
 	// arrives under a DIFFERENT idempotency key, which is the case the
 	// order-derived identity exists for.
-	code, body = internalJSON(t, http.MethodPost,
+	code, body = commerceStaffCall(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-replay-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "event cancelled"})
+		staffHeaders(t, organizerID), map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
 	if code != http.StatusOK {
 		t.Fatalf("replay void: %d %s", code, body)
 	}
@@ -247,6 +224,13 @@ func TestACompedOrderIsVoidedAndItsSeatComesBack(t *testing.T) {
 	if _, _, _, back := staffAvailability(t, slot); back != before {
 		t.Fatalf("available after the replay = %d, want %d — a replay must not return capacity twice", back, before)
 	}
+	// TKT-287: an EXISTING void is no way around scope either. The owner's exact
+	// request, replayed under another organizer's valid assertion, is the same 404 —
+	// not a 200 replay that would confirm the order and leak its void.
+	code, body = commerceStaffCall(t, http.MethodPost,
+		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "void-"+slot,
+		staffHeaders(t, uuid.NewString()), map[string]any{"actor": "staff:coverage", "reason": "event cancelled"})
+	assertStaffRefusal(t, "a cross-tenant replay of the owner's void", code, body)
 }
 
 // COS-5 through the real stack: a PAID order is refused by the void path. It has
@@ -279,9 +263,9 @@ func TestAPaidOrderCannotBeVoided(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body = internalJSON(t, http.MethodPost,
+	code, body = commerceStaffCall(t, http.MethodPost,
 		fmt.Sprintf("%s/internal/orders/%s/voids", commerceURL, order.OrderID), "paid-void-"+slot,
-		map[string]any{"organizer_id": organizerID, "actor": "staff:coverage", "reason": "should be refused"})
+		staffHeaders(t, organizerID), map[string]any{"actor": "staff:coverage", "reason": "should be refused"})
 	if code != http.StatusConflict {
 		t.Fatalf("voiding a paid order = %d %s, want 409 — it must go through the refund", code, body)
 	}

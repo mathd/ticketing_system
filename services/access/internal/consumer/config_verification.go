@@ -1,0 +1,124 @@
+package consumer
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// verifyTicketIssuerConfig compares the durable that nats-init pre-provisioned with the config
+// this binary expects, before Run consumes from it (TKT-327, ADR-034 amendment).
+//
+// Why the service no longer creates the durable: its filters are PLURAL, so a create request
+// carries them in the BODY and no subject permission can constrain them. A holder of the access
+// credential could re-create the durable with a widened filter and read another service's
+// events (ADR-072 §5). The CREATE grant is removed, so the durable now has two sources of truth:
+// consumerConfig() here and deploy/nats/consumers/access-ticket-issuer*.json. This check makes a
+// forgotten half fail at startup instead of silently.
+//
+// It compares ONLY the fields consumerConfig() sets. Fields the code leaves to the server default
+// (AckWait, MaxAckPending, MaxWaiting, replicas) are not compared: a durable the old service
+// created and one nats-init creates from the same fields get the same defaults, and a NATS
+// upgrade that changes a default cannot cause a false refusal.
+//
+// The filter set is order-independent and exact, and it includes the singular FilterSubject, so
+// a filter added through either field is refused.
+//
+// It also refuses a DENYLIST of explicit settings known to stop consumption while readiness reports
+// true, or to lose the durable: see consumptionDrift. A setting outside that list is not caught.
+// AckWait needs no check here: with a BackOff the server sets it to BackOff[0] and ignores an
+// explicit value (executed on the pinned broker), and BackOff is compared exactly.
+func verifyTicketIssuerConfig(want jetstream.ConsumerConfig, info *jetstream.ConsumerInfo) error {
+	if info == nil {
+		return fmt.Errorf("durable %s on stream PLATFORM: the bind returned no consumer info to verify", want.Durable)
+	}
+	got := info.Config
+	var drift []string
+	if gotFilters, wantFilters := filterSet(got), filterSet(want); !slices.Equal(gotFilters, wantFilters) {
+		drift = append(drift, fmt.Sprintf("filter_subjects is %v, want %v", gotFilters, wantFilters))
+	}
+	if got.AckPolicy != want.AckPolicy {
+		drift = append(drift, fmt.Sprintf("ack_policy is %v, want %v", got.AckPolicy, want.AckPolicy))
+	}
+	if got.DeliverPolicy != want.DeliverPolicy {
+		drift = append(drift, fmt.Sprintf("deliver_policy is %v, want %v", got.DeliverPolicy, want.DeliverPolicy))
+	}
+	if got.MaxDeliver != want.MaxDeliver {
+		drift = append(drift, fmt.Sprintf("max_deliver is %d, want %d", got.MaxDeliver, want.MaxDeliver))
+	}
+	// Exact and ordered: the schedule is the retry contract for issuance and for the terminal
+	// failure record (ACCESS_EVENT_RETRY_BACKOFF must agree with the provisioned file).
+	if !slices.Equal(got.BackOff, want.BackOff) {
+		drift = append(drift, fmt.Sprintf("backoff is %v, want %v", got.BackOff, want.BackOff))
+	}
+	if got.HeadersOnly != want.HeadersOnly {
+		drift = append(drift, fmt.Sprintf("headers_only is %t, want %t", got.HeadersOnly, want.HeadersOnly))
+	}
+	drift = append(drift, consumptionDrift(want, got, time.Now())...)
+	if len(drift) > 0 {
+		return fmt.Errorf("durable %s on stream PLATFORM does not match this binary's consumer config: %s "+
+			"(nats-init provisions it from deploy/nats/consumers; see docs/development.md to reconcile it)",
+			want.Durable, strings.Join(drift, "; "))
+	}
+	return nil
+}
+
+// filterSet returns every filter a config declares, plural and singular, sorted.
+func filterSet(cfg jetstream.ConsumerConfig) []string {
+	set := slices.Clone(cfg.FilterSubjects)
+	if cfg.FilterSubject != "" {
+		set = append(set, cfg.FilterSubject)
+	}
+	slices.Sort(set)
+	return set
+}
+
+// consumptionDrift reports the settings that would let the service bind, pass the field comparison,
+// report ready, and still consume nothing or lose the durable (TKT-327 review). Each must be
+// absent. Executed on the pinned broker and client: with max_batch below Consume's batch of 500,
+// or max_expires below its 30s request, every pull is refused, and nats.go reports it only to the
+// consume error callback, which the services do not treat as terminal; a future pause_until
+// delivers nothing and reports nothing. max_bytes does not refuse today's pulls, which set no byte
+// limit, but it would refuse a byte-bounded pull, so it is refused too. Without durable_name the
+// consumer is ephemeral, and with an inactive_threshold the broker deletes it after that idle
+// time; either way it can disappear while the service is down. replay_policy original delivers
+// the backlog at its original pacing, so a restart after downtime catches up no faster than the
+// events were published. With mem_storage the consumer's state lives in memory, and a restart of
+// the broker loses the consumer and its cursor (executed on the pinned broker). Both creation paths
+// (the old service code and nats-init's file) leave every one of these unset; init returns
+// pause_until as the zero time and the old path omits it, so only a pause that is still in the
+// future is refused.
+//
+// A startup check sees only startup: a pause or a limit that platform-admin applies later is not
+// detected (ADR-072 §2 does not bind platform-admin).
+func consumptionDrift(want, got jetstream.ConsumerConfig, now time.Time) []string {
+	var drift []string
+	if got.Durable != want.Durable {
+		drift = append(drift, fmt.Sprintf("durable_name is %q, want %q (without it the consumer is ephemeral)", got.Durable, want.Durable))
+	}
+	if got.InactiveThreshold != want.InactiveThreshold {
+		drift = append(drift, fmt.Sprintf("inactive_threshold is %v, want %v (the broker deletes an idle consumer)", got.InactiveThreshold, want.InactiveThreshold))
+	}
+	if got.MaxRequestBatch != want.MaxRequestBatch {
+		drift = append(drift, fmt.Sprintf("max_batch is %d, want %d (it refuses the client's pulls)", got.MaxRequestBatch, want.MaxRequestBatch))
+	}
+	if got.MaxRequestExpires != want.MaxRequestExpires {
+		drift = append(drift, fmt.Sprintf("max_expires is %v, want %v (it refuses the client's pulls)", got.MaxRequestExpires, want.MaxRequestExpires))
+	}
+	if got.MaxRequestMaxBytes != want.MaxRequestMaxBytes {
+		drift = append(drift, fmt.Sprintf("max_bytes is %d, want %d (it refuses byte-bounded pulls)", got.MaxRequestMaxBytes, want.MaxRequestMaxBytes))
+	}
+	if got.PauseUntil != nil && got.PauseUntil.After(now) {
+		drift = append(drift, fmt.Sprintf("pause_until is %s, want no pause (a paused consumer delivers nothing)", got.PauseUntil.UTC().Format(time.RFC3339)))
+	}
+	if got.ReplayPolicy != want.ReplayPolicy {
+		drift = append(drift, fmt.Sprintf("replay_policy is %v, want %v", got.ReplayPolicy, want.ReplayPolicy))
+	}
+	if got.MemoryStorage != want.MemoryStorage {
+		drift = append(drift, fmt.Sprintf("mem_storage is %t, want %t (a broker restart loses an in-memory consumer and its cursor)", got.MemoryStorage, want.MemoryStorage))
+	}
+	return drift
+}

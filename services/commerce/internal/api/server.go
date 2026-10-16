@@ -29,6 +29,7 @@ import (
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/contract"
 	"ticketing/shared/httpx"
+	"ticketing/shared/organizerassertion"
 )
 
 var errCheckoutConflict = errors.New("checkout request conflicts with existing order")
@@ -44,6 +45,10 @@ type Server struct {
 	catalogURL, inventoryURL, paymentsURL, token string
 	// The back office's commerce credential (TKT-194); see staff_credential.go.
 	staffWriteToken string
+	// organizerAssertions verifies catalog's organizer assertion with catalog's
+	// PUBLIC keys (TKT-287). It can check an assertion and cannot mint one. Nil
+	// refuses every staff operation.
+	organizerAssertions *organizerassertion.Verifier
 	// paymentsToken opens payments' internal surface, and ONLY payments'
 	// (ai-review S8). `token` above still opens catalog's and inventory's; the
 	// money surface was split off it because one value shared by five services
@@ -85,6 +90,9 @@ type Server struct {
 	// thing instead, so the default is enforcement.
 	limiters *customerLimiters
 	limOnce  sync.Once
+	// afterCheckoutClaim is a TKT-319 test seam. It runs once claimOrder has committed,
+	// before the park-marker guard in executeCheckout. Nil in production.
+	afterCheckoutClaim func()
 }
 
 // ServerConfig contains every dependency and setting fixed for a server's lifetime.
@@ -99,6 +107,7 @@ type ServerConfig struct {
 	InternalToken        string
 	PaymentsToken        string
 	StaffWriteToken      string
+	OrganizerAssertions  *organizerassertion.Verifier
 	CustomerAssertionKey string
 	Publisher            commerceevents.Publisher
 	MoneyEvidence        MoneyEvidence
@@ -141,6 +150,7 @@ func New(config ServerConfig) *Server {
 		publisher:       config.Publisher,
 		moneyEvidence:   config.MoneyEvidence,
 	}
+	s.organizerAssertions = config.OrganizerAssertions
 	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
@@ -637,6 +647,40 @@ func holdEndpoint(base string, body map[string]any) (string, bool) {
 	return base + "/holds", false
 }
 
+// publicGASoldOut reports whether inventory refused a PUBLIC GA hold as a sellout
+// (TKT-341, ADR-082). Every predicate must hold, and each one has its own test:
+//
+//   - scope == nil: a partner reserve keeps the uniform 409 its contract promises
+//     (/partners/reservations). Inventory never sends `sold_out` for a channelled
+//     hold, so this is commerce's own guard, not a duplicate of inventory's.
+//   - err == nil: redundant today, and kept as a defence. call() returns a nil body
+//     with any error (httpx.ReadResponseBody) and status 0 on a transport error, so
+//     the two predicates below already refuse every errored call.
+//   - status 409: the code counts only on inventory's capacity refusal.
+//   - the whole body decodes, `error` is a string and `code` is exactly "sold_out".
+//     A malformed body, or a body of another shape, is not evidence of a sellout.
+//
+// The caller calls this only on the GA path; a seated refusal keeps its own mapping.
+func publicGASoldOut(scope *partnerScope, err error, status int, body []byte) bool {
+	if scope != nil || err != nil || status != http.StatusConflict {
+		return false
+	}
+	var refusal struct {
+		Error *string `json:"error"`
+		Code  *string `json:"code"`
+	}
+	if json.Unmarshal(body, &refusal) != nil || refusal.Error == nil || refusal.Code == nil {
+		return false
+	}
+	return *refusal.Code == "sold_out"
+}
+
+// writeSoldOut answers a public GA sellout. The body is static: inventory's message
+// and any extra field never reach a public caller.
+func writeSoldOut(w http.ResponseWriter) {
+	write(w, http.StatusConflict, map[string]string{"error": "sold out", "code": "sold_out"})
+}
+
 // reservationID derives the reservation a given idempotency key names.
 //
 // organizer + key for a public sale, and organizer + RESELLER + key for a partner one
@@ -826,6 +870,14 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 					seatedInventoryRefusal(w, code, body, pinnedSeats)
 					return
 				}
+				// Inventory replays an existing claim before any capacity arithmetic
+				// and never deletes a claim, so real inventory cannot answer `sold_out`
+				// here today. That depends on there being no claim purge, so the case
+				// stays, and only a commerce-tier test with a fake inventory reaches it.
+				if publicGASoldOut(scope, err, code, body) {
+					writeSoldOut(w)
+					return
+				}
 				write(w, 409, map[string]string{"error": "inventory unavailable"})
 				return
 			}
@@ -955,6 +1007,12 @@ func (s *Server) reserveWithScope(w http.ResponseWriter, r *http.Request, scope 
 	if err != nil || (code != 200 && code != 201) {
 		if in.seated() {
 			seatedInventoryRefusal(w, code, body, in.canonicalSeatSet())
+			return
+		}
+		// A public GA sellout keeps its code (TKT-341, ADR-082). Everything else
+		// below keeps the answer it had.
+		if publicGASoldOut(scope, err, code, body) {
+			writeSoldOut(w)
 			return
 		}
 		// A GA quantity claim against a SEATED pool is refused by inventory under
@@ -1321,7 +1379,9 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 	return nil
 }
 
-// claimOrder returns the order id, its current status, and whether recovery has PARKED it.
+// claimOrder returns the order id, its current status, whether recovery has PARKED it, and
+// whether THIS call inserted the row (TKT-285, D21: a newly inserted order cannot have a
+// payment operation, a resumed one can).
 // Parked is read here rather than re-queried because this is the only place that already
 // holds the row lock, and a replay branch that answers from durable evidence needs to know
 // whether any worker can still act on that evidence (ai-review F2).
@@ -1338,15 +1398,16 @@ func (s *Server) fact(ctx context.Context, x reservation, order uuid.UUID, typ s
 // attribution immutable under idempotency: a second request bearing a different
 // (or absent) assertion cannot repoint a completed purchase at someone else, and
 // cannot promote a guest order into an attributed one. The first claim decides.
-func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, error) {
+func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint string, customer uuid.NullUUID) (uuid.UUID, string, bool, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, x.ID.String()); err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
+	inserted := false
 	var id uuid.UUID
 	var storedKey, storedFingerprint, status string
 	var recoveryClaim uuid.NullUUID
@@ -1366,9 +1427,10 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// reseller that did not make it. Settlement (ADR-048) splits by these.
 		_, err = tx.ExecContext(ctx, `INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,customer_id,channel_code,reseller_id) SELECT $1,$2,'created',$3,$4,$5,r.channel_code,r.reseller_id FROM reservations r WHERE r.id=$2`, id, x.ID, key, fingerprint, customer)
 		status = "created"
+		inserted = err == nil
 	} else if err == nil {
 		if storedKey != key || storedFingerprint != fingerprint {
-			return uuid.Nil, "", false, errCheckoutConflict
+			return uuid.Nil, "", false, false, errCheckoutConflict
 		}
 		// A recovery pass holds this order under an unexpired lease. It may already have
 		// asked payments whether a charge exists and been told no; binding one now would
@@ -1376,7 +1438,18 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// under a captured payment. Recovery's decision is bounded by its lease, so the
 		// buyer can retry once it lapses.
 		if recoveryClaim.Valid && recoveryLease.Valid && recoveryLease.Time.After(time.Now()) {
-			return uuid.Nil, "", false, errRecoveryInProgress
+			return uuid.Nil, "", false, false, errRecoveryInProgress
+		}
+		// The live case returned above, so a claim left here has an expired or NULL lease. Clear
+		// it under the row lock this transaction holds, before commit, so after this the stale
+		// worker's claim-fenced writes match no row and cannot park, release or abandon the order
+		// through the store; external calls, such as the inventory release, are not covered whether
+		// they come before or after the steal (ADR-016, TKT-319). Attempts, schedule, last error and
+		// the park marker are left alone.
+		if recoveryClaim.Valid {
+			if _, err = tx.ExecContext(ctx, `UPDATE orders SET recovery_claim_id=NULL, recovery_lease_until=NULL WHERE id=$1`, id); err != nil {
+				return uuid.Nil, "", false, false, err
+			}
 		}
 		// Reopening an existing order is fresh activity on it. Without this the row keeps
 		// the timestamp of the checkout that died, stays past recovery's grace period,
@@ -1389,18 +1462,23 @@ func (s *Server) claimOrder(ctx context.Context, x reservation, key, fingerprint
 		// to protect — while refreshing updated_at would push the order back inside
 		// recovery's 2-minute grace window on every retry, leaving the release that IS
 		// outstanding permanently unclaimable and the buyer looping on the same answer.
-		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, id); err != nil {
-			return uuid.Nil, "", false, err
+		//
+		// NOT for a zero-total order (TKT-285, D21). Checkout answers a resumed zero order 202
+		// without doing any work, so there is no in-flight request to protect, and refreshing the
+		// timestamp would let a buyer who replays every 30 seconds keep recovery from ever
+		// claiming it: the same reasoning as release_pending above.
+		if _, err = tx.ExecContext(ctx, `UPDATE orders SET updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending') AND $2::bigint <> 0`, id, x.Amount); err != nil {
+			return uuid.Nil, "", false, false, err
 		}
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return uuid.Nil, "", false, errCheckoutConflict
+		return uuid.Nil, "", false, false, errCheckoutConflict
 	}
 	if err != nil {
-		return uuid.Nil, "", false, err
+		return uuid.Nil, "", false, false, err
 	}
-	return id, status, recoveryParked.Valid, tx.Commit()
+	return id, status, recoveryParked.Valid, inserted, tx.Commit()
 }
 
 func checkoutClaimProblem(err error) (int, string) {
@@ -1656,7 +1734,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reservation, key string, in checkoutRequest, customer uuid.NullUUID) {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s\n%s", in.ReservationID, strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email)), in.PaymentToken))))
-	order, orderStatus, recoveryParked, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
+	order, orderStatus, recoveryParked, inserted, err := s.claimOrder(r.Context(), x, key, fingerprint, customer)
 	if err != nil {
 		code, message := checkoutClaimProblem(err)
 		if code == http.StatusInternalServerError {
@@ -1664,6 +1742,11 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		}
 		write(w, code, map[string]string{"error": message})
 		return
+	}
+	if s.afterCheckoutClaim != nil {
+		// TKT-319 test seam: a test parks checkout here so a recovery write can land between
+		// claimOrder's commit and the guard below. Nil in production.
+		s.afterCheckoutClaim()
 	}
 	if orderStatus == "completed" {
 		ref, e := s.guestReference(r.Context(), order)
@@ -1780,6 +1863,19 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		writeAwaitingReconciliation(w, order, orderStatus)
 		return
 	}
+	// D21 (TKT-285). A zero-total order this request did NOT insert is a RESUME, and every
+	// resumed zero order is recovery's job: it may be a legacy order whose old zero charge bound a
+	// payment operation, and only recovery classifies an order by operation evidence (ADR-016).
+	// Checkout keeps no second classifier. It answers 202 with the durable status and does
+	// NOTHING else: no lookup, no buyer_pii, no fact, no finalize, no status change, and no
+	// call to inventory or payments. claimOrder also leaves updated_at alone for such an order,
+	// so a replaying buyer cannot postpone recovery's grace period. Only an order THIS request
+	// inserted can skip the PSP below: payments binds an operation only after commerce inserts
+	// the order, so a new order cannot have one.
+	if x.Amount == 0 && !inserted {
+		write(w, 202, map[string]any{"order_id": order, "status": orderStatus})
+		return
+	}
 	if _, err = s.db.ExecContext(r.Context(), `INSERT INTO buyer_pii(buyer_id,name,email) VALUES($1,$2,$3) ON CONFLICT(buyer_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email`, x.BuyerID, in.Name, in.Email); err != nil {
 		write(w, 500, map[string]string{"error": "persist buyer"})
 		return
@@ -1795,6 +1891,18 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 	}
 	if _, err = s.db.ExecContext(r.Context(), `UPDATE reservations SET status='finalizing' WHERE id=$1 AND status IN ('held','finalizing')`, x.ID); err != nil {
 		write(w, 500, map[string]string{"error": "persist checkout"})
+		return
+	}
+	// A ZERO-TOTAL order skips the provider (TKT-285, owner decision D1): there is nothing to
+	// charge, so there is no settlement plan, no /internal/charges call and no payment
+	// operation, and the order completes through the same tail a paid one does. The
+	// discriminator is the persisted GROSS total (x.Amount), not the face value: a zero face
+	// value with a passed-on fee is a positive total and is still charged.
+	//
+	// The token was required and is not forwarded (D5); ADR-069 records that it is sent to
+	// payments only when a charge is made.
+	if x.Amount == 0 {
+		s.completeCheckout(w, r, x, order)
 		return
 	}
 	// The settlement plan comes from the PERSISTED snapshot, never a fresh
@@ -1879,7 +1987,23 @@ func (s *Server) executeCheckout(w http.ResponseWriter, r *http.Request, x reser
 		write(w, 202, map[string]any{"order_id": order, "status": "payment_unknown"})
 		return
 	}
-	code, _, err = s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
+	s.completeCheckout(w, r, x, order)
+}
+
+// completeCheckout is the completion tail both checkout paths share: inventory confirm, the
+// `confirmation_pending` answer when confirm fails, the order.completed fact, the completion
+// transaction, and the owed publish (TKT-285, D3).
+//
+// A PAID checkout reaches it after payments answered 200; a ZERO-TOTAL checkout reaches it
+// straight after the finalize, because there is no charge to wait for. It exists so the zero
+// path reuses the tail instead of copying it — a copy would let the two drift, and the failure
+// arms below are the part that matters: a confirm that fails must leave the order pending for
+// recovery and must NOT journal order.completed.
+//
+// It writes the response itself, like the rest of executeCheckout, and returns nothing: every
+// exit is a terminal answer to the buyer.
+func (s *Server) completeCheckout(w http.ResponseWriter, r *http.Request, x reservation, order uuid.UUID) {
+	code, _, err := s.call(r.Context(), http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/confirm?organizer_id=%s", s.inventoryURL, x.HoldID, x.OrganizerID), "", nil, true)
 	if err != nil || code != 200 {
 		res, execErr := s.db.ExecContext(r.Context(), `UPDATE orders SET status='confirmation_pending',updated_at=now() WHERE id=$1 AND status IN ('created','payment_unknown','confirmation_pending')`, order)
 		if execErr == nil {

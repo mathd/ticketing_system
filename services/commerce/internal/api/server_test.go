@@ -474,15 +474,17 @@ func TestRefundProblemMapsEveryStoreError(t *testing.T) {
 
 // The refund is internal-only: the gateway denies /internal/* at the edge, and commerce
 // fails closed to 404 (not 401) exactly as staffSale and deliveryEmail do. An unconfigured
-// token must not open the endpoint.
-func TestRefundOrderRequiresInternalToken(t *testing.T) {
+// server must not open the endpoint. (Since TKT-287 the internal token does not open it at
+// all; staff_credential_test.go has one case per predicate.)
+func TestRefundOrderFailsClosedOnAnUnconfiguredServer(t *testing.T) {
 	for name, token := range map[string]string{"no token configured": "", "wrong token": "expected"} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestServer(nil, http.DefaultClient, "", "", "", token)
 			req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+uuid.Nil.String()+"/refunds",
-				bytes.NewBufferString(`{"organizer_id":"00000000-0000-0000-0000-000000000001","quantity":1,"actor":"a","reason":"r"}`))
+				bytes.NewBufferString(`{"quantity":1,"actor":"a","reason":"r"}`))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Idempotency-Key", "refund-auth")
+			req.Header.Set("X-Internal-Token", token)
 			res := httptest.NewRecorder()
 			s.Router(nil, true).ServeHTTP(res, req)
 			if res.Code != http.StatusNotFound {
@@ -725,5 +727,18 @@ func TestReserveRequiresExactlyOneOfQuantityOrSeats(t *testing.T) {
 				t.Fatalf("status=%d want 400 — body %s got %s", res.Code, body, res.Body.String())
 			}
 		})
+	}
+}
+
+// TKT-287: an order that is not under the verified organizer — absent, or another
+// tenant's — is a 404 for the void, as it already was for the refund. It used to
+// fall through to 500, which both misreported the outcome and distinguished a
+// cross-tenant id from a well-formed request that failed.
+func TestVoidProblemMapsANoRowsMissTo404(t *testing.T) {
+	if code, _ := voidProblem(fmt.Errorf("bind: %w", sql.ErrNoRows)); code != http.StatusNotFound {
+		t.Fatalf("voidProblem(no rows) = %d, want 404", code)
+	}
+	if code, _ := refundProblem(fmt.Errorf("bind: %w", sql.ErrNoRows)); code != http.StatusNotFound {
+		t.Fatalf("refundProblem(no rows) = %d, want 404", code)
 	}
 }

@@ -67,7 +67,7 @@ jobs:
           match() { echo "$changed" | grep -Eq "$1" && echo true || echo false; }
           {
             echo "go=$(match '(^|/)(go\.mod|go\.sum)$|^go\.work(\.sum)?$|^\.github/workflows/security\.yaml$')"
-            echo "node=$(match '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$|^web/[^/]+/package\.json$|^\.github/workflows/security\.yaml$')"
+            echo "node=$(match '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.trivyignore\.yaml)$|^web/[^/]+/package\.json$|^\.github/workflows/security\.yaml$')"
           } >> "$GITHUB_OUTPUT"
 
   govulncheck:
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           # Some workspace modules intentionally have no go.sum. Use the
           # repository lockfile set so every matrix leg gets a stable key.
           cache-dependency-path: "**/go.sum"
@@ -111,6 +111,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' || needs.changes.outputs.node == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: corepack enable pnpm && corepack install
@@ -119,7 +120,14 @@ jobs:
           node-version: "24.18.0"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --audit-level high
+      # The only step that audits (ADR-081). It checks the allowlist with the
+      # clock (pnpm applies auditConfig.ignoreGhsas with no expiry), and then runs
+      # `pnpm audit --audit-level high` itself, with a minimal environment, the
+      # pnpmfile hooks off, and the registry and the lockfile directory pinned, so
+      # no runner setting can change what the audit reports. Trivy drops an expired
+      # entry by itself, so repository-scan needs no such step. This step stays
+      # last; `scan-allowlist.mjs wiring` refuses a change.
+      - run: node scripts/scan-allowlist.mjs audit
 
   repository-scan:
     runs-on: ubuntu-latest
@@ -134,6 +142,9 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           format: table
+          # Reviewed, expiring exceptions (ADR-081). Without this input the
+          # allowlist is not read, and every listed finding fails the scan.
+          trivyignores: .trivyignore.yaml
 
   # --- Scheduled-failure notification (TKT-213) ----------------------------------
   #
@@ -187,10 +198,10 @@ jobs:
           Commit: \`$GITHUB_SHA\`
 
           The weekly run re-scans every dependency even when nothing changed, so it is what
-          catches a newly-disclosed CVE in code that has not been touched. A per-PR run only
-          fires when dependency or build files change, which means a failure here can sit
-          unnoticed indefinitely — open the run to see which of govulncheck, pnpm-audit or
-          the repository scan is red.
+          catches a newly-disclosed CVE in code that has not been touched. On a pull request,
+          govulncheck and pnpm-audit run only when dependency files change, so a failure here
+          can sit unnoticed indefinitely — open the run to see which of govulncheck, pnpm-audit
+          or the repository scan is red.
 
           This issue closes itself when a later scheduled run succeeds.
           EOF
@@ -227,8 +238,8 @@ jobs:
           # Evidence, not inference: a job added to this workflow but missing from the
           # needs: list above would be invisible here, and this job would close a genuine
           # outage. Ask the run what every job actually concluded. This matters more here
-          # than in hermetic.yaml — security.yaml has three top-level jobs and a matrix,
-          # so it is the one likely to grow a fourth.
+          # than in hermetic.yaml — security.yaml has four top-level jobs before the
+          # notifiers, one of them an eight-leg matrix, so it is the one likely to grow.
           # FAIL CLOSED, on STATUS as well as conclusion, and filtering on no job names.
           #
           # Four earlier versions of this guard were each wrong, and the reasons are worth
