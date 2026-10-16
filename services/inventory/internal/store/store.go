@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -524,6 +525,19 @@ func sellerAdmits(soldBy uuid.NullUUID, caller uuid.UUID) bool {
 	return caller != uuid.Nil && soldBy.UUID == caller
 }
 
+// storedCurrency is the value that claims.currency (varchar(3)) stores for currency.
+// PostgreSQL stores a longer value only when every character after the third is a
+// space, and then it drops those spaces. Any other longer value fails the INSERT.
+// varchar counts characters, not bytes. Do not truncate any other value: "EUR:c0::p1:K"
+// must stay different from "EUR" (TestARequestInAnotherCurrencyDoesNotReplayAStoredHold).
+func storedCurrency(currency string) string {
+	r := []rune(currency)
+	if len(r) > 3 && strings.Trim(string(r[3:]), " ") == "" {
+		return string(r[:3])
+	}
+	return currency
+}
+
 func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, key string, opts ...HoldOption) (Claim, bool, error) {
 	var o holdOptions
 	for _, opt := range opts {
@@ -604,13 +618,13 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 		//
 		// existing.Channel is COALESCE(channel_code,''), and the INSERT stores
 		// NULLIF(channel,''), so an empty channel compares equal to itself. The
-		// INSERT stores the currency as sent, so an identical retry has an equal
-		// currency.
+		// currency column can store a different value than the request sent (see
+		// storedCurrency), so the compare uses the stored form of the request.
 		//
 		// This check stays BEFORE the expiry branch. A key is single-use across
 		// the claim's lifecycle (ADR-010), so a different request must not write
 		// the stored claim's expiry. Only the claim's own retry can do that.
-		if fp != requestFP || existing.Channel != channel || existing.Currency != currency {
+		if fp != requestFP || existing.Channel != channel || existing.Currency != storedCurrency(currency) {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {

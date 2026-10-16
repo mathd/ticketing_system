@@ -184,3 +184,30 @@ func TestFingerprintGoldenPreHashForFramedClasses(t *testing.T) {
 		})
 	}
 }
+
+// storedCurrency follows the PostgreSQL rule for an assignment to varchar(3). The
+// expected values are written from that rule, not from a run of the helper. A value
+// longer than 3 characters is stored only when every excess character is a space, and
+// then the spaces are dropped. Other longer values fail the INSERT, so the helper
+// keeps them unchanged. The database mechanism is pinned by
+// TestAnIdenticalRetryReplaysWhenTheColumnDropsTrailingSpaces (smoke).
+func TestStoredCurrencyFollowsTheVarcharAssignmentRule(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"EUR", "EUR"},
+		{"EU ", "EU "},
+		{"EUR ", "EUR"},
+		{"EUR   ", "EUR"},
+		{"€UR ", "€UR"},
+		{"EURO", "EURO"},
+		{"EUR\t", "EUR\t"},
+		{"EUR x", "EUR x"},
+		{" EUR", " EUR"},
+		{"EUR:c0::p1:K", "EUR:c0::p1:K"},
+	}
+	for _, c := range cases {
+		if got := storedCurrency(c.in); got != c.want {
+			t.Errorf("storedCurrency(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

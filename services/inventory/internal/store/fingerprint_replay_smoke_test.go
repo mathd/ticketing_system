@@ -335,6 +335,55 @@ func TestARequestInAnotherCurrencyDoesNotReplayAStoredHold(t *testing.T) {
 	}
 }
 
+// An identical retry replays when the column drops trailing spaces from the currency
+// (TKT-510, D15).
+//
+// claims.currency is varchar(3). PostgreSQL stores a longer value only when every
+// excess character is a space, and then it drops those spaces. So the row holds "EUR"
+// while the request, and the fingerprint, hold "EUR ". The currency compare must see
+// the stored form, or the request is refused by its own retry.
+//
+// varchar(n) counts characters, not bytes. "€UR " is 6 bytes and 4 characters, so the
+// row holds "€UR".
+//
+// The handler refuses these currencies (api/server.go), so the test calls CreateHold
+// directly, as TestARequestInAnotherCurrencyDoesNotReplayAStoredHold does.
+func TestAnIdenticalRetryReplaysWhenTheColumnDropsTrailingSpaces(t *testing.T) {
+	ctx, st, db := storeForTest(t, time.Minute)
+	cases := []struct{ sent, stored string }{
+		{"EUR ", "EUR"},
+		{"EUR   ", "EUR"},
+		{"\u20acUR ", "\u20acUR"},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%q", c.sent), func(t *testing.T) {
+			org, slot := provisioned(t, ctx, st, 10)
+			tt := uuid.New()
+			const key = "tkt-510-padded-currency"
+			first, replay, err := st.CreateHold(ctx, org, slot, tt, 1, 1500, c.sent, "", key)
+			if err != nil || replay {
+				t.Fatalf("first: err=%v replay=%v, want a new hold", err, replay)
+			}
+			// The fixture check: the column dropped the spaces. If it did not, the
+			// raw compare would pass and this test would prove nothing.
+			if got := snapshotClaim(t, ctx, db, first.ID).Currency; !got.Valid || got.String != c.stored {
+				t.Fatalf("fixture: stored currency %+v, want %q", got, c.stored)
+			}
+
+			again, replay, err := st.CreateHold(ctx, org, slot, tt, 1, 1500, c.sent, "", key)
+			if err != nil {
+				t.Fatalf("an identical retry was refused: %v", err)
+			}
+			if !replay || again.ID != first.ID {
+				t.Fatalf("an identical retry gave claim %s (replay=%v), want a replay of %s", again.ID, replay, first.ID)
+			}
+			if n := claimsOf(t, ctx, db, org); n != 1 {
+				t.Fatalf("%d claims after a retry, want 1", n)
+			}
+		})
+	}
+}
+
 // A different request under the key of an EXPIRED claim is a key reuse, not an expiry
 // (TKT-510, COS 5).
 //
