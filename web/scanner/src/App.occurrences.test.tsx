@@ -1,5 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+
+// Holds mint open after its transaction commits, so a test can prove the scan
+// request waits for mint to resolve. The store underneath is the production one.
+const mintGate = vi.hoisted(() => ({ hold: null as Promise<void> | null, committed: null as (() => void) | null }))
+
+vi.mock('./occurrences', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./occurrences')>()
+  return {
+    ...actual,
+    async openOccurrenceStore(...args: Parameters<typeof actual.openOccurrenceStore>) {
+      const store = await actual.openOccurrenceStore(...args)
+      return {
+        ...store,
+        async mint(...mintArgs: Parameters<typeof store.mint>) {
+          const minted = await store.mint(...mintArgs)
+          mintGate.committed?.()
+          if (mintGate.hold) await mintGate.hold
+          return minted
+        },
+      }
+    },
+  }
+})
+
 import App from './App'
 
 // The occurrence protocol on the scan flow (ADR-025 §D3/§D6): mint-and-commit
@@ -16,6 +40,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  mintGate.hold = null
+  mintGate.committed = null
   localStorage.clear()
   sessionStorage.clear()
   cleanup()
@@ -26,6 +52,35 @@ afterEach(() => {
 function pasteCredential(value = 'signed-ticket') {
   fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value } })
   fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
+}
+
+function chooseDirection(name: 'Entry' | 'Exit') {
+  fireEvent.click(screen.getByRole('radio', { name }))
+}
+
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
+
+// The stored occurrence, read straight from IndexedDB, not through the app.
+async function storedOccurrence(occurrenceId: string): Promise<Record<string, unknown> | undefined> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences')
+    open.onsuccess = () => resolve(open.result)
+    open.onerror = () => reject(open.error)
+  })
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').get(occurrenceId)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  } finally {
+    db.close()
+  }
 }
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -107,7 +162,78 @@ describe('App occurrence protocol', () => {
     const reconcileCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/reconciliations'))!
     const reconcileBody = JSON.parse((reconcileCall[1] as RequestInit).body as string)
     expect(reconcileBody.occurrences).toEqual([
-      { qr_payload: 'offline-ticket', occurrence_id: sent.occurrence_id, occurred_at: sent.occurred_at },
+      { qr_payload: 'offline-ticket', occurrence_id: sent.occurrence_id, occurred_at: sent.occurred_at, event_type: 'entry' },
+    ])
+  })
+
+  // ADR-025 §D3: the occurrence, with its direction, is committed before the request
+  // leaves. The fetch boundary reads the stored row, so a direction that lived only in
+  // React state, or only in the request, fails here.
+  it('commits exit direction before sending', async () => {
+    const release = deferred<void>()
+    const committed = deferred<void>()
+    mintGate.hold = release.promise
+    mintGate.committed = () => committed.resolve()
+    let storedAtSend: Record<string, unknown> | undefined
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('voided-tickets')) return feedResponse()
+      const body = JSON.parse(init!.body as string)
+      storedAtSend = await storedOccurrence(body.occurrence_id)
+      return new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    chooseDirection('Exit')
+    pasteCredential('exit-ticket')
+
+    await committed.promise
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
+    release.resolve()
+
+    expect(await screen.findByText(/^Exit recorded at /)).toBeDefined()
+    const scanCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))
+    expect(scanCalls).toHaveLength(1)
+    const sent = JSON.parse((scanCalls[0][1] as RequestInit).body as string)
+    expect(sent.direction).toBe('exit')
+    expect(storedAtSend).toMatchObject({
+      occurrenceId: sent.occurrence_id,
+      qrPayload: 'exit-ticket',
+      occurredAt: sent.occurred_at,
+      state: 'PENDING',
+      direction: 'exit',
+    })
+  })
+
+  // D3: a mode switch affects future scans only. The queued exit keeps its direction.
+  it('reconciles a queued exit after switching to entry', async () => {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => String(url).includes('voided-tickets') ? Promise.resolve(feedResponse()) : Promise.reject(new TypeError('network down')))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    chooseDirection('Exit')
+    pasteCredential('queued-exit-ticket')
+    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
+    expect(await screen.findByText('No connection — the exit is saved on this device and will sync when back online. The holder may leave.')).toBeDefined()
+    const sentCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/scans'))!
+    const sent = JSON.parse((sentCall[1] as RequestInit).body as string)
+    expect(sent.direction).toBe('exit')
+
+    chooseDirection('Entry')
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('voided-tickets')) return Promise.resolve(feedResponse())
+      if (String(url).endsWith('/reconciliations')) {
+        const body = JSON.parse(init!.body as string)
+        return Promise.resolve(new Response(JSON.stringify({
+          results: body.occurrences.map((o: { occurrence_id: string }) => ({ occurrence_id: o.occurrence_id, result: 'recorded' })),
+        }), { status: 200 }))
+      }
+      return Promise.reject(new TypeError('unexpected fetch'))
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+    expect(await screen.findByText('Synced 1 offline scan(s).')).toBeDefined()
+    const reconcileCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/reconciliations'))!
+    expect(JSON.parse((reconcileCall[1] as RequestInit).body as string).occurrences).toEqual([
+      { qr_payload: 'queued-exit-ticket', occurrence_id: sent.occurrence_id, occurred_at: sent.occurred_at, event_type: 'exit' },
     ])
   })
 })

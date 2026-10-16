@@ -304,6 +304,217 @@ describe('App', () => {
   })
 })
 
+// Exit mode (TKT-399). The direction is chosen on the rendered control and sent
+// with the scan. The copy for an exit never tells staff to stop a person who is
+// leaving: an exit is recorded or it is not recorded.
+function chooseDirection(name: 'Entry' | 'Exit') {
+  fireEvent.click(screen.getByRole('radio', { name }))
+}
+
+function scanBodies(fetchMock: { mock: { calls: unknown[][] } }) {
+  return fetchMock.mock.calls
+    .filter(([url]) => String(url).endsWith('/scans'))
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string))
+}
+
+const acceptedResponse = () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }), { status: 200 })
+
+describe('scan direction', () => {
+  it('submits a live exit from the scan control', async () => {
+    const fetchMock = routedFetch(() => Promise.resolve(acceptedResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByText('Entry mode')).toBeDefined()
+    pasteCredential('entry-ticket')
+    expect(await screen.findByText(/^Entry recorded at /)).toBeDefined()
+
+    chooseDirection('Exit')
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByText('Exit mode')).toBeDefined()
+    pasteCredential('exit-ticket')
+    expect(await screen.findByText(/^Exit recorded at /)).toBeDefined()
+    expect(screen.getByRole('heading', { name: 'Accepted' })).toBeDefined()
+    expect(screen.queryByText(/Entry recorded/)).toBeNull()
+
+    expect(scanBodies(fetchMock).map((body) => [body.qr_payload, body.direction])).toEqual([
+      ['entry-ticket', 'entry'],
+      ['exit-ticket', 'exit'],
+    ])
+  })
+
+  // Each row is the exact copy an operator reads. Entry copy is unchanged (D12),
+  // so an Entry row is here to catch exit wording that leaks into entry mode.
+  it.each([
+    ['an accepted exit', 'Exit', 200, { decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }, 'Accepted',
+      [`Exit recorded at ${new Date('2026-10-16T19:00:00Z').toLocaleString()}.`]],
+    ['a replayed exit', 'Exit', 200, { decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z', replay: true }, 'Accepted',
+      [`Exit recorded at ${new Date('2026-10-16T19:00:00Z').toLocaleString()}.`, 'This scan was previously recorded — result replayed, exit counted once.']],
+    ['an exit with no open entry', 'Exit', 409, { decision: 'rejected', reason: 'not_inside' }, 'Exit not recorded',
+      ['This pass is not recorded as inside.', 'Reason: not_inside.', 'The holder may leave.']],
+    ['an exit on a single-entry ticket', 'Exit', 409, { decision: 'rejected', reason: 'exit_not_applicable' }, 'Exit not recorded',
+      ['Exit is not available for this ticket.', 'Reason: exit_not_applicable.', 'The holder may leave.']],
+    ['an exit of a refunded ticket', 'Exit', 409, { decision: 'rejected', reason: 'refunded' }, 'Exit not recorded',
+      ['This ticket was refunded.', 'Reason: refunded.', 'The holder may leave.', 'This ticket is no longer valid for entry.']],
+    ['an exit of an exchanged ticket', 'Exit', 409, { decision: 'rejected', reason: 'exchanged' }, 'Exit not recorded',
+      ['This ticket was exchanged.', 'Reason: exchanged.', 'The holder may leave.', 'This ticket is no longer valid for entry.']],
+    ['an exit whose record cannot be verified', 'Exit', 409, { decision: 'rejected', reason: 'exit_unverified' }, 'Exit not recorded',
+      ['The ticket record could not be verified, so the exit was not counted.', 'Reason: exit_unverified.', 'The holder may leave.']],
+    ['an exit of a quarantined ticket', 'Exit', 409, { decision: 'rejected', reason: 'integrity_quarantined' }, 'Exit not recorded',
+      ['This ticket is held for an integrity check.', 'Reason: integrity_quarantined.', 'The holder may leave.']],
+    ['an exit with a reason this scanner does not know', 'Exit', 422, { decision: 'rejected', reason: 'invalid_credential' }, 'Exit not recorded',
+      ['Access did not record this exit.', 'Reason: invalid_credential.', 'The holder may leave.']],
+    ['an accepted entry', 'Entry', 200, { decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }, 'Accepted',
+      [`Entry recorded at ${new Date('2026-10-16T19:00:00Z').toLocaleString()}.`]],
+    ['a rejected entry', 'Entry', 422, { decision: 'rejected', reason: 'invalid_credential' }, 'Rejected',
+      ['Credential is invalid or cannot be redeemed.']],
+  ] as const)('displays %s with its direction', async (_name, direction, status, body, heading, lines) => {
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(new Response(JSON.stringify(body), { status }))))
+    render(<App />)
+    chooseDirection(direction)
+    pasteCredential()
+
+    expect(await screen.findByRole('heading', { name: heading })).toBeDefined()
+    const result = screen.getByRole('heading', { name: heading }).closest('section')!
+    expect(Array.from(result.querySelectorAll('p'), (line) => line.textContent)).toEqual(lines)
+    if (direction === 'Exit') {
+      expect(screen.queryByRole('heading', { name: 'Rejected' })).toBeNull()
+      expect(screen.queryByText(/Credential is invalid/)).toBeNull()
+    } else {
+      expect(screen.queryByText(/The holder may leave/)).toBeNull()
+    }
+  })
+
+  it('resets mode to entry after reload', async () => {
+    const fetchMock = routedFetch(() => Promise.resolve(acceptedResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<App />)
+    chooseDirection('Exit')
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(true)
+
+    view.unmount()
+    cleanup()
+    render(<App />)
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(false)
+    pasteCredential('after-reload')
+    expect(await screen.findByText(/^Entry recorded at /)).toBeDefined()
+    expect(scanBodies(fetchMock).map((body) => body.direction)).toEqual(['entry'])
+  })
+
+  it('resets mode to entry after the device is paired again', async () => {
+    let scans = 0
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(scans++ === 0
+      ? new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 })
+      : acceptedResponse())))
+    render(<App />)
+    chooseDirection('Exit')
+    pasteCredential()
+
+    fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+    expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByText('Entry mode')).toBeDefined()
+  })
+
+  it('clears the previous result when direction changes', async () => {
+    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(acceptedResponse())))
+    render(<App />)
+    pasteCredential()
+    expect(await screen.findByText(/^Entry recorded at /)).toBeDefined()
+
+    chooseDirection('Exit')
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(screen.queryByText(/Entry recorded/)).toBeNull()
+  })
+
+  it('does not let the direction change while a scan is in flight', async () => {
+    const reply = deferred<Response>()
+    vi.stubGlobal('fetch', routedFetch(() => reply.promise))
+    render(<App />)
+    pasteCredential()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Checking…' })).toBeDefined())
+
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).disabled).toBe(true)
+
+    reply.resolve(acceptedResponse())
+    expect(await screen.findByText(/^Entry recorded at /)).toBeDefined()
+    expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).disabled).toBe(false)
+  })
+
+  // A detection started under Entry must not submit after the operator chose Exit:
+  // the person in front of the camera would be counted in the wrong direction.
+  it('stops a camera generation when direction changes', async () => {
+    const first = fakeStream()
+    const second = fakeStream()
+    const staleDetection = deferred<Array<{ rawValue?: string }>>()
+    const detect = vi.fn()
+      .mockReturnValueOnce(staleDetection.promise)
+      .mockResolvedValue([{ rawValue: 'camera-exit-ticket' }])
+    vi.stubGlobal('BarcodeDetector', class {
+      detect = detect
+    })
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream)
+    stubCamera(getUserMedia)
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const fetchMock = routedFetch(() => Promise.resolve(acceptedResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    await waitFor(() => expect(detect).toHaveBeenCalledOnce())
+
+    chooseDirection('Exit')
+    expect(first.stop).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Stop camera' })).toBeNull()
+
+    // The detect loop awaited this promise before the test did, so its continuation
+    // has run when this await returns. A live generation would have put the code in
+    // the credential field before it started the scan.
+    await act(async () => {
+      staleDetection.resolve([{ rawValue: 'stale-entry-ticket' }])
+      await staleDetection.promise
+    })
+    expect((screen.getByLabelText('Ticket credential') as HTMLTextAreaElement).value).toBe('')
+    expect(screen.getByRole('button', { name: 'Check ticket' })).toBeDefined()
+    expect(detect).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    expect(await screen.findByText(/^Exit recorded at /)).toBeDefined()
+    expect(scanBodies(fetchMock).map((body) => [body.qr_payload, body.direction])).toEqual([
+      ['camera-exit-ticket', 'exit'],
+    ])
+    expect(second.stop).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a pending camera start when direction changes', async () => {
+    const { stop, stream } = fakeStream()
+    const pending = deferred<MediaStream>()
+    stubIdleDetector()
+    stubCamera(vi.fn().mockReturnValue(pending.promise))
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    chooseDirection('Exit')
+    await act(async () => {
+      pending.resolve(stream)
+      await pending.promise
+    })
+
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    expect(play).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Stop camera' })).toBeNull()
+  })
+})
+
 // The scan routes require an enrolled device, so the app has to keep its
 // credential and present a clear unpaired state.
 describe('device pairing', () => {

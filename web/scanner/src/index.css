@@ -11,3 +11,10 @@ video { display: block; width: 100%; margin-top: 1rem; border-radius: .5rem; bac
 .camera-note { margin-bottom: 0; }
 .result.accepted { border-color: #15803d; background: #f0fdf4; }
 .result.rejected { border-color: #b91c1c; background: #fef2f2; }
+.scan-direction { border: 0; padding: 0; margin: 0 0 1rem; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.scan-direction legend { font-weight: 700; padding: 0; margin-bottom: .5rem; width: 100%; }
+.scan-direction label { display: inline-flex; align-items: center; gap: .4rem; width: auto; margin: 0; font-weight: 400; cursor: pointer; }
+.scan-direction input { margin: 0; width: 1.25rem; height: 1.25rem; }
+.scan-mode { align-self: center; font-weight: 700; padding: .3rem .6rem; border-radius: .4rem; background: #e0f2fe; color: #075985; }
+.scan-mode.exit { background: #fef3c7; color: #92400e; }
+.result.not-recorded { border-color: #b45309; background: #fffbeb; }

@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe('durable pending record', () => {
   it('commits the PENDING record with a fresh UUIDv4 before anything else can run', async () => {
-    const record = await store.mint('qr-payload', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr-payload', '2026-07-17T09:00:00Z', 'entry')
     expect(record.state).toBe('PENDING')
     expect(record.actuated).toBe(false)
     // UUIDv4 shape — the id is scanner-minted (ADR-025 §D3).
@@ -72,8 +72,8 @@ describe('durable pending record', () => {
   })
 
   it('mints a distinct id per decision — retries reuse, decisions do not', async () => {
-    const a = await store.mint('qr-payload', '2026-07-17T09:00:00Z')
-    const b = await store.mint('qr-payload', '2026-07-17T09:01:00Z')
+    const a = await store.mint('qr-payload', '2026-07-17T09:00:00Z', 'entry')
+    const b = await store.mint('qr-payload', '2026-07-17T09:01:00Z', 'entry')
     expect(a.occurrenceId).not.toBe(b.occurrenceId)
   })
 
@@ -81,6 +81,20 @@ describe('durable pending record', () => {
     const record = await store.mintRefusal('listed-ticket', '2026-07-17T09:00:00Z')
     expect(record).toMatchObject({ state: 'QUEUED', actuated: false, localDecision: 'revocation_refused' })
     expect(await store.get(record.occurrenceId)).toMatchObject({ state: 'QUEUED', localDecision: 'revocation_refused' })
+  })
+
+  // The direction is a fact of the occurrence (TKT-399). It is committed with the
+  // record, so a later mode change cannot relabel it. A refusal has no direction:
+  // Access stores it as a refusal only, and an own property would be serialized.
+  it('commits the scan direction with the record and stores none on a refusal', async () => {
+    const exit = await store.mint('exit-qr', '2026-07-17T09:00:00Z', 'exit')
+    const entry = await store.mint('entry-qr', '2026-07-17T09:01:00Z', 'entry')
+    const refusal = await store.mintRefusal('listed-qr', '2026-07-17T09:02:00Z')
+
+    expect(exit.direction).toBe('exit')
+    expect(await store.get(exit.occurrenceId)).toMatchObject({ state: 'PENDING', direction: 'exit' })
+    expect(await store.get(entry.occurrenceId)).toMatchObject({ state: 'PENDING', direction: 'entry' })
+    expect(Object.hasOwn((await store.get(refusal.occurrenceId))!, 'direction')).toBe(false)
   })
 })
 
@@ -150,7 +164,7 @@ const ticketIDForStore = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
 
 describe('actuation gating', () => {
   it('actuates exactly once for a pending record, marking before reporting', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     expect(await store.actuate(record.occurrenceId)).toBe(true)
     const after = await store.get(record.occurrenceId)
     expect(after?.actuated).toBe(true)
@@ -162,13 +176,13 @@ describe('actuation gating', () => {
   })
 
   it('never actuates an already-actuated occurrence twice', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     expect(await store.actuate(record.occurrenceId)).toBe(true)
     expect(await store.actuate(record.occurrenceId)).toBe(false)
   })
 
   it('serializes racing actuations of the same occurrence to a single winner', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     const outcomes = await Promise.all([
       store.actuate(record.occurrenceId),
       store.actuate(record.occurrenceId),
@@ -182,9 +196,9 @@ describe('offline queue', () => {
   it('recovers this tab after a reload once, with the same occurrence identity', async () => {
     const dbName = `reload-${crypto.randomUUID()}`
     const firstPage = await openStore(dbName, { ownerId: 'page-before-reload' })
-    const stranded = await firstPage.mint('stranded-qr', '2026-09-03T20:00:00Z')
-    const actuated = await firstPage.mint('admitted-qr', '2026-09-03T20:01:00Z')
-    const resolved = await firstPage.mint('resolved-qr', '2026-09-03T20:02:00Z')
+    const stranded = await firstPage.mint('stranded-qr', '2026-09-03T20:00:00Z', 'entry')
+    const actuated = await firstPage.mint('admitted-qr', '2026-09-03T20:01:00Z', 'entry')
+    const resolved = await firstPage.mint('resolved-qr', '2026-09-03T20:02:00Z', 'entry')
     await firstPage.actuate(actuated.occurrenceId)
     await firstPage.markSynced(resolved.occurrenceId, 'conflict')
 
@@ -211,10 +225,36 @@ describe('offline queue', () => {
     expect(await reloadedPage.get(resolved.occurrenceId)).toMatchObject({ state: 'RESOLVED', result: 'conflict' })
   })
 
+  it('preserves direction through recovery and transitions', async () => {
+    const dbName = `direction-${crypto.randomUUID()}`
+    const firstPage = await openStore(dbName, { ownerId: 'page-before-reload' })
+    const stranded = await firstPage.mint('stranded-exit', '2026-09-03T20:00:00Z', 'exit')
+    const actuated = await firstPage.mint('admitted-exit', '2026-09-03T20:01:00Z', 'exit')
+    const resolved = await firstPage.mint('resolved-exit', '2026-09-03T20:02:00Z', 'exit')
+    expect(await firstPage.actuate(actuated.occurrenceId)).toBe(true)
+    await firstPage.markSynced(resolved.occurrenceId, 'conflict')
+    firstPage.close()
+
+    const reloadedPage = await openStore(dbName, {
+      ownerId: 'page-after-reload',
+      recoverOwnerId: 'page-before-reload',
+    })
+    expect(await reloadedPage.queued()).toMatchObject([
+      { occurrenceId: stranded.occurrenceId, state: 'QUEUED', direction: 'exit' },
+    ])
+    expect(await reloadedPage.get(actuated.occurrenceId)).toMatchObject({ state: 'ACTUATED', direction: 'exit' })
+    expect(await reloadedPage.get(resolved.occurrenceId)).toMatchObject({ state: 'RESOLVED', direction: 'exit' })
+
+    await reloadedPage.markQueued(stranded.occurrenceId)
+    expect(await reloadedPage.get(stranded.occurrenceId)).toMatchObject({ state: 'QUEUED', direction: 'exit' })
+    await reloadedPage.markSynced(stranded.occurrenceId, 'recorded')
+    expect(await reloadedPage.get(stranded.occurrenceId)).toMatchObject({ state: 'SYNCED', direction: 'exit' })
+  })
+
   it('retries reload recovery after the previous page releases its live-owner lock', async () => {
     const dbName = `overlapping-reload-${crypto.randomUUID()}`
     const firstPage = await openStore(dbName, { ownerId: 'page-before-reload' })
-    const stranded = await firstPage.mint('stranded-qr', '2026-09-03T20:00:00Z')
+    const stranded = await firstPage.mint('stranded-qr', '2026-09-03T20:00:00Z', 'entry')
 
     const reloadedPage = await openStore(dbName, {
       ownerId: 'page-after-reload',
@@ -234,7 +274,7 @@ describe('offline queue', () => {
   it('does not let a second live tab claim or actuate an in-flight occurrence', async () => {
     const dbName = `tabs-${crypto.randomUUID()}`
     const firstTab = await openStore(dbName, { ownerId: 'first-tab', now: () => 1_000 })
-    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z')
+    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z', 'entry')
 
     const secondTab = await openStore(dbName, { ownerId: 'second-tab', now: () => 1_000 })
     expect(await secondTab.queued()).toEqual([])
@@ -251,7 +291,7 @@ describe('offline queue', () => {
       pendingLeaseMs: 90,
       now: () => timestamp,
     })
-    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z')
+    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z', 'entry')
 
     timestamp = 1_060
     await vi.advanceTimersByTimeAsync(30)
@@ -275,7 +315,7 @@ describe('offline queue', () => {
       pendingLeaseMs: 90,
       now: () => timestamp,
     })
-    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z')
+    const pending = await firstTab.mint('in-flight-qr', '2026-09-03T20:00:00Z', 'entry')
 
     // The page is alive and still owns its browser lock, but its timer has not
     // run. An expired timestamp alone must not let another tab take the row.
@@ -290,7 +330,7 @@ describe('offline queue', () => {
 
     // Repeat with another row, then release the owner. The expired row becomes
     // recoverable once, without changing its occurrence identity.
-    const abandoned = await firstTab.mint('abandoned-qr', '2026-09-03T20:01:00Z')
+    const abandoned = await firstTab.mint('abandoned-qr', '2026-09-03T20:01:00Z', 'entry')
     timestamp = 1_182
     expect(await secondTab.queued()).toEqual([])
     firstTab.close()
@@ -313,7 +353,7 @@ describe('offline queue', () => {
       pendingLeaseMs: 100,
       now: () => 1_000,
     })
-    const pending = await abandoned.mint('abandoned-qr', '2026-09-03T20:00:00Z')
+    const pending = await abandoned.mint('abandoned-qr', '2026-09-03T20:00:00Z', 'entry')
     abandoned.close()
 
     const beforeExpiry = await openStore(dbName, { ownerId: 'observer-before-expiry', now: () => 1_099 })
@@ -335,14 +375,14 @@ describe('offline queue', () => {
   })
 
   it('queues an unsent occurrence and lists it for reconciliation', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     await store.markQueued(record.occurrenceId)
     const queued = await store.queued()
     expect(queued.map((r) => r.occurrenceId)).toEqual([record.occurrenceId])
   })
 
   it('moves a reconciled occurrence to a terminal state and out of the queue', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     await store.markQueued(record.occurrenceId)
     await store.markSynced(record.occurrenceId, 'recorded')
     expect(await store.queued()).toEqual([])
@@ -352,7 +392,7 @@ describe('offline queue', () => {
   })
 
   it('marks a conflict as RESOLVED — surfaced to the operator, never a gate action', async () => {
-    const record = await store.mint('qr', '2026-07-17T09:00:00Z')
+    const record = await store.mint('qr', '2026-07-17T09:00:00Z', 'entry')
     await store.markQueued(record.occurrenceId)
     await store.markSynced(record.occurrenceId, 'conflict')
     const after = await store.get(record.occurrenceId)

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ScanDirection } from './access-contract'
 import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
 
 const openStore = vi.hoisted(() => vi.fn())
@@ -34,7 +35,8 @@ function fakeStore() {
   const completedPulls = new Map<string, string>()
   const revokedIDs = new Set<string>()
   const store: OccurrenceStore = {
-    mint: vi.fn().mockResolvedValue(record),
+    // The fake keeps the direction it was given, so it cannot supply one itself.
+    mint: vi.fn(async (_qrPayload: string, _occurredAt: string, direction: ScanDirection) => ({ ...record, direction })),
     mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
     isRevoked: vi.fn(async (ticketID) => revokedIDs.has(ticketID.toLowerCase())),
     mergeRevoked: vi.fn(async (ticketIDs) => {
@@ -119,8 +121,8 @@ describe('Scanner storage failures', () => {
   })
 
   it('sends nothing when minting fails and enables a successful retry', async () => {
-    const { record, store } = fakeStore()
-    vi.mocked(store.mint).mockRejectedValueOnce(new Error('transaction failed')).mockResolvedValue(record)
+    const { store } = fakeStore()
+    vi.mocked(store.mint).mockRejectedValueOnce(new Error('transaction failed'))
     openStore.mockResolvedValue(store)
 
     render(<App />)

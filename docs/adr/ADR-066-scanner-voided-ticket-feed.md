@@ -199,6 +199,23 @@ route or actuate the gate. If the credential cannot be decoded, the scanner foll
 scan path. Access verifies the signed credential and organizer scope when it records a refusal in
 `scanner_local_decisions`. That record does not create a lifecycle event, quarantine row or alarm.
 
+**Amended by TKT-399: the local refusal is Entry-mode only.** The paragraph above applies to a
+scan in Entry mode. In Exit mode, a listed ticket mints no occurrence, stores no refusal row and
+calls nothing, on the device or in Access. The screen says "Exit not recorded", that the holder may
+leave, and that the ticket is no longer valid for entry. The reason: `scanner_local_decisions` has no
+direction column (migration `0014_scanner_local_decisions.sql`; the insert is in
+`RecordRevocationRefusal`, `services/access/internal/store/reconcile.go`), so a refused exit would
+be stored as a refused entry attempt that did not happen. Access accepts no `event_type` on a refusal
+row either (`services/access/internal/api/server.go`, `reconcile`). The cost: Access has no record
+that a voided ticket was presented at an exit. A record of that needs a direction on the refusal
+protocol, which is contract work for a new ticket.
+
+The alternative, skip the local check in Exit mode and send a normal exit, was rejected. A LIVE exit
+of a refunded or exchanged pass ticket writes nothing, because `admitPass` refuses it before it
+appends (`services/access/internal/store/scan.go`). But an OFFLINE exit reconciles through the pass
+branch of `ReconcileAdmission`, which has no refund or exchange check before it appends, so it would
+add an exit fact to the trail of a voided ticket.
+
 TKT-271 ships this revocation refusal only. A device with no completed pull keeps the existing
 offline policy. Its screen says that it holds no revocation list yet. The 24-hour ceiling, refusal
 before the first pull, unreadable-time refusal and operator override belong to TKT-500.

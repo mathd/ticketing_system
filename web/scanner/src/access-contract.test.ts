@@ -1,14 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
   decodeAccessError,
   decodeReconcileResponse,
   decodeScanResponse,
+  type ScanDirection,
 } from './access-contract'
 
 const OCCURRENCE = '6efae2f2-cd2d-4b9d-96cb-ec4ee048dc78'
 const OTHER_OCCURRENCE = '9552ce84-c3aa-4a67-b7e6-65ef783c1c95'
 
 describe('Access response contracts', () => {
+  // Checked by tsc, not at run time: the scanner's direction is the live
+  // contract's enum, so a third value cannot be stored without a contract change.
+  it('names the two live scan directions', () => {
+    expectTypeOf<ScanDirection>().toEqualTypeOf<'entry' | 'exit'>()
+  })
+
   it('decodes the generated accepted and rejected scan variants', () => {
     expect(decodeScanResponse(200, {
       decision: 'accepted',

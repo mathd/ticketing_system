@@ -211,6 +211,210 @@ try {
     'the form is usable after the request finishes',
     !(await page.getByRole('button', { name: 'Check ticket' }).isDisabled()),
   );
+
+  // TKT-399: Exit mode, through the rendered control, against Access's real pass
+  // policy path. The fixture follows the one above: a random slot, a signed
+  // credential and a SQL ticket row, plus ONE policy row for that slot (D9). No
+  // publication names a random slot, so nothing can overwrite the policy. The
+  // spec proves the scanner-to-Access path only, not catalog policy publication.
+  const seedTicket = (slot) => {
+    const id = randomUUID();
+    const order = randomUUID();
+    const passClaims = toBase64URL(JSON.stringify({
+      v: 1, tid: id, oid: order, org: ORGANIZER, sid: slot, iat: Math.floor(issuedAt.getTime() / 1000),
+    }));
+    const body = `${header}.${passClaims}`;
+    const qr = `${body}.${sign(null, Buffer.from(body), privateKey).toString('base64url')}`;
+    sql(
+      PG,
+      'access',
+      `INSERT INTO tickets
+         (id, order_id, guest_order_ref, organizer_id, buyer_id, slot_id, ticket_type_id, qr_payload, issued_at)
+       VALUES
+         ('${id}', '${order}', '${randomUUID()}', '${ORGANIZER}', '${randomUUID()}', '${slot}',
+          '${randomUUID()}', '${qr}', '${issuedAt.toISOString()}');`,
+    );
+    return { id, qr };
+  };
+  const passSlotID = randomUUID();
+  const singleSlotID = randomUUID();
+  sql(
+    PG,
+    'access',
+    `INSERT INTO slot_re_entry_policies (slot_id, organizer_id, mode, requires_exit)
+     VALUES ('${passSlotID}', '${ORGANIZER}', 'multi', true);`,
+  );
+  const pass = seedTicket(passSlotID);
+  const single = seedTicket(singleSlotID);
+  const lifecycleByID = (occurrenceID) => JSON.parse(sql(
+    PG,
+    'access',
+    `SELECT COALESCE(json_agg(json_build_object(
+       'ticket_id', ticket_id::text,
+       'event_type', event_type,
+       'occurred_at', to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+     )), '[]'::json)::text FROM lifecycle_events WHERE id='${occurrenceID}'`,
+  ));
+  const lifecycleTypes = (id) => JSON.parse(sql(
+    PG,
+    'access',
+    `SELECT COALESCE(json_agg(event_type ORDER BY occurred_at, id), '[]'::json)::text
+       FROM lifecycle_events WHERE ticket_id='${id}'`,
+  ));
+
+  const exitContext = await browser.newContext({ baseURL: BASE });
+  const exitPage = await exitContext.newPage();
+  // A mutation that makes the control unusable must fail in seconds, not minutes.
+  exitPage.setDefaultTimeout(15_000);
+  const isExitScan = (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/api/access/scans';
+  const isExitReconcile = (request) => request.method() === 'POST'
+    && new URL(request.url()).pathname === '/api/access/scans/reconciliations';
+  const exitToken = enrolScanner(ACCESS, `browser exit gate ${Date.now()}`);
+  await exitPage.goto('/scanner/', { waitUntil: 'domcontentloaded' });
+  await exitPage.fill('#pairing-token', exitToken);
+  const exitPull = exitPage.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/access/scans/voided-tickets');
+  await exitPage.click('button[type=submit]');
+  await exitPull;
+  await exitPage.getByText('This device holds no revocation list yet.').waitFor({ state: 'detached' });
+  check('a second device pairs and completes its own revocation pull', true);
+
+  const entryRadio = exitPage.getByRole('radio', { name: 'Entry' });
+  const exitRadio = exitPage.getByRole('radio', { name: 'Exit' });
+  const scanWith = async (qr) => {
+    await exitPage.getByLabel('Ticket credential').fill(qr);
+    const sent = exitPage.waitForRequest(isExitScan);
+    const answered = exitPage.waitForResponse((response) => isExitScan(response.request()));
+    await exitPage.getByRole('button', { name: 'Check ticket' }).click();
+    const request = await sent;
+    await answered;
+    return request.postDataJSON();
+  };
+  const resultText = () => exitPage.locator('section.result').innerText();
+
+  check('the scanner starts in Entry mode', await entryRadio.isChecked() && !(await exitRadio.isChecked()));
+  const firstEntry = await scanWith(pass.qr);
+  await exitPage.getByText(/^Entry recorded at /).waitFor();
+  check('an entry scan sends direction entry', firstEntry.direction === 'entry', `direction ${firstEntry.direction}`);
+  check(
+    'Access records the entry for that occurrence',
+    JSON.stringify(lifecycleByID(firstEntry.occurrence_id))
+      === JSON.stringify([{ ticket_id: pass.id, event_type: 'entry', occurred_at: firstEntry.occurred_at }]),
+    JSON.stringify(lifecycleByID(firstEntry.occurrence_id)),
+  );
+
+  await exitRadio.check();
+  await exitPage.getByText('Exit mode').waitFor();
+  const liveExit = await scanWith(pass.qr);
+  await exitPage.getByText(/^Exit recorded at /).waitFor();
+  check('the Exit control makes the scan send direction exit', liveExit.direction === 'exit', `direction ${liveExit.direction}`);
+  check('an accepted exit shows the Accepted heading', await exitPage.getByRole('heading', { name: 'Accepted' }).isVisible());
+  check(
+    'Access records the exit for that occurrence',
+    JSON.stringify(lifecycleByID(liveExit.occurrence_id))
+      === JSON.stringify([{ ticket_id: pass.id, event_type: 'exit', occurred_at: liveExit.occurred_at }]),
+    JSON.stringify(lifecycleByID(liveExit.occurrence_id)),
+  );
+
+  const secondExit = await scanWith(pass.qr);
+  await exitPage.getByRole('heading', { name: 'Exit not recorded' }).waitFor();
+  const notInside = await resultText();
+  check(
+    'a second exit is not recorded and names not_inside',
+    secondExit.direction === 'exit' && notInside.includes('Reason: not_inside.') && notInside.includes('The holder may leave.'),
+    notInside,
+  );
+  check('the refused exit appends nothing', lifecycleByID(secondExit.occurrence_id).length === 0);
+
+  await exitPage.reload({ waitUntil: 'domcontentloaded' });
+  await exitPage.getByLabel('Ticket credential').waitFor();
+  check('a reload returns the scanner to Entry mode', await entryRadio.isChecked() && !(await exitRadio.isChecked()));
+  const secondEntry = await scanWith(pass.qr);
+  await exitPage.getByText(/^Entry recorded at /).waitFor();
+  check('the holder enters again', lifecycleByID(secondEntry.occurrence_id)[0]?.event_type === 'entry');
+
+  // Offline: the exit is committed on the device, then the operator switches back
+  // to Entry before the queue syncs. The queued row must still reach Access as an exit.
+  await exitContext.setOffline(true);
+  await exitRadio.check();
+  await exitPage.getByLabel('Ticket credential').fill(pass.qr);
+  await exitPage.getByRole('button', { name: 'Check ticket' }).click();
+  await exitPage.getByRole('heading', { name: 'Queued offline' }).waitFor();
+  check(
+    'the queued exit tells staff the holder may leave',
+    (await resultText()).includes('the exit is saved on this device and will sync when back online. The holder may leave.'),
+    await resultText(),
+  );
+  const queuedExitRows = await exitPage.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const request = open.result.transaction('occurrences', 'readonly').objectStore('occurrences').getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        open.result.close();
+        resolve(request.result.filter((row) => row.state === 'QUEUED'));
+      };
+    };
+  }));
+  const queuedExit = queuedExitRows[0];
+  check(
+    'the device committed one queued exit',
+    queuedExitRows.length === 1 && queuedExit.direction === 'exit' && queuedExit.qrPayload === pass.qr,
+    JSON.stringify(queuedExitRows.map((row) => ({ state: row.state, direction: row.direction }))),
+  );
+  check('Access has no row for the queued exit yet', lifecycleByID(queuedExit.occurrenceId).length === 0);
+
+  await entryRadio.check();
+  check('the operator is back in Entry mode before the sync', await entryRadio.isChecked());
+  // The online edge syncs by itself, so both waits are registered BEFORE going online.
+  const exitReconcile = exitPage.waitForRequest(isExitReconcile);
+  const exitReconciled = exitPage.waitForResponse((response) => isExitReconcile(response.request()) && response.status() === 200);
+  await exitContext.setOffline(false);
+  const reconcileBody = (await exitReconcile).postDataJSON();
+  const reconcileAnswer = await (await exitReconciled).json();
+  const sentExit = reconcileBody.occurrences?.find((row) => row.occurrence_id === queuedExit.occurrenceId);
+  check(
+    'reconciliation sends the stored exit with event_type exit',
+    JSON.stringify(sentExit) === JSON.stringify({
+      qr_payload: pass.qr,
+      occurrence_id: queuedExit.occurrenceId,
+      occurred_at: queuedExit.occurredAt,
+      event_type: 'exit',
+    }),
+    JSON.stringify(reconcileBody.occurrences?.map((row) => ({ occurrence_id: row.occurrence_id, event_type: row.event_type }))),
+  );
+  check(
+    'Access answers recorded for the queued exit',
+    reconcileAnswer.results?.some((row) => row.occurrence_id === queuedExit.occurrenceId && row.result === 'recorded'),
+    JSON.stringify(reconcileAnswer),
+  );
+  check(
+    'Access stores exactly one exit for that occurrence, at the device time',
+    JSON.stringify(lifecycleByID(queuedExit.occurrenceId))
+      === JSON.stringify([{ ticket_id: pass.id, event_type: 'exit', occurred_at: queuedExit.occurredAt }]),
+    JSON.stringify(lifecycleByID(queuedExit.occurrenceId)),
+  );
+  check(
+    'the pass trail is entry, exit, entry, exit and holds no redeemed or duplicate_admit',
+    JSON.stringify(lifecycleTypes(pass.id)) === JSON.stringify(['entry', 'exit', 'entry', 'exit']),
+    JSON.stringify(lifecycleTypes(pass.id)),
+  );
+
+  // A slot with no policy row reads as single: an exit has no meaning there.
+  await exitRadio.check();
+  const singleExit = await scanWith(single.qr);
+  await exitPage.getByRole('heading', { name: 'Exit not recorded' }).waitFor();
+  const notApplicable = await resultText();
+  check(
+    'an exit on a single-entry slot names exit_not_applicable',
+    singleExit.direction === 'exit' && notApplicable.includes('Reason: exit_not_applicable.') && notApplicable.includes('The holder may leave.'),
+    notApplicable,
+  );
+  check('the single-entry ticket has no admission event', lifecycleTypes(single.id).length === 0, JSON.stringify(lifecycleTypes(single.id)));
+} catch (error) {
+  // A step that throws must not leave the summary saying "passed".
+  check('the spec ran to the end', false, String(error?.message ?? error).split('\n')[0]);
 } finally {
   await browser.close();
   if (!recorder.finish()) process.exitCode = 1;

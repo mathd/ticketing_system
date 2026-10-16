@@ -11,6 +11,9 @@ const queueReads = vi.hoisted(() => ({
   finished: 0,
   failNext: false,
   failMarkSyncedNext: false,
+  // Calls the page made to the production store's two record writers.
+  mints: 0,
+  refusals: 0,
   onStarted: null as (() => void) | null,
   holdNext: null as { result: Promise<OccurrenceRecord[]>; started: () => void } | null,
 }))
@@ -23,6 +26,14 @@ vi.mock('./occurrences', async (importOriginal) => {
       const store = await actual.openOccurrenceStore(...args)
       return {
         ...store,
+        async mint(...args: Parameters<typeof store.mint>) {
+          queueReads.mints += 1
+          return store.mint(...args)
+        },
+        async mintRefusal(...args: Parameters<typeof store.mintRefusal>) {
+          queueReads.refusals += 1
+          return store.mintRefusal(...args)
+        },
         async markSynced(...args: Parameters<typeof store.markSynced>) {
           if (queueReads.failMarkSyncedNext) {
             queueReads.failMarkSyncedNext = false
@@ -70,6 +81,8 @@ beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory())
   queueReads.failNext = false
   queueReads.failMarkSyncedNext = false
+  queueReads.mints = 0
+  queueReads.refusals = 0
   queueReads.holdNext = null
   queueReads.onStarted = null
   sessionStorage.clear()
@@ -845,5 +858,177 @@ describe('where the failure note renders (COS6)', () => {
     fireEvent.click(screen.getByRole('button', { name: /pair/i }))
     await screen.findByRole('button', { name: 'Sync queued scans' })
     expect(screen.getByText(unreadableNote)).toBeDefined()
+  })
+})
+
+// Exit mode (TKT-399): the direction is a fact of the stored occurrence. The rows
+// below are read and written in IndexedDB directly, so no fake can supply it.
+function chooseDirection(name: 'Entry' | 'Exit') {
+  fireEvent.click(screen.getByRole('radio', { name }))
+}
+
+// Writes rows into the scanner database before the page opens it. Same version and
+// stores as the production schema, so the page opens it without an upgrade.
+async function seedRows(rows: Record<string, unknown>[]) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences', 2)
+    open.onupgradeneeded = () => {
+      open.result.createObjectStore('occurrences', { keyPath: 'occurrenceId' })
+      open.result.createObjectStore('revocations', { keyPath: 'ticketID' })
+      open.result.createObjectStore('revocation_meta', { keyPath: 'key' })
+    }
+    open.onsuccess = () => resolve(open.result)
+    open.onerror = () => reject(open.error)
+  })
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('occurrences', 'readwrite')
+    for (const row of rows) tx.objectStore('occurrences').put(row)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+  db.close()
+}
+
+type SentOccurrence = Record<string, unknown> & { occurrence_id: string }
+
+async function syncAndCapture(): Promise<SentOccurrence[]> {
+  const sent: SentOccurrence[][] = []
+  stubFetch((body) => {
+    sent.push(body.occurrences as SentOccurrence[])
+    return Promise.resolve(recordedResponse(body))
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  await screen.findByText(/^Synced \d+ offline scan\(s\)\.$/)
+  expect(sent).toHaveLength(1)
+  return sent[0]
+}
+
+describe('the direction of a queued occurrence', () => {
+  // A row written before TKT-399 has no direction. Access reads an omitted
+  // event_type as an entry, which is what the row always meant. The current mode
+  // must not decide it.
+  it('reconciles a legacy row as entry while exit mode is selected', async () => {
+    const legacy = {
+      occurrenceId: 'c0d2a3f4-5b6c-4d7e-8f90-a1b2c3d4e5f6',
+      qrPayload: 'legacy-ticket',
+      occurredAt: '2026-09-30T21:00:00.000Z',
+      state: 'QUEUED',
+      actuated: false,
+      createdAt: '2026-09-30T21:00:00.000Z',
+      ownerId: 'page-before-upgrade',
+      leaseExpiresAt: 1,
+    }
+    await seedRows([legacy])
+    render(<App />)
+    chooseDirection('Exit')
+    expect(await syncAndCapture()).toEqual([
+      { qr_payload: 'legacy-ticket', occurrence_id: legacy.occurrenceId, occurred_at: legacy.occurredAt },
+    ])
+  })
+
+  // D13: a stored value that is not entry or exit is never sent as an entry, and
+  // never sent in a form that fails the whole batch. Access refuses the row alone.
+  it.each([
+    ['absent', false, undefined, undefined],
+    ['an own undefined', true, undefined, 'invalid'],
+    ['null', true, null, 'invalid'],
+    ['an empty string', true, '', 'invalid'],
+    ['the number 1', true, 1, 'invalid'],
+    ['EXIT in capitals', true, 'EXIT', 'EXIT'],
+    ['entry', true, 'entry', 'entry'],
+    ['exit', true, 'exit', 'exit'],
+  ] as const)('reconciles a stored direction that is %s while exit mode is selected', async (_name, own, value, expected) => {
+    const row: Record<string, unknown> = {
+      occurrenceId: 'd1e2f3a4-b5c6-4d7e-8f90-a1b2c3d4e5f6',
+      qrPayload: 'stored-ticket',
+      occurredAt: '2026-10-16T18:00:00.000Z',
+      state: 'QUEUED',
+      actuated: false,
+      createdAt: '2026-10-16T18:00:00.000Z',
+    }
+    if (own) row.direction = value
+    await seedRows([row])
+    // The fixture must hold the state it names: structured clone keeps an own
+    // undefined, and that is the case a `??` check reads as a legacy row.
+    const [stored] = await storedRows() as Record<string, unknown>[]
+    expect(Object.hasOwn(stored, 'direction')).toBe(own)
+    expect(stored.direction).toBe(value)
+
+    render(<App />)
+    chooseDirection('Exit')
+    const [sent] = await syncAndCapture()
+    expect(Object.hasOwn(sent, 'event_type')).toBe(expected !== undefined)
+    expect(sent.event_type).toBe(expected)
+    expect(Object.hasOwn(sent, 'local_decision')).toBe(false)
+  })
+
+  it('preserves complete mixed-direction rows after failed sync', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan('ticket-in')
+    chooseDirection('Exit')
+    await queueOneScan('ticket-out')
+    await readsSettled()
+    const before = await storedRows() as OccurrenceRecord[]
+    expect(before.map((row) => [row.qrPayload, row.state, row.direction]).sort()).toEqual([
+      ['ticket-in', 'QUEUED', 'entry'],
+      ['ticket-out', 'QUEUED', 'exit'],
+    ])
+
+    stubFetch(() => Promise.reject(new TypeError('network down')))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByText(/^Sync failed: No connection\. 2 scans are saved/)
+    expect(await storedRows()).toEqual(before)
+
+    stubFetch(() => Promise.resolve(new Response('<html>Bad Gateway</html>', { status: 502 })))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByText(/^Sync failed: The server answered but the reply could not be read\. 2 scans are saved/)
+    expect(await storedRows()).toEqual(before)
+
+    chooseDirection('Entry')
+    const sent = await syncAndCapture()
+    expect(sent.sort((a, b) => String(a.qr_payload).localeCompare(String(b.qr_payload)))).toEqual(
+      before
+        .map((row) => ({ qr_payload: row.qrPayload, occurrence_id: row.occurrenceId, occurred_at: row.occurredAt, event_type: row.direction }))
+        .sort((a, b) => a.qr_payload.localeCompare(b.qr_payload)),
+    )
+  })
+
+  // D7: in Exit mode a listed ticket mints nothing, stores nothing and sends
+  // nothing. Access has no direction on a refusal, so a refusal row would record a
+  // refused entry that never happened. The Entry half proves the ticket is listed.
+  it('does not record an exit-mode scan of a revoked ticket', async () => {
+    const tid = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
+    const fetchMock = vi.fn((url: string) => String(url).includes('voided-tickets')
+      ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [tid], next_cursor: null }), { status: 200 }))
+      : Promise.reject(new TypeError('network down')))
+    vi.stubGlobal('fetch', fetchMock)
+    const claims = btoa(JSON.stringify({ tid })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+    render(<App />)
+    await waitFor(() => expect(screen.queryByText(/holds no revocation list yet/i)).toBeNull())
+
+    chooseDirection('Exit')
+    fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: `header.${claims}.signature` } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
+    expect(await screen.findByRole('heading', { name: 'Exit not recorded' })).toBeDefined()
+    const result = screen.getByRole('heading', { name: 'Exit not recorded' }).closest('section')!
+    expect(Array.from(result.querySelectorAll('p'), (line) => line.textContent)).toEqual([
+      "This ticket is on the device's revocation list.",
+      'The holder may leave.',
+      'This ticket is no longer valid for entry.',
+    ])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+    await readsSettled()
+    expect(queueReads.mints).toBe(0)
+    expect(queueReads.refusals).toBe(0)
+    expect(await storedRows()).toEqual([])
+    expect(fetchMock.mock.calls.filter(([url]) => !String(url).includes('voided-tickets'))).toEqual([])
+    expect(screen.queryByRole('heading', { name: 'Not valid for entry' })).toBeNull()
+
+    chooseDirection('Entry')
+    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
+    expect(await screen.findByRole('heading', { name: 'Not valid for entry' })).toBeDefined()
+    await waitFor(() => expect(queueReads.refusals).toBe(1))
+    expect(queueReads.mints).toBe(0)
   })
 })

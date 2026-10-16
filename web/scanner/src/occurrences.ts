@@ -8,6 +8,8 @@
 // PENDING→ACTUATED transition needs a transactional read-modify-write: a
 // racing duplicate response must not observe actuated:false twice.
 
+import type { ScanDirection } from './access-contract'
+
 export type OccurrenceState = 'PENDING' | 'ACTUATED' | 'QUEUED' | 'SYNCED' | 'RESOLVED'
 
 export type OccurrenceRecord = {
@@ -23,13 +25,21 @@ export type OccurrenceRecord = {
   /** Epoch milliseconds. The owner renews this while its page remains alive. */
   leaseExpiresAt?: number
   localDecision?: 'revocation_refused'
+  /**
+   * The direction the operator chose for this scan, committed with the record.
+   * Absent only on rows written before TKT-399; those are entries.
+   */
+  direction?: ScanDirection
 }
+
+/** A record that mint has just committed always carries its direction. */
+export type MintedOccurrence = OccurrenceRecord & { direction: ScanDirection }
 
 export type RevocationPull = { completedAt?: string }
 
 export interface OccurrenceStore {
   /** Commits the PENDING record; resolves only after the IDB transaction completes. */
-  mint(qrPayload: string, occurredAt: string, localDecision?: 'revocation_refused'): Promise<OccurrenceRecord>
+  mint(qrPayload: string, occurredAt: string, direction: ScanDirection): Promise<MintedOccurrence>
   mintRefusal(qrPayload: string, occurredAt: string): Promise<OccurrenceRecord>
   isRevoked(ticketID: string): Promise<boolean>
   mergeRevoked(ticketIDs: string[]): Promise<void>
@@ -252,8 +262,8 @@ export async function openOccurrenceStore(
   }
 
   return {
-    async mint(qrPayload, occurredAt, localDecision) {
-      const record: OccurrenceRecord = {
+    async mint(qrPayload, occurredAt, direction) {
+      const record: MintedOccurrence = {
         occurrenceId: crypto.randomUUID(),
         qrPayload,
         occurredAt,
@@ -262,7 +272,7 @@ export async function openOccurrenceStore(
         createdAt: new Date().toISOString(),
         ownerId,
         leaseExpiresAt: now() + pendingLeaseMs,
-        ...(localDecision ? { localDecision } : {}),
+        direction,
       }
       await put(record)
       return record

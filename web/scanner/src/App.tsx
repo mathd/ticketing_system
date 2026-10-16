@@ -5,18 +5,21 @@ import {
   decodeScanResponse,
   type ReconcileResponse,
   type ReconcileRequest,
+  type ScanDirection,
   type ScanRequest,
 } from './access-contract'
 import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
-import { openOccurrenceStore, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
+import { openOccurrenceStore, type MintedOccurrence, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
 import { decodeTicketID } from './revocation'
 
+// Every result carries the direction of the scan it describes, taken from the
+// committed occurrence, never from the mode the screen shows later (TKT-399).
 type ScanOutcome =
-  | { kind: 'accepted'; scannedAt: string; replay: boolean }
-  | { kind: 'rejected'; reason: string; originalScanAt?: string }
-  | { kind: 'revocation-refused' }
-  | { kind: 'queued'; cause: 'offline' | 'unreadable' | 'local' }
-  | { kind: 'duplicate-response' }
+  | { kind: 'accepted'; direction: ScanDirection; scannedAt: string; replay: boolean }
+  | { kind: 'rejected'; direction: ScanDirection; reason: string; originalScanAt?: string }
+  | { kind: 'revocation-refused'; direction: ScanDirection }
+  | { kind: 'queued'; direction: ScanDirection; cause: 'offline' | 'unreadable' | 'local' }
+  | { kind: 'duplicate-response'; direction: ScanDirection }
 
 // What the operator is told about a queued scan. Each string says only what the code
 // established (TKT-305): the old single message claimed "No connection" for all three,
@@ -29,6 +32,32 @@ const QUEUED_CAUSE = {
   unreadable: 'The server answered but the reply could not be read',
   local: 'The scan was sent but could not be recorded on this device',
 } as const
+
+// What the operator is told when Access does not record an exit (D10). An exit is
+// a fact, not a decision: no line here tells staff to stop a person who is leaving.
+// A Map, so a reason such as "constructor" cannot read a prototype property.
+const EXIT_NOT_RECORDED = new Map([
+  ['not_inside', 'This pass is not recorded as inside.'],
+  ['exit_not_applicable', 'Exit is not available for this ticket.'],
+  ['refunded', 'This ticket was refunded.'],
+  ['exchanged', 'This ticket was exchanged.'],
+  ['exit_unverified', 'The ticket record could not be verified, so the exit was not counted.'],
+  ['integrity_quarantined', 'This ticket is held for an integrity check.'],
+])
+const exitNotRecordedFallback = 'Access did not record this exit.'
+const voidedReasons = new Set(['refunded', 'exchanged'])
+const noLongerValidForEntry = 'This ticket is no longer valid for entry.'
+
+// The reconciliation field for a stored direction (D13). A row with no own direction
+// was written before TKT-399 and is an entry, so the field is omitted and Access reads
+// it as one. Any other stored value goes out as a non-empty string, which Access
+// refuses for that row alone: an empty string would read as an entry, and a
+// non-string would fail the decode of the whole batch.
+function eventType(record: OccurrenceRecord): { event_type?: string } {
+  if (!Object.hasOwn(record, 'direction')) return {}
+  const value: unknown = record.direction
+  return { event_type: typeof value === 'string' && value !== '' ? value : 'invalid' }
+}
 
 type BarcodeDetectorInstance = {
   detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>
@@ -120,6 +149,11 @@ function App() {
   const [pairingInput, setPairingInput] = useState('')
   const [storageFailure, setStorageFailure] = useState<string | null>(null)
   const [hasRevocationPull, setHasRevocationPull] = useState(false)
+  // Entry on every load and every pairing, never persisted (D1, D14): a stored Exit
+  // would carry one operator's choice into the next session at a gate.
+  const [direction, setDirection] = useState<ScanDirection>('entry')
+  // Read by submit, which a camera callback from an earlier render can call.
+  const directionRef = useRef<ScanDirection>('entry')
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
@@ -148,6 +182,16 @@ function App() {
     stream.current?.getTracks().forEach((track) => track.stop())
     stream.current = null
     setCameraActive(false)
+  }
+
+  // A mode change stops the camera and clears the result (D5). A detection started
+  // under the old mode must not submit under a mode the operator no longer sees, and
+  // the old result describes the old mode.
+  const chooseDirection = (next: ScanDirection) => {
+    directionRef.current = next
+    setDirection(next)
+    stopCamera()
+    setOutcome(null)
   }
 
   const getStore = (): Promise<OccurrenceStore> => {
@@ -274,30 +318,40 @@ function App() {
 
   const submit = async (value = payload) => {
     if (!value.trim() || submitting) return
+    // Captured before the first await, so the scan keeps the mode it started in.
+    const scanDirection = directionRef.current
     setSubmitting(true)
     setOutcome(null)
     try {
       let store: OccurrenceStore
-      let record: OccurrenceRecord
+      let record: MintedOccurrence
       let listed = false
       try {
         store = await getStore()
         const ticketID = decodeTicketID(value.trim())
         listed = !!ticketID && await store.isRevoked(ticketID)
-        if (listed) {
-          record = await store.mintRefusal(value.trim(), new Date().toISOString())
+        if (listed && scanDirection === 'exit') {
+          // An exit is never refused (D7). Access stores a refusal with no direction,
+          // so a refusal row would record a refused entry that did not happen. Record
+          // nothing, here or in Access.
           reportStorageReady()
-          setOutcome({ kind: 'revocation-refused' })
+          setOutcome({ kind: 'revocation-refused', direction: 'exit' })
+          return
+        }
+        if (listed) {
+          await store.mintRefusal(value.trim(), new Date().toISOString())
+          reportStorageReady()
+          setOutcome({ kind: 'revocation-refused', direction: 'entry' })
           await refreshQueued()
           void syncQueued()
           return
         }
-        // Commit the occurrence before sending the request (ADR-025 §D3).
-        record = await store.mint(value.trim(), new Date().toISOString())
+        // Commit the occurrence, with its direction, before sending the request (ADR-025 §D3).
+        record = await store.mint(value.trim(), new Date().toISOString(), scanDirection)
         reportStorageReady()
       } catch {
         if (listed) {
-          setOutcome({ kind: 'revocation-refused' })
+          setOutcome({ kind: 'revocation-refused', direction: 'entry' })
           reportStorageFailure(storageRefusalMessage)
         } else {
           reportStorageFailure()
@@ -313,6 +367,7 @@ function App() {
           qr_payload: record.qrPayload,
           occurrence_id: record.occurrenceId,
           occurred_at: record.occurredAt,
+          direction: record.direction,
         }
         const response = await fetch(scanURL, {
           method: 'POST',
@@ -337,12 +392,12 @@ function App() {
           // A response opens the gate only through this device's pending record.
           const opened = await store.actuate(record.occurrenceId)
           if (opened) {
-            setOutcome({ kind: 'accepted', scannedAt: result.scanned_at, replay: result.replay === true })
+            setOutcome({ kind: 'accepted', direction: record.direction, scannedAt: result.scanned_at, replay: result.replay === true })
           } else {
-            setOutcome({ kind: 'duplicate-response' })
+            setOutcome({ kind: 'duplicate-response', direction: record.direction })
           }
         } else {
-          setOutcome({ kind: 'rejected', reason: result.reason, originalScanAt: result.original_scan_at })
+          setOutcome({ kind: 'rejected', direction: record.direction, reason: result.reason, originalScanAt: result.original_scan_at })
           try {
             await store.markSynced(record.occurrenceId, result.reason)
           } catch {
@@ -363,7 +418,7 @@ function App() {
           queueReadable = false
           reportStorageFailure(cause === 'local' ? storageAfterResponseMessage : undefined)
         }
-        setOutcome({ kind: 'queued', cause })
+        setOutcome({ kind: 'queued', direction: record.direction, cause })
         if (queueReadable) await refreshQueued()
       }
     } finally {
@@ -450,7 +505,8 @@ function App() {
         qr_payload: record.qrPayload,
         occurrence_id: record.occurrenceId,
         occurred_at: record.occurredAt,
-        ...(record.localDecision ? { local_decision: record.localDecision } : {}),
+        // A refusal goes out as a refusal only: Access rejects a row with both fields.
+        ...(record.localDecision ? { local_decision: record.localDecision } : eventType(record)),
       })),
     }
     const token = deviceTokenRef.current
@@ -622,6 +678,8 @@ function App() {
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
+    directionRef.current = 'entry'
+    setDirection('entry')
     // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
     setSyncNote((previous) => {
       if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
@@ -701,8 +759,19 @@ function App() {
   return (
     <main className="scanner">
       <h1>Gate scanner</h1>
-      <p>Scan a ticket QR code or paste its credential to validate entry.</p>
+      <p>Scan a ticket QR code or paste its credential to record an entry or an exit.</p>
       <section aria-label="Ticket scan input">
+        <fieldset className="scan-direction">
+          <legend>Scan direction</legend>
+          <label>
+            <input type="radio" name="scan-direction" value="entry" checked={direction === 'entry'} disabled={submitting} onChange={() => chooseDirection('entry')} />
+            Entry
+          </label>
+          <label>
+            <input type="radio" name="scan-direction" value="exit" checked={direction === 'exit'} disabled={submitting} onChange={() => chooseDirection('exit')} />
+            Exit
+          </label>
+        </fieldset>
         <label htmlFor="qr-payload">Ticket credential</label>
         <textarea id="qr-payload" value={payload} onChange={(event) => setPayload(event.target.value)} placeholder="Paste QR credential" rows={4} />
         <div className="scanner-actions">
@@ -710,6 +779,7 @@ function App() {
           <button type="button" onClick={() => void startCamera()} disabled={cameraActive || submitting}>Use camera</button>
           <button type="button" onClick={() => void pullRevocations()}>Refresh revocation list</button>
           {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
+          <span className={`scan-mode ${direction}`}>{direction === 'exit' ? 'Exit mode' : 'Entry mode'}</span>
         </div>
         <video ref={video} aria-label="Camera preview" muted playsInline hidden={!cameraActive} />
         {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
@@ -723,17 +793,34 @@ function App() {
         {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
       </section>
       {!hasRevocationPull && <p className="queue-note" role="status">This device holds no revocation list yet.</p>}
-      {outcome?.kind === 'revocation-refused' && <section className="result rejected" role="alert"><h2>Not valid for entry</h2><p>This ticket is on the device's revocation list. Do not admit.</p></section>}
+      {outcome?.kind === 'revocation-refused' && outcome.direction === 'entry' && <section className="result rejected" role="alert"><h2>Not valid for entry</h2><p>This ticket is on the device's revocation list. Do not admit.</p></section>}
+      {outcome?.kind === 'revocation-refused' && outcome.direction === 'exit' && (
+        <section className="result not-recorded" role="status">
+          <h2>Exit not recorded</h2>
+          <p>This ticket is on the device's revocation list.</p>
+          <p>The holder may leave.</p>
+          <p>{noLongerValidForEntry}</p>
+        </section>
+      )}
       {outcome?.kind === 'accepted' && (
         <section className="result accepted" role="status">
           <h2>Accepted</h2>
-          <p>Entry recorded at {readableTime(outcome.scannedAt)}.</p>
-          {outcome.replay && <p>This scan was previously recorded — result replayed, entry counted once.</p>}
+          <p>{outcome.direction === 'exit' ? 'Exit' : 'Entry'} recorded at {readableTime(outcome.scannedAt)}.</p>
+          {outcome.replay && <p>This scan was previously recorded — result replayed, {outcome.direction} counted once.</p>}
         </section>
       )}
-      {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
-      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{QUEUED_CAUSE[outcome.cause]} — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
-      {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second entry.</p></section>}
+      {outcome?.kind === 'rejected' && outcome.direction === 'entry' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
+      {outcome?.kind === 'rejected' && outcome.direction === 'exit' && (
+        <section className="result not-recorded" role="status">
+          <h2>Exit not recorded</h2>
+          <p>{EXIT_NOT_RECORDED.get(outcome.reason) ?? exitNotRecordedFallback}</p>
+          <p>Reason: {outcome.reason}.</p>
+          <p>The holder may leave.</p>
+          {voidedReasons.has(outcome.reason) && <p>{noLongerValidForEntry}</p>}
+        </section>
+      )}
+      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{QUEUED_CAUSE[outcome.cause]} — {outcome.direction === 'exit' ? 'the exit is saved on this device and will sync when back online. The holder may leave.' : 'the scan is saved on this device and will sync when back online. Admit per venue offline policy.'}</p></section>}
+      {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second {outcome.direction}.</p></section>}
     </main>
   )
 }

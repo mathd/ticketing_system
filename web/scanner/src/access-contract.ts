@@ -1,6 +1,7 @@
 import type { components } from './access-api-types.gen'
 
 export type ScanRequest = components['schemas']['ScanRequest']
+export type ScanDirection = NonNullable<ScanRequest['direction']>
 export type ReconcileRequest = components['schemas']['ReconcileRequest']
 export type ScanResponse =
   | components['schemas']['ScanAccepted']
