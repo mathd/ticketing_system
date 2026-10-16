@@ -346,8 +346,11 @@ collisions.
 The encoding stays as it is, because a change rehashes the stored claims (see above). The fix is in
 the replay rule:
 
-- **Replay rule.** `CreateHold` replays a stored claim only if the fingerprint, the stored channel and
-  the stored currency are all equal to the request's. Any other match is `ErrIdempotency`. This is
+- **Replay rule.** `CreateHold` replays a stored claim only if the fingerprint and the stored channel
+  are equal to the request's, and the stored currency is equal to the request's currency in the form
+  the column stores it (`storedCurrency` in `store.go`). The `varchar(3)` column drops excess
+  characters only when they are all spaces. So an identical retry with `"EUR "` replays, and
+  `"EUR:c0::p1:K"` stays different from `"EUR"`. Any other match is `ErrIdempotency`. This is
   ADR-024's rule ("a replay that changes or drops the channel is a key reuse"), applied to the
   currency too. The check runs before the expiry branch, so a different request never writes the
   stored claim's expiry.

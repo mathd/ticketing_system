@@ -146,13 +146,17 @@ func TestFingerprintSeparatesRequestsOnTheSameChannel(t *testing.T) {
 	}
 }
 
-// GOLDEN PRE-HASH STRINGS for the code-bearing and reseller-bearing classes.
+// GOLDEN PRE-HASH STRINGS, one for each request class.
+//
+// A class is one value from each of: channel {empty, no ':', with ':'}, code {no, yes}
+// and reseller {no, yes}. That makes 12 classes. This test pins 10 of them.
+// TestFingerprintStaysByteIdenticalWithoutAPresaleCode (smoke) pins the other 2:
+// (empty channel, no code, no reseller) and (channel without ':', no code, no reseller).
 //
 // Each expected string is written out by hand from the format, then hashed here
 // with crypto/sha256. A fixture built from fingerprint() could not detect a change to
 // fingerprint(), so no expected value comes from it.
 //
-// TestFingerprintStaysByteIdenticalWithoutAPresaleCode pins the code-less classes.
 // If one of these literals needs a change, that is a wire-compatibility break: the
 // stored claims of that class stop replaying.
 func TestFingerprintGoldenPreHashForFramedClasses(t *testing.T) {
@@ -172,8 +176,41 @@ func TestFingerprintGoldenPreHashForFramedClasses(t *testing.T) {
 			base + ":presale:r36:44444444-4444-4444-4444-444444444444"},
 		{"channel, a code and a reseller", "presale", "VIP", fpReseller,
 			base + ":presale:c7:presale:p3:VIP:r36:44444444-4444-4444-4444-444444444444"},
+		// The code is in the fingerprint even when there is no channel. CreateHold
+		// ignores the code and does not store it, because no allocation requires it,
+		// but it computes the fingerprint before it drops the code.
 		{"empty channel and a code", "", "K", uuid.Nil,
 			base + ":c0::p1:K"},
+		{"empty channel and a reseller", "", "", fpReseller,
+			base + ":r36:44444444-4444-4444-4444-444444444444"},
+		{"empty channel, a code and a reseller", "", "K", fpReseller,
+			base + ":c0::p1:K:r36:44444444-4444-4444-4444-444444444444"},
+		// A code-less channel is appended without a frame, colons included.
+		{"channel with colons, no code", "a:b", "", uuid.Nil,
+			base + ":a:b"},
+		{"channel with colons and a reseller", "a:b", "", fpReseller,
+			base + ":a:b:r36:44444444-4444-4444-4444-444444444444"},
+		{"channel with colons, a code and a reseller", "a:b", "VIP", fpReseller,
+			base + ":a:b:c3:a:b:p3:VIP:r36:44444444-4444-4444-4444-444444444444"},
+	}
+	// Each case must be a different class, so that the 10 cases cover 10 classes.
+	seen := map[string]string{}
+	for _, c := range cases {
+		channelKind := "empty"
+		if c.channel != "" {
+			channelKind = "no colon"
+			if strings.Contains(c.channel, ":") {
+				channelKind = "colon"
+			}
+		}
+		class := fmt.Sprintf("channel=%s code=%v reseller=%v", channelKind, c.code != "", c.reseller != uuid.Nil)
+		if prev, ok := seen[class]; ok {
+			t.Fatalf("%q and %q are the same class (%s)", prev, c.name, class)
+		}
+		seen[class] = c.name
+	}
+	if len(seen) != 10 {
+		t.Fatalf("the table covers %d classes, want 10 (the smoke test pins the other 2)", len(seen))
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
