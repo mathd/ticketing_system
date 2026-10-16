@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"testing"
 	"time"
 
@@ -670,11 +669,11 @@ func TestChannelSalesWindowIsHalfOpen(t *testing.T) {
 	eval := func(t *testing.T, opens, closes string) bool {
 		t.Helper()
 		var open bool
-		q := `SELECT ` + windowOpen + ` FROM (SELECT ` + opens + `::timestamptz AS opens_at, ` +
-			closes + `::timestamptz AS closes_at) w`
 		// The predicate reads clock_timestamp(); pin it to a literal so the bounds
-		// can be placed exactly ON it.
-		q = strings.ReplaceAll(q, "clock_timestamp()", "$1::timestamptz")
+		// can be placed exactly ON it. atInstant is the derivation the presale claim
+		// path uses (presaleDecision), so this judges that form.
+		q := `SELECT ` + atInstant(windowOpen, "$1::timestamptz") + ` FROM (SELECT ` + opens +
+			`::timestamptz AS opens_at, ` + closes + `::timestamptz AS closes_at) w`
 		if err := db.QueryRowContext(ctx, q, "2026-08-10T12:00:00Z").Scan(&open); err != nil {
 			t.Fatal(err)
 		}
