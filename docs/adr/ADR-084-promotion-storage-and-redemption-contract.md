@@ -361,8 +361,8 @@ R2. The contract above is the one rule for production.
   appended only when present and length-framed, exactly as the presale code is (`store.go:395`), so
   a request without a promotion keeps its existing fingerprint bytes. TKT-381/TKT-382 must test both
   that compatibility and that two requests that differ ONLY in their promotion inputs do not
-  collide. That is all the frames can give: they do not separate a pair that already collides
-  without them (ADR-064 §9). Each new field must be length-framed with its own marker, and replay
+  collide. That is all the frames can give: two requests that already collide without them, and
+  carry the same promotion inputs, still collide (ADR-064 §9). Each new field must be length-framed with its own marker, and replay
   must still compare the stored channel and the stored form of the currency, because the
   fingerprint alone is not injective (ADR-064 §9, TKT-510).
 - The hold sends the **paid** unit face as `unit_amount`. The pre-discount face is not sent to
