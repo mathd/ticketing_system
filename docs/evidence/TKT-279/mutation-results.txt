@@ -1,0 +1,66 @@
+Mutation checks against fd9b31ec. Each mutation was applied separately and restored.
+
+remove-call-shared
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+remove-call-inventory
+$ go test -count=1 ./services/inventory/internal/api -run ^TestInventoryResponseHeaderCardinality$
+availability_cache_tier_test.go:79: duplicate Cache-Control: got 200 {"slot_id":"00000000-0000-0000-0000-000000000000","capacity":0,"held":0,"confirmed":0,"available":0,"offering_status":"open"}, want 500
+exit=1; assertion failure verified; restored
+
+remove-call-catalog
+$ go test -count=1 ./services/catalog/internal/api -run ^TestCatalogCacheTierDuplicateValuesAreRefused$
+cache_tier_test.go:251: two individually permitted enum values: got 200 {"map":{"id":"00000000-0000-0000-0000-000000000000","organizer_id":"00000000-0000-0000-0000-000000000000","venue_id":"00000000-0000-0000-0000-000000000000","name":"m","version":1,"status":"published","orphan_prevention_enabled":false,"created_at":"2026-01-01T00:00:00Z"},"sections":[]}, want 500
+exit=1; assertion failure verified; restored
+
+enum-only
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+string-only
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+allow-two
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+count-distinct
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+check-arrays
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:533: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n" logs="{\"time\":\"2026-09-27T10:11:53.696523323-04:00\",\"level\":\"ERROR\",\"msg\":\"response violates OpenAPI contract\",\"method\":\"GET\",\"path\":\"/headers\",\"status\":200,\"error\":\"response header \\\"X-Array\\\" has 2 field values; want at most one\"}\n"
+exit=1; assertion failure verified; restored
+
+exact-only
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:533: status = 500, want 201; body="{\"error\":\"response violates OpenAPI contract\"}\n" logs="{\"time\":\"2026-09-27T10:11:54.686477507-04:00\",\"level\":\"ERROR\",\"msg\":\"response violates OpenAPI contract\",\"method\":\"GET\",\"path\":\"/fallback\",\"status\":201,\"error\":\"response header \\\"X-Mode\\\" has 2 field values; want at most one\"}\n"
+exit=1; assertion failure verified; restored
+
+default-before-exact
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:533: status = 500, want 201; body="{\"error\":\"response violates OpenAPI contract\"}\n" logs="{\"time\":\"2026-09-27T10:11:55.673553854-04:00\",\"level\":\"ERROR\",\"msg\":\"response violates OpenAPI contract\",\"method\":\"GET\",\"path\":\"/fallback\",\"status\":201,\"error\":\"response header \\\"X-Mode\\\" has 2 field values; want at most one\"}\n"
+exit=1; assertion failure verified; restored
+
+case-sensitive
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:458: status = 200, want 500; body="\"original body\""
+exit=1; assertion failure verified; restored
+
+omit-log
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:473: want exactly one drift log, got ""
+exit=1; assertion failure verified; restored
+
+leak-body
+$ go test -count=1 ./shared/go/contract -run ^TestResponseHeaderCardinality$
+http_test.go:461: body = "\"original body\"", want "{\"error\":\"response violates OpenAPI contract\"}\n"
+exit=1; assertion failure verified; restored

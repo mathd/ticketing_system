@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,6 +74,65 @@ paths:
                 required: [ok]
                 properties:
                   ok: {type: boolean}
+`)
+
+var cardinalitySpec = []byte(`openapi: 3.0.3
+info: {title: cardinality test, version: 1.0.0}
+paths:
+  /headers:
+    get:
+      parameters:
+        - in: header
+          name: X-Request
+          required: false
+          schema: {type: string, enum: [allowed]}
+      responses:
+        '200':
+          description: ok
+          headers:
+            X-String: {$ref: '#/components/headers/StringHeader'}
+            x-MiXeD: {schema: {type: string}}
+            X-Integer: {schema: {type: integer, minimum: 0}}
+            X-Number: {schema: {type: number}}
+            X-Boolean: {schema: {type: boolean}}
+            X-Optional: {schema: {type: string}}
+            X-Canonical: {schema: {type: string, enum: [allowed]}}
+            X-Enum: {schema: {type: string, enum: [alpha, beta]}}
+            X-Composed: {schema: {type: string, allOf: [{type: string, enum: [allowed]}]}}
+            X-Array: {schema: {type: array, items: {type: string, enum: [alpha, beta]}}}
+            X-Integer-Array: {schema: {type: array, items: {type: integer, minimum: 0}}}
+            X-Untyped: {schema: {}}
+          content: {application/json: {schema: {type: string}}}
+        '304':
+          description: not modified
+          headers:
+            X-String: {schema: {type: string}}
+            X-Untyped: {schema: {}}
+  /fallback:
+    get:
+      responses:
+        '200':
+          description: exact
+          headers: {X-Mode: {schema: {type: string}}}
+        '2XX':
+          description: range
+          headers: {X-Mode: {schema: {type: array, items: {type: string}}}}
+        default:
+          description: fallback
+          headers: {X-Mode: {schema: {type: string}}}
+  /head:
+    head:
+      responses:
+        '200':
+          description: head
+          headers: {X-Mode: {schema: {type: string}}}
+components:
+  headers:
+    StringHeader:
+      required: false
+      schema: {$ref: '#/components/schemas/StringValue'}
+  schemas:
+    StringValue: {type: string, enum: [allowed]}
 `)
 
 // driftingHandler answers /things with a body the spec forbids (no `ok`).
@@ -342,6 +403,223 @@ func TestResponseDriftLogSanitizesCapabilityPaths(t *testing.T) {
 	}
 	if entry["method"] != http.MethodGet {
 		t.Errorf("method = %v — the line must stay diagnosable", entry["method"])
+	}
+}
+
+func TestResponseHeaderCardinality(t *testing.T) {
+	tests := []struct {
+		name, header  string
+		status, count int
+		set           func(http.Header)
+	}{
+		{name: "string reference refuses two values", header: "X-String", count: 2, set: func(h http.Header) { h.Add("X-String", "allowed"); h.Add("X-String", "forbidden") }},
+		{name: "integer refuses two values", header: "X-Integer", count: 2, set: func(h http.Header) { h.Add("X-Integer", "0"); h.Add("X-Integer", "1") }},
+		{name: "number refuses two values", header: "X-Number", count: 2, set: func(h http.Header) { h.Add("X-Number", "1"); h.Add("X-Number", "2") }},
+		{name: "boolean refuses two values", header: "X-Boolean", count: 2, set: func(h http.Header) { h.Add("X-Boolean", "true"); h.Add("X-Boolean", "false") }},
+		{name: "optional primitive refuses two values", header: "X-Optional", count: 2, set: func(h http.Header) { h.Add("X-Optional", "one"); h.Add("X-Optional", "two") }},
+		{name: "enum refuses two allowed values", header: "X-Enum", count: 2, set: func(h http.Header) { h.Add("X-Enum", "alpha"); h.Add("X-Enum", "beta") }},
+		{name: "enum refuses identical values", header: "X-Enum", count: 2, set: func(h http.Header) { h.Add("X-Enum", "alpha"); h.Add("X-Enum", "alpha") }},
+		{name: "composed string refuses two valid values", header: "X-Composed", count: 2, set: func(h http.Header) { h.Add("X-Composed", "allowed"); h.Add("X-Composed", "allowed") }},
+		{name: "three values are refused", header: "X-Integer", count: 3, set: func(h http.Header) { h.Add("X-Integer", "0"); h.Add("X-Integer", "1"); h.Add("X-Integer", "2") }},
+		{name: "split map key casing is counted", header: "X-String", count: 2, set: func(h http.Header) { h["X-String"] = []string{"allowed"}; h["x-string"] = []string{"allowed"} }},
+		{name: "mixed-case declaration is counted", header: "x-MiXeD", count: 2, set: func(h http.Header) { h.Add("x-mixed", "one"); h.Add("x-mixed", "two") }},
+		{name: "head response is checked", header: "X-Mode", count: 2, status: http.StatusOK, set: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }},
+		{name: "not modified response is checked", header: "X-String", count: 2, status: http.StatusNotModified, set: func(h http.Header) { h.Add("X-String", "allowed"); h.Add("X-String", "allowed") }},
+		{name: "exact status wins over range and default", header: "X-Mode", count: 2, status: http.StatusOK, set: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }},
+		{name: "default response selected when no exact or range", header: "X-Mode", count: 2, status: http.StatusNotFound, set: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&logs, nil))
+			handler, err := ResponseValidator(cardinalitySpec, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tc.set(w.Header())
+				w.Header().Set("X-Handler-Only", "secret")
+				if r.URL.Path == "/headers" {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				status := tc.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `"original body"`)
+			}), log, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := "/headers"
+			method := http.MethodGet
+			if strings.Contains(tc.name, "head response") {
+				path, method = "/head", http.MethodHead
+			} else if strings.Contains(tc.name, "exact status") || strings.Contains(tc.name, "default response") {
+				path = "/fallback"
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500; body=%q", rec.Code, rec.Body.String())
+			}
+			if got, want := rec.Body.String(), "{\"error\":\"response violates OpenAPI contract\"}\n"; got != want {
+				t.Fatalf("body = %q, want %q", got, want)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q", got)
+			}
+			if got := rec.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+				t.Fatalf("Cache-Control = %v", got)
+			}
+			if rec.Header().Get("X-Handler-Only") != "" || strings.Contains(rec.Body.String(), "original body") {
+				t.Fatalf("handler response leaked: headers=%v body=%q", rec.Header(), rec.Body.String())
+			}
+			if strings.Count(logs.String(), "\n") != 1 {
+				t.Fatalf("want exactly one drift log, got %q", logs.String())
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+				t.Fatalf("decode drift log: %v", err)
+			}
+			status := tc.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			if entry["level"] != "ERROR" || entry["method"] != method || entry["path"] != path || entry["status"] != float64(status) {
+				t.Fatalf("drift log = %v", entry)
+			}
+			if value, _ := entry["error"].(string); !strings.Contains(value, tc.header) || !strings.Contains(value, fmt.Sprintf("%d field values", tc.count)) {
+				t.Fatalf("drift log does not name the header and count: %v", entry)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name, path, header string
+		status, wantStatus int
+		headers            func(http.Header)
+		want               []string
+	}{
+		{name: "one comma value is one field value", path: "/headers", header: "X-Optional", status: 200, headers: func(h http.Header) { h.Set("X-Optional", "one, two") }, want: []string{"one, two"}},
+		{name: "array accepts multiple field values", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "beta") }, want: []string{"alpha", "beta"}},
+		{name: "array accepts one comma-separated field value", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Set("X-Array", "alpha,beta") }, want: []string{"alpha,beta"}},
+		{name: "array validates first field and leaves later field alone", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "forbidden") }, want: []string{"alpha", "forbidden"}},
+		{name: "integer array ignores invalid later field as before", path: "/headers", header: "X-Integer-Array", status: 200, headers: func(h http.Header) { h.Add("X-Integer-Array", "1"); h.Add("X-Integer-Array", "invalid") }, want: []string{"1", "invalid"}},
+		{name: "untyped optional declaration with no value remains unchanged", path: "/headers", status: 200, headers: func(http.Header) {}},
+		{name: "untyped header preserves duplicate values on not modified response", path: "/headers", header: "X-Untyped", status: http.StatusNotModified, headers: func(h http.Header) { h.Add("X-Untyped", "one"); h.Add("X-Untyped", "two") }, want: []string{"one", "two"}},
+		{name: "single noncanonical key retains value validation limitation", path: "/headers", header: "X-Canonical", status: 200, headers: func(h http.Header) { h["x-canonical"] = []string{"invalid"} }, want: []string{"invalid"}},
+		{name: "composed string accepts one value", path: "/headers", header: "X-Composed", status: 200, headers: func(h http.Header) { h.Set("X-Composed", "allowed") }, want: []string{"allowed"}},
+		{name: "different declared headers each accept one value", path: "/headers", status: 200, headers: func(h http.Header) { h.Set("X-String", "allowed"); h.Set("X-Integer", "0") }},
+		{name: "range response selected before default", path: "/fallback", header: "X-Mode", status: 201, headers: func(h http.Header) { h.Add("X-Mode", "one"); h.Add("X-Mode", "two") }, want: []string{"one", "two"}},
+		{name: "invalid first array field still fails ordinary validation", path: "/headers", header: "X-Array", status: 200, wantStatus: http.StatusInternalServerError, headers: func(h http.Header) { h.Add("X-Array", "forbidden"); h.Add("X-Array", "alpha") }},
+	} {
+		t.Run("control/"+tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler, err := ResponseValidator(cardinalitySpec, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				tc.headers(w.Header())
+				if tc.path == "/headers" {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(tc.status)
+				if tc.path == "/headers" {
+					_, _ = io.WriteString(w, `"original body"`)
+				} else {
+					_, _ = io.WriteString(w, "original body")
+				}
+			}), slog.New(slog.NewJSONHandler(&logs, nil)), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			wantStatus := tc.wantStatus
+			if wantStatus == 0 {
+				wantStatus = tc.status
+			}
+			if rec.Code != wantStatus {
+				t.Fatalf("status = %d, want %d; body=%q logs=%q", rec.Code, wantStatus, rec.Body.String(), logs.String())
+			}
+			if wantStatus == http.StatusInternalServerError {
+				return
+			}
+			got := rec.Header().Values(tc.header)
+			if tc.want != nil && !slices.Equal(got, tc.want) {
+				t.Fatalf("%s values = %v, want %v", tc.header, got, tc.want)
+			}
+			wantBody := "original body"
+			if tc.path == "/headers" {
+				wantBody = `"original body"`
+			}
+			if rec.Body.String() != wantBody {
+				t.Fatalf("body = %q, want %q", rec.Body.String(), wantBody)
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("successful response logged drift: %q", logs.String())
+			}
+		})
+	}
+}
+
+func TestRequestHeaderCardinalityUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		values     []string
+		wantStatus int
+	}{
+		{name: "valid first value reaches Header Get despite invalid second", values: []string{"allowed", "forbidden"}, wantStatus: http.StatusOK},
+		{name: "invalid first value still fails", values: []string{"forbidden", "allowed"}, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen string
+			handler, err := RequestValidator(cardinalitySpec, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen = r.Header.Get("X-Request")
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-String", "allowed")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `"ok"`)
+			}), nil, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/headers", nil)
+			for _, value := range tc.values {
+				req.Header.Add("X-Request", value)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK && seen != "allowed" {
+				t.Fatalf("handler saw %q", seen)
+			}
+		})
+	}
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("response validation enabled=%v", enabled), func(t *testing.T) {
+			var logs bytes.Buffer
+			handler, err := RequestValidator(cardinalitySpec, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Add("X-String", "allowed")
+				w.Header().Add("X-String", "allowed")
+				_, _ = io.WriteString(w, `"ok"`)
+			}), slog.New(slog.NewJSONHandler(&logs, nil)), enabled)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/headers", nil))
+			if enabled {
+				if rec.Code != http.StatusInternalServerError {
+					t.Fatalf("enabled response validation status = %d", rec.Code)
+				}
+			} else {
+				if rec.Code != http.StatusOK || len(rec.Header().Values("X-String")) != 2 {
+					t.Fatalf("disabled response changed duplicate values: %d %v", rec.Code, rec.Header().Values("X-String"))
+				}
+				if logs.Len() != 0 {
+					t.Fatalf("disabled response validation logged: %q", logs.String())
+				}
+			}
+		})
 	}
 }
 

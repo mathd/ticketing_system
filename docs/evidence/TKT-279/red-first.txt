@@ -1,0 +1,394 @@
+$ (cd shared/go && go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/string_reference_refuses_two_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/integer_refuses_two_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/number_refuses_two_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/boolean_refuses_two_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/optional_primitive_refuses_two_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/enum_refuses_two_allowed_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/enum_refuses_identical_values
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/three_values_are_refused
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/split_map_key_casing_is_counted
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/head_response_is_checked
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/not_modified_response_is_checked
+    http_test.go:437: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/array_accepts_multiple_field_values
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/range_response_selected_before_default
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range
+    http_test.go:504: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+--- FAIL: TestResponseHeaderCardinality (0.02s)
+    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range (0.00s)
+=== RUN   TestRequestHeaderCardinalityUnchanged
+=== RUN   TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second
+    http_test.go:543: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+=== RUN   TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails
+    http_test.go:543: validate OpenAPI contract: invalid paths: invalid path /headers: invalid operation GET: header schema is invalid: parameter must contain exactly one of content and schema: &{{map[] <nil>   no declared type  <nil> false false false false <nil> <nil> map[] map[]}}
+--- FAIL: TestRequestHeaderCardinalityUnchanged (0.00s)
+    --- FAIL: TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second (0.00s)
+    --- FAIL: TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.029s
+FAIL
+exit=1
+
+$ (cd shared/go && go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+# ./contract
+open /home/mathieu/.cache/go-build/57/5715da0964e991b5991612dbca0f236431dc2e25437b6f07a9260032f478b37a-d: read-only file system
+FAIL	./contract [setup failed]
+FAIL
+exit=1
+
+$ (cd shared/go && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/string_reference_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/integer_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/number_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/boolean_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/optional_primitive_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/enum_refuses_two_allowed_values
+=== RUN   TestResponseHeaderCardinality/enum_refuses_identical_values
+=== RUN   TestResponseHeaderCardinality/three_values_are_refused
+=== RUN   TestResponseHeaderCardinality/split_map_key_casing_is_counted
+=== RUN   TestResponseHeaderCardinality/head_response_is_checked
+    http_test.go:447: status = 200, want 500; body="original body"
+=== RUN   TestResponseHeaderCardinality/not_modified_response_is_checked
+    http_test.go:447: status = 304, want 500; body="original body"
+=== RUN   TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value
+    http_test.go:509: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/array_accepts_multiple_field_values
+    http_test.go:509: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone
+    http_test.go:509: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged
+    http_test.go:509: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation
+    http_test.go:509: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default
+=== RUN   TestResponseHeaderCardinality/control/range_response_selected_before_default
+=== RUN   TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range
+--- FAIL: TestResponseHeaderCardinality (0.02s)
+    --- PASS: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/three_values_are_refused (0.00s)
+    --- PASS: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range (0.00s)
+=== RUN   TestRequestHeaderCardinalityUnchanged
+=== RUN   TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second
+2026/09/27 09:49:04 ERROR response violates OpenAPI contract method=GET path=/headers status=200 error="response header Content-Type has unexpected value: \"\""
+    http_test.go:552: status = 500, want 200; body={"error":"response violates OpenAPI contract"}
+=== RUN   TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails
+--- FAIL: TestRequestHeaderCardinalityUnchanged (0.00s)
+    --- FAIL: TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.033s
+FAIL
+exit=1
+
+$ (cd shared/go && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/string_reference_refuses_two_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/integer_refuses_two_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/number_refuses_two_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/boolean_refuses_two_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/optional_primitive_refuses_two_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/enum_refuses_two_allowed_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/enum_refuses_identical_values
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/three_values_are_refused
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/split_map_key_casing_is_counted
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/head_response_is_checked
+    http_test.go:450: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/not_modified_response_is_checked
+    http_test.go:450: status = 304, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value
+=== RUN   TestResponseHeaderCardinality/control/array_accepts_multiple_field_values
+=== RUN   TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone
+=== RUN   TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged
+    http_test.go:519: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation
+=== RUN   TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default
+=== RUN   TestResponseHeaderCardinality/control/range_response_selected_before_default
+=== RUN   TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range
+--- FAIL: TestResponseHeaderCardinality (0.02s)
+    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range (0.00s)
+=== RUN   TestRequestHeaderCardinalityUnchanged
+=== RUN   TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second
+=== RUN   TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails
+--- PASS: TestRequestHeaderCardinalityUnchanged (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.033s
+FAIL
+exit=1
+
+$ (cd shared/go && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./contract -run "^TestResponseHeaderCardinality/control/untyped" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged
+    http_test.go:519: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n" logs="{\"time\":\"2026-09-27T09:50:14.375252375-04:00\",\"level\":\"ERROR\",\"msg\":\"response violates OpenAPI contract\",\"method\":\"GET\",\"path\":\"/headers\",\"status\":200,\"error\":\"response header \\\"X-Untyped\\\" doesn't match schema: Value is not nullable\\nSchema:\\n  {}\\n\\nValue:\\n  null\\n\"}\n"
+--- FAIL: TestResponseHeaderCardinality (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/untyped_declaration_remains_unchanged (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.012s
+FAIL
+exit=1
+$ (cd shared/go && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/string_reference_refuses_two_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/integer_refuses_two_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/number_refuses_two_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/boolean_refuses_two_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/optional_primitive_refuses_two_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/enum_refuses_two_allowed_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/enum_refuses_identical_values
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/three_values_are_refused
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/split_map_key_casing_is_counted
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/head_response_is_checked
+    http_test.go:451: status = 200, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/not_modified_response_is_checked
+    http_test.go:451: status = 304, want 500; body="\"original body\""
+=== RUN   TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value
+=== RUN   TestResponseHeaderCardinality/control/array_accepts_multiple_field_values
+=== RUN   TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone
+=== RUN   TestResponseHeaderCardinality/control/untyped_optional_declaration_with_no_value_remains_unchanged
+=== RUN   TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation
+=== RUN   TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default
+=== RUN   TestResponseHeaderCardinality/control/range_response_selected_before_default
+=== RUN   TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range
+--- FAIL: TestResponseHeaderCardinality (0.02s)
+    --- FAIL: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/three_values_are_refused (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/head_response_is_checked (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/untyped_optional_declaration_with_no_value_remains_unchanged (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range (0.00s)
+=== RUN   TestRequestHeaderCardinalityUnchanged
+=== RUN   TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second
+=== RUN   TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails
+=== RUN   TestRequestHeaderCardinalityUnchanged/response_validation_enabled=true
+    http_test.go:591: enabled response validation status = 200
+=== RUN   TestRequestHeaderCardinalityUnchanged/response_validation_enabled=false
+--- FAIL: TestRequestHeaderCardinalityUnchanged (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails (0.00s)
+    --- FAIL: TestRequestHeaderCardinalityUnchanged/response_validation_enabled=true (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/response_validation_enabled=false (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.032s
+FAIL
+exit=1
+
+$ (cd services/inventory && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./internal/api -run "^TestInventoryResponseHeaderCardinality$" -v)
+=== RUN   TestInventoryResponseHeaderCardinality
+=== RUN   TestInventoryResponseHeaderCardinality/availability_single_values
+=== RUN   TestInventoryResponseHeaderCardinality/availability_duplicate_Cache-Control
+    availability_cache_tier_test.go:76: duplicate Cache-Control: got 200 {"slot_id":"00000000-0000-0000-0000-000000000000","capacity":0,"held":0,"confirmed":0,"available":0,"offering_status":"open"}, want 500
+=== RUN   TestInventoryResponseHeaderCardinality/availability_duplicate_Age
+    availability_cache_tier_test.go:76: duplicate Age: got 200 {"slot_id":"00000000-0000-0000-0000-000000000000","capacity":0,"held":0,"confirmed":0,"available":0,"offering_status":"open"}, want 500
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_single_values
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Cache-Control
+    availability_cache_tier_test.go:76: duplicate Cache-Control: got 200 {"slot_id":"00000000-0000-0000-0000-000000000000","seat_map_id":"00000000-0000-0000-0000-000000000000","offering_status":"open","remaining_capacity":0,"unavailable_seat_identities":[]}, want 500
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Age
+    availability_cache_tier_test.go:76: duplicate Age: got 200 {"slot_id":"00000000-0000-0000-0000-000000000000","seat_map_id":"00000000-0000-0000-0000-000000000000","offering_status":"open","remaining_capacity":0,"unavailable_seat_identities":[]}, want 500
+--- FAIL: TestInventoryResponseHeaderCardinality (0.07s)
+    --- PASS: TestInventoryResponseHeaderCardinality/availability_single_values (0.01s)
+    --- FAIL: TestInventoryResponseHeaderCardinality/availability_duplicate_Cache-Control (0.01s)
+    --- FAIL: TestInventoryResponseHeaderCardinality/availability_duplicate_Age (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/seat_occupancy_single_values (0.01s)
+    --- FAIL: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Cache-Control (0.01s)
+    --- FAIL: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Age (0.01s)
+FAIL
+FAIL	ticketing/services/inventory/internal/api	0.081s
+FAIL
+exit=1
+$ (cd shared/go && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./contract -run "^(TestResponseHeaderCardinality|TestRequestHeaderCardinalityUnchanged)$" -v)
+=== RUN   TestResponseHeaderCardinality
+=== RUN   TestResponseHeaderCardinality/string_reference_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/integer_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/number_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/boolean_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/optional_primitive_refuses_two_values
+=== RUN   TestResponseHeaderCardinality/enum_refuses_two_allowed_values
+=== RUN   TestResponseHeaderCardinality/enum_refuses_identical_values
+=== RUN   TestResponseHeaderCardinality/three_values_are_refused
+=== RUN   TestResponseHeaderCardinality/split_map_key_casing_is_counted
+=== RUN   TestResponseHeaderCardinality/head_response_is_checked
+=== RUN   TestResponseHeaderCardinality/not_modified_response_is_checked
+=== RUN   TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value
+=== RUN   TestResponseHeaderCardinality/control/array_accepts_multiple_field_values
+=== RUN   TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone
+=== RUN   TestResponseHeaderCardinality/control/untyped_optional_declaration_with_no_value_remains_unchanged
+=== RUN   TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation
+=== RUN   TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default
+    http_test.go:520: status = 500, want 200; body="{\"error\":\"response violates OpenAPI contract\"}\n" logs="{\"time\":\"2026-09-27T09:51:51.523535414-04:00\",\"level\":\"ERROR\",\"msg\":\"response violates OpenAPI contract\",\"method\":\"GET\",\"path\":\"/fallback\",\"status\":200,\"error\":\"response header \\\"X-Mode\\\" has 2 field values; want at most one\"}\n"
+=== RUN   TestResponseHeaderCardinality/control/range_response_selected_before_default
+=== RUN   TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range
+--- FAIL: TestResponseHeaderCardinality (0.03s)
+    --- PASS: TestResponseHeaderCardinality/string_reference_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/integer_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/number_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/boolean_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/optional_primitive_refuses_two_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/enum_refuses_two_allowed_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/enum_refuses_identical_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/three_values_are_refused (0.00s)
+    --- PASS: TestResponseHeaderCardinality/split_map_key_casing_is_counted (0.00s)
+    --- PASS: TestResponseHeaderCardinality/head_response_is_checked (0.00s)
+    --- PASS: TestResponseHeaderCardinality/not_modified_response_is_checked (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/one_comma_value_is_one_field_value (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_accepts_multiple_field_values (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/array_validates_first_field_and_leaves_later_field_alone (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/untyped_optional_declaration_with_no_value_remains_unchanged (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/single_noncanonical_optional_key_retains_value_validation_limitation (0.00s)
+    --- FAIL: TestResponseHeaderCardinality/control/exact_status_wins_over_range_and_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/range_response_selected_before_default (0.00s)
+    --- PASS: TestResponseHeaderCardinality/control/default_response_selected_when_no_exact_or_range (0.00s)
+=== RUN   TestRequestHeaderCardinalityUnchanged
+=== RUN   TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second
+=== RUN   TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails
+=== RUN   TestRequestHeaderCardinalityUnchanged/response_validation_enabled=true
+=== RUN   TestRequestHeaderCardinalityUnchanged/response_validation_enabled=false
+--- PASS: TestRequestHeaderCardinalityUnchanged (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/valid_first_value_reaches_Header_Get_despite_invalid_second (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/invalid_first_value_still_fails (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/response_validation_enabled=true (0.00s)
+    --- PASS: TestRequestHeaderCardinalityUnchanged/response_validation_enabled=false (0.00s)
+FAIL
+FAIL	ticketing/shared/contract	0.039s
+FAIL
+exit=1
+
+$ (cd services/inventory && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./internal/api -run "^TestInventoryResponseHeaderCardinality$" -v)
+=== RUN   TestInventoryResponseHeaderCardinality
+=== RUN   TestInventoryResponseHeaderCardinality/availability_single_values
+=== RUN   TestInventoryResponseHeaderCardinality/availability_duplicate_Cache-Control
+2026/09/27 09:51:52 ERROR response violates OpenAPI contract method=GET path=/slots/37da62d2-ffa5-4078-a253-51c2180d3e84/availability status=200 error="response header \"Cache-Control\" has 2 field values; want at most one"
+=== RUN   TestInventoryResponseHeaderCardinality/availability_duplicate_Age
+2026/09/27 09:51:52 ERROR response violates OpenAPI contract method=GET path=/slots/e03537bd-4da8-4ea7-8ac7-cd265661271e/availability status=200 error="response header \"Age\" has 2 field values; want at most one"
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_single_values
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Cache-Control
+2026/09/27 09:51:52 ERROR response violates OpenAPI contract method=GET path=/slots/cc3257a5-4c59-43e4-a843-e35700911d82/seat-occupancy status=200 error="response header \"Cache-Control\" has 2 field values; want at most one"
+=== RUN   TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Age
+2026/09/27 09:51:52 ERROR response violates OpenAPI contract method=GET path=/slots/be07b988-753e-48ae-aac7-51fb85415089/seat-occupancy status=200 error="response header \"Age\" has 2 field values; want at most one"
+--- PASS: TestInventoryResponseHeaderCardinality (0.08s)
+    --- PASS: TestInventoryResponseHeaderCardinality/availability_single_values (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/availability_duplicate_Cache-Control (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/availability_duplicate_Age (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/seat_occupancy_single_values (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Cache-Control (0.01s)
+    --- PASS: TestInventoryResponseHeaderCardinality/seat_occupancy_duplicate_Age (0.01s)
+PASS
+ok  	ticketing/services/inventory/internal/api	0.090s
+exit=0
+$ (cd services/catalog && GOCACHE=/tmp/tkt279-wtq_tp1j/gocache go test -count=1 ./internal/api -run "^TestPublicReadCacheTierDuplicateHeaderIsNotCaught$" -v)
+=== RUN   TestPublicReadCacheTierDuplicateHeaderIsNotCaught
+2026/09/27 09:52:28 ERROR response violates OpenAPI contract method=GET path=/public/venues status=200 error="response header \"Cache-Control\" has 2 field values; want at most one"
+    cache_tier_test.go:273: the duplicate-header gap appears to be CLOSED (got 500, want 200). If the shared response validator now rejects a multi-valued declared header, that is good news: update ADR-004's TKT-209 amendment and delete this test.
+--- FAIL: TestPublicReadCacheTierDuplicateHeaderIsNotCaught (0.04s)
+FAIL
+FAIL	ticketing/services/catalog/internal/api	0.049s
+FAIL
+exit=1
