@@ -385,8 +385,10 @@ func TestEveryInvalidPresaleCodeRefusesIdentically(t *testing.T) {
 // it did before TKT-239.
 //
 // An unconditional append would rehash EVERY claim in the database, so every
-// in-flight retry would stop replaying and re-execute — a system-wide double-sell
-// on retry, from what looks like adding a field.
+// in-flight retry would stop matching its stored fingerprint. A mismatch is a
+// permanent ErrIdempotency for that key (ADR-010), which commerce shows as 409
+// "inventory unavailable": every buyer with a retry in flight fails checkout,
+// system-wide, from what looks like adding a field.
 func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	// GOLDEN LITERALS, computed OUTSIDE this package from the pre-TKT-239
 	// algorithm. That is the whole point: a first version of this test compared
@@ -398,7 +400,7 @@ func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	//
 	// If these literals ever need updating, that is a WIRE-COMPATIBILITY BREAK, not
 	// a test update: every idempotency record in every database stops replaying and
-	// every in-flight retry re-executes.
+	// every in-flight retry is refused as a key reuse.
 	const (
 		goldenBare        = "bbb9368991be6cd401b4876d78a07bbb1ebcb18be9c90abe45a98102c11a4510"
 		goldenWithChannel = "27ba9d12ad92b46f7f200784cd338b843fdbc10d8ffd779578a74de579a6af23"
@@ -410,7 +412,7 @@ func TestFingerprintStaysByteIdenticalWithoutAPresaleCode(t *testing.T) {
 	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "", "", uuid.Nil); got != goldenBare {
 		t.Fatalf("the no-channel no-code fingerprint CHANGED:\n got %s\nwant %s\n"+
 			"Every pre-TKT-239 idempotency record just stopped replaying — an in-flight "+
-			"retry now re-executes instead, which is a double-sell.", got, goldenBare)
+			"retry is now refused as a key reuse, so the buyer's checkout fails.", got, goldenBare)
 	}
 	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "", uuid.Nil); got != goldenWithChannel {
 		t.Fatalf("the channel-only fingerprint CHANGED:\n got %s\nwant %s\n"+
@@ -522,7 +524,8 @@ func TestDrawDownMovesTheRedemptionAndNeverFreesIt(t *testing.T) {
 	}
 }
 
-// The compatibility boundary is PRE-TKT-239 -> shipped, and nothing else.
+// When TKT-239 merged, the compatibility boundary was PRE-TKT-239 -> shipped,
+// and nothing else.
 //
 // A second-pass review argued the framed encoding broke compatibility with
 // fingerprints written by this branch's own first commit. It does not, and the
@@ -533,14 +536,17 @@ func TestDrawDownMovesTheRedemptionAndNeverFreesIt(t *testing.T) {
 // that introduced codes.
 //
 // What must hold is that a code-LESS request still hashes exactly as it did
-// before this ticket — which is what the golden literals above assert. Every
-// claim already in a database is code-less by construction.
+// before this ticket — which is what the golden literals above assert.
+//
+// Code-bearing claims HAVE been stored since TKT-239 shipped, so the framed
+// format is now a stored format too. TestFingerprintGoldenPreHashForFramedClasses
+// (fingerprint_test.go) pins its bytes. This test keeps only the code-less class.
 func TestOnlyCodeLessFingerprintsNeedBackwardCompatibility(t *testing.T) {
 	org := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	slot := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	tt := uuid.MustParse("33333333-3333-3333-3333-333333333333")
-	// Same inputs, no code: byte-identical to the pre-TKT-239 algorithm. This is
-	// the only class of fingerprint that can already exist in a database.
+	// Same inputs, no code: byte-identical to the pre-TKT-239 algorithm. This
+	// was the only stored class before TKT-239.
 	const goldenWithChannel = "27ba9d12ad92b46f7f200784cd338b843fdbc10d8ffd779578a74de579a6af23"
 	if got := fingerprint(org, slot, tt, 2, 1500, "EUR", "presale", "", uuid.Nil); got != goldenWithChannel {
 		t.Fatalf("code-less fingerprint drifted: got %s want %s", got, goldenWithChannel)

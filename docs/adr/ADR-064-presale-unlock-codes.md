@@ -319,22 +319,55 @@ grants the second the first's redemption *without its code ever being checked*. 
 this for `CreateHold`; ai-review caught that `PlaceGroupReservation` had the identical defect.
 
 An **unconditional** append rehashes every claim in the database, so every in-flight retry stops
-replaying and re-executes — a system-wide double-sell on retry, from what looks like adding a field.
-Golden literals computed outside the package pin the pre-TKT-239 values; changing them is a
-wire-compatibility break, not a test update.
+matching its stored fingerprint. A mismatch is a permanent `ErrIdempotency` for that key (ADR-010: a
+key is single-use across the claim's lifecycle), and commerce shows it to the buyer as 409
+"inventory unavailable" (`commerce/internal/api/server.go`, the GA hold refusal). So every buyer with
+a retry in flight fails checkout, system-wide, from what looks like adding a field. Golden literals
+computed outside the package pin the pre-TKT-239 values; changing them is a wire-compatibility
+break, not a test update.
 
 And the appended part is **length-framed**, not colon-joined. Channel codes and presale codes are
 both arbitrary opaque strings that may contain the delimiter, so a bare join is ambiguous:
 `(channel="a", code="b:c")` and `(channel="a:b", code="c")` hashed **identically** — measured — and
 the second request replayed the first before its allocation or code was examined. Framing applies
-only to code-bearing requests, so **no fingerprint that can already exist in a database changes**.
+only to code-bearing requests, so **no fingerprint that existed in a database before TKT-239
+changes**.
+
+**The fingerprint is not injective, and replay does not rely on it alone (TKT-510).** An earlier
+version of this section said that framing makes every distinct (channel, code) pair hash
+differently. **That claim is withdrawn.** The frame separates two codes on the same channel. It does
+not separate two channels: the bare `":"+channel` comes before the frame, and a code-less channel can
+spell it. `(channel "agency", code "CODE")` and `(channel "agency:c6:agency:p4:CODE", no code)` have
+the same pre-hash, and before TKT-510 each one replayed the other's hold. The currency is not framed
+either, so currency `"EUR:c0::p1:K"` with no channel and no code hashes as currency `"EUR"` with no
+channel and code `"K"`. `TestFingerprintCollisionsAcrossDifferentChannelsArePinned` pins these
+collisions.
+
+The encoding stays as it is, because a change rehashes the stored claims (see above). The fix is in
+the replay rule:
+
+- **Replay rule.** `CreateHold` replays a stored claim only if the fingerprint, the stored channel and
+  the stored currency are all equal to the request's. Any other match is `ErrIdempotency`. This is
+  ADR-024's rule ("a replay that changes or drops the channel is a key reuse"), applied to the
+  currency too. The check runs before the expiry branch, so a different request never writes the
+  stored claim's expiry.
+- **Precondition.** In one reseller scope, with an equal channel and an equal currency, the fingerprint
+  identifies the request only while the fixed fields contain no `:`. They are UUIDs and integers,
+  the inventory hold handler accepts only `EUR`, or `""` on a legacy request
+  (`services/inventory/internal/api/server.go`), and the OpenAPI contract gives the currency the
+  pattern `^[A-Z]{3}$`. A direct store caller is not limited, which is why the replay rule compares
+  the currency. A new fixed field that can contain `:` breaks this, and needs its own frame.
+- **Group placement.** `PlaceGroupReservation` has its own fingerprint (`reservations.go`). This
+  section does not claim that it is framed against the same collision. TKT-313 (PR #410) owns that
+  framing.
 
 A second review pass argued the framing broke compatibility with fingerprints written by this
 ticket's own first commit. **Rejected on its premise:** that commit lives only on an unmerged
 feature branch, never ran against a database, and a code-bearing request could not have existed
-before the feature that introduced codes. The only compatibility boundary is pre-TKT-239 →
-shipped, every stored fingerprint is code-less by construction, and
-`TestOnlyCodeLessFingerprintsNeedBackwardCompatibility` pins it.
+before the feature that introduced codes. At that time the only compatibility boundary was
+pre-TKT-239 → shipped, and `TestOnlyCodeLessFingerprintsNeedBackwardCompatibility` pins it.
+Code-bearing claims have been stored since TKT-239 shipped, so the framed format is a stored format
+now too. `TestFingerprintGoldenPreHashForFramedClasses` pins its bytes.
 
 ## Guarantees, and what they are not
 

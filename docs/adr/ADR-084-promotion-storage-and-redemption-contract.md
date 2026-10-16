@@ -360,7 +360,9 @@ R2. The contract above is the one rule for production.
 - The Inventory hold fingerprint (`store.go:368`) adds the promotion code, id and version. They are
   appended only when present and length-framed, exactly as the presale code is (`store.go:395`), so
   a request without a promotion keeps its existing fingerprint bytes. TKT-381/TKT-382 must test both
-  that compatibility and that two promotion-bearing requests that differ do not collide.
+  that compatibility and that two promotion-bearing requests that differ do not collide. Each new
+  field must be length-framed with its own marker, and replay must still compare the stored channel
+  and currency, because the fingerprint alone is not injective (ADR-064 §9, TKT-510).
 - The hold sends the **paid** unit face as `unit_amount`. The pre-discount face is not sent to
   Inventory. It lives in the Commerce snapshot.
 - A version freezes the reduction terms only. It does not freeze the Catalog price winner or the

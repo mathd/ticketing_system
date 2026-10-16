@@ -365,6 +365,23 @@ func (p *Postgres) Provision(ctx context.Context, eventID, slotID, organizerID u
 
 // fingerprint stays byte-identical to the pre-channel format when channel is empty, so
 // idempotency records created before the channel migration keep replaying (ADR-009).
+//
+// It is NOT injective on its own (TKT-510). The channel is appended without a frame
+// when there is no code, and the currency is never framed. So a channel or a currency
+// can spell the code frame of a different request:
+//
+//	(channel "agency", code "CODE") and (channel "agency:c6:agency:p4:CODE", no code)
+//
+// have the same pre-hash. TestFingerprintCollisionsAcrossDifferentChannelsArePinned
+// pins these collisions.
+//
+// It is injective only for requests with an EQUAL channel and an EQUAL currency in ONE
+// reseller scope, when the fixed fields contain no ':'. They are UUIDs and integers,
+// and the handler limits the currency to EUR or "". Then the tail after ":"+channel is
+// empty, the reseller frame, or the length-framed code, and these cannot be confused.
+//
+// Replay is safe because CreateHold compares the stored channel and currency as well
+// as this value. Any new caller that compares this value must do the same.
 func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, currency, channel, presaleCode string, reseller uuid.UUID) string {
 	s := fmt.Sprintf("%s:%s:%s:%d:%d:%s", org, slot, ticketType, qty, unitAmount, currency)
 	if channel != "" {
@@ -372,10 +389,14 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	}
 	// The presale code is appended ONLY when non-empty, for exactly the reason the
 	// channel above is: an unconditional append rehashes EVERY claim in the
-	// database, so every in-flight retry stops replaying and re-executes instead —
-	// a double-sell on retry, system-wide, from what looks like adding a field
-	// (TKT-239 plan-review). TestFingerprintStaysByteIdenticalWithoutAPresaleCode
-	// pins the legacy bytes with golden literals.
+	// database, so every in-flight retry stops matching its stored fingerprint.
+	// A mismatch is a permanent ErrIdempotency for that key (ADR-010), and
+	// commerce shows it to the buyer as 409 "inventory unavailable"
+	// (commerce/internal/api/server.go, the GA hold refusal). So every buyer
+	// with a retry in flight fails checkout, system-wide, from what looks like
+	// adding a field (TKT-239 plan-review).
+	// TestFingerprintStaysByteIdenticalWithoutAPresaleCode pins the legacy bytes
+	// with golden literals.
 	//
 	// It must be IN the fingerprint though: two holds sharing an idempotency key
 	// but presenting different codes are different requests, and replaying one as
@@ -386,12 +407,15 @@ func fingerprint(org, slot, ticketType uuid.UUID, qty int32, unitAmount int64, c
 	// ambiguous: (channel="a", code="b:c") and (channel="a:b", code="c") produced
 	// byte-identical input and therefore the same hash — measured, not theorised.
 	// The second request would then replay the first BEFORE its allocation or code
-	// was ever checked. Length-prefixing removes the ambiguity: no two distinct
-	// (channel, code) pairs can produce the same framing.
+	// was ever checked.
+	//
+	// The frame separates two codes on the SAME channel. It does not separate two
+	// channels: the bare ":"+channel above comes first, and a code-less channel
+	// can spell this frame (TKT-510, see the function comment). CreateHold
+	// compares the channel for that reason.
 	//
 	// Only code-bearing requests are framed. A code-less request keeps the exact
-	// legacy algorithm, so nothing already in a database is rehashed — the
-	// collision needs a non-empty code to be reachable at all.
+	// legacy algorithm, so nothing already in a database is rehashed.
 	if presaleCode != "" {
 		s += fmt.Sprintf(":c%d:%s:p%d:%s", len(channel), channel, len(presaleCode), presaleCode)
 	}
@@ -562,14 +586,31 @@ func (p *Postgres) CreateHold(ctx context.Context, org, slot, ticketType uuid.UU
 	// bytes (TestFingerprintStaysByteIdenticalWithoutAPresaleCode). Only requests
 	// that actually carry a code against an ungated channel change, and only
 	// forward: a row written before this change stored code-less bytes, so its
-	// retry still mismatches until its TTL expires. That is today's behaviour, not
-	// a regression this introduces.
+	// retry still mismatches. A mismatch is a permanent ErrIdempotency for that
+	// key, also after the hold expires (ADR-010: a key is single-use across the
+	// claim's lifecycle). That is today's behaviour, not a regression this
+	// introduces.
 	requestFP := fingerprint(org, slot, ticketType, qty, unitAmount, currency, channel, presaleCode, o.reseller)
 
 	err = tx.QueryRowContext(ctx, `SELECT id,organizer_id,pool_id,quantity,status,COALESCE(channel_code,''),expires_at,clock_timestamp(),now(),request_fingerprint,ticket_type_id,unit_amount,currency FROM claims WHERE organizer_id=$1 AND idempotency_key=$2 AND reseller_scope IS NOT DISTINCT FROM $3 AND staff_scope IS NULL`, org, key, resellerScope(o.reseller)).
 		Scan(&existing.ID, &existing.OrganizerID, &existing.PoolID, &existing.Quantity, &existing.Status, &existing.Channel, &existing.ExpiresAt, &existing.ServerTime, &existing.snapshotTime, &fp, &existing.TicketTypeID, &existing.UnitAmount, &existing.Currency)
 	if err == nil {
-		if fp != requestFP {
+		// The fingerprint alone does not identify a request (TKT-510). The channel
+		// is not framed when there is no code, and the currency is never framed,
+		// so either one can spell the code frame of a different request. An
+		// equal fingerprint with a different channel or currency is a different
+		// request, so it is a key reuse (ADR-024: "a replay that changes or
+		// drops the channel is a key reuse").
+		//
+		// existing.Channel is COALESCE(channel_code,''), and the INSERT stores
+		// NULLIF(channel,''), so an empty channel compares equal to itself. The
+		// INSERT stores the currency as sent, so an identical retry has an equal
+		// currency.
+		//
+		// This check stays BEFORE the expiry branch. A key is single-use across
+		// the claim's lifecycle (ADR-010), so a different request must not write
+		// the stored claim's expiry. Only the claim's own retry can do that.
+		if fp != requestFP || existing.Channel != channel || existing.Currency != currency {
 			return Claim{}, false, ErrIdempotency
 		}
 		if existing.expired() {
