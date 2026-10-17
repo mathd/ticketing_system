@@ -18,6 +18,7 @@ import {
   type OccurrenceStore,
 } from './occurrences'
 import { decodeTicketID } from './revocation'
+import { readScanClock, scanStillInTime } from './scan-clock'
 
 // Every result carries the direction of the scan it describes, taken from the
 // committed occurrence, never from the mode the screen shows later (TKT-399).
@@ -27,6 +28,8 @@ type ScanOutcome =
   | { kind: 'revocation-refused'; direction: ScanDirection }
   | { kind: 'queued'; direction: ScanDirection; cause: 'offline' | 'unreadable' | 'local' }
   | { kind: 'duplicate-response'; direction: ScanDirection }
+  // The scan ran out of time (D27). `answered` says if Access accepted it first.
+  | { kind: 'too-late'; direction: ScanDirection; answered: boolean }
 
 // What the operator is told about a queued scan. Each string says only what the code
 // established (TKT-305): the old single message claimed "No connection" for all three,
@@ -87,6 +90,13 @@ const storageAfterResponseMessage = 'This device could not save the server resul
 const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
 const storageBlockedMessage = 'Another scanner tab is open on this device. Close the other scanner tabs, then try again. No ticket was checked.'
 const storageOpenTimeoutMessage = 'Scan storage did not open in time. If another scanner tab is open on this device, close it, then try again. No ticket was checked.'
+
+// What the operator is told when a scan runs out of time (D27). The scanner
+// knows only that it could not confirm the 3 second limit: the clocks may show
+// a long wait, or disagree, or give no usable time. It does not know the cause.
+const scanStoppedMessage = 'The scanner could not confirm that this scan finished within 3 seconds, so it stopped the scan. No ticket was checked. If another scanner tab is open on this device, close it, then try again.'
+const answeredLateMessage = (direction: ScanDirection) =>
+  `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the answer came within 3 seconds, so it did not open the gate.`
 
 // A tab on the older scanner code keeps the queue open and blocks this one
 // (TKT-399). The operator can fix that at once, so the screen says how. An open
@@ -345,6 +355,11 @@ function App() {
     if (!value.trim() || submitting) return
     // Captured before the first await, so the scan keeps the mode it started in.
     const scanDirection = directionRef.current
+    // The 3 second limit counts from here, for the button and the camera alike
+    // (D27). The scan checks it before each step that would mint, send or open the
+    // gate, so no wait anywhere before that step can let a scan through late.
+    const scanStart = readScanClock()
+    const inTime = () => scanStillInTime(scanStart, readScanClock())
     setSubmitting(true)
     setOutcome(null)
     try {
@@ -361,6 +376,12 @@ function App() {
           // nothing, here or in Access.
           reportStorageReady()
           setOutcome({ kind: 'revocation-refused', direction: 'exit' })
+          return
+        }
+        if (!inTime()) {
+          // Nothing is minted and nothing is sent. The store itself is fine.
+          reportStorageReady()
+          setOutcome({ kind: 'too-late', direction: scanDirection, answered: false })
           return
         }
         if (listed) {
@@ -380,6 +401,20 @@ function App() {
           reportStorageFailure(storageRefusalMessage)
         } else {
           reportStorageFailure(openFailureMessage(cause))
+        }
+        return
+      }
+
+      if (!inTime()) {
+        // The mint itself took too long. Nothing was sent, so the row is closed
+        // and never reconciled: a reconciliation would record a scan that the
+        // operator was told did not happen. If the write fails, the row stays
+        // PENDING and is recovered like a page that crashed before it sent.
+        setOutcome({ kind: 'too-late', direction: record.direction, answered: false })
+        try {
+          await store.markSynced(record.occurrenceId, 'late_not_sent')
+        } catch {
+          reportStorageFailure()
         }
         return
       }
@@ -414,8 +449,28 @@ function App() {
         const result = decodeScanResponse(response.status, body)
         cause = 'local'
         if (result.decision === 'accepted') {
+          if (!inTime()) {
+            // Access has recorded the scan, but the answer came too late, so the
+            // gate stays shut. The row is closed and never actuated. If the write
+            // fails, the row stays PENDING; recovery can only queue it, and the
+            // reconciliation finds the scan Access already recorded.
+            setOutcome({ kind: 'too-late', direction: record.direction, answered: true })
+            try {
+              await store.markSynced(record.occurrenceId, 'late_accepted')
+            } catch {
+              reportStorageFailure(storageAfterResponseMessage)
+            }
+            return
+          }
           // A response opens the gate only through this device's pending record.
           const opened = await store.actuate(record.occurrenceId)
+          if (opened && !inTime()) {
+            // The row is marked before the gate opens, and the mark came too late.
+            // The gate stays shut: the same stranded admission as a crash between
+            // marking and opening (ADR-025 §3), never a late opening.
+            setOutcome({ kind: 'too-late', direction: record.direction, answered: true })
+            return
+          }
           if (opened) {
             setOutcome({ kind: 'accepted', direction: record.direction, scannedAt: result.scanned_at, replay: result.replay === true })
           } else {
@@ -850,6 +905,20 @@ function App() {
         </section>
       )}
       {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{QUEUED_CAUSE[outcome.cause]} — {outcome.direction === 'exit' ? 'the exit is saved on this device and will sync when back online. The holder may leave.' : 'the scan is saved on this device and will sync when back online. Admit per venue offline policy.'}</p></section>}
+      {outcome?.kind === 'too-late' && outcome.direction === 'entry' && (
+        <section className="result rejected" role="alert">
+          <h2>{outcome.answered ? 'Gate not opened' : 'Scan stopped'}</h2>
+          <p>{outcome.answered ? answeredLateMessage('entry') : scanStoppedMessage}</p>
+          {outcome.answered && <p>A new scan of this ticket may be refused as already used.</p>}
+        </section>
+      )}
+      {outcome?.kind === 'too-late' && outcome.direction === 'exit' && (
+        <section className="result not-recorded" role="status">
+          <h2>{outcome.answered ? 'Gate not opened' : 'Exit not recorded'}</h2>
+          <p>{outcome.answered ? answeredLateMessage('exit') : scanStoppedMessage}</p>
+          <p>The holder may leave.</p>
+        </section>
+      )}
       {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second {outcome.direction}.</p></section>}
     </main>
   )

@@ -407,23 +407,26 @@ describe('offline queue', () => {
 })
 
 // Opens a raw connection the way a test or another tab does, with no handlers.
+// The open must settle in a fixed number of task turns. An open that waits
+// behind a request that never finishes fails the test by name.
 function rawOpen(dbName: string, version: number, upgrade?: (db: IDBDatabase) => void): Promise<IDBDatabase> {
   const open = indexedDB.open(dbName, version)
   if (upgrade) open.onupgradeneeded = () => upgrade(open.result)
-  return new Promise((resolve, reject) => {
+  return bounded(`the raw open of version ${version}`, new Promise((resolve, reject) => {
     open.onsuccess = () => resolve(open.result)
     open.onerror = () => reject(open.error)
-  })
+  }))
 }
 
 // Opens a later version and reports which event came first: blocked, or success.
+// It must settle in a fixed number of task turns, as rawOpen must.
 function openLaterVersion(dbName: string, version: number): Promise<{ kind: 'blocked' } | { kind: 'opened'; db: IDBDatabase }> {
   const open = indexedDB.open(dbName, version)
-  return new Promise((resolve, reject) => {
+  return bounded(`the open of later version ${version}`, new Promise((resolve, reject) => {
     open.onblocked = () => resolve({ kind: 'blocked' })
     open.onsuccess = () => resolve({ kind: 'opened', db: open.result })
     open.onerror = () => reject(open.error)
-  })
+  }))
 }
 
 function allRows(db: IDBDatabase): Promise<Array<Record<string, unknown>>> {
@@ -473,12 +476,23 @@ function manualOpenTimer() {
 // never waits for the promise itself, so a promise that hangs fails the
 // assertion instead of the test timing out. It stops early once the promise
 // settles, so a 'pending' answer means it ran every turn.
+// The real setImmediate, read once. A test may fake the global one. Reading it
+// inside each call took a variable time, so a bound nested in another bound used
+// up a variable part of the outer one's turns.
+const { setImmediate: nextTurn } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
+
 async function settledState(promise: Promise<unknown>): Promise<'pending' | 'resolved' | unknown> {
   let state: unknown = 'pending'
   promise.then(() => { state = 'resolved' }, (cause: unknown) => { state = cause })
-  const { setImmediate } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
-  for (let i = 0; i < 200 && state === 'pending'; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+  for (let i = 0; i < 200 && state === 'pending'; i++) await new Promise<void>((resolve) => nextTurn(resolve))
   return state
+}
+
+// Gives the promise's result if it settles within the turns settledState
+// allows. A promise still pending then fails the test with its name.
+async function bounded<T>(what: string, promise: Promise<T>): Promise<T> {
+  if (await settledState(promise) === 'pending') throw new Error(`${what} did not settle`)
+  return promise
 }
 
 // Another new tab whose version 3 open is reported blocked by the older tab. It
@@ -512,12 +526,12 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
       tx.onerror = () => reject(tx.error)
     })
 
-    await expect(openStore(dbName)).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
+    await expect(bounded('the blocked open', openStore(dbName))).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
     // A second open while the first still waits must not queue behind it. It would
     // wait until the older tab closes and then let a scan through late.
     const retry = openStore(dbName)
     olderTab.close()
-    await expect(retry).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
+    await expect(bounded('the retry while the first open waits', retry)).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
 
     // The open that was reported blocked completes once the older tab closes. An
     // open queues behind it, so this one succeeds only after it has finished.
@@ -526,7 +540,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     expect([...afterUpgrade.objectStoreNames].sort()).toEqual(['occurrences', 'revocation_meta', 'revocations'])
     afterUpgrade.close()
 
-    const reopened = await openStore(dbName)
+    const reopened = await bounded('the open after the upgrade', openStore(dbName))
     const queued = await reopened.queued()
     expect(queued).toEqual([legacy])
     // No own direction: the reconciliation omits event_type and Access reads an entry.
@@ -662,7 +676,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     olderTab.close()
     expect(await settledState(late)).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
 
-    const retry = await openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => now })
+    const retry = await bounded('the retry', openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => now }))
     const record = await retry.mint('retry-qr', '2026-10-16T19:00:00Z', 'exit')
     expect(await retry.actuate(record.occurrenceId)).toBe(true)
   })
@@ -693,7 +707,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
   // A clock that gives no usable time cannot show the open is in time.
   it('refuses an open when the clock gives no usable time', async () => {
     const dbName = `no-clock-${crypto.randomUUID()}`
-    await expect(openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => Number.NaN }))
+    await expect(bounded('the open with no usable clock', openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => Number.NaN })))
       .rejects.toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
     const later = await openLaterVersion(dbName, 4)
     expect(later.kind).toBe('opened')
@@ -729,7 +743,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
       () => current.queued(),
       () => current.get(inFlight.occurrenceId),
     ]
-    for (const use of uses) await expect(use()).rejects.toBeInstanceOf(OccurrenceStoreClosedError)
+    for (const use of uses) await expect(bounded('a use of the closed store', use())).rejects.toBeInstanceOf(OccurrenceStoreClosedError)
   })
 
   it('refuses to open, and releases its owner, when a later version opens during the owner lock', async () => {
@@ -743,7 +757,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
       runIfOwnerAbsent: (ownerId, task) => ownerLiveness.runIfOwnerAbsent(ownerId, task),
     }
 
-    await expect(openOccurrenceStore(dbName, { ownerId: 'racing-owner', ownerLiveness: racing }))
+    await expect(bounded('the open that races a later version', openOccurrenceStore(dbName, { ownerId: 'racing-owner', ownerLiveness: racing })))
       .rejects.toBeInstanceOf(OccurrenceStoreClosedError)
     expect(later?.kind).toBe('opened')
     if (later?.kind === 'opened') later.db.close()
@@ -765,7 +779,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
       },
     }
 
-    await expect(openOccurrenceStore(dbName, { ownerId: 'recovering-page', ownerLiveness: racing }))
+    await expect(bounded('the open that races a later version', openOccurrenceStore(dbName, { ownerId: 'recovering-page', ownerLiveness: racing })))
       .rejects.toBeInstanceOf(OccurrenceStoreClosedError)
     expect(later?.kind).toBe('opened')
     if (later?.kind === 'opened') later.db.close()

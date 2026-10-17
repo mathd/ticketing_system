@@ -51,7 +51,7 @@ export interface OccurrenceStore {
    */
   actuate(occurrenceId: string): Promise<boolean>
   markQueued(occurrenceId: string): Promise<void>
-  /** recorded/synced → SYNCED; conflict/rejected → RESOLVED (operator-facing, never a gate action). */
+  /** recorded/synced → SYNCED; any other result → RESOLVED (operator-facing, never a gate action). */
   markSynced(occurrenceId: string, result: string): Promise<void>
   queued(): Promise<OccurrenceRecord[]>
   get(occurrenceId: string): Promise<OccurrenceRecord | undefined>
@@ -276,8 +276,9 @@ export async function openOccurrenceStore(
     db.close()
     releaseOwner?.()
   }
-  // A later version cannot open while this connection stays open. Close at once,
-  // so that version is never blocked by this tab; this tab then fails closed.
+  // A later version cannot open while this connection stays open. Close at once.
+  // The later version can still wait for transactions that were already running
+  // here, but not for new ones: every new operation then fails closed.
   db.onversionchange = close
   const assertOpen = () => {
     if (closed) throw new OccurrenceStoreClosedError()

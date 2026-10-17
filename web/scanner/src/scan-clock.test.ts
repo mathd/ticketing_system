@@ -1,0 +1,62 @@
+import { describe, expect, it } from 'vitest'
+import { scanStillInTime } from './scan-clock'
+
+// The expected values come from the rule (ADR-025 §3, D27): a 3000 ms limit on
+// each clock, and at most 1000 ms between the two elapsed times. They are
+// literals, not the module's constants, so a change to a constant shows here.
+const start = { monotonic: 10_000, wall: 1_760_000_000_000 }
+const after = (monotonic: number, wall: number) => ({
+  monotonic: start.monotonic + monotonic,
+  wall: start.wall + wall,
+})
+
+describe('scanStillInTime (TKT-399 D27)', () => {
+  it.each([
+    { monotonic: 0, wall: 0, inTime: true },
+    { monotonic: 2_999, wall: 2_999, inTime: true },
+    { monotonic: 3_000, wall: 3_000, inTime: false },
+    { monotonic: 3_000, wall: 2_999, inTime: false },
+    { monotonic: 2_999, wall: 3_000, inTime: false },
+  ])('the 3000 ms limit: monotonic $monotonic ms, wall $wall ms, in time=$inTime', ({ monotonic, wall, inTime }) => {
+    expect(scanStillInTime(start, after(monotonic, wall))).toBe(inTime)
+  })
+
+  // Some browsers stop performance.now() while the device sleeps. The wall
+  // clock still runs. When the clock stopped for only part of the wait, the two
+  // clocks agree within 1000 ms, and the wall clock alone shows the wait.
+  it.each([
+    { stopped: 'for the whole wait', monotonic: 0 },
+    { stopped: 'for 500 ms', monotonic: 2_500 },
+  ])('refuses when the monotonic clock stopped $stopped while 3000 ms passed on the wall clock', ({ monotonic }) => {
+    expect(scanStillInTime(start, after(monotonic, 3_000))).toBe(false)
+  })
+
+  // The scanner cannot tell which clock is true, so a difference above 1000 ms
+  // refuses in both directions. A wall clock that jumped forward looks the same
+  // as a monotonic clock that stopped; one set back can hide a stopped one.
+  it.each([
+    { name: 'forward by 1000 ms', monotonic: 100, wall: 1_100, inTime: true },
+    { name: 'forward by 1001 ms', monotonic: 100, wall: 1_101, inTime: false },
+    { name: 'back by 1000 ms', monotonic: 100, wall: -900, inTime: true },
+    { name: 'back by 1001 ms', monotonic: 100, wall: -901, inTime: false },
+    { name: 'back by an hour', monotonic: 100, wall: -3_600_000, inTime: false },
+  ])('a wall clock that jumped $name: in time=$inTime', ({ monotonic, wall, inTime }) => {
+    expect(scanStillInTime(start, after(monotonic, wall))).toBe(inTime)
+  })
+
+  // Both clocks agree, so only the rule that a monotonic clock never goes back
+  // can refuse.
+  it('refuses a monotonic clock that went back', () => {
+    expect(scanStillInTime(start, after(-1, -1))).toBe(false)
+  })
+
+  const unusable = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]
+  it.each(unusable.flatMap((value) => [
+    { name: `start monotonic ${value}`, from: { ...start, monotonic: value }, to: after(0, 0) },
+    { name: `start wall ${value}`, from: { ...start, wall: value }, to: after(0, 0) },
+    { name: `now monotonic ${value}`, from: start, to: { ...after(0, 0), monotonic: value } },
+    { name: `now wall ${value}`, from: start, to: { ...after(0, 0), wall: value } },
+  ]))('refuses a clock that gives no usable time: $name', ({ from, to }) => {
+    expect(scanStillInTime(from, to)).toBe(false)
+  })
+})

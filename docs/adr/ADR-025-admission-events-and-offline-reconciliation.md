@@ -213,29 +213,75 @@ conflicts. Together every physical admission that Access learns about is represe
    pre-TKT-399 code opens version 2, reads every `QUEUED` row and reconciles it with no
    `event_type`, so Access would record this code's queued exit as an entry. That older code has
    no `versionchange` handler, so while its tab is open, no new tab can open the database. The
-   browser keeps one queue of open requests for each storage key and database name; for the
+   cost is a one-way door: once version 3 exists on a device, a rolled-back pre-TKT-399 scanner
+   gets `VersionError` when it opens the database. That scanner fails closed: it shows its
+   storage failure, mints nothing and sends no scan. Rows already queued on that device stay
+   there unsent until a TKT-399 or later scanner opens the database. The new code closes its own
+   connection on `versionchange` and then refuses every new store operation. A later version can
+   still wait until the transactions that were already running on that connection finish.
+
+   **Amended by TKT-399: no scan may be minted, sent or open the gate after the operator was left
+   waiting 3 seconds or more since the scan started** (decision D27). 3 seconds is a policy limit,
+   not a measured value: we assume that the ticket holder is still at the gate when the scanner
+   refuses. The rule is checked at the scan, not at each wait, because a scan waits on more than
+   one thing. Before the store can be used, it opens the database, takes the page owner lock and
+   recovers `PENDING` rows, and every caller of the store (scan, revocation pull, queue sync)
+   shares that one startup. A scan starts when the operator presses Check ticket, or when the
+   camera detects a code; the time the camera ran before the detection does not count. At that
+   moment, before its first wait, the scan reads two clocks: a monotonic clock
+   (`performance.now()`) and the wall clock (`Date.now()`). Each can be wrong in a way the other
+   shows: some browsers stop the monotonic clock while the device sleeps (WebKit bug 225610), and
+   the wall clock jumps when the device time is set. The scan is in time only if all four readings are finite
+   numbers, the monotonic clock did not go back, less than 3000 ms passed on each clock, and the
+   two elapsed times differ by 1000 ms or less. Every other case refuses, because the scanner
+   cannot tell which clock is true. 1000 ms is well below the limit, and we assume it is far
+   above what a healthy device shows: we expect browsers to round these clocks by 100 ms or less,
+   and clock correction to move the wall clock by a few milliseconds in 3 seconds. We have not
+   measured this on every browser; a device above it refuses scans, it never lets one through. The check does not catch
+   faults that cancel out: a monotonic clock that stops while the wall clock is set back by about
+   the same time. The scan checks the limit at four points:
+
+   - Before it mints its occurrence, or the local refusal of a ticket on the revocation list. A
+     late scan mints nothing and sends nothing. The screen says that the scanner could not
+     confirm that the scan finished within 3 seconds, and that no ticket was checked.
+   - After the mint and before it sends the scan, because the mint is a wait too. The scan sends
+     nothing, and the screen says the same. The row is marked `RESOLVED` (result
+     `late_not_sent`), so it is never reconciled: a reconciliation would record a scan that the
+     operator was told did not happen. If that write fails, the row stays `PENDING` and is
+     recovered like the row of a page that crashed between mint and send.
+   - After Access accepts the scan and before the row is marked actuated. The gate does not
+     open. Access has already recorded the scan, so the screen says that Access recorded it and
+     that the gate was not opened. The row is marked `RESOLVED` (result `late_accepted`) and is
+     never actuated. If that write fails, the row stays `PENDING`. Recovery can only queue it, and
+     its reconciliation finds the scan that Access already recorded (a replay, §4).
+   - After the row is marked actuated and before the screen shows the accepted result, because
+     the mark is a wait too. The gate does not open, and the row stays `ACTUATED`: the stranded
+     admission of a crash between marking and opening, as above, never a late opening.
+
+   A rejected answer, a `401`, and an Exit-mode scan of a ticket on the revocation list open
+   nothing, so they are shown as before, even when late. A failure after the scan was sent still
+   queues the row and shows the offline result, as before: Access may have recorded the scan,
+   and only reconciliation can tell. The revocation pull and the queue sync do not check the
+   limit. They open nothing, and a reconciliation sends facts that each scan decided when it
+   happened, so a late sync is the normal offline path, not a late scan.
+
+   **Amended by TKT-399: each database open also has a limit of 3 seconds, as an early signal.**
+   The browser keeps one queue of open requests for each storage key and database name; for the
    scanner, that is its origin and `gate-occurrences`. The first request in it is reported
    `blocked`; every request behind it, from the same tab or from any other, waits with no event of
    its own. A tab cannot see the requests of other tabs, so every open request has a time limit
-   of 3 seconds (`OPEN_TIMEOUT_MS`). That is a policy limit, not a measured value: we assume that
-   an open with nothing in front of it takes much less time, and that the ticket holder is still
-   at the gate when the scanner refuses. The tab measures the limit as elapsed time on a
-   monotonic clock (`performance.now()`) from the moment it sends the request. A request reported
-   `blocked` refuses at once, and the tab tells the operator to close the other scanner tabs. A
-   request that has not succeeded before 3 seconds have passed refuses, and the tab says that scan
-   storage did not open in time and to close any other scanner tab. The refusal comes when the
-   tab's timer runs, or when the late success arrives if that is first. A browser can run a timer
-   late, so the refusal can come after 3 seconds; the clock, not the timer, decides that a success
-   is too late. In both cases nothing is minted and nothing is sent. A request that the tab
-   gave up on stays in the queue. If it succeeds later, or if its success comes too late, the tab
-   closes that connection at once and uses it for nothing, so a refused scan is never sent late. Until then, a new open in that tab
-   refuses at once with the error that request gave; each later scan tries to open again. The new
-   code closes its own connection on `versionchange` and then refuses every store operation, so a
-   later version is never blocked by it. The cost is a one-way door: once version 3 exists on a
-   device, a rolled-back pre-TKT-399 scanner gets `VersionError` when it opens the database.
-   That scanner fails closed: it shows its storage failure, mints nothing and sends no scan. Rows
-   already queued on that device stay there unsent until a TKT-399 or later scanner opens the
-   database.
+   of 3 seconds (`OPEN_TIMEOUT_MS`), measured on a monotonic clock (`performance.now()`) from the
+   moment the tab sends the request. A request reported `blocked` refuses at once, and the tab
+   tells the operator to close the other scanner tabs. A request that has not succeeded before 3
+   seconds have passed refuses, and the tab says that scan storage did not open in time and to
+   close any other scanner tab. The refusal comes when the tab's timer runs, or when the late
+   success arrives if that is first. A browser can run a timer late, so the refusal can come
+   after 3 seconds; the clock, not the timer, decides that a success is too late. In both cases
+   nothing is minted and nothing is sent. A request that the tab gave up on stays in the queue.
+   If it succeeds later, or if its success comes too late, the tab closes that connection at once
+   and uses it for nothing. Until then, a new open in that tab refuses at once with the error
+   that request gave; each later scan tries to open again. This limit covers the open request
+   only, not the owner lock and the recovery after it; the scan limit above covers those.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at
