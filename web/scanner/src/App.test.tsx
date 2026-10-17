@@ -319,6 +319,53 @@ function scanBodies(fetchMock: { mock: { calls: unknown[][] } }) {
 
 const acceptedResponse = () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }), { status: 200 })
 
+// A revocation feed that answers 401 to the first device token once `revoke` is
+// called, and serves every other request. Scans are accepted.
+function revocableFeed() {
+  let revoked = false
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (!String(url).includes('voided-tickets')) return Promise.resolve(acceptedResponse())
+    const token = (init!.headers as Record<string, string>)['X-Scanner-Token']
+    return Promise.resolve(revoked && token === 'paired-device-token'
+      ? new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 })
+      : new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return {
+    fetchMock,
+    revoke: () => { revoked = true },
+    // The pull on load must finish first, or a refresh joins it instead of asking again.
+    firstPullDone: () => waitFor(() => expect(screen.queryAllByText(/holds no revocation list yet/)).toHaveLength(0)),
+  }
+}
+
+// The device loses its pairing on a revocation refresh, then the operator pairs it again.
+async function repairAfterFeed401(feed: ReturnType<typeof revocableFeed>) {
+  feed.revoke()
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh revocation list' }))
+  fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+  expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
+}
+
+// Every occurrence row, read straight from IndexedDB, not through the app.
+async function storedOccurrences(): Promise<Array<Record<string, unknown>>> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences')
+    open.onsuccess = () => resolve(open.result)
+    open.onerror = () => reject(open.error)
+  })
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
 describe('scan direction', () => {
   it('submits a live exit from the scan control', async () => {
     const fetchMock = routedFetch(() => Promise.resolve(acceptedResponse()))
@@ -419,6 +466,61 @@ describe('scan direction', () => {
     expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByRole('radio', { name: 'Exit' }) as HTMLInputElement).checked).toBe(false)
     expect(screen.getByText('Entry mode')).toBeDefined()
+  })
+
+  it('clears an exit result when the device is paired again', async () => {
+    const feed = revocableFeed()
+    render(<App />)
+    await feed.firstPullDone()
+    chooseDirection('Exit')
+    pasteCredential('exit-ticket')
+    expect(await screen.findByText(/^Exit recorded at /)).toBeDefined()
+
+    await repairAfterFeed401(feed)
+    expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(screen.queryByText(/Exit recorded/)).toBeNull()
+  })
+
+  // A detection that started in Exit mode before the device lost its pairing must not
+  // submit after the operator pairs again: the mode is Entry then, so the exit would
+  // be minted and synced as an entry.
+  it('stops a camera generation when the device loses its pairing', async () => {
+    const { stop, stream } = fakeStream()
+    const staleDetection = deferred<Array<{ rawValue?: string }>>()
+    const detect = vi.fn().mockReturnValueOnce(staleDetection.promise)
+    vi.stubGlobal('BarcodeDetector', class {
+      detect = detect
+    })
+    stubCamera(vi.fn().mockResolvedValue(stream))
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    const feed = revocableFeed()
+
+    render(<App />)
+    await feed.firstPullDone()
+    chooseDirection('Exit')
+    fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+    await waitFor(() => expect(detect).toHaveBeenCalledOnce())
+
+    await repairAfterFeed401(feed)
+    expect(stop).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Stop camera' })).toBeNull()
+
+    // The detect loop awaited this promise before the test did, so its continuation
+    // has run when this await returns. A live generation would have started its scan.
+    await act(async () => {
+      staleDetection.resolve([{ rawValue: 'stale-exit-ticket' }])
+      await staleDetection.promise
+    })
+    // A scan through the screen is the barrier. A scan that started from the stale
+    // detection holds the button until it has finished, so it is sent first.
+    await screen.findByRole('button', { name: 'Check ticket' })
+    pasteCredential('after-repair-ticket')
+    expect(await screen.findByText(/^Entry recorded at /)).toBeDefined()
+    expect(scanBodies(feed.fetchMock).map((body) => [body.qr_payload, body.direction])).toEqual([
+      ['after-repair-ticket', 'entry'],
+    ])
+    expect((await storedOccurrences()).filter((record) => record.qrPayload === 'stale-exit-ticket')).toEqual([])
   })
 
   it('clears the previous result when direction changes', async () => {

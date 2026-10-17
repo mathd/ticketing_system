@@ -678,8 +678,13 @@ function App() {
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
+    // Stop the camera before the mode goes back to Entry. A detection still pending
+    // from before would otherwise submit after the next pairing and read Entry.
+    stopCamera()
     directionRef.current = 'entry'
     setDirection('entry')
+    // The result describes a scan under the old pairing and mode (D5, D14).
+    setOutcome(null)
     // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
     setSyncNote((previous) => {
       if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }

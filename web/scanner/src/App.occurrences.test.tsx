@@ -1,29 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-// Holds mint open after its transaction commits, so a test can prove the scan
-// request waits for mint to resolve. The store underneath is the production one.
-const mintGate = vi.hoisted(() => ({ hold: null as Promise<void> | null, committed: null as (() => void) | null }))
-
-vi.mock('./occurrences', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./occurrences')>()
-  return {
-    ...actual,
-    async openOccurrenceStore(...args: Parameters<typeof actual.openOccurrenceStore>) {
-      const store = await actual.openOccurrenceStore(...args)
-      return {
-        ...store,
-        async mint(...mintArgs: Parameters<typeof store.mint>) {
-          const minted = await store.mint(...mintArgs)
-          mintGate.committed?.()
-          if (mintGate.hold) await mintGate.hold
-          return minted
-        },
-      }
-    },
-  }
-})
-
 import App from './App'
 
 // The occurrence protocol on the scan flow (ADR-025 §D3/§D6): mint-and-commit
@@ -40,8 +17,6 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  mintGate.hold = null
-  mintGate.committed = null
   localStorage.clear()
   sessionStorage.clear()
   cleanup()
@@ -58,29 +33,24 @@ function chooseDirection(name: 'Entry' | 'Exit') {
   fireEvent.click(screen.getByRole('radio', { name }))
 }
 
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => { resolve = res })
-  return { promise, resolve }
-}
-
-// The stored occurrence, read straight from IndexedDB, not through the app.
-async function storedOccurrence(occurrenceId: string): Promise<Record<string, unknown> | undefined> {
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const open = indexedDB.open('gate-occurrences')
-    open.onsuccess = () => resolve(open.result)
-    open.onerror = () => reject(open.error)
+// Records each occurrence write when its IndexedDB transaction completes, with the
+// value it wrote. It watches the real store, so it sees a commit, not a promise that
+// says one happened.
+function watchCommittedWrites(): Map<string, Array<Record<string, unknown>>> {
+  const committed = new Map<string, Array<Record<string, unknown>>>()
+  const realPut = IDBObjectStore.prototype.put
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['put']>) {
+    const request = realPut.apply(this, args)
+    if (this.name === 'occurrences') {
+      const written = structuredClone(args[0]) as Record<string, unknown>
+      this.transaction.addEventListener('complete', () => {
+        const id = String(written.occurrenceId)
+        committed.set(id, [...(committed.get(id) ?? []), written])
+      })
+    }
+    return request
   })
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').get(occurrenceId)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-  } finally {
-    db.close()
-  }
+  return committed
 }
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -167,41 +137,35 @@ describe('App occurrence protocol', () => {
   })
 
   // ADR-025 §D3: the occurrence, with its direction, is committed before the request
-  // leaves. The fetch boundary reads the stored row, so a direction that lived only in
-  // React state, or only in the request, fails here.
+  // leaves. The fetch fake reads the commit record synchronously, before it awaits
+  // anything, so a mint that sends before its transaction completes fails here. A
+  // read of the row would not: it queues behind the outstanding write and finds it.
   it('commits exit direction before sending', async () => {
-    const release = deferred<void>()
-    const committed = deferred<void>()
-    mintGate.hold = release.promise
-    mintGate.committed = () => committed.resolve()
-    let storedAtSend: Record<string, unknown> | undefined
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url).includes('voided-tickets')) return feedResponse()
+    const committed = watchCommittedWrites()
+    let committedAtSend: Array<Record<string, unknown>> | undefined
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes('voided-tickets')) return Promise.resolve(feedResponse())
       const body = JSON.parse(init!.body as string)
-      storedAtSend = await storedOccurrence(body.occurrence_id)
-      return new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }), { status: 200 })
+      committedAtSend = [...(committed.get(body.occurrence_id) ?? [])]
+      return Promise.resolve(new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T19:00:00Z' }), { status: 200 }))
     })
     vi.stubGlobal('fetch', fetchMock)
     render(<App />)
     chooseDirection('Exit')
     pasteCredential('exit-ticket')
 
-    await committed.promise
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
-    release.resolve()
-
     expect(await screen.findByText(/^Exit recorded at /)).toBeDefined()
     const scanCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))
     expect(scanCalls).toHaveLength(1)
     const sent = JSON.parse((scanCalls[0][1] as RequestInit).body as string)
     expect(sent.direction).toBe('exit')
-    expect(storedAtSend).toMatchObject({
+    expect(committedAtSend).toEqual([expect.objectContaining({
       occurrenceId: sent.occurrence_id,
       qrPayload: 'exit-ticket',
       occurredAt: sent.occurred_at,
       state: 'PENDING',
       direction: 'exit',
-    })
+    })])
   })
 
   // D3: a mode switch affects future scans only. The queued exit keeps its direction.
