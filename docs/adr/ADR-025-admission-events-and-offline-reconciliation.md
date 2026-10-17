@@ -281,32 +281,65 @@ conflicts. Together every physical admission that Access learns about is represe
      made in time, so a slow queue write cannot make the result late. If the queue write fails,
      the row stays `PENDING` and recovery queues it, as before: staff were told to admit.
 
-   **Amended by TKT-399 (decision D30, 2026-10-17): a scan that the time limit stopped is never
-   synced to Access, also when the write that closes its row fails in this page.** The danger is
-   a reconciliation that records a scan the screen said did not happen, or did not admit. A
-   write can fail or be slow, so one more write cannot carry this rule alone. The rule is held
-   by one record in the memory of the page, `LateScans`. The page keeps it for its life and
-   gives it to every store it opens, because a failed write makes the page close its store and
-   open a new one with a new owner. A scan that runs out of time declares its row in this record
-   first, with no wait before the declaration, and then writes the close (`closeLate`). Each
-   store of the page applies the record at each point where a row can become reconcilable:
+   **Amended by TKT-399 (decisions D30 and D35, 2026-10-17): a scan that the time limit stopped
+   is never synced to Access, also when the write that closes its row fails in this page, and no
+   tab can queue the row of a scan while the page of that scan lives.** The danger is a
+   reconciliation that records a scan the screen said did not happen, or did not admit. A write
+   can fail or be slow, so one more write cannot carry this rule alone. The rule is held by one
+   record in the memory of the page, `PageScans`. The page keeps it for its life and gives it to
+   every store it opens, because a failed write makes the page close its store and open a new one
+   with a new owner.
 
-   - Recovery of a `PENDING` row closes a declared row with its result and never queues it.
+   The record holds each row of the page from its mint until the page decides the outcome of that
+   row (D35):
+
+   - A store puts the row in the record before it writes the mint. If the mint write fails, there
+     is no row, and the row leaves the record.
+   - The row leaves the record when a store writes its outcome: the actuation (also when the
+     actuation finds the row already decided), the queue write, or the terminal write of a
+     rejection.
+   - When the page decided an outcome in time and the write of that outcome fails, the page takes
+     the row out of the record itself. This applies to the queue write of an offline result, the
+     queue write of a local refusal, and the terminal write of a rejection. The row stays
+     `PENDING`, and recovery queues it, which gives the outcome that the page decided. A `401`
+     whose queue write fails does not do this: the scan then decides again, at the check of the
+     offline result.
+   - A scan that runs out of time declares its row late in the record first, with no wait before
+     the declaration, and then writes the close (`closeLate`). A declared row stays in the record
+     until a store of this page writes its close.
+
+   Each store of the page applies the record:
+
+   - When a store closes, it keeps its owner lock while the record holds a row of that owner that
+     is not decided, or a declared row of that owner that is not closed. Recovery in any tab needs
+     the owner lock of the row (`runIfOwnerAbsent`), whatever the lease of the row shows. This
+     includes this page: a new store of the page recovers the rows of the owner it replaced only
+     through that same lock. So while this page lives, no tab can queue a row that a scan of this
+     page has not decided, or has declared late and not closed. The lock goes when the last such
+     row of that owner leaves the record, or when the page goes away.
    - The listing of rows to reconcile (`queued`, which every sync uses) never lists a declared
      row. Before it lists, it tries again to write the close of each declared row that is not
      closed yet. If that write fails again, the filter still keeps the row out.
-   - When a store closes, it keeps the owner lock of each declared row that is not closed yet.
-     Recovery in any tab needs that lock, so while this page lives, no other tab can recover the
-     row, whatever its lease shows. The lock goes when a store of this page writes the close, or
-     when the page goes away.
+   - Recovery of a `PENDING` row closes a declared row with its result and never queues it. The
+     lock above keeps recovery from a declared row while the page keeps its owners, so this rule
+     applies only when the page let its owners go and a store of the page still recovers rows.
+     We keep it as a second barrier.
+
+   A store opened with no record of a page stands alone: when it closes, it lets its owner go at
+   once, as when its page is gone. The scanner page always gives its record to its stores.
 
    The queue write (`markQueued`) does not read the record. Only the scan that owns a row calls
    it, and that scan calls it only after a check that passed, never after it declared the row
-   late. A local refusal is now minted `PENDING` under the page owner, like a scan, and queued
-   only after its check. So at each point where a scan can declare its row late, the row is
-   `PENDING` and its owner lock is held, and no other tab can queue it first, unless another
-   failure closed the store of the scan first (the second open case below). The actuation rule
-   refuses a row with a local decision, so a `PENDING` refusal never opens the gate.
+   late. A local refusal is minted `PENDING` under the page owner, like a scan, and queued only
+   after its check. So at each point where a scan can declare its row late, the row is `PENDING`
+   and its owner lock is held, also when another failure closed the store of the scan first, and
+   no tab can queue it first. The actuation rule refuses a row with a local decision, so a
+   `PENDING` refusal never opens the gate.
+
+   If the page keeps a row in the record that it never decides, the owner of that row keeps its
+   lock while the page lives. The row then stays `PENDING`, and no tab queues or reconciles it
+   until the page goes away. The tests check that each outcome above takes the row out of the
+   record.
 
    An Exit-mode scan follows the same rule. An exit is never refused (D7), so each late exit
    screen says that the holder may leave. But a late exit is closed and never synced, as the
@@ -316,20 +349,13 @@ conflicts. Together every physical admission that Access learns about is represe
    and Access can still show a pass as inside after its holder left. We have not checked what
    Access then does at the next entry of that pass.
 
-   These cases stay open:
+   This case stays open:
 
-   - The page goes away (crash, reload, closed tab) after a close write failed and before a
-     store of this page wrote it again. The browser then releases the owner lock, the record in
-     memory is lost, and the row is recovered like the row of a page that crashed (the recovery
-     rule above): it is queued and reconciled. This is the crash window of this section, and
-     this decision does not close it.
-   - Another failure made the page close the store of a scan while that scan waited, before the
-     scan declared its row late. That close released the owner lock with no declared row to
-     keep. Between that close and the declaration, a recovery can queue the row: at once in this
-     page, which recovers the rows of the owner it replaced, or in another tab when the lease has
-     expired. A sync can then reconcile it. After the declaration, this page closes the row and
-     never lists it, but another tab can still list a row that is already `QUEUED` while the
-     close write fails. A test pins this: a store that does not share the record lists such a row.
+   - The page goes away (crash, reload, closed tab) while the record holds a row: after a close
+     write failed and before a store of this page wrote it again, or while a scan waits for its
+     outcome. The browser then releases the owner lock, the record in memory is lost, and the row
+     is recovered like the row of a page that crashed (the recovery rule above): it is queued and
+     reconciled. This is the crash window of this section, and these decisions do not close it.
 
    A rejected answer and a `401` open nothing and tell staff nothing to admit, so they are shown
    as before, even when late. A `401` also queues the row as before, in time or late: it is not

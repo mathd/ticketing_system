@@ -10,7 +10,7 @@ import {
 } from './access-contract'
 import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
 import {
-  LateScans,
+  PageScans,
   OccurrenceStoreBlockedError,
   OccurrenceStoreOpenTimeoutError,
   openOccurrenceStore,
@@ -206,9 +206,10 @@ function App() {
   const syncRequested = useRef(false)
   const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
   const occurrenceOwner = useRef(pageOccurrenceOwner)
-  // The scans this page stopped for time (D30). One for the life of the page,
-  // given to every store it opens, because a failed write replaces the store.
-  const [lateScans] = useState(() => new LateScans())
+  // The scans of this page that are in flight or that it stopped for time (D30,
+  // D35). One for the life of the page, given to every store it opens, because a
+  // failed write replaces the store.
+  const [pageScans] = useState(() => new PageScans())
   const deviceTokenRef = useRef(deviceToken)
   deviceTokenRef.current = deviceToken
   const reopenAfter = useRef<Promise<void>>(Promise.resolve())
@@ -240,7 +241,7 @@ function App() {
   const getStore = (): Promise<OccurrenceStore> => {
     if (storePromise.current) return storePromise.current
     const owner = occurrenceOwner.current
-    const attempt = reopenAfter.current.then(() => openOccurrenceStore('gate-occurrences', { ...owner, lateScans }))
+    const attempt = reopenAfter.current.then(() => openOccurrenceStore('gate-occurrences', { ...owner, pageScans }))
     storePromise.current = attempt
     // A failed open never stays cached. The revocation pull hides its own
     // failure, and the next scan must then open storage again, not get that failure.
@@ -290,10 +291,10 @@ function App() {
       const pendingStore = storePromise.current
       storePromise.current = null
       const closed = pendingStore ? pendingStore.then((opened) => opened.close()).catch(() => undefined) : undefined
-      // The page is going away, so the owners of late rows go too, after the
-      // stores have closed. A row not closed by then is recovered like the row
-      // of a crashed page (ADR-025 §3).
-      void Promise.all([reopenAfter.current, closed]).then(() => lateScans.releaseOwners())
+      // The page is going away, so the owners of open rows go too, after the
+      // stores have closed. A row still open then is recovered like the row of
+      // a crashed page (ADR-025 §3).
+      void Promise.all([reopenAfter.current, closed]).then(() => pageScans.releaseOwners())
       stopCamera()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -417,7 +418,7 @@ function App() {
             await closeLate(store, refusal.occurrenceId, 'late_not_sent', storageRefusalMessage)
             return
           }
-          await store.markQueued(refusal.occurrenceId)
+          await queueDecided(store, refusal.occurrenceId)
           await refreshQueued()
           void syncQueued()
           return
@@ -502,7 +503,9 @@ function App() {
           } catch {
             // Access has decided this ticket. Keep that decision on screen even
             // when the local terminal-state write fails. Reopening under a new
-            // owner will recover the pending row for reconciliation.
+            // owner will recover the pending row for reconciliation, so the
+            // page lets the row go (D35).
+            pageScans.decided(record.occurrenceId)
             reportStorageFailure(storageAfterResponseMessage)
           }
           return
@@ -523,7 +526,7 @@ function App() {
         setOutcome({ kind: 'queued', direction: record.direction, cause })
         let queueReadable = true
         try {
-          await store.markQueued(record.occurrenceId)
+          await queueDecided(store, record.occurrenceId)
         } catch {
           queueReadable = false
           reportStorageFailure(cause === 'local' ? storageAfterResponseMessage : undefined)
@@ -532,6 +535,18 @@ function App() {
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // Queues the row of a scan whose outcome the page decided in time. The
+  // decision stands when the write fails: the row stays PENDING, and the page
+  // lets it go (D35), so recovery queues it, which is the same outcome. The 401
+  // path does not use this: when its queue write fails, the scan decides again.
+  const queueDecided = async (store: OccurrenceStore, occurrenceId: string) => {
+    try {
+      await store.markQueued(occurrenceId)
+    } finally {
+      pageScans.decided(occurrenceId)
     }
   }
 

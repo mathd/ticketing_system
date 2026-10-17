@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ScanDirection } from './access-contract'
-import { LateScans, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
+import { PageScans, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
 
 const openStore = vi.hoisted(() => vi.fn())
 
@@ -105,7 +105,7 @@ describe('Scanner storage failures', () => {
     expect(openStore).toHaveBeenCalledWith('gate-occurrences', {
       ownerId: 'current-page-owner',
       recoverOwnerId: 'previous-page-owner',
-      lateScans: expect.any(LateScans),
+      pageScans: expect.any(PageScans),
     })
     view.unmount()
     await waitFor(() => expect(store.close).toHaveBeenCalledOnce())
@@ -176,11 +176,11 @@ describe('Scanner storage failures', () => {
     expect(openStore).toHaveBeenLastCalledWith('gate-occurrences', {
       ownerId: 'replacement-page-owner',
       recoverOwnerId: 'current-page-owner',
-      lateScans: expect.any(LateScans),
+      pageScans: expect.any(PageScans),
     })
     // One record of late scans for the page, given to the store that replaced
     // the failed one (TKT-399 D30).
-    expect(openStore.mock.calls[1][1].lateScans).toBe(openStore.mock.calls[0][1].lateScans)
+    expect(openStore.mock.calls[1][1].pageScans).toBe(openStore.mock.calls[0][1].pageScans)
     expect(vi.mocked(store.close).mock.invocationCallOrder[0]).toBeLessThan(
       openStore.mock.invocationCallOrder[1],
     )

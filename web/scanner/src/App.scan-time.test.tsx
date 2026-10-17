@@ -162,12 +162,12 @@ async function syncOnce() {
 // does. Only the write of that terminal state fails, so the test can arm it
 // before the scan and every other write still succeeds.
 const terminalWrite = { failures: 0 }
-function failNextTerminalWrite() {
+function failNextTerminalWrite(failedState = 'RESOLVED') {
   terminalWrite.failures = 1
   const put = IDBObjectStore.prototype.put
   vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
     const state = (value as { state?: unknown } | null)?.state
-    if (this.name === 'occurrences' && state === 'RESOLVED' && terminalWrite.failures > 0) {
+    if (this.name === 'occurrences' && state === failedState && terminalWrite.failures > 0) {
       terminalWrite.failures -= 1
       throw new DOMException('the disk is full', 'QuotaExceededError')
     }
@@ -775,6 +775,130 @@ describe('a scan that the time limit stopped is never synced (TKT-399 D30)', () 
     expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
       state: 'RESOLVED', actuated: false, result: 'late_unconfirmed', direction: 'exit',
     })])
+  })
+
+  // A6-1 (decision D35): another storage failure replaces the store while a scan
+  // waits for its answer. The page lives, so neither this page nor another tab
+  // may queue the row of that scan before it ends. The scan then ends late, and
+  // no sync sends it.
+  it('never reconciles a scan whose store was replaced while it waited, and that then ended late', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    const [inFlight] = await rowsFor('signed-ticket')
+    expect(inFlight).toEqual(expect.objectContaining({ state: 'PENDING' }))
+
+    // The next listing of the queue fails, so the sync replaces the store.
+    const getAll = IDBObjectStore.prototype.getAll
+    let listingFailures = 1
+    vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['getAll']>) {
+      if (this.name === 'occurrences' && listingFailures > 0) {
+        listingFailures -= 1
+        throw new DOMException('the disk is broken', 'UnknownError')
+      }
+      return getAll.apply(this, args)
+    })
+    act(() => { window.dispatchEvent(new Event('online')) })
+    expect(await screen.findByText(/cannot save scans right now/)).toBeDefined()
+    expect(listingFailures).toBe(0)
+
+    // Another tab opens after the lease of the row expired.
+    const otherTab = await openOccurrenceStore(DB, { ownerId: 'other-tab', now: () => Date.now() + 120_000 })
+    try {
+      expect((await otherTab.queued()).map((row) => row.occurrenceId)).toEqual([seeded])
+      // This page syncs from its next store, which recovers the rows of the owner it replaced.
+      await syncOnce()
+      expect(reconciledIds()).toEqual([seeded])
+
+      // The scan ends late. Its store is closed, so the close write fails.
+      advance(30_000)
+      reply.reject(new TypeError('Failed to fetch'))
+      expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+      await expectIdleButton()
+      expect(screen.queryByText(offlineAdmitText)).toBeNull()
+      expect((await otherTab.queued()).map((row) => row.occurrenceId)).toEqual([])
+      expect(reconciledIds()).not.toContain(inFlight.occurrenceId)
+
+      // The next listing of this page closes the row, and nothing sends it.
+      act(() => { window.dispatchEvent(new Event('online')) })
+      await waitFor(async () => expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+        state: 'RESOLVED', actuated: false, result: 'late_unconfirmed',
+      })]))
+      expect(reconciledIds()).toEqual([seeded])
+      expect((await otherTab.queued()).map((row) => row.occurrenceId)).toEqual([])
+    } finally {
+      otherTab.close()
+    }
+  })
+
+  // D35: an outcome decided in time stands when its write fails. The page lets
+  // the row go, so its next store recovers the row and a sync sends it, while
+  // the page lives.
+  it('reconciles a scan decided offline in time whose queue write failed, from the next store of this page', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(29_999)
+    failNextTerminalWrite('QUEUED')
+    reply.reject(new TypeError('Failed to fetch'))
+
+    expect(await screen.findByText(offlineAdmitText)).toBeDefined()
+    expect(await screen.findByText(/cannot save scans right now/)).toBeDefined()
+    await expectIdleButton()
+    expect(terminalWrite.failures).toBe(0)
+    const [row] = await rowsFor('signed-ticket')
+    expect(row).toEqual(expect.objectContaining({ state: 'PENDING', actuated: false }))
+
+    await syncOnce()
+    expect(reconciledIds().sort()).toEqual([seeded, row.occurrenceId].sort())
+  })
+
+  it('reconciles a rejected scan whose terminal write failed, from the next store of this page', async () => {
+    const seeded = await seedQueuedRow()
+    stubScans(() => Promise.resolve(new Response(JSON.stringify({
+      decision: 'rejected', reason: 'already_redeemed', original_scan_at: '2026-10-16T19:59:00Z',
+    }), { status: 409 })))
+    failNextTerminalWrite()
+    render(<App />)
+    scan()
+
+    expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeDefined()
+    expect(await screen.findByText(/could not save the server result/)).toBeDefined()
+    await expectIdleButton()
+    expect(terminalWrite.failures).toBe(0)
+    const [row] = await rowsFor('signed-ticket')
+    expect(row).toEqual(expect.objectContaining({ state: 'PENDING', actuated: false }))
+
+    await syncOnce()
+    expect(reconciledIds().sort()).toEqual([seeded, row.occurrenceId].sort())
+  })
+
+  it('reconciles a local refusal decided in time whose queue write failed, from the next store of this page', async () => {
+    const seeded = await seedQueuedRow()
+    const ticketID = '0b5d6a8e-1c2f-4e3a-9b7d-2f6c8e1a4b3c'
+    const seeder = await openOccurrenceStore(DB, { ownerId: 'revocation-seeder' })
+    await seeder.mergeRevoked([ticketID])
+    seeder.close()
+    failNextTerminalWrite('QUEUED')
+
+    render(<App />)
+    scan(credentialFor(ticketID))
+
+    expect(await screen.findByRole('heading', { name: 'Not valid for entry' })).toBeDefined()
+    expect(await screen.findByText(/could not save the refusal/)).toBeDefined()
+    await expectIdleButton()
+    expect(terminalWrite.failures).toBe(0)
+    const [refusal] = (await storedRows()).filter((row) => row.localDecision === 'revocation_refused')
+    expect(refusal).toEqual(expect.objectContaining({ state: 'PENDING' }))
+
+    await syncOnce()
+    expect(reconciledIds().sort()).toEqual([seeded, refusal.occurrenceId as string].sort())
   })
 
   // A revoked ticket must never read as admissible, so the screen still refuses.
