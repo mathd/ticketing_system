@@ -32,9 +32,10 @@ Why the two roles are always different models: **a drafter is unattached to a fa
 
 ## 2. Findings triage and decision audit (in `agent:ai-review` and at Gate 3 feedback)
 
-The code review has two ordered inputs. Start with the diff only and record its findings before
-showing the reviewer the approved plan or decision log. Then provide the approved plan, every
-`kind=decision` comment, and the implementation evidence for a decision audit. The second lens asks:
+The code review has two ordered inputs, on one frozen head (`reviews.md` § One round). Start
+with the diff only and record its findings before showing the reviewer the approved plan or
+decision log. Then provide the approved plan, every `kind=decision` comment, and the
+implementation evidence for a decision audit. The second lens asks:
 
 - Does the implementation match the approved plan?
 - Does the evidence support each logged choice and its stated consequences?
@@ -44,19 +45,21 @@ showing the reviewer the approved plan or decision log. Then provide the approve
 
 Treat a decision-audit problem like any other finding. A wrong choice that violates correctness,
 security or the COS is blocking. Missing rationale or a missing entry is blocking only when it hides
-a material choice from Gate 3. Fix the artifact as well as the code when both are wrong. The audit
-does not count as a second review pass because the diff has not changed; any non-trivial fix it
-causes still triggers the normal second-pass rule.
+a material choice from Gate 3. Fix the artifact as well as the code when both are wrong. The
+initial inspection and the audit are one round; whether a fix it causes needs another round is
+`reviews.md` § Stage policy.
 
 Every finding — from the Codex adversarial review or the human reviewer — gets classified before acting:
 
-- **Blocking** — correctness, security, or AC violation *in this diff* → fix now, in the PR.
-- **Incidental** — real but out of scope (pre-existing issue, adjacent improvement, nice-to-have) → **create a Backlog issue** (`createJiraIssue`, status Backlog), link the finding in its body, note the deferral in the review reply.
-- **Rejected** — false positive or nitpick → say so explicitly, with the reason. Adversarial reviewers are instructed to find problems, so some won't exist; filtering is part of the job.
+- **Blocking** — correctness, security, or AC violation *in this diff* → fix now, in the PR. Disposition `fixed`. Never deferred, whatever its severity.
+- **Incidental** — real but out of scope (pre-existing issue, adjacent improvement, nice-to-have) → **create a Backlog ticket** (`POST /ticket/new`, with a minimal context-mémo — `decomposition.md`), link the finding in its body, note the deferral in the review reply. Disposition `deferred`.
+- **Rejected** — false positive or nitpick → say so explicitly, with the reason. Adversarial reviewers are instructed to find problems, so some won't exist; filtering is part of the job. Disposition `rejected`; at the stage's repeat threshold it needs the reviewer's refutation check (`reviews.md` § Refutations).
+
+Severity (Critical/High/Medium/Low/Nit) is the reviewer's, kept as given; it decides whether another round runs. Blocking/incidental/rejected is yours; it decides what happens to the finding.
 
 Invariant: **no finding is silently dropped.** Each one changes the diff, produces a ticket, or gets a stated rejection. Fixing incidental findings in the PR is scope creep — it bloats the diff, slows review, and the SHA churn invalidates earlier review effort.
 
-**Why the second pass is load-bearing, in numbers.** Across TKT-22's five stories: 6 of 9 findings (TKT-190), 3 of 4 (TKT-191), 4 of 5 (TKT-197) and ~17 of 24 (TKT-192) were defects **in code written to fix an earlier finding** — **30 of 42 overall.** Fix diffs are written fast, under momentum, against one example, and by construction nobody has reviewed them. Treat "I only changed six lines to fix a finding" as the *highest*-risk diff on the branch, not the lowest.
+**Why a fix diff is the riskiest diff on the branch, in numbers.** Across TKT-22's five stories: 6 of 9 findings (TKT-190), 3 of 4 (TKT-191), 4 of 5 (TKT-197) and ~17 of 24 (TKT-192) were defects **in code written to fix an earlier finding** — **30 of 42 overall.** Fix diffs are written fast, under momentum, against one example, and by construction nobody has reviewed them. Treat "I only changed six lines to fix a finding" as the *highest*-risk diff on the branch, not the lowest: verify it as carefully as the original, and set `materialChange` honestly (`reviews.md` § Stage policy) — below the Critical/High threshold, that flag is the only route to a re-review.
 
 ### 2.b Running the local gate honestly (`agent:coding`)
 
@@ -70,11 +73,11 @@ The local gate is the source of truth for "green" — but only when run against 
 
 ## 3. Ready-for-review walkthrough (the Gate 3 hand-off, on the PR)
 
-The "ready for review" comment **on the PR** (code repo, not Jira) is a guided walkthrough, not a pointer at the diff. The reviewer's time is the pipeline's scarcest resource; structure it (marker on line 1 — see `SKILL.md`):
+The "ready for review" comment **on the PR** (code repo, not the board) is a guided walkthrough, not a pointer at the diff. The reviewer's time is the pipeline's scarcest resource; structure it (marker on line 1 — see `SKILL.md`):
 
 ```markdown
 <!-- sdlc:stage=ai-review kind=review-guide -->
-### 🔎 Review guide — <ISSUE-KEY>
+### 🔎 Review guide — <TICKET-KEY>
 
 **Scope:** <n> files, +<x>/−<y> — <one sentence: what this PR does>.
 
@@ -86,6 +89,8 @@ The "ready for review" comment **on the PR** (code repo, not Jira) is a guided w
 **Manual checks:** <1–3 observable verifications the reviewer can run>
 **Decision log:** <shaping + planning + development IDs, or "none">
 **Deferred (triage):** <Backlog tickets from incidental findings, or "none">
+**Review rounds:** <plan-review n/4, ai-review n/4; reviewer + researcher models; reviewed head vs final head>
+**Not re-reviewed:** <fixes below the repeat threshold since the last round, each with its verification — or "none">
 ```
 
 Order the walkthrough by risk: the thing most likely to be wrong goes first.

@@ -1,0 +1,13 @@
+{
+  "stage": "ai-review",
+  "round": 1,
+  "artifact": "base:BASE_SHA/head:HEAD_SHA",
+  "reviewer": "gpt-6.1-sol",
+  "researcher": "gpt-6-luna",
+  "results": ["REPLACE_WITH_INITIAL_RESULT_OBJECT", "REPLACE_WITH_AUDIT_RESULT_OBJECT"],
+  "dispositions": {"R1": "fixed"},
+  "dispositionEvidence": {"R1": "Fixed at FIX_SHA; regression test observed red before the fix, green after."},
+  "verificationPassed": true,
+  "materialChange": false,
+  "refutationChecks": {}
+}

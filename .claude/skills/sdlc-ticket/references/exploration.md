@@ -1,4 +1,4 @@
-# Upstream exploration — idea → brief (Jira)
+# Upstream exploration — idea → brief
 
 Read this when the user brings an **idea or problem, not a spec** ("explore this", "I'm thinking about feature X"). Output: a brief in the epic, ready for `decomposition.md`. Exploration, PRD authoring, and decomposition run as **one flow ending at Gate 1** — no separate approval gate, but the drive style applies: the user can stop, steer, or restart at any point.
 
@@ -22,7 +22,7 @@ While eliciting, actively sharpen the domain language — a fuzzy term now is an
 
 - **Challenge conflicts.** A term that clashes with the decision registry / existing glossary gets called out on the spot: "you're using 'account' — Customer or User? Those are different things."
 - **Cross-reference the code.** When the user asserts how something works, check the code agrees; surface contradictions rather than transcribing the claim.
-- **Offer a decision record sparingly** — only when the choice is **hard to reverse**, **surprising without context**, and **the result of a real trade-off**. If any is missing, skip it. When all three hold, it's registry material (per the 3-houses rule in `SKILL.md`), not a throwaway line in the brief.
+- **Offer a decision record sparingly** — only when the choice is **hard to reverse**, **surprising without context**, and **the result of a real trade-off**. If any is missing, skip it. When all three hold, it's registry material (per the 3-houses rule in `setup.md`), not a throwaway line in the brief.
 
 ## Mode A — coached brainstorm
 
@@ -65,8 +65,8 @@ Before the brief is final, read the **actual repo**: where would this integrate,
 
 One **pre-mortem** pass on the finished brief (`quality-practices.md` §1): *this shipped and flopped / never shipped — why?* Patch or flag accordingly. Record the one-line lens note in the brief.
 
-## Output & hand-off (Jira)
+## Output & hand-off (board)
 
-1. Create the **epic**: `createJiraIssue` type Epic, summary `Epic: <feature>`, description = the brief (`## Brief`). Status starts at **Backlog**. (For a heavier feature, put the brief on a **Confluence page** and link it from the epic instead.)
-2. Continue directly into `decomposition.md` in the same run: the PRD is appended under `## PRD` (epic description or Confluence page), children are created with dependency links and baked context-mémo, and the flow ends with the **readiness verdict** on the epic.
+1. Create the **epic**: `POST /ticket/new` with `type: "Epic"`, summary `Epic: <feature>`, description = the brief (`## Brief`). Status starts at **Backlog**. (For a heavier feature, put the brief in `docs/product/` and link the path from the epic instead.)
+2. Continue directly into `decomposition.md` in the same run: the PRD is appended under `## PRD` (epic description or the PRD file in `docs/product/`), children are created with dependency links and baked context-mémo, and the flow ends with the **readiness verdict** on the epic.
 3. ⛔ **Gate 1 covers the whole lineage:** by transitioning the children **Backlog → Ready** (prioritizing), the human approves brief, PRD, and decomposition in one decision — everything they need to judge is on the epic.

@@ -1,102 +1,86 @@
 # Setup — bootstrap a project for the SDLC pipeline
 
-Read this on the **first run** in a project (no `.claude/sdlc.config.json`). One-time, idempotent: if the config already exists, **validate** it instead of recreating. Output: a Jira project on the custom agentic workflow + Confluence space + a written `.claude/sdlc.config.json`.
+Read this on the **first run** in a project (no `.claude/sdlc.config.json`). One-time, idempotent:
+if the config already exists, **validate** it instead of recreating. Output: a vault and board
+serving the project's tickets, a written `.claude/sdlc.config.json`, verified branch protection,
+and one smoke-tested ticket.
 
-## What the agent can vs can't do
+> **Prerequisite — cross-model review.** If the environment forbids sending code to an external
+> model, this SDLC is not a fit; do not run a degraded variant (SKILL.md § config.models).
 
-The Atlassian MCP creates issues, links, comments, and Confluence pages — but **not Jira projects, workflows, boards, components, or Confluence spaces**. So setup splits three ways: the **org's Jira admin route** creates the empty Jira project + Confluence space; the **project lead** (project admin) configures the workflow, board, components, access, and connections; then the **agent** resolves IDs and writes the config.
+## 1. Vault and board
 
-> **Client-owned environment?** The provisioning path below assumes your own org owns the Atlassian instance. When the *client* owns Jira/Confluence/the repo, confirm the **prerequisites** up front, with a client admin partner if the consultant lacks admin: project/workflow creation, entity-property write access (else the description fallback), branch protection, cross-model review allowed, and who owns each gate (PO is often client-side; if the client owns the repo, the merge gate may be theirs). If a prerequisite can't be met — notably cross-model review — this SDLC isn't a fit for that engagement; don't run a degraded variant.
+The board is its own repository, `~/sources/sdlc-board`. Mechanics: `local-tracker.md`.
 
-## 1. Jira project + Confluence space (admin provisioning, then your board setup)
+1. Clone `~/sources/sdlc-board` once per machine. One install serves several projects — `?vault=`
+   selects between them.
+2. Create the project's vault in FNS and add it to the API token's vault allowlist.
+3. Write `_board/config.md` in the vault: schema, project name, statuses, transversal statuses, WIP
+   limits. The board renders its columns from it and refuses a write to a status it does not list.
+4. Start the server (`local-tracker.md` § Architecture) and open `board.html`.
 
-**Source of truth:** your org's Jira project-creation process. The essentials:
+### Statuses — 6 plus transversal BLOCKED
 
-- **The admin route creates the empty shells** — it provisions **both** the Jira project and the Confluence space, with the **name + key you give in the request**. That request is its *entire* role; **everything else (project settings, access, connections, workflow, issue types, columns) is yours** to configure afterward as project admin.
-- **One Jira project = one client mandate.** Company-managed. Name conforms to the SOW; a **simple, recognizable project key**.
-- **Issue types:** Epic, User Story, Task, Sub-Task, Bug (if applicable).
-  - **Epic** = the feature. Carries the PRD link; **no pipeline label**; reaches Done when its last child closes.
-  - **User Story / Task / Sub-Task** = the pipeline units that flow through the workflow and carry the `agent:*` / `needs:human` labels.
+`Backlog → Ready → Planning → Building → PO Review → Done`, plus **BLOCKED** (reachable from any
+active status; returns to Ready/Planning/Building by context). The agent stages are first-class
+statuses so human + AI co-work is visible on the board.
 
-### Access (§2 of the page)
-- Add the project team (**DE / DS / DA**).
-- **Team Lead** as project **admin**.
-- **PO** with read + validation access (owns the **PO REVIEW** gate).
+| Status | Entry | Exit gate |
+|---|---|---|
+| **Backlog** | intake | ⛔ Gate 1 priority → Ready (board hard-blocks while `readiness` is open or a blocker is open) |
+| **Ready** | prioritized queue | agent claims → Planning |
+| **Planning** | agent claimed, drafting plan | ⛔ Gate 2 plan → Building (skip if `risk:low`) |
+| **Building** | coding + PR + review | ⛔ Gate 3 review + **merge** → PO Review |
+| **PO Review** | PO functional validation | ⛔ Gate 4 PO accepts → Done (board refuses Done without `kind=metrics`) |
+| **Done** | closure (metrics, learnings, branch delete) | — |
+| **BLOCKED** | transversal (open blocker) | ← returns by context |
 
-### Connections (§3 of the page)
-- **GitHub** connected to the project (if the mandate has a repo).
-- The mandate's **Confluence space** connected to the project.
+A ticket never moves backward without an explicit, observable reason in its thread.
 
-### Workflow — custom agentic (6 statuses + BLOCKED)
+**Labels** are free-form on the note, nothing to pre-create: `agent:planning`, `agent:plan-review`,
+`agent:coding`, `agent:ai-review`, `needs:human`, `risk:low`.
 
-`Backlog → Ready → Planning → Building → PO Review → Done`, plus transversal **BLOCKED** (reachable from any active status; returns to Ready/Planning/Building by context). The agent stages are **first-class statuses** so human + AI co-work is visible on the board — deliberately richer than a standard delivery template, which only has the status axis.
+**Ticket types:** `Epic` (the feature; carries the PRD link; no pipeline label; closed by roll-up once
+its last child is Done — `local-tracker.md` § Epics), `Story` / `Task` (the pipeline units), `Spike` (`shaping.md` § Spikes).
 
-| Status | Entry | Exit gate | vs. standard |
-|---|---|---|---|
-| **Backlog** | intake | ⛔ Gate 1 priority → Ready | ~ TO DO |
-| **Ready** | prioritized queue | agent claims → Planning | ~ TO DO |
-| **Planning** | agent claimed, drafting plan | ⛔ Gate 2 plan → Building (skip if `risk:low`) | **added** — no standard equivalent |
-| **Building** | coding + PR + review | ⛔ Gate 3 review + **merge** → PO Review | ~ IN PROGRESS / IN REVIEW |
-| **PO Review** | PO functional validation | ⛔ Gate 4 PO accepts → Done | **kept from standard** |
-| **Done** | closure (metrics, learnings, branch delete) | — | ~ DONE |
-| **BLOCKED** | transversal (open blocker) | ← returns by context | **kept from standard** |
+### Semantics the agent must respect
 
-Rework loops (Building / PO Review → Planning or Ready) and the rule "a ticket never moves backward without an explicit, observable reason" carry over from the standard. Record the real transition names in the config (they are not the status names).
+- **COS = Conditions of Success** — this pipeline's term for acceptance criteria. Every ticket has
+  them; Gate 4 validates them.
+- **WIP = one ticket in progress** per implementer, so the agent claims one ticket at a time.
+- **PO Review** = the PO validates the **COS are met from the user's output** (via code if not
+  user-demonstrable) before the work is accepted. That is Gate 4.
+- **`Done` is defined by the project's Definition of Done**, not by this skill. The local gate is
+  necessary, not sufficient. Name the DoD location in the project's instructions.
 
-**Who builds this:** you do. The admin route creates only the bare Jira project + Confluence space — provisioning carries no workflow/board options — so the custom statuses, transitions, board columns, and components above are **yours to configure** as project admin. The provisioning step never touches the workflow.
+### Where things live — the "3 houses" rule
 
-### Org delivery standard — sources of truth
+Documentation is in the repository (see the project's `AGENTS.md`):
 
-This pipeline sits **inside** the org's standard delivery workflow. Defer to the org's canonical pages; don't duplicate or contradict them — typically:
+| House | What | Where |
+|---|---|---|
+| Technical | binding decisions, standards | ADRs in `registry.bindingPath`; repo-wide rules in `AGENTS.md` |
+| Process | how we work, lessons | `docs/LEARNINGS.md` + `docs/learnings/`; process rules in `AGENTS.md` or this skill |
+| Product | solution definition, PRDs, briefs | `docs/product/` |
 
-- The **delivery workflow** page — the canonical sprint flow and the authoritative Jira status table.
-- The **Definition of Done (DoD)** page — **`Done` is defined there, not in this skill.** The local gate is necessary but not sufficient; a ticket is Done only when the DoD is met.
-- The **ticket-creation conventions** page.
-- The **project delivery frame** (cadre) + its template and kickoff checklist.
+Promote a reusable **technical** learning to an ADR and a **process** learning to `AGENTS.md` or
+this skill — not just a ticket comment.
 
-**Semantics the agent must respect** (from the delivery-workflow standard):
-- **COS = Conditions of Success** (this pipeline's term for acceptance criteria). Write COS on every ticket; the PO gate validates them. This skill's "AC" = COS.
-- **Sprints are 4 weeks** (3 if a client constraint); the board is sprint-based. **Gate 1 (priority) ≈ the ticket being committed to a sprint** at planning/refinement. **WIP = one task in progress per person**, so the agent claims one ticket at a time.
-- **`IN REVIEW`** (the `Building` tail here) = code deployed to **DEV** + PR reviewed by **another dev** — the approver is a dev, not the PO.
-- **`PO REVIEW`** = the PO validates the **COS are met from the user's output** (via code if not user-demonstrable) and gives **final approval before the sprint work deploys to the client's TEST env**. That is Gate 4.
+## 2. Code repo branch protection (agent, via `gh`)
 
-**Where things live — the "3 houses" rule**: code + technical standards → the **team standards registry** (via PR); process/org/project docs → the **team wiki**; solution definition + client deliverables → the **document store**. So promote reusable **technical** learnings to the registry and **process** learnings to the wiki — not just a Jira memo.
+Default branch: require a PR and the CI check on the host (on GitHub, a repository ruleset; commit
+its payload to the repo). Record any bypass actors in the project's instructions. Verify with
+`gh api repos/<o>/<r>/rules/branches/<b>` and by attempting a forbidden operation as an identity
+without bypass.
 
-**V0: no workflow conditions** — gates are enforced by process (the agent never does a human-gate transition). Later: reserve the ⛔ transitions to a role via workflow conditions.
+## 3. Write the config (agent)
 
-**Story Points** field on the pipeline units (V0 ticket sizing). Calibrate so a "one PR, reviewable in one sitting" ticket (`decomposition.md` sizing rule) ≈ small (1–3 pts); anything larger should be split, not pointed bigger. *(Cost/token estimation for sales is out of V0 scope.)*
+Write **`.claude/sdlc.config.json`** (schema in `SKILL.md` § Config): `tracker: "local"`, `gates`,
+`code`, `models`, `review.severityMap`, `registry`. Check the cross-model pairs (SKILL.md
+§ config.models) before the first run.
 
-**Components** — create a scheme of **5–12 coarse functional areas, aligned 1:1 with the decision-registry tags** so the context-mémo bake (`decomposition.md`) can route relevance by component. Example for this repo: `auth`, `api`, `db`, `projects`, `llms`, `mcp`, `dashboard-ui`, `uploads`, `infra`. Generic rule: *components = your registry's tags.*
+## 4. Smoke test
 
-**Labels** — free-form in Jira, **nothing to pre-create**: `agent:planning`, `agent:plan-review`, `agent:coding`, `agent:ai-review`, `needs:human`, `risk:low`.
-
-## 2. Confluence space (provisioned with the project)
-
-The admin route provisions the space alongside the Jira project (§1). Record its key and connect it to the Jira project. Epic PRDs become pages here, linked from the epic; story/task "PRDs" stay in the issue description.
-
-## 3. Board views (agent or admin)
-
-- **Quick filter `needs:human`** — the "is the bottleneck me?" view (every ticket waiting on a human gate).
-- **Quick filter `risk:low`**.
-- **Swimlanes by Epic** — see each feature's children together.
-
-## 4. Code repo branch protection (agent, via `gh`)
-
-Default branch: require a PR and the CI check on the host (on GitHub, a repository ruleset; commit its payload to the repo). Record any bypass actors in the project's instructions. Verify with `gh api repos/<o>/<r>/rules/branches/<b>` and by attempting a forbidden operation as an identity without bypass.
-
-## 5. Resolve + write config (agent)
-
-- **Blocks link type:** `getIssueLinkTypes` → the "blocks / is blocked by" name on this instance.
-- **Transition names:** create a throwaway test issue, `getTransitionsForJiraIssue`, record the name for each hop (they are **not** the status names).
-- **Component keys** as created above.
-- Optionally create the **"🧠 Agent memory"** issue and/or point `registry.bindingPath` at the team decision registry.
-- Write **`.claude/sdlc.config.json`** (schema in `SKILL.md`) with the resolved values.
-
-## 6. Smoke test
-
-Run **one trivial `risk:low` ticket** end to end (it skips Gate 2) to confirm statuses, transitions, labels, issue links, components, comments, and the PR→merge→Done handoff all work before onboarding real work.
-
-## Notes
-
-- **Entity properties** (the `agent-context` context-mémo, `decomposition.md`) are written via the Jira **REST** API, not the MCP. Confirm a token can `PUT /rest/api/3/issue/{KEY}/properties/agent-context`; else use the fallback defined in `SKILL.md` § Notes (an `<!-- sdlc:context -->` block at the end of the description) until that access exists.
-- **Estimation scope:** Story Points (ticket size) are in V0. Dev cost/token estimation to help sales is **out of V0** — hard to calibrate before the pipeline has run; revisit once metrics accumulate.
+Run **one trivial `risk:low` ticket** end to end (it skips Gate 2) to confirm statuses, transitions,
+labels, `blocked-by` links, comments, the transition log, and the PR → merge → Done handoff all work
+before onboarding real work.
