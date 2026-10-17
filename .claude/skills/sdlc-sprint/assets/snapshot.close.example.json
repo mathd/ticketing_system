@@ -1,0 +1,57 @@
+{
+  "vault": "demo",
+  "sprint": {
+    "key": "S-3",
+    "name": "Invitations",
+    "goal": "Invite and revoke users",
+    "state": "active",
+    "startDate": "2026-10-19T09:00:00-04:00",
+    "endDate": "2026-10-30T17:00:00-04:00",
+    "startScope": ["DEMO-1", "DEMO-2", "DEMO-3"],
+    "endScope": null
+  },
+  "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
+  "observedAt": "2026-10-30T16:30:00-04:00",
+  "membershipComplete": true,
+  "unreadable": [],
+  "historyGaps": [],
+  "members": [
+    {"key": "DEMO-1", "status": "Done", "blocked": false},
+    {"key": "DEMO-2", "status": "Done", "blocked": false},
+    {"key": "DEMO-3", "status": "Done", "blocked": false}
+  ],
+  "brief": {
+    "digest": "43b4d29806dd12d299e7e8d85905b51daa8db65be69ad522373cfafa38969ad2",
+    "sprint": "S-3",
+    "release": true,
+    "closureTask": "DEMO-3",
+    "members": ["DEMO-1", "DEMO-2", "DEMO-3"],
+    "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
+    "approvedBy": "Fictional Human"
+  },
+  "closeApproval": {
+    "digest": "2bfcd6d03beb9b287c1745247f932133dd23a9d71932e8112e5b9bb08b5e6abe",
+    "sprint": "S-3",
+    "briefDigest": "43b4d29806dd12d299e7e8d85905b51daa8db65be69ad522373cfafa38969ad2",
+    "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
+    "closeSprint": true,
+    "approvedBy": "Fictional Human",
+    "approvedAt": "2026-10-30T15:00:00-04:00",
+    "candidate": "f1e2d3c4b5a6978877665544332211ffeeddccbb",
+    "reportDigest": "2f5737a703578238b9c6ff975d883110356d3825ed58e66eb950c3334ab528dd",
+    "tag": "v1.4.0"
+  },
+  "release": {
+    "ready": true,
+    "candidate": "f1e2d3c4b5a6978877665544332211ffeeddccbb",
+    "reportDigest": "2f5737a703578238b9c6ff975d883110356d3825ed58e66eb950c3334ab528dd",
+    "tag": "v1.4.0",
+    "tagObject": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+    "publication": {
+      "verified": true,
+      "candidate": "f1e2d3c4b5a6978877665544332211ffeeddccbb",
+      "tag": "v1.4.0",
+      "tagObject": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    }
+  }
+}

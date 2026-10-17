@@ -1,18 +1,22 @@
 # Independent reviews — rounds, cap, refutations
 
-Read this before any `agent:plan-review` or `agent:ai-review` work. It is the single source for
-review mechanics: round structure, when a round repeats, the cap, refutations and the round
-record. *Who* reviews is `config.models` (SKILL.md § config.models); *how* to call the model is the
-runner doc. Triage vocabulary and the review-guide are in `quality-practices.md` §2–3.
+Read this before any `agent:plan-review` or `agent:ai-review` work, and before any `sprint-review`
+round (the `sdlc-sprint-review` skill). It is the single source for review mechanics: round
+structure, when a round repeats, the cap, refutations and the round record. *Who* reviews is
+`config.models` (SKILL.md § config.models); *how* to call the model is the runner doc. Triage
+vocabulary and the review-guide are in `quality-practices.md` §2–3.
 
-Adopted from the py-moov sdlc-ticket review procedure (2026-10-16). It replaces the former
+Adopted from the upstream sdlc-ticket review procedure (2026-10-16). It replaces the former
 "second pass iff the fixes were non-trivial" rule, the churn cap, the convergence exception and the
-docs-only merge-at-cap carve-out.
+docs-only merge-at-cap carve-out. The `sprint-review` stage was added on 2026-10-17 (§ Sprint
+review).
 
 ## Inputs and identity
 
 The reviewer's model must differ from **every** author of the artifact: the plan drafter for
-`plan-review`; the implementer, and the author of every fix, for `ai-review`. When you fixed
+`plan-review`; the implementer, and the author of every fix, for `ai-review`; the implementer and
+the fix authors of every member ticket, the implementer of the closure task and the report author
+for `sprint-review`. When you fixed
 findings yourself, you are an author too — `main-agent` and a named model can be the same model
 (SKILL.md § config.models). Different runner names, providers or effort settings do not prove
 independence.
@@ -23,6 +27,9 @@ The **initial** lens never sees author rationale:
   COS and the verification facts. No plan, no decision log.
 - `plan-review`: the proposed steps, scope, test strategy and COS. Withhold the rationale and the
   decision-log sections.
+- `sprint-review`: the frozen release packet: the release criteria, the scope, the complete diff from
+  the base to the candidate, the relevant code and the verification facts. No brief, no story plans,
+  no decision logs.
 
 Prime it for guilt: "assume the artifact is wrong and find where", not "check whether it is ok".
 
@@ -31,7 +38,9 @@ Prime it for guilt: "assume the artifact is wrong and find where", not "check wh
 1. **Freeze and identify the artifact.** `ai-review`: `base:<sha>/head:<sha>`. `plan-review`:
    `<TICKET-KEY>:plan:sha256:<digest>`, where the digest is the SHA-256 of the complete plan text
    you give the reviewer (draft with every amendment applied — `plan-final` stays a delta in the
-   thread, but the reviewer gets the whole plan). Board comments carry no ID, so the digest is the
+   thread, but the reviewer gets the whole plan). `sprint-review`: `<SPRINT-KEY>:packet:sha256:<digest>`,
+   where the digest is the SHA-256 of the body of the packet record (`stage=sprint-review
+   kind=summary`) as the board returns it. Board comments carry no ID, so the digest is the
    identity; quote it in the stage comment. Record the actual author models.
 2. **Initial inspection** in a fresh reviewer context — a new runner call, never a continued
    thread, so an earlier audit's rationale does not carry over. Require a complete result
@@ -40,7 +49,9 @@ Prime it for guilt: "assume the artifact is wrong and find where", not "check wh
    applicable, every `kind=decision` comment, the initial findings and the verification evidence.
    It checks plan compliance, unsupported choices, omitted material decisions, and invalidated
    decisions with no superseding entry (`quality-practices.md` §2). For `plan-review`, it audits
-   the draft against the governing ADRs and the shaping decisions. **Do not fix between the two
+   the draft against the governing ADRs and the shaping decisions, and in the last round also the
+   plan recap (`plan-recap.md`): it must state the plan faithfully, keep every COS and add
+   nothing. **Do not fix between the two
    lenses**; if the artifact changes, discard the incomplete round and review the new artifact.
 4. **Validate both results, merge duplicate defects, triage every finding** against the reviewed
    revision (SKILL.md § Hard rules — verify against the revision under review). Keep the original
@@ -70,6 +81,7 @@ substitution. Research calls (§ Researcher) are not rounds.
 |---|---|
 | `plan-review` | Critical, High, Medium |
 | `ai-review` | Critical, High |
+| `sprint-review` | Critical, High |
 
 Use the original normalized severity, never an author's reclassification. Findings below the
 threshold still need a disposition and verification; their fixes are handed off **not re-reviewed**,
@@ -87,10 +99,16 @@ comments — A/B arms post one record each for the same round, and a record re-p
 reuses its round number. A new session, a rebase, a reviewer retry, a renamed
 PR or a model failure never resets it.
 
+`sprint-review` has one budget of four rounds **per sprint**, not per ticket. The count is the
+number of distinct `round` values among the `stage=sprint-review kind=review` records on the sprint
+note, over all four areas. One round holds the four area pairs. So an area cannot use a round that
+the other areas do not use, and a change of area never resets the count.
+
 When round four still requires another review, the contract returns `STOP`: list the unresolved
 findings and every unreviewed fix in a `kind=blocker` comment, keep the current `agent:*` label and
 stop. **Only the human can authorize more rounds**, in a comment that names the stage and the new
-limit; pass it with `--authorized-through N --authorization <comment ref>`. In `gates: "autonomous"`
+limit; pass it with `--authorized-through N --authorization <comment ref>` (for a sprint, the key of
+the note and the digest of the comment body). In `gates: "autonomous"`
 this is a STOP condition (SKILL.md § Autonomous mode) — the agent never authorizes extra rounds for
 itself, and silence or a timeout is not authorization.
 
@@ -154,6 +172,10 @@ severities are `Critical`, `High`, `Medium`, `Low`, `Nit`; other labels map thro
 assumption. Finding IDs are unique across both lenses; the audit references a duplicate rather than
 repeating its ID.
 
+A `sprint-review` result also carries `area` (`implementation`, `verification`, `documentation` or
+`retrospective`), and so does its record. Prefix finding IDs with the area (`IMPL-1`, `VER-1`,
+`DOC-1`, `RETRO-1`).
+
 `APPROVE` cannot carry a Critical, High or Medium finding. `BLOCKED` always stops. An empty or
 truncated result, a wrong revision or a missing verdict is a failed invocation, whatever the exit
 status (the runner docs' "completed ≠ ran").
@@ -161,22 +183,27 @@ status (the runner docs' "completed ≠ ran").
 ## Round record
 
 Assemble it after both lenses, shaped like `assets/review-round.example.json`: `stage`, `round`,
-`artifact`, `reviewer`, optional `researcher`, optional `arm` (A/B only), `results` (the two lens objects, in order),
+`area` (`sprint-review` only), `artifact`, `reviewer`, optional `researcher`, optional `arm` (A/B only), `results` (the two lens objects, in order),
 `dispositions` (`fixed` | `rejected` | `deferred` per finding ID), `dispositionEvidence` (fix SHA and
 verification, refutation evidence, or follow-up ticket and scope reason), `verificationPassed`,
 `materialChange`, `refutationChecks`. Carry still-unresolved findings from earlier rounds into the
 new results; a new round cannot hide them by omission.
 
-Post it as `<!-- sdlc:stage=<plan-review|ai-review> kind=review -->` with the record in a JSON code
-block, then run, from the repository root (comments are append-only: after a `FIX`, post the
-completed record again with the **same** `round` — for one stage, round and arm, the latest record
-is the one that counts):
+Post it as `<!-- sdlc:stage=<plan-review|ai-review|sprint-review> kind=review -->` with the record
+in a JSON code block (a `sprint-review` record goes on the sprint note, the others on the ticket),
+then run, from the repository root (comments are append-only: after a `FIX`, post the completed
+record again with the **same** `round` — for one stage, round and arm (or area), the latest record is
+the one that counts):
 
 ```sh
 python3 .claude/skills/sdlc-ticket/scripts/review_round.py review .review-<ticket>-<stage>-r<n>.json \
   --config .claude/sdlc.config.json --artifact <expected artifact> \
-  --reviewer <actual reviewer model> --author <actual author> [--author <another author>]
+  --reviewer <actual reviewer model> --author <actual author> [--author <another author>] \
+  [--area <implementation|verification|documentation|retrospective>]
 ```
+
+`--area` is required for a `sprint-review` record. It must equal the `area` on the record and on both
+lens results.
 
 Write the record with the Write tool to `.review-<ticket>-<stage>-r<round>.json` in the worktree
 root — `.gitignore` covers `.review-*.json` — and delete it after the comment is posted. The expected
@@ -193,12 +220,52 @@ T3 result), never from the returned result. Read the output, not just the exit c
 
 Never retry a valid `FIX`, `REVIEW_AGAIN` or `STOP` as if the script had crashed.
 
+## Sprint review — four areas, one round
+
+`sprint-review` validates a whole release. The `sdlc-sprint-review` skill owns the missions of the
+four areas, the packet and the report. This section holds the review contract.
+
+- **One round is four area pairs.** Each of `implementation`, `verification`, `documentation` and
+  `retrospective` runs its own initial inspection and decision audit on the **same** frozen packet.
+  All four share one `round` number and one packet identity. The reviewer may be the same model for
+  several areas, each in its own context.
+- **One record per area.** Check each one:
+
+  ```sh
+  python3 .claude/skills/sdlc-ticket/scripts/review_round.py review .review-S-3-sprint-review-r1-implementation.json \
+    --config .claude/sdlc.config.json --artifact <packet identity> --reviewer <actual model> \
+    --author <actual author> --area implementation
+  ```
+
+- **One aggregate.** Save the four records of the round as one JSON array, shaped like
+  `assets/sprint-round.example.json`. Then run:
+
+  ```sh
+  python3 .claude/skills/sdlc-ticket/scripts/review_round.py sprint-round .review-S-3-sprint-review-r1.json \
+    --config .claude/sdlc.config.json --artifact <packet identity> \
+    --reviewer implementation=<model> --reviewer verification=<model> \
+    --reviewer documentation=<model> --reviewer retrospective=<model> \
+    --author <actual author> [--author <another author>]
+  ```
+
+  Repeat `--author` for every author of the code, of the packet and of the report. Take the expected
+  values from the frozen packet and from the runners' own records, never from a returned result. The
+  command needs exactly four areas, one round, one packet, a complete pair for each area and a
+  reviewer that is not an author. It returns the most restrictive decision of the four: `STOP`, then
+  `FIX`, then `REVIEW_AGAIN`, then `HUMAN_REVIEW`. Exit 0 allows the hand-off checks only. Extra rounds
+  use `--authorized-through` and `--authorization` as `review` does.
+- **One shared cap.** The sprint has four rounds in all (§ Cap). `STOP` at round four blocks the
+  sprint's closure until the human authorizes more rounds.
+- **A failed or missing area blocks the hand-off.** A `FAIL:` is a tool error, not a verdict. An area
+  that did not run is not an approval.
+
 ## A/B review arms
 
 When `aiReview` is an array (`ab-stages.md`), every arm runs round 1 on the same frozen artifact,
 each with its own initial and audit lens and its own round record (an `arm` field naming the arm's model, finding IDs prefixed by arm). All arms' records carry `round: 1` and consume one round. The
 stage acts on the most restrictive output across arms: `STOP` before `FIX` before `REVIEW_AGAIN`
-before `HUMAN_REVIEW`. Rounds 2 and later run on the first array element only.
+before `HUMAN_REVIEW`. Rounds 2 and later run on the first array element only. A/B arms do not apply to `sprint-review`:
+`models.sprintReview` is one value, or one value for each area.
 
 ## Validating this procedure
 

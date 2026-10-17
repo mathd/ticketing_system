@@ -89,10 +89,12 @@ Read the relevant file **before** executing the step — don't improvise the how
 | `references/exploration.md` | Intake is a raw idea, not a spec — coached brainstorm / brief / PRFAQ → brief in the epic |
 | `references/shaping.md` | Ticket in Backlog needs preparing for Gate 1 — the 8-item DoR (`readiness`, incl. the context-mémo bake), spikes, human decisions |
 | `references/quality-practices.md` | Pre-mortem on plans (Planning), findings triage + review-guide hand-off (Building), correct-course when a human pushes back |
+| `references/plan-recap.md` | **Planning, before the last plan-review audit** — the one-minute plan page for the human (`kind=plan-recap`, shown in the board's Plan tab): format, when to post and refresh it |
 | `references/reviews.md` | **Before any `plan-review` or `ai-review` work** — round structure (initial inspection + decision audit), stage repeat policy, four-round cap, refutation checks, researcher, round record + `scripts/review_round.py` |
 | `references/t3-runner.md` | **The session runs in T3 Code and a stage resolves to anything but `main-agent`** — `delegate_task` target, explicit effort, read-only caveat, output checks, escalation |
 | `references/codex-runner.md` | **A stage resolves to a `gpt-*` model outside T3** — `/codex:rescue`, brief files, job-record check, judging output, escalation ladder |
 | `references/ab-stages.md` | **`plan` or `aiReview` is an array** — parallel arms on the same input: finding-tally scoring (aiReview), anonymized human selection (plan), logging |
+| `references/sprints.md` | **`GET /board` shows `sprintMode: true`, or the ticket has a `sprint`, or it is a sprint closure task** — the claim rule, the member rules and the hand-off to `sdlc-sprint` and `sdlc-sprint-review` |
 | `references/local-tracker.md` | **Before the first board read or write of a run** — endpoints, `_rev` compare-and-swap, creating tickets (`POST /ticket/new`), comments, links, authoring note fields, movement |
 
 ## Before you start
@@ -117,15 +119,18 @@ Project-specific bindings live in **`.claude/sdlc.config.json`** in the code rep
                   "gateVerdict": "<optional: path the gate writes its own verdict to; omit if it doesn't>" },
   "models":     { "plan": "main-agent", "planReview": "gpt-6.1-sol",
                   "implement": "main-agent", "aiReview": "gpt-6.1-sol",
+                  "sprintReview": "<optional: a model value, or an object that maps the four sprint review areas to model values — absent: aiReview>",
                   "research": "<optional: cheaper model for reviewer lookups — references/reviews.md § Researcher>" },
   "review":     { "severityMap": { "P0": "Critical", "P1": "High", "P2": "Medium", "P3": "Low", "P4": "Nit" } },
-  "registry":   { "bindingPath": "docs/adr/", "referenceLocation": "local" }
+  "registry":   { "bindingPath": "docs/adr/", "referenceLocation": "local" },
+  "sprints":    { "vault": "<optional: board vault name for the sprint routes>",
+                  "reportLanguage": "fr | en (default en)" }
 }
 ```
 
 ### `config.models` — who does each stage
 
-Four stages are model-assignable, plus the optional `research` helper for the two review stages (a single value; an array is a config error; mechanics in `references/reviews.md` § Researcher). **The config declares it; the agent never infers it.** Read the value, resolve it via the table, run it. Never detect which model is driving the session and branch on it — a different planner is a config edit, not a runtime decision. This routing is **the single source**: the transition steps below say *what* each stage does; *who runs it and how* is always this table.
+Four stages are model-assignable, plus the optional `research` helper for the review stages (a single value; an array is a config error; mechanics in `references/reviews.md` § Researcher) and the optional `sprintReview` key (below). **The config declares it; the agent never infers it.** Read the value, resolve it via the table, run it. Never detect which model is driving the session and branch on it — a different planner is a config edit, not a runtime decision. This routing is **the single source**: the transition steps below say *what* each stage does; *who runs it and how* is always this table.
 
 **The config picks the model; the environment picks the runner.** If the session runs in T3 Code
 (the `delegate_task` tool is available), run every delegated stage — Claude models included — through
@@ -149,9 +154,13 @@ and the runner always passes it explicitly: a runner default can be lower (T3 de
 `gpt-6.1-sol` to `low`). **Exception:** `gemini-*` carries its effort in the id
 (`-low`/`-medium`/`-high`), so an `:effort` suffix there is a config error.
 
+**`config.models.sprintReview` (optional).** It names the reviewer of each area of the `sprint-review` stage (`references/reviews.md` § Sprint review, `sdlc-sprint-review`). It is one model value, or an object that maps `implementation`, `verification`, `documentation` and `retrospective` to one model value each. Each value follows the table above, `:effort` suffix included. An array is a config error: stop and report. When the key is absent, every area uses `models.aiReview`. If `aiReview` is an array and `sprintReview` is absent, the sprint stage stops until you set `sprintReview`.
+
+**`config.sprints` (optional).** Only the two sprint skills read it. `vault` is the board vault name that they put on every sprint route (`sdlc-sprint/references/board.md`). `reportLanguage` is `fr` or `en`, and the default is `en`.
+
 **You are always the orchestrator.** Whatever `config.models` says, *you* read the ticket, brief the worker, **talk to the human**, revise, post every comment, and own the outcome. These keys assign **who does the thinking for a stage** — never who drives the board or holds the conversation. A delegated worker **cannot ask the human anything**: one brief in, one answer out. Any step needing a human decision (grilling on open decisions, a gate hand-off) is **yours**, in this session.
 
-**⛔ The reviewer must never be the author.** Cross-model review is the pipeline's load-bearing invariant, constraining **two pairs**: `plan` ≠ `planReview` and `implement` ≠ `aiReview`. Check both when you read the config; if either matches, **stop and report** — don't run a degraded flow. A model reviewing its own output re-confirms rather than falsifies. Note `main-agent` and a named Claude model can *collide*: if the session model is the named one, that's the same violation wearing two labels. When unsure, ask. The reviewer must also differ from the author of every **fix** it re-reviews — if you fixed findings yourself, you are an author of the next round's artifact. `research` is exempt: it returns evidence, never a verdict, so it may share a model with an author.
+**⛔ The reviewer must never be the author.** Cross-model review is the pipeline's load-bearing invariant, constraining **two pairs**: `plan` ≠ `planReview` and `implement` ≠ `aiReview`. Check both when you read the config; if either matches, **stop and report** — don't run a degraded flow. The optional sprint stage adds a third pair, which the sprint skills check at run time: each area's `sprintReview` model differs from every author of the release and from the report author (`references/sprints.md`). A model reviewing its own output re-confirms rather than falsifies. Note `main-agent` and a named Claude model can *collide*: if the session model is the named one, that's the same violation wearing two labels. When unsure, ask. The reviewer must also differ from the author of every **fix** it re-reviews — if you fixed findings yourself, you are an author of the next round's artifact. `research` is exempt: it returns evidence, never a verdict, so it may share a model with an author.
 
 Swapping `plan` ↔ `planReview` is how the "Codex drafts, main agent reviews" variant is expressed — a config flip, not a fork of this skill. **Cross-model review is a prerequisite, not an option:** if an environment forbids sending code to an external model, this SDLC doesn't apply there — don't build a degraded variant.
 
@@ -172,6 +181,7 @@ Swapping `plan` ↔ `planReview` is how the "Codex drafts, main agent reviews" v
 - **`risk:low` is challengeable.** The claim comment must restate *why* the risk is low. If the work turns out to touch auth, data migrations, CI/deploy config, or >5 files, drop the label (say so in a comment) — the plan gate comes back. A mislabeled ticket must never bypass human judgment silently.
 - **`risk:low` is about BLAST RADIUS, not difficulty — and the two come apart.** The carve-outs above all ask *"what breaks if this is wrong?"*, so a ticket can pass every one of them and still have a hard, **wrong-by-default** design. Keep the plan gate when the ticket's central question is a design question with a non-obvious answer — above all **"how do I construct a test that can actually fail?"**, which is the shape that recurs here. TKT-266 was tests-only, two files, zero production code, and correctly `risk:low` by blast radius; it then spent three build cycles on fixture design, because both obvious fixtures were unfalsifiable for structural reasons (an FK-to-PK join yields *zero rows*, not a wrong one; a multi-valued mutation returns the right row *beside* the wrong one). Each was rejected only by running a mutation. A plan critique costs one delegated read and catches that class cheaply — which is exactly what the plan gate is for, and skipping it bought nothing.
 - **Never claim a ticket with open blockers**, even if a human moved it to `Ready` — the status is priority, not feasibility. Surface the conflict instead (`references/decomposition.md` covers links).
+- **In sprint mode, claim only from the active sprint.** When `GET /board` reports `sprintMode: true`, claim only a `Ready` ticket whose `sprint` is the key of the active sprint. With no active sprint, claim nothing and report that. Membership never waives a gate. Starting and closing a sprint are human requests (`references/sprints.md`).
 - **The ticket's comment thread is the memory.** Every `agent:*` stage ends with a marker-tagged comment (`<!-- sdlc:stage=… kind=… -->` on line 1) *before* the label moves; every stage and every resume starts by reading the board + thread, not conversation memory. Comments without a marker are human steering — incorporate and acknowledge them.
 - Per-stage durations come from the vault's **transition log** (`_log/transitions.md`, served as `GET /metrics?key=K`), never hand-tracked.
 
@@ -240,6 +250,7 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 
 # 2 Queue + claim
 #   Verify zero open blockers (GET /ticket?key=K → every `blocked-by` link's ticket is Done).
+#   Sprint mode on (`GET /board` → `sprintMode: true`)? Claim only a member of the active sprint (§ Labels).
 #   POST assignee=self (no pipeline label yet — the first one is set in step 3).
 #   Code repo:  git fetch && git switch -c <TICKET-KEY>-<slug> origin/main
 #   POST comment <!-- sdlc:stage=ready kind=claim --> + selection reason
@@ -313,6 +324,11 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 #      REQUIRED SECTION — `Review rounds: <n> of 4; final contract output: HUMAN_REVIEW`.
 #      REQUIRED SECTION — `Decision log: <IDs>` or `Decision log: none`. Confirm the listed
 #      entries cover every material choice introduced while drafting or revising the plan.
+#      With it, post <!-- sdlc:stage=planning kind=plan-recap --> (references/plan-recap.md): the
+#      complete plan in plain language, written by config.models.plan and checked by
+#      config.models.planReview (never by its author): audited in the last round — or, when that
+#      round's fixes changed what it says, rewritten and fidelity-checked (plan-recap.md step 2). It is what the
+#      human reads at Gate 2, in the board's Plan tab.
 #   If risk:low → skip to step 4.
 #   POST labels -agent:plan-review +needs:human
 #   ⛔ GATE 2 — wait for the human to transition Planning → Building.
@@ -385,7 +401,8 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 
 # 5 PO validation (board)
 #   needs:human stays set (ball is with the PO).
-#   POST comment <!-- sdlc:stage=po-review kind=summary --> validation note (what to check, preview/deploy link).
+#   POST comment <!-- sdlc:stage=po-review kind=summary --> validation note (what to check, preview/deploy link),
+#   answering the current plan recap's "Done when" list item by item.
 #   ⛔ GATE 4 — the PO functionally validates and transitions PO Review → Done.
 #     Changes requested? swap needs:human back to agent:coding, fix in the PR (re-open if needed), re-green.
 
@@ -400,7 +417,7 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 
 ## Memory & metrics
 
-- **Thread = memory.** Markers on line 1: `<!-- sdlc:stage=<backlog|ready|planning|plan-review|coding|ai-review|po-review|done> kind=<claim|plan|plan-final|decision|review|summary|blocker|metrics|readiness> -->`. `kind=review` is one review round record (`references/reviews.md` § Round record); the round count per stage is the number of **distinct `round` numbers** among them, not the number of comments (A/B arms and re-posted records share a round). The `review-guide` lives on the **PR**, not the board. Resume = read the board status + label + the latest of each marker kind + every `kind=decision` and `kind=review` comment + any human comment after the last agent comment.
+- **Thread = memory.** Markers on line 1: `<!-- sdlc:stage=<backlog|ready|planning|plan-review|coding|ai-review|po-review|done> kind=<claim|plan|plan-final|plan-recap|decision|review|summary|blocker|metrics|readiness> -->`. `kind=plan-recap` is the human-readable current plan (`references/plan-recap.md`); the newest one is current. `kind=review` is one review round record (`references/reviews.md` § Round record); the round count per stage is the number of **distinct `round` numbers** among them, not the number of comments (A/B arms and re-posted records share a round). The `review-guide` lives on the **PR**, not the board. Resume = read the board status + label + the latest of each marker kind + every `kind=decision` and `kind=review` comment + any human comment after the last agent comment. Sprint comments live on the sprint note and use `stage=sprint` and `stage=sprint-review` (`sdlc-sprint/references/records.md`).
 - **Cross-ticket memory.** Reusable learnings (codebase patterns, gotchas) go to `docs/learnings/` with a one-line entry in `docs/LEARNINGS.md`. When a pattern proves out, promote it per the **"3 houses" rule** (`references/setup.md`): **technical** decisions → an ADR in `registry.bindingPath`, **process** rules → `AGENTS.md` or this skill (internal maintenance, direct commit), **product** definition → `docs/product/`. Working memory ≠ gospel.
 - **Promotion is a mandatory Done step, not best-effort.** The `kind=metrics` closing comment must include a `learnings:` section — either concrete promotable items (each with its target house) or the explicit word `none`. Skipping it is the registry cold-start failure mode.
 - **Metrics.** Durations from the vault's transition log (`GET /metrics?key=K`); `needs:human` time-in-state is the Gate 2 / Gate 3 human wait — a first-class metric, the likely bottleneck. Diff size from `gh pr view`. The `kind=metrics` comment has **required fields** — a table `stage | duration` (one row per status + per `agent:*` label), `human-wait total`, `diff: +x/−y (n files)`, the `learnings:` section, and a `retro:` section. All five, every ticket; missing data is written `n/a`, not omitted.

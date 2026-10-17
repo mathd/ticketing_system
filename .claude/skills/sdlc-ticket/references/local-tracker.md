@@ -39,6 +39,12 @@ server) · `POST /archive` (move Done tickets to `archive/`; `?before=YYYY-MM-DD
 
 All routes take an optional `?vault=<name>`; omit it for the default vault.
 
+A vault in sprint mode has more routes: `GET /sprints`, `GET /sprint?key=`, `POST /sprint/new`,
+`POST /sprint`, `POST /sprint/start`, `POST /sprint/close`, `POST /ticket/sprint` and
+`GET /metrics?sprint=`. `GET /board` then also returns `sprintMode` and the list of sprints, and each
+ticket carries `sprint`. Sprint routes need `?vault=`. Their mechanics are in
+`.claude/skills/sdlc-sprint/references/board.md`.
+
 **Optimistic concurrency — `_rev` is the status you are moving FROM.** It is no longer a content
 hash. The server re-reads the note, checks that field still holds `_rev`, and writes; it answers
 **409** with both values if someone moved the ticket first — re-fetch `/board`, re-apply, retry.
@@ -99,12 +105,13 @@ Every board operation the pipeline uses, and how to do it:
 
 | Operation | How |
 |---|---|
-| Create a ticket | **`POST /ticket/new`** with `summary` (required), `role` (required), and any of `type` (default `Story`), `description`, `parent`, `labels`, `links`, `readiness`, `context`, `model`, `effort`, `prefix`. The server allocates the key under its write lock from `tickets/` **and** `archive/`, starts the ticket in the first status, logs a `created` line, and answers `201 {key, path, status}`. Use the returned key. Never pick `max key + 1` yourself and `put_note` it — that was last-writer-wins and could overwrite a live ticket (the server's `_create_ticket` docstring). `POST /ticket` refuses a key that does not exist. |
+| Create a ticket | **`POST /ticket/new`** with `summary` (required), `role` (required), and any of `type` (default `Story`), `description`, `parent`, `labels`, `links`, `readiness`, `context`, `model`, `effort`, `prefix`. The server allocates the key under its write lock from `tickets/` **and** `archive/`, starts the ticket in the first status, logs a `created` line, and answers `201 {key, path, status}`. Use the returned key. Never pick `max key + 1` yourself and `put_note` it — that was last-writer-wins and could overwrite a live ticket (the server's `_create_ticket` docstring). `POST /ticket` refuses a key that does not exist. In a sprint vault, a body that carries `sprint` is refused: assign the sprint afterwards (sprint row below). |
 | Read a ticket | `GET /ticket?key=K` (or the ticket in `GET /board`); `GET /history?key=K` for its transitions |
 | Set labels / assignee / `pr` | POST `{key, _rev, status, role, labels}` (keep the one-pipeline-label invariant) |
 | Transition | POST `{key, _rev:<current status>, status:<new>, role, model, effort}` |
 | Comment | POST `{key, _rev, status, role, comments:[{stage,kind,body}]}` (append-only, merged by identity) |
 | Close an epic | See § Epics |
+| Sprint state, membership, start, close | The `sdlc-sprint` skill (`references/board.md`). `?vault=` on every route. `_rev` is the sprint's `rev`, not a status. `role` on every write. `POST /ticket` ignores `sprint`. The claim rule is in `sprints.md` |
 | Dependency | On the **blocked** ticket: `links: [{type:"blocked-by", key:"<blocker>"}]`. The board and its Gate 1 check read only `blocked-by` (`workflow.py`, `board.html`); a `blocks` link on the blocker is invisible to them. Authored in the note (below), not a board write |
 | Context-mémo, `readiness`, description | A `context` / `readiness` object or the body on the note — authored in the note (below), not a board write |
 | git / gh | **real** — branch, PR, review (set `pr` on the ticket). In pure demo runs, simulate and narrate |
@@ -165,10 +172,12 @@ checks:
 2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
    `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
+   In sprint mode, claim only a member of the active sprint (`sprints.md`).
 4. **Planning** — `kind=plan` (drafted by `config.models.plan`) + append-only `kind=decision`
    entries → `agent:plan-review` (review rounds per `reviews.md`: blind plan critique, then plan +
    decision-log audit by `config.models.planReview`, one `kind=review` comment per round) →
-   `kind=plan-final` with the decision IDs → `needs:human` (skip if `risk:low`).
+   `kind=plan-final` with the decision IDs + `kind=plan-recap` (`plan-recap.md`; the board's
+   Plan tab shows the newest) → `needs:human` (skip if `risk:low`).
 5. ⛔ Gate 2 — human approves → `Building`, swap to `agent:coding`.
 6. **Building** — TDD + append-only `kind=decision` entries, PR open (`pr` field) →
    `agent:ai-review` (review rounds per `reviews.md`: blind diff review, then approved-plan +
@@ -186,6 +195,8 @@ checks:
 
 ## Rules
 - The invariants of SKILL.md § Labels: one pipeline label in flight, stop at `needs:human`, thread = memory.
+- In sprint mode (`GET /board` → `sprintMode: true`), claim only from the active sprint
+  (`sprints.md`). Never send a `sprint` field on a ticket write.
 - `kind=decision` comments are the ticket's shaping, planning and development decision logs. The
   board shows their phase counts on cards and renders the full log in the ticket's Decisions tab.
 - State lives in the vault. Never write ticket state into a feature branch, a PR, or the

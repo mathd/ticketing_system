@@ -23,5 +23,9 @@
   "registry": {
     "bindingPath": "docs/adr/",
     "referenceLocation": "local"
+  },
+  "sprints": {
+    "vault": "sdlc",
+    "reportLanguage": "en"
   }
 }

@@ -1,8 +1,13 @@
 """Decide the next action for one completed review round.
 
-Ported from the py-moov sdlc-ticket `contracts.py review` command. It reads a
+Ported from the upstream sdlc-ticket `contracts.py` review commands. It reads a
 round record and the project config. It does not call a tracker, a model or git.
 See references/reviews.md for the procedure that produces the record.
+
+Commands:
+    review        decide the next action for one record (one lens pair)
+    sprint-round  decide the next action for one sprint round: the four area
+                  records of one `sprint-review` round, taken together
 """
 
 from __future__ import annotations
@@ -16,7 +21,8 @@ SEVERITIES = {"Critical", "High", "Medium", "Low", "Nit"}
 MAX_REVIEW_ROUNDS = 4
 MATERIAL_SEVERITIES = {"Critical", "High", "Medium"}
 REPEAT_SEVERITIES = {"Critical", "High"}
-STAGES = {"plan-review", "ai-review"}
+STAGES = {"plan-review", "ai-review", "sprint-review"}
+SPRINT_AREAS = {"implementation", "verification", "documentation", "retrospective"}
 
 
 def require(condition: Any, message: str) -> None:
@@ -52,6 +58,9 @@ def review_action(
 ) -> str:
     """Return HUMAN_REVIEW, FIX, REVIEW_AGAIN or STOP for a round record.
 
+    A `sprint-review` record also names its `area` on the record and on both lens
+    results. It uses the same repeat threshold as `ai-review`.
+
     Raises:
         ValueError: the record is invalid or incomplete.
 
@@ -60,6 +69,8 @@ def review_action(
     require(record.get("stage") in STAGES, "invalid review stage")
     material_change = record.get("materialChange", False)
     require(type(material_change) is bool, "materialChange must be boolean")
+    if record["stage"] == "sprint-review":
+        require(record.get("area") in SPRINT_AREAS, "sprint review area required")
     number = record.get("round")
     require(
         type(authorized_through) is int
@@ -97,6 +108,10 @@ def review_action(
                 for k in ("artifact", "reviewer", "round", "stage")
             ),
             "review scope, identity, or revision mismatch",
+        )
+        require(
+            record["stage"] != "sprint-review" or output.get("area") == record["area"],
+            "sprint review area mismatch",
         )
         require(
             output.get("verdict") in {"APPROVE", "REVISE", "BLOCKED"},
@@ -175,9 +190,62 @@ def review_action(
     return "HUMAN_REVIEW"
 
 
+def sprint_round_action(
+    records: Any,
+    policy: dict[str, Any],
+    artifact: str,
+    reviewers: dict[str, str],
+    authors: list[str],
+    authorized_through: int = MAX_REVIEW_ROUNDS,
+) -> str:
+    """Validate all four independent area pairs of one sprint round.
+
+    Returns:
+        The most restrictive decision for the complete shared round, in the order
+        STOP, FIX, REVIEW_AGAIN, HUMAN_REVIEW.
+
+    """
+    require(
+        isinstance(records, list) and len(records) == len(SPRINT_AREAS),
+        "four sprint review records required",
+    )
+    require(set(reviewers) == SPRINT_AREAS, "four expected sprint reviewers required")
+    require(
+        all(isinstance(record, dict) for record in records),
+        "sprint records must be objects",
+    )
+    require(
+        {record.get("area") for record in records} == SPRINT_AREAS,
+        "missing or duplicate sprint area",
+    )
+    require(
+        len({record.get("round") for record in records}) == 1, "sprint round mismatch"
+    )
+    decisions = []
+    for record in records:
+        require(record.get("stage") == "sprint-review", "sprint review stage required")
+        area = record["area"]
+        validate_review_target(record, artifact, reviewers[area], authors, area)
+        decisions.append(review_action(record, policy, authorized_through))
+    return next(
+        decision
+        for decision in ("STOP", "FIX", "REVIEW_AGAIN", "HUMAN_REVIEW")
+        if decision in decisions
+    )
+
+
 def validate_review_target(
-    record: dict[str, Any], artifact: str, reviewer: str, authors: list[str]
+    record: dict[str, Any],
+    artifact: str,
+    reviewer: str,
+    authors: list[str],
+    area: str | None = None,
 ) -> None:
+    if record.get("stage") == "sprint-review":
+        require(
+            area in SPRINT_AREAS and record.get("area") == area,
+            "unexpected sprint review area",
+        )
     require(
         text(artifact) and record.get("artifact") == artifact,
         "unexpected review artifact",
@@ -206,22 +274,59 @@ def main() -> int:
     review.add_argument("--artifact", required=True)
     review.add_argument("--reviewer", required=True)
     review.add_argument("--author", required=True, action="append")
-    review.add_argument("--authorized-through", type=int, default=MAX_REVIEW_ROUNDS)
     review.add_argument(
-        "--authorization",
-        help="ticket comment holding the human's explicit authorization beyond round four",
+        "--area",
+        choices=sorted(SPRINT_AREAS),
+        help="required for a sprint-review record; the area the record must name",
     )
+    sprint_round = sub.add_parser("sprint-round")
+    sprint_round.add_argument("path", help="JSON array of the four area records")
+    sprint_round.add_argument("--config", required=True)
+    sprint_round.add_argument("--artifact", required=True)
+    sprint_round.add_argument(
+        "--reviewer",
+        required=True,
+        action="append",
+        help="AREA=actual-model-identity, once per area",
+    )
+    sprint_round.add_argument("--author", required=True, action="append")
+    for command in (review, sprint_round):
+        command.add_argument(
+            "--authorized-through", type=int, default=MAX_REVIEW_ROUNDS
+        )
+        command.add_argument(
+            "--authorization",
+            help="board comment holding the human's explicit authorization beyond round four",
+        )
     args = parser.parse_args()
     try:
         data = load(args.path)
-        validate_review_target(data, args.artifact, args.reviewer, args.author)
+        if args.action == "review":
+            validate_review_target(
+                data, args.artifact, args.reviewer, args.author, args.area
+            )
         require(
             args.authorized_through == MAX_REVIEW_ROUNDS or text(args.authorization),
             "human authorization reference required for extra rounds",
         )
-        action = review_action(
-            data, validate_policy(load(args.config)), args.authorized_through
-        )
+        policy = validate_policy(load(args.config))
+        if args.action == "review":
+            action = review_action(data, policy, args.authorized_through)
+        else:
+            pairs = [value.split("=", 1) for value in args.reviewer]
+            require(
+                len(pairs) == len(SPRINT_AREAS)
+                and all(len(pair) == 2 for pair in pairs),
+                "four AREA=reviewer bindings required",
+            )
+            action = sprint_round_action(
+                data,
+                policy,
+                args.artifact,
+                dict(pairs),
+                args.author,
+                args.authorized_through,
+            )
     except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
         print(f"FAIL: {exc}")
         return 1

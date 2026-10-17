@@ -1,0 +1,174 @@
+[
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "implementation",
+    "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+    "reviewer": "example-reviewer-a",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "implementation",
+        "lens": "initial",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-a",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The three stories share one token service. No duplicate mechanism and no cross-story defect found.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "implementation",
+        "lens": "audit",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-a",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The approved brief and the story decisions match the code. No omitted material decision.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {}
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "verification",
+    "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+    "reviewer": "example-reviewer-b",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "verification",
+        "lens": "initial",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-b",
+        "complete": true,
+        "verdict": "REVISE",
+        "summary": "The integration and end-to-end tests exercise the real database and the staging build.",
+        "findings": [
+          {
+            "id": "VER-1",
+            "severity": "Medium",
+            "evidence": "tests/e2e/test_invitation_journey.py:31 uses English fixtures only.",
+            "impact": "The French invitation path has no real-system evidence.",
+            "correction": "Switch the French locale off in the candidate and record the follow-up."
+          }
+        ],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "verification",
+        "lens": "audit",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-b",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The recorded run receipts match the candidate. The French fixtures are missing.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {
+      "VER-1": "fixed"
+    },
+    "dispositionEvidence": {
+      "VER-1": "Fixed at 5d4c3b2a1908f7e6d5c4b3a291807f6e5d4c3b2a; test_french_locale_is_off passes and fails when the switch is removed."
+    },
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {}
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "documentation",
+    "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+    "reviewer": "example-reviewer-b",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "documentation",
+        "lens": "initial",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-b",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The admin guide and the release notes match the delivered behavior.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "documentation",
+        "lens": "audit",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-b",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The report source matches the review results. One screenshot shows the old menu.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {}
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "retrospective",
+    "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+    "reviewer": "example-reviewer-a",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "retrospective",
+        "lens": "initial",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-a",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Cache invalidation came up late in three stories.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "retrospective",
+        "lens": "audit",
+        "artifact": "S-3:packet:sha256:368c13b0c93802a6fb37e9e9a9f4689e733fe60739971117ad41d53b4135f49c",
+        "reviewer": "example-reviewer-a",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "The pattern is supported by three closeouts. No ADR candidate.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {}
+  }
+]
