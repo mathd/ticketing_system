@@ -185,6 +185,10 @@ async function queueOneScan(value = 'offline-ticket') {
   fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value } })
   fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
   await screen.findByRole('heading', { name: 'Queued offline' })
+  // The result shows before submit has finished: it still refreshes the queue
+  // count, and the button reads "Checking…" until then. Wait for the scan to end,
+  // so the next step does not race it.
+  await screen.findByRole('button', { name: 'Check ticket' })
 }
 
 // The stored occurrence rows, read straight from IndexedDB — not through the app.

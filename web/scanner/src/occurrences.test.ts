@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   OccurrenceStoreBlockedError,
   OccurrenceStoreClosedError,
+  OccurrenceStoreOpenTimeoutError,
+  OPEN_TIMEOUT_MS,
   openOccurrenceStore,
   type OccurrenceStore,
+  type OpenTimer,
   type OccurrenceStoreOptions,
   type OwnerLiveness,
 } from './occurrences'
@@ -432,6 +435,52 @@ function allRows(db: IDBDatabase): Promise<Array<Record<string, unknown>>> {
   })
 }
 
+// The pre-TKT-399 code: version 2, the same stores, and no versionchange handler.
+function openOlderTab(dbName: string): Promise<IDBDatabase> {
+  return rawOpen(dbName, 2, (db) => {
+    db.createObjectStore('occurrences', { keyPath: 'occurrenceId' })
+    db.createObjectStore('revocations', { keyPath: 'ticketID' })
+    db.createObjectStore('revocation_meta', { keyPath: 'key' })
+  })
+}
+
+async function putLegacyRow(db: IDBDatabase): Promise<Record<string, unknown>> {
+  const legacy = {
+    occurrenceId: crypto.randomUUID(), qrPayload: 'legacy-qr', occurredAt: '2026-10-01T18:00:00Z',
+    state: 'QUEUED', actuated: false, createdAt: '2026-10-01T18:00:00Z',
+  }
+  const tx = db.transaction('occurrences', 'readwrite')
+  tx.objectStore('occurrences').put(legacy)
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+  return legacy
+}
+
+// The test decides when an open runs out of time. No clock is involved.
+function manualOpenTimer() {
+  const state = { started: 0, timer: (() => () => {}) as OpenTimer, fire: () => {} }
+  state.timer = (onTimeout) => {
+    state.started += 1
+    let cancelled = false
+    state.fire = () => { if (!cancelled) onTimeout() }
+    return () => { cancelled = true }
+  }
+  return state
+}
+
+// Says whether a promise has settled once every task queued so far has run.
+// It never waits for the promise itself, so a promise that hangs fails the
+// assertion instead of the test timing out.
+async function settledState(promise: Promise<unknown>): Promise<'pending' | 'resolved' | unknown> {
+  let state: unknown = 'pending'
+  promise.then(() => { state = 'resolved' }, (cause: unknown) => { state = cause })
+  const { setImmediate } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
+  for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+  return state
+}
+
 describe('version 3 barrier between scanner versions (TKT-399)', () => {
   // A tab still on the pre-TKT-399 code opens version 2 and has no versionchange
   // handler, so it never closes for an upgrade. It reconciles every QUEUED row
@@ -482,6 +531,83 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     if (later.kind !== 'opened') return
     expect(await allRows(later.db)).toEqual([legacy])
     later.db.close()
+  })
+
+  // IndexedDB keeps one queue of open requests for each origin, not for each tab.
+  // Tab A's open is reported blocked. Tab B's open waits in the queue behind it
+  // and gets no event of its own, and B cannot see what A knows. Only a time
+  // bound stops B from waiting until the older tab closes and then scanning late.
+  it('gives up on an open that waits behind another tab, and closes the connection it gets later', async () => {
+    const dbName = `queued-open-${crypto.randomUUID()}`
+    const olderTab = await openOlderTab(dbName)
+    const legacy = await putLegacyRow(olderTab)
+
+    // Two separate copies of the module are two tabs: each has its own state.
+    vi.resetModules()
+    const tabA = await import('./occurrences')
+    vi.resetModules()
+    const tabB = await import('./occurrences')
+    expect(tabB).not.toBe(tabA)
+    expect(tabB.OccurrenceStoreBlockedError).not.toBe(tabA.OccurrenceStoreBlockedError)
+
+    const timerA = manualOpenTimer()
+    expect(await settledState(tabA.openOccurrenceStore(dbName, { ownerLiveness, openTimer: timerA.timer })))
+      .toBeInstanceOf(tabA.OccurrenceStoreBlockedError)
+
+    const timerB = manualOpenTimer()
+    const openB = tabB.openOccurrenceStore(dbName, { ownerLiveness, openTimer: timerB.timer })
+    // B gets no blocked event, and does not know that A was blocked.
+    expect(await settledState(openB)).toBe('pending')
+    expect(timerB.started).toBe(1)
+
+    timerB.fire()
+    const outcome = await settledState(openB)
+    expect(outcome).toBeInstanceOf(tabB.OccurrenceStoreOpenTimeoutError)
+
+    // A retry in tab B refuses at once and sends no new open request.
+    const timerRetry = manualOpenTimer()
+    expect(await settledState(tabB.openOccurrenceStore(dbName, { ownerLiveness, openTimer: timerRetry.timer })))
+      .toBeInstanceOf(tabB.OccurrenceStoreOpenTimeoutError)
+    expect(timerRetry.started).toBe(0)
+
+    olderTab.close()
+    // This open queues behind A's and B's requests, so it succeeds after both.
+    const afterBoth = await rawOpen(dbName, 3)
+    expect(await allRows(afterBoth)).toEqual([legacy])
+    afterBoth.close()
+
+    // A and B closed the connections they got late, so a later version opens.
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind !== 'opened') return
+    expect(await allRows(later.db)).toEqual([legacy])
+    later.db.close()
+  })
+
+  it(`gives up on a waiting open after ${OPEN_TIMEOUT_MS} ms by default`, async () => {
+    const dbName = `default-bound-${crypto.randomUUID()}`
+    const olderTab = await openOlderTab(dbName)
+    const otherTab = indexedDB.open(dbName, 3)
+    await new Promise<void>((resolve) => { otherTab.onblocked = () => resolve() })
+    otherTab.onsuccess = () => otherTab.result.close()
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const waiting = openStore(dbName)
+      vi.advanceTimersByTime(OPEN_TIMEOUT_MS - 1)
+      expect(await settledState(waiting)).toBe('pending')
+      vi.advanceTimersByTime(1)
+      expect(await settledState(waiting)).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    olderTab.close()
+    const drained = await rawOpen(dbName, 3)
+    drained.close()
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind === 'opened') later.db.close()
   })
 
   it('closes itself when a later version opens, and then refuses every use', async () => {

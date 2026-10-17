@@ -71,6 +71,8 @@ export type OccurrenceStoreOptions = {
   pendingLeaseMs?: number
   now?: () => number
   ownerLiveness?: OwnerLiveness
+  /** Limits how long the database open may wait. Tests replace the clock. */
+  openTimer?: OpenTimer
 }
 
 /**
@@ -160,6 +162,14 @@ export class OccurrenceStoreBlockedError extends Error {
   }
 }
 
+/** The open did not succeed in time. The page does not know why. */
+export class OccurrenceStoreOpenTimeoutError extends Error {
+  constructor() {
+    super('the occurrence database did not open in time')
+    this.name = 'OccurrenceStoreOpenTimeoutError'
+  }
+}
+
 /** The store was closed, by this page or by a later version in another tab. */
 export class OccurrenceStoreClosedError extends Error {
   constructor() {
@@ -168,15 +178,41 @@ export class OccurrenceStoreClosedError extends Error {
   }
 }
 
-// Names of databases with an open request that was reported blocked and still
-// waits. A new open request would queue behind it without an event of its own.
-const blockedOpens = new Set<string>()
+// A healthy open takes milliseconds. Three seconds is far above that, and short
+// enough that the ticket holder is still at the gate when the scanner refuses.
+export const OPEN_TIMEOUT_MS = 3_000
 
-function openDatabase(dbName: string): Promise<IDBDatabase> {
-  if (blockedOpens.has(dbName)) return Promise.reject(new OccurrenceStoreBlockedError())
+/** Starts the time limit of one open and returns a function that stops it. */
+export type OpenTimer = (onTimeout: () => void) => () => void
+
+const defaultOpenTimer: OpenTimer = (onTimeout) => {
+  const timer = globalThis.setTimeout(onTimeout, OPEN_TIMEOUT_MS)
+  return () => globalThis.clearTimeout(timer)
+}
+
+// Databases with an open request that this page gave up on and that still
+// waits, with the error that request gave. The browser keeps one queue of open
+// requests for each origin, so a new request would wait behind it. This page
+// cannot see the requests of other tabs, so the time limit is what stops a
+// request that waits behind theirs.
+const abandonedOpens = new Map<string, () => Error>()
+
+function openDatabase(dbName: string, openTimer: OpenTimer): Promise<IDBDatabase> {
+  const abandoned = abandonedOpens.get(dbName)
+  if (abandoned) return Promise.reject(abandoned())
   return new Promise((resolve, reject) => {
-    let blocked = false
+    // Once the caller has its error, no connection may reach it. The request
+    // still waits, so the success handler below closes the connection it gets.
+    let gaveUp = false
+    let stopTimer = () => {}
+    const giveUp = (error: () => Error) => {
+      gaveUp = true
+      stopTimer()
+      abandonedOpens.set(dbName, error)
+      reject(error())
+    }
     const open = indexedDB.open(dbName, DB_VERSION)
+    stopTimer = openTimer(() => giveUp(() => new OccurrenceStoreOpenTimeoutError()))
     open.onupgradeneeded = () => {
       // From 2 to 3 nothing changes, so every row stays as it is.
       const db = open.result
@@ -184,20 +220,17 @@ function openDatabase(dbName: string): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(REVOCATIONS)) db.createObjectStore(REVOCATIONS, { keyPath: 'ticketID' })
       if (!db.objectStoreNames.contains(REVOCATION_META)) db.createObjectStore(REVOCATION_META, { keyPath: 'key' })
     }
-    open.onblocked = () => {
-      // The caller fails closed now. The request still waits, so when the other
-      // tab closes, the success handler below closes the connection it gets.
-      blocked = true
-      blockedOpens.add(dbName)
-      reject(new OccurrenceStoreBlockedError())
-    }
+    // A tab on the older code holds version 2 open. The caller fails closed now.
+    open.onblocked = () => giveUp(() => new OccurrenceStoreBlockedError())
     open.onsuccess = () => {
-      if (!blocked) return resolve(open.result)
-      blockedOpens.delete(dbName)
+      stopTimer()
+      if (!gaveUp) return resolve(open.result)
+      abandonedOpens.delete(dbName)
       open.result.close()
     }
     open.onerror = () => {
-      if (blocked) blockedOpens.delete(dbName)
+      stopTimer()
+      if (gaveUp) abandonedOpens.delete(dbName)
       reject(open.error)
     }
   })
@@ -214,7 +247,7 @@ export async function openOccurrenceStore(
   if (!ownerId || !Number.isSafeInteger(pendingLeaseMs) || pendingLeaseMs <= 0) {
     throw new TypeError('occurrence owner and pending lease must be valid')
   }
-  const db = await openDatabase(dbName)
+  const db = await openDatabase(dbName, options.openTimer ?? defaultOpenTimer)
 
   // Set by close(), and by a later version that asks this connection to close.
   // Every operation checks it, so a closed store refuses with one known error.

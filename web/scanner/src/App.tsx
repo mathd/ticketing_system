@@ -11,6 +11,7 @@ import {
 import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
 import {
   OccurrenceStoreBlockedError,
+  OccurrenceStoreOpenTimeoutError,
   openOccurrenceStore,
   type MintedOccurrence,
   type OccurrenceRecord,
@@ -85,11 +86,15 @@ const storageBeforeScanMessage = 'This device cannot save scans right now. No ti
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
 const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
 const storageBlockedMessage = 'Another scanner tab is open on this device. Close the other scanner tabs, then try again. No ticket was checked.'
+const storageOpenTimeoutMessage = 'Scan storage did not open in time. If another scanner tab is open on this device, close it, then try again. No ticket was checked.'
 
 // A tab on the older scanner code keeps the queue open and blocks this one
-// (TKT-399). The operator can fix that at once, so the screen says how.
+// (TKT-399). The operator can fix that at once, so the screen says how. An open
+// that ran out of time does not know the cause, so its text says only what may help.
 function openFailureMessage(cause: unknown): string {
-  return cause instanceof OccurrenceStoreBlockedError ? storageBlockedMessage : storageBeforeScanMessage
+  if (cause instanceof OccurrenceStoreBlockedError) return storageBlockedMessage
+  if (cause instanceof OccurrenceStoreOpenTimeoutError) return storageOpenTimeoutMessage
+  return storageBeforeScanMessage
 }
 
 // The enrolled device's credential.
@@ -212,21 +217,28 @@ function App() {
     const owner = occurrenceOwner.current
     const attempt = reopenAfter.current.then(() => openOccurrenceStore('gate-occurrences', owner))
     storePromise.current = attempt
+    // A failed open never stays cached. The revocation pull hides its own
+    // failure, and the next scan must then open storage again, not get that failure.
+    attempt.catch(() => discardStore(attempt))
     return attempt
   }
 
-  const reportStorageFailure = (message = storageBeforeScanMessage) => {
-    const failedStore = storePromise.current
+  // Forgets a store that failed, if it is still the current one. The next open
+  // uses a new owner, and waits until the failed store has closed.
+  const discardStore = (failedStore: Promise<OccurrenceStore>) => {
+    if (storePromise.current !== failedStore) return
     storePromise.current = null
-    if (failedStore) {
-      const releasedOwner = occurrenceOwner.current
-      occurrenceOwner.current = replaceOccurrenceOwner(releasedOwner)
-      const priorClose = reopenAfter.current
-      const failedClose = failedStore
-        .then((opened) => opened.close())
-        .catch(() => undefined)
-      reopenAfter.current = Promise.all([priorClose, failedClose]).then(() => undefined)
-    }
+    const releasedOwner = occurrenceOwner.current
+    occurrenceOwner.current = replaceOccurrenceOwner(releasedOwner)
+    const priorClose = reopenAfter.current
+    const failedClose = failedStore
+      .then((opened) => opened.close())
+      .catch(() => undefined)
+    reopenAfter.current = Promise.all([priorClose, failedClose]).then(() => undefined)
+  }
+
+  const reportStorageFailure = (message = storageBeforeScanMessage) => {
+    if (storePromise.current) discardStore(storePromise.current)
     if (mounted.current) setStorageFailure(message)
   }
 

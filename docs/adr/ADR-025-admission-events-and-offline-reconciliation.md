@@ -212,9 +212,18 @@ conflicts. Together every physical admission that Access learns about is represe
    upgrade from version 2 changes no store, index or row. It exists because a tab on the
    pre-TKT-399 code opens version 2, reads every `QUEUED` row and reconciles it with no
    `event_type`, so Access would record this code's queued exit as an entry. That older code has
-   no `versionchange` handler, so while its tab is open, a new tab's open is blocked. The new tab
-   then refuses to scan and tells the operator to close the other scanner tabs. The new code
-   closes its own connection on `versionchange` and then refuses every store operation, so a
+   no `versionchange` handler, so while its tab is open, no new tab can open the database. The
+   browser keeps one queue of open requests for the origin. The first request in it is reported
+   `blocked`; every request behind it, from the same tab or from any other, waits with no event of
+   its own. A tab cannot see the requests of other tabs, so every open request has a time limit
+   of 3 seconds (`OPEN_TIMEOUT_MS`; a healthy open takes milliseconds). A request reported `blocked` refuses at once, and the tab
+   tells the operator to close the other scanner tabs. A request that has not succeeded within 3
+   seconds refuses, and the tab says that scan storage did not open in time and to close any other
+   scanner tab. In both cases nothing is minted and nothing is sent. A request that the tab
+   gave up on stays in the queue. If it succeeds later, the tab closes that connection at once and
+   uses it for nothing, so a refused scan is never sent late. Until then, a new open in that tab
+   refuses at once with the error that request gave; each later scan tries to open again. The new
+   code closes its own connection on `versionchange` and then refuses every store operation, so a
    later version is never blocked by it. The cost is a one-way door: once version 3 exists on a
    device, a rolled-back pre-TKT-399 scanner gets `VersionError` when it opens the database.
    That scanner fails closed: it shows its storage failure, mints nothing and sends no scan. Rows

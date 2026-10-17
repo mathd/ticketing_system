@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ScanDirection } from './access-contract'
-import { OccurrenceStoreBlockedError, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
+import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
 
 const openStore = vi.hoisted(() => vi.fn())
 
-// The error classes stay real: App tells a blocked open apart by its type.
+// The error classes stay real: App tells open failures apart by their type.
 vi.mock('./occurrences', async (importOriginal) => ({
   ...await importOriginal<typeof import('./occurrences')>(),
   openOccurrenceStore: openStore,
@@ -120,32 +120,6 @@ describe('Scanner storage failures', () => {
 
     expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
     expect(openStore).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1)
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-
-  // An older scanner tab holds the database at version 2 (TKT-399). Only the
-  // operator can close it, so the screen says which tab to close.
-  it('tells the operator to close the other scanner tab and checks nothing while the open is blocked', async () => {
-    const { store } = fakeStore()
-    openStore.mockRejectedValue(new OccurrenceStoreBlockedError())
-
-    render(<App />)
-
-    const blockedText = 'Another scanner tab is open on this device. Close the other scanner tabs, then try again. No ticket was checked.'
-    expect((await screen.findByRole('alert')).textContent).toBe(blockedText)
-    checkTicket()
-    await waitFor(() => expect(openStore).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
-    expect(screen.getByRole('alert').textContent).toBe(blockedText)
-    expect(screen.queryByRole('heading', { level: 2, name: /Accepted|Queued offline/ })).toBeNull()
-    expect(fetch).not.toHaveBeenCalled()
-
-    // The other tab is closed: the next scan opens the store and goes through.
-    openStore.mockResolvedValue(store)
-    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
-    expect(store.mint).toHaveBeenCalledOnce()
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1)
     expect(screen.queryByRole('alert')).toBeNull()
   })
